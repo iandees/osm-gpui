@@ -159,6 +159,14 @@ impl MapViewer {
         eprintln!("🔄 Toggled tile boundaries: {}", if self.show_tile_boundaries { "ON" } else { "OFF" });
     }
 
+    fn toggle_layer_visibility(&mut self, layer_name: &str) {
+        if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+            let current_visibility = layer.is_visible();
+            layer.set_visible(!current_visibility);
+            eprintln!("🔄 Toggled {} layer: {}", layer_name, if !current_visibility { "ON" } else { "OFF" });
+        }
+    }
+
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
         self.viewport.handle_mouse_down(event.position);
         println!(
@@ -228,9 +236,11 @@ impl MapViewer {
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Update viewport size to actual window dimensions
+        // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
-        self.viewport.update_size(window_size);
+        let panel_width = px(280.0);
+        let map_size = gpui::size(window_size.width - panel_width, window_size.height);
+        self.viewport.update_size(map_size);
 
         // Check for new OSM data
         self.check_for_new_osm_data(cx);
@@ -242,134 +252,227 @@ impl Render for MapViewer {
         let zoom_level = self.viewport.zoom_level();
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
 
+        // Collect layer information for the UI
+        let layer_info: Vec<(String, bool)> = self.layer_manager.layers()
+            .iter()
+            .map(|layer| (layer.name().to_string(), layer.is_visible()))
+            .collect();
+
         div()
             .size_full()
             .bg(rgb(0x1a202c))
             .flex()
-            .flex_col()
+            .flex_row()
             .child(
-                // Header with menu
-                div()
-                    .h_12()
-                    .bg(rgb(0x111827))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .child(
-                        div()
-                            .text_color(rgb(0xffffff))
-                            .text_xl()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("🗺️ OSM-GPUI Map Viewer (Layered)"),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(0x9ca3af))
-                            .text_sm()
-                            .child("Mouse to pan/zoom | 'T' tiles | Layered Architecture"),
-                    ),
-            )
-            .child(
-                // Main map area
+                // Main content area (header + map)
                 div()
                     .flex_1()
-                    .relative()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                            this.handle_mouse_down(ev);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                        this.handle_mouse_move(ev, cx);
-                    }))
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, ev: &MouseUpEvent, _, _| {
-                            this.handle_mouse_up(ev);
-                        }),
-                    )
-                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                        this.handle_scroll(ev, cx);
-                    }))
+                    .flex()
+                    .flex_col()
                     .child(
+                        // Header with menu
                         div()
-                            .size_full()
-                            .relative()
-                            .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
-                            // Render all layer elements (raster content like tiles)
-                            .children(self.layer_manager.render_all_elements(&self.viewport))
-                            // Render canvas layers (vector content)
+                            .h_12()
+                            .bg(rgb(0x111827))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px_4()
                             .child(
-                                canvas(
-                                    |_, _, _| {},
-                                    {
-                                        let viewport_clone = self.viewport.clone();
-                                        move |bounds, _, window, _| {
-                                            // Create a temporary viewport for rendering
-                                            let viewport = Viewport::new(
-                                                viewport_clone.center().0,
-                                                viewport_clone.center().1,
-                                                viewport_clone.zoom_level(),
-                                                bounds.size,
-                                            );
+                                div()
+                                    .text_color(rgb(0xffffff))
+                                    .text_xl()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("🗺️ OSM-GPUI Map Viewer (Layered)"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(0x9ca3af))
+                                    .text_sm()
+                                    .child("Mouse to pan/zoom | 'T' tiles | Click layers to toggle"),
+                            ),
+                    )
+                    .child(
+                        // Map area
+                        div()
+                            .flex_1()
+                            .relative()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                                    this.handle_mouse_down(ev);
+                                }),
+                            )
+                            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                                this.handle_mouse_move(ev, cx);
+                            }))
+                            .on_mouse_up(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
+                                    this.handle_mouse_up(ev);
+                                }),
+                            )
+                            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                                this.handle_scroll(ev, cx);
+                            }))
+                            .child(
+                                div()
+                                    .size_full()
+                                    .relative()
+                                    .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
+                                    // Render all layer elements (raster content like tiles)
+                                    .children(self.layer_manager.render_all_elements(&self.viewport))
+                                    // Render canvas layers (vector content)
+                                    .child(
+                                        canvas(
+                                            |_, _, _| {},
+                                            {
+                                                let viewport_clone = self.viewport.clone();
+                                                move |bounds, _, window, _| {
+                                                    // Create a temporary viewport for rendering
+                                                    let viewport = Viewport::new(
+                                                        viewport_clone.center().0,
+                                                        viewport_clone.center().1,
+                                                        viewport_clone.zoom_level(),
+                                                        bounds.size,
+                                                    );
 
-                                            // Manually render each layer's canvas content
-                                            // This is a temporary solution until we can properly handle the borrow checker
+                                                    // Manually render each layer's canvas content
+                                                    // This is a temporary solution until we can properly handle the borrow checker
 
-                                            // Render grid layer
-                                            let grid_layer = GridLayer::new();
-                                            grid_layer.render_canvas(&viewport, bounds, window);
-                                        }
-                                    }
-                                )
+                                                    // Render grid layer
+                                                    let grid_layer = GridLayer::new();
+                                                    grid_layer.render_canvas(&viewport, bounds, window);
+                                                }
+                                            }
+                                        )
+                                    )
+                            )
+                            .child(
+                                // Debug info overlay
+                                div()
+                                    .absolute()
+                                    .top_4()
+                                    .left_4()
+                                    .p_3()
+                                    .bg(gpui::black())
+                                    .rounded_lg()
+                                    .text_color(rgb(0xffffff))
+                                    .text_sm()
+                                    .opacity(0.9)
+                                    .min_w_64()
+                                    .child(format!("🔍 Zoom: {:.1}", zoom_level))
+                                    .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
+                                    .child(format!("📊 Objects: {}", osm_objects))
+                                    .child(format!("🗺️ Tiles: {} visible", total_tiles))
+                                    .child(format!("💾 Cache: {} files", cached_files))
+                            ),
+                    )
+            )
+            .child(
+                // Right panel with layer controls
+                div()
+                    .w(px(280.0))
+                    .h_full()
+                    .bg(rgb(0x111827))
+                    .border_l_1()
+                    .border_color(rgb(0x374151))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        // Panel header
+                        div()
+                            .h_12()
+                            .bg(rgb(0x1f2937))
+                            .flex()
+                            .items_center()
+                            .px_4()
+                            .border_b_1()
+                            .border_color(rgb(0x374151))
+                            .child(
+                                div()
+                                    .text_color(rgb(0xffffff))
+                                    .text_lg()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child("🏗️ Layer Controls")
                             )
                     )
                     .child(
-                        // Debug info overlay
+                        // Layer list container
                         div()
-                            .absolute()
-                            .top_4()
-                            .left_4()
-                            .p_3()
-                            .bg(gpui::black())
-                            .rounded_lg()
-                            .text_color(rgb(0xffffff))
-                            .text_sm()
-                            .opacity(0.9)
-                            .min_w_64()
-                            .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                            .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
-                            .child(format!("📊 Objects: {}", osm_objects))
-                            .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                            .child(format!("💾 Cache: {} files", cached_files))
-                    )
-                    .child(
-                        // Layer control panel
-                        div()
-                            .absolute()
-                            .top_4()
-                            .right_4()
-                            .p_3()
-                            .bg(gpui::black())
-                            .rounded_lg()
-                            .text_color(rgb(0xffffff))
-                            .text_sm()
-                            .opacity(0.9)
-                            .min_w_48()
-                            .child("🏗️ Active Layers")
+                            .flex_1()
+                            .p_4()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
                             .children(
-                                self.layer_manager.layers().iter().map(|layer| {
+                                layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
+                                    let layer_name = name.clone();
                                     div()
+                                        .id(("layer", index))
+                                        .p_3()
+                                        .bg(rgb(0x1f2937))
+                                        .rounded_lg()
+                                        .border_1()
+                                        .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x374151) })
+                                        .cursor_pointer()
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .child(format!("• {}", layer.name()))
-                                        .child(if layer.is_visible() { "✅" } else { "❌" })
+                                        .gap_3()
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
+                                                this.toggle_layer_visibility(&layer_name);
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    // Checkbox
+                                                    div()
+                                                        .w(px(20.0))
+                                                        .h(px(20.0))
+                                                        .rounded_sm()
+                                                        .border_2()
+                                                        .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x6b7280) })
+                                                        .bg(if *is_visible { rgb(0x10b981) } else { rgb(0x374151) })
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .when(*is_visible, |this| {
+                                                            this.child(
+                                                                div()
+                                                                    .text_color(rgb(0xffffff))
+                                                                    .text_sm()
+                                                                    .font_weight(gpui::FontWeight::BOLD)
+                                                                    .child("✓")
+                                                            )
+                                                        })
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_color(rgb(0xffffff))
+                                                        .text_sm()
+                                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                                        .child(name.clone())
+                                                )
+                                        )
+                                        .child(
+                                            // Layer order indicator
+                                            div()
+                                                .text_color(rgb(0x9ca3af))
+                                                .text_xs()
+                                                .child(format!("#{}", index + 1))
+                                        )
                                 })
+                                .collect::<Vec<_>>()
                             )
-                    ),
+                    )
             )
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 eprintln!("⌨️ Key down: {}", ev.keystroke.key);
@@ -395,7 +498,6 @@ impl Render for MapViewer {
 fn main() {
     // Initialize simple logging to stderr
     eprintln!("🚀 Starting OSM-GPUI Map Viewer with Tile Loading");
-    eprintln!("💡 Tile debug info will be displayed in console");
 
     // Initialize shared OSM data
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(None))).unwrap();
