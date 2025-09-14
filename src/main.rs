@@ -1,6 +1,6 @@
 use gpui::{
     actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context,
-    Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
+    KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
     ScrollWheelEvent, SystemMenuType, Window, WindowOptions,
 };
 use std::sync::{Arc, Mutex};
@@ -492,12 +492,12 @@ fn main() {
                 items: vec![
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
-                    MenuItem::action("Quit", Quit),
+                    MenuItem::action("Quit\t⌘Q", Quit),
                 ],
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Open…", OpenOsmFile)],
+                items: vec![MenuItem::action("Open…\t⌘O", OpenOsmFile)],
             },
         ]);
 
@@ -515,7 +515,14 @@ fn main() {
                 focus: true,
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| MapViewer::new(window, cx)),
+            |window, cx| {
+                // Register keyboard bindings in the window context
+                cx.bind_keys([
+                    KeyBinding::new("cmd-o", OpenOsmFile, None),
+                    KeyBinding::new("cmd-q", Quit, None),
+                ]);
+                cx.new(|cx| MapViewer::new(window, cx))
+            },
         )
         .unwrap();
 
