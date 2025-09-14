@@ -28,7 +28,6 @@ struct MapViewer {
     viewport: Viewport,
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
-    show_tile_boundaries: bool,
     first_dataset_fitted: bool,
 }
 
@@ -45,7 +44,6 @@ impl MapViewer {
             viewport,
             layer_manager,
             tile_cache,
-            show_tile_boundaries: false,
             first_dataset_fitted: false,
         }
     }
@@ -103,16 +101,9 @@ impl MapViewer {
             let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
             let zoom_level = zoom_x.min(zoom_y).max(1.0).min(18.0); // Clamp zoom to [1, 18]
 
-            eprintln!("fit_to_osm_data: center=({:.6}, {:.6}), zoom_level={:.2}", center_lat, center_lon, zoom_level);
-
             self.viewport.pan_to(center_lat, center_lon);
             self.viewport.set_zoom(zoom_level);
         }
-    }
-
-    fn zoom(&mut self, delta: f64) {
-        let new_zoom = (self.viewport.zoom_level() + delta).max(1.0).min(20.0);
-        self.viewport.set_zoom(new_zoom);
     }
 
     fn toggle_layer_visibility(&mut self, layer_name: &str) {
@@ -146,7 +137,7 @@ impl MapViewer {
         }
     }
 
-    fn handle_mouse_up(&mut self, event: &MouseUpEvent) {
+    fn handle_mouse_up(&mut self, _: &MouseUpEvent) {
         self.viewport.handle_mouse_up();
         println!("🖱️ Mouse up");
     }
@@ -328,10 +319,6 @@ impl Render for MapViewer {
                                                 let viewport_clone = self.viewport.clone();
                                                 let layer_manager = std::ptr::addr_of!(self.layer_manager);
                                                 move |bounds, _, window, _| {
-                                                    // Print debug info to understand coordinate spaces
-                                                    eprintln!("Canvas bounds: {:?}", bounds);
-                                                    eprintln!("Viewport size: {:?}", viewport_clone.transform.screen_size);
-
                                                     let layer_manager = unsafe { &*layer_manager };
                                                     layer_manager.render_all_canvas(&viewport_clone, bounds, window);
                                                 }
