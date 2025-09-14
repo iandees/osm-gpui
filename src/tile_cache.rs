@@ -1,8 +1,7 @@
 use gpui::{Asset, BackgroundExecutor, RenderImage, ImageCacheError};
-use http_client::{AsyncBody, Method, Request as HttpRequest};
-use futures::AsyncReadExt;
 use std::fs;
 use std::sync::Arc;
+use std::io::Read;
 
 pub struct TileAsset;
 
@@ -14,75 +13,86 @@ impl Asset for TileAsset {
         url: Self::Source,
         cx: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let http_client = cx.http_client().clone();
+        let executor = cx.background_executor().clone();
 
         async move {
-            let cache_dir = std::env::temp_dir().join("osm-gpui-tiles");
+            // Use GPUI's background executor to run the HTTP request synchronously
+            executor.spawn(async move {
+                let cache_dir = std::env::temp_dir().join("osm-gpui-tiles");
 
-            // Create a safe filename from the URL
-            let filename = if let Some(parts) = url.strip_prefix("https://tile.openstreetmap.org/") {
-                parts.replace('/', "_")
-            } else {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                url.hash(&mut hasher);
-                format!("tile_{:x}.png", hasher.finish())
-            };
+                // Create a safe filename from the URL
+                let filename = if let Some(parts) = url.strip_prefix("https://tile.openstreetmap.org/") {
+                    parts.replace('/', "_")
+                } else {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    url.hash(&mut hasher);
+                    format!("tile_{:x}.png", hasher.finish())
+                };
 
-            let file_path = cache_dir.join(&filename);
+                let file_path = cache_dir.join(&filename);
 
-            // Check if file already exists, load it directly
-            if file_path.exists() {
-                match load_image_from_file(&file_path) {
-                    Ok(image) => return Ok(Arc::new(image)),
-                    Err(e) => {
-                        // If cached file is corrupted, delete it and re-download
-                        let _ = fs::remove_file(&file_path);
-                        eprintln!("⚠️ Corrupted cached tile deleted: {}", e);
+                // Check if file already exists, load it directly
+                if file_path.exists() {
+                    match load_image_from_file(&file_path) {
+                        Ok(image) => {
+                            return Ok(Arc::new(image));
+                        }
+                        Err(_) => {
+                            // If cached file is corrupted, delete it and re-download
+                            let _ = fs::remove_file(&file_path);
+                        }
                     }
                 }
-            }
 
-            // Ensure cache directory exists
-            if let Err(e) = fs::create_dir_all(&cache_dir) {
-                return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to create cache directory: {}", e))));
-            }
+                // Ensure cache directory exists
+                if let Err(e) = fs::create_dir_all(&cache_dir) {
+                    return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to create cache directory: {}", e))));
+                }
 
-            // Download the image using GPUI's HTTP client
-            let request = HttpRequest::builder()
-                .method(Method::GET)
-                .uri(&url)
-                .header("User-Agent", "osm-gpui/0.1.0")
-                .body(AsyncBody::empty())
-                .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to create HTTP request: {}", e))))?;
+                // Use a simple synchronous HTTP request that doesn't require Tokio
+                match download_file_sync(&url) {
+                    Ok(bytes) => {
+                        // Check if the response actually contains image data
+                        if bytes.is_empty() {
+                            return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Received empty response body for URL: {}", url))));
+                        }
 
-            let mut response = http_client
-                .send(request)
-                .await
-                .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to fetch image: {}", e))))?;
+                        // Check if this looks like an actual image file (PNG should start with PNG signature)
+                        if bytes.len() < 8 || &bytes[1..4] != b"PNG" {
+                            return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Response is not PNG image data"))));
+                        }
 
-            if !response.status().is_success() {
-                return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("HTTP error {}: {}", response.status(), url))));
-            }
+                        // Write to file
+                        fs::write(&file_path, &bytes)
+                            .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to write file: {}", e))))?;
 
-            // Read the response body using the correct API
-            let mut bytes = Vec::new();
-            response.body_mut().read_to_end(&mut bytes).await
-                .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to read response body: {}", e))))?;
-
-            // Write to file
-            fs::write(&file_path, &bytes)
-                .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to write file: {}", e))))?;
-
-            eprintln!("💾 Saved tile: {} ({} bytes)", file_path.display(), bytes.len());
-
-            // Load the saved file as an image
-            let image = load_image_from_file(&file_path)
-                .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("{}", e))))?;
-            Ok(Arc::new(image))
+                        // Load the saved file as an image
+                        let image = load_image_from_file(&file_path)
+                            .map_err(|e| ImageCacheError::Other(Arc::new(anyhow::anyhow!("{}", e))))?;
+                        Ok(Arc::new(image))
+                    }
+                    Err(e) => {
+                        Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to fetch image: {}", e))))
+                    }
+                }
+            }).await
         }
     }
+}
+
+fn download_file_sync(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    // Use ureq for synchronous HTTP requests that don't require Tokio
+    let response = ureq::get(url)
+        .set("User-Agent", "osm-gpui/0.1.0 (https://github.com/iandees/osm-gpui) Rust/GPUI")
+        .set("Referer", "https://github.com/iandees/osm-gpui")
+        .timeout(std::time::Duration::from_secs(30))
+        .call()?;
+
+    let mut bytes = Vec::new();
+    response.into_reader().read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, String> {
