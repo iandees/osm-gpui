@@ -1,8 +1,4 @@
-use gpui::{
-    actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context,
-    KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
-    ScrollWheelEvent, SystemMenuType, Window, WindowOptions,
-};
+use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, EntityId, KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
 use std::sync::{Arc, Mutex};
 
 mod coordinates;
@@ -18,10 +14,14 @@ use osm::{OsmData, OsmParser};
 use viewport::Viewport;
 use layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 
-actions!(osm_gpui, [OpenOsmFile, Quit]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto]);
 
 // Replace single optional data store with a queue of datasets awaiting layer creation
 static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
+    std::sync::OnceLock::new();
+
+// Queue for layer addition requests
+static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
     std::sync::OnceLock::new();
 
 struct MapViewer {
@@ -37,8 +37,9 @@ impl MapViewer {
         let executor = cx.background_executor().clone();
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor)));
         let mut layer_manager = LayerManager::new();
-        layer_manager.add_layer(Box::new(TileLayer::new(tile_cache.clone())));
+        // Removed default tile layer - will be added via menu
         layer_manager.add_layer(Box::new(GridLayer::new()));
+
         // No default OSM layer; loaded files add their own
         Self {
             viewport,
@@ -189,6 +190,31 @@ impl MapViewer {
         }
     }
 
+    fn check_for_layer_requests(&mut self, cx: &mut Context<Self>) {
+        if let Some(requests) = LAYER_REQUESTS.get() {
+            if let Ok(mut guard) = requests.try_lock() {
+                if guard.is_empty() { return; }
+                for layer_name in guard.drain(..) {
+                    match layer_name.as_str() {
+                        "OpenStreetMap Carto" => {
+                            if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
+                                let tile_layer = TileLayer::new(self.tile_cache.clone());
+                                self.layer_manager.add_layer(Box::new(tile_layer));
+                                eprintln!("✅ Added OpenStreetMap Carto layer");
+                            } else {
+                                eprintln!("🗺️ OpenStreetMap Carto layer already exists");
+                            }
+                        },
+                        _ => {
+                            eprintln!("❌ Unknown layer request: {}", layer_name);
+                        }
+                    }
+                }
+                cx.notify();
+            }
+        }
+    }
+
     fn get_layer_stats(&self) -> (usize, usize, usize) {
         let mut cached_files = 0;
         let mut osm_nodes = 0;
@@ -217,6 +243,18 @@ impl MapViewer {
 
         (total_tiles, cached_files, osm_nodes + osm_ways)
     }
+
+    fn add_osm_carto_layer(&mut self) {
+        // Check if OSM Carto layer already exists
+        if self.layer_manager.find_layer("OpenStreetMap Carto").is_some() {
+            eprintln!("🗺️ OpenStreetMap Carto layer already exists");
+            return;
+        }
+
+        let tile_layer = TileLayer::new(self.tile_cache.clone());
+        self.layer_manager.add_layer(Box::new(tile_layer));
+        eprintln!("✅ Added OpenStreetMap Carto layer");
+    }
 }
 
 impl Render for MapViewer {
@@ -233,6 +271,7 @@ impl Render for MapViewer {
 
         // Process queued OSM datasets into layers before stats and listing
         self.check_for_new_osm_data(cx);
+        self.check_for_layer_requests(cx);
 
         // Update all layers
         self.layer_manager.update_all();
@@ -463,6 +502,7 @@ fn main() {
 
     // Initialize shared OSM data
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
 
     Application::new().run(|cx: &mut App| {
         // Bring the menu bar to the foreground
@@ -471,6 +511,7 @@ fn main() {
         // Register the open file action
         cx.on_action(open_osm_file);
         cx.on_action(quit);
+        cx.on_action(add_osm_carto);
 
         // Set up OS menu system
         cx.set_menus(vec![
@@ -485,6 +526,10 @@ fn main() {
             Menu {
                 name: "File".into(),
                 items: vec![MenuItem::action("Open…\t⌘O", OpenOsmFile)],
+            },
+            Menu {
+                name: "Imagery".into(),
+                items: vec![MenuItem::action("OpenStreetMap Carto", AddOsmCarto)],
             },
         ]);
 
@@ -566,4 +611,17 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 fn quit(_: &Quit, cx: &mut App) {
     println!("Gracefully quitting the application . . .");
     cx.quit();
+}
+
+// Handle the Imagery > OpenStreetMap Carto menu action
+fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
+    println!("🗺️ Imagery > OpenStreetMap Carto menu action triggered");
+
+    // Add the layer request to the global queue
+    if let Some(requests) = LAYER_REQUESTS.get() {
+        if let Ok(mut queue) = requests.lock() {
+            queue.push("OpenStreetMap Carto".to_string());
+            println!("📊 Queued OpenStreetMap Carto layer for creation");
+        }
+    }
 }

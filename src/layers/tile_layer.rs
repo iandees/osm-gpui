@@ -8,6 +8,7 @@ use crate::tiles::get_tiles_for_bounds;
 
 /// Layer for rendering raster map tiles
 pub struct TileLayer {
+    name: String,
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
     show_boundaries: bool,
@@ -15,7 +16,12 @@ pub struct TileLayer {
 
 impl TileLayer {
     pub fn new(tile_cache: Arc<Mutex<TileCache>>) -> Self {
+        Self::new_with_name("OpenStreetMap Carto".to_string(), tile_cache)
+    }
+
+    pub fn new_with_name(name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
         Self {
+            name,
             visible: true,
             tile_cache,
             show_boundaries: false,
@@ -28,8 +34,8 @@ impl TileLayer {
 }
 
 impl MapLayer for TileLayer {
-    fn name(&self) -> &'static str {
-        "Raster Tiles"
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn is_visible(&self) -> bool {
