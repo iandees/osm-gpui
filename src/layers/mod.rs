@@ -9,7 +9,7 @@ pub mod grid_layer;
 /// Trait that all map layers must implement
 pub trait MapLayer: Send + Sync {
     /// Get the name of this layer for debugging/UI purposes
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
@@ -30,9 +30,6 @@ pub trait MapLayer: Send + Sync {
     fn stats(&self) -> Vec<(String, String)> {
         vec![]
     }
-
-    /// Allow downcasting to concrete types
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Manager for all map layers
@@ -60,6 +57,11 @@ impl LayerManager {
     /// Get all mutable layers
     pub fn layers_mut(&mut self) -> &mut [Box<dyn MapLayer>] {
         &mut self.layers
+    }
+
+    /// Find a layer by name (immutable)
+    pub fn find_layer(&self, name: &str) -> Option<&Box<dyn MapLayer>> {
+        self.layers.iter().find(|layer| layer.name() == name)
     }
 
     /// Find a layer by name

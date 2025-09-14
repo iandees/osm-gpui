@@ -56,14 +56,17 @@ impl MapLayer for TileLayer {
             let (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat) =
                 tile_coord.to_lat_lon_bounds();
 
-            let screen_min = viewport.geo_to_screen(tile_min_lat, tile_min_lon);
-            let screen_max = viewport.geo_to_screen(tile_max_lat, tile_max_lon);
+            let screen_top_left = viewport.geo_to_screen(tile_max_lat, tile_min_lon);
+            let screen_bottom_right = viewport.geo_to_screen(tile_min_lat, tile_max_lon);
 
             // Calculate tile screen position and size
-            let tile_x = screen_min.x.0.min(screen_max.x.0);
-            let tile_y = screen_max.y.0.min(screen_min.y.0);
-            let tile_width = (screen_max.x.0 - screen_min.x.0).abs();
-            let tile_height = (screen_min.y.0 - screen_max.y.0).abs();
+            // Note: In screen coordinates, y increases downward
+            // tile_max_lat (north) -> smaller y (top)
+            // tile_min_lat (south) -> larger y (bottom)
+            let tile_x = screen_top_left.x.0;
+            let tile_y = screen_top_left.y.0;
+            let tile_width = (screen_bottom_right.x.0 - screen_top_left.x.0).abs();
+            let tile_height = (screen_bottom_right.y.0 - screen_top_left.y.0).abs();
 
             // Generate tile URL
             let tile_url = tile_coord.to_url();
@@ -81,39 +84,39 @@ impl MapLayer for TileLayer {
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                         window.use_asset::<crate::tile_cache::TileAsset>(&tile_url, cx)
                     })
-                    .size_full()
-                    .object_fit(gpui::ObjectFit::Cover)
-                    .with_loading(|| {
-                        div()
-                            .size_full()
-                            .bg(rgb(0x4a5568))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_xs()
-                                    .child("Downloading...")
-                            )
-                            .into_any_element()
-                    })
-                    .with_fallback(|| {
-                        div()
-                            .size_full()
-                            .bg(rgb(0x9f1239))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_xs()
-                                    .child("Failed")
-                            )
-                            .into_any_element()
-                    })
-                    .into_any_element()
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Cover)
+                        .with_loading(|| {
+                            div()
+                                .size_full()
+                                .bg(rgb(0x4a5568))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_color(rgb(0xffffff))
+                                        .text_xs()
+                                        .child("Downloading...")
+                                )
+                                .into_any_element()
+                        })
+                        .with_fallback(|| {
+                            div()
+                                .size_full()
+                                .bg(rgb(0x9f1239))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_color(rgb(0xffffff))
+                                        .text_xs()
+                                        .child("Failed")
+                                )
+                                .into_any_element()
+                        })
+                        .into_any_element()
                 )
                 .into_any_element();
 
@@ -142,19 +145,19 @@ impl MapLayer for TileLayer {
             let (tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat) =
                 tile_coord.to_lat_lon_bounds();
 
-            // Convert tile bounds to screen coordinates using viewport
-            let screen_min = viewport.geo_to_screen(tile_min_lat, tile_min_lon);
-            let screen_max = viewport.geo_to_screen(tile_max_lat, tile_max_lon);
+            // Use the same coordinate logic as in render_elements for consistency
+            let screen_top_left = viewport.geo_to_screen(tile_max_lat, tile_min_lon);
+            let screen_bottom_right = viewport.geo_to_screen(tile_min_lat, tile_max_lon);
 
             // Validate coordinates before using in Lyon path
             use crate::coordinates::is_point_valid;
-            if is_point_valid(screen_min) && is_point_valid(screen_max) {
+            if is_point_valid(screen_top_left) && is_point_valid(screen_bottom_right) {
                 // Draw tile boundary rectangle
                 let mut builder = PathBuilder::stroke(px(1.0));
-                builder.move_to(point(screen_min.x, screen_max.y));
-                builder.line_to(point(screen_max.x, screen_max.y));
-                builder.line_to(point(screen_max.x, screen_min.y));
-                builder.line_to(point(screen_min.x, screen_min.y));
+                builder.move_to(point(screen_top_left.x, screen_top_left.y));
+                builder.line_to(point(screen_bottom_right.x, screen_top_left.y));
+                builder.line_to(point(screen_bottom_right.x, screen_bottom_right.y));
+                builder.line_to(point(screen_top_left.x, screen_bottom_right.y));
                 builder.close();
 
                 if let Ok(path) = builder.build() {
@@ -176,9 +179,5 @@ impl MapLayer for TileLayer {
             ("Active Downloads".to_string(), active_downloads.to_string()),
             ("Show Boundaries".to_string(), self.show_boundaries.to_string()),
         ]
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }

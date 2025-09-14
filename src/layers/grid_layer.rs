@@ -125,8 +125,4 @@ impl MapLayer for GridLayer {
                 (self.grid_color.b * 255.0) as u32)),
         ]
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }

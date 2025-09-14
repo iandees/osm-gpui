@@ -45,9 +45,9 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     // Clamp latitude to avoid projection issues at poles
     let clamped_lat = lat.max(-85.051128779807).min(85.051128779807);
 
+    // Standard Web Mercator projection (EPSG:3857)
     let x = lon * 20037508.34 / 180.0;
-    let y = ((90.0 + clamped_lat) * PI / 360.0).tan().ln() / (PI / 180.0);
-    let y = y * 20037508.34 / 180.0;
+    let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * 20037508.34 / PI;
 
     // Ensure finite values
     let x = if x.is_finite() { x } else { 0.0 };
@@ -58,7 +58,7 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
 
 fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
     let lon = x * 180.0 / 20037508.34;
-    let lat = (y * 180.0 / 20037508.34).to_radians().exp().atan() * 360.0 / PI - 90.0;
+    let lat = (2.0 * (y * PI / 20037508.34).exp().atan() - PI / 2.0) * 180.0 / PI;
 
     // Ensure finite values and clamp to valid ranges
     let lat = if lat.is_finite() {

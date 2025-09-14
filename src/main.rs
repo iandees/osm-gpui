@@ -17,12 +17,11 @@ use tile_cache::TileCache;
 use osm::{OsmData, OsmParser};
 use viewport::Viewport;
 use layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
-use crate::layers::MapLayer;
 
 actions!(osm_gpui, [OpenOsmFile, Quit]);
 
-// Global state for OSM data that can be shared between threads
-static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Option<OsmData>>>> =
+// Replace single optional data store with a queue of datasets awaiting layer creation
+static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
     std::sync::OnceLock::new();
 
 struct MapViewer {
@@ -30,57 +29,24 @@ struct MapViewer {
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
     show_tile_boundaries: bool,
+    first_dataset_fitted: bool,
 }
 
 impl MapViewer {
     fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let viewport = Viewport::new(
-            40.7128,                          // NYC latitude
-            -74.0060,                         // NYC longitude
-            11.0,                             // Initial zoom
-            gpui::size(px(800.0), px(600.0)), // Default size, will be updated
-        );
-
+        let viewport = Viewport::new(40.7128, -74.0060, 11.0, gpui::size(px(800.0), px(600.0)));
         let executor = cx.background_executor().clone();
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor)));
-
-        // Create layer manager and add layers
         let mut layer_manager = LayerManager::new();
-
-        // Add tile layer (raster tiles) - bottom layer
-        let tile_layer = TileLayer::new(tile_cache.clone());
-        layer_manager.add_layer(Box::new(tile_layer));
-
-        // Add grid layer - middle layer
-        let grid_layer = GridLayer::new();
-        layer_manager.add_layer(Box::new(grid_layer));
-
-        // Add OSM data layer - top layer
-        let osm_layer = OsmLayer::new();
-        layer_manager.add_layer(Box::new(osm_layer));
-
+        layer_manager.add_layer(Box::new(TileLayer::new(tile_cache.clone())));
+        layer_manager.add_layer(Box::new(GridLayer::new()));
+        // No default OSM layer; loaded files add their own
         Self {
             viewport,
             layer_manager,
             tile_cache,
             show_tile_boundaries: false,
-        }
-    }
-
-    fn check_for_new_osm_data(&mut self, cx: &mut Context<Self>) {
-        if let Some(shared_data) = SHARED_OSM_DATA.get() {
-            if let Ok(mut data_guard) = shared_data.try_lock() {
-                if let Some(new_data) = data_guard.take() {
-                    // Set OSM data in the OSM layer
-                    if let Some(osm_layer) = self.layer_manager.find_layer_mut("OSM Data") {
-                        if let Some(osm_layer) = osm_layer.as_any_mut().downcast_mut::<OsmLayer>() {
-                            osm_layer.set_osm_data(Arc::new(new_data.clone()));
-                        }
-                    }
-                    self.fit_to_osm_data(&new_data);
-                    cx.notify();
-                }
-            }
+            first_dataset_fitted: false,
         }
     }
 
@@ -149,16 +115,6 @@ impl MapViewer {
         self.viewport.set_zoom(new_zoom);
     }
 
-    fn toggle_tile_boundaries(&mut self) {
-        self.show_tile_boundaries = !self.show_tile_boundaries;
-        if let Some(tile_layer) = self.layer_manager.find_layer_mut("Raster Tiles") {
-            if let Some(tile_layer) = tile_layer.as_any_mut().downcast_mut::<TileLayer>() {
-                tile_layer.set_show_boundaries(self.show_tile_boundaries);
-            }
-        }
-        eprintln!("🔄 Toggled tile boundaries: {}", if self.show_tile_boundaries { "ON" } else { "OFF" });
-    }
-
     fn toggle_layer_visibility(&mut self, layer_name: &str) {
         if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
             let current_visibility = layer.is_visible();
@@ -168,20 +124,29 @@ impl MapViewer {
     }
 
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
-        self.viewport.handle_mouse_down(event.position);
+        // Adjust mouse coordinates to account for header offset
+        let header_height = px(48.0);
+        let adjusted_position = point(event.position.x, event.position.y - header_height);
+
+        self.viewport.handle_mouse_down(adjusted_position);
         println!(
-            "🖱️ Mouse down at: {:.1}, {:.1}",
-            event.position.x.0, event.position.y.0
+            "🖱️ Mouse down at: {:.1}, {:.1} (adjusted: {:.1}, {:.1})",
+            event.position.x.0, event.position.y.0,
+            adjusted_position.x.0, adjusted_position.y.0
         );
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        if self.viewport.handle_mouse_move(event.position) {
+        // Adjust mouse coordinates to account for header offset
+        let header_height = px(48.0);
+        let adjusted_position = point(event.position.x, event.position.y - header_height);
+
+        if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
         }
     }
 
-    fn handle_mouse_up(&mut self, _event: &MouseUpEvent) {
+    fn handle_mouse_up(&mut self, event: &MouseUpEvent) {
         self.viewport.handle_mouse_up();
         println!("🖱️ Mouse up");
     }
@@ -198,8 +163,38 @@ impl MapViewer {
             },
         };
 
-        if self.viewport.handle_scroll(event.position, scroll_delta) {
+        // Adjust mouse coordinates to account for header offset
+        let header_height = px(48.0);
+        let adjusted_position = point(event.position.x, event.position.y - header_height);
+
+        if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
             cx.notify();
+        }
+    }
+
+    fn check_for_new_osm_data(&mut self, cx: &mut Context<Self>) {
+        if let Some(queue) = SHARED_OSM_DATA.get() {
+            if let Ok(mut guard) = queue.try_lock() {
+                if guard.is_empty() { return; }
+                for (name, data) in guard.drain(..) {
+                    let file_name = if name.is_empty() { "OSM".to_string() } else { name };
+                    // Ensure unique layer name
+                    let mut candidate = file_name.clone();
+                    let mut i = 2;
+                    while self.layer_manager.find_layer(&candidate).is_some() {
+                        candidate = format!("{} ({})", file_name, i);
+                        i += 1;
+                    }
+                    let data_arc = Arc::new(data.clone());
+                    let layer = OsmLayer::new_with_data(candidate.clone(), data_arc.clone());
+                    self.layer_manager.add_layer(Box::new(layer));
+                    if !self.first_dataset_fitted {
+                        self.fit_to_osm_data(&data);
+                        self.first_dataset_fitted = true;
+                    }
+                }
+                cx.notify();
+            }
         }
     }
 
@@ -235,13 +230,17 @@ impl MapViewer {
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Update viewport size to actual window dimensions minus the right panel
+        // Update viewport size to actual window dimensions minus the right panel and header
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
-        let map_size = gpui::size(window_size.width - panel_width, window_size.height);
+        let header_height = px(48.0); // h_12() = 12 * 4px = 48px
+        let map_size = gpui::size(
+            window_size.width - panel_width,
+            window_size.height - header_height
+        );
         self.viewport.update_size(map_size);
 
-        // Check for new OSM data
+        // Process queued OSM datasets into layers before stats and listing
         self.check_for_new_osm_data(cx);
 
         // Update all layers
@@ -327,24 +326,19 @@ impl Render for MapViewer {
                                             |_, _, _| {},
                                             {
                                                 let viewport_clone = self.viewport.clone();
+                                                let layer_manager = std::ptr::addr_of!(self.layer_manager);
                                                 move |bounds, _, window, _| {
-                                                    // Create a temporary viewport for rendering
-                                                    let viewport = Viewport::new(
-                                                        viewport_clone.center().0,
-                                                        viewport_clone.center().1,
-                                                        viewport_clone.zoom_level(),
-                                                        bounds.size,
-                                                    );
+                                                    // Print debug info to understand coordinate spaces
+                                                    eprintln!("Canvas bounds: {:?}", bounds);
+                                                    eprintln!("Viewport size: {:?}", viewport_clone.transform.screen_size);
 
-                                                    // Manually render each layer's canvas content
-                                                    // This is a temporary solution until we can properly handle the borrow checker
-
-                                                    // Render grid layer
-                                                    let grid_layer = GridLayer::new();
-                                                    grid_layer.render_canvas(&viewport, bounds, window);
+                                                    let layer_manager = unsafe { &*layer_manager };
+                                                    layer_manager.render_all_canvas(&viewport_clone, bounds, window);
                                                 }
                                             }
                                         )
+                                        .absolute()
+                                        .size_full() // Ensure canvas fills the entire map area
                                     )
                             )
                             .child(
@@ -473,24 +467,6 @@ impl Render for MapViewer {
                             )
                     )
             )
-            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
-                eprintln!("⌨️ Key down: {}", ev.keystroke.key);
-                match ev.keystroke.key.as_str() {
-                    "=" | "+" => {
-                        this.zoom(1.0);
-                        cx.notify();
-                    }
-                    "-" => {
-                        this.zoom(-1.0);
-                        cx.notify();
-                    }
-                    "t" => {
-                        this.toggle_tile_boundaries();
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-            }))
     }
 }
 
@@ -499,7 +475,7 @@ fn main() {
     eprintln!("🚀 Starting OSM-GPUI Map Viewer with Tile Loading");
 
     // Initialize shared OSM data
-    SHARED_OSM_DATA.set(Arc::new(Mutex::new(None))).unwrap();
+    SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
 
     Application::new().run(|cx: &mut App| {
         // Bring the menu bar to the foreground
@@ -555,7 +531,7 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
     println!("🗂️ File > Open OSM File menu action triggered");
 
     let executor = cx.background_executor().clone();
-    let shared_data = SHARED_OSM_DATA.get().unwrap().clone();
+    let shared_queue = SHARED_OSM_DATA.get().unwrap().clone();
 
     // Spawn async file dialog
     executor
@@ -567,34 +543,26 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
                 .pick_file()
                 .await
             {
-                let path_str = file_path.path().to_string_lossy().to_string();
-                println!(
-                    "📁 Selected file via OS menu: {}",
-                    file_path.path().display()
-                );
+                let path = file_path.path().to_path_buf();
+                let path_str = path.to_string_lossy().to_string();
+                println!("📁 Selected file: {}", path.display());
 
                 // Parse OSM file in background
                 let parser = OsmParser::new();
                 match parser.parse_file(&path_str) {
                     Ok(osm_data) => {
-                        println!(
-                            "✅ Successfully parsed OSM file with {} nodes and {} ways",
-                            osm_data.nodes.len(),
-                            osm_data.ways.len()
-                        );
+                        println!("✅ Parsed OSM: {} nodes, {} ways", osm_data.nodes.len(), osm_data.ways.len());
 
-                        // Store the loaded data in shared state
-                        if let Ok(mut data_guard) = shared_data.lock() {
-                            *data_guard = Some(osm_data);
-                            println!("📊 OSM data loaded and ready for display!");
+                        if let Ok(mut q) = shared_queue.lock() {
+                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+                            q.push((stem, osm_data));
                         }
+                        println!("📊 Queued dataset for layer creation");
                     }
-                    Err(e) => {
-                        println!("❌ Failed to parse OSM file: {}", e);
-                    }
+                    Err(e) => println!("❌ Failed to parse OSM file: {}", e),
                 }
             } else {
-                println!("❌ No file selected from OS menu");
+                println!("❌ No file selected");
             }
         })
         .detach();
