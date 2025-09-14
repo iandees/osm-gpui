@@ -1,0 +1,32 @@
+[package]
+name = "osm-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "A high-performance map rendering system built with Rust and the GPUI framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/iandees/osm-gpui"
+homepage = "https://github.com/iandees/osm-gpui"
+documentation = "https://docs.rs/osm-gpui"
+keywords = ["maps", "geospatial", "gis", "gpui", "openstreetmap"]
+categories = ["graphics", "visualization", "gui"]
+authors = ["Ian Dees <me@iandees.com>"]
+readme = "README.md"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+quick-xml = "0.31"
+rfd = "0.14"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }
+image = "0.24"
+futures = "0.3"
+log = "0.4"
+env_logger = "0.10"
+anyhow = "1.0"
+
+
+[dev-dependencies]
+
+[[bin]]
+name = "osm-gpui"
+path = "src/main.rs"

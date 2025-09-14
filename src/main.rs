@@ -1,0 +1,506 @@
+use gpui::{
+    actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context,
+    Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render,
+    ScrollWheelEvent, SystemMenuType, Window, WindowOptions,
+};
+use std::sync::{Arc, Mutex};
+
+mod coordinates;
+mod osm;
+mod tile_cache;
+mod tiles;
+mod viewport;
+mod layers;
+
+use coordinates::lat_lon_to_mercator;
+use tile_cache::TileCache;
+use osm::{OsmData, OsmParser};
+use viewport::Viewport;
+use layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
+use crate::layers::MapLayer;
+
+actions!(osm_gpui, [OpenOsmFile, Quit]);
+
+// Global state for OSM data that can be shared between threads
+static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Option<OsmData>>>> =
+    std::sync::OnceLock::new();
+
+struct MapViewer {
+    viewport: Viewport,
+    layer_manager: LayerManager,
+    tile_cache: Arc<Mutex<TileCache>>,
+    show_tile_boundaries: bool,
+}
+
+impl MapViewer {
+    fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let viewport = Viewport::new(
+            40.7128,                          // NYC latitude
+            -74.0060,                         // NYC longitude
+            11.0,                             // Initial zoom
+            gpui::size(px(800.0), px(600.0)), // Default size, will be updated
+        );
+
+        let executor = cx.background_executor().clone();
+        let tile_cache = Arc::new(Mutex::new(TileCache::new(executor)));
+
+        // Create layer manager and add layers
+        let mut layer_manager = LayerManager::new();
+
+        // Add tile layer (raster tiles) - bottom layer
+        let tile_layer = TileLayer::new(tile_cache.clone());
+        layer_manager.add_layer(Box::new(tile_layer));
+
+        // Add grid layer - middle layer
+        let grid_layer = GridLayer::new();
+        layer_manager.add_layer(Box::new(grid_layer));
+
+        // Add OSM data layer - top layer
+        let osm_layer = OsmLayer::new();
+        layer_manager.add_layer(Box::new(osm_layer));
+
+        Self {
+            viewport,
+            layer_manager,
+            tile_cache,
+            show_tile_boundaries: false,
+        }
+    }
+
+    fn check_for_new_osm_data(&mut self, cx: &mut Context<Self>) {
+        if let Some(shared_data) = SHARED_OSM_DATA.get() {
+            if let Ok(mut data_guard) = shared_data.try_lock() {
+                if let Some(new_data) = data_guard.take() {
+                    // Set OSM data in the OSM layer
+                    if let Some(osm_layer) = self.layer_manager.find_layer_mut("OSM Data") {
+                        if let Some(osm_layer) = osm_layer.as_any_mut().downcast_mut::<OsmLayer>() {
+                            osm_layer.set_osm_data(Arc::new(new_data.clone()));
+                        }
+                    }
+                    self.fit_to_osm_data(&new_data);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Fit view to show OSM data
+    fn fit_to_osm_data(&mut self, osm_data: &OsmData) {
+        if osm_data.nodes.is_empty() {
+            return;
+        }
+
+        let mut min_lat = f64::INFINITY;
+        let mut max_lat = f64::NEG_INFINITY;
+        let mut min_lon = f64::INFINITY;
+        let mut max_lon = f64::NEG_INFINITY;
+
+        for node in osm_data.nodes.values() {
+            min_lat = min_lat.min(node.lat);
+            max_lat = max_lat.max(node.lat);
+            min_lon = min_lon.min(node.lon);
+            max_lon = max_lon.max(node.lon);
+        }
+
+        if min_lat != f64::INFINITY {
+            let mut center_lat = (min_lat + max_lat) / 2.0;
+            let mut center_lon = (min_lon + max_lon) / 2.0;
+
+            // If bounding box height is zero, set to a small value
+            if (max_lat - min_lat).abs() < 1e-6 {
+                center_lat = min_lat;
+                min_lat -= 0.005;
+                max_lat += 0.005;
+            }
+            if (max_lon - min_lon).abs() < 1e-6 {
+                center_lon = min_lon;
+                min_lon -= 0.005;
+                max_lon += 0.005;
+            }
+
+            // Calculate required zoom to fit bounding box
+            let margin = 1.2; // Add 20% margin
+            let viewport = &self.viewport;
+            let screen_width = viewport.transform.screen_size.width.0 as f64;
+            let screen_height = viewport.transform.screen_size.height.0 as f64;
+
+            // Convert bounding box to Mercator
+            let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
+            let (max_x, max_y) = lat_lon_to_mercator(max_lat, max_lon);
+            let bbox_width = (max_x - min_x).abs();
+            let bbox_height = (max_y - min_y).abs();
+
+            // Calculate zoom to fit bbox in screen
+            let world_width_meters = 40075016.686;
+            let tile_size = 256.0;
+            let zoom_x = ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2();
+            let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
+            let zoom_level = zoom_x.min(zoom_y).max(1.0).min(18.0); // Clamp zoom to [1, 18]
+
+            eprintln!("fit_to_osm_data: center=({:.6}, {:.6}), zoom_level={:.2}", center_lat, center_lon, zoom_level);
+
+            self.viewport.pan_to(center_lat, center_lon);
+            self.viewport.set_zoom(zoom_level);
+        }
+    }
+
+    fn zoom(&mut self, delta: f64) {
+        let new_zoom = (self.viewport.zoom_level() + delta).max(1.0).min(20.0);
+        self.viewport.set_zoom(new_zoom);
+    }
+
+    fn toggle_tile_boundaries(&mut self) {
+        self.show_tile_boundaries = !self.show_tile_boundaries;
+        if let Some(tile_layer) = self.layer_manager.find_layer_mut("Raster Tiles") {
+            if let Some(tile_layer) = tile_layer.as_any_mut().downcast_mut::<TileLayer>() {
+                tile_layer.set_show_boundaries(self.show_tile_boundaries);
+            }
+        }
+        eprintln!("🔄 Toggled tile boundaries: {}", if self.show_tile_boundaries { "ON" } else { "OFF" });
+    }
+
+    fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
+        self.viewport.handle_mouse_down(event.position);
+        println!(
+            "🖱️ Mouse down at: {:.1}, {:.1}",
+            event.position.x.0, event.position.y.0
+        );
+    }
+
+    fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.viewport.handle_mouse_move(event.position) {
+            cx.notify();
+        }
+    }
+
+    fn handle_mouse_up(&mut self, _event: &MouseUpEvent) {
+        self.viewport.handle_mouse_up();
+        println!("🖱️ Mouse up");
+    }
+
+    fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let scroll_delta = match event.delta {
+            gpui::ScrollDelta::Lines(delta) => gpui::Point {
+                x: px(delta.x),
+                y: px(delta.y),
+            },
+            gpui::ScrollDelta::Pixels(delta) => gpui::Point {
+                x: px(delta.x.0 / 10.0),
+                y: px(delta.y.0 / 10.0),
+            },
+        };
+
+        if self.viewport.handle_scroll(event.position, scroll_delta) {
+            cx.notify();
+        }
+    }
+
+    fn get_layer_stats(&self) -> (usize, usize, usize) {
+        let mut total_tiles = 0;
+        let mut cached_files = 0;
+        let mut osm_nodes = 0;
+        let mut osm_ways = 0;
+
+        for layer in self.layer_manager.layers() {
+            let stats = layer.stats();
+            for (key, value) in stats {
+                match key.as_str() {
+                    "Cached Files" => cached_files = value.parse().unwrap_or(0),
+                    "Nodes" => osm_nodes = value.parse().unwrap_or(0),
+                    "Ways" => osm_ways = value.parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
+        }
+
+        // Calculate visible tiles
+        let zoom_level = self.viewport.zoom_level();
+        let tile_zoom = zoom_level.round().max(0.0).min(18.0) as u32;
+        let bounds_geo = self.viewport.visible_bounds();
+        let visible_tiles = tiles::get_tiles_for_bounds(
+            bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon, tile_zoom
+        );
+        total_tiles = visible_tiles.len();
+
+        (total_tiles, cached_files, osm_nodes + osm_ways)
+    }
+}
+
+impl Render for MapViewer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Update viewport size to actual window dimensions
+        let window_size = window.bounds().size;
+        self.viewport.update_size(window_size);
+
+        // Check for new OSM data
+        self.check_for_new_osm_data(cx);
+
+        // Update all layers
+        self.layer_manager.update_all();
+
+        let (center_lat, center_lon) = self.viewport.center();
+        let zoom_level = self.viewport.zoom_level();
+        let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
+
+        div()
+            .size_full()
+            .bg(rgb(0x1a202c))
+            .flex()
+            .flex_col()
+            .child(
+                // Header with menu
+                div()
+                    .h_12()
+                    .bg(rgb(0x111827))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .child(
+                        div()
+                            .text_color(rgb(0xffffff))
+                            .text_xl()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("🗺️ OSM-GPUI Map Viewer (Layered)"),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(0x9ca3af))
+                            .text_sm()
+                            .child("Mouse to pan/zoom | 'T' tiles | Layered Architecture"),
+                    ),
+            )
+            .child(
+                // Main map area
+                div()
+                    .flex_1()
+                    .relative()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                            this.handle_mouse_down(ev);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                        this.handle_mouse_move(ev, cx);
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, ev: &MouseUpEvent, _, _| {
+                            this.handle_mouse_up(ev);
+                        }),
+                    )
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                        this.handle_scroll(ev, cx);
+                    }))
+                    .child(
+                        div()
+                            .size_full()
+                            .relative()
+                            .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
+                            // Render all layer elements (raster content like tiles)
+                            .children(self.layer_manager.render_all_elements(&self.viewport))
+                            // Render canvas layers (vector content)
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    {
+                                        let viewport_clone = self.viewport.clone();
+                                        move |bounds, _, window, _| {
+                                            // Create a temporary viewport for rendering
+                                            let viewport = Viewport::new(
+                                                viewport_clone.center().0,
+                                                viewport_clone.center().1,
+                                                viewport_clone.zoom_level(),
+                                                bounds.size,
+                                            );
+
+                                            // Manually render each layer's canvas content
+                                            // This is a temporary solution until we can properly handle the borrow checker
+
+                                            // Render grid layer
+                                            let grid_layer = GridLayer::new();
+                                            grid_layer.render_canvas(&viewport, bounds, window);
+                                        }
+                                    }
+                                )
+                            )
+                    )
+                    .child(
+                        // Debug info overlay
+                        div()
+                            .absolute()
+                            .top_4()
+                            .left_4()
+                            .p_3()
+                            .bg(gpui::black())
+                            .rounded_lg()
+                            .text_color(rgb(0xffffff))
+                            .text_sm()
+                            .opacity(0.9)
+                            .min_w_64()
+                            .child(format!("🔍 Zoom: {:.1}", zoom_level))
+                            .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
+                            .child(format!("📊 Objects: {}", osm_objects))
+                            .child(format!("🗺️ Tiles: {} visible", total_tiles))
+                            .child(format!("💾 Cache: {} files", cached_files))
+                    )
+                    .child(
+                        // Layer control panel
+                        div()
+                            .absolute()
+                            .top_4()
+                            .right_4()
+                            .p_3()
+                            .bg(gpui::black())
+                            .rounded_lg()
+                            .text_color(rgb(0xffffff))
+                            .text_sm()
+                            .opacity(0.9)
+                            .min_w_48()
+                            .child("🏗️ Active Layers")
+                            .children(
+                                self.layer_manager.layers().iter().map(|layer| {
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(format!("• {}", layer.name()))
+                                        .child(if layer.is_visible() { "✅" } else { "❌" })
+                                })
+                            )
+                    ),
+            )
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                eprintln!("⌨️ Key down: {}", ev.keystroke.key);
+                match ev.keystroke.key.as_str() {
+                    "=" | "+" => {
+                        this.zoom(1.0);
+                        cx.notify();
+                    }
+                    "-" => {
+                        this.zoom(-1.0);
+                        cx.notify();
+                    }
+                    "t" => {
+                        this.toggle_tile_boundaries();
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }))
+    }
+}
+
+fn main() {
+    // Initialize simple logging to stderr
+    eprintln!("🚀 Starting OSM-GPUI Map Viewer with Tile Loading");
+    eprintln!("💡 Tile debug info will be displayed in console");
+
+    // Initialize shared OSM data
+    SHARED_OSM_DATA.set(Arc::new(Mutex::new(None))).unwrap();
+
+    Application::new().run(|cx: &mut App| {
+        // Bring the menu bar to the foreground
+        cx.activate(true);
+
+        // Register the open file action
+        cx.on_action(open_osm_file);
+        cx.on_action(quit);
+
+        // Set up OS menu system
+        cx.set_menus(vec![
+            Menu {
+                name: "OSM Viewer".into(),
+                items: vec![
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ],
+            },
+            Menu {
+                name: "File".into(),
+                items: vec![MenuItem::action("Open…", OpenOsmFile)],
+            },
+        ]);
+
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                    origin: point(px(100.0), px(100.0)),
+                    size: size(px(1200.0), px(800.0)),
+                })),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("OSM-GPUI Map Viewer".into()),
+                    appears_transparent: false,
+                    traffic_light_position: None,
+                }),
+                focus: true,
+                ..Default::default()
+            },
+            |window, cx| cx.new(|cx| MapViewer::new(window, cx)),
+        )
+        .unwrap();
+
+        cx.on_window_closed(|cx| {
+            cx.quit();
+        })
+        .detach();
+    });
+}
+
+// Handle the File > Open OSM File menu action
+fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
+    println!("🗂️ File > Open OSM File menu action triggered");
+
+    let executor = cx.background_executor().clone();
+    let shared_data = SHARED_OSM_DATA.get().unwrap().clone();
+
+    // Spawn async file dialog
+    executor
+        .spawn(async move {
+            if let Some(file_path) = rfd::AsyncFileDialog::new()
+                .add_filter("OSM files", &["osm", "xml"])
+                .add_filter("All files", &["*"])
+                .set_title("Select OSM file to open")
+                .pick_file()
+                .await
+            {
+                let path_str = file_path.path().to_string_lossy().to_string();
+                println!(
+                    "📁 Selected file via OS menu: {}",
+                    file_path.path().display()
+                );
+
+                // Parse OSM file in background
+                let parser = OsmParser::new();
+                match parser.parse_file(&path_str) {
+                    Ok(osm_data) => {
+                        println!(
+                            "✅ Successfully parsed OSM file with {} nodes and {} ways",
+                            osm_data.nodes.len(),
+                            osm_data.ways.len()
+                        );
+
+                        // Store the loaded data in shared state
+                        if let Ok(mut data_guard) = shared_data.lock() {
+                            *data_guard = Some(osm_data);
+                            println!("📊 OSM data loaded and ready for display!");
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to parse OSM file: {}", e);
+                    }
+                }
+            } else {
+                println!("❌ No file selected from OS menu");
+            }
+        })
+        .detach();
+}
+
+// Define the quit function that is registered with the App
+fn quit(_: &Quit, cx: &mut App) {
+    println!("Gracefully quitting the application . . .");
+    cx.quit();
+}
