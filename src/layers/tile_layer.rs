@@ -68,7 +68,7 @@ impl MapLayer for TileLayer {
             // Generate tile URL
             let tile_url = tile_coord.to_url();
 
-            // Create tile element with GPUI's native image loading
+            // Create tile element using GPUI's img with asset loading
             let tile_element = div()
                 .absolute()
                 .left(px(tile_x))
@@ -77,50 +77,16 @@ impl MapLayer for TileLayer {
                 .h(px(tile_height))
                 .bg(rgb(0x2d3748)) // Default background
                 .child(
-                    // Check if tile is cached locally
-                    if let Ok(tile_cache) = self.tile_cache.try_lock() {
-                        if let Some(file_path) = tile_cache.get_tile_path(tile_url.clone()) {
-                            // Tile is available locally, show it
-                            img(file_path)
-                                .size_full()
-                                .object_fit(ObjectFit::Cover)
-                                .with_fallback(|| {
-                                    div()
-                                        .size_full()
-                                        .bg(rgb(0x9f1239))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            div()
-                                                .text_color(rgb(0xffffff))
-                                                .text_xs()
-                                                .child("Failed")
-                                        )
-                                        .into_any_element()
-                                })
-                                .into_any_element()
-                        } else {
-                            // Tile not cached, show loading state
-                            div()
-                                .size_full()
-                                .bg(rgb(0x4a5568))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .text_color(rgb(0xffffff))
-                                        .text_xs()
-                                        .child("Downloading...")
-                                )
-                                .into_any_element()
-                        }
-                    } else {
-                        // Cache unavailable, show error state
+                    // Use GPUI's img with asset loading system
+                    img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                        window.use_asset::<crate::tile_cache::TileAsset>(&tile_url, cx)
+                    })
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .with_loading(|| {
                         div()
                             .size_full()
-                            .bg(rgb(0x6b7280))
+                            .bg(rgb(0x4a5568))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -128,10 +94,26 @@ impl MapLayer for TileLayer {
                                 div()
                                     .text_color(rgb(0xffffff))
                                     .text_xs()
-                                    .child("Cache Error")
+                                    .child("Downloading...")
                             )
                             .into_any_element()
-                    }
+                    })
+                    .with_fallback(|| {
+                        div()
+                            .size_full()
+                            .bg(rgb(0x9f1239))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_color(rgb(0xffffff))
+                                    .text_xs()
+                                    .child("Failed")
+                            )
+                            .into_any_element()
+                    })
+                    .into_any_element()
                 )
                 .into_any_element();
 
@@ -141,7 +123,7 @@ impl MapLayer for TileLayer {
         elements
     }
 
-    fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
+    fn render_canvas(&self, viewport: &Viewport, _bounds: Bounds<Pixels>, window: &mut Window) {
         if !self.show_boundaries {
             return;
         }

@@ -1,5 +1,4 @@
 use gpui::*;
-use std::sync::Arc;
 
 use crate::viewport::Viewport;
 

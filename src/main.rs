@@ -204,7 +204,6 @@ impl MapViewer {
     }
 
     fn get_layer_stats(&self) -> (usize, usize, usize) {
-        let mut total_tiles = 0;
         let mut cached_files = 0;
         let mut osm_nodes = 0;
         let mut osm_ways = 0;
@@ -228,7 +227,7 @@ impl MapViewer {
         let visible_tiles = tiles::get_tiles_for_bounds(
             bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon, tile_zoom
         );
-        total_tiles = visible_tiles.len();
+        let total_tiles = visible_tiles.len();
 
         (total_tiles, cached_files, osm_nodes + osm_ways)
     }
