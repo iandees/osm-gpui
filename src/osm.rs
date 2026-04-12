@@ -75,7 +75,7 @@ impl OsmParser {
 
         loop {
             match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                Ok(Event::Start(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
                         osm_data.bounds = Some(self.parse_bounds(e)?);
                     }
@@ -90,6 +90,57 @@ impl OsmParser {
                     b"relation" => {
                         current_element = ElementType::Relation;
                         current_relation = Some(self.parse_relation_start(e)?);
+                    }
+                    b"tag" => {
+                        let (key, value) = self.parse_tag(e)?;
+                        match current_element {
+                            ElementType::Node => {
+                                if let Some(ref mut node) = current_node {
+                                    node.tags.insert(key, value);
+                                }
+                            }
+                            ElementType::Way => {
+                                if let Some(ref mut way) = current_way {
+                                    way.tags.insert(key, value);
+                                }
+                            }
+                            ElementType::Relation => {
+                                if let Some(ref mut relation) = current_relation {
+                                    relation.tags.insert(key, value);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    b"nd" => {
+                        if let Some(ref mut way) = current_way {
+                            let node_ref = self.parse_node_ref(e)?;
+                            way.nodes.push(node_ref);
+                        }
+                    }
+                    b"member" => {
+                        if let Some(ref mut relation) = current_relation {
+                            let member = self.parse_member(e)?;
+                            relation.members.push(member);
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                    b"bounds" => {
+                        osm_data.bounds = Some(self.parse_bounds(e)?);
+                    }
+                    b"node" => {
+                        let node = self.parse_node_start(e)?;
+                        osm_data.nodes.insert(node.id, node);
+                    }
+                    b"way" => {
+                        let way = self.parse_way_start(e)?;
+                        osm_data.ways.push(way);
+                    }
+                    b"relation" => {
+                        let relation = self.parse_relation_start(e)?;
+                        osm_data.relations.push(relation);
                     }
                     b"tag" => {
                         let (key, value) = self.parse_tag(e)?;
@@ -176,7 +227,7 @@ impl OsmParser {
 
         loop {
             match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                Ok(Event::Start(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
                         osm_data.bounds = Some(self.parse_bounds(e)?);
                     }
@@ -191,6 +242,57 @@ impl OsmParser {
                     b"relation" => {
                         current_element = ElementType::Relation;
                         current_relation = Some(self.parse_relation_start(e)?);
+                    }
+                    b"tag" => {
+                        let (key, value) = self.parse_tag(e)?;
+                        match current_element {
+                            ElementType::Node => {
+                                if let Some(ref mut node) = current_node {
+                                    node.tags.insert(key, value);
+                                }
+                            }
+                            ElementType::Way => {
+                                if let Some(ref mut way) = current_way {
+                                    way.tags.insert(key, value);
+                                }
+                            }
+                            ElementType::Relation => {
+                                if let Some(ref mut relation) = current_relation {
+                                    relation.tags.insert(key, value);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    b"nd" => {
+                        if let Some(ref mut way) = current_way {
+                            let node_ref = self.parse_node_ref(e)?;
+                            way.nodes.push(node_ref);
+                        }
+                    }
+                    b"member" => {
+                        if let Some(ref mut relation) = current_relation {
+                            let member = self.parse_member(e)?;
+                            relation.members.push(member);
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                    b"bounds" => {
+                        osm_data.bounds = Some(self.parse_bounds(e)?);
+                    }
+                    b"node" => {
+                        let node = self.parse_node_start(e)?;
+                        osm_data.nodes.insert(node.id, node);
+                    }
+                    b"way" => {
+                        let way = self.parse_way_start(e)?;
+                        osm_data.ways.push(way);
+                    }
+                    b"relation" => {
+                        let relation = self.parse_relation_start(e)?;
+                        osm_data.relations.push(relation);
                     }
                     b"tag" => {
                         let (key, value) = self.parse_tag(e)?;
@@ -479,3 +581,49 @@ impl std::fmt::Display for OsmParseError {
 }
 
 impl std::error::Error for OsmParseError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_str_includes_self_closing_nodes() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.0" lon="-74.0"/>
+  <node id="2" lat="40.1" lon="-74.1">
+    <tag k="name" v="tagged"/>
+  </node>
+  <way id="10">
+    <nd ref="1"/>
+    <nd ref="2"/>
+  </way>
+</osm>"#;
+
+        let parser = OsmParser::new();
+        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+
+        assert!(
+            osm_data.nodes.contains_key(&1),
+            "node 1 (self-closing, untagged) was not inserted"
+        );
+        assert!(
+            osm_data.nodes.contains_key(&2),
+            "node 2 (tagged, paired tags) was not inserted"
+        );
+
+        let tagged = &osm_data.nodes[&2];
+        assert_eq!(
+            tagged.tags.get("name").map(|s| s.as_str()),
+            Some("tagged"),
+            "tag on node 2 was not parsed"
+        );
+
+        assert_eq!(osm_data.ways.len(), 1, "expected exactly one way");
+        assert_eq!(
+            osm_data.ways[0].nodes,
+            vec![1, 2],
+            "way node refs do not match"
+        );
+    }
+}
