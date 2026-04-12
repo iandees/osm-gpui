@@ -23,8 +23,6 @@ static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
 static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
 
-static API_ERROR_MESSAGES: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
-    std::sync::OnceLock::new();
 
 struct MapViewer {
     viewport: Viewport,
@@ -293,41 +291,41 @@ impl MapViewer {
         }
 
         self.set_status("Downloading OSM data…");
+        cx.notify();
 
-        let data_queue = SHARED_OSM_DATA.get().unwrap().clone();
-        let error_queue = API_ERROR_MESSAGES.get().unwrap().clone();
         let label = format!(
             "OSM API ({:.4},{:.4},{:.4},{:.4})",
             bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
         );
 
-        std::thread::spawn(move || {
-            match osm_api::fetch_bbox(bounds) {
-                Ok(data) => {
-                    if let Ok(mut q) = data_queue.lock() {
-                        q.push((label, data));
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { osm_api::fetch_bbox(bounds) })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(data) => {
+                        let data_arc = Arc::new(data);
+                        let mut candidate = label.clone();
+                        let mut i = 2;
+                        while this.layer_manager.find_layer(&candidate).is_some() {
+                            candidate = format!("{} ({})", label, i);
+                            i += 1;
+                        }
+                        let layer = OsmLayer::new_with_data(candidate, data_arc);
+                        this.layer_manager.add_layer(Box::new(layer));
+                        this.status_message = None;
+                    }
+                    Err(e) => {
+                        this.set_status(e.to_string());
                     }
                 }
-                Err(e) => {
-                    if let Ok(mut q) = error_queue.lock() {
-                        q.push(e.to_string());
-                    }
-                }
-            }
-        });
-
-        cx.notify();
-    }
-
-    fn check_for_api_errors(&mut self, cx: &mut Context<Self>) {
-        let Some(queue) = API_ERROR_MESSAGES.get() else { return };
-        if let Ok(mut guard) = queue.try_lock() {
-            if let Some(msg) = guard.pop() {
-                guard.clear();
-                self.set_status(msg);
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
     }
 }
 
@@ -347,7 +345,6 @@ impl Render for MapViewer {
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
-        self.check_for_api_errors(cx);
         self.expire_status();
 
         // Update all layers
@@ -606,7 +603,6 @@ fn main() {
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    API_ERROR_MESSAGES.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
 
     Application::new().run(|cx: &mut App| {
         // Bring the menu bar to the foreground
