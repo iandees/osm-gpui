@@ -340,6 +340,12 @@ impl Render for MapViewer {
                                     this.handle_mouse_up(ev);
                                 }),
                             )
+                            .on_mouse_up_out(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
+                                    this.handle_mouse_up(ev);
+                                }),
+                            )
                             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                                 this.handle_scroll(ev, cx);
                             }))
