@@ -1,5 +1,5 @@
 use crate::coordinates::CoordinateTransform;
-use gpui::*;
+use gpui::{Pixels, Point, Size};
 
 /// Viewport state for handling map navigation
 #[derive(Debug, Clone)]

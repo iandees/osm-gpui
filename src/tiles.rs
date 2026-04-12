@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui::SharedString;
 use std::f64::consts::PI;
 
 /// A tile coordinate in the Web Mercator projection

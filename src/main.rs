@@ -1,18 +1,12 @@
 use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, EntityId, KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
 use std::sync::{Arc, Mutex};
 
-mod coordinates;
-mod osm;
-mod tile_cache;
-mod tiles;
-mod viewport;
-mod layers;
-
-use coordinates::lat_lon_to_mercator;
-use tile_cache::TileCache;
-use osm::{OsmData, OsmParser};
-use viewport::Viewport;
-use layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
+use osm_gpui::coordinates::lat_lon_to_mercator;
+use osm_gpui::tile_cache::TileCache;
+use osm_gpui::osm::{OsmData, OsmParser};
+use osm_gpui::viewport::Viewport;
+use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
+use osm_gpui::tiles;
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto]);
 
