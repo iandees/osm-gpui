@@ -1,5 +1,5 @@
 use crate::coordinates::GeoBounds;
-use crate::osm::OsmParseError;
+use crate::osm::{OsmData, OsmParser, OsmParseError};
 
 const MAX_AREA_SQ_DEG: f64 = 0.25;
 
@@ -47,6 +47,33 @@ pub(crate) fn build_url(bounds: &GeoBounds) -> String {
         "https://api.openstreetmap.org/api/0.6/map?bbox={:.7},{:.7},{:.7},{:.7}",
         bounds.min_lon, bounds.min_lat, bounds.max_lon, bounds.max_lat
     )
+}
+
+const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
+
+/// Synchronous fetch — call from a worker thread, not the UI thread.
+pub fn fetch_bbox(bounds: GeoBounds) -> Result<OsmData, OsmApiError> {
+    check_area(&bounds)?;
+
+    let url = build_url(&bounds);
+    let response = ureq::get(&url)
+        .set("User-Agent", USER_AGENT)
+        .call();
+
+    let body = match response {
+        Ok(resp) => resp
+            .into_string()
+            .map_err(|e| OsmApiError::Network(e.to_string()))?,
+        Err(ureq::Error::Status(status, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            return Err(OsmApiError::Http { status, body });
+        }
+        Err(e) => return Err(OsmApiError::Network(e.to_string())),
+    };
+
+    OsmParser::new()
+        .parse_str(&body)
+        .map_err(OsmApiError::Parse)
 }
 
 #[cfg(test)]
