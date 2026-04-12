@@ -1,5 +1,6 @@
 use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, EntityId, KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::tile_cache::TileCache;
@@ -23,6 +24,7 @@ struct MapViewer {
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
+    status_message: Option<(String, Instant)>,
 }
 
 impl MapViewer {
@@ -40,6 +42,7 @@ impl MapViewer {
             layer_manager,
             tile_cache,
             first_dataset_fitted: false,
+            status_message: None,
         }
     }
 
@@ -249,6 +252,18 @@ impl MapViewer {
         self.layer_manager.add_layer(Box::new(tile_layer));
         eprintln!("✅ Added OpenStreetMap Carto layer");
     }
+
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some((message.into(), Instant::now()));
+    }
+
+    fn expire_status(&mut self) {
+        if let Some((_, set_at)) = &self.status_message {
+            if set_at.elapsed() > Duration::from_secs(5) {
+                self.status_message = None;
+            }
+        }
+    }
 }
 
 impl Render for MapViewer {
@@ -266,6 +281,7 @@ impl Render for MapViewer {
         // Process queued OSM datasets into layers before stats and listing
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
+        self.expire_status();
 
         // Update all layers
         self.layer_manager.update_all();
@@ -385,7 +401,26 @@ impl Render for MapViewer {
                                     .child(format!("📊 Objects: {}", osm_objects))
                                     .child(format!("🗺️ Tiles: {} visible", total_tiles))
                                     .child(format!("💾 Cache: {} files", cached_files))
-                            ),
+                            )
+                            .child({
+                                let status = self.status_message.clone();
+                                if let Some((msg, _)) = status {
+                                    div()
+                                        .absolute()
+                                        .top_4()
+                                        .right_4()
+                                        .p_3()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_sm()
+                                        .opacity(0.9)
+                                        .child(msg)
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            }),
                     )
             )
             .child(
