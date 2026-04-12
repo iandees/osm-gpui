@@ -8,7 +8,7 @@ use osm_gpui::viewport::Viewport;
 use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 use osm_gpui::tiles;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, DownloadFromOsm]);
 
 // Replace single optional data store with a queue of datasets awaiting layer creation
 static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
@@ -512,6 +512,7 @@ fn main() {
         cx.on_action(open_osm_file);
         cx.on_action(quit);
         cx.on_action(add_osm_carto);
+        cx.on_action(download_from_osm);
 
         // Set up OS menu system
         cx.set_menus(vec![
@@ -525,7 +526,10 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Open…\t⌘O", OpenOsmFile)],
+                items: vec![
+                    MenuItem::action("Open…\t⌘O", OpenOsmFile),
+                    MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
+                ],
             },
             Menu {
                 name: "Imagery".into(),
@@ -551,6 +555,7 @@ fn main() {
                 // Register keyboard bindings in the window context
                 cx.bind_keys([
                     KeyBinding::new("cmd-o", OpenOsmFile, None),
+                    KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
                 ]);
                 cx.new(|cx| MapViewer::new(window, cx))
@@ -611,6 +616,11 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 fn quit(_: &Quit, cx: &mut App) {
     println!("Gracefully quitting the application . . .");
     cx.quit();
+}
+
+// Handle the File > Download from OSM menu action
+fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
+    println!("🌐 File > Download from OSM menu action triggered");
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
