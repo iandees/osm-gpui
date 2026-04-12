@@ -217,7 +217,8 @@ mod tests {
         let tile = TileCoord::new(1, 1, 1);
         let (lon_min, lat_min, lon_max, lat_max) = tile.to_lat_lon_bounds();
         assert!(lon_min >= 0.0 && lon_max <= 180.0);
-        assert!(lat_min >= -85.0 && lat_max <= 0.0);
+        // Web Mercator bounds are ~±85.0511°, so -85.0 is too tight.
+        assert!(lat_min >= -85.1 && lat_max <= 0.0);
     }
 
     #[test]
