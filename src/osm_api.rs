@@ -33,7 +33,7 @@ impl std::fmt::Display for OsmApiError {
     }
 }
 
-pub(crate) fn check_area(bounds: &GeoBounds) -> Result<(), OsmApiError> {
+pub fn check_area(bounds: &GeoBounds) -> Result<(), OsmApiError> {
     let area = (bounds.max_lon - bounds.min_lon) * (bounds.max_lat - bounds.min_lat);
     if area > MAX_AREA_SQ_DEG {
         Err(OsmApiError::AreaTooLarge { area_sq_deg: area })
