@@ -5,6 +5,7 @@
 pub mod coordinates;
 pub mod layers;
 pub mod osm;
+pub mod osm_api;
 pub mod tile_cache;
 pub mod tiles;
 pub mod viewport;

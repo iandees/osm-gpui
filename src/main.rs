@@ -1,5 +1,6 @@
 use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, EntityId, KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::tile_cache::TileCache;
@@ -7,8 +8,9 @@ use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::viewport::Viewport;
 use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 use osm_gpui::tiles;
+use osm_gpui::osm_api;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, DownloadFromOsm]);
 
 // Replace single optional data store with a queue of datasets awaiting layer creation
 static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
@@ -18,11 +20,16 @@ static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> 
 static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
     std::sync::OnceLock::new();
 
+static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
+    std::sync::OnceLock::new();
+
+
 struct MapViewer {
     viewport: Viewport,
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
+    status_message: Option<(String, Instant)>,
 }
 
 impl MapViewer {
@@ -40,6 +47,7 @@ impl MapViewer {
             layer_manager,
             tile_cache,
             first_dataset_fitted: false,
+            status_message: None,
         }
     }
 
@@ -179,6 +187,7 @@ impl MapViewer {
                         self.first_dataset_fitted = true;
                     }
                 }
+                self.status_message = None;
                 cx.notify();
             }
         }
@@ -249,6 +258,75 @@ impl MapViewer {
         self.layer_manager.add_layer(Box::new(tile_layer));
         eprintln!("✅ Added OpenStreetMap Carto layer");
     }
+
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some((message.into(), Instant::now()));
+    }
+
+    fn expire_status(&mut self) {
+        if let Some((_, set_at)) = &self.status_message {
+            if set_at.elapsed() > Duration::from_secs(5) {
+                self.status_message = None;
+            }
+        }
+    }
+
+    fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
+        let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
+        let pending = if let Ok(mut guard) = requests.try_lock() {
+            let n = guard.len();
+            guard.clear();
+            n
+        } else {
+            0
+        };
+        if pending == 0 { return }
+
+        let bounds = self.viewport.visible_bounds();
+
+        if let Err(e) = osm_api::check_area(&bounds) {
+            self.set_status(e.to_string());
+            cx.notify();
+            return;
+        }
+
+        self.set_status("Downloading OSM data…");
+        cx.notify();
+
+        let label = format!(
+            "OSM API ({:.4},{:.4},{:.4},{:.4})",
+            bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
+        );
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { osm_api::fetch_bbox(bounds) })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(data) => {
+                        let data_arc = Arc::new(data);
+                        let mut candidate = label.clone();
+                        let mut i = 2;
+                        while this.layer_manager.find_layer(&candidate).is_some() {
+                            candidate = format!("{} ({})", label, i);
+                            i += 1;
+                        }
+                        let layer = OsmLayer::new_with_data(candidate, data_arc);
+                        this.layer_manager.add_layer(Box::new(layer));
+                        this.status_message = None;
+                    }
+                    Err(e) => {
+                        this.set_status(e.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 impl Render for MapViewer {
@@ -266,6 +344,8 @@ impl Render for MapViewer {
         // Process queued OSM datasets into layers before stats and listing
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
+        self.check_for_download_requests(cx);
+        self.expire_status();
 
         // Update all layers
         self.layer_manager.update_all();
@@ -385,7 +465,26 @@ impl Render for MapViewer {
                                     .child(format!("📊 Objects: {}", osm_objects))
                                     .child(format!("🗺️ Tiles: {} visible", total_tiles))
                                     .child(format!("💾 Cache: {} files", cached_files))
-                            ),
+                            )
+                            .child({
+                                let status = self.status_message.clone();
+                                if let Some((msg, _)) = status {
+                                    div()
+                                        .absolute()
+                                        .top_4()
+                                        .right_4()
+                                        .p_3()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_sm()
+                                        .opacity(0.9)
+                                        .child(msg)
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            }),
                     )
             )
             .child(
@@ -503,6 +602,7 @@ fn main() {
     // Initialize shared OSM data
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
 
     Application::new().run(|cx: &mut App| {
         // Bring the menu bar to the foreground
@@ -512,6 +612,7 @@ fn main() {
         cx.on_action(open_osm_file);
         cx.on_action(quit);
         cx.on_action(add_osm_carto);
+        cx.on_action(download_from_osm);
 
         // Set up OS menu system
         cx.set_menus(vec![
@@ -525,7 +626,10 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Open…\t⌘O", OpenOsmFile)],
+                items: vec![
+                    MenuItem::action("Open…\t⌘O", OpenOsmFile),
+                    MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
+                ],
             },
             Menu {
                 name: "Imagery".into(),
@@ -551,6 +655,7 @@ fn main() {
                 // Register keyboard bindings in the window context
                 cx.bind_keys([
                     KeyBinding::new("cmd-o", OpenOsmFile, None),
+                    KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
                 ]);
                 cx.new(|cx| MapViewer::new(window, cx))
@@ -611,6 +716,16 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 fn quit(_: &Quit, cx: &mut App) {
     println!("Gracefully quitting the application . . .");
     cx.quit();
+}
+
+// Handle the File > Download from OSM menu action
+fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
+    println!("🌐 File > Download from OSM menu action triggered");
+    if let Some(requests) = DOWNLOAD_REQUESTS.get() {
+        if let Ok(mut q) = requests.lock() {
+            q.push(());
+        }
+    }
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
