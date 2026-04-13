@@ -19,7 +19,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, DownloadFromOsm]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -33,6 +33,7 @@ struct AddImageryLayer {
 #[derive(Debug, Clone)]
 enum LayerRequest {
     OsmCarto,
+    CoordinateGrid,
     Imagery { name: String, url_template: String },
 }
 
@@ -215,9 +216,8 @@ impl MapViewer {
         // Use the global idle tracker (set before Application::new().run(...))
         let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
-        let mut layer_manager = LayerManager::new();
-        // Removed default tile layer - will be added via menu
-        layer_manager.add_layer(Box::new(GridLayer::new()));
+        let layer_manager = LayerManager::new();
+        // No default layers; tile and grid layers are added via the menu.
 
         // No default OSM layer; loaded files add their own
         Self {
@@ -484,6 +484,11 @@ impl MapViewer {
                             if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
                                 let tile_layer = TileLayer::new(self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
+                            }
+                        }
+                        LayerRequest::CoordinateGrid => {
+                            if self.layer_manager.find_layer("Coordinate Grid").is_none() {
+                                self.layer_manager.add_layer(Box::new(GridLayer::new()));
                             }
                         }
                         LayerRequest::Imagery { name, url_template } => {
@@ -1378,6 +1383,7 @@ fn main() {
         cx.on_action(open_osm_file);
         cx.on_action(quit);
         cx.on_action(add_osm_carto);
+        cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
         cx.on_action(add_imagery_layer);
         cx.on_action(no_op_imagery_info);
@@ -1533,11 +1539,24 @@ fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
     }
 }
 
+// Handle the Imagery > Coordinate Grid menu action
+fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
+    if let Some(requests) = LAYER_REQUESTS.get() {
+        if let Ok(mut queue) = requests.lock() {
+            queue.push(LayerRequest::CoordinateGrid);
+        }
+    }
+    cx.refresh_windows();
+}
+
 /// Build and install the menu bar, using the current viewport center to filter
 /// the Imagery menu to relevant ELI entries.
 fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryLoadState) {
-    let mut imagery_items: Vec<MenuItem> =
-        vec![MenuItem::action("OpenStreetMap Carto", AddOsmCarto)];
+    let mut imagery_items: Vec<MenuItem> = vec![
+        MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
+        MenuItem::separator(),
+        MenuItem::action("Coordinate Grid", AddCoordinateGrid),
+    ];
 
     match state {
         ImageryLoadState::Loading => {
