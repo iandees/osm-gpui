@@ -57,6 +57,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "key" => parse_key(line_no, &rest),
         "capture" => parse_capture(line_no, &rest),
         "log" => Ok(Op::Log { message: rest.join(" ") }),
+        "load_osm" => parse_load_osm(line_no, &rest),
         other => Err(err(line_no, format!("unknown op '{}'", other))),
     }
 }
@@ -192,6 +193,13 @@ fn parse_capture(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     Ok(Op::Capture { path: rest[0].to_string() })
 }
 
+fn parse_load_osm(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    if rest.len() != 1 {
+        return Err(err(line_no, "load_osm: want PATH"));
+    }
+    Ok(Op::LoadOsm { path: rest[0].to_string() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +307,19 @@ mod tests {
     #[test]
     fn log_joins_tokens() {
         assert_eq!(parse("log hello world").unwrap()[0].op, Op::Log { message: "hello world".into() });
+    }
+
+    #[test]
+    fn load_osm_captures_path() {
+        assert_eq!(
+            parse("load_osm path/to/fixture.osm").unwrap()[0].op,
+            Op::LoadOsm { path: "path/to/fixture.osm".into() }
+        );
+    }
+
+    #[test]
+    fn load_osm_requires_path() {
+        assert!(parse("load_osm").is_err());
     }
 
     #[test]

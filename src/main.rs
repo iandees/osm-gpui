@@ -165,6 +165,8 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
+    selected: Option<osm_gpui::selection::FeatureRef>,
+    mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
 }
 
 impl MapViewer {
@@ -185,6 +187,8 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
+            selected: None,
+            mouse_down_pos: None,
         }
     }
 
@@ -259,6 +263,7 @@ impl MapViewer {
         let adjusted_position = point(event.position.x, event.position.y - header_height);
 
         self.viewport.handle_mouse_down(adjusted_position);
+        self.mouse_down_pos = Some(adjusted_position);
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -271,8 +276,55 @@ impl MapViewer {
         }
     }
 
-    fn handle_mouse_up(&mut self, _: &MouseUpEvent) {
+    fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        let header_height = px(48.0);
+        let up_pos = point(event.position.x, event.position.y - header_height);
+        let was_click = match self.mouse_down_pos.take() {
+            Some(down) => {
+                let dx = up_pos.x.0 - down.x.0;
+                let dy = up_pos.y.0 - down.y.0;
+                (dx * dx + dy * dy).sqrt() < 4.0
+            }
+            None => false,
+        };
         self.viewport.handle_mouse_up();
+        if was_click {
+            let before = self.selected.clone();
+            self.handle_map_click(up_pos);
+            if before != self.selected {
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+        let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
+        self.selected = osm_gpui::selection::resolve_hits(per_layer);
+    }
+
+    fn sync_selection_to_layers(&mut self) {
+        // Clear the selection if its owning layer is gone or hidden, so the
+        // right panel never shows info for a feature not drawn on the map.
+        if let Some(sel) = &self.selected {
+            let still_live = self
+                .layer_manager
+                .find_layer(&sel.layer_name)
+                .map(|l| l.is_visible())
+                .unwrap_or(false);
+            if !still_live {
+                self.selected = None;
+            }
+        }
+        let selected = self.selected.clone();
+        for layer in self.layer_manager.layers_mut() {
+            if let Some(sel) = &selected {
+                if layer.name() == sel.layer_name {
+                    layer.set_highlight(Some(sel.clone()));
+                    continue;
+                }
+            }
+            layer.set_highlight(None);
+        }
     }
 
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -487,7 +539,7 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         click_count: 1,
                     };
-                    self.handle_mouse_up(&ev);
+                    self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
                 ScriptCommand::Click { x, y, right } => {
@@ -506,7 +558,7 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         click_count: 1,
                     };
-                    self.handle_mouse_up(&ev);
+                    self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
@@ -530,9 +582,6 @@ impl MapViewer {
             }
         }
 
-        // Signal that this render frame has happened (and any command is done).
-        bus.signal_done_and_frame();
-
         // If a script runner thread is active, request an animation frame so
         // the render loop keeps going. This ensures the background thread never
         // starves waiting for a render that gpui wouldn't produce on its own.
@@ -540,12 +589,110 @@ impl MapViewer {
             window.request_animation_frame();
         }
     }
+
+    fn render_selection_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        use osm_gpui::selection::FeatureKind;
+
+        let base = div()
+            .id("selection-panel")
+            .flex_1()
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3();
+
+        let Some(sel) = self.selected.clone() else {
+            return base.child(
+                div()
+                    .text_color(rgb(0x6b7280))
+                    .text_sm()
+                    .child("Click a feature to see its tags.")
+            );
+        };
+
+        let kind_label = match sel.kind { FeatureKind::Node => "Node", FeatureKind::Way => "Way" };
+        let url_kind = match sel.kind { FeatureKind::Node => "node", FeatureKind::Way => "way" };
+        let tags_vec: Vec<(String, String)> = self
+            .layer_manager
+            .find_layer(&sel.layer_name)
+            .and_then(|layer| layer.feature_tags(&sel))
+            .unwrap_or_default();
+
+        let header = div()
+            .text_color(rgb(0xffffff))
+            .text_lg()
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(format!("{} #{}", kind_label, sel.id));
+
+        let link_text = "View on openstreetmap.org ↗".to_string();
+        let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
+        let link = div()
+            .id(("osm-link", sel.id as usize))
+            .text_color(rgb(0x60a5fa))
+            .text_sm()
+            .cursor_pointer()
+            .child(link_text)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
+                    cx.open_url(&url);
+                }),
+            );
+
+        let tags_block = if tags_vec.is_empty() {
+            div()
+                .text_color(rgb(0x6b7280))
+                .text_sm()
+                .child("(no tags)")
+                .into_any_element()
+        } else {
+            let mut col = div().flex().flex_col().gap_1();
+            for (k, v) in tags_vec {
+                col = col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_color(rgb(0xd1d5db))
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(k)
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .child(v)
+                        )
+                );
+            }
+            col.into_any_element()
+        };
+
+        base.child(header).child(link).child(tags_block)
+    }
 }
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process any pending script command before anything else.
+        // Consume any pending script command first.
         self.process_script_command(window, cx);
+
+        // Drain cross-thread queues BEFORE signalling the script bus, so
+        // ops like `load_osm` (which push here and then call wait_frame)
+        // observe the resulting layer on the same frame.
+        self.check_for_new_osm_data(cx);
+        self.check_for_layer_requests(cx);
+        self.check_for_download_requests(cx);
+
+        // Now it's safe to signal: the effects of this frame's commands
+        // and pushes are visible.
+        if let Some(bus) = SCRIPT_BUS.get() {
+            bus.signal_done_and_frame();
+        }
 
         // Update viewport size to actual window dimensions minus the right panel and header
         let window_size = window.bounds().size;
@@ -557,14 +704,11 @@ impl Render for MapViewer {
         );
         self.viewport.update_size(map_size);
 
-        // Process queued OSM datasets into layers before stats and listing
-        self.check_for_new_osm_data(cx);
-        self.check_for_layer_requests(cx);
-        self.check_for_download_requests(cx);
         self.expire_status();
 
         // Update all layers
         self.layer_manager.update_all();
+        self.sync_selection_to_layers();
 
         let (center_lat, center_lon) = self.viewport.center();
         let zoom_level = self.viewport.zoom_level();
@@ -626,14 +770,14 @@ impl Render for MapViewer {
                             }))
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
-                                    this.handle_mouse_up(ev);
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.handle_mouse_up(ev, cx);
                                 }),
                             )
                             .on_mouse_up_out(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
-                                    this.handle_mouse_up(ev);
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.handle_mouse_up(ev, cx);
                                 }),
                             )
                             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
@@ -653,9 +797,13 @@ impl Render for MapViewer {
                                             {
                                                 let viewport_clone = self.viewport.clone();
                                                 let layer_manager = std::ptr::addr_of!(self.layer_manager);
+                                                let selected = self.selected.clone();
                                                 move |bounds, _, window, _| {
                                                     let layer_manager = unsafe { &*layer_manager };
                                                     layer_manager.render_all_canvas(&viewport_clone, bounds, window);
+                                                    if let Some(sel) = &selected {
+                                                        layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
+                                                    }
                                                 }
                                             }
                                         )
@@ -734,7 +882,6 @@ impl Render for MapViewer {
                     .child(
                         // Layer list container
                         div()
-                            .flex_1()
                             .p_4()
                             .flex()
                             .flex_col()
@@ -807,6 +954,14 @@ impl Render for MapViewer {
                                 .collect::<Vec<_>>()
                             )
                     )
+                    // Divider between layer controls and selection panel
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .bg(rgb(0x374151))
+                    )
+                    // Selection panel (flex_1, scrollable)
+                    .child(self.render_selection_panel(cx))
             )
     }
 }
@@ -868,6 +1023,26 @@ impl AppHandle for LiveApp {
 
     fn wait_frame(&mut self) {
         self.bus.wait_frame();
+    }
+
+    fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let parser = OsmParser::new();
+        let path_str = path.to_string_lossy().to_string();
+        let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+        if let Some(q) = SHARED_OSM_DATA.get() {
+            if let Ok(mut guard) = q.lock() {
+                guard.push((stem, data));
+            } else {
+                return Err("SHARED_OSM_DATA mutex poisoned".into());
+            }
+        } else {
+            return Err("SHARED_OSM_DATA not initialized".into());
+        }
+        // Thanks to the reorder in render(), the next frame drains the queue
+        // before signalling — so after wait_frame the layer exists.
+        self.bus.wait_frame();
+        Ok(())
     }
 }
 

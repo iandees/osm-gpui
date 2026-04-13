@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-74.0000"/>
+
+  <!-- Two geometry-only nodes forming a way -->
+  <node id="1001" lat="40.7100" lon="-74.0080"/>
+  <node id="1002" lat="40.7140" lon="-74.0020"/>
+
+  <!-- A tagged POI node, off the way -->
+  <node id="2001" lat="40.7120" lon="-74.0060">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Fixture Cafe"/>
+  </node>
+
+  <!-- A tagged way between the two geometry nodes -->
+  <way id="3001">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Fixture Street"/>
+  </way>
+</osm>

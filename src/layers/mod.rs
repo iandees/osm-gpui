@@ -30,6 +30,39 @@ pub trait MapLayer: Send + Sync {
     fn stats(&self) -> Vec<(String, String)> {
         vec![]
     }
+
+    /// Return hit candidates near a screen-space point. Default: none.
+    /// Implementations should only return candidates within their own tolerance.
+    fn hit_test(
+        &self,
+        _viewport: &Viewport,
+        _screen_pt: Point<Pixels>,
+    ) -> Vec<crate::selection::HitCandidate> {
+        Vec::new()
+    }
+
+    /// Tell the layer which feature (if any) is currently selected.
+    /// Default: no-op. OsmLayer overrides this to drive `render_elements`.
+    fn set_highlight(&mut self, _feature: Option<crate::selection::FeatureRef>) {}
+
+    /// Return key/value tags for the given feature if this layer owns it.
+    /// Default: `None`.
+    fn feature_tags(
+        &self,
+        _feature: &crate::selection::FeatureRef,
+    ) -> Option<Vec<(String, String)>> {
+        None
+    }
+
+    /// Draw a highlight overlay for `feature` if it belongs to this layer.
+    /// Default: no-op.
+    fn render_highlight(
+        &self,
+        _viewport: &Viewport,
+        _bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _feature: &crate::selection::FeatureRef,
+    ) {}
 }
 
 /// Manager for all map layers
@@ -104,5 +137,34 @@ impl LayerManager {
             .iter()
             .map(|layer| (layer.name().to_string(), layer.stats()))
             .collect()
+    }
+
+    /// Run hit_test against every visible layer, returning results in draw order.
+    pub fn hit_test_all(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+    ) -> Vec<Vec<crate::selection::HitCandidate>> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .map(|layer| layer.hit_test(viewport, screen_pt))
+            .collect()
+    }
+
+    /// Render `feature`'s highlight by asking the owning layer (matched by name).
+    /// No-op if no layer with that name exists.
+    pub fn render_highlight(
+        &self,
+        feature: &crate::selection::FeatureRef,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
+        if let Some(layer) = self.find_layer(&feature.layer_name) {
+            if layer.is_visible() {
+                layer.render_highlight(viewport, bounds, window, feature);
+            }
+        }
     }
 }
