@@ -51,7 +51,7 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 | `src/tile_cache.rs` | `TileAsset` implementing GPUI's `Asset` trait. Downloads PNGs with `ureq`, validates magic bytes, caches to `/tmp/osm-gpui-tiles/`, converts RGBA→BGRA for GPUI. |
 | `src/layers/mod.rs` | `MapLayer` trait (`render_elements` for raster, `render_canvas` for vector paths, plus `name`/`is_visible`/`update`/`stats`) and `LayerManager`. |
 | `src/layers/tile_layer.rs` | Raster tile layer — calculates visible tiles, emits `img()` elements via `window.use_asset::<TileAsset>`. |
-| `src/layers/osm_layer.rs` | Vector OSM layer — nodes as absolutely-positioned divs, ways as `PathBuilder` + `window.paint_path`. Holds `Arc<OsmData>`. |
+| `src/layers/osm_layer.rs` | Vector OSM layer. Holds `Arc<OsmData>` plus precomputed render caches (per-node mercator, per-way mercator vertex lists and bboxes, layer-level bbox). Nodes paint as canvas `paint_quad`s; all visible ways batch into one `PathBuilder` + `window.paint_path` call per frame. See *Performance notes* below. |
 | `src/layers/grid_layer.rs` | Lat/lon grid. Spacing adapts to zoom (10° → 0.001°). |
 | `src/idle_tracker.rs` | `IdleTracker` — atomic counters for in-flight tile fetches. Powers `wait_idle` in the script harness. |
 | `src/script/` | Line-DSL parser and runner for scripted screenshot sessions. See *Scripted screenshots* below. |
@@ -124,6 +124,41 @@ Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATIO
 `load_osm PATH` parses an OSM XML file and pushes it onto the dataset queue, the same pipeline used by **File > Open**. Follow it with `wait_idle` so the next frame creates the layer before subsequent clicks run.
 
 Example script: `docs/screenshots/smoke.osmscript` exercises every op.
+
+## Performance notes
+
+Pan/zoom smoothness is sensitive to both build profile and render-path hygiene. A few things worth knowing before tuning:
+
+### Always measure in `--release`
+
+Debug builds are **~4× slower** on this workload. A representative Manhattan dataset (~3k objects) measured ~32 fps in `cargo run` and ~120 fps in `cargo run --release`. Never chase a perf problem in a debug build — reproduce it under `--release` first, or you'll optimize ghosts.
+
+If debug feels too slow for day-to-day hacking, add a `[profile.dev]` `opt-level = 1` (or `2`) to `Cargo.toml` — it keeps debuginfo but turns on basic optimization.
+
+### What the OSM layer does (and why)
+
+`OsmLayer::render_canvas` is the hot path for large datasets. In rough order of impact, these are the tricks it uses — don't undo them without measuring:
+
+1. **Per-node mercator cache** (`node_cache`). At `set_osm_data` time every node is projected once to Web Mercator meters. Per-frame projection to screen is then `(m - center) * pixels_per_meter` — two subs and a multiply, no trig. The hot loop never calls `lat_lon_to_mercator` (which is `tan`+`ln`).
+2. **Per-way vertex lists** (`way_vertices`). Ways store `Vec<i64>` node refs; resolving those through `HashMap::get` per vertex, per frame, is cache-unfriendly. `way_vertices[i]` is a contiguous `Vec<(f64, f64)>` of mercator coords ready to iterate.
+3. **Mercator-space bbox culling**. Every way has a cached mercator AABB; `viewport.mercator_view_bounds()` exposes the view AABB. An offscreen way is rejected with four `f64` compares before its vertex list is touched. There's also a layer-level AABB (`layer_bbox`) that short-circuits the whole `render_canvas` when the dataset is fully off-screen.
+4. **One `paint_path` for all ways**. A single `PathBuilder::stroke` accumulates every visible way as subpaths (`move_to` starts a new one, `line_to` extends it). One build + one draw call per frame instead of N. When per-rule / MapCSS-style styling arrives, the same trick extends to one `paint_path` per `(stroke_width, color)` group.
+
+### Gotchas we hit (and you might)
+
+- **`paint_quad` vs `paint_path` for nodes.** Nodes render as individual `paint_quad` calls. Batching them into a single filled `PathBuilder` was tried and turned out *much* slower — Lyon's fill tessellator isn't built for thousands of tiny rectangles, and open sub-rect paths don't fill correctly without explicit closing. `paint_quad` is a direct GPU-quad primitive; prefer it for many uniform rects. `paint_path` is the right answer for strokes and complex fills (ways, polygons).
+- **`CoordinateTransform::geo_to_screen` calls `lat_lon_to_mercator` twice per call** (once for the point, once for the center). The hot path uses `mercator_to_screen` instead, which is trig-free. Don't "simplify" by switching hot-loop calls back to `geo_to_screen`.
+- **`Viewport`, `visible_bounds`, and `is_visible` operate in lat/lon.** They're fine for low-volume callers (hit-test, one-off queries). In per-vertex loops use `mercator_view_bounds` + explicit AABB compares instead.
+- **Don't add per-frame allocations inside loops.** Builders and scratch vecs are allocated once per `render_canvas` call; keep it that way.
+
+### If you need more performance
+
+Levers we haven't pulled yet, in rough order of expected payoff:
+
+- **Pixel-dedupe node dots at low zoom.** At z13 over Manhattan, thousands of nodes collide into the same pixels. A viewport-sized bitmap (or coarse grid) keyed by `(screen_x >> k, screen_y >> k)` would let you emit at most one `paint_quad` per small block with no visible change until zoomed in.
+- **Sub-pixel way cull.** Skip ways whose mercator bbox projects to < 2 px. Lots of tiny buildings at low zoom contribute a single pixel but still walk the vertex list.
+- **Persistent / reusable `PathBuilder` scratch buffers.** Minor; only if the allocator shows up in a profile.
+- **Per-rule style batching.** When MapCSS-style rendering lands, group features by `(stroke_width, color)` / `(fill_color)` and keep the "one path per group" structure. Don't regress to one path per feature.
 
 ## Roadmap (realistic)
 
