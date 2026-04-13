@@ -1,4 +1,5 @@
 use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -167,6 +168,7 @@ struct MapViewer {
     status_message: Option<(String, Instant)>,
     selected: Option<osm_gpui::selection::FeatureRef>,
     mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
+    frame_times: VecDeque<Instant>,
 }
 
 impl MapViewer {
@@ -189,6 +191,35 @@ impl MapViewer {
             status_message: None,
             selected: None,
             mouse_down_pos: None,
+            frame_times: VecDeque::with_capacity(120),
+        }
+    }
+
+    /// Record the current frame timestamp and return smoothed FPS over the
+    /// retained sample window (last ~1s of frames).
+    fn tick_fps(&mut self) -> f32 {
+        let now = Instant::now();
+        self.frame_times.push_back(now);
+        while let Some(&front) = self.frame_times.front() {
+            if now.duration_since(front) > Duration::from_secs(1) {
+                self.frame_times.pop_front();
+            } else {
+                break;
+            }
+        }
+        while self.frame_times.len() > 120 {
+            self.frame_times.pop_front();
+        }
+        if self.frame_times.len() < 2 {
+            return 0.0;
+        }
+        let span = now
+            .duration_since(*self.frame_times.front().unwrap())
+            .as_secs_f32();
+        if span <= 0.0 {
+            0.0
+        } else {
+            (self.frame_times.len() - 1) as f32 / span
         }
     }
 
@@ -713,6 +744,7 @@ impl Render for MapViewer {
         let (center_lat, center_lon) = self.viewport.center();
         let zoom_level = self.viewport.zoom_level();
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
+        let fps = self.tick_fps();
 
         // Collect layer information for the UI
         let layer_info: Vec<(String, bool)> = self.layer_manager.layers()
@@ -829,6 +861,7 @@ impl Render for MapViewer {
                                     .child(format!("📊 Objects: {}", osm_objects))
                                     .child(format!("🗺️ Tiles: {} visible", total_tiles))
                                     .child(format!("💾 Cache: {} files", cached_files))
+                                    .child(format!("⚡ FPS: {:.0}", fps))
                             )
                             .child({
                                 let status = self.status_message.clone();
