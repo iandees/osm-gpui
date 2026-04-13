@@ -671,36 +671,91 @@ impl MapViewer {
                 }),
             );
 
-        let tags_block = if tags_vec.is_empty() {
-            div()
-                .text_color(rgb(0x6b7280))
-                .text_sm()
-                .child("(no tags)")
-                .into_any_element()
-        } else {
-            let mut col = div().flex().flex_col().gap_1();
-            for (k, v) in tags_vec {
-                col = col.child(
+        let border_color = rgb(0x374151);
+        let header_bg = rgb(0x111827);
+
+        let tags_block = {
+            let header = div()
+                .flex()
+                .flex_row()
+                .bg(header_bg)
+                .border_b_1()
+                .border_color(border_color)
+                .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
+                        .w(px(110.0))
+                        .px_2()
+                        .py_1()
+                        .border_r_1()
+                        .border_color(border_color)
+                        .text_color(rgb(0x9ca3af))
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Key"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x9ca3af))
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Value"),
+                );
+
+            let mut table = div()
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(border_color)
+                .rounded_md()
+                .overflow_hidden()
+                .child(header);
+
+            if tags_vec.is_empty() {
+                table = table.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x6b7280))
+                        .text_sm()
+                        .child("(no tags)"),
+                );
+            } else {
+                let last_index = tags_vec.len() - 1;
+                for (i, (k, v)) in tags_vec.into_iter().enumerate() {
+                    let mut row = div().flex().flex_row();
+                    if i != last_index {
+                        row = row.border_b_1().border_color(border_color);
+                    }
+                    table = table.child(
+                        row.child(
                             div()
+                                .w(px(110.0))
+                                .px_2()
+                                .py_1()
+                                .border_r_1()
+                                .border_color(border_color)
                                 .text_color(rgb(0xd1d5db))
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(k)
+                                .child(k),
                         )
                         .child(
                             div()
+                                .flex_1()
+                                .px_2()
+                                .py_1()
                                 .text_color(rgb(0xffffff))
                                 .text_sm()
-                                .child(v)
-                        )
-                );
+                                .child(v),
+                        ),
+                    );
+                }
             }
-            col.into_any_element()
+
+            table.into_any_element()
         };
 
         base.child(header).child(link).child(tags_block)
