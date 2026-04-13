@@ -8,7 +8,7 @@
 #
 # Fixture layout at zoom 18, centered on (40.7120, -74.0060):
 #   node 2001  (40.7120, -74.0060)  → window  (460, 438)   # tagged POI (center)
-#   way  3001  1001 → 1002          # diagonal line; click at (570, 438) —
+#   way  3001  1001 → 1002          # diagonal line; click at (647, 438) —
 #                                   # clear of the POI's 8px node tolerance.
 
 window 1200 800
