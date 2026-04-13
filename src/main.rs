@@ -592,6 +592,32 @@ impl MapViewer {
             window.request_animation_frame();
         }
     }
+
+    fn render_selection_panel(&self, _cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let base = div()
+            .id("selection-panel")
+            .flex_1()
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2();
+
+        match &self.selected {
+            None => base.child(
+                div()
+                    .text_color(rgb(0x6b7280))
+                    .text_sm()
+                    .child("Click a feature to see its tags.")
+            ),
+            Some(_sel) => base.child(
+                div()
+                    .text_color(rgb(0xffffff))
+                    .text_sm()
+                    .child("(selection panel filled in next task)")
+            ),
+        }
+    }
 }
 
 impl Render for MapViewer {
@@ -791,7 +817,6 @@ impl Render for MapViewer {
                     .child(
                         // Layer list container
                         div()
-                            .flex_1()
                             .p_4()
                             .flex()
                             .flex_col()
@@ -864,6 +889,14 @@ impl Render for MapViewer {
                                 .collect::<Vec<_>>()
                             )
                     )
+                    // Divider between layer controls and selection panel
+                    .child(
+                        div()
+                            .h(px(1.0))
+                            .bg(rgb(0x374151))
+                    )
+                    // Selection panel (flex_1, scrollable)
+                    .child(self.render_selection_panel(cx))
             )
     }
 }
