@@ -1,11 +1,15 @@
-use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
+use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SharedString, SystemMenuType, Window, WindowOptions};
+use serde::Deserialize;
+use schemars::JsonSchema;
+use gpui::Action;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::idle_tracker::IdleTracker;
+use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::viewport::Viewport;
@@ -17,12 +21,42 @@ use osm_gpui::capture;
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm]);
 
+/// Action for adding an imagery layer from the ELI by id.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+struct AddImageryLayer {
+    id: SharedString,
+}
+
+/// Request to add a new layer from a menu action.
+#[derive(Debug, Clone)]
+enum LayerRequest {
+    OsmCarto,
+    CoordinateGrid,
+    Imagery { name: String, url_template: String },
+}
+
+/// Stores the full ELI list once loaded (populated on the background executor).
+static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
+
+/// Set to true when the imagery index is loaded (or failed) so the render loop
+/// knows to refresh the menu.
+static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ImageryLoadState {
+    Loading,
+    Ready,
+    Failed,
+}
+
 // Replace single optional data store with a queue of datasets awaiting layer creation
 static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
     std::sync::OnceLock::new();
 
 // Queue for layer addition requests
-static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
+static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<LayerRequest>>>> =
     std::sync::OnceLock::new();
 
 static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
@@ -169,6 +203,10 @@ struct MapViewer {
     selected: Option<osm_gpui::selection::FeatureRef>,
     mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
     frame_times: VecDeque<Instant>,
+    /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
+    last_menu_center: Option<(f64, f64)>,
+    /// Imagery load state observed on the previous frame; detect transitions.
+    last_imagery_load_state: Option<ImageryLoadState>,
 }
 
 impl MapViewer {
@@ -191,7 +229,34 @@ impl MapViewer {
             selected: None,
             mouse_down_pos: None,
             frame_times: VecDeque::with_capacity(120),
+            last_menu_center: None,
+            last_imagery_load_state: None,
         }
+    }
+
+    /// Rebuild the Imagery menu if needed (center moved or load state changed).
+    fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
+        let (lat, lon) = self.viewport.center();
+
+        // Pull current load state.
+        let current_state = IMAGERY_LOAD_STATE
+            .get()
+            .and_then(|s| s.lock().ok().map(|g| *g))
+            .unwrap_or(ImageryLoadState::Loading);
+
+        let state_changed = self.last_imagery_load_state != Some(current_state);
+        let center_moved = match self.last_menu_center {
+            None => true,
+            Some((plat, plon)) => (plat - lat).abs() > 0.5 || (plon - lon).abs() > 0.5,
+        };
+        if !state_changed && !center_moved {
+            return;
+        }
+        // Only refresh when the imagery index has reached a terminal state
+        // (Ready or Failed). In Loading we don't have entries yet.
+        rebuild_menus(&mut *cx, lat, lon, current_state);
+        self.last_menu_center = Some((lat, lon));
+        self.last_imagery_load_state = Some(current_state);
     }
 
     /// Record the current frame timestamp and return smoothed FPS over the
@@ -285,6 +350,10 @@ impl MapViewer {
             let current_visibility = layer.is_visible();
             layer.set_visible(!current_visibility);
         }
+    }
+
+    fn reorder_layer(&mut self, from: usize, to: usize) {
+        self.layer_manager.move_layer(from, to);
     }
 
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
@@ -409,20 +478,34 @@ impl MapViewer {
         if let Some(requests) = LAYER_REQUESTS.get() {
             if let Ok(mut guard) = requests.try_lock() {
                 if guard.is_empty() { return; }
-                for layer_name in guard.drain(..) {
-                    match layer_name.as_str() {
-                        "OpenStreetMap Carto" => {
+                for req in guard.drain(..) {
+                    match req {
+                        LayerRequest::OsmCarto => {
                             if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
                                 let tile_layer = TileLayer::new(self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
                             }
-                        },
-                        "Coordinate Grid" => {
+                        }
+                        LayerRequest::CoordinateGrid => {
                             if self.layer_manager.find_layer("Coordinate Grid").is_none() {
                                 self.layer_manager.add_layer(Box::new(GridLayer::new()));
                             }
-                        },
-                        _ => {}
+                        }
+                        LayerRequest::Imagery { name, url_template } => {
+                            // Ensure unique name
+                            let mut candidate = name.clone();
+                            let mut i = 2;
+                            while self.layer_manager.find_layer(&candidate).is_some() {
+                                candidate = format!("{} ({})", name, i);
+                                i += 1;
+                            }
+                            let layer = TileLayer::new_with_template(
+                                candidate,
+                                url_template,
+                                self.tile_cache.clone(),
+                            );
+                            self.layer_manager.add_layer(Box::new(layer));
+                        }
                     }
                 }
                 cx.notify();
@@ -675,36 +758,91 @@ impl MapViewer {
                 }),
             );
 
-        let tags_block = if tags_vec.is_empty() {
-            div()
-                .text_color(rgb(0x6b7280))
-                .text_sm()
-                .child("(no tags)")
-                .into_any_element()
-        } else {
-            let mut col = div().flex().flex_col().gap_1();
-            for (k, v) in tags_vec {
-                col = col.child(
+        let border_color = rgb(0x374151);
+        let header_bg = rgb(0x111827);
+
+        let tags_block = {
+            let header = div()
+                .flex()
+                .flex_row()
+                .bg(header_bg)
+                .border_b_1()
+                .border_color(border_color)
+                .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
+                        .w(px(110.0))
+                        .px_2()
+                        .py_1()
+                        .border_r_1()
+                        .border_color(border_color)
+                        .text_color(rgb(0x9ca3af))
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Key"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x9ca3af))
+                        .text_xs()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Value"),
+                );
+
+            let mut table = div()
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(border_color)
+                .rounded_md()
+                .overflow_hidden()
+                .child(header);
+
+            if tags_vec.is_empty() {
+                table = table.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(rgb(0x6b7280))
+                        .text_sm()
+                        .child("(no tags)"),
+                );
+            } else {
+                let last_index = tags_vec.len() - 1;
+                for (i, (k, v)) in tags_vec.into_iter().enumerate() {
+                    let mut row = div().flex().flex_row();
+                    if i != last_index {
+                        row = row.border_b_1().border_color(border_color);
+                    }
+                    table = table.child(
+                        row.child(
                             div()
+                                .w(px(110.0))
+                                .px_2()
+                                .py_1()
+                                .border_r_1()
+                                .border_color(border_color)
                                 .text_color(rgb(0xd1d5db))
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(k)
+                                .child(k),
                         )
                         .child(
                             div()
+                                .flex_1()
+                                .px_2()
+                                .py_1()
                                 .text_color(rgb(0xffffff))
                                 .text_sm()
-                                .child(v)
-                        )
-                );
+                                .child(v),
+                        ),
+                    );
+                }
             }
-            col.into_any_element()
+
+            table.into_any_element()
         };
 
         base.child(header).child(link).child(tags_block)
@@ -722,6 +860,7 @@ impl Render for MapViewer {
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
+        self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
@@ -923,9 +1062,12 @@ impl Render for MapViewer {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .children(
+                            .children({
+                                let total_layers = layer_info.len();
                                 layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
                                     let layer_name = name.clone();
+                                    let can_move_up = index > 0;
+                                    let can_move_down = index + 1 < total_layers;
                                     div()
                                         .id(("layer", index))
                                         .p_3()
@@ -944,6 +1086,66 @@ impl Render for MapViewer {
                                                 this.toggle_layer_visibility(&layer_name);
                                                 cx.notify();
                                             }),
+                                        )
+                                        .child(
+                                            // Reorder handle: up/down buttons.
+                                            // Each button stops propagation so the row-level
+                                            // visibility toggle does not also fire.
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .items_center()
+                                                .gap_1()
+                                                .child({
+                                                    let up = div()
+                                                        .id(("layer-up", index))
+                                                        .w(px(18.0))
+                                                        .h(px(14.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_color(if can_move_up { rgb(0xd1d5db) } else { rgb(0x4b5563) })
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .child("▲");
+                                                    if can_move_up {
+                                                        up.cursor_pointer().on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
+                                                                this.reorder_layer(index, index - 1);
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                    } else {
+                                                        up
+                                                    }
+                                                })
+                                                .child({
+                                                    let down = div()
+                                                        .id(("layer-down", index))
+                                                        .w(px(18.0))
+                                                        .h(px(14.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_color(if can_move_down { rgb(0xd1d5db) } else { rgb(0x4b5563) })
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .child("▼");
+                                                    if can_move_down {
+                                                        down.cursor_pointer().on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
+                                                                this.reorder_layer(index, index + 1);
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                    } else {
+                                                        down
+                                                    }
+                                                })
                                         )
                                         .child(
                                             div()
@@ -989,7 +1191,7 @@ impl Render for MapViewer {
                                         )
                                 })
                                 .collect::<Vec<_>>()
-                            )
+                            })
                     )
                     // Divider between layer controls and selection panel
                     .child(
@@ -1103,6 +1305,10 @@ fn main() {
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    IMAGERY_LOAD_STATE
+        .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
+        .unwrap();
 
     // If there's a script, spawn it on a background OS thread before the app
     // starts. The thread blocks until the window is visible, then drives the
@@ -1179,33 +1385,42 @@ fn main() {
         cx.on_action(add_osm_carto);
         cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
+        cx.on_action(add_imagery_layer);
+        cx.on_action(no_op_imagery_info);
 
-        // Set up OS menu system
-        cx.set_menus(vec![
-            Menu {
-                name: "OSM Viewer".into(),
-                items: vec![
-                    MenuItem::os_submenu("Services", SystemMenuType::Services),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit\t⌘Q", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("Open…\t⌘O", OpenOsmFile),
-                    MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
-                ],
-            },
-            Menu {
-                name: "Imagery".into(),
-                items: vec![
-                    MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
-                    MenuItem::separator(),
-                    MenuItem::action("Coordinate Grid", AddCoordinateGrid),
-                ],
-            },
-        ]);
+        // Initial menu (before ELI loads). MapViewer's render loop will call
+        // rebuild_menus again whenever the load state or viewport changes.
+        rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
+
+        // Kick off background download/parse of the Editor Layer Index.
+        cx.background_executor()
+            .spawn(async move {
+                match imagery::fetch_and_cache() {
+                    Ok(body) => {
+                        let entries = imagery::parse(&body);
+                        eprintln!("imagery: loaded {} ELI entries", entries.len());
+                        if let Some(index) = IMAGERY_INDEX.get() {
+                            if let Ok(mut guard) = index.lock() {
+                                *guard = entries;
+                            }
+                        }
+                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                            if let Ok(mut g) = state.lock() {
+                                *g = ImageryLoadState::Ready;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("imagery: failed to load ELI: {}", e);
+                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                            if let Ok(mut g) = state.lock() {
+                                *g = ImageryLoadState::Failed;
+                            }
+                        }
+                    }
+                }
+            })
+            .detach();
 
         cx.open_window(
             WindowOptions {
@@ -1280,28 +1495,134 @@ fn quit(_: &Quit, cx: &mut App) {
 }
 
 // Handle the File > Download from OSM menu action
-fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
+fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     if let Some(requests) = DOWNLOAD_REQUESTS.get() {
         if let Ok(mut q) = requests.lock() {
             q.push(());
         }
     }
+    // Wake the render loop so MapViewer drains the queue on the next frame
+    // instead of waiting for an unrelated input event.
+    cx.refresh_windows();
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
-fn add_osm_carto(_: &AddOsmCarto, _cx: &mut App) {
+fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
         if let Ok(mut queue) = requests.lock() {
-            queue.push("OpenStreetMap Carto".to_string());
+            queue.push(LayerRequest::OsmCarto);
+        }
+    }
+    cx.refresh_windows();
+}
+
+// Handle an ELI imagery menu action. Looks up the entry in the loaded index
+// and enqueues a layer request.
+fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
+    let id = action.id.to_string();
+    let Some(index) = IMAGERY_INDEX.get() else { return };
+    let entry = {
+        let guard = match index.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        guard.iter().find(|e| e.id == id).cloned()
+    };
+    let Some(entry) = entry else { return };
+    if let Some(requests) = LAYER_REQUESTS.get() {
+        if let Ok(mut queue) = requests.lock() {
+            queue.push(LayerRequest::Imagery {
+                name: entry.name,
+                url_template: entry.url_template,
+            });
         }
     }
 }
 
 // Handle the Imagery > Coordinate Grid menu action
-fn add_coordinate_grid(_: &AddCoordinateGrid, _cx: &mut App) {
+fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
         if let Ok(mut queue) = requests.lock() {
-            queue.push("Coordinate Grid".to_string());
+            queue.push(LayerRequest::CoordinateGrid);
         }
     }
+    cx.refresh_windows();
 }
+
+/// Build and install the menu bar, using the current viewport center to filter
+/// the Imagery menu to relevant ELI entries.
+fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryLoadState) {
+    let mut imagery_items: Vec<MenuItem> = vec![
+        MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
+        MenuItem::separator(),
+        MenuItem::action("Coordinate Grid", AddCoordinateGrid),
+    ];
+
+    match state {
+        ImageryLoadState::Loading => {
+            imagery_items.push(MenuItem::separator());
+            imagery_items.push(MenuItem::action(
+                "(Loading imagery index…)",
+                NoOpImageryInfo,
+            ));
+        }
+        ImageryLoadState::Failed => {
+            imagery_items.push(MenuItem::separator());
+            imagery_items.push(MenuItem::action(
+                "(Imagery index unavailable)",
+                NoOpImageryInfo,
+            ));
+        }
+        ImageryLoadState::Ready => {
+            let entries = IMAGERY_INDEX
+                .get()
+                .and_then(|i| i.lock().ok().map(|g| g.clone()))
+                .unwrap_or_default();
+            let shown = imagery::entries_for_viewport(&entries, center_lat, center_lon);
+            if !shown.is_empty() {
+                imagery_items.push(MenuItem::separator());
+                for entry in shown {
+                    let label = if entry.best {
+                        format!("★ {}", entry.name)
+                    } else {
+                        entry.name.clone()
+                    };
+                    imagery_items.push(MenuItem::action(
+                        label,
+                        AddImageryLayer {
+                            id: entry.id.clone().into(),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    cx.set_menus(vec![
+        Menu {
+            name: "OSM Viewer".into(),
+            items: vec![
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Quit\t⌘Q", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("Open…\t⌘O", OpenOsmFile),
+                MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
+            ],
+        },
+        Menu {
+            name: "Imagery".into(),
+            items: imagery_items,
+        },
+    ]);
+}
+
+// Dummy action used for disabled-style "info" entries in the Imagery menu.
+// (GPUI does not support disabled menu items directly, so we use a no-op.)
+actions!(osm_gpui, [NoOpImageryInfo]);
+
+fn no_op_imagery_info(_: &NoOpImageryInfo, _cx: &mut App) {}

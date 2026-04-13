@@ -38,6 +38,60 @@ impl TileCoord {
     }
 }
 
+/// Substitute tile placeholders in a URL template.
+///
+/// Supports `{z}` / `{zoom}`, `{x}`, `{y}`, the TMS-flipped `{-y}`, and
+/// `{switch:a,b,c}` / `{s}` subdomain placeholders. A `{s}` placeholder is
+/// only substituted when a `{switch:...}` list also appears in the template
+/// (that list becomes the subdomain pool); otherwise `{s}` is left as-is.
+pub fn url_from_template(template: &str, tile: &TileCoord) -> String {
+    let z = tile.z;
+    let x = tile.x;
+    let y = tile.y;
+    let n = 1u32.checked_shl(z).unwrap_or(0);
+    let flipped_y = n.saturating_sub(1).saturating_sub(y);
+
+    // Pick a subdomain if a switch:list is present.
+    let mut out = String::with_capacity(template.len() + 8);
+    let mut subdomains: Vec<&str> = Vec::new();
+    if let Some(start) = template.find("{switch:") {
+        if let Some(rel_end) = template[start..].find('}') {
+            let end = start + rel_end;
+            let list = &template[start + "{switch:".len()..end];
+            subdomains = list.split(',').map(|s| s.trim()).collect();
+        }
+    }
+    // Pseudo-random pick based on tile coordinates (stable per-tile).
+    let pick = |list: &[&str]| -> String {
+        if list.is_empty() {
+            return String::new();
+        }
+        let idx = ((x as u64).wrapping_mul(31) ^ (y as u64).wrapping_mul(17) ^ z as u64)
+            as usize
+            % list.len();
+        list[idx].to_string()
+    };
+
+    // First replace {switch:...} with the picked subdomain, then remaining tokens.
+    let mut s = template.to_string();
+    if !subdomains.is_empty() {
+        let pattern_start = s.find("{switch:").unwrap();
+        let pattern_end = s[pattern_start..].find('}').unwrap() + pattern_start;
+        let replacement = pick(&subdomains);
+        s.replace_range(pattern_start..=pattern_end, &replacement);
+        s = s.replace("{s}", &replacement);
+    }
+
+    s = s.replace("{zoom}", &z.to_string());
+    s = s.replace("{z}", &z.to_string());
+    s = s.replace("{x}", &x.to_string());
+    s = s.replace("{-y}", &flipped_y.to_string());
+    s = s.replace("{y}", &y.to_string());
+
+    out.push_str(&s);
+    out
+}
+
 /// Convert latitude/longitude to tile coordinates at a given zoom level
 pub fn lat_lon_to_tile(lat: f64, lon: f64, zoom: u32) -> TileCoord {
     let lat_rad = lat.to_radians();
@@ -233,6 +287,37 @@ mod tests {
         let tile = TileCoord::new(123, 456, 10);
         let url = tile.to_url();
         assert_eq!(url, "https://tile.openstreetmap.org/10/123/456.png");
+    }
+
+    #[test]
+    fn url_template_substitution() {
+        let tile = TileCoord::new(3, 5, 4);
+        // {z}/{x}/{y}
+        let u = url_from_template("https://t.example/{z}/{x}/{y}.png", &tile);
+        assert_eq!(u, "https://t.example/4/3/5.png");
+        // {zoom} alias
+        let u = url_from_template("https://t.example/{zoom}/{x}/{y}.png", &tile);
+        assert_eq!(u, "https://t.example/4/3/5.png");
+        // {-y} TMS flip: at z=4 n=16, flipped = 16-1-5 = 10
+        let u = url_from_template("https://t.example/{z}/{x}/{-y}.png", &tile);
+        assert_eq!(u, "https://t.example/4/3/10.png");
+        // {switch:a,b,c} — ensure the output is one of the listed subdomains
+        let u = url_from_template(
+            "https://{switch:alpha,beta,gamma}.example/{z}/{x}/{y}.png",
+            &tile,
+        );
+        let prefix_ok = ["https://alpha.example/", "https://beta.example/", "https://gamma.example/"]
+            .iter()
+            .any(|p| u.starts_with(p));
+        assert!(prefix_ok, "got {}", u);
+        // {s} paired with {switch:...} is also substituted
+        let u = url_from_template(
+            "https://{switch:a,b,c}.example/{s}/{z}/{x}/{y}.png",
+            &tile,
+        );
+        let inner = u.trim_start_matches("https://");
+        let first = inner.split('.').next().unwrap();
+        assert!(u.contains(&format!("/{}/", first)), "got {}", u);
     }
 
     #[test]
