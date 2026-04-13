@@ -357,18 +357,14 @@ impl MapViewer {
     }
 
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         self.viewport.handle_mouse_down(adjusted_position);
         self.mouse_down_pos = Some(adjusted_position);
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
@@ -376,8 +372,7 @@ impl MapViewer {
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
-        let header_height = px(48.0);
-        let up_pos = point(event.position.x, event.position.y - header_height);
+        let up_pos = event.position;
         let was_click = match self.mouse_down_pos.take() {
             Some(down) => {
                 let dx = up_pos.x.0 - down.x.0;
@@ -438,9 +433,7 @@ impl MapViewer {
             },
         };
 
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
             cx.notify();
@@ -868,13 +861,12 @@ impl Render for MapViewer {
             bus.signal_done_and_frame();
         }
 
-        // Update viewport size to actual window dimensions minus the right panel and header
+        // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
-        let header_height = px(48.0); // h_12() = 12 * 4px = 48px
         let map_size = gpui::size(
             window_size.width - panel_width,
-            window_size.height - header_height
+            window_size.height,
         );
         self.viewport.update_size(map_size);
 
@@ -901,39 +893,10 @@ impl Render for MapViewer {
             .flex()
             .flex_row()
             .child(
-                // Main content area (header + map)
+                // Map area
                 div()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // Header with menu
-                        div()
-                            .h_12()
-                            .bg(rgb(0x111827))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_4()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child("🗺️ OSM-GPUI Map Viewer (Layered)"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(0x9ca3af))
-                                    .text_sm()
-                                    .child("Mouse to pan/zoom | 'T' tiles | Click layers to toggle"),
-                            ),
-                    )
-                    .child(
-                        // Map area
-                        div()
-                            .flex_1()
-                            .relative()
+                    .relative()
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseDownEvent, _, _| {
@@ -1026,7 +989,6 @@ impl Render for MapViewer {
                                 }
                             }),
                     )
-            )
             .child(
                 // Right panel with layer controls
                 div()
