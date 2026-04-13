@@ -165,6 +165,8 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
+    selected: Option<osm_gpui::selection::FeatureRef>,
+    mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
 }
 
 impl MapViewer {
@@ -185,6 +187,8 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
+            selected: None,
+            mouse_down_pos: None,
         }
     }
 
@@ -259,6 +263,7 @@ impl MapViewer {
         let adjusted_position = point(event.position.x, event.position.y - header_height);
 
         self.viewport.handle_mouse_down(adjusted_position);
+        self.mouse_down_pos = Some(adjusted_position);
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -271,8 +276,30 @@ impl MapViewer {
         }
     }
 
-    fn handle_mouse_up(&mut self, _: &MouseUpEvent) {
+    fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        let header_height = px(48.0);
+        let up_pos = point(event.position.x, event.position.y - header_height);
+        let was_click = match self.mouse_down_pos.take() {
+            Some(down) => {
+                let dx = up_pos.x.0 - down.x.0;
+                let dy = up_pos.y.0 - down.y.0;
+                (dx * dx + dy * dy).sqrt() < 4.0
+            }
+            None => false,
+        };
         self.viewport.handle_mouse_up();
+        if was_click {
+            let before = self.selected.clone();
+            self.handle_map_click(up_pos);
+            if before != self.selected {
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+        let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
+        self.selected = osm_gpui::selection::resolve_hits(per_layer);
     }
 
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -487,7 +514,7 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         click_count: 1,
                     };
-                    self.handle_mouse_up(&ev);
+                    self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
                 ScriptCommand::Click { x, y, right } => {
@@ -506,7 +533,7 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         click_count: 1,
                     };
-                    self.handle_mouse_up(&ev);
+                    self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
@@ -626,14 +653,14 @@ impl Render for MapViewer {
                             }))
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
-                                    this.handle_mouse_up(ev);
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.handle_mouse_up(ev, cx);
                                 }),
                             )
                             .on_mouse_up_out(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, _| {
-                                    this.handle_mouse_up(ev);
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.handle_mouse_up(ev, cx);
                                 }),
                             )
                             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
