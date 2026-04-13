@@ -1,0 +1,11 @@
+/* osm-gpui default MapCSS stylesheet */
+
+way                  { color: #4169E1; width: 4; }
+way[highway]         { color: #ff8c00; width: 5; }
+way[highway=footway] { color: #8b4513; width: 2; }
+way[waterway]        { color: #1e90ff; width: 3; }
+way[building]        { color: #808080; width: 1; }
+
+node           { color: #FFD700; symbol-size: 10; }
+node[amenity]  { color: #ff1493; symbol-size: 12; }
+node[shop]     { color: #32cd32; symbol-size: 12; }
