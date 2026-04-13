@@ -53,6 +53,9 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 | `src/layers/tile_layer.rs` | Raster tile layer — calculates visible tiles, emits `img()` elements via `window.use_asset::<TileAsset>`. |
 | `src/layers/osm_layer.rs` | Vector OSM layer — nodes as absolutely-positioned divs, ways as `PathBuilder` + `window.paint_path`. Holds `Arc<OsmData>`. |
 | `src/layers/grid_layer.rs` | Lat/lon grid. Spacing adapts to zoom (10° → 0.001°). |
+| `src/idle_tracker.rs` | `IdleTracker` — atomic counters for in-flight tile fetches. Powers `wait_idle` in the script harness. |
+| `src/script/` | Line-DSL parser and runner for scripted screenshot sessions. See *Scripted screenshots* below. |
+| `src/capture.rs` | macOS window-id lookup (CGWindowList) + `screencapture` subprocess wrapper. |
 
 ### Dead code — do not extend without asking
 
@@ -81,6 +84,44 @@ These files compile but aren't wired into the app. Left over from refactors; can
 - ⌘Q — Quit
 
 No other bindings are wired. (The old `map.rs` had `T`/`L`/`G`/`D`/`F`/`R` toggles; they are not in the current app.)
+
+## Scripted screenshots
+
+Run a script of viewport/input/capture operations against the live app and produce PNGs. Useful for visual regression checks and LLM-driven testing where a headed browser test isn't available.
+
+```bash
+cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
+```
+
+Flags:
+
+- `--script <path>` — run a `.osmscript` file. Without this flag, the app launches normally.
+- `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
+- `--keep-open` — don't exit after the last step, so you can poke at the final state.
+
+Script format is line-oriented with `#` comments:
+
+```
+window 1200 800
+viewport 47.6062 -122.3321 12
+wait_idle 10s
+capture out/seattle.png
+
+drag 600,400 300,400
+wait_idle
+capture out/panned.png
+
+scroll 600,400 dy=-5
+click 600,400
+key cmd+o
+wait 250ms
+```
+
+Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `key CHORD` (e.g. `cmd+shift+a`), `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
+
+`wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` shells out to macOS `screencapture -l <windowid>` so the app window doesn't need focus and can even be occluded. **macOS only** — the capture path is Mac-specific.
+
+Example script: `docs/screenshots/smoke.osmscript` exercises every op.
 
 ## Roadmap (realistic)
 
