@@ -12,10 +12,10 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 - Adaptive lat/lon grid overlay (always on by default).
 - Layer list in right panel with click-to-toggle visibility.
 - Debug overlay: zoom, center coords, object/tile counts, cache stats.
+- Feature picking: click a node or way to select it; right panel shows feature type, OSM link, and all tags. Selected features are highlighted (magenta ring for nodes, magenta stroke for ways).
 
 **Not implemented**
 - Any editing (node/way create, modify, delete, upload).
-- Feature picking / tag inspection on click.
 - Relation rendering (parsed, but unused).
 - GeoJSON loading in the UI (code exists in `src/data.rs` but is dead).
 - Layer reordering, style editing, search, export, undo/redo.
@@ -117,9 +117,11 @@ key cmd+o
 wait 250ms
 ```
 
-Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `key CHORD` (e.g. `cmd+shift+a`), `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
+Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `key CHORD` (e.g. `cmd+shift+a`), `load_osm PATH`, `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
 
 `wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` shells out to macOS `screencapture -l <windowid>` so the app window doesn't need focus and can even be occluded. **macOS only** — the capture path is Mac-specific.
+
+`load_osm PATH` parses an OSM XML file and pushes it onto the dataset queue, the same pipeline used by **File > Open**. Follow it with `wait_idle` so the next frame creates the layer before subsequent clicks run.
 
 Example script: `docs/screenshots/smoke.osmscript` exercises every op.
 
