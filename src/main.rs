@@ -909,11 +909,22 @@ impl Render for MapViewer {
             .map(|layer| (layer.name().to_string(), layer.is_visible()))
             .collect();
 
+        let context_menu_open = self.context_menu.is_some();
         div()
             .size_full()
             .bg(rgb(0x1a202c))
             .flex()
             .flex_row()
+            .when(context_menu_open, |this| {
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
+                        if this.context_menu.take().is_some() {
+                            cx.notify();
+                        }
+                    }),
+                )
+            })
             .child(
                 // Main content area (header + map)
                 div()
@@ -1227,6 +1238,51 @@ impl Render for MapViewer {
                     // Selection panel (flex_1, scrollable)
                     .child(self.render_selection_panel(cx))
             )
+            .child({
+                if let Some(menu) = self.context_menu.clone() {
+                    div()
+                        .absolute()
+                        .left(menu.position.x)
+                        .top(menu.position.y)
+                        .bg(rgb(0x1f2937))
+                        .border_1()
+                        .border_color(rgb(0x374151))
+                        .rounded_md()
+                        .shadow_lg()
+                        .py_1()
+                        .min_w(px(120.0))
+                        .child(
+                            div()
+                                .id("layer-context-menu-delete")
+                                .px_3()
+                                .py_1p5()
+                                .cursor_pointer()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .hover(|this| this.bg(rgb(0x374151)))
+                                .child("Delete")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
+                                        if let Some(menu) = this.context_menu.take() {
+                                            if let Some(reqs) = LAYER_REQUESTS.get() {
+                                                if let Ok(mut guard) = reqs.lock() {
+                                                    guard.push(LayerRequest::Delete {
+                                                        index: menu.layer_index,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            })
     }
 }
 
