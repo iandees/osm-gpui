@@ -82,6 +82,17 @@ impl LayerManager {
         self.layers.push(layer);
     }
 
+    /// Move the layer at `from` to position `to`. No-op if either index is
+    /// out of bounds or if `from == to`.
+    pub fn move_layer(&mut self, from: usize, to: usize) {
+        let len = self.layers.len();
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        let layer = self.layers.remove(from);
+        self.layers.insert(to, layer);
+    }
+
     /// Get all layers
     pub fn layers(&self) -> &[Box<dyn MapLayer>] {
         &self.layers
@@ -166,5 +177,46 @@ impl LayerManager {
                 layer.render_highlight(viewport, bounds, window, feature);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn apply_move(items: &mut Vec<&'static str>, from: usize, to: usize) {
+        let len = items.len();
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        let item = items.remove(from);
+        items.insert(to, item);
+    }
+
+    #[test]
+    fn move_layer_down() {
+        let mut v = vec!["a", "b", "c"];
+        apply_move(&mut v, 0, 2);
+        assert_eq!(v, vec!["b", "c", "a"]);
+    }
+
+    #[test]
+    fn move_layer_up() {
+        let mut v = vec!["a", "b", "c"];
+        apply_move(&mut v, 2, 0);
+        assert_eq!(v, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn move_layer_same_index_is_noop() {
+        let mut v = vec!["a", "b"];
+        apply_move(&mut v, 1, 1);
+        assert_eq!(v, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn move_layer_out_of_bounds_is_noop() {
+        let mut v = vec!["a", "b"];
+        apply_move(&mut v, 0, 99);
+        apply_move(&mut v, 99, 0);
+        assert_eq!(v, vec!["a", "b"]);
     }
 }

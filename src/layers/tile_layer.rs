@@ -4,11 +4,15 @@ use std::sync::{Arc, Mutex};
 use crate::layers::MapLayer;
 use crate::viewport::Viewport;
 use crate::tile_cache::TileCache;
-use crate::tiles::get_tiles_for_bounds;
+use crate::tiles::{get_tiles_for_bounds, url_from_template};
+
+/// The built-in OpenStreetMap Carto tile URL template.
+pub const OSM_CARTO_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 /// Layer for rendering raster map tiles
 pub struct TileLayer {
     name: String,
+    url_template: String,
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
     show_boundaries: bool,
@@ -16,12 +20,25 @@ pub struct TileLayer {
 
 impl TileLayer {
     pub fn new(tile_cache: Arc<Mutex<TileCache>>) -> Self {
-        Self::new_with_name("OpenStreetMap Carto".to_string(), tile_cache)
+        Self::new_with_template(
+            "OpenStreetMap Carto".to_string(),
+            OSM_CARTO_TEMPLATE.to_string(),
+            tile_cache,
+        )
     }
 
     pub fn new_with_name(name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
+        Self::new_with_template(name, OSM_CARTO_TEMPLATE.to_string(), tile_cache)
+    }
+
+    pub fn new_with_template(
+        name: String,
+        url_template: String,
+        tile_cache: Arc<Mutex<TileCache>>,
+    ) -> Self {
         Self {
             name,
+            url_template,
             visible: true,
             tile_cache,
             show_boundaries: false,
@@ -74,8 +91,8 @@ impl MapLayer for TileLayer {
             let tile_width = (screen_bottom_right.x.0 - screen_top_left.x.0).abs();
             let tile_height = (screen_bottom_right.y.0 - screen_top_left.y.0).abs();
 
-            // Generate tile URL
-            let tile_url = tile_coord.to_url();
+            // Generate tile URL via the layer's URL template.
+            let tile_url = url_from_template(&self.url_template, tile_coord);
 
             // Parent-tile fallback: while the child tile is loading, show the
             // already-cached parent (z-1) tile scaled 2× and clipped to this

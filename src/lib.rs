@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod coordinates;
 pub mod idle_tracker;
+pub mod imagery;
 pub mod layers;
 pub mod osm;
 pub mod osm_api;
