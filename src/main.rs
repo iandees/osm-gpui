@@ -765,6 +765,8 @@ impl MapViewer {
             let header = div()
                 .flex()
                 .flex_row()
+                .w_full()
+                .min_w_0()
                 .bg(header_bg)
                 .border_b_1()
                 .border_color(border_color)
@@ -783,6 +785,9 @@ impl MapViewer {
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .px_2()
                         .py_1()
                         .text_color(rgb(0x9ca3af))
@@ -812,7 +817,7 @@ impl MapViewer {
             } else {
                 let last_index = tags_vec.len() - 1;
                 for (i, (k, v)) in tags_vec.into_iter().enumerate() {
-                    let mut row = div().flex().flex_row();
+                    let mut row = div().flex().flex_row().w_full().min_w_0();
                     if i != last_index {
                         row = row.border_b_1().border_color(border_color);
                     }
@@ -832,6 +837,9 @@ impl MapViewer {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
                                 .px_2()
                                 .py_1()
                                 .text_color(rgb(0xffffff))
