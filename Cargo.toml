@@ -21,6 +21,10 @@ image = "0.25"
 anyhow = "1.0"
 smallvec = "1.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+
 
 [dev-dependencies]
 

@@ -3376,6 +3376,8 @@ name = "osm-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
  "gpui",
  "image",
  "quick-xml 0.31.0",
