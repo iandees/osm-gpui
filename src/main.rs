@@ -288,6 +288,10 @@ impl MapViewer {
         }
     }
 
+    fn reorder_layer(&mut self, from: usize, to: usize) {
+        self.layer_manager.move_layer(from, to);
+    }
+
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
         // Adjust mouse coordinates to account for header offset
         let header_height = px(48.0);
@@ -919,9 +923,12 @@ impl Render for MapViewer {
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .children(
+                            .children({
+                                let total_layers = layer_info.len();
                                 layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
                                     let layer_name = name.clone();
+                                    let can_move_up = index > 0;
+                                    let can_move_down = index + 1 < total_layers;
                                     div()
                                         .id(("layer", index))
                                         .p_3()
@@ -940,6 +947,66 @@ impl Render for MapViewer {
                                                 this.toggle_layer_visibility(&layer_name);
                                                 cx.notify();
                                             }),
+                                        )
+                                        .child(
+                                            // Reorder handle: up/down buttons.
+                                            // Each button stops propagation so the row-level
+                                            // visibility toggle does not also fire.
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .items_center()
+                                                .gap_1()
+                                                .child({
+                                                    let up = div()
+                                                        .id(("layer-up", index))
+                                                        .w(px(18.0))
+                                                        .h(px(14.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_color(if can_move_up { rgb(0xd1d5db) } else { rgb(0x4b5563) })
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .child("▲");
+                                                    if can_move_up {
+                                                        up.cursor_pointer().on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
+                                                                this.reorder_layer(index, index - 1);
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                    } else {
+                                                        up
+                                                    }
+                                                })
+                                                .child({
+                                                    let down = div()
+                                                        .id(("layer-down", index))
+                                                        .w(px(18.0))
+                                                        .h(px(14.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .text_color(if can_move_down { rgb(0xd1d5db) } else { rgb(0x4b5563) })
+                                                        .text_xs()
+                                                        .font_weight(gpui::FontWeight::BOLD)
+                                                        .child("▼");
+                                                    if can_move_down {
+                                                        down.cursor_pointer().on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
+                                                                this.reorder_layer(index, index + 1);
+                                                                cx.stop_propagation();
+                                                                cx.notify();
+                                                            }),
+                                                        )
+                                                    } else {
+                                                        down
+                                                    }
+                                                })
                                         )
                                         .child(
                                             div()
@@ -985,7 +1052,7 @@ impl Render for MapViewer {
                                         )
                                 })
                                 .collect::<Vec<_>>()
-                            )
+                            })
                     )
                     // Divider between layer controls and selection panel
                     .child(
