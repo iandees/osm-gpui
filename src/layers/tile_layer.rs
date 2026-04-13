@@ -99,7 +99,7 @@ impl MapLayer for TileLayer {
             // child's quadrant. Prevents the dark "downloading" flash.
             let parent_fallback = tile_coord.parent().map(|parent_coord| {
                 let (qx, qy) = tile_coord.quadrant_in_parent();
-                let parent_url = parent_coord.to_url();
+                let parent_url = url_from_template(&self.url_template, &parent_coord);
                 div()
                     .absolute()
                     .left(px(-tile_width * qx as f32))
