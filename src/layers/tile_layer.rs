@@ -77,14 +77,43 @@ impl MapLayer for TileLayer {
             // Generate tile URL
             let tile_url = tile_coord.to_url();
 
+            // Parent-tile fallback: while the child tile is loading, show the
+            // already-cached parent (z-1) tile scaled 2× and clipped to this
+            // child's quadrant. Prevents the dark "downloading" flash.
+            let parent_fallback = tile_coord.parent().map(|parent_coord| {
+                let (qx, qy) = tile_coord.quadrant_in_parent();
+                let parent_url = parent_coord.to_url();
+                div()
+                    .absolute()
+                    .left(px(-tile_width * qx as f32))
+                    .top(px(-tile_height * qy as f32))
+                    .w(px(tile_width * 2.0))
+                    .h(px(tile_height * 2.0))
+                    .child(
+                        img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                            window.use_asset::<crate::tile_cache::TileAsset>(&parent_url, cx)
+                        })
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                    .into_any_element()
+            });
+
             // Create tile element using GPUI's img with asset loading
-            let tile_element = div()
+            let mut tile_element = div()
                 .absolute()
                 .left(px(tile_x))
                 .top(px(tile_y))
                 .w(px(tile_width))
                 .h(px(tile_height))
-                .bg(rgb(0x2d3748)) // Default background
+                .overflow_hidden()
+                .bg(rgb(0x2d3748)); // Ultimate fallback background
+
+            if let Some(parent_el) = parent_fallback {
+                tile_element = tile_element.child(parent_el);
+            }
+
+            let tile_element = tile_element
                 .child(
                     // Use GPUI's img with asset loading system
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
@@ -92,21 +121,6 @@ impl MapLayer for TileLayer {
                     })
                         .size_full()
                         .object_fit(gpui::ObjectFit::Cover)
-                        .with_loading(|| {
-                            div()
-                                .size_full()
-                                .bg(rgb(0x4a5568))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .text_color(rgb(0xffffff))
-                                        .text_xs()
-                                        .child("Downloading...")
-                                )
-                                .into_any_element()
-                        })
                         .with_fallback(|| {
                             div()
                                 .size_full()
