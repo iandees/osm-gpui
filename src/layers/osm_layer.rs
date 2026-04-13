@@ -7,6 +7,8 @@ use crate::osm::OsmData;
 use crate::coordinates::{is_point_valid, validate_coords};
 use crate::selection::{FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
 
+const SELECTION_ACCENT: u32 = 0xFF4081;
+
 /// Layer for rendering OSM vector data (nodes and ways)
 pub struct OsmLayer {
     name: String,
@@ -16,6 +18,8 @@ pub struct OsmLayer {
     way_color: Rgba,
     node_size: f32,
     way_width: f32,
+    /// Feature to highlight in `render_elements` (set each frame by MapViewer).
+    highlight: Option<FeatureRef>,
 }
 
 impl OsmLayer {
@@ -28,6 +32,7 @@ impl OsmLayer {
             way_color: rgb(0x4169E1),  // Royal blue for ways
             node_size: 10.0,
             way_width: 4.0,
+            highlight: None,
         }
     }
 
@@ -40,7 +45,14 @@ impl OsmLayer {
             way_color: rgb(0x4169E1),
             node_size: 10.0,
             way_width: 4.0,
+            highlight: None,
         }
+    }
+
+    /// Set (or clear) which feature should be drawn highlighted this frame.
+    /// MapViewer calls this every frame based on the current selection.
+    pub fn set_highlight(&mut self, feature: Option<FeatureRef>) {
+        self.highlight = feature;
     }
 
     /// Set the OSM data for this layer
@@ -96,6 +108,26 @@ impl MapLayer for OsmLayer {
                 if viewport.is_visible(valid_lat, valid_lon) {
                     let screen_pos = viewport.geo_to_screen(valid_lat, valid_lon);
                     if is_point_valid(screen_pos) {
+                        let is_selected = matches!(
+                            &self.highlight,
+                            Some(FeatureRef { layer_name, kind: FeatureKind::Node, id })
+                                if layer_name == &self.name && *id == node.id
+                        );
+
+                        if is_selected {
+                            let ring_size = self.node_size * 2.0;
+                            let ring = div()
+                                .absolute()
+                                .left(px(screen_pos.x.0 - ring_size / 2.0))
+                                .top(px(screen_pos.y.0 - ring_size / 2.0))
+                                .w(px(ring_size))
+                                .h(px(ring_size))
+                                .border_2()
+                                .border_color(rgb(SELECTION_ACCENT))
+                                .into_any_element();
+                            elements.push(ring);
+                        }
+
                         let node_element = div()
                             .absolute()
                             .left(px(screen_pos.x.0 - self.node_size / 2.0))
@@ -104,7 +136,6 @@ impl MapLayer for OsmLayer {
                             .h(px(self.node_size))
                             .bg(self.node_color)
                             .into_any_element();
-
                         elements.push(node_element);
                     }
                 }
@@ -246,6 +277,54 @@ impl MapLayer for OsmLayer {
             }
         }
         way_hits
+    }
+
+    fn render_highlight(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        feature: &FeatureRef,
+    ) {
+        if feature.layer_name != self.name { return; }
+        let Some(ref osm_data) = self.osm_data else { return; };
+
+        match feature.kind {
+            FeatureKind::Node => {
+                // Nodes are highlighted via render_elements (needs layout, not canvas).
+            }
+            FeatureKind::Way => {
+                let Some(way) = osm_data.ways.iter().find(|w| w.id == feature.id) else { return; };
+                if way.nodes.len() < 2 { return; }
+
+                let origin_x = bounds.origin.x;
+                let origin_y = bounds.origin.y;
+
+                let mut pts: Vec<Point<Pixels>> = Vec::with_capacity(way.nodes.len());
+                for node_id in &way.nodes {
+                    if let Some(n) = osm_data.nodes.get(node_id) {
+                        if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
+                            let sp = viewport.geo_to_screen(lat, lon);
+                            if is_point_valid(sp) {
+                                pts.push(point(
+                                    px(sp.x.0 + origin_x.0),
+                                    px(sp.y.0 + origin_y.0),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if pts.len() < 2 { return; }
+
+                let mut builder = PathBuilder::stroke(px(self.way_width + 4.0));
+                for (i, p) in pts.iter().enumerate() {
+                    if i == 0 { builder.move_to(*p); } else { builder.line_to(*p); }
+                }
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, rgb(SELECTION_ACCENT));
+                }
+            }
+        }
     }
 }
 
