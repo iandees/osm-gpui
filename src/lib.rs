@@ -7,6 +7,7 @@ pub mod idle_tracker;
 pub mod layers;
 pub mod osm;
 pub mod osm_api;
+pub mod script;
 pub mod tile_cache;
 pub mod tiles;
 pub mod viewport;
