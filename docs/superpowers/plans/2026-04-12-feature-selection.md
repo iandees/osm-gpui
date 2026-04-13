@@ -689,12 +689,12 @@ Edit `handle_mouse_down`:
     }
 ```
 
-- [ ] **Step 3: On mouse up, detect click vs drag and run hit-test**
+- [ ] **Step 3: On mouse up, detect click vs drag, run hit-test, and notify**
 
 Replace `handle_mouse_up`:
 
 ```rust
-    fn handle_mouse_up(&mut self, event: &MouseUpEvent) {
+    fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let header_height = px(48.0);
         let up_pos = point(event.position.x, event.position.y - header_height);
         let was_click = match self.mouse_down_pos.take() {
@@ -707,7 +707,11 @@ Replace `handle_mouse_up`:
         };
         self.viewport.handle_mouse_up();
         if was_click {
+            let before = self.selected.clone();
             self.handle_map_click(up_pos);
+            if before != self.selected {
+                cx.notify();
+            }
         }
     }
 
@@ -717,9 +721,25 @@ Replace `handle_mouse_up`:
     }
 ```
 
-- [ ] **Step 4: Update both `on_mouse_up` handlers to pass the event through**
+- [ ] **Step 4: Update the mouse-up listeners to forward `cx`, and fix both script call sites**
 
-Find every `on_mouse_up(...)` and `on_mouse_up_out(...)` block whose closure calls `this.handle_mouse_up(ev)` — confirm they pass `ev` (they already do, the signature change is compatible). Also find the `ScriptCommand::Click` handler and `ScriptCommand::Drag` handler in `process_script_command` and verify their constructed `MouseUpEvent`s still compile (they already pass a real event value).
+In `src/main.rs`, find the two listener bindings for `on_mouse_up` and `on_mouse_up_out` (around line 627–638). Change each from:
+
+```rust
+    cx.listener(|this, ev: &MouseUpEvent, _, _| {
+        this.handle_mouse_up(ev);
+    }),
+```
+
+to:
+
+```rust
+    cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+        this.handle_mouse_up(ev, cx);
+    }),
+```
+
+Also update the two call sites inside `process_script_command` (the `ScriptCommand::Click` and `ScriptCommand::Drag` branches — around lines 485–510) that construct a `MouseUpEvent` and call `self.handle_mouse_up(&ev)`. Change both to `self.handle_mouse_up(&ev, cx);` — `cx` is already in scope inside `process_script_command`.
 
 Run: `cargo build`
 Expected: clean build.
@@ -765,9 +785,15 @@ In `src/layers/osm_layer.rs`, add inside `impl MapLayer for OsmLayer` (the inher
 
 ```rust
     fn sync_selection_to_layers(&mut self) {
-        // Clear the selection if its owning layer is gone.
+        // Clear the selection if its owning layer is gone or hidden, so the
+        // right panel never shows info for a feature not drawn on the map.
         if let Some(sel) = &self.selected {
-            if self.layer_manager.find_layer(&sel.layer_name).is_none() {
+            let still_live = self
+                .layer_manager
+                .find_layer(&sel.layer_name)
+                .map(|l| l.is_visible())
+                .unwrap_or(false);
+            if !still_live {
                 self.selected = None;
             }
         }
@@ -902,7 +928,7 @@ Schematically, the panel becomes:
                             .bg(rgb(0x374151))
                     )
                     // --- Selection panel (flex_1, scrollable) ---
-                    .child(self.render_selection_panel())
+                    .child(self.render_selection_panel(cx))
             )
 ```
 
@@ -913,7 +939,7 @@ Keep the existing layer-row closure exactly as it is today; only the surrounding
 Add a method on `MapViewer`:
 
 ```rust
-    fn render_selection_panel(&self) -> gpui::Div {
+    fn render_selection_panel(&self, _cx: &mut Context<Self>) -> gpui::Div {
         let base = div()
             .id("selection-panel")
             .flex_1()
@@ -964,7 +990,7 @@ git commit -m "Add selection panel scaffold under the layer list"
 Replace `render_selection_panel` from Task 7:
 
 ```rust
-    fn render_selection_panel(&self) -> gpui::Div {
+    fn render_selection_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         use osm_gpui::selection::FeatureKind;
 
         let base = div()
@@ -999,7 +1025,7 @@ Replace `render_selection_panel` from Task 7:
             .font_weight(gpui::FontWeight::BOLD)
             .child(format!("{} #{}", kind_label, sel.id));
 
-        let link_text = format!("View on openstreetmap.org ↗");
+        let link_text = "View on openstreetmap.org ↗".to_string();
         let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
         let link = div()
             .id(("osm-link", sel.id as usize))
@@ -1009,9 +1035,12 @@ Replace `render_selection_panel` from Task 7:
             .child(link_text)
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                move |_ev, _, cx| {
+                // `cx.listener` gives us the same `Context<Self>` type used
+                // elsewhere in this file; `Context<Self>` derefs to `App`,
+                // which provides `open_url`.
+                cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
                     cx.open_url(&url);
-                },
+                }),
             );
 
         let tags_block: gpui::Div = if tags_vec.is_empty() {
@@ -1219,7 +1248,47 @@ Add it to `describe`:
         Op::LoadOsm { path } => format!("load_osm {}", path),
 ```
 
-- [ ] **Step 2: Implement `LiveApp::load_osm`**
+- [ ] **Step 2: Reorder `render()` so queue drains happen before the frame signal**
+
+Today `process_script_command` is called first and its last line is `bus.signal_done_and_frame()`, which wakes any waiting `wait_frame`. The queue drains (`check_for_new_osm_data`, `check_for_layer_requests`, `check_for_download_requests`) run *after* that signal. That means a thread that pushes onto `SHARED_OSM_DATA` and then calls `wait_frame` can wake up before its data has been picked up.
+
+Fix: split the signal out of `process_script_command`, drain the queues in between, then signal explicitly.
+
+In `src/main.rs`, find the end of `process_script_command` and remove the last call:
+
+```rust
+        // Signal that this render frame has happened (and any command is done).
+        bus.signal_done_and_frame();
+```
+
+(The `request_animation_frame` line below it stays — leave it in place.)
+
+In `Render for MapViewer`, update the top of `render` to look like:
+
+```rust
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Consume any pending script command first.
+        self.process_script_command(window, cx);
+
+        // Drain cross-thread queues BEFORE signalling the script bus, so
+        // ops like `load_osm` (which push here and then call wait_frame)
+        // observe the resulting layer on the same frame.
+        self.check_for_new_osm_data(cx);
+        self.check_for_layer_requests(cx);
+        self.check_for_download_requests(cx);
+
+        // Now it's safe to signal: the effects of this frame's commands
+        // and pushes are visible.
+        if let Some(bus) = SCRIPT_BUS.get() {
+            bus.signal_done_and_frame();
+        }
+
+        // ... existing body continues (window size, layer updates, UI build) ...
+```
+
+Delete the later duplicate calls to `check_for_new_osm_data`, `check_for_layer_requests`, and `check_for_download_requests` further down in `render` — they've moved to the top.
+
+- [ ] **Step 3: Implement `LiveApp::load_osm`**
 
 In `src/main.rs`, inside `impl AppHandle for LiveApp`, add:
 
@@ -1238,18 +1307,19 @@ In `src/main.rs`, inside `impl AppHandle for LiveApp`, add:
         } else {
             return Err("SHARED_OSM_DATA not initialized".into());
         }
-        // Wait one frame so MapViewer drains the queue and creates the layer.
+        // Thanks to the reorder in Step 2, the next frame drains the queue
+        // before signalling — so after wait_frame the layer exists.
         self.bus.wait_frame();
         Ok(())
     }
 ```
 
-- [ ] **Step 3: Build and run tests**
+- [ ] **Step 4: Build and run tests**
 
 Run: `cargo build && cargo test`
 Expected: clean build; all tests pass, including the existing `wait_idle_*` tests (their `Fake` now also implements `load_osm`).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/script/runner.rs src/main.rs
@@ -1300,28 +1370,44 @@ Create `docs/screenshots/select.osmscript`:
 
 ```
 # Load fixture data and exercise feature selection.
+#
+# Coordinate model: `click X Y` uses raw window coords. MapViewer subtracts
+# 48px (header) from y before hit-testing. With window 1200x800 and the
+# 280px right panel, the map area is 920x752 and the viewport center
+# projects to map-area (460, 376) = window (460, 424).
+#
+# Fixture layout at zoom 18, centered on (40.7120, -74.0060):
+#   node 1001  (40.7100, -74.0080)  → window ~(240, 424)
+#   node 1002  (40.7140, -74.0020)  → window ~(680, 424)
+#   node 2001  (40.7120, -74.0060)  → window  (460, 424)   # tagged POI
+#   way  3001  1001 → 1002          # passes through (460,424) too, so
+#                                   # we click it at (570, 424) — clear of
+#                                   # the POI's 8px node tolerance.
+
 window 1200 800
-viewport 40.7120 -74.0060 18
+# Load BEFORE setting the viewport: the first loaded dataset triggers
+# fit_to_osm_data which would otherwise clobber an earlier `viewport` call.
 load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
 wait_idle 5s
 
-# Click on the tagged POI node (approximately viewport center).
-click 460,400
+# Click the tagged POI node.
+click 460,424
 wait_idle 2s
 capture out/select-node.png
 
-# Click empty space to deselect.
+# Click far from any fixture feature to deselect.
 click 100,700
 wait_idle 2s
 capture out/select-empty.png
 
-# Click along the way, away from the two geometry nodes.
-click 560,280
+# Click the way mid-segment (clear of POI and endpoint nodes).
+click 570,424
 wait_idle 2s
 capture out/select-way.png
 ```
 
-*The click coordinates are approximate; the first run will produce screenshots — adjust the coordinates based on where the fixture features project on-screen. The `viewport` and fixture are chosen so `(460, 400)` lands near node 2001, and `(560, 280)` lands roughly mid-segment on way 3001. Confirm visually and tweak if needed.*
+*If features don't land where the header comment says, re-check the actual window size GPUI opened (some platforms honor `--window-size` strictly, others don't), and adjust coordinates from the first-run screenshots.*
 
 - [ ] **Step 3: Run the script end-to-end and inspect the captures**
 
