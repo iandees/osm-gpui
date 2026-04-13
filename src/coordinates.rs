@@ -86,6 +86,15 @@ pub struct CoordinateTransform {
     pub center_lon: f64,
     pub pixels_per_meter_x: f64,
     pub pixels_per_meter_y: f64,
+    /// Visible extent in Web Mercator (EPSG:3857) meters. Cached so hot
+    /// render paths can cull and project without recomputing lat/lon→mercator
+    /// per node.
+    pub mercator_min_x: f64,
+    pub mercator_max_x: f64,
+    pub mercator_min_y: f64,
+    pub mercator_max_y: f64,
+    pub mercator_center_x: f64,
+    pub mercator_center_y: f64,
 }
 
 impl CoordinateTransform {
@@ -137,7 +146,37 @@ impl CoordinateTransform {
             center_lon,
             pixels_per_meter_x,
             pixels_per_meter_y,
+            mercator_min_x,
+            mercator_max_x,
+            mercator_min_y,
+            mercator_max_y,
+            mercator_center_x: center_x,
+            mercator_center_y: center_y,
         }
+    }
+
+    /// Project a point given in Mercator (EPSG:3857) meters directly to
+    /// screen pixels. This is the trig-free fast path used by layers that
+    /// cache mercator coordinates up front; it avoids re-running
+    /// `lat_lon_to_mercator` per vertex every frame.
+    #[inline]
+    pub fn mercator_to_screen(&self, mx: f64, my: f64) -> GpuiPoint<Pixels> {
+        let half_w = self.screen_size.width.0 / 2.0;
+        let half_h = self.screen_size.height.0 / 2.0;
+        let x = half_w + ((mx - self.mercator_center_x) * self.pixels_per_meter_x) as f32;
+        let y = half_h - ((my - self.mercator_center_y) * self.pixels_per_meter_y) as f32;
+        let x = if x.is_finite() { x } else { half_w };
+        let y = if y.is_finite() { y } else { half_h };
+        GpuiPoint { x: px(x), y: px(y) }
+    }
+
+    /// Cheap visibility test in Mercator space (no trig, no GeoBounds conversion).
+    #[inline]
+    pub fn mercator_in_view(&self, mx: f64, my: f64) -> bool {
+        mx >= self.mercator_min_x
+            && mx <= self.mercator_max_x
+            && my >= self.mercator_min_y
+            && my <= self.mercator_max_y
     }
 
     /// Convert geographic coordinates (lat, lon) to screen coordinates (x, y)

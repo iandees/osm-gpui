@@ -125,6 +125,25 @@ impl Viewport {
         self.transform.geo_to_screen(lat, lon)
     }
 
+    /// Project a point given in Web Mercator meters directly to screen pixels
+    /// (no trig). Prefer this in hot render paths where source coordinates
+    /// have already been projected to Mercator and cached.
+    #[inline]
+    pub fn mercator_to_screen(&self, mx: f64, my: f64) -> Point<Pixels> {
+        self.transform.mercator_to_screen(mx, my)
+    }
+
+    /// Mercator-space AABB of the current view (min_x, max_x, min_y, max_y).
+    #[inline]
+    pub fn mercator_view_bounds(&self) -> (f64, f64, f64, f64) {
+        (
+            self.transform.mercator_min_x,
+            self.transform.mercator_max_x,
+            self.transform.mercator_min_y,
+            self.transform.mercator_max_y,
+        )
+    }
+
     /// Convert screen coordinates to geographic coordinates
     pub fn screen_to_geo(&self, point: Point<Pixels>) -> (f64, f64) {
         self.transform.screen_to_geo(point)
