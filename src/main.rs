@@ -1014,7 +1014,7 @@ impl Render for MapViewer {
                                     .text_color(rgb(0xffffff))
                                     .text_lg()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("🏗️ Layer Controls")
+                                    .child("Layers")
                             )
                     )
                     .child(
