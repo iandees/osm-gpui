@@ -1271,19 +1271,23 @@ fn quit(_: &Quit, cx: &mut App) {
 }
 
 // Handle the File > Download from OSM menu action
-fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
+fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     if let Some(requests) = DOWNLOAD_REQUESTS.get() {
         if let Ok(mut q) = requests.lock() {
             q.push(());
         }
     }
+    // Wake the render loop so MapViewer drains the queue on the next frame
+    // instead of waiting for an unrelated input event.
+    cx.refresh_windows();
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
-fn add_osm_carto(_: &AddOsmCarto, _cx: &mut App) {
+fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
         if let Ok(mut queue) = requests.lock() {
             queue.push("OpenStreetMap Carto".to_string());
         }
     }
+    cx.refresh_windows();
 }
