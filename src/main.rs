@@ -1020,10 +1020,10 @@ impl Render for MapViewer {
                     .child(
                         // Layer list container
                         div()
-                            .p_4()
+                            .p_2()
                             .flex()
                             .flex_col()
-                            .gap_2()
+                            .gap_1()
                             .children({
                                 let total_layers = layer_info.len();
                                 layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
@@ -1032,7 +1032,7 @@ impl Render for MapViewer {
                                     let can_move_down = index + 1 < total_layers;
                                     div()
                                         .id(("layer", index))
-                                        .p_3()
+                                        .p_2()
                                         .bg(rgb(0x1f2937))
                                         .rounded_lg()
                                         .border_1()
@@ -1041,7 +1041,7 @@ impl Render for MapViewer {
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .gap_3()
+                                        .gap_2()
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
                                             cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
@@ -1057,12 +1057,11 @@ impl Render for MapViewer {
                                                 .flex()
                                                 .flex_col()
                                                 .items_center()
-                                                .gap_1()
                                                 .child({
                                                     let up = div()
                                                         .id(("layer-up", index))
                                                         .w(px(18.0))
-                                                        .h(px(14.0))
+                                                        .h(px(12.0))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -1087,7 +1086,7 @@ impl Render for MapViewer {
                                                     let down = div()
                                                         .id(("layer-down", index))
                                                         .w(px(18.0))
-                                                        .h(px(14.0))
+                                                        .h(px(12.0))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -1117,8 +1116,8 @@ impl Render for MapViewer {
                                                 .child(
                                                     // Checkbox
                                                     div()
-                                                        .w(px(20.0))
-                                                        .h(px(20.0))
+                                                        .w(px(16.0))
+                                                        .h(px(16.0))
                                                         .rounded_sm()
                                                         .border_2()
                                                         .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x6b7280) })
@@ -1130,7 +1129,7 @@ impl Render for MapViewer {
                                                             this.child(
                                                                 div()
                                                                     .text_color(rgb(0xffffff))
-                                                                    .text_sm()
+                                                                    .text_xs()
                                                                     .font_weight(gpui::FontWeight::BOLD)
                                                                     .child("✓")
                                                             )
