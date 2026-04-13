@@ -34,6 +34,15 @@ struct AddImageryLayer {
 enum LayerRequest {
     OsmCarto,
     Imagery { name: String, url_template: String },
+    /// Remove the layer at the given index in the `LayerManager`.
+    Delete { index: usize },
+}
+
+/// State for the right-click context menu on a layer row.
+#[derive(Debug, Clone)]
+struct LayerContextMenu {
+    layer_index: usize,
+    position: gpui::Point<gpui::Pixels>,
 }
 
 /// Stores the full ELI list once loaded (populated on the background executor).
@@ -206,6 +215,8 @@ struct MapViewer {
     last_menu_center: Option<(f64, f64)>,
     /// Imagery load state observed on the previous frame; detect transitions.
     last_imagery_load_state: Option<ImageryLoadState>,
+    /// Active right-click context menu for a layer row, if any.
+    context_menu: Option<LayerContextMenu>,
 }
 
 impl MapViewer {
@@ -231,6 +242,7 @@ impl MapViewer {
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
+            context_menu: None,
         }
     }
 
@@ -485,6 +497,13 @@ impl MapViewer {
                                 let tile_layer = TileLayer::new(self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
                             }
+                        }
+                        LayerRequest::Delete { index } => {
+                            let _ = self.layer_manager.remove_at(index);
+                            // Dismiss any open context menu; the indices may
+                            // have shifted so the menu's target is no longer
+                            // meaningful.
+                            self.context_menu = None;
                         }
                         LayerRequest::Imagery { name, url_template } => {
                             // Ensure unique name
