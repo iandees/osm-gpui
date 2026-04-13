@@ -582,9 +582,6 @@ impl MapViewer {
             }
         }
 
-        // Signal that this render frame has happened (and any command is done).
-        bus.signal_done_and_frame();
-
         // If a script runner thread is active, request an animation frame so
         // the render loop keeps going. This ensures the background thread never
         // starves waiting for a render that gpui wouldn't produce on its own.
@@ -681,8 +678,21 @@ impl MapViewer {
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process any pending script command before anything else.
+        // Consume any pending script command first.
         self.process_script_command(window, cx);
+
+        // Drain cross-thread queues BEFORE signalling the script bus, so
+        // ops like `load_osm` (which push here and then call wait_frame)
+        // observe the resulting layer on the same frame.
+        self.check_for_new_osm_data(cx);
+        self.check_for_layer_requests(cx);
+        self.check_for_download_requests(cx);
+
+        // Now it's safe to signal: the effects of this frame's commands
+        // and pushes are visible.
+        if let Some(bus) = SCRIPT_BUS.get() {
+            bus.signal_done_and_frame();
+        }
 
         // Update viewport size to actual window dimensions minus the right panel and header
         let window_size = window.bounds().size;
@@ -694,10 +704,6 @@ impl Render for MapViewer {
         );
         self.viewport.update_size(map_size);
 
-        // Process queued OSM datasets into layers before stats and listing
-        self.check_for_new_osm_data(cx);
-        self.check_for_layer_requests(cx);
-        self.check_for_download_requests(cx);
         self.expire_status();
 
         // Update all layers
@@ -1017,6 +1023,26 @@ impl AppHandle for LiveApp {
 
     fn wait_frame(&mut self) {
         self.bus.wait_frame();
+    }
+
+    fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let parser = OsmParser::new();
+        let path_str = path.to_string_lossy().to_string();
+        let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+        if let Some(q) = SHARED_OSM_DATA.get() {
+            if let Ok(mut guard) = q.lock() {
+                guard.push((stem, data));
+            } else {
+                return Err("SHARED_OSM_DATA mutex poisoned".into());
+            }
+        } else {
+            return Err("SHARED_OSM_DATA not initialized".into());
+        }
+        // Thanks to the reorder in render(), the next frame drains the queue
+        // before signalling — so after wait_frame the layer exists.
+        self.bus.wait_frame();
+        Ok(())
     }
 }
 

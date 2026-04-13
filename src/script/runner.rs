@@ -20,6 +20,8 @@ pub trait AppHandle {
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
     /// Yield until the next frame has been rendered.
     fn wait_frame(&mut self);
+    /// Parse and load an OSM file, making it a new layer on the map.
+    fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -71,7 +73,12 @@ impl Runner {
                 Ok(())
             }
             Op::Log { message } => { println!("{}", message); Ok(()) }
-            Op::LoadOsm { .. } => panic!("load_osm: not yet wired (Task 10)"),
+            Op::LoadOsm { path } => {
+                let pb = std::path::PathBuf::from(path);
+                app.load_osm(&pb)
+                    .map_err(|e| RunError { line_no: step.line_no, message: format!("load_osm: {}", e) })?;
+                Ok(())
+            }
         }
     }
 
@@ -119,7 +126,7 @@ fn describe(op: &Op) -> String {
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
-        Op::LoadOsm { .. } => panic!("load_osm: not yet wired (Task 10)"),
+        Op::LoadOsm { path } => format!("load_osm {}", path),
     }
 }
 
@@ -150,6 +157,7 @@ mod tests {
                 self.idle.tile_fetch_finished();
             }
         }
+        fn load_osm(&mut self, _p: &std::path::Path) -> Result<(), String> { Ok(()) }
     }
 
     #[test]
