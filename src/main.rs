@@ -1101,6 +1101,17 @@ impl Render for MapViewer {
                                                 cx.notify();
                                             }),
                                         )
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Right,
+                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                this.context_menu = Some(LayerContextMenu {
+                                                    layer_index: index,
+                                                    position: event.position,
+                                                });
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }),
+                                        )
                                         .child(
                                             // Reorder handle: up/down buttons.
                                             // Each button stops propagation so the row-level
