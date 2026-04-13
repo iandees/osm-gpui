@@ -71,6 +71,7 @@ impl Runner {
                 Ok(())
             }
             Op::Log { message } => { println!("{}", message); Ok(()) }
+            Op::LoadOsm { .. } => panic!("load_osm: not yet wired (Task 10)"),
         }
     }
 
@@ -118,6 +119,7 @@ fn describe(op: &Op) -> String {
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
+        Op::LoadOsm { .. } => panic!("load_osm: not yet wired (Task 10)"),
     }
 }
 

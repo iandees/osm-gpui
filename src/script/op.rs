@@ -35,6 +35,7 @@ pub enum Op {
     Key { chord: Chord },
     Capture { path: String },
     Log { message: String },
+    LoadOsm { path: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
