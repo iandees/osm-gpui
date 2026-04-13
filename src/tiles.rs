@@ -36,6 +36,25 @@ impl TileCoord {
             self.z, self.x, self.y
         )
     }
+
+    /// The parent tile (one zoom level up), or `None` at z==0.
+    pub fn parent(&self) -> Option<TileCoord> {
+        if self.z == 0 {
+            return None;
+        }
+        Some(TileCoord {
+            x: self.x / 2,
+            y: self.y / 2,
+            z: self.z - 1,
+        })
+    }
+
+    /// Position of this tile within its parent's 2×2 grid.
+    /// Returns (column, row) where each is 0 or 1:
+    /// (0, 0) = top-left, (1, 0) = top-right, (0, 1) = bottom-left, (1, 1) = bottom-right.
+    pub fn quadrant_in_parent(&self) -> (u32, u32) {
+        (self.x % 2, self.y % 2)
+    }
 }
 
 /// Substitute tile placeholders in a URL template.
@@ -287,6 +306,21 @@ mod tests {
         let tile = TileCoord::new(123, 456, 10);
         let url = tile.to_url();
         assert_eq!(url, "https://tile.openstreetmap.org/10/123/456.png");
+    }
+
+    #[test]
+    fn test_tile_parent() {
+        assert_eq!(TileCoord::new(0, 0, 0).parent(), None);
+        assert_eq!(TileCoord::new(2, 3, 2).parent(), Some(TileCoord::new(1, 1, 1)));
+        assert_eq!(TileCoord::new(5, 7, 3).parent(), Some(TileCoord::new(2, 3, 2)));
+    }
+
+    #[test]
+    fn test_tile_quadrant_in_parent() {
+        assert_eq!(TileCoord::new(2, 2, 2).quadrant_in_parent(), (0, 0));
+        assert_eq!(TileCoord::new(3, 2, 2).quadrant_in_parent(), (1, 0));
+        assert_eq!(TileCoord::new(2, 3, 2).quadrant_in_parent(), (0, 1));
+        assert_eq!(TileCoord::new(3, 3, 2).quadrant_in_parent(), (1, 1));
     }
 
     #[test]
