@@ -19,7 +19,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -60,6 +60,9 @@ static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<LayerRequest>>>> =
     std::sync::OnceLock::new();
 
 static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
+    std::sync::OnceLock::new();
+
+static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
 
 // Global idle tracker shared with the script runner
@@ -207,6 +210,8 @@ struct MapViewer {
     last_menu_center: Option<(f64, f64)>,
     /// Imagery load state observed on the previous frame; detect transitions.
     last_imagery_load_state: Option<ImageryLoadState>,
+    /// Whether the debug info overlay is currently visible.
+    show_debug_overlay: bool,
 }
 
 impl MapViewer {
@@ -231,6 +236,7 @@ impl MapViewer {
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
+            show_debug_overlay: false,
         }
     }
 
@@ -547,6 +553,24 @@ impl MapViewer {
         }
     }
 
+    fn check_for_toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
+        let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() else { return };
+        let pending = if let Ok(mut guard) = requests.try_lock() {
+            let n = guard.len();
+            guard.clear();
+            n
+        } else {
+            0
+        };
+        if pending > 0 {
+            // Parity of toggles: odd = flip, even = no-op
+            if pending % 2 == 1 {
+                self.show_debug_overlay = !self.show_debug_overlay;
+            }
+            cx.notify();
+        }
+    }
+
     fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
         let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
         let pending = if let Ok(mut guard) = requests.try_lock() {
@@ -853,6 +877,7 @@ impl Render for MapViewer {
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
+        self.check_for_toggle_debug_overlay(cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -949,26 +974,31 @@ impl Render for MapViewer {
                                         .size_full() // Ensure canvas fills the entire map area
                                     )
                             )
-                            .child(
-                                // Debug info overlay
-                                div()
-                                    .absolute()
-                                    .top_4()
-                                    .left_4()
-                                    .p_3()
-                                    .bg(gpui::black())
-                                    .rounded_lg()
-                                    .text_color(rgb(0xffffff))
-                                    .text_sm()
-                                    .opacity(0.9)
-                                    .min_w_64()
-                                    .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                                    .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
-                                    .child(format!("📊 Objects: {}", osm_objects))
-                                    .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                                    .child(format!("💾 Cache: {} files", cached_files))
-                                    .child(format!("⚡ FPS: {:.0}", fps))
-                            )
+                            .child({
+                                // Debug info overlay (toggleable via View menu)
+                                if self.show_debug_overlay {
+                                    div()
+                                        .absolute()
+                                        .top_4()
+                                        .left_4()
+                                        .p_3()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_sm()
+                                        .opacity(0.9)
+                                        .min_w_64()
+                                        .child(format!("🔍 Zoom: {:.1}", zoom_level))
+                                        .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
+                                        .child(format!("📊 Objects: {}", osm_objects))
+                                        .child(format!("🗺️ Tiles: {} visible", total_tiles))
+                                        .child(format!("💾 Cache: {} files", cached_files))
+                                        .child(format!("⚡ FPS: {:.0}", fps))
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            })
                             .child({
                                 let status = self.status_message.clone();
                                 if let Some((msg, _)) = status {
@@ -1266,6 +1296,7 @@ fn main() {
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1346,6 +1377,7 @@ fn main() {
         cx.on_action(add_osm_carto);
         cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
+        cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
         cx.on_action(no_op_imagery_info);
 
@@ -1500,6 +1532,16 @@ fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
     }
 }
 
+// Handle the View > Toggle Debug Overlay menu action
+fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
+    if let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() {
+        if let Ok(mut queue) = requests.lock() {
+            queue.push(());
+        }
+    }
+    cx.refresh_windows();
+}
+
 // Handle the Imagery > Coordinate Grid menu action
 fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
@@ -1578,6 +1620,12 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
         Menu {
             name: "Imagery".into(),
             items: imagery_items,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
+            ],
         },
     ]);
 }
