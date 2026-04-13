@@ -1,0 +1,22 @@
+# Exercises every op. Run with:
+#   cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
+
+window 1200 800
+viewport 47.6062 -122.3321 12
+log loading seattle
+wait_idle 10s
+capture docs/screenshots/smoke-01-initial.png
+
+drag 600,400 300,400
+wait_idle
+capture docs/screenshots/smoke-02-panned.png
+
+scroll 600,400 dy=-5
+wait_idle
+capture docs/screenshots/smoke-03-zoomed.png
+
+click 600,400
+wait 250ms
+capture docs/screenshots/smoke-04-clicked.png
+
+log done

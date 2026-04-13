@@ -1,14 +1,18 @@
-use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, EntityId, KeyBinding, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
-use std::sync::{Arc, Mutex};
+use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SystemMenuType, Window, WindowOptions};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use osm_gpui::coordinates::lat_lon_to_mercator;
+use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::viewport::Viewport;
 use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 use osm_gpui::tiles;
 use osm_gpui::osm_api;
+use osm_gpui::script::{self, runner::{AppHandle, Runner}};
+use osm_gpui::capture;
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, DownloadFromOsm]);
 
@@ -23,6 +27,137 @@ static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<String>>>> =
 static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
 
+// Global idle tracker shared with the script runner
+static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
+
+// Set to true while a script runner thread is active
+static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// Script command channel (background thread → gpui main thread)
+// ---------------------------------------------------------------------------
+//
+// The script runner runs on a background thread (so `std::thread::sleep` in
+// `wait_frame` does not block the gpui event loop). It cannot hold `AsyncApp`
+// because that type uses `Rc`-internals and is not `Send`.
+//
+// Instead the runner enqueues `ScriptCommand` values into a mutex-protected
+// queue and waits for the main thread to execute them (signalled via a condvar).
+//
+// MapViewer's render fn drains this queue each frame and processes the commands
+// directly, then signals completion. A second condvar signals "a frame was
+// rendered" so `wait_frame` can wake up.
+
+#[derive(Debug)]
+enum ScriptCommand {
+    /// pan_to + set_zoom + ensure tile layer
+    SetViewport { lat: f64, lon: f64, zoom: f64 },
+    /// Resize the window
+    SetWindowSize { w: u32, h: u32 },
+    /// Synthesize a left-button drag (from → to with sleep between steps)
+    Drag { from: (f32, f32), to: (f32, f32) },
+    /// Synthesize a mouse click
+    Click { x: f32, y: f32, right: bool },
+    /// Synthesize a scroll event
+    Scroll { x: f32, y: f32, dx: f32, dy: f32 },
+}
+
+/// Shared state between the script-runner thread and the gpui main thread.
+struct ScriptBus {
+    /// Pending command for this frame. None when idle.
+    pending: Mutex<Option<ScriptCommand>>,
+    /// Signalled by the main thread when it has processed a pending command.
+    done_cv: Condvar,
+    /// Counts how many frames have been rendered (monotonically increasing).
+    frame_count: Mutex<u64>,
+    /// Signalled each time a frame is rendered.
+    frame_cv: Condvar,
+}
+
+impl ScriptBus {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending: Mutex::new(None),
+            done_cv: Condvar::new(),
+            frame_count: Mutex::new(0),
+            frame_cv: Condvar::new(),
+        })
+    }
+
+    /// Submit a command and block until the main thread has processed it.
+    fn submit(&self, cmd: ScriptCommand) {
+        {
+            let mut lock = self.pending.lock().unwrap();
+            *lock = Some(cmd);
+        }
+        // Wait until the command is consumed.
+        let _guard = self.done_cv.wait_while(
+            self.pending.lock().unwrap(),
+            |opt| opt.is_some(),
+        ).unwrap();
+    }
+
+    /// Wait until at least one more render frame has completed.
+    fn wait_frame(&self) {
+        let current = *self.frame_count.lock().unwrap();
+        let _guard = self.frame_cv.wait_while(
+            self.frame_count.lock().unwrap(),
+            |fc| *fc <= current,
+        ).unwrap();
+    }
+
+    /// Called by MapViewer::render to drain and process the pending command.
+    /// Returns the command if any was pending (caller processes it).
+    fn take_pending(&self) -> Option<ScriptCommand> {
+        self.pending.lock().unwrap().take()
+    }
+
+    /// Called by MapViewer::render after processing a command (or if no command).
+    fn signal_done_and_frame(&self) {
+        self.done_cv.notify_all();
+        let mut fc = self.frame_count.lock().unwrap();
+        *fc += 1;
+        self.frame_cv.notify_all();
+    }
+}
+
+static SCRIPT_BUS: std::sync::OnceLock<Arc<ScriptBus>> = std::sync::OnceLock::new();
+
+// Keystroke commands need a separate queue since gpui `Keystroke` is not Send-safe
+// (it only contains Strings, Modifiers — actually it IS Send). Let's use a simple
+// OnceLock queue for keystrokes.
+static KEYSTROKE_QUEUE: std::sync::OnceLock<Arc<Mutex<Vec<Keystroke>>>> =
+    std::sync::OnceLock::new();
+
+#[derive(Default)]
+struct CliArgs {
+    script: Option<PathBuf>,
+    window_size: Option<(u32, u32)>,
+    keep_open: bool,
+}
+
+fn parse_cli_args() -> CliArgs {
+    let mut out = CliArgs::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--script" => {
+                out.script = Some(PathBuf::from(
+                    args.next().expect("--script needs a path"),
+                ))
+            }
+            "--window-size" => {
+                let v = args.next().expect("--window-size needs WxH");
+                let (w, h) = v.split_once('x').expect("--window-size format WxH");
+                out.window_size = Some((w.parse().expect("W"), h.parse().expect("H")));
+            }
+            "--keep-open" => out.keep_open = true,
+            other => eprintln!("ignoring unknown arg: {}", other),
+        }
+    }
+    out
+}
 
 struct MapViewer {
     viewport: Viewport,
@@ -36,7 +171,9 @@ impl MapViewer {
     fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let viewport = Viewport::new(40.7128, -74.0060, 11.0, gpui::size(px(800.0), px(600.0)));
         let executor = cx.background_executor().clone();
-        let tile_cache = Arc::new(Mutex::new(TileCache::new(executor)));
+        // Use the global idle tracker (set before Application::new().run(...))
+        let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
+        let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let mut layer_manager = LayerManager::new();
         // Removed default tile layer - will be added via menu
         layer_manager.add_layer(Box::new(GridLayer::new()));
@@ -113,7 +250,6 @@ impl MapViewer {
         if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
             let current_visibility = layer.is_visible();
             layer.set_visible(!current_visibility);
-            eprintln!("🔄 Toggled {} layer: {}", layer_name, if !current_visibility { "ON" } else { "OFF" });
         }
     }
 
@@ -123,11 +259,6 @@ impl MapViewer {
         let adjusted_position = point(event.position.x, event.position.y - header_height);
 
         self.viewport.handle_mouse_down(adjusted_position);
-        println!(
-            "🖱️ Mouse down at: {:.1}, {:.1} (adjusted: {:.1}, {:.1})",
-            event.position.x.0, event.position.y.0,
-            adjusted_position.x.0, adjusted_position.y.0
-        );
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -142,7 +273,6 @@ impl MapViewer {
 
     fn handle_mouse_up(&mut self, _: &MouseUpEvent) {
         self.viewport.handle_mouse_up();
-        println!("🖱️ Mouse up");
     }
 
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -203,14 +333,9 @@ impl MapViewer {
                             if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
                                 let tile_layer = TileLayer::new(self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
-                                eprintln!("✅ Added OpenStreetMap Carto layer");
-                            } else {
-                                eprintln!("🗺️ OpenStreetMap Carto layer already exists");
                             }
                         },
-                        _ => {
-                            eprintln!("❌ Unknown layer request: {}", layer_name);
-                        }
+                        _ => {}
                     }
                 }
                 cx.notify();
@@ -245,18 +370,6 @@ impl MapViewer {
         let total_tiles = visible_tiles.len();
 
         (total_tiles, cached_files, osm_nodes + osm_ways)
-    }
-
-    fn add_osm_carto_layer(&mut self) {
-        // Check if OSM Carto layer already exists
-        if self.layer_manager.find_layer("OpenStreetMap Carto").is_some() {
-            eprintln!("🗺️ OpenStreetMap Carto layer already exists");
-            return;
-        }
-
-        let tile_layer = TileLayer::new(self.tile_cache.clone());
-        self.layer_manager.add_layer(Box::new(tile_layer));
-        eprintln!("✅ Added OpenStreetMap Carto layer");
     }
 
     fn set_status(&mut self, message: impl Into<String>) {
@@ -327,10 +440,113 @@ impl MapViewer {
         })
         .detach();
     }
+
+    /// Process any pending script command from the background runner thread.
+    /// Called at the start of each render frame.
+    fn process_script_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bus) = SCRIPT_BUS.get() else { return };
+
+        let cmd = bus.take_pending();
+
+        if let Some(cmd) = cmd {
+            match cmd {
+                ScriptCommand::SetViewport { lat, lon, zoom } => {
+                    self.viewport.pan_to(lat, lon);
+                    self.viewport.set_zoom(zoom);
+                    // Ensure tile layer exists
+                    if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
+                        let tile_layer = TileLayer::new(self.tile_cache.clone());
+                        self.layer_manager.add_layer(Box::new(tile_layer));
+                    }
+                    cx.notify();
+                }
+                ScriptCommand::SetWindowSize { w, h } => {
+                    window.resize(gpui::size(px(w as f32), px(h as f32)));
+                    cx.notify();
+                }
+                ScriptCommand::Drag { from, to } => {
+                    // For drag: just do down + single move + up; the sleep between steps
+                    // happens in the runner thread, so here we do single events.
+                    let ev = MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position: point(px(from.0), px(from.1)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    self.handle_mouse_down(&ev);
+                    let ev = MouseMoveEvent {
+                        position: point(px(to.0), px(to.1)),
+                        pressed_button: Some(gpui::MouseButton::Left),
+                        modifiers: gpui::Modifiers::none(),
+                    };
+                    self.handle_mouse_move(&ev, cx);
+                    let ev = MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position: point(px(to.0), px(to.1)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                    };
+                    self.handle_mouse_up(&ev);
+                    cx.notify();
+                }
+                ScriptCommand::Click { x, y, right } => {
+                    let btn = if right { gpui::MouseButton::Right } else { gpui::MouseButton::Left };
+                    let ev = MouseDownEvent {
+                        button: btn,
+                        position: point(px(x), px(y)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    self.handle_mouse_down(&ev);
+                    let ev = MouseUpEvent {
+                        button: btn,
+                        position: point(px(x), px(y)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                    };
+                    self.handle_mouse_up(&ev);
+                    cx.notify();
+                }
+                ScriptCommand::Scroll { x, y, dx, dy } => {
+                    let ev = ScrollWheelEvent {
+                        position: point(px(x), px(y)),
+                        delta: ScrollDelta::Pixels(gpui::Point { x: px(dx), y: px(dy) }),
+                        modifiers: gpui::Modifiers::none(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    };
+                    self.handle_scroll(&ev, cx);
+                }
+            }
+        }
+
+        // Also drain keystroke queue (processed via Window so needs to be here)
+        if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
+            if let Ok(mut guard) = ks_queue.try_lock() {
+                for ks in guard.drain(..) {
+                    window.dispatch_keystroke(ks, &mut **cx);
+                }
+            }
+        }
+
+        // Signal that this render frame has happened (and any command is done).
+        bus.signal_done_and_frame();
+
+        // If a script runner thread is active, request an animation frame so
+        // the render loop keeps going. This ensures the background thread never
+        // starves waiting for a render that gpui wouldn't produce on its own.
+        if SCRIPT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            window.request_animation_frame();
+        }
+    }
 }
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process any pending script command before anything else.
+        self.process_script_command(window, cx);
+
         // Update viewport size to actual window dimensions minus the right panel and header
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
@@ -595,16 +811,153 @@ impl Render for MapViewer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// LiveApp: AppHandle impl backed by ScriptBus (background-thread safe)
+// ---------------------------------------------------------------------------
+
+struct LiveApp {
+    idle: Arc<IdleTracker>,
+    bus: Arc<ScriptBus>,
+    window_id: u32,
+}
+
+impl AppHandle for LiveApp {
+    fn set_window_size(&mut self, w: u32, h: u32) {
+        self.bus.submit(ScriptCommand::SetWindowSize { w, h });
+    }
+
+    fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32) {
+        self.bus.submit(ScriptCommand::SetViewport { lat, lon, zoom: zoom as f64 });
+    }
+
+    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration) {
+        // Submit as a single command; the render fn handles the full down/move/up.
+        self.bus.submit(ScriptCommand::Drag { from, to });
+    }
+
+    fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton) {
+        let right = matches!(button, script::MouseButton::Right);
+        self.bus.submit(ScriptCommand::Click { x: at.0, y: at.1, right });
+    }
+
+    fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32) {
+        self.bus.submit(ScriptCommand::Scroll { x: at.0, y: at.1, dx, dy });
+    }
+
+    fn dispatch_key(&mut self, chord: &script::Chord) {
+        // Keystroke is Send (only contains String + bools), use the dedicated queue.
+        let ks = Keystroke {
+            modifiers: gpui::Modifiers {
+                control: chord.ctrl,
+                alt: chord.alt,
+                shift: chord.shift,
+                platform: chord.cmd,
+                function: false,
+            },
+            key: chord.key.clone(),
+            key_char: None,
+        };
+        if let Some(q) = KEYSTROKE_QUEUE.get() {
+            if let Ok(mut guard) = q.lock() {
+                guard.push(ks);
+            }
+        }
+        // Wait for next frame so gpui processes the keystroke.
+        self.bus.wait_frame();
+    }
+
+    fn wait_frame(&mut self) {
+        self.bus.wait_frame();
+    }
+}
+
 fn main() {
-    // Initialize simple logging to stderr
     eprintln!("🚀 Starting OSM-GPUI Map Viewer with Tile Loading");
+
+    let args = parse_cli_args();
+    let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
+
+    // Initialize the global idle tracker before the app starts so TileCache
+    // picks up the same Arc.
+    let idle = IdleTracker::new();
+    GLOBAL_IDLE.set(idle.clone()).ok();
+
+    // Initialize script bus
+    let bus = ScriptBus::new();
+    SCRIPT_BUS.set(bus.clone()).ok();
+    KEYSTROKE_QUEUE.set(Arc::new(Mutex::new(Vec::new()))).ok();
 
     // Initialize shared OSM data
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
 
-    Application::new().run(|cx: &mut App| {
+    // If there's a script, spawn it on a background OS thread before the app
+    // starts. The thread blocks until the window is visible, then drives the
+    // live app via ScriptBus.
+    if let Some(script_path) = args.script {
+        let keep_open = args.keep_open;
+        let idle_for_runner = idle.clone();
+        let bus_for_runner = bus.clone();
+
+        std::thread::spawn(move || {
+            SCRIPT_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+            // Wait for the window to be on-screen.
+            std::thread::sleep(Duration::from_millis(500));
+
+            // Find the window's OS-level ID.
+            let window_id = match capture::find_own_window_id() {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("script: could not find window id: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            // Parse the script file.
+            let script_text = match std::fs::read_to_string(&script_path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("script: could not read {:?}: {}", script_path, e);
+                    std::process::exit(1);
+                }
+            };
+            let steps = match script::parse(&script_text) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("script: parse error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let runner = Runner {
+                idle: idle_for_runner,
+                window_id,
+            };
+
+            let mut live_app = LiveApp {
+                idle: idle.clone(),
+                bus: bus_for_runner,
+                window_id,
+            };
+
+            match runner.run(&mut live_app, &steps) {
+                Ok(()) => {
+                    SCRIPT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if !keep_open {
+                        std::process::exit(0);
+                    }
+                }
+                Err(e) => {
+                    SCRIPT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!("script error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        });
+    }
+
+    Application::new().run(move |cx: &mut App| {
         // Bring the menu bar to the foreground
         cx.activate(true);
 
@@ -641,7 +994,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
                     origin: point(px(100.0), px(100.0)),
-                    size: size(px(1200.0), px(800.0)),
+                    size: size(px(win_w as f32), px(win_h as f32)),
                 })),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("OSM-GPUI Map Viewer".into()),
@@ -672,8 +1025,6 @@ fn main() {
 
 // Handle the File > Open OSM File menu action
 fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
-    println!("🗂️ File > Open OSM File menu action triggered");
-
     let executor = cx.background_executor().clone();
     let shared_queue = SHARED_OSM_DATA.get().unwrap().clone();
 
@@ -689,24 +1040,18 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
             {
                 let path = file_path.path().to_path_buf();
                 let path_str = path.to_string_lossy().to_string();
-                println!("📁 Selected file: {}", path.display());
 
                 // Parse OSM file in background
                 let parser = OsmParser::new();
                 match parser.parse_file(&path_str) {
                     Ok(osm_data) => {
-                        println!("✅ Parsed OSM: {} nodes, {} ways", osm_data.nodes.len(), osm_data.ways.len());
-
                         if let Ok(mut q) = shared_queue.lock() {
                             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
                             q.push((stem, osm_data));
                         }
-                        println!("📊 Queued dataset for layer creation");
                     }
-                    Err(e) => println!("❌ Failed to parse OSM file: {}", e),
+                    Err(e) => eprintln!("Failed to parse OSM file: {}", e),
                 }
-            } else {
-                println!("❌ No file selected");
             }
         })
         .detach();
@@ -714,13 +1059,11 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 
 // Define the quit function that is registered with the App
 fn quit(_: &Quit, cx: &mut App) {
-    println!("Gracefully quitting the application . . .");
     cx.quit();
 }
 
 // Handle the File > Download from OSM menu action
 fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
-    println!("🌐 File > Download from OSM menu action triggered");
     if let Some(requests) = DOWNLOAD_REQUESTS.get() {
         if let Ok(mut q) = requests.lock() {
             q.push(());
@@ -729,14 +1072,10 @@ fn download_from_osm(_: &DownloadFromOsm, _cx: &mut App) {
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
-fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
-    println!("🗺️ Imagery > OpenStreetMap Carto menu action triggered");
-
-    // Add the layer request to the global queue
+fn add_osm_carto(_: &AddOsmCarto, _cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
         if let Ok(mut queue) = requests.lock() {
             queue.push("OpenStreetMap Carto".to_string());
-            println!("📊 Queued OpenStreetMap Carto layer for creation");
         }
     }
 }
