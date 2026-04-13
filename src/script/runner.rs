@@ -75,16 +75,27 @@ impl Runner {
     }
 
     fn wait_idle<A: AppHandle>(&self, app: &mut A, timeout: Duration, line_no: usize) -> Result<(), RunError> {
+        // Number of frames to wait unconditionally before we start checking
+        // for idle. This gives gpui time to run at least one render cycle so
+        // tile-fetch work has been submitted to the background executor.
+        const PRIMING_FRAMES: u32 = 10;
+
         let deadline = Instant::now() + timeout;
+        let mut frame = 0u32;
         let mut consecutive_idle = 0;
         loop {
             app.wait_frame();
-            if self.idle.is_idle() {
-                consecutive_idle += 1;
-                if consecutive_idle >= 2 { return Ok(()); }
-            } else {
-                consecutive_idle = 0;
+            frame += 1;
+
+            if frame > PRIMING_FRAMES {
+                if self.idle.is_idle() {
+                    consecutive_idle += 1;
+                    if consecutive_idle >= 2 { return Ok(()); }
+                } else {
+                    consecutive_idle = 0;
+                }
             }
+
             if Instant::now() >= deadline {
                 return Err(RunError {
                     line_no,
