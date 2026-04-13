@@ -45,6 +45,15 @@ pub trait MapLayer: Send + Sync {
     /// Default: no-op. OsmLayer overrides this to drive `render_elements`.
     fn set_highlight(&mut self, _feature: Option<crate::selection::FeatureRef>) {}
 
+    /// Return key/value tags for the given feature if this layer owns it.
+    /// Default: `None`.
+    fn feature_tags(
+        &self,
+        _feature: &crate::selection::FeatureRef,
+    ) -> Option<Vec<(String, String)>> {
+        None
+    }
+
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
     /// Default: no-op.
     fn render_highlight(

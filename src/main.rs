@@ -593,7 +593,9 @@ impl MapViewer {
         }
     }
 
-    fn render_selection_panel(&self, _cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn render_selection_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        use osm_gpui::selection::FeatureKind;
+
         let base = div()
             .id("selection-panel")
             .flex_1()
@@ -601,22 +603,79 @@ impl MapViewer {
             .p_4()
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_3();
 
-        match &self.selected {
-            None => base.child(
+        let Some(sel) = self.selected.clone() else {
+            return base.child(
                 div()
                     .text_color(rgb(0x6b7280))
                     .text_sm()
                     .child("Click a feature to see its tags.")
-            ),
-            Some(_sel) => base.child(
-                div()
-                    .text_color(rgb(0xffffff))
-                    .text_sm()
-                    .child("(selection panel filled in next task)")
-            ),
-        }
+            );
+        };
+
+        let kind_label = match sel.kind { FeatureKind::Node => "Node", FeatureKind::Way => "Way" };
+        let url_kind = match sel.kind { FeatureKind::Node => "node", FeatureKind::Way => "way" };
+        let tags_vec: Vec<(String, String)> = self
+            .layer_manager
+            .find_layer(&sel.layer_name)
+            .and_then(|layer| layer.feature_tags(&sel))
+            .unwrap_or_default();
+
+        let header = div()
+            .text_color(rgb(0xffffff))
+            .text_lg()
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(format!("{} #{}", kind_label, sel.id));
+
+        let link_text = "View on openstreetmap.org ↗".to_string();
+        let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
+        let link = div()
+            .id(("osm-link", sel.id as usize))
+            .text_color(rgb(0x60a5fa))
+            .text_sm()
+            .cursor_pointer()
+            .child(link_text)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
+                    cx.open_url(&url);
+                }),
+            );
+
+        let tags_block = if tags_vec.is_empty() {
+            div()
+                .text_color(rgb(0x6b7280))
+                .text_sm()
+                .child("(no tags)")
+                .into_any_element()
+        } else {
+            let mut col = div().flex().flex_col().gap_1();
+            for (k, v) in tags_vec {
+                col = col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_color(rgb(0xd1d5db))
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(k)
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .child(v)
+                        )
+                );
+            }
+            col.into_any_element()
+        };
+
+        base.child(header).child(link).child(tags_block)
     }
 }
 

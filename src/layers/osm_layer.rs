@@ -277,6 +277,24 @@ impl MapLayer for OsmLayer {
         way_hits
     }
 
+    fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
+        if feature.layer_name != self.name { return None; }
+        let data = self.osm_data.as_ref()?;
+        let tags = match feature.kind {
+            FeatureKind::Node => {
+                let n = data.nodes.get(&feature.id)?;
+                n.tags.clone()
+            }
+            FeatureKind::Way => {
+                let w = data.ways.iter().find(|w| w.id == feature.id)?;
+                w.tags.clone()
+            }
+        };
+        let mut kv: Vec<(String, String)> = tags.into_iter().collect();
+        kv.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(kv)
+    }
+
     fn render_highlight(
         &self,
         viewport: &Viewport,
