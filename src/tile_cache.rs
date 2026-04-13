@@ -1,7 +1,13 @@
 use gpui::{Asset, BackgroundExecutor, RenderImage, ImageCacheError};
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::io::Read;
+
+use crate::idle_tracker::IdleTracker;
+
+/// Global IdleTracker shared between TileCache and TileAsset::load.
+/// Set once when TileCache is constructed with an IdleTracker.
+static TILE_IDLE_TRACKER: OnceLock<Arc<IdleTracker>> = OnceLock::new();
 
 pub struct TileAsset;
 
@@ -14,10 +20,17 @@ impl Asset for TileAsset {
         cx: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
+        let idle = TILE_IDLE_TRACKER.get().cloned();
 
         async move {
-            // Use GPUI's background executor to run the HTTP request synchronously
-            executor.spawn(async move {
+            // Signal that a tile fetch has started (if idle tracker is wired up).
+            if let Some(ref tracker) = idle {
+                tracker.tile_fetch_started();
+            }
+            // Use GPUI's background executor to run the HTTP request synchronously.
+            // We await the spawned future and call tile_fetch_finished exactly once
+            // after it resolves, covering all success and error paths.
+            let result = executor.spawn(async move {
                 let cache_dir = std::env::temp_dir().join("osm-gpui-tiles");
 
                 // Create a safe filename from the URL
@@ -77,7 +90,13 @@ impl Asset for TileAsset {
                         Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!("Failed to fetch image: {}", e))))
                     }
                 }
-            }).await
+            }).await;
+            // Exactly one finished call for the one started call above,
+            // regardless of which success or error branch the inner future took.
+            if let Some(ref tracker) = idle {
+                tracker.tile_fetch_finished();
+            }
+            result
         }
     }
 }
@@ -120,13 +139,15 @@ fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, Stri
 
 #[derive(Clone)]
 pub struct TileCache {
-    // We don't need to track downloads manually anymore
-    // GPUI's asset system handles this automatically
+    idle: Arc<IdleTracker>,
 }
 
 impl TileCache {
-    pub fn new(_executor: BackgroundExecutor) -> Self {
-        Self {}
+    pub fn new(_executor: BackgroundExecutor, idle: Arc<IdleTracker>) -> Self {
+        // Register the tracker globally so TileAsset::load can access it.
+        // If already set (e.g. in tests), we simply use whichever was set first.
+        let _ = TILE_IDLE_TRACKER.set(idle.clone());
+        Self { idle }
     }
 
     /// Get statistics about the cache

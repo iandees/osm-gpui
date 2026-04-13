@@ -36,7 +36,8 @@ impl MapViewer {
     fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let viewport = Viewport::new(40.7128, -74.0060, 11.0, gpui::size(px(800.0), px(600.0)));
         let executor = cx.background_executor().clone();
-        let tile_cache = Arc::new(Mutex::new(TileCache::new(executor)));
+        let idle = osm_gpui::idle_tracker::IdleTracker::new();
+        let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle.clone())));
         let mut layer_manager = LayerManager::new();
         // Removed default tile layer - will be added via menu
         layer_manager.add_layer(Box::new(GridLayer::new()));
