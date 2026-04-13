@@ -29,14 +29,6 @@ impl TileCoord {
         (lon_min, lat_min, lon_max, lat_max)
     }
 
-    /// Generate the URL for this tile from the OSM tile server
-    pub fn to_url(&self) -> String {
-        format!(
-            "https://tile.openstreetmap.org/{}/{}/{}.png",
-            self.z, self.x, self.y
-        )
-    }
-
     /// The parent tile (one zoom level up), or `None` at z==0.
     pub fn parent(&self) -> Option<TileCoord> {
         if self.z == 0 {
@@ -224,7 +216,11 @@ pub struct Tile {
 
 impl Tile {
     pub fn new(coord: TileCoord) -> Self {
-        let url = coord.to_url().into();
+        let url = url_from_template(
+            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            &coord,
+        )
+        .into();
         Self {
             coord,
             state: TileLoadState::NotLoaded,
@@ -299,13 +295,6 @@ mod tests {
         let tiles = get_tiles_for_bounds(51.0, -1.0, 52.0, 0.0, 5);
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|t| t.z == 5));
-    }
-
-    #[test]
-    fn test_tile_url_generation() {
-        let tile = TileCoord::new(123, 456, 10);
-        let url = tile.to_url();
-        assert_eq!(url, "https://tile.openstreetmap.org/10/123/456.png");
     }
 
     #[test]
