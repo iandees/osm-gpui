@@ -41,6 +41,10 @@ pub trait MapLayer: Send + Sync {
         Vec::new()
     }
 
+    /// Tell the layer which feature (if any) is currently selected.
+    /// Default: no-op. OsmLayer overrides this to drive `render_elements`.
+    fn set_highlight(&mut self, _feature: Option<crate::selection::FeatureRef>) {}
+
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
     /// Default: no-op.
     fn render_highlight(

@@ -49,12 +49,6 @@ impl OsmLayer {
         }
     }
 
-    /// Set (or clear) which feature should be drawn highlighted this frame.
-    /// MapViewer calls this every frame based on the current selection.
-    pub fn set_highlight(&mut self, feature: Option<FeatureRef>) {
-        self.highlight = feature;
-    }
-
     /// Set the OSM data for this layer
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
         self.osm_data = Some(osm_data);
@@ -93,6 +87,10 @@ impl MapLayer for OsmLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn set_highlight(&mut self, feature: Option<FeatureRef>) {
+        self.highlight = feature;
     }
 
     fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {

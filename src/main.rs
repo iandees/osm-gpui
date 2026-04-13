@@ -302,6 +302,31 @@ impl MapViewer {
         self.selected = osm_gpui::selection::resolve_hits(per_layer);
     }
 
+    fn sync_selection_to_layers(&mut self) {
+        // Clear the selection if its owning layer is gone or hidden, so the
+        // right panel never shows info for a feature not drawn on the map.
+        if let Some(sel) = &self.selected {
+            let still_live = self
+                .layer_manager
+                .find_layer(&sel.layer_name)
+                .map(|l| l.is_visible())
+                .unwrap_or(false);
+            if !still_live {
+                self.selected = None;
+            }
+        }
+        let selected = self.selected.clone();
+        for layer in self.layer_manager.layers_mut() {
+            if let Some(sel) = &selected {
+                if layer.name() == sel.layer_name {
+                    layer.set_highlight(Some(sel.clone()));
+                    continue;
+                }
+            }
+            layer.set_highlight(None);
+        }
+    }
+
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let scroll_delta = match event.delta {
             gpui::ScrollDelta::Lines(delta) => gpui::Point {
@@ -592,6 +617,7 @@ impl Render for MapViewer {
 
         // Update all layers
         self.layer_manager.update_all();
+        self.sync_selection_to_layers();
 
         let (center_lat, center_lon) = self.viewport.center();
         let zoom_level = self.viewport.zoom_level();
@@ -680,9 +706,13 @@ impl Render for MapViewer {
                                             {
                                                 let viewport_clone = self.viewport.clone();
                                                 let layer_manager = std::ptr::addr_of!(self.layer_manager);
+                                                let selected = self.selected.clone();
                                                 move |bounds, _, window, _| {
                                                     let layer_manager = unsafe { &*layer_manager };
                                                     layer_manager.render_all_canvas(&viewport_clone, bounds, window);
+                                                    if let Some(sel) = &selected {
+                                                        layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
+                                                    }
                                                 }
                                             }
                                         )
