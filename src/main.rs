@@ -34,7 +34,12 @@ struct AddImageryLayer {
 enum LayerRequest {
     OsmCarto,
     CoordinateGrid,
-    Imagery { name: String, url_template: String },
+    Imagery {
+        name: String,
+        url_template: String,
+        min_zoom: Option<u32>,
+        max_zoom: Option<u32>,
+    },
     /// Remove the layer at the given index in the `LayerManager`.
     Delete { index: usize },
 }
@@ -507,7 +512,7 @@ impl MapViewer {
                                 self.layer_manager.add_layer(Box::new(GridLayer::new()));
                             }
                         }
-                        LayerRequest::Imagery { name, url_template } => {
+                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom } => {
                             // Ensure unique name
                             let mut candidate = name.clone();
                             let mut i = 2;
@@ -519,7 +524,9 @@ impl MapViewer {
                                 candidate,
                                 url_template,
                                 self.tile_cache.clone(),
-                            );
+                            )
+                            .with_min_zoom(min_zoom)
+                            .with_max_zoom(max_zoom);
                             self.layer_manager.add_layer(Box::new(layer));
                         }
                     }
@@ -1619,6 +1626,8 @@ fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
             queue.push(LayerRequest::Imagery {
                 name: entry.name,
                 url_template: entry.url_template,
+                min_zoom: entry.min_zoom,
+                max_zoom: entry.max_zoom,
             });
         }
     }
