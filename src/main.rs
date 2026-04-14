@@ -19,7 +19,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -60,6 +60,9 @@ static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<LayerRequest>>>> =
     std::sync::OnceLock::new();
 
 static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
+    std::sync::OnceLock::new();
+
+static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
 
 // Global idle tracker shared with the script runner
@@ -207,6 +210,8 @@ struct MapViewer {
     last_menu_center: Option<(f64, f64)>,
     /// Imagery load state observed on the previous frame; detect transitions.
     last_imagery_load_state: Option<ImageryLoadState>,
+    /// Whether the debug info overlay is currently visible.
+    show_debug_overlay: bool,
 }
 
 impl MapViewer {
@@ -231,6 +236,7 @@ impl MapViewer {
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
+            show_debug_overlay: false,
         }
     }
 
@@ -357,18 +363,14 @@ impl MapViewer {
     }
 
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         self.viewport.handle_mouse_down(adjusted_position);
         self.mouse_down_pos = Some(adjusted_position);
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
@@ -376,8 +378,7 @@ impl MapViewer {
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
-        let header_height = px(48.0);
-        let up_pos = point(event.position.x, event.position.y - header_height);
+        let up_pos = event.position;
         let was_click = match self.mouse_down_pos.take() {
             Some(down) => {
                 let dx = up_pos.x.0 - down.x.0;
@@ -438,9 +439,7 @@ impl MapViewer {
             },
         };
 
-        // Adjust mouse coordinates to account for header offset
-        let header_height = px(48.0);
-        let adjusted_position = point(event.position.x, event.position.y - header_height);
+        let adjusted_position = event.position;
 
         if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
             cx.notify();
@@ -551,6 +550,24 @@ impl MapViewer {
             if set_at.elapsed() > Duration::from_secs(5) {
                 self.status_message = None;
             }
+        }
+    }
+
+    fn check_for_toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
+        let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() else { return };
+        let pending = if let Ok(mut guard) = requests.try_lock() {
+            let n = guard.len();
+            guard.clear();
+            n
+        } else {
+            0
+        };
+        if pending > 0 {
+            // Parity of toggles: odd = flip, even = no-op
+            if pending % 2 == 1 {
+                self.show_debug_overlay = !self.show_debug_overlay;
+            }
+            cx.notify();
         }
     }
 
@@ -868,6 +885,7 @@ impl Render for MapViewer {
         self.check_for_new_osm_data(cx);
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
+        self.check_for_toggle_debug_overlay(cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -876,13 +894,12 @@ impl Render for MapViewer {
             bus.signal_done_and_frame();
         }
 
-        // Update viewport size to actual window dimensions minus the right panel and header
+        // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
-        let header_height = px(48.0); // h_12() = 12 * 4px = 48px
         let map_size = gpui::size(
             window_size.width - panel_width,
-            window_size.height - header_height
+            window_size.height,
         );
         self.viewport.update_size(map_size);
 
@@ -909,39 +926,10 @@ impl Render for MapViewer {
             .flex()
             .flex_row()
             .child(
-                // Main content area (header + map)
+                // Map area
                 div()
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // Header with menu
-                        div()
-                            .h_12()
-                            .bg(rgb(0x111827))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_4()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_xl()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child("🗺️ OSM-GPUI Map Viewer (Layered)"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(0x9ca3af))
-                                    .text_sm()
-                                    .child("Mouse to pan/zoom | 'T' tiles | Click layers to toggle"),
-                            ),
-                    )
-                    .child(
-                        // Map area
-                        div()
-                            .flex_1()
-                            .relative()
+                    .relative()
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseDownEvent, _, _| {
@@ -994,26 +982,31 @@ impl Render for MapViewer {
                                         .size_full() // Ensure canvas fills the entire map area
                                     )
                             )
-                            .child(
-                                // Debug info overlay
-                                div()
-                                    .absolute()
-                                    .top_4()
-                                    .left_4()
-                                    .p_3()
-                                    .bg(gpui::black())
-                                    .rounded_lg()
-                                    .text_color(rgb(0xffffff))
-                                    .text_sm()
-                                    .opacity(0.9)
-                                    .min_w_64()
-                                    .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                                    .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
-                                    .child(format!("📊 Objects: {}", osm_objects))
-                                    .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                                    .child(format!("💾 Cache: {} files", cached_files))
-                                    .child(format!("⚡ FPS: {:.0}", fps))
-                            )
+                            .child({
+                                // Debug info overlay (toggleable via View menu)
+                                if self.show_debug_overlay {
+                                    div()
+                                        .absolute()
+                                        .top_4()
+                                        .left_4()
+                                        .p_3()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_sm()
+                                        .opacity(0.9)
+                                        .min_w_64()
+                                        .child(format!("🔍 Zoom: {:.1}", zoom_level))
+                                        .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
+                                        .child(format!("📊 Objects: {}", osm_objects))
+                                        .child(format!("🗺️ Tiles: {} visible", total_tiles))
+                                        .child(format!("💾 Cache: {} files", cached_files))
+                                        .child(format!("⚡ FPS: {:.0}", fps))
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            })
                             .child({
                                 let status = self.status_message.clone();
                                 if let Some((msg, _)) = status {
@@ -1034,7 +1027,6 @@ impl Render for MapViewer {
                                 }
                             }),
                     )
-            )
             .child(
                 // Right panel with layer controls
                 div()
@@ -1060,16 +1052,16 @@ impl Render for MapViewer {
                                     .text_color(rgb(0xffffff))
                                     .text_lg()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("🏗️ Layer Controls")
+                                    .child("Layers")
                             )
                     )
                     .child(
                         // Layer list container
                         div()
-                            .p_4()
+                            .p_2()
                             .flex()
                             .flex_col()
-                            .gap_2()
+                            .gap_1()
                             .children({
                                 let total_layers = layer_info.len();
                                 layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
@@ -1078,7 +1070,7 @@ impl Render for MapViewer {
                                     let can_move_down = index + 1 < total_layers;
                                     div()
                                         .id(("layer", index))
-                                        .p_3()
+                                        .p_2()
                                         .bg(rgb(0x1f2937))
                                         .rounded_lg()
                                         .border_1()
@@ -1087,7 +1079,7 @@ impl Render for MapViewer {
                                         .flex()
                                         .items_center()
                                         .justify_between()
-                                        .gap_3()
+                                        .gap_2()
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
                                             cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
@@ -1103,12 +1095,11 @@ impl Render for MapViewer {
                                                 .flex()
                                                 .flex_col()
                                                 .items_center()
-                                                .gap_1()
                                                 .child({
                                                     let up = div()
                                                         .id(("layer-up", index))
                                                         .w(px(18.0))
-                                                        .h(px(14.0))
+                                                        .h(px(12.0))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -1133,7 +1124,7 @@ impl Render for MapViewer {
                                                     let down = div()
                                                         .id(("layer-down", index))
                                                         .w(px(18.0))
-                                                        .h(px(14.0))
+                                                        .h(px(12.0))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -1163,8 +1154,8 @@ impl Render for MapViewer {
                                                 .child(
                                                     // Checkbox
                                                     div()
-                                                        .w(px(20.0))
-                                                        .h(px(20.0))
+                                                        .w(px(16.0))
+                                                        .h(px(16.0))
                                                         .rounded_sm()
                                                         .border_2()
                                                         .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x6b7280) })
@@ -1176,7 +1167,7 @@ impl Render for MapViewer {
                                                             this.child(
                                                                 div()
                                                                     .text_color(rgb(0xffffff))
-                                                                    .text_sm()
+                                                                    .text_xs()
                                                                     .font_weight(gpui::FontWeight::BOLD)
                                                                     .child("✓")
                                                             )
@@ -1313,6 +1304,7 @@ fn main() {
     SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1393,6 +1385,7 @@ fn main() {
         cx.on_action(add_osm_carto);
         cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
+        cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
         cx.on_action(no_op_imagery_info);
 
@@ -1547,6 +1540,16 @@ fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
     }
 }
 
+// Handle the View > Toggle Debug Overlay menu action
+fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
+    if let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() {
+        if let Ok(mut queue) = requests.lock() {
+            queue.push(());
+        }
+    }
+    cx.refresh_windows();
+}
+
 // Handle the Imagery > Coordinate Grid menu action
 fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
@@ -1625,6 +1628,12 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
         Menu {
             name: "Imagery".into(),
             items: imagery_items,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
+            ],
         },
     ]);
 }
