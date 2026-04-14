@@ -143,8 +143,8 @@ impl BackgroundRenderer {
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
 
         // Calculate pixels per degree for positioning
-        let pixels_per_degree_lat = bounds.size.height.0 as f64 / lat_span;
-        let pixels_per_degree_lon = bounds.size.width.0 as f64 / lon_span;
+        let pixels_per_degree_lat = bounds.size.height.to_f64() / lat_span;
+        let pixels_per_degree_lon = bounds.size.width.to_f64() / lon_span;
 
         // Render each visible tile
         for tile_coord in visible_tiles {
@@ -179,19 +179,19 @@ impl BackgroundRenderer {
 
         // Convert tile bounds to screen coordinates
         let tile_screen_min_x = ((tile_min_lon - center_lon) * pixels_per_degree_lon
-            + bounds.size.width.0 as f64 / 2.0) as f32;
+            + bounds.size.width.to_f64() / 2.0) as f32;
         let tile_screen_max_x = ((tile_max_lon - center_lon) * pixels_per_degree_lon
-            + bounds.size.width.0 as f64 / 2.0) as f32;
+            + bounds.size.width.to_f64() / 2.0) as f32;
         let tile_screen_min_y = ((center_lat - tile_max_lat) * pixels_per_degree_lat
-            + bounds.size.height.0 as f64 / 2.0) as f32;
+            + bounds.size.height.to_f64() / 2.0) as f32;
         let tile_screen_max_y = ((center_lat - tile_min_lat) * pixels_per_degree_lat
-            + bounds.size.height.0 as f64 / 2.0) as f32;
+            + bounds.size.height.to_f64() / 2.0) as f32;
 
         // Calculate tile screen bounds
         let tile_bounds = gpui::Bounds {
             origin: Point {
-                x: px(tile_screen_min_x + bounds.origin.x.0),
-                y: px(tile_screen_min_y + bounds.origin.y.0),
+                x: px(tile_screen_min_x) + bounds.origin.x,
+                y: px(tile_screen_min_y) + bounds.origin.y,
             },
             size: Size {
                 width: px(tile_screen_max_x - tile_screen_min_x),
@@ -200,10 +200,10 @@ impl BackgroundRenderer {
         };
 
         // Only render if the tile is visible
-        if tile_bounds.origin.x.0 < bounds.size.width.0
-            && tile_bounds.origin.x.0 + tile_bounds.size.width.0 > 0.0
-            && tile_bounds.origin.y.0 < bounds.size.height.0
-            && tile_bounds.origin.y.0 + tile_bounds.size.height.0 > 0.0
+        if tile_bounds.origin.x < bounds.size.width
+            && tile_bounds.origin.x + tile_bounds.size.width > Pixels::ZERO
+            && tile_bounds.origin.y < bounds.size.height
+            && tile_bounds.origin.y + tile_bounds.size.height > Pixels::ZERO
         {
             // Convert image to GPUI format and paint it
             if let Ok(image_data) = self.convert_image_to_gpui(&tile.image) {

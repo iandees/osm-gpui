@@ -296,7 +296,7 @@ impl MapView {
             let bottom_screen = self.viewport.geo_to_screen(bottom_right.0, lon);
 
             // Only draw if the line is within screen bounds
-            if top_screen.x.0 >= -10.0 && top_screen.x.0 <= bounds.size.width.0 + 10.0 {
+            if top_screen.x >= px(-10.0) && top_screen.x <= bounds.size.width + px(10.0) {
                 let mut builder = PathBuilder::stroke(px(1.0));
                 builder.move_to(point(top_screen.x, px(0.0)));
                 builder.line_to(point(bottom_screen.x, bounds.size.height));
@@ -317,7 +317,7 @@ impl MapView {
             let right_screen = self.viewport.geo_to_screen(lat, bottom_right.1);
 
             // Only draw if the line is within screen bounds
-            if left_screen.y.0 >= -10.0 && left_screen.y.0 <= bounds.size.height.0 + 10.0 {
+            if left_screen.y >= px(-10.0) && left_screen.y <= bounds.size.height + px(10.0) {
                 let mut builder = PathBuilder::stroke(px(1.0));
                 builder.move_to(point(px(0.0), left_screen.y));
                 builder.line_to(point(bounds.size.width, right_screen.y));
@@ -342,10 +342,10 @@ impl MapView {
                         let screen_pos = self.viewport.geo_to_screen(*lat, *lon);
 
                         // Only render if visible
-                        if screen_pos.x.0 >= -20.0
-                            && screen_pos.x.0 <= bounds.size.width.0 + 20.0
-                            && screen_pos.y.0 >= -20.0
-                            && screen_pos.y.0 <= bounds.size.height.0 + 20.0
+                        if screen_pos.x >= px(-20.0)
+                            && screen_pos.x <= bounds.size.width + px(20.0)
+                            && screen_pos.y >= px(-20.0)
+                            && screen_pos.y <= bounds.size.height + px(20.0)
                         {
                             // Draw feature as a circle
                             let radius = px(layer.style.point_radius);
@@ -476,8 +476,8 @@ impl Render for MapView {
                             // Calculate viewport bounds for coordinate conversion
                             let lat_span = 180.0 / (2.0_f64.powf(zoom_level));
                             let lon_span = 360.0 / (2.0_f64.powf(zoom_level));
-                            let pixels_per_degree_lat = bounds.size.height.0 as f64 / lat_span;
-                            let pixels_per_degree_lon = bounds.size.width.0 as f64 / lon_span;
+                            let pixels_per_degree_lat = bounds.size.height.to_f64() / lat_span;
+                            let pixels_per_degree_lon = bounds.size.width.to_f64() / lon_span;
 
                             // Calculate geographic bounds of the current view
                             let top_left_lon = center.1 - lon_span / 2.0;
@@ -491,14 +491,14 @@ impl Render for MapView {
 
                             let mut lon = start_lon;
                             while lon <= end_lon {
-                                let x = (bounds.size.width.0 / 2.0)
-                                    + ((lon - center.1) * pixels_per_degree_lon) as f32;
+                                let x = bounds.size.width * 0.5
+                                    + px(((lon - center.1) * pixels_per_degree_lon) as f32);
 
                                 // Only draw if the line is within screen bounds
-                                if x >= -10.0 && x <= bounds.size.width.0 + 10.0 {
+                                if x >= px(-10.0) && x <= bounds.size.width + px(10.0) {
                                     let mut builder = PathBuilder::stroke(px(1.0));
-                                    builder.move_to(point(px(x), px(0.0)));
-                                    builder.line_to(point(px(x), bounds.size.height));
+                                    builder.move_to(point(x, px(0.0)));
+                                    builder.line_to(point(x, bounds.size.height));
                                     if let Ok(path) = builder.build() {
                                         window.paint_path(path, grid_color);
                                     }
@@ -513,14 +513,14 @@ impl Render for MapView {
 
                             let mut lat = start_lat;
                             while lat <= end_lat {
-                                let y = (bounds.size.height.0 / 2.0)
-                                    - ((lat - center.0) * pixels_per_degree_lat) as f32;
+                                let y = bounds.size.height * 0.5
+                                    - px(((lat - center.0) * pixels_per_degree_lat) as f32);
 
                                 // Only draw if the line is within screen bounds
-                                if y >= -10.0 && y <= bounds.size.height.0 + 10.0 {
+                                if y >= px(-10.0) && y <= bounds.size.height + px(10.0) {
                                     let mut builder = PathBuilder::stroke(px(1.0));
-                                    builder.move_to(point(px(0.0), px(y)));
-                                    builder.line_to(point(bounds.size.width, px(y)));
+                                    builder.move_to(point(px(0.0), y));
+                                    builder.line_to(point(bounds.size.width, y));
                                     if let Ok(path) = builder.build() {
                                         window.paint_path(path, grid_color);
                                     }

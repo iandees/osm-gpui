@@ -114,8 +114,8 @@ impl CoordinateTransform {
         let world_width_pixels = tile_size * 2.0_f64.powf(zoom_level);
         let meters_per_pixel = world_width_meters / world_width_pixels;
 
-        let half_width_meters = (screen_size.width.0 as f64 / 2.0) * meters_per_pixel;
-        let half_height_meters = (screen_size.height.0 as f64 / 2.0) * meters_per_pixel;
+        let half_width_meters = (screen_size.width.to_f64() / 2.0) * meters_per_pixel;
+        let half_height_meters = (screen_size.height.to_f64() / 2.0) * meters_per_pixel;
 
         let mercator_min_x = center_x - half_width_meters;
         let mercator_min_y = center_y - half_height_meters;
@@ -125,8 +125,8 @@ impl CoordinateTransform {
         let epsilon = 1e-6;
         let denom_x = (mercator_max_x - mercator_min_x).abs().max(epsilon);
         let denom_y = (mercator_max_y - mercator_min_y).abs().max(epsilon);
-        let pixels_per_meter_x = screen_size.width.0 as f64 / denom_x;
-        let pixels_per_meter_y = screen_size.height.0 as f64 / denom_y;
+        let pixels_per_meter_x = screen_size.width.to_f64() / denom_x;
+        let pixels_per_meter_y = screen_size.height.to_f64() / denom_y;
 
         // Calculate geographic bounds for compatibility
         let (min_lat, min_lon) = mercator_to_lat_lon(mercator_min_x, mercator_min_y);
@@ -161,13 +161,13 @@ impl CoordinateTransform {
     /// `lat_lon_to_mercator` per vertex every frame.
     #[inline]
     pub fn mercator_to_screen(&self, mx: f64, my: f64) -> GpuiPoint<Pixels> {
-        let half_w = self.screen_size.width.0 / 2.0;
-        let half_h = self.screen_size.height.0 / 2.0;
-        let x = half_w + ((mx - self.mercator_center_x) * self.pixels_per_meter_x) as f32;
-        let y = half_h - ((my - self.mercator_center_y) * self.pixels_per_meter_y) as f32;
-        let x = if x.is_finite() { x } else { half_w };
-        let y = if y.is_finite() { y } else { half_h };
-        GpuiPoint { x: px(x), y: px(y) }
+        let half_w = self.screen_size.width * 0.5;
+        let half_h = self.screen_size.height * 0.5;
+        let x = half_w + px(((mx - self.mercator_center_x) * self.pixels_per_meter_x) as f32);
+        let y = half_h - px(((my - self.mercator_center_y) * self.pixels_per_meter_y) as f32);
+        let x = if x.as_f32().is_finite() { x } else { half_w };
+        let y = if y.as_f32().is_finite() { y } else { half_h };
+        GpuiPoint { x, y }
     }
 
     /// Cheap visibility test in Mercator space (no trig, no GeoBounds conversion).
@@ -184,19 +184,16 @@ impl CoordinateTransform {
         let (merc_x, merc_y) = lat_lon_to_mercator(lat, lon);
         let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
 
-        let merc_y_diff = merc_y - center_merc_y;
-        let y_offset = merc_y_diff * self.pixels_per_meter_y;
-        let y = (self.screen_size.height.0 / 2.0) - y_offset as f32;
+        let half_w = self.screen_size.width * 0.5;
+        let half_h = self.screen_size.height * 0.5;
+        let y_offset = (merc_y - center_merc_y) * self.pixels_per_meter_y;
+        let x = half_w + px(((merc_x - center_merc_x) * self.pixels_per_meter_x) as f32);
+        let y = half_h - px(y_offset as f32);
 
-        // eprintln!("geo_to_screen: lat={:.6}, lon={:.6}, merc_y={:.2}, center_merc_y={:.2}, merc_y_diff={:.2}, ppm_y={:.6}, y_offset={:.2}, y={:.2}", lat, lon, merc_y, center_merc_y, merc_y_diff, self.pixels_per_meter_y, y_offset, y);
+        let x = if x.as_f32().is_finite() { x } else { half_w };
+        let y = if y.as_f32().is_finite() { y } else { half_h };
 
-        // Ensure finite screen coordinates
-        let x = (self.screen_size.width.0 / 2.0)
-            + ((merc_x - center_merc_x) * self.pixels_per_meter_x) as f32;
-        let x = if x.is_finite() { x } else { self.screen_size.width.0 / 2.0 };
-        let y = if y.is_finite() { y } else { self.screen_size.height.0 / 2.0 };
-
-        GpuiPoint { x: px(x), y: px(y) }
+        GpuiPoint { x, y }
     }
 
     /// Convert screen coordinates (x, y) to geographic coordinates (lat, lon)
@@ -204,9 +201,9 @@ impl CoordinateTransform {
         let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
 
         let merc_x = center_merc_x
-            + ((point.x.0 - self.screen_size.width.0 / 2.0) as f64 / self.pixels_per_meter_x);
+            + (point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
         let merc_y = center_merc_y
-            - ((point.y.0 - self.screen_size.height.0 / 2.0) as f64 / self.pixels_per_meter_y); // Flip Y axis
+            - (point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y; // Flip Y axis
 
         // Ensure finite mercator coordinates before conversion
         let merc_x = if merc_x.is_finite() {
@@ -260,8 +257,8 @@ impl CoordinateTransform {
 
         // Step 1: Convert screen point to Mercator coordinates at current zoom
         let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
-        let dx = (screen_point.x.0 - self.screen_size.width.0 / 2.0) as f64 / self.pixels_per_meter_x;
-        let dy = -(screen_point.y.0 - self.screen_size.height.0 / 2.0) as f64 / self.pixels_per_meter_y;
+        let dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
+        let dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
         let mouse_merc_x = center_merc_x + dx;
         let mouse_merc_y = center_merc_y + dy;
 
@@ -270,8 +267,8 @@ impl CoordinateTransform {
         let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
 
         // Step 3: Calculate new center so mouse_merc_x/y stays under the same screen pixel
-        let new_dx = (screen_point.x.0 - self.screen_size.width.0 / 2.0) as f64 / new_transform.pixels_per_meter_x;
-        let new_dy = -(screen_point.y.0 - self.screen_size.height.0 / 2.0) as f64 / new_transform.pixels_per_meter_y;
+        let new_dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / new_transform.pixels_per_meter_x;
+        let new_dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64() / new_transform.pixels_per_meter_y;
         let new_center_merc_x = mouse_merc_x - new_dx;
         let new_center_merc_y = mouse_merc_y - new_dy;
         let (new_center_lat, new_center_lon) = mercator_to_lat_lon(new_center_merc_x, new_center_merc_y);
@@ -280,14 +277,14 @@ impl CoordinateTransform {
     }
 
     /// Pan by a screen pixel offset
-    pub fn pan_by_pixels(&mut self, dx: f32, dy: f32) {
+    pub fn pan_by_pixels(&mut self, dx: Pixels, dy: Pixels) {
         // Validate inputs
-        if !dx.is_finite() || !dy.is_finite() {
+        if !dx.as_f32().is_finite() || !dy.as_f32().is_finite() {
             return;
         }
 
-        let mercator_dx = dx as f64 / self.pixels_per_meter_x;
-        let mercator_dy = -(dy as f64) / self.pixels_per_meter_y; // Negative because screen Y increases downward
+        let mercator_dx = dx.to_f64() / self.pixels_per_meter_x;
+        let mercator_dy = -dy.to_f64() / self.pixels_per_meter_y; // Negative because screen Y increases downward
 
         // Ensure finite mercator deltas
         let mercator_dx = if mercator_dx.is_finite() {
@@ -328,7 +325,7 @@ impl CoordinateTransform {
 
 /// Validates that a point has finite coordinates
 pub fn is_point_valid(point: GpuiPoint<Pixels>) -> bool {
-    point.x.0.is_finite() && point.y.0.is_finite()
+    point.x.as_f32().is_finite() && point.y.as_f32().is_finite()
 }
 
 /// Creates a safe point with finite coordinates, falling back to defaults if needed
@@ -368,8 +365,8 @@ mod tests {
 
         // Test center point conversion
         let screen_center = transform.geo_to_screen(40.7128, -74.0060);
-        assert!((screen_center.x.0 - 400.0).abs() < 1.0);
-        assert!((screen_center.y.0 - 300.0).abs() < 1.0);
+        assert!((screen_center.x.as_f32() - 400.0).abs() < 1.0);
+        assert!((screen_center.y.as_f32() - 300.0).abs() < 1.0);
 
         // Test round trip conversion
         let original_lat = 40.7500;

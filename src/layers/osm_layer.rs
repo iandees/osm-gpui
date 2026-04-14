@@ -218,8 +218,8 @@ impl MapLayer for OsmLayer {
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
         let Some(ref osm_data) = self.osm_data else { return; };
 
-        let origin_x = bounds.origin.x.0;
-        let origin_y = bounds.origin.y.0;
+        let origin_x = bounds.origin.x;
+        let origin_y = bounds.origin.y;
         // Mercator-space view AABB. Culling and projection both happen in
         // this space so nothing in the hot loop touches trig.
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
@@ -281,7 +281,7 @@ impl MapLayer for OsmLayer {
             for &(mx, my) in verts {
                 let sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) { continue; }
-                let p = point(px(sp.x.0 + origin_x), px(sp.y.0 + origin_y));
+                let p = point(sp.x + origin_x, sp.y + origin_y);
                 if first {
                     group.builder.move_to(p);
                     first = false;
@@ -320,11 +320,11 @@ impl MapLayer for OsmLayer {
                 Some(n) => self.stylesheet.node_style(&n.tags),
                 None => crate::style::NodeStyle::default(),
             };
-            let half = style.size / 2.0;
+            let half = px(style.size / 2.0);
             let quad_bounds = Bounds {
                 origin: point(
-                    px(sp.x.0 + origin_x - half),
-                    px(sp.y.0 + origin_y - half),
+                    sp.x + origin_x - half,
+                    sp.y + origin_y - half,
                 ),
                 size: size(px(style.size), px(style.size)),
             };
@@ -360,9 +360,7 @@ impl MapLayer for OsmLayer {
                 if !viewport.is_visible(lat, lon) { continue; }
                 let sp = viewport.geo_to_screen(lat, lon);
                 if !is_point_valid(sp) { continue; }
-                let dx = sp.x.0 - screen_pt.x.0;
-                let dy = sp.y.0 - screen_pt.y.0;
-                let dist = (dx * dx + dy * dy).sqrt();
+                let dist = (sp - screen_pt).magnitude() as f32;
                 if dist <= NODE_TOL {
                     node_hits.push(HitCandidate {
                         feature: FeatureRef {
@@ -452,11 +450,11 @@ impl MapLayer for OsmLayer {
                 if !is_point_valid(sp) { return; }
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let ring_size = node_style.size * 2.0;
-                let half = ring_size / 2.0;
+                let half = px(ring_size / 2.0);
                 let ring_bounds = Bounds {
                     origin: point(
-                        px(sp.x.0 + bounds.origin.x.0 - half),
-                        px(sp.y.0 + bounds.origin.y.0 - half),
+                        sp.x + bounds.origin.x - half,
+                        sp.y + bounds.origin.y - half,
                     ),
                     size: size(px(ring_size), px(ring_size)),
                 };
@@ -479,10 +477,7 @@ impl MapLayer for OsmLayer {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
                             let sp = viewport.geo_to_screen(lat, lon);
                             if is_point_valid(sp) {
-                                pts.push(point(
-                                    px(sp.x.0 + origin_x.0),
-                                    px(sp.y.0 + origin_y.0),
-                                ));
+                                pts.push(point(sp.x + origin_x, sp.y + origin_y));
                             }
                         }
                     }
