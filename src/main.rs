@@ -1708,15 +1708,15 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
             items: vec![
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Quit\t⌘Q", Quit),
+                MenuItem::action("Quit", Quit),
             ],
             disabled: false,
         },
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("Open…\t⌘O", OpenOsmFile),
-                MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
+                MenuItem::action("Open…", OpenOsmFile),
+                MenuItem::action("Download from OSM", DownloadFromOsm),
             ],
             disabled: false,
         },
