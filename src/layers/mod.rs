@@ -82,6 +82,15 @@ impl LayerManager {
         self.layers.push(layer);
     }
 
+    /// Remove the layer at `index`. Returns the removed layer, or `None` if
+    /// `index` is out of bounds.
+    pub fn remove_at(&mut self, index: usize) -> Option<Box<dyn MapLayer>> {
+        if index >= self.layers.len() {
+            return None;
+        }
+        Some(self.layers.remove(index))
+    }
+
     /// Move the layer at `from` to position `to`. No-op if either index is
     /// out of bounds or if `from == to`.
     pub fn move_layer(&mut self, from: usize, to: usize) {
@@ -209,6 +218,28 @@ mod tests {
     fn move_layer_same_index_is_noop() {
         let mut v = vec!["a", "b"];
         apply_move(&mut v, 1, 1);
+        assert_eq!(v, vec!["a", "b"]);
+    }
+
+    fn apply_remove_at(items: &mut Vec<&'static str>, index: usize) -> Option<&'static str> {
+        if index >= items.len() {
+            return None;
+        }
+        Some(items.remove(index))
+    }
+
+    #[test]
+    fn remove_at_removes_item() {
+        let mut v = vec!["a", "b", "c"];
+        let removed = apply_remove_at(&mut v, 1);
+        assert_eq!(removed, Some("b"));
+        assert_eq!(v, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn remove_at_out_of_bounds_is_none() {
+        let mut v = vec!["a", "b"];
+        assert_eq!(apply_remove_at(&mut v, 5), None);
         assert_eq!(v, vec!["a", "b"]);
     }
 

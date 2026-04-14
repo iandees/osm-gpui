@@ -35,6 +35,15 @@ enum LayerRequest {
     OsmCarto,
     CoordinateGrid,
     Imagery { name: String, url_template: String },
+    /// Remove the layer at the given index in the `LayerManager`.
+    Delete { index: usize },
+}
+
+/// State for the right-click context menu on a layer row.
+#[derive(Debug, Clone)]
+struct LayerContextMenu {
+    layer_index: usize,
+    position: gpui::Point<gpui::Pixels>,
 }
 
 /// Stores the full ELI list once loaded (populated on the background executor).
@@ -210,6 +219,8 @@ struct MapViewer {
     last_menu_center: Option<(f64, f64)>,
     /// Imagery load state observed on the previous frame; detect transitions.
     last_imagery_load_state: Option<ImageryLoadState>,
+    /// Active right-click context menu for a layer row, if any.
+    context_menu: Option<LayerContextMenu>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
 }
@@ -236,6 +247,7 @@ impl MapViewer {
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
+            context_menu: None,
             show_debug_overlay: false,
         }
     }
@@ -484,6 +496,13 @@ impl MapViewer {
                                 let tile_layer = TileLayer::new(self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
                             }
+                        }
+                        LayerRequest::Delete { index } => {
+                            let _ = self.layer_manager.remove_at(index);
+                            // Dismiss any open context menu; the indices may
+                            // have shifted so the menu's target is no longer
+                            // meaningful.
+                            self.context_menu = None;
                         }
                         LayerRequest::CoordinateGrid => {
                             if self.layer_manager.find_layer("Coordinate Grid").is_none() {
@@ -920,11 +939,22 @@ impl Render for MapViewer {
             .map(|layer| (layer.name().to_string(), layer.is_visible()))
             .collect();
 
+        let context_menu_open = self.context_menu.is_some();
         div()
             .size_full()
             .bg(rgb(0x1a202c))
             .flex()
             .flex_row()
+            .when(context_menu_open, |this| {
+                this.on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
+                        if this.context_menu.take().is_some() {
+                            cx.notify();
+                        }
+                    }),
+                )
+            })
             .child(
                 // Map area
                 div()
@@ -1087,6 +1117,17 @@ impl Render for MapViewer {
                                                 cx.notify();
                                             }),
                                         )
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Right,
+                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                this.context_menu = Some(LayerContextMenu {
+                                                    layer_index: index,
+                                                    position: event.position,
+                                                });
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }),
+                                        )
                                         .child(
                                             // Reorder handle: up/down buttons.
                                             // Each button stops propagation so the row-level
@@ -1201,6 +1242,51 @@ impl Render for MapViewer {
                     // Selection panel (flex_1, scrollable)
                     .child(self.render_selection_panel(cx))
             )
+            .child({
+                if let Some(menu) = self.context_menu.clone() {
+                    div()
+                        .absolute()
+                        .left(menu.position.x)
+                        .top(menu.position.y)
+                        .bg(rgb(0x1f2937))
+                        .border_1()
+                        .border_color(rgb(0x374151))
+                        .rounded_md()
+                        .shadow_lg()
+                        .py_1()
+                        .min_w(px(120.0))
+                        .child(
+                            div()
+                                .id("layer-context-menu-delete")
+                                .px_3()
+                                .py_1p5()
+                                .cursor_pointer()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .hover(|this| this.bg(rgb(0x374151)))
+                                .child("Delete")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
+                                        if let Some(menu) = this.context_menu.take() {
+                                            if let Some(reqs) = LAYER_REQUESTS.get() {
+                                                if let Ok(mut guard) = reqs.lock() {
+                                                    guard.push(LayerRequest::Delete {
+                                                        index: menu.layer_index,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            })
     }
 }
 
