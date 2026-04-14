@@ -7,6 +7,7 @@ use crate::viewport::Viewport;
 use crate::osm::OsmData;
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::selection::{FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
+use crate::style::Stylesheet;
 
 const SELECTION_ACCENT: u32 = 0xFF4081;
 
@@ -53,10 +54,8 @@ pub struct OsmLayer {
     layer_bbox: Option<WayBbox>,
     /// Precomputed mercator positions for every node.
     node_cache: NodeCache,
-    node_color: Rgba,
-    way_color: Rgba,
-    node_size: f32,
-    way_width: f32,
+    /// Stylesheet used to pick per-feature colors/weights from OSM tags.
+    stylesheet: Arc<Stylesheet>,
     /// Feature to highlight (set each frame by MapViewer).
     highlight: Option<FeatureRef>,
 }
@@ -136,10 +135,7 @@ impl OsmLayer {
             way_vertices: Vec::new(),
             layer_bbox: None,
             node_cache: NodeCache { by_id: HashMap::new(), flat: Vec::new() },
-            node_color: rgb(0xFFD700), // Yellow for nodes
-            way_color: rgb(0x4169E1),  // Royal blue for ways
-            node_size: 10.0,
-            way_width: 4.0,
+            stylesheet: Arc::new(Stylesheet::load_default()),
             highlight: None,
         }
     }
@@ -156,10 +152,7 @@ impl OsmLayer {
             way_vertices,
             layer_bbox,
             node_cache,
-            node_color: rgb(0xFFD700),
-            way_color: rgb(0x4169E1),
-            node_size: 10.0,
-            way_width: 4.0,
+            stylesheet: Arc::new(Stylesheet::load_default()),
             highlight: None,
         }
     }
@@ -194,12 +187,9 @@ impl OsmLayer {
         self.osm_data.is_some()
     }
 
-    /// Set styling options
-    pub fn set_style(&mut self, node_color: Rgba, way_color: Rgba, node_size: f32, way_width: f32) {
-        self.node_color = node_color;
-        self.way_color = way_color;
-        self.node_size = node_size;
-        self.way_width = way_width;
+    /// Replace the stylesheet used for per-feature styling.
+    pub fn set_stylesheet(&mut self, stylesheet: Arc<Stylesheet>) {
+        self.stylesheet = stylesheet;
     }
 }
 
@@ -226,9 +216,7 @@ impl MapLayer for OsmLayer {
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
-        if self.osm_data.is_none() {
-            return;
-        }
+        let Some(ref osm_data) = self.osm_data else { return; };
 
         let origin_x = bounds.origin.x.0;
         let origin_y = bounds.origin.y.0;
@@ -248,14 +236,20 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        // Ways: bbox-cull in Mercator space, then batch all visible ways into
-        // a single stroked path. Vertex lookup is a single contiguous slice
-        // per way (`way_vertices[i]`) — no HashMap indirection. One
-        // PathBuilder with many subpaths = one paint_path call per frame.
-        // When per-rule styling arrives, group ways by
-        // `(stroke_width, color)` and emit one path per group.
-        let mut way_builder = PathBuilder::stroke(px(self.way_width));
-        let mut way_points_pushed = false;
+        // Ways: bbox-cull in Mercator space, then group visible ways by
+        // `(color, width)` style. Each group becomes one `paint_path` call,
+        // preserving the batching gains from PR #5 while honoring per-way
+        // style. Vertex lookup is a single contiguous slice per way
+        // (`way_vertices[i]`) — no HashMap indirection.
+        //
+        // Group key uses `f32::to_bits` for width so we don't need a float-
+        // hashing crate.
+        struct WayGroup {
+            color: u32,
+            builder: PathBuilder,
+            emitted: bool,
+        }
+        let mut way_groups: HashMap<(u32, u32), WayGroup> = HashMap::new();
 
         for (i, verts) in self.way_vertices.iter().enumerate() {
             if verts.len() < 2 {
@@ -273,6 +267,15 @@ impl MapLayer for OsmLayer {
                 continue;
             }
 
+            let way_tags = &osm_data.ways[i].tags;
+            let style = self.stylesheet.way_style(way_tags);
+            let key = (style.color, style.width.to_bits());
+            let group = way_groups.entry(key).or_insert_with(|| WayGroup {
+                color: style.color,
+                builder: PathBuilder::stroke(px(style.width)),
+                emitted: false,
+            });
+
             let mut first = true;
             let mut emitted = 0;
             for &(mx, my) in verts {
@@ -280,21 +283,22 @@ impl MapLayer for OsmLayer {
                 if !is_point_valid(sp) { continue; }
                 let p = point(px(sp.x.0 + origin_x), px(sp.y.0 + origin_y));
                 if first {
-                    way_builder.move_to(p);
+                    group.builder.move_to(p);
                     first = false;
                 } else {
-                    way_builder.line_to(p);
+                    group.builder.line_to(p);
                 }
                 emitted += 1;
             }
             if emitted >= 2 {
-                way_points_pushed = true;
+                group.emitted = true;
             }
         }
 
-        if way_points_pushed {
-            if let Ok(path) = way_builder.build() {
-                window.paint_path(path, self.way_color);
+        for (_, g) in way_groups {
+            if !g.emitted { continue; }
+            if let Ok(path) = g.builder.build() {
+                window.paint_path(path, rgb(g.color));
             }
         }
 
@@ -304,21 +308,27 @@ impl MapLayer for OsmLayer {
         // per-element layout pass. Batching nodes into a single PathBuilder
         // fill path was tried and turned out much slower — Lyon's fill
         // tessellator is not tuned for thousands of tiny rectangles.
-        let half = self.node_size / 2.0;
-        for &(_id, mx, my) in &self.node_cache.flat {
+        //
+        // Per-node style comes from the stylesheet via the node's tags.
+        for &(id, mx, my) in &self.node_cache.flat {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
             }
             let sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) { continue; }
+            let style = match osm_data.nodes.get(&id) {
+                Some(n) => self.stylesheet.node_style(&n.tags),
+                None => crate::style::NodeStyle::default(),
+            };
+            let half = style.size / 2.0;
             let quad_bounds = Bounds {
                 origin: point(
                     px(sp.x.0 + origin_x - half),
                     px(sp.y.0 + origin_y - half),
                 ),
-                size: size(px(self.node_size), px(self.node_size)),
+                size: size(px(style.size), px(style.size)),
             };
-            window.paint_quad(fill(quad_bounds, self.node_color));
+            window.paint_quad(fill(quad_bounds, rgb(style.color)));
         }
     }
 
@@ -327,8 +337,6 @@ impl MapLayer for OsmLayer {
             vec![
                 ("Nodes".to_string(), osm_data.nodes.len().to_string()),
                 ("Ways".to_string(), osm_data.ways.len().to_string()),
-                ("Node Size".to_string(), self.node_size.to_string()),
-                ("Way Width".to_string(), self.way_width.to_string()),
             ]
         } else {
             vec![("Status".to_string(), "No data loaded".to_string())]
@@ -442,7 +450,8 @@ impl MapLayer for OsmLayer {
                 let Some((lat, lon)) = validate_coords(n.lat, n.lon) else { return; };
                 let sp = viewport.geo_to_screen(lat, lon);
                 if !is_point_valid(sp) { return; }
-                let ring_size = self.node_size * 2.0;
+                let node_style = self.stylesheet.node_style(&n.tags);
+                let ring_size = node_style.size * 2.0;
                 let half = ring_size / 2.0;
                 let ring_bounds = Bounds {
                     origin: point(
@@ -480,7 +489,8 @@ impl MapLayer for OsmLayer {
                 }
                 if pts.len() < 2 { return; }
 
-                let mut builder = PathBuilder::stroke(px(self.way_width + 4.0));
+                let way_style = self.stylesheet.way_style(&way.tags);
+                let mut builder = PathBuilder::stroke(px(way_style.width + 4.0));
                 for (i, p) in pts.iter().enumerate() {
                     if i == 0 { builder.move_to(*p); } else { builder.line_to(*p); }
                 }

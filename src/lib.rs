@@ -11,6 +11,7 @@ pub mod osm;
 pub mod osm_api;
 pub mod script;
 pub mod selection;
+pub mod style;
 pub mod tile_cache;
 pub mod tiles;
 pub mod viewport;
