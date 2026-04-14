@@ -73,13 +73,13 @@ impl MapLayer for GridLayer {
                 let screen_point = viewport.geo_to_screen(valid_lat, valid_lon);
 
                 if is_point_valid(screen_point) {
-                    let x = screen_point.x.0;
+                    let x = screen_point.x;
 
                     // Only draw if the line is within screen bounds
-                    if x >= -10.0 && x <= bounds.size.width.0 + 10.0 {
+                    if x >= px(-10.0) && x <= bounds.size.width + px(10.0) {
                         let mut builder = PathBuilder::stroke(px(1.0));
-                        builder.move_to(point(px(x), px(0.0)));
-                        builder.line_to(point(px(x), bounds.size.height));
+                        builder.move_to(point(x, px(0.0)));
+                        builder.line_to(point(x, bounds.size.height));
                         if let Ok(path) = builder.build() {
                             window.paint_path(path, self.grid_color);
                         }
@@ -99,13 +99,13 @@ impl MapLayer for GridLayer {
                 let screen_point = viewport.geo_to_screen(valid_lat, valid_lon);
 
                 if is_point_valid(screen_point) {
-                    let y = screen_point.y.0;
+                    let y = screen_point.y;
 
                     // Only draw if the line is within screen bounds
-                    if y >= -10.0 && y <= bounds.size.height.0 + 10.0 {
+                    if y >= px(-10.0) && y <= bounds.size.height + px(10.0) {
                         let mut builder = PathBuilder::stroke(px(1.0));
-                        builder.move_to(point(px(0.0), px(y)));
-                        builder.line_to(point(bounds.size.width, px(y)));
+                        builder.move_to(point(px(0.0), y));
+                        builder.line_to(point(bounds.size.width, y));
                         if let Ok(path) = builder.build() {
                             window.paint_path(path, self.grid_color);
                         }

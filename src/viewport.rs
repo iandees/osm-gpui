@@ -52,7 +52,7 @@ impl Viewport {
                 let dx = (position.x - last_pos.x) * self.pan_sensitivity as f32;
                 let dy = (position.y - last_pos.y) * self.pan_sensitivity as f32;
 
-                self.transform.pan_by_pixels(-dx.0, -dy.0);
+                self.transform.pan_by_pixels(-dx, -dy);
                 self.last_mouse_position = Some(position);
                 return true; // Indicate that the view should be redrawn
             }
@@ -65,7 +65,7 @@ impl Viewport {
     /// Handle scroll wheel event for zooming
     pub fn handle_scroll(&mut self, position: Point<Pixels>, delta: Point<Pixels>) -> bool {
         // Use vertical scroll for zooming
-        let zoom_delta = -delta.y.0 as f64 * self.zoom_sensitivity;
+        let zoom_delta = -delta.y.to_f64() * self.zoom_sensitivity;
 
         if zoom_delta.abs() > 0.0 {
             self.transform.zoom_at_point(position, zoom_delta);

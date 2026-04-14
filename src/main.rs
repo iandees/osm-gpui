@@ -1,4 +1,4 @@
-use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Application, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SharedString, SystemMenuType, Window, WindowOptions};
+use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding, Keystroke, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollDelta, ScrollWheelEvent, SharedString, SystemMenuType, Window, WindowOptions};
 use serde::Deserialize;
 use schemars::JsonSchema;
 use gpui::Action;
@@ -342,8 +342,8 @@ impl MapViewer {
             // Calculate required zoom to fit bounding box
             let margin = 1.2; // Add 20% margin
             let viewport = &self.viewport;
-            let screen_width = viewport.transform.screen_size.width.0 as f64;
-            let screen_height = viewport.transform.screen_size.height.0 as f64;
+            let screen_width = viewport.transform.screen_size.width.to_f64();
+            let screen_height = viewport.transform.screen_size.height.to_f64();
 
             // Convert bounding box to Mercator
             let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
@@ -393,9 +393,7 @@ impl MapViewer {
         let up_pos = event.position;
         let was_click = match self.mouse_down_pos.take() {
             Some(down) => {
-                let dx = up_pos.x.0 - down.x.0;
-                let dy = up_pos.y.0 - down.y.0;
-                (dx * dx + dy * dy).sqrt() < 4.0
+                (up_pos - down).magnitude() < 4.0
             }
             None => false,
         };
@@ -446,8 +444,8 @@ impl MapViewer {
                 y: px(delta.y),
             },
             gpui::ScrollDelta::Pixels(delta) => gpui::Point {
-                x: px(delta.x.0 / 10.0),
-                y: px(delta.y.0 / 10.0),
+                x: delta.x * 0.1,
+                y: delta.y * 0.1,
             },
         };
 
@@ -1461,7 +1459,7 @@ fn main() {
         });
     }
 
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         // Bring the menu bar to the foreground
         cx.activate(true);
 
@@ -1535,7 +1533,7 @@ fn main() {
         )
         .unwrap();
 
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _window_id| {
             cx.quit();
         })
         .detach();
@@ -1703,6 +1701,7 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
                 MenuItem::separator(),
                 MenuItem::action("Quit\t⌘Q", Quit),
             ],
+            disabled: false,
         },
         Menu {
             name: "File".into(),
@@ -1710,16 +1709,19 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
                 MenuItem::action("Open…\t⌘O", OpenOsmFile),
                 MenuItem::action("Download from OSM\t⌘⇧D", DownloadFromOsm),
             ],
+            disabled: false,
         },
         Menu {
             name: "Imagery".into(),
             items: imagery_items,
+            disabled: false,
         },
         Menu {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
             ],
+            disabled: false,
         },
     ]);
 }

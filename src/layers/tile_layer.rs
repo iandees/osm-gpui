@@ -86,10 +86,10 @@ impl MapLayer for TileLayer {
             // Note: In screen coordinates, y increases downward
             // tile_max_lat (north) -> smaller y (top)
             // tile_min_lat (south) -> larger y (bottom)
-            let tile_x = screen_top_left.x.0;
-            let tile_y = screen_top_left.y.0;
-            let tile_width = (screen_bottom_right.x.0 - screen_top_left.x.0).abs();
-            let tile_height = (screen_bottom_right.y.0 - screen_top_left.y.0).abs();
+            let tile_x = screen_top_left.x;
+            let tile_y = screen_top_left.y;
+            let tile_width = (screen_bottom_right.x - screen_top_left.x).abs();
+            let tile_height = (screen_bottom_right.y - screen_top_left.y).abs();
 
             // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -102,10 +102,10 @@ impl MapLayer for TileLayer {
                 let parent_url = url_from_template(&self.url_template, &parent_coord);
                 div()
                     .absolute()
-                    .left(px(-tile_width * qx as f32))
-                    .top(px(-tile_height * qy as f32))
-                    .w(px(tile_width * 2.0))
-                    .h(px(tile_height * 2.0))
+                    .left(-tile_width * qx as f32)
+                    .top(-tile_height * qy as f32)
+                    .w(tile_width * 2.0)
+                    .h(tile_height * 2.0)
                     .child(
                         img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                             window.use_asset::<crate::tile_cache::TileAsset>(&parent_url, cx)
@@ -119,10 +119,10 @@ impl MapLayer for TileLayer {
             // Create tile element using GPUI's img with asset loading
             let mut tile_element = div()
                 .absolute()
-                .left(px(tile_x))
-                .top(px(tile_y))
-                .w(px(tile_width))
-                .h(px(tile_height))
+                .left(tile_x)
+                .top(tile_y)
+                .w(tile_width)
+                .h(tile_height)
                 .overflow_hidden()
                 .bg(rgb(0x2d3748)); // Ultimate fallback background
 

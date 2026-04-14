@@ -29,12 +29,12 @@ pub fn point_to_segment_distance(
     a: Point<Pixels>,
     b: Point<Pixels>,
 ) -> f32 {
-    let px = p.x.0;
-    let py = p.y.0;
-    let ax = a.x.0;
-    let ay = a.y.0;
-    let bx = b.x.0;
-    let by = b.y.0;
+    let px = p.x.as_f32();
+    let py = p.y.as_f32();
+    let ax = a.x.as_f32();
+    let ay = a.y.as_f32();
+    let bx = b.x.as_f32();
+    let by = b.y.as_f32();
 
     let dx = bx - ax;
     let dy = by - ay;
