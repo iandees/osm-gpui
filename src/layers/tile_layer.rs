@@ -16,6 +16,8 @@ pub struct TileLayer {
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
     show_boundaries: bool,
+    min_zoom: Option<u32>,
+    max_zoom: Option<u32>,
 }
 
 impl TileLayer {
@@ -42,12 +44,60 @@ impl TileLayer {
             visible: true,
             tile_cache,
             show_boundaries: false,
+            min_zoom: None,
+            max_zoom: None,
         }
+    }
+
+    pub fn with_min_zoom(mut self, min_zoom: Option<u32>) -> Self {
+        self.min_zoom = min_zoom;
+        self
+    }
+
+    pub fn with_max_zoom(mut self, max_zoom: Option<u32>) -> Self {
+        self.max_zoom = max_zoom;
+        self
     }
 
     pub fn set_show_boundaries(&mut self, show: bool) {
         self.show_boundaries = show;
     }
+
+    /// Compute the tile zoom level to request for a given viewport zoom,
+    /// honoring the layer's optional `min_zoom` / `max_zoom` ELI bounds.
+    pub fn effective_tile_zoom(&self, viewport_z: f64) -> Option<u32> {
+        compute_effective_tile_zoom(viewport_z, self.min_zoom, self.max_zoom)
+    }
+}
+
+/// Compute the tile zoom level to request for a given viewport zoom,
+/// honoring optional `min_zoom` / `max_zoom` ELI bounds.
+///
+/// Returns `None` when the layer should not draw at all (viewport is
+/// below `min_zoom` or more than one level above `max_zoom`).
+/// When viewport zoom rounds to exactly `max_zoom + 1`, returns
+/// `Some(max_zoom)` so we overzoom by one level. Otherwise returns
+/// the rounded viewport zoom, capped at the global limit of 18.
+fn compute_effective_tile_zoom(
+    viewport_z: f64,
+    min_zoom: Option<u32>,
+    max_zoom: Option<u32>,
+) -> Option<u32> {
+    let rounded = viewport_z.round().max(0.0).min(18.0) as u32;
+    if let Some(min_z) = min_zoom {
+        if rounded < min_z {
+            return None;
+        }
+    }
+    if let Some(max_z) = max_zoom {
+        if rounded > max_z + 1 {
+            return None;
+        }
+        if rounded > max_z {
+            return Some(max_z);
+        }
+    }
+    Some(rounded)
 }
 
 impl MapLayer for TileLayer {
@@ -67,7 +117,9 @@ impl MapLayer for TileLayer {
         let mut elements = Vec::new();
 
         let zoom_level = viewport.zoom_level();
-        let tile_zoom = zoom_level.round().max(0.0).min(18.0) as u32;
+        let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
+            return elements;
+        };
         let bounds_geo = viewport.visible_bounds();
         let (min_lat, min_lon, max_lat, max_lon) = (
             bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
@@ -170,7 +222,9 @@ impl MapLayer for TileLayer {
 
         // Render tile boundaries for debugging
         let zoom_level = viewport.zoom_level();
-        let tile_zoom = zoom_level.round().max(0.0).min(18.0) as u32;
+        let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
+            return;
+        };
         let bounds_geo = viewport.visible_bounds();
         let (min_lat, min_lon, max_lat, max_lon) = (
             bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
@@ -211,10 +265,70 @@ impl MapLayer for TileLayer {
             (0, 0)
         };
 
-        vec![
+        let mut stats = vec![
             ("Cached Files".to_string(), cached_files.to_string()),
             ("Active Downloads".to_string(), active_downloads.to_string()),
             ("Show Boundaries".to_string(), self.show_boundaries.to_string()),
-        ]
+        ];
+        if let Some(min_z) = self.min_zoom {
+            stats.push(("Min Zoom".to_string(), min_z.to_string()));
+        }
+        if let Some(max_z) = self.max_zoom {
+            stats.push(("Max Zoom".to_string(), max_z.to_string()));
+        }
+        stats
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_effective_tile_zoom;
+
+    #[test]
+    fn no_bounds_passthrough() {
+        assert_eq!(compute_effective_tile_zoom(0.0, None, None), Some(0));
+        assert_eq!(compute_effective_tile_zoom(5.4, None, None), Some(5));
+        assert_eq!(compute_effective_tile_zoom(12.0, None, None), Some(12));
+        // Existing global cap of 18.
+        assert_eq!(compute_effective_tile_zoom(20.0, None, None), Some(18));
+    }
+
+    #[test]
+    fn below_min_returns_none() {
+        assert_eq!(compute_effective_tile_zoom(3.0, Some(5), None), None);
+        assert_eq!(compute_effective_tile_zoom(4.49, Some(5), None), None);
+    }
+
+    #[test]
+    fn at_min_uses_viewport_z() {
+        assert_eq!(compute_effective_tile_zoom(5.0, Some(5), None), Some(5));
+        assert_eq!(compute_effective_tile_zoom(4.5, Some(5), None), Some(5));
+    }
+
+    #[test]
+    fn at_max_uses_viewport_z() {
+        assert_eq!(compute_effective_tile_zoom(14.0, None, Some(14)), Some(14));
+        assert_eq!(compute_effective_tile_zoom(13.5, None, Some(14)), Some(14));
+    }
+
+    #[test]
+    fn one_above_max_clamps() {
+        assert_eq!(compute_effective_tile_zoom(15.0, None, Some(14)), Some(14));
+    }
+
+    #[test]
+    fn two_above_max_returns_none() {
+        assert_eq!(compute_effective_tile_zoom(16.0, None, Some(14)), None);
+        assert_eq!(compute_effective_tile_zoom(17.0, None, Some(14)), None);
+    }
+
+    #[test]
+    fn min_and_max_combined() {
+        assert_eq!(compute_effective_tile_zoom(4.0, Some(5), Some(14)), None);
+        assert_eq!(compute_effective_tile_zoom(5.0, Some(5), Some(14)), Some(5));
+        assert_eq!(compute_effective_tile_zoom(10.0, Some(5), Some(14)), Some(10));
+        assert_eq!(compute_effective_tile_zoom(14.0, Some(5), Some(14)), Some(14));
+        assert_eq!(compute_effective_tile_zoom(15.0, Some(5), Some(14)), Some(14));
+        assert_eq!(compute_effective_tile_zoom(16.0, Some(5), Some(14)), None);
     }
 }
