@@ -13,17 +13,18 @@ authors = ["Ian Dees <me@iandees.com>"]
 readme = "README.md"
 
 [dependencies]
+anyhow = "1.0"
+dirs = "5"
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+image = "0.25"
 quick-xml = "0.31"
 rfd = "0.14"
-ureq = { version = "2.9", features = ["json"] }
+schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-schemars = "1.0"
-image = "0.25"
-anyhow = "1.0"
 smallvec = "1.0"
+ureq = { version = "2.9", features = ["json"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
