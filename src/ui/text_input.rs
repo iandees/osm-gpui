@@ -1,14 +1,13 @@
 //! Minimal single-line text input entity.
 
 use gpui::{
-    div, prelude::*, px, rgb, App, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Window,
+    div, prelude::*, px, rgb, App, ClipboardItem, Context, FocusHandle, Focusable, KeyDownEvent,
+    MouseButton, MouseDownEvent, SharedString, Window,
 };
 
 pub struct TextInput {
     content: String,
     cursor: usize,
-    #[allow(dead_code)]
     selection_anchor: Option<usize>,
     placeholder: SharedString,
     focus_handle: FocusHandle,
@@ -36,23 +35,69 @@ impl TextInput {
         cx.notify();
     }
 
-    fn on_key_down(
-        &mut self,
-        ev: &KeyDownEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
+        let m = &ev.keystroke.modifiers;
+        let cmd = m.platform || m.control; // Cmd on macOS, Ctrl elsewhere
+
+        if cmd {
+            match key {
+                "a" => {
+                    self.selection_anchor = Some(0);
+                    self.cursor = self.content.len();
+                    cx.notify();
+                    return;
+                }
+                "c" => {
+                    if let Some(text) = self.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                    return;
+                }
+                "x" => {
+                    if let Some(text) = self.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        self.delete_selection();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "v" => {
+                    if let Some(item) = cx.read_from_clipboard() {
+                        if let Some(text) = item.text() {
+                            let clean: String = text.replace(['\r', '\n'], "");
+                            self.replace_selection_with(&clean);
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key {
-            "backspace" => self.backspace(),
-            "delete" => self.delete_forward(),
-            "left" => self.move_left(),
-            "right" => self.move_right(),
-            "home" => self.cursor = 0,
-            "end" => self.cursor = self.content.len(),
+            "backspace" => {
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.backspace();
+                }
+            }
+            "delete" => {
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.delete_forward();
+                }
+            }
+            "left" => self.move_horizontal(-1, m.shift),
+            "right" => self.move_horizontal(1, m.shift),
+            "home" => self.move_to(0, m.shift),
+            "end" => self.move_to(self.content.len(), m.shift),
             _ => {
                 if let Some(s) = printable_from(ev) {
-                    self.insert(&s);
+                    self.replace_selection_with(&s);
                 }
             }
         }
@@ -81,12 +126,64 @@ impl TextInput {
         self.content.replace_range(self.cursor..next, "");
     }
 
-    fn move_left(&mut self) {
-        self.cursor = prev_char_boundary(&self.content, self.cursor);
+    fn has_selection(&self) -> bool {
+        matches!(self.selection_anchor, Some(a) if a != self.cursor)
     }
 
-    fn move_right(&mut self) {
-        self.cursor = next_char_boundary(&self.content, self.cursor);
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.selection_anchor?;
+        if a == self.cursor {
+            return None;
+        }
+        Some((a.min(self.cursor), a.max(self.cursor)))
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (lo, hi) = self.selection_range()?;
+        Some(self.content[lo..hi].to_string())
+    }
+
+    fn delete_selection(&mut self) {
+        if let Some((lo, hi)) = self.selection_range() {
+            self.content.replace_range(lo..hi, "");
+            self.cursor = lo;
+            self.selection_anchor = None;
+        }
+    }
+
+    fn replace_selection_with(&mut self, s: &str) {
+        if self.has_selection() {
+            self.delete_selection();
+        }
+        self.insert(s);
+        self.selection_anchor = None;
+    }
+
+    fn move_horizontal(&mut self, dir: i32, extend: bool) {
+        let next = if dir < 0 {
+            prev_char_boundary(&self.content, self.cursor)
+        } else {
+            next_char_boundary(&self.content, self.cursor)
+        };
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = next;
+    }
+
+    fn move_to(&mut self, target: usize, extend: bool) {
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = target.min(self.content.len());
     }
 }
 
