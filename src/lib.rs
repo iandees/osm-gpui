@@ -15,6 +15,7 @@ pub mod selection;
 pub mod style;
 pub mod tile_cache;
 pub mod tiles;
+pub mod ui;
 pub mod viewport;
 
 pub use osm::{OsmBounds, OsmData, OsmNode, OsmParser, OsmRelation, OsmWay};
