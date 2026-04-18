@@ -1592,7 +1592,7 @@ fn main() {
             })
             .detach();
 
-        cx.open_window(
+        let map_window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
                     origin: point(px(100.0), px(100.0)),
@@ -1619,8 +1619,11 @@ fn main() {
         )
         .unwrap();
 
-        cx.on_window_closed(|cx, _window_id| {
-            cx.quit();
+        let map_window_id = map_window.window_id();
+        cx.on_window_closed(move |cx, window_id| {
+            if window_id == map_window_id {
+                cx.quit();
+            }
         })
         .detach();
     });
@@ -1682,8 +1685,26 @@ fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
 }
 
-fn open_settings(_: &OpenSettings, _cx: &mut App) {
-    eprintln!("settings: open settings (stub)");
+fn open_settings(_: &OpenSettings, cx: &mut App) {
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                origin: point(px(200.0), px(200.0)),
+                size: size(px(600.0), px(500.0)),
+            })),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Settings".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
+            }),
+            focus: true,
+            ..Default::default()
+        },
+        |_window, cx| {
+            cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(cx))
+        },
+    )
+    .unwrap();
 }
 
 // Handle the File > Download from OSM menu action
