@@ -19,6 +19,7 @@ use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
+use theme;
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery]);
 
@@ -1535,6 +1536,8 @@ fn main() {
     }
 
     gpui_platform::application().run(move |cx: &mut App| {
+        theme::init(theme::LoadThemes::JustBase, cx);
+
         // Bring the menu bar to the foreground
         cx.activate(true);
 
