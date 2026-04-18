@@ -64,9 +64,8 @@ A GPUI `Entity` with state: `content: String`, `cursor: usize` (byte offset into
 Caller-agnostic, intended for reuse beyond this feature.
 
 - Renders a backdrop covering the window (catches clicks, but does **not** dismiss — that's the caller's job via `Cancel`/`Esc`) with a centered frame above it.
-- Accepts: `title: SharedString`, `body: AnyView`, `footer: AnyView`, `on_cancel: impl Fn(&mut App)`.
-- Traps `Esc` key events to invoke `on_cancel`.
-- Implements Tab / Shift-Tab focus cycling across an ordered list of focusable children provided by the caller.
+- Accepts: `title: SharedString`, `body: impl IntoElement`, `footer: impl IntoElement`.
+- Purely visual chrome — the caller owns Esc handling, focus cycling, and all key events. This keeps `Modal` simple and avoids coupling it to a specific event-handling strategy.
 
 ### `src/ui/custom_imagery_dialog.rs` — this feature
 
