@@ -182,18 +182,29 @@ impl MapLayer for TileLayer {
                 tile_element = tile_element.child(parent_el);
             }
 
+            // Pick a character budget for the fallback message based on
+            // the on-screen tile width: roughly one char per 6 px, clamped
+            // to a sensible range so very small tiles still get something.
+            let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
+            let fallback_url = tile_url.clone();
+            let asset_url = tile_url;
+
             let tile_element = tile_element
                 .child(
                     // Use GPUI's img with asset loading system
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                        window.use_asset::<crate::tile_cache::TileAsset>(&tile_url, cx)
+                        window.use_asset::<crate::tile_cache::TileAsset>(&asset_url, cx)
                     })
                         .size_full()
                         .object_fit(gpui::ObjectFit::Cover)
-                        .with_fallback(|| {
+                        .with_fallback(move || {
+                            let reason = crate::tile_cache::last_error(&fallback_url)
+                                .unwrap_or_else(|| "Failed".to_string());
+                            let display = crate::tile_cache::truncate_middle(&reason, char_budget);
                             div()
                                 .size_full()
                                 .bg(rgb(0x9f1239))
+                                .overflow_hidden()
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -201,7 +212,8 @@ impl MapLayer for TileLayer {
                                     div()
                                         .text_color(rgb(0xffffff))
                                         .text_xs()
-                                        .child("Failed")
+                                        .whitespace_nowrap()
+                                        .child(display)
                                 )
                                 .into_any_element()
                         })
