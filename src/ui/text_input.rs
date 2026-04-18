@@ -5,12 +5,22 @@ use gpui::{
     MouseButton, MouseDownEvent, SharedString, Window,
 };
 
+/// Approximate character width for scroll estimation. Doesn't need to be
+/// exact — we just need the cursor to stay roughly in view.
+const CHAR_WIDTH_EST: f32 = 8.0;
+/// Padding kept between the cursor and the edge of the visible area.
+const SCROLL_MARGIN: f32 = 24.0;
+
 pub struct TextInput {
     content: String,
     cursor: usize,
     selection_anchor: Option<usize>,
     placeholder: SharedString,
     focus_handle: FocusHandle,
+    /// Pixel offset scrolled from the left. Adjusted so the caret stays visible.
+    scroll_offset: f32,
+    /// Last-known width of the input container, captured on render.
+    last_width: f32,
 }
 
 impl TextInput {
@@ -21,6 +31,8 @@ impl TextInput {
             selection_anchor: None,
             placeholder: placeholder.into(),
             focus_handle: cx.focus_handle(),
+            scroll_offset: 0.0,
+            last_width: 370.0, // sensible default; updated on render
         }
     }
 
@@ -101,6 +113,7 @@ impl TextInput {
                 }
             }
         }
+        self.ensure_cursor_visible();
         cx.notify();
     }
 
@@ -185,6 +198,20 @@ impl TextInput {
         }
         self.cursor = target.min(self.content.len());
     }
+
+    /// Adjust `scroll_offset` so the cursor stays within the visible area.
+    fn ensure_cursor_visible(&mut self) {
+        let cursor_chars = self.content[..self.cursor].chars().count() as f32;
+        let cursor_px = cursor_chars * CHAR_WIDTH_EST;
+        let visible = self.last_width - SCROLL_MARGIN;
+
+        if cursor_px - self.scroll_offset > visible {
+            self.scroll_offset = cursor_px - visible;
+        }
+        if cursor_px < self.scroll_offset + SCROLL_MARGIN {
+            self.scroll_offset = (cursor_px - SCROLL_MARGIN).max(0.0);
+        }
+    }
 }
 
 impl Focusable for TextInput {
@@ -256,6 +283,8 @@ impl Render for TextInput {
             div().child(content).into_any_element()
         };
 
+        let scroll = self.scroll_offset;
+
         div()
             .track_focus(&self.focus_handle)
             .key_context("TextInput")
@@ -276,7 +305,15 @@ impl Render for TextInput {
             .rounded_sm()
             .text_color(rgb(0xffffff))
             .text_sm()
-            .child(inner)
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .ml(px(-scroll))
+                    .child(inner),
+            )
     }
 }
 
