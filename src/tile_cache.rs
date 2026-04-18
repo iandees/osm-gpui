@@ -64,7 +64,7 @@ pub enum TileFetchError {
     Http { status: u16, body_snippet: Option<String> },
     Transport(String),
     EmptyBody,
-    NotPng,
+    NotImage,
     Io(String),
 }
 
@@ -79,7 +79,7 @@ impl fmt::Display for TileFetchError {
             },
             TileFetchError::Transport(kind) => write!(f, "Transport: {}", kind),
             TileFetchError::EmptyBody => write!(f, "Empty body"),
-            TileFetchError::NotPng => write!(f, "Not PNG"),
+            TileFetchError::NotImage => write!(f, "Not an image"),
             TileFetchError::Io(msg) => write!(f, "Disk: {}", msg),
         }
     }
@@ -155,9 +155,12 @@ impl Asset for TileAsset {
                             return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
                         }
 
-                        // Check if this looks like an actual image file (PNG should start with PNG signature)
-                        if bytes.len() < 8 || &bytes[1..4] != b"PNG" {
-                            let reason = TileFetchError::NotPng.to_string();
+                        // Check if this looks like an actual image file
+                        // PNG: bytes 1..4 == "PNG", JPEG: bytes 0..3 == FF D8 FF
+                        let is_png = bytes.len() >= 8 && &bytes[1..4] == b"PNG";
+                        let is_jpeg = bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF;
+                        if !is_png && !is_jpeg {
+                            let reason = TileFetchError::NotImage.to_string();
                             record_error(&url, reason.clone());
                             return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
                         }
@@ -354,7 +357,7 @@ mod tests {
     fn display_other_variants() {
         assert_eq!(TileFetchError::Transport("Dns".into()).to_string(), "Transport: Dns");
         assert_eq!(TileFetchError::EmptyBody.to_string(), "Empty body");
-        assert_eq!(TileFetchError::NotPng.to_string(), "Not PNG");
+        assert_eq!(TileFetchError::NotImage.to_string(), "Not an image");
         assert_eq!(TileFetchError::Io("write: nope".into()).to_string(), "Disk: write: nope");
     }
 
