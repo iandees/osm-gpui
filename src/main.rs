@@ -30,6 +30,14 @@ struct AddImageryLayer {
     id: SharedString,
 }
 
+/// Action for adding a saved custom imagery entry as a layer.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+struct AddSavedCustomImagery {
+    index: usize,
+}
+
 /// Request to add a new layer from a menu action.
 #[derive(Debug, Clone)]
 enum LayerRequest {
@@ -1531,6 +1539,7 @@ fn main() {
         cx.on_action(download_from_osm);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
+        cx.on_action(add_saved_custom_imagery);
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
 
@@ -1728,6 +1737,26 @@ fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
     cx.refresh_windows();
 }
 
+// Handle the Imagery > Custom Imagery > <saved entry> menu action
+fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut App) {
+    let entries = custom_imagery_snapshot();
+    let Some(entry) = entries.get(action.index).cloned() else {
+        eprintln!("add_saved_custom_imagery: stale index {}", action.index);
+        return;
+    };
+    if let Some(requests) = LAYER_REQUESTS.get() {
+        if let Ok(mut q) = requests.lock() {
+            q.push(LayerRequest::Imagery {
+                name: entry.name,
+                url_template: entry.url_template,
+                min_zoom: Some(entry.min_zoom),
+                max_zoom: Some(entry.max_zoom),
+            });
+        }
+    }
+    cx.refresh_windows();
+}
+
 // Handle the Imagery > Coordinate Grid menu action
 fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
@@ -1741,7 +1770,27 @@ fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
 /// Build and install the menu bar, using the current viewport center to filter
 /// the Imagery menu to relevant ELI entries.
 fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryLoadState) {
+    let custom = custom_imagery_snapshot();
+    let mut custom_items: Vec<MenuItem> = vec![
+        MenuItem::action("Add…", AddCustomImagery),
+    ];
+    if !custom.is_empty() {
+        custom_items.push(MenuItem::separator());
+        for (idx, entry) in custom.iter().enumerate() {
+            custom_items.push(MenuItem::action(
+                entry.name.clone(),
+                AddSavedCustomImagery { index: idx },
+            ));
+        }
+    }
+
     let mut imagery_items: Vec<MenuItem> = vec![
+        MenuItem::submenu(Menu {
+            name: "Custom Imagery".into(),
+            items: custom_items,
+            disabled: false,
+        }),
+        MenuItem::separator(),
         MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
         MenuItem::separator(),
         MenuItem::action("Coordinate Grid", AddCoordinateGrid),
