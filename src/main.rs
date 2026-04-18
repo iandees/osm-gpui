@@ -19,8 +19,55 @@ use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
+use theme;
+use gpui::{Font, Pixels, FontWeight};
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings]);
+
+/// Minimal theme settings provider so `ui` crate components can query fonts/density.
+struct DefaultThemeSettings {
+    ui_font: Font,
+    buffer_font: Font,
+}
+
+impl Default for DefaultThemeSettings {
+    fn default() -> Self {
+        Self {
+            ui_font: Font {
+                family: ".SystemUIFont".into(),
+                weight: FontWeight::NORMAL,
+                ..Default::default()
+            },
+            buffer_font: Font {
+                family: "Menlo".into(),
+                weight: FontWeight::NORMAL,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+impl theme::ThemeSettingsProvider for DefaultThemeSettings {
+    fn ui_font<'a>(&'a self, _cx: &'a App) -> &'a Font {
+        &self.ui_font
+    }
+
+    fn buffer_font<'a>(&'a self, _cx: &'a App) -> &'a Font {
+        &self.buffer_font
+    }
+
+    fn ui_font_size(&self, _cx: &App) -> Pixels {
+        px(14.0)
+    }
+
+    fn buffer_font_size(&self, _cx: &App) -> Pixels {
+        px(14.0)
+    }
+
+    fn ui_density(&self, _cx: &App) -> theme::UiDensity {
+        theme::UiDensity::Default
+    }
+}
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -63,9 +110,6 @@ struct LayerContextMenu {
 /// Stores the full ELI list once loaded (populated on the background executor).
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
 
-/// Stores the user's saved custom imagery entries (persisted to disk).
-static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
-
 /// Set to true when the imagery index is loaded (or failed) so the render loop
 /// knows to refresh the menu.
 static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
@@ -95,6 +139,10 @@ static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new
 
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
+
+/// Guard to prevent opening multiple settings windows simultaneously.
+static SETTINGS_WINDOW_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 // Set to true while a script runner thread is active
 static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
@@ -1367,9 +1415,9 @@ impl Render for MapViewer {
 // ---------------------------------------------------------------------------
 
 struct LiveApp {
-    idle: Arc<IdleTracker>,
+    _idle: Arc<IdleTracker>,
     bus: Arc<ScriptBus>,
-    window_id: u32,
+    _window_id: u32,
 }
 
 impl AppHandle for LiveApp {
@@ -1513,9 +1561,9 @@ fn main() {
             };
 
             let mut live_app = LiveApp {
-                idle: idle.clone(),
+                _idle: idle.clone(),
                 bus: bus_for_runner,
-                window_id,
+                _window_id: window_id,
             };
 
             match runner.run(&mut live_app, &steps) {
@@ -1535,6 +1583,9 @@ fn main() {
     }
 
     gpui_platform::application().run(move |cx: &mut App| {
+        theme::init(theme::LoadThemes::JustBase, cx);
+        theme::set_theme_settings_provider(Box::new(DefaultThemeSettings::default()), cx);
+
         // Bring the menu bar to the foreground
         cx.activate(true);
 
@@ -1549,10 +1600,11 @@ fn main() {
         cx.on_action(add_saved_custom_imagery);
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
+        cx.on_action(open_settings);
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
-        let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(loaded)));
+        custom_imagery_store::init_store(loaded);
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
@@ -1588,7 +1640,7 @@ fn main() {
             })
             .detach();
 
-        cx.open_window(
+        let map_window = cx.open_window(
             WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
                     origin: point(px(100.0), px(100.0)),
@@ -1608,34 +1660,29 @@ fn main() {
                     KeyBinding::new("cmd-o", OpenOsmFile, None),
                     KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
+                    KeyBinding::new("cmd-,", OpenSettings, None),
                 ]);
                 cx.new(|cx| MapViewer::new(window, cx))
             },
         )
         .unwrap();
 
-        cx.on_window_closed(|cx, _window_id| {
-            cx.quit();
+        let map_window_id = map_window.window_id();
+        cx.on_window_closed(move |cx, window_id| {
+            if window_id == map_window_id {
+                cx.quit();
+            }
         })
         .detach();
     });
 }
 
 fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
-    CUSTOM_IMAGERY_STORE
-        .get()
-        .and_then(|s| s.lock().ok().map(|g| g.clone()))
-        .unwrap_or_default()
+    custom_imagery_store::snapshot()
 }
 
 fn append_custom_imagery(entry: CustomImageryEntry) {
-    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
-    let snapshot = {
-        let Ok(mut g) = store.lock() else { return };
-        g.push(entry);
-        g.clone()
-    };
-    custom_imagery_store::save(&snapshot);
+    custom_imagery_store::append(entry);
 }
 
 // Handle the File > Open OSM File menu action
@@ -1675,6 +1722,41 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 // Define the quit function that is registered with the App
 fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
+}
+
+fn open_settings(_: &OpenSettings, cx: &mut App) {
+    if SETTINGS_WINDOW_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    SETTINGS_WINDOW_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let settings_window = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                origin: point(px(200.0), px(200.0)),
+                size: size(px(600.0), px(500.0)),
+            })),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some("Settings".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
+            }),
+            focus: true,
+            ..Default::default()
+        },
+        |_window, cx| {
+            cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(cx))
+        },
+    )
+    .unwrap();
+
+    let settings_window_id = settings_window.window_id();
+    cx.on_window_closed(move |_cx, window_id| {
+        if window_id == settings_window_id {
+            SETTINGS_WINDOW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .detach();
 }
 
 // Handle the File > Download from OSM menu action
@@ -1847,6 +1929,8 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
         Menu {
             name: "OSM Viewer".into(),
             items: vec![
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
                 MenuItem::action("Quit", Quit),

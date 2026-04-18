@@ -2,4 +2,5 @@
 
 pub mod custom_imagery_dialog;
 pub mod modal;
+pub mod settings_window;
 pub mod text_input;
