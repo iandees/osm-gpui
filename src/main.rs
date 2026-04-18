@@ -94,6 +94,10 @@ static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
 
+/// Guard to prevent opening multiple settings windows simultaneously.
+static SETTINGS_WINDOW_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // Set to true while a script runner thread is active
 static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -1674,7 +1678,12 @@ fn quit(_: &Quit, cx: &mut App) {
 }
 
 fn open_settings(_: &OpenSettings, cx: &mut App) {
-    cx.open_window(
+    if SETTINGS_WINDOW_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    SETTINGS_WINDOW_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let settings_window = cx.open_window(
         WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
                 origin: point(px(200.0), px(200.0)),
@@ -1693,6 +1702,14 @@ fn open_settings(_: &OpenSettings, cx: &mut App) {
         },
     )
     .unwrap();
+
+    let settings_window_id = settings_window.window_id();
+    cx.on_window_closed(move |_cx, window_id| {
+        if window_id == settings_window_id {
+            SETTINGS_WINDOW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .detach();
 }
 
 // Handle the File > Download from OSM menu action
