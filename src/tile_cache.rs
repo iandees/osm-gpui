@@ -266,7 +266,7 @@ fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, Stri
 
 #[derive(Clone)]
 pub struct TileCache {
-    idle: Arc<IdleTracker>,
+    _idle: Arc<IdleTracker>,
 }
 
 impl TileCache {
@@ -274,7 +274,7 @@ impl TileCache {
         // Register the tracker globally so TileAsset::load can access it.
         // If already set (e.g. in tests), we simply use whichever was set first.
         let _ = TILE_IDLE_TRACKER.set(idle.clone());
-        Self { idle }
+        Self { _idle: idle }
     }
 
     /// Get statistics about the cache

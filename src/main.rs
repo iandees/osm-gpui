@@ -1367,9 +1367,9 @@ impl Render for MapViewer {
 // ---------------------------------------------------------------------------
 
 struct LiveApp {
-    idle: Arc<IdleTracker>,
+    _idle: Arc<IdleTracker>,
     bus: Arc<ScriptBus>,
-    window_id: u32,
+    _window_id: u32,
 }
 
 impl AppHandle for LiveApp {
@@ -1513,9 +1513,9 @@ fn main() {
             };
 
             let mut live_app = LiveApp {
-                idle: idle.clone(),
+                _idle: idle.clone(),
                 bus: bus_for_runner,
-                window_id,
+                _window_id: window_id,
             };
 
             match runner.run(&mut live_app, &steps) {
