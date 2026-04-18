@@ -21,7 +21,7 @@ use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 use theme;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -1552,6 +1552,7 @@ fn main() {
         cx.on_action(add_saved_custom_imagery);
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
+        cx.on_action(open_settings);
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
@@ -1611,6 +1612,7 @@ fn main() {
                     KeyBinding::new("cmd-o", OpenOsmFile, None),
                     KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
+                    KeyBinding::new("cmd-,", OpenSettings, None),
                 ]);
                 cx.new(|cx| MapViewer::new(window, cx))
             },
@@ -1678,6 +1680,10 @@ fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 // Define the quit function that is registered with the App
 fn quit(_: &Quit, cx: &mut App) {
     cx.quit();
+}
+
+fn open_settings(_: &OpenSettings, _cx: &mut App) {
+    eprintln!("settings: open settings (stub)");
 }
 
 // Handle the File > Download from OSM menu action
@@ -1850,6 +1856,8 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
         Menu {
             name: "OSM Viewer".into(),
             items: vec![
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
                 MenuItem::action("Quit", Quit),
