@@ -613,43 +613,50 @@ impl MapViewer {
     }
 
     fn check_for_dialog_queue(&mut self, cx: &mut Context<Self>) {
-        if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
-            if let Ok(mut g) = queue.lock() {
-                if !g.is_empty() && self.custom_imagery_dialog.is_none() {
-                    g.clear();
-                    let dialog = cx.new(|cx| {
-                        osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new_deferred(cx)
-                    });
-                    cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
-                        use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
-                        match event {
-                            DialogEvent::Cancelled => {
-                                this.custom_imagery_dialog = None;
-                                cx.notify();
-                            }
-                            DialogEvent::Submitted(entry) => {
-                                append_custom_imagery(entry.clone());
-                                if let Some(requests) = LAYER_REQUESTS.get() {
-                                    if let Ok(mut q) = requests.lock() {
-                                        q.push(LayerRequest::Imagery {
-                                            name: entry.name.clone(),
-                                            url_template: entry.url_template.clone(),
-                                            min_zoom: Some(entry.min_zoom),
-                                            max_zoom: Some(entry.max_zoom),
-                                        });
-                                    }
-                                }
-                                this.custom_imagery_dialog = None;
-                                this.last_menu_center = None;
-                                cx.notify();
+        let should_open = if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
+            if let Ok(mut g) = queue.try_lock() {
+                let had_requests = !g.is_empty();
+                g.clear();
+                had_requests && self.custom_imagery_dialog.is_none()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if should_open {
+            let dialog = cx.new(|cx| {
+                osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new_deferred(cx)
+            });
+            cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.custom_imagery_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(entry) => {
+                        append_custom_imagery(entry.clone());
+                        if let Some(requests) = LAYER_REQUESTS.get() {
+                            if let Ok(mut q) = requests.lock() {
+                                q.push(LayerRequest::Imagery {
+                                    name: entry.name.clone(),
+                                    url_template: entry.url_template.clone(),
+                                    min_zoom: Some(entry.min_zoom),
+                                    max_zoom: Some(entry.max_zoom),
+                                });
                             }
                         }
-                    })
-                    .detach();
-                    self.custom_imagery_dialog = Some(dialog);
-                    cx.notify();
+                        this.custom_imagery_dialog = None;
+                        this.last_menu_center = None;
+                        cx.notify();
+                    }
                 }
-            }
+            })
+            .detach();
+            self.custom_imagery_dialog = Some(dialog);
+            cx.notify();
         }
     }
 

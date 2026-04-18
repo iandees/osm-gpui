@@ -199,15 +199,61 @@ impl Render for TextInput {
         let bg = if focused { rgb(0x1f2937) } else { rgb(0x111827) };
         let border = if focused { rgb(0x60a5fa) } else { rgb(0x374151) };
 
-        let content_to_show: SharedString = if self.content.is_empty() {
-            self.placeholder.clone()
+        // Build the inner content element depending on focus/selection state.
+        let inner: gpui::AnyElement = if focused {
+            if self.has_selection() {
+                // Render: before-selection | selected (highlighted) | after-selection
+                let (lo, hi) = self.selection_range().unwrap();
+                let before: SharedString = self.content[..lo].to_string().into();
+                let selected: SharedString = self.content[lo..hi].to_string().into();
+                let after: SharedString = self.content[hi..].to_string().into();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().child(before))
+                    .child(
+                        div()
+                            .child(selected)
+                            .bg(rgb(0x264f78))
+                            .text_color(rgb(0xffffff)),
+                    )
+                    .child(div().child(after))
+                    .into_any_element()
+            } else if self.content.is_empty() {
+                // Focused, empty: show caret then placeholder
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().w(px(1.0)).h(px(14.0)).bg(rgb(0xffffff)))
+                    .child(
+                        div()
+                            .child(self.placeholder.clone())
+                            .text_color(rgb(0x6b7280)),
+                    )
+                    .into_any_element()
+            } else {
+                // Focused, non-empty: split at cursor with visible caret
+                let before: SharedString = self.content[..self.cursor].to_string().into();
+                let after: SharedString = self.content[self.cursor..].to_string().into();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().child(before))
+                    .child(div().w(px(1.0)).h(px(14.0)).bg(rgb(0xffffff)))
+                    .child(div().child(after))
+                    .into_any_element()
+            }
+        } else if self.content.is_empty() {
+            div()
+                .child(self.placeholder.clone())
+                .text_color(rgb(0x6b7280))
+                .into_any_element()
         } else {
-            self.content.clone().into()
-        };
-        let text_col = if self.content.is_empty() {
-            rgb(0x6b7280)
-        } else {
-            rgb(0xffffff)
+            let content: SharedString = self.content.clone().into();
+            div().child(content).into_any_element()
         };
 
         div()
@@ -228,9 +274,9 @@ impl Render for TextInput {
             .border_1()
             .border_color(border)
             .rounded_sm()
-            .text_color(text_col)
+            .text_color(rgb(0xffffff))
             .text_sm()
-            .child(content_to_show)
+            .child(inner)
     }
 }
 
