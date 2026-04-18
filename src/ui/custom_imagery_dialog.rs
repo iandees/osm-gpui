@@ -264,7 +264,7 @@ impl CustomImageryDialog {
     }
 }
 
-fn error_message(e: &ValidationError) -> &'static str {
+pub fn error_message(e: &ValidationError) -> &'static str {
     match e {
         ValidationError::NameEmpty => "Name is required.",
         ValidationError::TemplateEmpty => "URL template is required.",

@@ -5,6 +5,44 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Global in-memory cache of custom imagery entries shared between the app and settings window.
+pub static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
+
+/// Initialize the global store with the loaded entries. Call this once at startup.
+pub fn init_store(entries: Vec<CustomImageryEntry>) {
+    let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(entries)));
+}
+
+/// Replace the in-memory store contents and persist to disk.
+pub fn update_store(entries: Vec<CustomImageryEntry>) {
+    if let Some(store) = CUSTOM_IMAGERY_STORE.get() {
+        if let Ok(mut g) = store.lock() {
+            *g = entries.clone();
+        }
+    }
+    save(&entries);
+}
+
+/// Return a snapshot of the current in-memory entries.
+pub fn snapshot() -> Vec<CustomImageryEntry> {
+    CUSTOM_IMAGERY_STORE
+        .get()
+        .and_then(|s| s.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default()
+}
+
+/// Append one entry to the in-memory store and persist to disk.
+pub fn append(entry: CustomImageryEntry) {
+    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
+    let snapshot = {
+        let Ok(mut g) = store.lock() else { return };
+        g.push(entry);
+        g.clone()
+    };
+    save(&snapshot);
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomImageryEntry {

@@ -64,9 +64,6 @@ struct LayerContextMenu {
 /// Stores the full ELI list once loaded (populated on the background executor).
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
 
-/// Stores the user's saved custom imagery entries (persisted to disk).
-static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
-
 /// Set to true when the imagery index is loaded (or failed) so the render loop
 /// knows to refresh the menu.
 static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
@@ -1556,7 +1553,7 @@ fn main() {
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
-        let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(loaded)));
+        custom_imagery_store::init_store(loaded);
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
@@ -1630,20 +1627,11 @@ fn main() {
 }
 
 fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
-    CUSTOM_IMAGERY_STORE
-        .get()
-        .and_then(|s| s.lock().ok().map(|g| g.clone()))
-        .unwrap_or_default()
+    custom_imagery_store::snapshot()
 }
 
 fn append_custom_imagery(entry: CustomImageryEntry) {
-    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
-    let snapshot = {
-        let Ok(mut g) = store.lock() else { return };
-        g.push(entry);
-        g.clone()
-    };
-    custom_imagery_store::save(&snapshot);
+    custom_imagery_store::append(entry);
 }
 
 // Handle the File > Open OSM File menu action

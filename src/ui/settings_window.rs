@@ -11,6 +11,7 @@ pub struct SettingsWindow {
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     expanded_index: Option<usize>,
+    confirm_delete_index: Option<usize>,
     edit_name: Option<Entity<TextInput>>,
     edit_url: Option<Entity<TextInput>>,
     edit_min_zoom: Option<Entity<TextInput>>,
@@ -24,6 +25,7 @@ impl SettingsWindow {
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
             expanded_index: None,
+            confirm_delete_index: None,
             edit_name: None,
             edit_url: None,
             edit_min_zoom: None,
@@ -58,8 +60,66 @@ impl SettingsWindow {
         self.edit_error = None;
     }
 
-    fn save_entry(&mut self, idx: usize, _cx: &mut Context<Self>) {
-        eprintln!("settings: save entry {} (stub)", idx);
+    fn save_entry(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let (Some(name), Some(url), Some(min_z), Some(max_z)) = (
+            self.edit_name.as_ref(),
+            self.edit_url.as_ref(),
+            self.edit_min_zoom.as_ref(),
+            self.edit_max_zoom.as_ref(),
+        ) else {
+            return;
+        };
+
+        let name_val = name.read(cx).content().to_string();
+        let url_val = url.read(cx).content().to_string();
+        let min_val = min_z.read(cx).content().to_string();
+        let max_val = max_z.read(cx).content().to_string();
+
+        match crate::ui::custom_imagery_dialog::validate(&name_val, &url_val, &min_val, &max_val) {
+            Ok(entry) => {
+                self.entries[idx] = entry;
+                self.persist();
+                self.expanded_index = None;
+                self.clear_editing();
+                cx.notify();
+            }
+            Err(e) => {
+                self.edit_error = Some(
+                    crate::ui::custom_imagery_dialog::error_message(&e).into(),
+                );
+                cx.notify();
+            }
+        }
+    }
+
+    fn delete_entry(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if idx < self.entries.len() {
+            self.entries.remove(idx);
+            self.persist();
+        }
+        self.expanded_index = None;
+        self.clear_editing();
+        self.confirm_delete_index = None;
+        cx.notify();
+    }
+
+    fn add_new_entry(&mut self, cx: &mut Context<Self>) {
+        let blank = CustomImageryEntry {
+            name: String::new(),
+            url_template: String::new(),
+            min_zoom: 0,
+            max_zoom: 19,
+        };
+        self.entries.push(blank.clone());
+        let new_idx = self.entries.len() - 1;
+        self.expanded_index = Some(new_idx);
+        self.confirm_delete_index = None;
+        self.start_editing(&blank, cx);
+        cx.notify();
+    }
+
+    fn persist(&self) {
+        custom_imagery_store::update_store(self.entries.clone());
     }
 }
 
@@ -91,13 +151,48 @@ impl Render for SettingsWindow {
         } else {
             for (idx, entry) in self.entries.iter().enumerate() {
                 let is_expanded = self.expanded_index == Some(idx);
+                let entry_name = entry.name.clone();
 
-                let trash_button = IconButton::new(("trash", idx), IconName::Trash)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted);
+                let end_slot: AnyElement = if self.confirm_delete_index == Some(idx) {
+                    let name_for_label = entry_name.clone();
+                    h_flex()
+                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .child(
+                            Label::new(format!("Delete {}?", name_for_label))
+                                .size(LabelSize::Small)
+                                .color(Color::Error),
+                        )
+                        .child(
+                            Button::new(("confirm-delete", idx), "Delete")
+                                .style(ButtonStyle::Filled)
+                                .size(ButtonSize::Compact)
+                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                    this.delete_entry(idx, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(("cancel-delete", idx), "Cancel")
+                                .style(ButtonStyle::Subtle)
+                                .size(ButtonSize::Compact)
+                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                    this.confirm_delete_index = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    IconButton::new(("trash", idx), IconName::Trash)
+                        .icon_size(IconSize::Small)
+                        .icon_color(Color::Muted)
+                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            this.confirm_delete_index = Some(idx);
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                };
 
                 let list_item = ListItem::new(("entry", idx))
-                    .child(Label::new(entry.name.clone()))
+                    .child(Label::new(entry_name))
                     .toggle(Some(is_expanded))
                     .on_toggle(cx.listener(move |this, _ev, _window, cx| {
                         if this.expanded_index == Some(idx) {
@@ -106,11 +201,12 @@ impl Render for SettingsWindow {
                         } else {
                             let entry = this.entries[idx].clone();
                             this.expanded_index = Some(idx);
+                            this.confirm_delete_index = None;
                             this.start_editing(&entry, cx);
                         }
                         cx.notify();
                     }))
-                    .end_slot(trash_button);
+                    .end_slot(end_slot);
 
                 content = content.child(list_item);
 
@@ -154,6 +250,11 @@ impl Render for SettingsWindow {
                         let cancel_btn = Button::new(("cancel", idx), "Cancel")
                             .style(ButtonStyle::Subtle)
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                if let Some(entry) = this.entries.get(idx) {
+                                    if entry.name.is_empty() && entry.url_template.is_empty() {
+                                        this.entries.remove(idx);
+                                    }
+                                }
                                 this.expanded_index = None;
                                 this.clear_editing();
                                 cx.notify();
@@ -171,6 +272,14 @@ impl Render for SettingsWindow {
                 }
             }
         }
+
+        content = content.child(
+            Button::new("add-source", "Add Source")
+                .style(ButtonStyle::Subtle)
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.add_new_entry(cx);
+                })),
+        );
 
         div()
             .track_focus(&self.focus_handle)
