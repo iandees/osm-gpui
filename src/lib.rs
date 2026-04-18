@@ -4,6 +4,7 @@
 
 pub mod capture;
 pub mod coordinates;
+pub mod custom_imagery_store;
 pub mod idle_tracker;
 pub mod imagery;
 pub mod layers;
@@ -14,6 +15,7 @@ pub mod selection;
 pub mod style;
 pub mod tile_cache;
 pub mod tiles;
+pub mod ui;
 pub mod viewport;
 
 pub use osm::{OsmBounds, OsmData, OsmNode, OsmParser, OsmRelation, OsmWay};

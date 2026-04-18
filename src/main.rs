@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
+use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::viewport::Viewport;
@@ -19,7 +20,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -27,6 +28,14 @@ actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadF
 #[serde(deny_unknown_fields)]
 struct AddImageryLayer {
     id: SharedString,
+}
+
+/// Action for adding a saved custom imagery entry as a layer.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+struct AddSavedCustomImagery {
+    index: usize,
 }
 
 /// Request to add a new layer from a menu action.
@@ -54,6 +63,9 @@ struct LayerContextMenu {
 /// Stores the full ELI list once loaded (populated on the background executor).
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
 
+/// Stores the user's saved custom imagery entries (persisted to disk).
+static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
+
 /// Set to true when the imagery index is loaded (or failed) so the render loop
 /// knows to refresh the menu.
 static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
@@ -78,6 +90,8 @@ static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
 
 static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
+
+static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
@@ -228,6 +242,8 @@ struct MapViewer {
     context_menu: Option<LayerContextMenu>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
+    /// Active custom imagery dialog, if open.
+    custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
 }
 
 impl MapViewer {
@@ -254,6 +270,7 @@ impl MapViewer {
             last_imagery_load_state: None,
             context_menu: None,
             show_debug_overlay: false,
+            custom_imagery_dialog: None,
         }
     }
 
@@ -595,6 +612,54 @@ impl MapViewer {
         }
     }
 
+    fn check_for_dialog_queue(&mut self, cx: &mut Context<Self>) {
+        let should_open = if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
+            if let Ok(mut g) = queue.try_lock() {
+                let had_requests = !g.is_empty();
+                g.clear();
+                had_requests && self.custom_imagery_dialog.is_none()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if should_open {
+            let dialog = cx.new(|cx| {
+                osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new_deferred(cx)
+            });
+            cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.custom_imagery_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(entry) => {
+                        append_custom_imagery(entry.clone());
+                        if let Some(requests) = LAYER_REQUESTS.get() {
+                            if let Ok(mut q) = requests.lock() {
+                                q.push(LayerRequest::Imagery {
+                                    name: entry.name.clone(),
+                                    url_template: entry.url_template.clone(),
+                                    min_zoom: Some(entry.min_zoom),
+                                    max_zoom: Some(entry.max_zoom),
+                                });
+                            }
+                        }
+                        this.custom_imagery_dialog = None;
+                        this.last_menu_center = None;
+                        cx.notify();
+                    }
+                }
+            })
+            .detach();
+            self.custom_imagery_dialog = Some(dialog);
+            cx.notify();
+        }
+    }
+
     fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
         let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
         let pending = if let Ok(mut guard) = requests.try_lock() {
@@ -910,6 +975,7 @@ impl Render for MapViewer {
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
         self.check_for_toggle_debug_overlay(cx);
+        self.check_for_dialog_queue(cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -1292,6 +1358,7 @@ impl Render for MapViewer {
                     div().into_any_element()
                 }
             })
+            .children(self.custom_imagery_dialog.clone())
     }
 }
 
@@ -1396,6 +1463,7 @@ fn main() {
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    let _ = OPEN_CUSTOM_IMAGERY_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1478,7 +1546,13 @@ fn main() {
         cx.on_action(download_from_osm);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
+        cx.on_action(add_saved_custom_imagery);
         cx.on_action(no_op_imagery_info);
+        cx.on_action(open_custom_imagery_dialog);
+
+        // Load persisted custom imagery entries.
+        let loaded = custom_imagery_store::load();
+        let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(loaded)));
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
@@ -1545,6 +1619,23 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
+    CUSTOM_IMAGERY_STORE
+        .get()
+        .and_then(|s| s.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default()
+}
+
+fn append_custom_imagery(entry: CustomImageryEntry) {
+    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
+    let snapshot = {
+        let Ok(mut g) = store.lock() else { return };
+        g.push(entry);
+        g.clone()
+    };
+    custom_imagery_store::save(&snapshot);
 }
 
 // Handle the File > Open OSM File menu action
@@ -1643,6 +1734,36 @@ fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
     cx.refresh_windows();
 }
 
+// Handle the Imagery > Add Custom Imagery… menu action
+fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
+    if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
+        if let Ok(mut g) = queue.lock() {
+            g.push(());
+        }
+    }
+    cx.refresh_windows();
+}
+
+// Handle the Imagery > Custom Imagery > <saved entry> menu action
+fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut App) {
+    let entries = custom_imagery_snapshot();
+    let Some(entry) = entries.get(action.index).cloned() else {
+        eprintln!("add_saved_custom_imagery: stale index {}", action.index);
+        return;
+    };
+    if let Some(requests) = LAYER_REQUESTS.get() {
+        if let Ok(mut q) = requests.lock() {
+            q.push(LayerRequest::Imagery {
+                name: entry.name,
+                url_template: entry.url_template,
+                min_zoom: Some(entry.min_zoom),
+                max_zoom: Some(entry.max_zoom),
+            });
+        }
+    }
+    cx.refresh_windows();
+}
+
 // Handle the Imagery > Coordinate Grid menu action
 fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     if let Some(requests) = LAYER_REQUESTS.get() {
@@ -1656,7 +1777,27 @@ fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
 /// Build and install the menu bar, using the current viewport center to filter
 /// the Imagery menu to relevant ELI entries.
 fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryLoadState) {
+    let custom = custom_imagery_snapshot();
+    let mut custom_items: Vec<MenuItem> = vec![
+        MenuItem::action("Add…", AddCustomImagery),
+    ];
+    if !custom.is_empty() {
+        custom_items.push(MenuItem::separator());
+        for (idx, entry) in custom.iter().enumerate() {
+            custom_items.push(MenuItem::action(
+                entry.name.clone(),
+                AddSavedCustomImagery { index: idx },
+            ));
+        }
+    }
+
     let mut imagery_items: Vec<MenuItem> = vec![
+        MenuItem::submenu(Menu {
+            name: "Custom Imagery".into(),
+            items: custom_items,
+            disabled: false,
+        }),
+        MenuItem::separator(),
         MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
         MenuItem::separator(),
         MenuItem::action("Coordinate Grid", AddCoordinateGrid),

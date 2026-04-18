@@ -1,0 +1,359 @@
+//! Minimal single-line text input entity.
+
+use gpui::{
+    div, prelude::*, px, rgb, App, ClipboardItem, Context, FocusHandle, Focusable, KeyDownEvent,
+    MouseButton, MouseDownEvent, SharedString, Window,
+};
+
+/// Approximate character width for scroll estimation. Doesn't need to be
+/// exact — we just need the cursor to stay roughly in view.
+const CHAR_WIDTH_EST: f32 = 8.0;
+/// Padding kept between the cursor and the edge of the visible area.
+const SCROLL_MARGIN: f32 = 24.0;
+
+pub struct TextInput {
+    content: String,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    placeholder: SharedString,
+    focus_handle: FocusHandle,
+    /// Pixel offset scrolled from the left. Adjusted so the caret stays visible.
+    scroll_offset: f32,
+    /// Last-known width of the input container, captured on render.
+    last_width: f32,
+}
+
+impl TextInput {
+    pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>) -> Self {
+        Self {
+            content: String::new(),
+            cursor: 0,
+            selection_anchor: None,
+            placeholder: placeholder.into(),
+            focus_handle: cx.focus_handle(),
+            scroll_offset: 0.0,
+            last_width: 370.0, // sensible default; updated on render
+        }
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn set_content(&mut self, value: impl Into<String>, cx: &mut Context<Self>) {
+        self.content = value.into();
+        self.cursor = self.content.len();
+        self.selection_anchor = None;
+        cx.notify();
+    }
+
+    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        let m = &ev.keystroke.modifiers;
+        let cmd = m.platform || m.control; // Cmd on macOS, Ctrl elsewhere
+
+        if cmd {
+            match key {
+                "a" => {
+                    self.selection_anchor = Some(0);
+                    self.cursor = self.content.len();
+                    cx.notify();
+                    return;
+                }
+                "c" => {
+                    if let Some(text) = self.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                    return;
+                }
+                "x" => {
+                    if let Some(text) = self.selected_text() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        self.delete_selection();
+                        cx.notify();
+                    }
+                    return;
+                }
+                "v" => {
+                    if let Some(item) = cx.read_from_clipboard() {
+                        if let Some(text) = item.text() {
+                            let clean: String = text.replace(['\r', '\n'], "");
+                            self.replace_selection_with(&clean);
+                            cx.notify();
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match key {
+            "backspace" => {
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.backspace();
+                }
+            }
+            "delete" => {
+                if self.has_selection() {
+                    self.delete_selection();
+                } else {
+                    self.delete_forward();
+                }
+            }
+            "left" => self.move_horizontal(-1, m.shift),
+            "right" => self.move_horizontal(1, m.shift),
+            "home" => self.move_to(0, m.shift),
+            "end" => self.move_to(self.content.len(), m.shift),
+            _ => {
+                if let Some(s) = printable_from(ev) {
+                    self.replace_selection_with(&s);
+                }
+            }
+        }
+        self.ensure_cursor_visible();
+        cx.notify();
+    }
+
+    fn insert(&mut self, s: &str) {
+        self.content.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let prev = prev_char_boundary(&self.content, self.cursor);
+        self.content.replace_range(prev..self.cursor, "");
+        self.cursor = prev;
+    }
+
+    fn delete_forward(&mut self) {
+        if self.cursor == self.content.len() {
+            return;
+        }
+        let next = next_char_boundary(&self.content, self.cursor);
+        self.content.replace_range(self.cursor..next, "");
+    }
+
+    fn has_selection(&self) -> bool {
+        matches!(self.selection_anchor, Some(a) if a != self.cursor)
+    }
+
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.selection_anchor?;
+        if a == self.cursor {
+            return None;
+        }
+        Some((a.min(self.cursor), a.max(self.cursor)))
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (lo, hi) = self.selection_range()?;
+        Some(self.content[lo..hi].to_string())
+    }
+
+    fn delete_selection(&mut self) {
+        if let Some((lo, hi)) = self.selection_range() {
+            self.content.replace_range(lo..hi, "");
+            self.cursor = lo;
+            self.selection_anchor = None;
+        }
+    }
+
+    fn replace_selection_with(&mut self, s: &str) {
+        if self.has_selection() {
+            self.delete_selection();
+        }
+        self.insert(s);
+        self.selection_anchor = None;
+    }
+
+    fn move_horizontal(&mut self, dir: i32, extend: bool) {
+        let next = if dir < 0 {
+            prev_char_boundary(&self.content, self.cursor)
+        } else {
+            next_char_boundary(&self.content, self.cursor)
+        };
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = next;
+    }
+
+    fn move_to(&mut self, target: usize, extend: bool) {
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor);
+            }
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = target.min(self.content.len());
+    }
+
+    /// Adjust `scroll_offset` so the cursor stays within the visible area.
+    fn ensure_cursor_visible(&mut self) {
+        let cursor_chars = self.content[..self.cursor].chars().count() as f32;
+        let cursor_px = cursor_chars * CHAR_WIDTH_EST;
+        let visible = self.last_width - SCROLL_MARGIN;
+
+        if cursor_px - self.scroll_offset > visible {
+            self.scroll_offset = cursor_px - visible;
+        }
+        if cursor_px < self.scroll_offset + SCROLL_MARGIN {
+            self.scroll_offset = (cursor_px - SCROLL_MARGIN).max(0.0);
+        }
+    }
+}
+
+impl Focusable for TextInput {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for TextInput {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.focus_handle.is_focused(window);
+        let bg = if focused { rgb(0x1f2937) } else { rgb(0x111827) };
+        let border = if focused { rgb(0x60a5fa) } else { rgb(0x374151) };
+
+        // Build the inner content element depending on focus/selection state.
+        let inner: gpui::AnyElement = if focused {
+            if self.has_selection() {
+                // Render: before-selection | selected (highlighted) | after-selection
+                let (lo, hi) = self.selection_range().unwrap();
+                let before: SharedString = self.content[..lo].to_string().into();
+                let selected: SharedString = self.content[lo..hi].to_string().into();
+                let after: SharedString = self.content[hi..].to_string().into();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().child(before))
+                    .child(
+                        div()
+                            .child(selected)
+                            .bg(rgb(0x264f78))
+                            .text_color(rgb(0xffffff)),
+                    )
+                    .child(div().child(after))
+                    .into_any_element()
+            } else if self.content.is_empty() {
+                // Focused, empty: show caret then placeholder
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().w(px(1.0)).h(px(14.0)).bg(rgb(0xffffff)))
+                    .child(
+                        div()
+                            .child(self.placeholder.clone())
+                            .text_color(rgb(0x6b7280)),
+                    )
+                    .into_any_element()
+            } else {
+                // Focused, non-empty: split at cursor with visible caret
+                let before: SharedString = self.content[..self.cursor].to_string().into();
+                let after: SharedString = self.content[self.cursor..].to_string().into();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().child(before))
+                    .child(div().w(px(1.0)).h(px(14.0)).bg(rgb(0xffffff)))
+                    .child(div().child(after))
+                    .into_any_element()
+            }
+        } else if self.content.is_empty() {
+            div()
+                .child(self.placeholder.clone())
+                .text_color(rgb(0x6b7280))
+                .into_any_element()
+        } else {
+            let content: SharedString = self.content.clone().into();
+            div().child(content).into_any_element()
+        };
+
+        let scroll = self.scroll_offset;
+
+        div()
+            .track_focus(&self.focus_handle)
+            .key_context("TextInput")
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev: &MouseDownEvent, window, _cx| {
+                    this.focus_handle.focus(window, _cx);
+                }),
+            )
+            .w_full()
+            .h(px(28.0))
+            .px_2()
+            .py_1()
+            .bg(bg)
+            .border_1()
+            .border_color(border)
+            .rounded_sm()
+            .text_color(rgb(0xffffff))
+            .text_sm()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .ml(px(-scroll))
+                    .child(inner),
+            )
+    }
+}
+
+fn printable_from(ev: &KeyDownEvent) -> Option<String> {
+    let m = &ev.keystroke.modifiers;
+    if m.control || m.platform || m.alt {
+        return None;
+    }
+    // Prefer key_char (preserves shift-produced chars).
+    if let Some(ch) = &ev.keystroke.key_char {
+        if !ch.is_empty() {
+            return Some(ch.clone());
+        }
+    }
+    let key = &ev.keystroke.key;
+    if key.chars().count() == 1 && !key.starts_with('f') {
+        return Some(key.clone());
+    }
+    None
+}
+
+fn prev_char_boundary(s: &str, i: usize) -> usize {
+    if i == 0 {
+        return 0;
+    }
+    let mut j = i - 1;
+    while j > 0 && !s.is_char_boundary(j) {
+        j -= 1;
+    }
+    j
+}
+
+fn next_char_boundary(s: &str, i: usize) -> usize {
+    let n = s.len();
+    if i >= n {
+        return n;
+    }
+    let mut j = i + 1;
+    while j < n && !s.is_char_boundary(j) {
+        j += 1;
+    }
+    j
+}
