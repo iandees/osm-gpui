@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
+use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::viewport::Viewport;
@@ -53,6 +54,9 @@ struct LayerContextMenu {
 
 /// Stores the full ELI list once loaded (populated on the background executor).
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
+
+/// Stores the user's saved custom imagery entries (persisted to disk).
+static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
 
 /// Set to true when the imagery index is loaded (or failed) so the render loop
 /// knows to refresh the menu.
@@ -1480,6 +1484,10 @@ fn main() {
         cx.on_action(add_imagery_layer);
         cx.on_action(no_op_imagery_info);
 
+        // Load persisted custom imagery entries.
+        let loaded = custom_imagery_store::load();
+        let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(loaded)));
+
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
         rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
@@ -1545,6 +1553,23 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
+    CUSTOM_IMAGERY_STORE
+        .get()
+        .and_then(|s| s.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default()
+}
+
+fn append_custom_imagery(entry: CustomImageryEntry) {
+    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
+    let snapshot = {
+        let Ok(mut g) = store.lock() else { return };
+        g.push(entry);
+        g.clone()
+    };
+    custom_imagery_store::save(&snapshot);
 }
 
 // Handle the File > Open OSM File menu action
