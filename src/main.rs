@@ -20,7 +20,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -82,6 +82,8 @@ static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
 
 static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
     std::sync::OnceLock::new();
+
+static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
@@ -232,6 +234,8 @@ struct MapViewer {
     context_menu: Option<LayerContextMenu>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
+    /// Active custom imagery dialog, if open.
+    custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
 }
 
 impl MapViewer {
@@ -258,6 +262,7 @@ impl MapViewer {
             last_imagery_load_state: None,
             context_menu: None,
             show_debug_overlay: false,
+            custom_imagery_dialog: None,
         }
     }
 
@@ -599,6 +604,47 @@ impl MapViewer {
         }
     }
 
+    fn check_for_dialog_queue(&mut self, cx: &mut Context<Self>) {
+        if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
+            if let Ok(mut g) = queue.lock() {
+                if !g.is_empty() && self.custom_imagery_dialog.is_none() {
+                    g.clear();
+                    let dialog = cx.new(|cx| {
+                        osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new_deferred(cx)
+                    });
+                    cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
+                        use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
+                        match event {
+                            DialogEvent::Cancelled => {
+                                this.custom_imagery_dialog = None;
+                                cx.notify();
+                            }
+                            DialogEvent::Submitted(entry) => {
+                                append_custom_imagery(entry.clone());
+                                if let Some(requests) = LAYER_REQUESTS.get() {
+                                    if let Ok(mut q) = requests.lock() {
+                                        q.push(LayerRequest::Imagery {
+                                            name: entry.name.clone(),
+                                            url_template: entry.url_template.clone(),
+                                            min_zoom: Some(entry.min_zoom),
+                                            max_zoom: Some(entry.max_zoom),
+                                        });
+                                    }
+                                }
+                                this.custom_imagery_dialog = None;
+                                this.last_menu_center = None;
+                                cx.notify();
+                            }
+                        }
+                    })
+                    .detach();
+                    self.custom_imagery_dialog = Some(dialog);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
     fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
         let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
         let pending = if let Ok(mut guard) = requests.try_lock() {
@@ -914,6 +960,7 @@ impl Render for MapViewer {
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
         self.check_for_toggle_debug_overlay(cx);
+        self.check_for_dialog_queue(cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -1296,6 +1343,7 @@ impl Render for MapViewer {
                     div().into_any_element()
                 }
             })
+            .children(self.custom_imagery_dialog.clone())
     }
 }
 
@@ -1400,6 +1448,7 @@ fn main() {
     LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
+    let _ = OPEN_CUSTOM_IMAGERY_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1483,6 +1532,7 @@ fn main() {
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
         cx.on_action(no_op_imagery_info);
+        cx.on_action(open_custom_imagery_dialog);
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
@@ -1663,6 +1713,16 @@ fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
     if let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() {
         if let Ok(mut queue) = requests.lock() {
             queue.push(());
+        }
+    }
+    cx.refresh_windows();
+}
+
+// Handle the Imagery > Add Custom Imagery… menu action
+fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
+    if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
+        if let Ok(mut g) = queue.lock() {
+            g.push(());
         }
     }
     cx.refresh_windows();

@@ -177,6 +177,8 @@ pub struct CustomImageryDialog {
     max_zoom: Entity<TextInput>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
+    /// True on the first render pass — the name field is focused then cleared.
+    needs_focus: bool,
 }
 
 impl EventEmitter<DialogEvent> for CustomImageryDialog {}
@@ -198,6 +200,26 @@ impl CustomImageryDialog {
             max_zoom,
             error: None,
             focus_handle,
+            needs_focus: false,
+        }
+    }
+
+    /// Constructor that defers the initial focus to the first render pass.
+    /// Use this when a `Window` reference is not available at creation time.
+    pub fn new_deferred(cx: &mut Context<Self>) -> Self {
+        let name = cx.new(|cx| TextInput::new(cx, "My imagery"));
+        let url_template = cx.new(|cx| TextInput::new(cx, "https://…/{z}/{x}/{y}.png"));
+        let min_zoom = cx.new(|cx| TextInput::new(cx, "0"));
+        let max_zoom = cx.new(|cx| TextInput::new(cx, "19"));
+        let focus_handle = cx.focus_handle();
+        Self {
+            name,
+            url_template,
+            min_zoom,
+            max_zoom,
+            error: None,
+            focus_handle,
+            needs_focus: true,
         }
     }
 
@@ -278,7 +300,15 @@ impl Focusable for CustomImageryDialog {
 }
 
 impl Render for CustomImageryDialog {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Deferred focus: focus the name field on the first render pass when
+        // the dialog was created without a Window reference.
+        if self.needs_focus {
+            self.needs_focus = false;
+            let name_handle = self.name.read(cx).focus_handle(cx);
+            name_handle.focus(window, cx);
+        }
+
         let body = div()
             .flex()
             .flex_col()
