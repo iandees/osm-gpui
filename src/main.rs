@@ -1079,27 +1079,43 @@ impl Render for MapViewer {
                 div()
                     .flex_1()
                     .relative()
+                            // Right button drives panning.
                             .on_mouse_down(
-                                gpui::MouseButton::Left,
+                                gpui::MouseButton::Right,
                                 cx.listener(|this, ev: &MouseDownEvent, _, _| {
                                     this.handle_mouse_down(ev);
                                 }),
                             )
-                            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                                this.handle_mouse_move(ev, cx);
-                            }))
+                            .on_mouse_up(
+                                gpui::MouseButton::Right,
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.viewport.handle_mouse_up();
+                                    cx.notify();
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                gpui::MouseButton::Right,
+                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                    this.viewport.handle_mouse_up();
+                                    cx.notify();
+                                }),
+                            )
+                            // Left button is selection only: record the press position, decide on release.
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                                    this.mouse_down_pos = Some(ev.position);
+                                }),
+                            )
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseUpEvent, _, cx| {
                                     this.handle_mouse_up(ev, cx);
                                 }),
                             )
-                            .on_mouse_up_out(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
-                                    this.handle_mouse_up(ev, cx);
-                                }),
-                            )
+                            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                                this.handle_mouse_move(ev, cx);
+                            }))
                             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                                 this.handle_scroll(ev, cx);
                             }))
