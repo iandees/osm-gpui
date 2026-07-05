@@ -21,6 +21,14 @@ use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 use theme;
 use gpui::{Font, Pixels, FontWeight};
+use gpui_component::{
+    ActiveTheme,
+    accordion::Accordion,
+    checkbox::Checkbox,
+    description_list::{DescriptionItem, DescriptionList},
+    label::Label,
+    menu::ContextMenuExt,
+};
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings]);
 
@@ -85,6 +93,23 @@ struct AddSavedCustomImagery {
     index: usize,
 }
 
+/// Action to move the layer at `index` by `delta` positions (negative = up).
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = layers)]
+#[serde(deny_unknown_fields)]
+struct MoveLayer {
+    index: usize,
+    delta: i32,
+}
+
+/// Action to delete the layer at `index`.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = layers)]
+#[serde(deny_unknown_fields)]
+struct DeleteLayer {
+    index: usize,
+}
+
 /// Request to add a new layer from a menu action.
 #[derive(Debug, Clone)]
 enum LayerRequest {
@@ -98,13 +123,6 @@ enum LayerRequest {
     },
     /// Remove the layer at the given index in the `LayerManager`.
     Delete { index: usize },
-}
-
-/// State for the right-click context menu on a layer row.
-#[derive(Debug, Clone)]
-struct LayerContextMenu {
-    layer_index: usize,
-    position: gpui::Point<gpui::Pixels>,
 }
 
 /// Stores the full ELI list once loaded (populated on the background executor).
@@ -286,12 +304,12 @@ struct MapViewer {
     last_menu_center: Option<(f64, f64)>,
     /// Imagery load state observed on the previous frame; detect transitions.
     last_imagery_load_state: Option<ImageryLoadState>,
-    /// Active right-click context menu for a layer row, if any.
-    context_menu: Option<LayerContextMenu>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
     /// Active custom imagery dialog, if open.
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
+    /// Indices of the currently-open accordion sections in the side panel.
+    side_panel_open: Vec<usize>,
 }
 
 impl MapViewer {
@@ -316,9 +334,9 @@ impl MapViewer {
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
-            context_menu: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
+            side_panel_open: vec![0, 1],
         }
     }
 
@@ -444,6 +462,26 @@ impl MapViewer {
         self.layer_manager.move_layer(from, to);
     }
 
+    /// Handle the `MoveLayer` context-menu action.
+    fn on_move_layer(&mut self, action: &MoveLayer, _: &mut Window, cx: &mut Context<Self>) {
+        let total = self.layer_manager.layers().len();
+        let target = action.index as i32 + action.delta;
+        if target >= 0 && (target as usize) < total {
+            self.reorder_layer(action.index, target as usize);
+            cx.notify();
+        }
+    }
+
+    /// Handle the `DeleteLayer` context-menu action (routes through LAYER_REQUESTS).
+    fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(reqs) = LAYER_REQUESTS.get() {
+            if let Ok(mut guard) = reqs.lock() {
+                guard.push(LayerRequest::Delete { index: action.index });
+            }
+        }
+        cx.notify();
+    }
+
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
         let adjusted_position = event.position;
 
@@ -567,10 +605,6 @@ impl MapViewer {
                         }
                         LayerRequest::Delete { index } => {
                             let _ = self.layer_manager.remove_at(index);
-                            // Dismiss any open context menu; the indices may
-                            // have shifted so the menu's target is no longer
-                            // meaningful.
-                            self.context_menu = None;
                         }
                         LayerRequest::CoordinateGrid => {
                             if self.layer_manager.find_layer("Coordinate Grid").is_none() {
@@ -862,49 +896,142 @@ impl MapViewer {
         }
     }
 
-    fn render_selection_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        use osm_gpui::selection::FeatureKind;
+    /// The full right-hand side panel: a themed container wrapping a collapsible
+    /// Accordion with a Layers section and a Selection/Tags section.
+    fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let layer_info: Vec<(String, bool)> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .map(|layer| (layer.name().to_string(), layer.is_visible()))
+            .collect();
 
-        let base = div()
-            .id("selection-panel")
-            .flex_1()
-            .overflow_y_scroll()
-            .p_4()
+        let layers_section = self.render_layers_section(&layer_info, cx);
+        let tags_section = self.render_tags_section(cx);
+        let open_layers = self.side_panel_open.contains(&0);
+        let open_selection = self.side_panel_open.contains(&1);
+
+        div()
+            .w(px(280.0))
+            .h_full()
+            .bg(cx.theme().sidebar)
+            .border_l_1()
+            .border_color(cx.theme().border)
             .flex()
             .flex_col()
-            .gap_3();
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("side-panel-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .child(
+                        Accordion::new("side-panel")
+                            .multiple(true)
+                            .item(move |item| {
+                                item.open(open_layers).title("Layers").child(layers_section)
+                            })
+                            .item(move |item| {
+                                item.open(open_selection)
+                                    .title("Selection")
+                                    .child(tags_section)
+                            })
+                            .on_toggle_click(cx.listener(
+                                |this, open_ixs: &[usize], _w, cx| {
+                                    this.side_panel_open = open_ixs.to_vec();
+                                    cx.notify();
+                                },
+                            )),
+                    ),
+            )
+    }
+
+    /// The Layers accordion section: a Checkbox row per layer with a right-click
+    /// context menu offering Move up / Move down / Delete.
+    fn render_layers_section(
+        &self,
+        layer_info: &[(String, bool)],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let total = layer_info.len();
+        if total == 0 {
+            return Label::new("No layers yet. Add one from the menu.").into_any_element();
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .children(
+                layer_info
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (name, is_visible))| {
+                        let layer_name = name.clone();
+                        Checkbox::new(("layer", index))
+                            .checked(*is_visible)
+                            .label(name.clone())
+                            .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
+                                this.toggle_layer_visibility(&layer_name);
+                                cx.notify();
+                            }))
+                            .context_menu(move |menu, _window, _cx| {
+                                let mut menu = menu;
+                                if index > 0 {
+                                    menu = menu
+                                        .menu("Move up", Box::new(MoveLayer { index, delta: -1 }));
+                                }
+                                if index + 1 < total {
+                                    menu = menu
+                                        .menu("Move down", Box::new(MoveLayer { index, delta: 1 }));
+                                }
+                                menu.separator()
+                                    .menu("Delete", Box::new(DeleteLayer { index }))
+                            })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_any_element()
+    }
+
+    /// The Selection/Tags accordion section: a header, an OSM link, and a
+    /// DescriptionList of the selected feature's tags (with empty states).
+    fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::selection::FeatureKind;
 
         let Some(sel) = self.selected.clone() else {
-            return base.child(
-                div()
-                    .text_color(rgb(0x6b7280))
-                    .text_sm()
-                    .child("Click a feature to see its tags.")
-            );
+            return Label::new("Click a feature to see its tags.")
+                .text_color(cx.theme().muted_foreground)
+                .text_sm()
+                .into_any_element();
         };
 
-        let kind_label = match sel.kind { FeatureKind::Node => "Node", FeatureKind::Way => "Way" };
-        let url_kind = match sel.kind { FeatureKind::Node => "node", FeatureKind::Way => "way" };
+        let kind_label = match sel.kind {
+            FeatureKind::Node => "Node",
+            FeatureKind::Way => "Way",
+        };
+        let url_kind = match sel.kind {
+            FeatureKind::Node => "node",
+            FeatureKind::Way => "way",
+        };
         let tags_vec: Vec<(String, String)> = self
             .layer_manager
             .find_layer(&sel.layer_name)
             .and_then(|layer| layer.feature_tags(&sel))
             .unwrap_or_default();
 
-        let header = div()
-            .text_color(rgb(0xffffff))
+        let header = Label::new(format!("{} #{}", kind_label, sel.id))
             .text_lg()
-            .font_weight(gpui::FontWeight::BOLD)
-            .child(format!("{} #{}", kind_label, sel.id));
+            .font_weight(gpui::FontWeight::BOLD);
 
-        let link_text = "View on openstreetmap.org ↗".to_string();
         let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
         let link = div()
             .id(("osm-link", sel.id as usize))
-            .text_color(rgb(0x60a5fa))
+            .text_color(cx.theme().link)
             .text_sm()
             .cursor_pointer()
-            .child(link_text)
+            .child("View on openstreetmap.org ↗")
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
@@ -912,102 +1039,26 @@ impl MapViewer {
                 }),
             );
 
-        let border_color = rgb(0x374151);
-        let header_bg = rgb(0x111827);
-
-        let tags_block = {
-            let header = div()
-                .flex()
-                .flex_row()
-                .w_full()
-                .min_w_0()
-                .bg(header_bg)
-                .border_b_1()
-                .border_color(border_color)
-                .child(
-                    div()
-                        .w(px(110.0))
-                        .px_2()
-                        .py_1()
-                        .border_r_1()
-                        .border_color(border_color)
-                        .text_color(rgb(0x9ca3af))
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Key"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .px_2()
-                        .py_1()
-                        .text_color(rgb(0x9ca3af))
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Value"),
-                );
-
-            let mut table = div()
-                .flex()
-                .flex_col()
-                .border_1()
-                .border_color(border_color)
-                .rounded_md()
-                .overflow_hidden()
-                .child(header);
-
-            if tags_vec.is_empty() {
-                table = table.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .text_color(rgb(0x6b7280))
-                        .text_sm()
-                        .child("(no tags)"),
-                );
-            } else {
-                let last_index = tags_vec.len() - 1;
-                for (i, (k, v)) in tags_vec.into_iter().enumerate() {
-                    let mut row = div().flex().flex_row().w_full().min_w_0();
-                    if i != last_index {
-                        row = row.border_b_1().border_color(border_color);
-                    }
-                    table = table.child(
-                        row.child(
-                            div()
-                                .w(px(110.0))
-                                .px_2()
-                                .py_1()
-                                .border_r_1()
-                                .border_color(border_color)
-                                .text_color(rgb(0xd1d5db))
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(k),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .px_2()
-                                .py_1()
-                                .text_color(rgb(0xffffff))
-                                .text_sm()
-                                .child(v),
-                        ),
-                    );
-                }
-            }
-
-            table.into_any_element()
+        let list = if tags_vec.is_empty() {
+            DescriptionList::new().child(
+                DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()),
+            )
+        } else {
+            DescriptionList::new().columns(1).bordered(true).children(
+                tags_vec.into_iter().map(|(k, v)| {
+                    DescriptionItem::new(k).value(Label::new(v).into_any_element())
+                }),
+            )
         };
 
-        base.child(header).child(link).child(tags_block)
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(header)
+            .child(link)
+            .child(list)
+            .into_any_element()
     }
 }
 
@@ -1052,28 +1103,11 @@ impl Render for MapViewer {
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
         let fps = self.tick_fps();
 
-        // Collect layer information for the UI
-        let layer_info: Vec<(String, bool)> = self.layer_manager.layers()
-            .iter()
-            .map(|layer| (layer.name().to_string(), layer.is_visible()))
-            .collect();
-
-        let context_menu_open = self.context_menu.is_some();
         div()
             .size_full()
             .bg(rgb(0x1a202c))
             .flex()
             .flex_row()
-            .when(context_menu_open, |this| {
-                this.on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
-                        if this.context_menu.take().is_some() {
-                            cx.notify();
-                        }
-                    }),
-                )
-            })
             .child(
                 // Map area
                 div()
@@ -1194,234 +1228,10 @@ impl Render for MapViewer {
                     )
             .child(
                 // Right panel with layer controls
-                div()
-                    .w(px(280.0))
-                    .h_full()
-                    .bg(rgb(0x111827))
-                    .border_l_1()
-                    .border_color(rgb(0x374151))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // Panel header
-                        div()
-                            .h_12()
-                            .bg(rgb(0x1f2937))
-                            .flex()
-                            .items_center()
-                            .px_4()
-                            .border_b_1()
-                            .border_color(rgb(0x374151))
-                            .child(
-                                div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_lg()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Layers")
-                            )
-                    )
-                    .child(
-                        // Layer list container
-                        div()
-                            .p_2()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .children({
-                                let total_layers = layer_info.len();
-                                layer_info.iter().enumerate().map(|(index, (name, is_visible))| {
-                                    let layer_name = name.clone();
-                                    let can_move_up = index > 0;
-                                    let can_move_down = index + 1 < total_layers;
-                                    div()
-                                        .id(("layer", index))
-                                        .p_2()
-                                        .bg(rgb(0x1f2937))
-                                        .rounded_lg()
-                                        .border_1()
-                                        .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x374151) })
-                                        .cursor_pointer()
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap_2()
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
-                                                this.toggle_layer_visibility(&layer_name);
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Right,
-                                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                                this.context_menu = Some(LayerContextMenu {
-                                                    layer_index: index,
-                                                    position: event.position,
-                                                });
-                                                cx.stop_propagation();
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(
-                                            // Reorder handle: up/down buttons.
-                                            // Each button stops propagation so the row-level
-                                            // visibility toggle does not also fire.
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .items_center()
-                                                .child({
-                                                    let up = div()
-                                                        .id(("layer-up", index))
-                                                        .w(px(18.0))
-                                                        .h(px(12.0))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .text_color(if can_move_up { rgb(0xd1d5db) } else { rgb(0x4b5563) })
-                                                        .text_xs()
-                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                        .child("▲");
-                                                    if can_move_up {
-                                                        up.cursor_pointer().on_mouse_down(
-                                                            gpui::MouseButton::Left,
-                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
-                                                                this.reorder_layer(index, index - 1);
-                                                                cx.stop_propagation();
-                                                                cx.notify();
-                                                            }),
-                                                        )
-                                                    } else {
-                                                        up
-                                                    }
-                                                })
-                                                .child({
-                                                    let down = div()
-                                                        .id(("layer-down", index))
-                                                        .w(px(18.0))
-                                                        .h(px(12.0))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .text_color(if can_move_down { rgb(0xd1d5db) } else { rgb(0x4b5563) })
-                                                        .text_xs()
-                                                        .font_weight(gpui::FontWeight::BOLD)
-                                                        .child("▼");
-                                                    if can_move_down {
-                                                        down.cursor_pointer().on_mouse_down(
-                                                            gpui::MouseButton::Left,
-                                                            cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
-                                                                this.reorder_layer(index, index + 1);
-                                                                cx.stop_propagation();
-                                                                cx.notify();
-                                                            }),
-                                                        )
-                                                    } else {
-                                                        down
-                                                    }
-                                                })
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .child(
-                                                    // Checkbox
-                                                    div()
-                                                        .w(px(16.0))
-                                                        .h(px(16.0))
-                                                        .rounded_sm()
-                                                        .border_2()
-                                                        .border_color(if *is_visible { rgb(0x10b981) } else { rgb(0x6b7280) })
-                                                        .bg(if *is_visible { rgb(0x10b981) } else { rgb(0x374151) })
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .when(*is_visible, |this| {
-                                                            this.child(
-                                                                div()
-                                                                    .text_color(rgb(0xffffff))
-                                                                    .text_xs()
-                                                                    .font_weight(gpui::FontWeight::BOLD)
-                                                                    .child("✓")
-                                                            )
-                                                        })
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_color(rgb(0xffffff))
-                                                        .text_sm()
-                                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                                        .child(name.clone())
-                                                )
-                                        )
-                                        .child(
-                                            // Layer order indicator
-                                            div()
-                                                .text_color(rgb(0x9ca3af))
-                                                .text_xs()
-                                                .child(format!("#{}", index + 1))
-                                        )
-                                })
-                                .collect::<Vec<_>>()
-                            })
-                    )
-                    // Divider between layer controls and selection panel
-                    .child(
-                        div()
-                            .h(px(1.0))
-                            .bg(rgb(0x374151))
-                    )
-                    // Selection panel (flex_1, scrollable)
-                    .child(self.render_selection_panel(cx))
+                self.render_side_panel(cx)
             )
-            .child({
-                if let Some(menu) = self.context_menu.clone() {
-                    div()
-                        .absolute()
-                        .left(menu.position.x)
-                        .top(menu.position.y)
-                        .bg(rgb(0x1f2937))
-                        .border_1()
-                        .border_color(rgb(0x374151))
-                        .rounded_md()
-                        .shadow_lg()
-                        .py_1()
-                        .min_w(px(120.0))
-                        .child(
-                            div()
-                                .id("layer-context-menu-delete")
-                                .px_3()
-                                .py_1p5()
-                                .cursor_pointer()
-                                .text_color(rgb(0xffffff))
-                                .text_sm()
-                                .hover(|this| this.bg(rgb(0x374151)))
-                                .child("Delete")
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _event: &MouseDownEvent, _, cx| {
-                                        if let Some(menu) = this.context_menu.take() {
-                                            if let Some(reqs) = LAYER_REQUESTS.get() {
-                                                if let Ok(mut guard) = reqs.lock() {
-                                                    guard.push(LayerRequest::Delete {
-                                                        index: menu.layer_index,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }),
-                                ),
-                        )
-                        .into_any_element()
-                } else {
-                    div().into_any_element()
-                }
-            })
+            .on_action(cx.listener(Self::on_move_layer))
+            .on_action(cx.listener(Self::on_delete_layer))
             .children(self.custom_imagery_dialog.clone())
     }
 }
