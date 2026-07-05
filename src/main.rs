@@ -19,8 +19,6 @@ use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
-use theme;
-use gpui::{Font, Pixels, FontWeight};
 use gpui_component::{
     ActiveTheme,
     accordion::Accordion,
@@ -31,51 +29,6 @@ use gpui_component::{
 };
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings]);
-
-/// Minimal theme settings provider so `ui` crate components can query fonts/density.
-struct DefaultThemeSettings {
-    ui_font: Font,
-    buffer_font: Font,
-}
-
-impl Default for DefaultThemeSettings {
-    fn default() -> Self {
-        Self {
-            ui_font: Font {
-                family: ".SystemUIFont".into(),
-                weight: FontWeight::NORMAL,
-                ..Default::default()
-            },
-            buffer_font: Font {
-                family: "Menlo".into(),
-                weight: FontWeight::NORMAL,
-                ..Default::default()
-            },
-        }
-    }
-}
-
-impl theme::ThemeSettingsProvider for DefaultThemeSettings {
-    fn ui_font<'a>(&'a self, _cx: &'a App) -> &'a Font {
-        &self.ui_font
-    }
-
-    fn buffer_font<'a>(&'a self, _cx: &'a App) -> &'a Font {
-        &self.buffer_font
-    }
-
-    fn ui_font_size(&self, _cx: &App) -> Pixels {
-        px(14.0)
-    }
-
-    fn buffer_font_size(&self, _cx: &App) -> Pixels {
-        px(14.0)
-    }
-
-    fn ui_density(&self, _cx: &App) -> theme::UiDensity {
-        theme::UiDensity::Default
-    }
-}
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -1122,14 +1075,14 @@ impl Render for MapViewer {
                             )
                             .on_mouse_up(
                                 gpui::MouseButton::Right,
-                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
                                     this.viewport.handle_mouse_up();
                                     cx.notify();
                                 }),
                             )
                             .on_mouse_up_out(
                                 gpui::MouseButton::Right,
-                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                                cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
                                     this.viewport.handle_mouse_up();
                                     cx.notify();
                                 }),
@@ -1409,8 +1362,6 @@ fn main() {
     }
 
     gpui_platform::application().run(move |cx: &mut App| {
-        theme::init(theme::LoadThemes::JustBase, cx);
-        theme::set_theme_settings_provider(Box::new(DefaultThemeSettings::default()), cx);
         gpui_component::init(cx);
 
         // Bring the menu bar to the foreground
