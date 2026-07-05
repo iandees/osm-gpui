@@ -58,7 +58,7 @@ impl OsmParser {
 
     pub fn parse(&self, reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_reader(reader);
-        xml_reader.trim_text(true);
+        xml_reader.config_mut().trim_text(true);
 
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
@@ -210,7 +210,7 @@ impl OsmParser {
 
     pub fn parse_str(&self, xml_str: &str) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_str(xml_str);
-        xml_reader.trim_text(true);
+        xml_reader.config_mut().trim_text(true);
 
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
