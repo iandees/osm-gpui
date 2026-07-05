@@ -1585,6 +1585,7 @@ fn main() {
     gpui_platform::application().run(move |cx: &mut App| {
         theme::init(theme::LoadThemes::JustBase, cx);
         theme::set_theme_settings_provider(Box::new(DefaultThemeSettings::default()), cx);
+        gpui_component::init(cx);
 
         // Bring the menu bar to the foreground
         cx.activate(true);
@@ -1662,7 +1663,8 @@ fn main() {
                     KeyBinding::new("cmd-q", Quit, None),
                     KeyBinding::new("cmd-,", OpenSettings, None),
                 ]);
-                cx.new(|cx| MapViewer::new(window, cx))
+                let view = cx.new(|cx| MapViewer::new(window, cx));
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
             },
         )
         .unwrap();
@@ -1744,8 +1746,9 @@ fn open_settings(_: &OpenSettings, cx: &mut App) {
             focus: true,
             ..Default::default()
         },
-        |_window, cx| {
-            cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(cx))
+        |window, cx| {
+            let view = cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(cx));
+            cx.new(|cx| gpui_component::Root::new(view, window, cx))
         },
     )
     .unwrap();
