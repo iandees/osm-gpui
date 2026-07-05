@@ -20,8 +20,7 @@ use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 use gpui_component::{
-    ActiveTheme,
-    accordion::Accordion,
+    ActiveTheme, Icon, IconName, Sizable,
     checkbox::Checkbox,
     description_list::{DescriptionItem, DescriptionList},
     label::Label,
@@ -850,7 +849,8 @@ impl MapViewer {
     }
 
     /// The full right-hand side panel: a themed container wrapping a collapsible
-    /// Accordion with a Layers section and a Selection/Tags section.
+    /// The right pane: Layers and Selection sections stacked top-to-bottom,
+    /// each collapsible and sized to its content (the whole pane scrolls).
     fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let layer_info: Vec<(String, bool)> = self
             .layer_manager
@@ -878,26 +878,70 @@ impl MapViewer {
                     .id("side-panel-scroll")
                     .flex_1()
                     .overflow_y_scroll()
-                    .p_2()
-                    .child(
-                        Accordion::new("side-panel")
-                            .multiple(true)
-                            .item(move |item| {
-                                item.open(open_layers).title("Layers").child(layers_section)
-                            })
-                            .item(move |item| {
-                                item.open(open_selection)
-                                    .title("Selection")
-                                    .child(tags_section)
-                            })
-                            .on_toggle_click(cx.listener(
-                                |this, open_ixs: &[usize], _w, cx| {
-                                    this.side_panel_open = open_ixs.to_vec();
-                                    cx.notify();
-                                },
-                            )),
-                    ),
+                    .flex()
+                    .flex_col()
+                    .child(self.collapsible_section("Layers", 0, open_layers, layers_section, cx))
+                    .child(self.collapsible_section(
+                        "Selection",
+                        1,
+                        open_selection,
+                        tags_section,
+                        cx,
+                    )),
             )
+    }
+
+    /// A single collapsible section: a clickable header (chevron + title) that
+    /// toggles `side_panel_open[index]`, with its content rendered below when
+    /// open. Sizes to content so sections stack instead of splitting the height.
+    fn collapsible_section(
+        &self,
+        title: &'static str,
+        index: usize,
+        open: bool,
+        content: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let header = div()
+            .id(("section-header", index))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .cursor_pointer()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .hover(|this| this.bg(cx.theme().accent))
+            .child(
+                Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall()
+                .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                Label::new(title)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD),
+            )
+            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                if let Some(pos) = this.side_panel_open.iter().position(|&i| i == index) {
+                    this.side_panel_open.remove(pos);
+                } else {
+                    this.side_panel_open.push(index);
+                }
+                cx.notify();
+            }));
+
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .when(open, |this| this.child(div().px_2().py_1p5().child(content)))
     }
 
     /// The Layers accordion section: a Checkbox row per layer with a right-click
@@ -1007,7 +1051,7 @@ impl MapViewer {
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_2()
             .child(header)
             .child(link)
             .child(list)
