@@ -4,18 +4,19 @@ use gpui::*;
 use ui::prelude::*;
 use ui::{ListHeader, ListItem};
 
+use gpui_component::input::{Input, InputState};
+
 use crate::custom_imagery_store::{self, CustomImageryEntry};
-use crate::ui::text_input::TextInput;
 
 pub struct SettingsWindow {
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     expanded_index: Option<usize>,
     confirm_delete_index: Option<usize>,
-    edit_name: Option<Entity<TextInput>>,
-    edit_url: Option<Entity<TextInput>>,
-    edit_min_zoom: Option<Entity<TextInput>>,
-    edit_max_zoom: Option<Entity<TextInput>>,
+    edit_name: Option<Entity<InputState>>,
+    edit_url: Option<Entity<InputState>>,
+    edit_min_zoom: Option<Entity<InputState>>,
+    edit_max_zoom: Option<Entity<InputState>>,
     edit_error: Option<SharedString>,
 }
 
@@ -34,16 +35,32 @@ impl SettingsWindow {
         }
     }
 
-    fn start_editing(&mut self, entry: &CustomImageryEntry, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| TextInput::new(cx, "Name"));
-        let url = cx.new(|cx| TextInput::new(cx, "https://…/{z}/{x}/{y}.png"));
-        let min_zoom = cx.new(|cx| TextInput::new(cx, "0"));
-        let max_zoom = cx.new(|cx| TextInput::new(cx, "19"));
-
-        name.update(cx, |ti, cx| ti.set_content(entry.name.clone(), cx));
-        url.update(cx, |ti, cx| ti.set_content(entry.url_template.clone(), cx));
-        min_zoom.update(cx, |ti, cx| ti.set_content(entry.min_zoom.to_string(), cx));
-        max_zoom.update(cx, |ti, cx| ti.set_content(entry.max_zoom.to_string(), cx));
+    fn start_editing(
+        &mut self,
+        entry: &CustomImageryEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Name")
+                .default_value(entry.name.clone())
+        });
+        let url = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://…/{z}/{x}/{y}.png")
+                .default_value(entry.url_template.clone())
+        });
+        let min_zoom = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("0")
+                .default_value(entry.min_zoom.to_string())
+        });
+        let max_zoom = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("19")
+                .default_value(entry.max_zoom.to_string())
+        });
 
         self.edit_name = Some(name);
         self.edit_url = Some(url);
@@ -70,10 +87,10 @@ impl SettingsWindow {
             return;
         };
 
-        let name_val = name.read(cx).content().to_string();
-        let url_val = url.read(cx).content().to_string();
-        let min_val = min_z.read(cx).content().to_string();
-        let max_val = max_z.read(cx).content().to_string();
+        let name_val = name.read(cx).value().to_string();
+        let url_val = url.read(cx).value().to_string();
+        let min_val = min_z.read(cx).value().to_string();
+        let max_val = max_z.read(cx).value().to_string();
 
         match crate::ui::custom_imagery_dialog::validate(&name_val, &url_val, &min_val, &max_val) {
             Ok(entry) => {
@@ -103,7 +120,7 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn add_new_entry(&mut self, cx: &mut Context<Self>) {
+    fn add_new_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let blank = CustomImageryEntry {
             name: String::new(),
             url_template: String::new(),
@@ -114,7 +131,7 @@ impl SettingsWindow {
         let new_idx = self.entries.len() - 1;
         self.expanded_index = Some(new_idx);
         self.confirm_delete_index = None;
-        self.start_editing(&blank, cx);
+        self.start_editing(&blank, window, cx);
         cx.notify();
     }
 
@@ -129,11 +146,11 @@ impl Focusable for SettingsWindow {
     }
 }
 
-fn field_row(label: &'static str, input: Entity<TextInput>) -> impl IntoElement {
+fn field_row(label: &'static str, input: &Entity<InputState>) -> impl IntoElement {
     v_flex()
         .gap(px(2.0))
         .child(Label::new(label).size(LabelSize::XSmall).color(Color::Muted))
-        .child(input)
+        .child(Input::new(input))
 }
 
 impl Render for SettingsWindow {
@@ -194,7 +211,7 @@ impl Render for SettingsWindow {
                 let list_item = ListItem::new(("entry", idx))
                     .child(Label::new(entry_name))
                     .toggle(Some(is_expanded))
-                    .on_toggle(cx.listener(move |this, _ev, _window, cx| {
+                    .on_toggle(cx.listener(move |this, _ev, window, cx| {
                         if this.expanded_index == Some(idx) {
                             this.expanded_index = None;
                             this.clear_editing();
@@ -202,7 +219,7 @@ impl Render for SettingsWindow {
                             let entry = this.entries[idx].clone();
                             this.expanded_index = Some(idx);
                             this.confirm_delete_index = None;
-                            this.start_editing(&entry, cx);
+                            this.start_editing(&entry, window, cx);
                         }
                         cx.notify();
                     }))
@@ -220,16 +237,16 @@ impl Render for SettingsWindow {
                         let mut expanded_content = v_flex()
                             .pl(DynamicSpacing::Base24.rems(cx))
                             .gap(DynamicSpacing::Base08.rems(cx))
-                            .child(field_row("Name", edit_name))
-                            .child(field_row("URL template", edit_url))
+                            .child(field_row("Name", &edit_name))
+                            .child(field_row("URL template", &edit_url))
                             .child(
                                 h_flex()
                                     .gap(DynamicSpacing::Base08.rems(cx))
                                     .child(
-                                        div().flex_1().child(field_row("Min zoom", edit_min_zoom)),
+                                        div().flex_1().child(field_row("Min zoom", &edit_min_zoom)),
                                     )
                                     .child(
-                                        div().flex_1().child(field_row("Max zoom", edit_max_zoom)),
+                                        div().flex_1().child(field_row("Max zoom", &edit_max_zoom)),
                                     ),
                             );
 
@@ -276,8 +293,8 @@ impl Render for SettingsWindow {
         content = content.child(
             Button::new("add-source", "Add Source")
                 .style(ButtonStyle::Subtle)
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    this.add_new_entry(cx);
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    this.add_new_entry(window, cx);
                 })),
         );
 

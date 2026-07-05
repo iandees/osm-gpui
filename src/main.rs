@@ -694,7 +694,7 @@ impl MapViewer {
         }
     }
 
-    fn check_for_dialog_queue(&mut self, cx: &mut Context<Self>) {
+    fn check_for_dialog_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let should_open = if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
             if let Ok(mut g) = queue.try_lock() {
                 let had_requests = !g.is_empty();
@@ -709,7 +709,7 @@ impl MapViewer {
 
         if should_open {
             let dialog = cx.new(|cx| {
-                osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new_deferred(cx)
+                osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new(window, cx)
             });
             cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
                 use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
@@ -1074,7 +1074,7 @@ impl Render for MapViewer {
         self.check_for_layer_requests(cx);
         self.check_for_download_requests(cx);
         self.check_for_toggle_debug_overlay(cx);
-        self.check_for_dialog_queue(cx);
+        self.check_for_dialog_queue(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
