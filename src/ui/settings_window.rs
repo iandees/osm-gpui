@@ -1,10 +1,14 @@
 //! Settings window with custom imagery management.
 
 use gpui::*;
-use ui::prelude::*;
-use ui::{ListHeader, ListItem};
 
-use gpui_component::input::{Input, InputState};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{Input, InputState},
+    label::Label,
+    v_flex, ActiveTheme as _, StyledExt as _,
+};
 
 use crate::custom_imagery_store::{self, CustomImageryEntry};
 
@@ -146,24 +150,31 @@ impl Focusable for SettingsWindow {
     }
 }
 
-fn field_row(label: &'static str, input: &Entity<InputState>) -> impl IntoElement {
+fn field_row(label: &'static str, input: &Entity<InputState>, muted: Hsla) -> impl IntoElement {
     v_flex()
-        .gap(px(2.0))
-        .child(Label::new(label).size(LabelSize::XSmall).color(Color::Muted))
+        .gap_1()
+        .child(Label::new(label).text_xs().text_color(muted))
         .child(Input::new(input))
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut content = v_flex()
-            .gap(DynamicSpacing::Base08.rems(cx))
-            .child(ListHeader::new("Custom Imagery Sources"));
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let border = cx.theme().border;
+
+        let mut content = v_flex().gap_2().child(
+            Label::new("Custom Imagery Sources")
+                .text_sm()
+                .font_semibold()
+                .text_color(cx.theme().foreground),
+        );
 
         if self.entries.is_empty() {
             content = content.child(
                 Label::new("No custom imagery sources configured.")
-                    .color(Color::Muted)
-                    .size(LabelSize::Small),
+                    .text_sm()
+                    .text_color(muted),
             );
         } else {
             for (idx, entry) in self.entries.iter().enumerate() {
@@ -173,24 +184,27 @@ impl Render for SettingsWindow {
                 let end_slot: AnyElement = if self.confirm_delete_index == Some(idx) {
                     let name_for_label = entry_name.clone();
                     h_flex()
-                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .gap_2()
+                        .items_center()
                         .child(
                             Label::new(format!("Delete {}?", name_for_label))
-                                .size(LabelSize::Small)
-                                .color(Color::Error),
+                                .text_sm()
+                                .text_color(danger),
                         )
                         .child(
-                            Button::new(("confirm-delete", idx), "Delete")
-                                .style(ButtonStyle::Filled)
-                                .size(ButtonSize::Compact)
+                            Button::new(("confirm-delete", idx))
+                                .label("Delete")
+                                .danger()
+                                .compact()
                                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                                     this.delete_entry(idx, cx);
                                 })),
                         )
                         .child(
-                            Button::new(("cancel-delete", idx), "Cancel")
-                                .style(ButtonStyle::Subtle)
-                                .size(ButtonSize::Compact)
+                            Button::new(("cancel-delete", idx))
+                                .label("Cancel")
+                                .ghost()
+                                .compact()
                                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                                     this.confirm_delete_index = None;
                                     cx.notify();
@@ -198,9 +212,10 @@ impl Render for SettingsWindow {
                         )
                         .into_any_element()
                 } else {
-                    IconButton::new(("trash", idx), IconName::Trash)
-                        .icon_size(IconSize::Small)
-                        .icon_color(Color::Muted)
+                    Button::new(("trash", idx))
+                        .label("Delete")
+                        .ghost()
+                        .compact()
                         .on_click(cx.listener(move |this, _ev, _window, cx| {
                             this.confirm_delete_index = Some(idx);
                             cx.notify();
@@ -208,10 +223,21 @@ impl Render for SettingsWindow {
                         .into_any_element()
                 };
 
-                let list_item = ListItem::new(("entry", idx))
-                    .child(Label::new(entry_name))
-                    .toggle(Some(is_expanded))
-                    .on_toggle(cx.listener(move |this, _ev, window, cx| {
+                let row_toggle_idx = idx;
+                let row = h_flex()
+                    .id(("entry", idx))
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _ev, window, cx| {
+                        let idx = row_toggle_idx;
                         if this.expanded_index == Some(idx) {
                             this.expanded_index = None;
                             this.clear_editing();
@@ -223,9 +249,10 @@ impl Render for SettingsWindow {
                         }
                         cx.notify();
                     }))
-                    .end_slot(end_slot);
+                    .child(Label::new(entry_name))
+                    .child(end_slot);
 
-                content = content.child(list_item);
+                content = content.child(row);
 
                 if is_expanded {
                     if let (Some(edit_name), Some(edit_url), Some(edit_min_zoom), Some(edit_max_zoom)) = (
@@ -235,37 +262,41 @@ impl Render for SettingsWindow {
                         self.edit_max_zoom.clone(),
                     ) {
                         let mut expanded_content = v_flex()
-                            .pl(DynamicSpacing::Base24.rems(cx))
-                            .gap(DynamicSpacing::Base08.rems(cx))
-                            .child(field_row("Name", &edit_name))
-                            .child(field_row("URL template", &edit_url))
+                            .pl_6()
+                            .gap_2()
+                            .child(field_row("Name", &edit_name, muted))
+                            .child(field_row("URL template", &edit_url, muted))
                             .child(
                                 h_flex()
-                                    .gap(DynamicSpacing::Base08.rems(cx))
+                                    .gap_2()
                                     .child(
-                                        div().flex_1().child(field_row("Min zoom", &edit_min_zoom)),
+                                        div()
+                                            .flex_1()
+                                            .child(field_row("Min zoom", &edit_min_zoom, muted)),
                                     )
                                     .child(
-                                        div().flex_1().child(field_row("Max zoom", &edit_max_zoom)),
+                                        div()
+                                            .flex_1()
+                                            .child(field_row("Max zoom", &edit_max_zoom, muted)),
                                     ),
                             );
 
                         if let Some(err) = &self.edit_error {
                             expanded_content = expanded_content.child(
-                                Label::new(err.clone())
-                                    .color(Color::Error)
-                                    .size(LabelSize::Small),
+                                Label::new(err.clone()).text_sm().text_color(danger),
                             );
                         }
 
-                        let save_btn = Button::new(("save", idx), "Save")
-                            .style(ButtonStyle::Filled)
+                        let save_btn = Button::new(("save", idx))
+                            .label("Save")
+                            .primary()
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
                                 this.save_entry(idx, cx);
                             }));
 
-                        let cancel_btn = Button::new(("cancel", idx), "Cancel")
-                            .style(ButtonStyle::Subtle)
+                        let cancel_btn = Button::new(("cancel", idx))
+                            .label("Cancel")
+                            .ghost()
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
                                 if let Some(entry) = this.entries.get(idx) {
                                     if entry.name.is_empty() && entry.url_template.is_empty() {
@@ -277,12 +308,8 @@ impl Render for SettingsWindow {
                                 cx.notify();
                             }));
 
-                        expanded_content = expanded_content.child(
-                            h_flex()
-                                .gap(DynamicSpacing::Base08.rems(cx))
-                                .child(save_btn)
-                                .child(cancel_btn),
-                        );
+                        expanded_content = expanded_content
+                            .child(h_flex().gap_2().child(save_btn).child(cancel_btn));
 
                         content = content.child(expanded_content);
                     }
@@ -291,8 +318,9 @@ impl Render for SettingsWindow {
         }
 
         content = content.child(
-            Button::new("add-source", "Add Source")
-                .style(ButtonStyle::Subtle)
+            Button::new("add-source")
+                .label("Add Source")
+                .ghost()
                 .on_click(cx.listener(|this, _ev, window, cx| {
                     this.add_new_entry(window, cx);
                 })),
@@ -301,8 +329,8 @@ impl Render for SettingsWindow {
         div()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().colors().background)
-            .p(DynamicSpacing::Base16.rems(cx))
+            .bg(cx.theme().background)
+            .p_4()
             .child(content)
     }
 }
