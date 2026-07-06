@@ -251,6 +251,9 @@ struct MapViewer {
     status_message: Option<(String, Instant)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
     mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
+    /// Screen-space (start, current) points of an in-progress left-drag box
+    /// select, or `None` when not dragging a box.
+    box_select: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
@@ -262,6 +265,22 @@ struct MapViewer {
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
+}
+
+/// Normalize two arbitrary screen points into a `Bounds` with a top-left
+/// origin and non-negative size, regardless of drag direction.
+fn normalize_rect(
+    a: gpui::Point<gpui::Pixels>,
+    b: gpui::Point<gpui::Pixels>,
+) -> gpui::Bounds<gpui::Pixels> {
+    let min_x = a.x.as_f32().min(b.x.as_f32());
+    let max_x = a.x.as_f32().max(b.x.as_f32());
+    let min_y = a.y.as_f32().min(b.y.as_f32());
+    let max_y = a.y.as_f32().max(b.y.as_f32());
+    gpui::Bounds {
+        origin: gpui::point(px(min_x), px(min_y)),
+        size: gpui::size(px(max_x - min_x), px(max_y - min_y)),
+    }
 }
 
 impl MapViewer {
@@ -283,6 +302,7 @@ impl MapViewer {
             status_message: None,
             selected: Vec::new(),
             mouse_down_pos: None,
+            box_select: None,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
@@ -447,17 +467,37 @@ impl MapViewer {
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
         }
+
+        if event.pressed_button == Some(gpui::MouseButton::Left) {
+            if let Some(start) = self.mouse_down_pos {
+                let moved = (adjusted_position - start).magnitude() >= 4.0;
+                if moved || self.box_select.is_some() {
+                    self.box_select = Some((start, adjusted_position));
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = event.position;
-        let was_click = match self.mouse_down_pos.take() {
-            Some(down) => {
-                (up_pos - down).magnitude() < 4.0
+        let down_pos = self.mouse_down_pos.take();
+        self.viewport.handle_mouse_up();
+
+        if let Some((start, _)) = self.box_select.take() {
+            let rect = normalize_rect(start, up_pos);
+            let before = self.selected.clone();
+            self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
+            if before != self.selected {
+                cx.notify();
             }
+            return;
+        }
+
+        let was_click = match down_pos {
+            Some(down) => (up_pos - down).magnitude() < 4.0,
             None => false,
         };
-        self.viewport.handle_mouse_up();
         if was_click {
             let before = self.selected.clone();
             self.handle_map_click(up_pos);
@@ -1216,6 +1256,24 @@ impl Render for MapViewer {
                                         .text_sm()
                                         .opacity(0.9)
                                         .child(msg)
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            })
+                            .child({
+                                if let Some((start, current)) = self.box_select {
+                                    let rect = normalize_rect(start, current);
+                                    div()
+                                        .absolute()
+                                        .left(rect.origin.x)
+                                        .top(rect.origin.y)
+                                        .w(rect.size.width)
+                                        .h(rect.size.height)
+                                        .bg(cx.theme().accent)
+                                        .border_1()
+                                        .border_color(cx.theme().accent)
+                                        .opacity(0.35)
                                         .into_any_element()
                                 } else {
                                     div().into_any_element()
