@@ -134,6 +134,68 @@ fn compute_way_tables(
     (bboxes, vertices)
 }
 
+/// Push an oriented rectangle covering the segment `p0`-`p1` (as two raw
+/// triangles) into `path`, creating it lazily on first use. Skips
+/// degenerate (zero-length) segments.
+///
+/// Pushes vertices directly (`Path::vertices` is a public field) instead of
+/// going through `Path::push_triangle`, which recomputes `path.bounds` via
+/// three separate `Bounds::union` calls per triangle. `bounds_min_max`
+/// accumulates the same information as cheap float compares instead; the
+/// caller writes it into `path.bounds` once, after all segments in the
+/// group are pushed.
+fn push_segment_quad(
+    path: &mut Option<Path<Pixels>>,
+    bounds_min_max: &mut (f32, f32, f32, f32),
+    p0: Point<Pixels>,
+    p1: Point<Pixels>,
+    half_width: f32,
+) {
+    let x0 = f32::from(p0.x);
+    let y0 = f32::from(p0.y);
+    let x1 = f32::from(p1.x);
+    let y1 = f32::from(p1.y);
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < f32::EPSILON {
+        return;
+    }
+    let nx = -dy / len * half_width;
+    let ny = dx / len * half_width;
+
+    let ax = x0 + nx;
+    let ay = y0 + ny;
+    let bx = x0 - nx;
+    let by = y0 - ny;
+    let cx = x1 - nx;
+    let cy = y1 - ny;
+    let dxp = x1 + nx;
+    let dyp = y1 + ny;
+
+    let (min_x, max_x, min_y, max_y) = bounds_min_max;
+    for &(x, y) in &[(ax, ay), (bx, by), (cx, cy), (dxp, dyp)] {
+        if x < *min_x { *min_x = x; }
+        if x > *max_x { *max_x = x; }
+        if y < *min_y { *min_y = y; }
+        if y > *max_y { *max_y = y; }
+    }
+
+    let a = point(px(ax), px(ay));
+    let b = point(px(bx), px(by));
+    let c = point(px(cx), px(cy));
+    let d = point(px(dxp), px(dyp));
+    let st = point(0., 1.);
+
+    let p = path.get_or_insert_with(|| Path::new(a));
+    p.vertices.push(PathVertex { xy_position: a, st_position: st, content_mask: Default::default() });
+    p.vertices.push(PathVertex { xy_position: b, st_position: st, content_mask: Default::default() });
+    p.vertices.push(PathVertex { xy_position: c, st_position: st, content_mask: Default::default() });
+    p.vertices.push(PathVertex { xy_position: a, st_position: st, content_mask: Default::default() });
+    p.vertices.push(PathVertex { xy_position: c, st_position: st, content_mask: Default::default() });
+    p.vertices.push(PathVertex { xy_position: d, st_position: st, content_mask: Default::default() });
+}
+
 /// Bulk-build a point index over every node's mercator position.
 fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
     let items: Vec<_> = node_cache
@@ -290,10 +352,22 @@ impl MapLayer for OsmLayer {
         //
         // Group key uses `f32::to_bits` for width so we don't need a float-
         // hashing crate.
+        //
+        // Each segment is emitted as two raw triangles (an oriented quad)
+        // pushed directly into the group's `Path`, bypassing
+        // `PathBuilder::stroke`'s Lyon tessellation pass entirely — that
+        // tessellator dominated frame time (~1.3-1.8ms for ~3800 visible
+        // ways, measured under a synthetic 8k-node/4k-way dataset), since it
+        // reruns from scratch every repaint (e.g. every mouse-move while
+        // panning). No mitered joins at segment corners; at typical way
+        // widths (2-6px) this isn't visible, and it mirrors the same
+        // tradeoff already made for node rendering below.
         struct WayGroup {
             color: u32,
-            builder: PathBuilder,
-            emitted: bool,
+            half_width: f32,
+            path: Option<Path<Pixels>>,
+            /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad`.
+            bounds_min_max: (f32, f32, f32, f32),
         }
         let mut way_groups: HashMap<(u32, u32), WayGroup> = HashMap::new();
 
@@ -318,32 +392,30 @@ impl MapLayer for OsmLayer {
             let key = (style.color, style.width.to_bits());
             let group = way_groups.entry(key).or_insert_with(|| WayGroup {
                 color: style.color,
-                builder: PathBuilder::stroke(px(style.width)),
-                emitted: false,
+                half_width: style.width / 2.0,
+                path: None,
+                bounds_min_max: (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
             });
 
-            let mut first = true;
-            let mut emitted = 0;
+            let mut prev: Option<Point<Pixels>> = None;
             for &(mx, my) in verts {
                 let sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) { continue; }
                 let p = point(sp.x + origin_x, sp.y + origin_y);
-                if first {
-                    group.builder.move_to(p);
-                    first = false;
-                } else {
-                    group.builder.line_to(p);
+                if let Some(p0) = prev {
+                    push_segment_quad(&mut group.path, &mut group.bounds_min_max, p0, p, group.half_width);
                 }
-                emitted += 1;
-            }
-            if emitted >= 2 {
-                group.emitted = true;
+                prev = Some(p);
             }
         }
 
         for (_, g) in way_groups {
-            if !g.emitted { continue; }
-            if let Ok(path) = g.builder.build() {
+            if let Some(mut path) = g.path {
+                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
+                path.bounds = Bounds {
+                    origin: point(px(min_x), px(min_y)),
+                    size: size(px(max_x - min_x), px(max_y - min_y)),
+                };
                 window.paint_path(path, rgb(g.color));
             }
         }

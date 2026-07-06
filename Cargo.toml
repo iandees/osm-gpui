@@ -38,3 +38,15 @@ core-graphics = "0.24"
 [[bin]]
 name = "osm-gpui"
 path = "src/main.rs"
+
+# Debug builds of this crate hit ~40ms/frame in OsmLayer's canvas paint alone
+# (measured on an 8k-node/4k-way dataset) vs ~2ms/frame in release — an ~18x
+# gap driven by unoptimized per-frame numeric code (trig, hashmap lookups,
+# vector math). opt-level 1 for our own code plus opt-level 3 for
+# dependencies (compiled once, then cached) keeps incremental rebuilds fast
+# while making `cargo run` usable for interactive testing.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
