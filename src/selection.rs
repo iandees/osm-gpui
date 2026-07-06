@@ -73,6 +73,43 @@ pub fn resolve_hits(per_layer: Vec<Vec<HitCandidate>>) -> Option<FeatureRef> {
     best.map(|(_, _, f)| f)
 }
 
+/// A key's aggregated value across a set of features: either every feature
+/// that has the key agrees on one value, or they don't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagValue {
+    Single(String),
+    Multiple(usize),
+}
+
+/// Aggregate tags across multiple features' tag lists. Keys are the union
+/// across all features. For each key, distinct values are counted only
+/// among the features that *have* that key: exactly one distinct value
+/// yields `Single(value)`; more than one yields `Multiple(distinct_count)`.
+/// A feature missing a key does not affect that key's aggregation. Sorted
+/// by key.
+pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, TagValue)> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for tags in per_feature {
+        for (k, v) in tags {
+            by_key.entry(k.clone()).or_default().insert(v.clone());
+        }
+    }
+
+    by_key
+        .into_iter()
+        .map(|(k, values)| {
+            let value = if values.len() == 1 {
+                TagValue::Single(values.into_iter().next().unwrap())
+            } else {
+                TagValue::Multiple(values.len())
+            };
+            (k, value)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +178,60 @@ mod tests {
         let winner = resolve_hits(vec![vec![a], vec![b]]).unwrap();
         assert_eq!(winner.layer_name, "top");
         assert_eq!(winner.id, 99);
+    }
+
+    #[test]
+    fn aggregate_single_feature_single_value() {
+        let per_feature = vec![vec![("highway".to_string(), "residential".to_string())]];
+        let result = aggregate_tags(&per_feature);
+        assert_eq!(
+            result,
+            vec![("highway".to_string(), TagValue::Single("residential".to_string()))]
+        );
+    }
+
+    #[test]
+    fn aggregate_multiple_distinct_values_counts_distinct_only() {
+        let per_feature = vec![
+            vec![("name".to_string(), "Main St".to_string())],
+            vec![("name".to_string(), "Elm St".to_string())],
+            vec![("name".to_string(), "Main St".to_string())], // duplicate value
+        ];
+        let result = aggregate_tags(&per_feature);
+        assert_eq!(result, vec![("name".to_string(), TagValue::Multiple(2))]);
+    }
+
+    #[test]
+    fn aggregate_missing_key_on_some_features_is_ignored() {
+        let per_feature = vec![
+            vec![("name".to_string(), "Main St".to_string())],
+            vec![], // no tags at all on this feature
+        ];
+        let result = aggregate_tags(&per_feature);
+        assert_eq!(
+            result,
+            vec![("name".to_string(), TagValue::Single("Main St".to_string()))]
+        );
+    }
+
+    #[test]
+    fn aggregate_union_of_keys_across_features() {
+        let per_feature = vec![
+            vec![("highway".to_string(), "residential".to_string())],
+            vec![("surface".to_string(), "paved".to_string())],
+        ];
+        let result = aggregate_tags(&per_feature);
+        assert_eq!(
+            result,
+            vec![
+                ("highway".to_string(), TagValue::Single("residential".to_string())),
+                ("surface".to_string(), TagValue::Single("paved".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregate_empty_input_returns_empty() {
+        assert!(aggregate_tags(&[]).is_empty());
     }
 }
