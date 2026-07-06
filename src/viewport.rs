@@ -149,6 +149,12 @@ impl Viewport {
         self.transform.screen_to_geo(point)
     }
 
+    /// Convert screen coordinates directly to Web Mercator meters (no lat/lon
+    /// round trip). Used by box-select hit-testing.
+    pub fn screen_to_mercator(&self, point: Point<Pixels>) -> (f64, f64) {
+        self.transform.screen_to_mercator(point)
+    }
+
     /// Get current visible bounds
     pub fn visible_bounds(&self) -> crate::coordinates::GeoBounds {
         self.transform.visible_bounds()

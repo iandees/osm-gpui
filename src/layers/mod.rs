@@ -41,9 +41,20 @@ pub trait MapLayer: Send + Sync {
         Vec::new()
     }
 
-    /// Tell the layer which feature (if any) is currently selected.
-    /// Default: no-op. OsmLayer overrides this to drive `render_elements`.
-    fn set_highlight(&mut self, _feature: Option<crate::selection::FeatureRef>) {}
+    /// Return every feature inside a screen-space rectangle. Default: none.
+    /// Nodes: point inside the rect. Ways: fully enclosed (all vertices
+    /// inside). Implementations only return their own features.
+    fn hit_test_rect(
+        &self,
+        _viewport: &Viewport,
+        _rect: Bounds<Pixels>,
+    ) -> Vec<crate::selection::FeatureRef> {
+        Vec::new()
+    }
+
+    /// Tell the layer which features are currently selected.
+    /// Default: no-op. OsmLayer overrides this to store the set.
+    fn set_highlight(&mut self, _features: &[crate::selection::FeatureRef]) {}
 
     /// Return key/value tags for the given feature if this layer owns it.
     /// Default: `None`.
@@ -169,6 +180,19 @@ impl LayerManager {
             .iter()
             .filter(|layer| layer.is_visible())
             .map(|layer| layer.hit_test(viewport, screen_pt))
+            .collect()
+    }
+
+    /// Run hit_test_rect against every visible layer, concatenated in draw order.
+    pub fn hit_test_rect_all(
+        &self,
+        viewport: &Viewport,
+        rect: Bounds<Pixels>,
+    ) -> Vec<crate::selection::FeatureRef> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .flat_map(|layer| layer.hit_test_rect(viewport, rect))
             .collect()
     }
 

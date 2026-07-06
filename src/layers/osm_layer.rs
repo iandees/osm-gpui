@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use crate::layers::MapLayer;
 use crate::viewport::Viewport;
-use crate::osm::OsmData;
+use crate::osm::{OsmData, OsmWay};
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::selection::{FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
 use crate::style::Stylesheet;
+use rstar::{RTree, AABB, primitives::{GeomWithData, Rectangle}};
 
 const SELECTION_ACCENT: u32 = 0xFF4081;
 
@@ -57,7 +58,15 @@ pub struct OsmLayer {
     /// Stylesheet used to pick per-feature colors/weights from OSM tags.
     stylesheet: Arc<Stylesheet>,
     /// Feature to highlight (set each frame by MapViewer).
-    highlight: Option<FeatureRef>,
+    highlight: Vec<FeatureRef>,
+    /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
+    /// data changes. Used by box-select (`hit_test_rect`).
+    node_index: RTree<GeomWithData<[f64; 2], i64>>,
+    /// Spatial index of all way bounding boxes (mercator meters -> way id),
+    /// rebuilt whenever data changes. `locate_in_envelope` on this index
+    /// returns ways whose bbox is fully contained in the query rect, which is
+    /// exactly the "fully enclosed" box-select rule for ways.
+    way_index: RTree<GeomWithData<Rectangle<[f64; 2]>, i64>>,
 }
 
 fn compute_node_cache(data: &OsmData) -> NodeCache {
@@ -125,6 +134,33 @@ fn compute_way_tables(
     (bboxes, vertices)
 }
 
+/// Bulk-build a point index over every node's mercator position.
+fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
+    let items: Vec<_> = node_cache
+        .flat
+        .iter()
+        .map(|&(id, mx, my)| GeomWithData::new([mx, my], id))
+        .collect();
+    RTree::bulk_load(items)
+}
+
+/// Bulk-build a bounding-box index over every way's mercator bbox. Ways with
+/// no valid bbox (no resolvable nodes) are skipped.
+fn build_way_index(way_bboxes: &[Option<WayBbox>], ways: &[OsmWay]) -> RTree<GeomWithData<Rectangle<[f64; 2]>, i64>> {
+    let items: Vec<_> = way_bboxes
+        .iter()
+        .zip(ways.iter())
+        .filter_map(|(bbox, way)| {
+            let b = bbox.as_ref()?;
+            Some(GeomWithData::new(
+                Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
+                way.id,
+            ))
+        })
+        .collect();
+    RTree::bulk_load(items)
+}
+
 impl OsmLayer {
     pub fn new() -> Self {
         Self {
@@ -136,7 +172,9 @@ impl OsmLayer {
             layer_bbox: None,
             node_cache: NodeCache { by_id: HashMap::new(), flat: Vec::new() },
             stylesheet: Arc::new(Stylesheet::load_default()),
-            highlight: None,
+            highlight: Vec::new(),
+            node_index: RTree::new(),
+            way_index: RTree::new(),
         }
     }
 
@@ -144,6 +182,8 @@ impl OsmLayer {
         let node_cache = compute_node_cache(&osm_data);
         let (way_bboxes, way_vertices) = compute_way_tables(&osm_data, &node_cache);
         let layer_bbox = compute_layer_bbox(&node_cache);
+        let node_index = build_node_index(&node_cache);
+        let way_index = build_way_index(&way_bboxes, &osm_data.ways);
         Self {
             name: name.into(),
             visible: true,
@@ -153,7 +193,9 @@ impl OsmLayer {
             layer_bbox,
             node_cache,
             stylesheet: Arc::new(Stylesheet::load_default()),
-            highlight: None,
+            highlight: Vec::new(),
+            node_index,
+            way_index,
         }
     }
 
@@ -164,6 +206,8 @@ impl OsmLayer {
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
+        self.node_index = build_node_index(&self.node_cache);
+        self.way_index = build_way_index(&self.way_bboxes, &osm_data.ways);
         self.osm_data = Some(osm_data);
     }
 
@@ -180,6 +224,8 @@ impl OsmLayer {
         self.layer_bbox = None;
         self.node_cache.by_id.clear();
         self.node_cache.flat.clear();
+        self.node_index = RTree::new();
+        self.way_index = RTree::new();
     }
 
     /// Check if this layer has data
@@ -204,8 +250,8 @@ impl MapLayer for OsmLayer {
         self.visible = visible;
     }
 
-    fn set_highlight(&mut self, feature: Option<FeatureRef>) {
-        self.highlight = feature;
+    fn set_highlight(&mut self, features: &[FeatureRef]) {
+        self.highlight = features.to_vec();
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
@@ -414,6 +460,36 @@ impl MapLayer for OsmLayer {
         way_hits
     }
 
+    fn hit_test_rect(&self, viewport: &Viewport, rect: Bounds<Pixels>) -> Vec<FeatureRef> {
+        let (x1, y1) = viewport.screen_to_mercator(rect.origin);
+        let (x2, y2) = viewport.screen_to_mercator(point(
+            rect.origin.x + rect.size.width,
+            rect.origin.y + rect.size.height,
+        ));
+        let min_x = x1.min(x2);
+        let max_x = x1.max(x2);
+        let min_y = y1.min(y2);
+        let max_y = y1.max(y2);
+        let envelope = AABB::from_corners([min_x, min_y], [max_x, max_y]);
+
+        let mut out = Vec::new();
+        for item in self.node_index.locate_in_envelope(envelope) {
+            out.push(FeatureRef {
+                layer_name: self.name.clone(),
+                kind: FeatureKind::Node,
+                id: item.data,
+            });
+        }
+        for item in self.way_index.locate_in_envelope(envelope) {
+            out.push(FeatureRef {
+                layer_name: self.name.clone(),
+                kind: FeatureKind::Way,
+                id: item.data,
+            });
+        }
+        out
+    }
+
     fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
         if feature.layer_name != self.name { return None; }
         let data = self.osm_data.as_ref()?;
@@ -504,7 +580,7 @@ mod tests {
     use crate::osm::{OsmData, OsmNode, OsmWay};
     use crate::selection::FeatureKind;
     use crate::viewport::Viewport;
-    use gpui::{point, px, size};
+    use gpui::{point, px, size, Bounds};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -574,5 +650,61 @@ mod tests {
 
         let hits = layer.hit_test(&viewport, point(px(50.0), px(50.0)));
         assert!(hits.is_empty(), "unexpected hits: {:?}", hits);
+    }
+
+    #[test]
+    fn hit_test_rect_selects_contained_nodes_and_fully_enclosed_ways() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        // n1 and n2 sit exactly at the viewport center (mercator-identical);
+        // n3 is a full degree away, so its mercator position is far outside
+        // any modest screen-space rect around the center.
+        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon, tags: empty_tags() };
+        let n3 = OsmNode { id: 3, lat: center_lat + 1.0, lon: center_lon + 1.0, tags: empty_tags() };
+        // way_in's bbox is the (degenerate) point at the center: fully enclosed.
+        let way_in = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        // way_partial's bbox spans from the center to the far node: NOT fully
+        // enclosed by a modest rect around the center.
+        let way_partial = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags() };
+        let data = data_with(vec![n1, n2, n3], vec![way_in, way_partial]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data("L", data);
+
+        // A screen-space box symmetric around the viewport's center screen
+        // point (400, 300) — always brackets the center's mercator position
+        // regardless of zoom level.
+        let rect = Bounds {
+            origin: point(px(300.0), px(200.0)),
+            size: size(px(200.0), px(200.0)),
+        };
+
+        let hits = layer.hit_test_rect(&viewport, rect);
+        let node_ids: Vec<i64> = hits
+            .iter()
+            .filter(|f| f.kind == FeatureKind::Node)
+            .map(|f| f.id)
+            .collect();
+        let way_ids: Vec<i64> = hits
+            .iter()
+            .filter(|f| f.kind == FeatureKind::Way)
+            .map(|f| f.id)
+            .collect();
+
+        assert!(node_ids.contains(&1) && node_ids.contains(&2), "got {:?}", node_ids);
+        assert!(!node_ids.contains(&3), "far node should not be selected: {:?}", node_ids);
+        assert!(way_ids.contains(&10), "fully-enclosed way should be selected: {:?}", way_ids);
+        assert!(!way_ids.contains(&20), "partially-overlapping way should not be selected: {:?}", way_ids);
+    }
+
+    #[test]
+    fn hit_test_rect_empty_when_no_data() {
+        let layer = OsmLayer::new();
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        assert!(layer.hit_test_rect(&viewport, rect).is_empty());
     }
 }

@@ -220,6 +220,21 @@ impl CoordinateTransform {
         mercator_to_lat_lon(merc_x, merc_y)
     }
 
+    /// Convert screen coordinates directly to Web Mercator (EPSG:3857) meters,
+    /// skipping the final lat/lon conversion `screen_to_geo` does. Used by
+    /// box-select hit-testing, which queries an R-tree built in Mercator space.
+    pub fn screen_to_mercator(&self, point: GpuiPoint<Pixels>) -> (f64, f64) {
+        let merc_x = self.mercator_center_x
+            + (point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
+        let merc_y = self.mercator_center_y
+            - (point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
+
+        let merc_x = if merc_x.is_finite() { merc_x } else { self.mercator_center_x };
+        let merc_y = if merc_y.is_finite() { merc_y } else { self.mercator_center_y };
+
+        (merc_x, merc_y)
+    }
+
     /// Update the transform for a new center point (for panning)
     pub fn pan_to(&mut self, new_center_lat: f64, new_center_lon: f64) {
         // Validate inputs before updating
@@ -376,5 +391,23 @@ mod tests {
 
         assert!((converted_lat - original_lat).abs() < 0.001);
         assert!((converted_lon - original_lon).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_screen_to_mercator_round_trip() {
+        let screen_size = size(px(800.0), px(600.0));
+        let transform = CoordinateTransform::new(40.7128, -74.0060, 12.0, screen_size);
+
+        // Offsets from the viewport's own mercator center, not absolute
+        // mercator coordinates: real map viewports are always centered near
+        // their content, so this exercises the round trip at a screen-pixel
+        // magnitude the f32 `Pixels` type can represent precisely.
+        let original_mx = transform.mercator_center_x + 100.0;
+        let original_my = transform.mercator_center_y - 50.0;
+        let screen_point = transform.mercator_to_screen(original_mx, original_my);
+        let (mx, my) = transform.screen_to_mercator(screen_point);
+
+        assert!((mx - original_mx).abs() < 0.01, "mx: {} vs {}", mx, original_mx);
+        assert!((my - original_my).abs() < 0.01, "my: {} vs {}", my, original_my);
     }
 }

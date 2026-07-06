@@ -249,8 +249,11 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
-    selected: Option<osm_gpui::selection::FeatureRef>,
+    selected: Vec<osm_gpui::selection::FeatureRef>,
     mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
+    /// Screen-space (start, current) points of an in-progress left-drag box
+    /// select, or `None` when not dragging a box.
+    box_select: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
@@ -262,6 +265,22 @@ struct MapViewer {
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
+}
+
+/// Normalize two arbitrary screen points into a `Bounds` with a top-left
+/// origin and non-negative size, regardless of drag direction.
+fn normalize_rect(
+    a: gpui::Point<gpui::Pixels>,
+    b: gpui::Point<gpui::Pixels>,
+) -> gpui::Bounds<gpui::Pixels> {
+    let min_x = a.x.as_f32().min(b.x.as_f32());
+    let max_x = a.x.as_f32().max(b.x.as_f32());
+    let min_y = a.y.as_f32().min(b.y.as_f32());
+    let max_y = a.y.as_f32().max(b.y.as_f32());
+    gpui::Bounds {
+        origin: gpui::point(px(min_x), px(min_y)),
+        size: gpui::size(px(max_x - min_x), px(max_y - min_y)),
+    }
 }
 
 impl MapViewer {
@@ -281,14 +300,15 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
-            selected: None,
+            selected: Vec::new(),
             mouse_down_pos: None,
+            box_select: None,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
-            side_panel_open: vec![0, 1],
+            side_panel_open: vec![0, 1, 2],
         }
     }
 
@@ -447,17 +467,37 @@ impl MapViewer {
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
         }
+
+        if event.pressed_button == Some(gpui::MouseButton::Left) {
+            if let Some(start) = self.mouse_down_pos {
+                let moved = (adjusted_position - start).magnitude() >= 4.0;
+                if moved || self.box_select.is_some() {
+                    self.box_select = Some((start, adjusted_position));
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = event.position;
-        let was_click = match self.mouse_down_pos.take() {
-            Some(down) => {
-                (up_pos - down).magnitude() < 4.0
+        let down_pos = self.mouse_down_pos.take();
+        self.viewport.handle_mouse_up();
+
+        if let Some((start, _)) = self.box_select.take() {
+            let rect = normalize_rect(start, up_pos);
+            let before = self.selected.clone();
+            self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
+            if before != self.selected {
+                cx.notify();
             }
+            return;
+        }
+
+        let was_click = match down_pos {
+            Some(down) => (up_pos - down).magnitude() < 4.0,
             None => false,
         };
-        self.viewport.handle_mouse_up();
         if was_click {
             let before = self.selected.clone();
             self.handle_map_click(up_pos);
@@ -469,31 +509,30 @@ impl MapViewer {
 
     fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-        self.selected = osm_gpui::selection::resolve_hits(per_layer);
+        self.selected = osm_gpui::selection::resolve_hits(per_layer)
+            .into_iter()
+            .collect();
     }
 
     fn sync_selection_to_layers(&mut self) {
-        // Clear the selection if its owning layer is gone or hidden, so the
-        // right panel never shows info for a feature not drawn on the map.
-        if let Some(sel) = &self.selected {
-            let still_live = self
-                .layer_manager
+        // Drop any selected feature whose owning layer is gone or hidden, so
+        // the right panel never shows info for a feature not drawn on the map.
+        let layer_manager = &self.layer_manager;
+        self.selected.retain(|sel| {
+            layer_manager
                 .find_layer(&sel.layer_name)
                 .map(|l| l.is_visible())
-                .unwrap_or(false);
-            if !still_live {
-                self.selected = None;
-            }
-        }
+                .unwrap_or(false)
+        });
+
         let selected = self.selected.clone();
         for layer in self.layer_manager.layers_mut() {
-            if let Some(sel) = &selected {
-                if layer.name() == sel.layer_name {
-                    layer.set_highlight(Some(sel.clone()));
-                    continue;
-                }
-            }
-            layer.set_highlight(None);
+            let matching: Vec<osm_gpui::selection::FeatureRef> = selected
+                .iter()
+                .filter(|s| s.layer_name == layer.name())
+                .cloned()
+                .collect();
+            layer.set_highlight(&matching);
         }
     }
 
@@ -848,9 +887,12 @@ impl MapViewer {
         }
     }
 
-    /// The full right-hand side panel: a themed container wrapping a collapsible
-    /// The right pane: Layers and Selection sections stacked top-to-bottom,
-    /// each collapsible and sized to its content (the whole pane scrolls).
+    const SELECTION_ROW_HEIGHT: f32 = 22.0;
+    const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
+
+    /// The right pane: Layers, Selection, and Tags sections stacked
+    /// top-to-bottom, each collapsible and sized to its content (the whole
+    /// pane scrolls).
     fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let layer_info: Vec<(String, bool)> = self
             .layer_manager
@@ -860,9 +902,18 @@ impl MapViewer {
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
+        let selection_section = self.render_selection_section(cx);
         let tags_section = self.render_tags_section(cx);
+
         let open_layers = self.side_panel_open.contains(&0);
         let open_selection = self.side_panel_open.contains(&1);
+        let open_tags = self.side_panel_open.contains(&2);
+
+        let selection_title = match self.selected.len() {
+            0 => "Selection".to_string(),
+            1 => "Selection (1 item)".to_string(),
+            n => format!("Selection ({} items)", n),
+        };
 
         div()
             .w(px(280.0))
@@ -882,12 +933,13 @@ impl MapViewer {
                     .flex_col()
                     .child(self.collapsible_section("Layers", 0, open_layers, layers_section, cx))
                     .child(self.collapsible_section(
-                        "Selection",
+                        selection_title,
                         1,
                         open_selection,
-                        tags_section,
+                        selection_section,
                         cx,
-                    )),
+                    ))
+                    .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx)),
             )
     }
 
@@ -896,7 +948,7 @@ impl MapViewer {
     /// open. Sizes to content so sections stack instead of splitting the height.
     fn collapsible_section(
         &self,
-        title: &'static str,
+        title: impl Into<gpui::SharedString>,
         index: usize,
         open: bool,
         content: gpui::AnyElement,
@@ -942,6 +994,57 @@ impl MapViewer {
             .flex_col()
             .child(header)
             .when(open, |this| this.child(div().px_2().py_1p5().child(content)))
+    }
+
+    /// The Selection accordion section: a scrollable list of the selected
+    /// features (max ~10 rows visible, then scrolls). Clicking a row narrows
+    /// the selection to just that feature.
+    fn render_selection_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::selection::FeatureKind;
+
+        if self.selected.is_empty() {
+            return Label::new("Click or drag to select.")
+                .text_color(cx.theme().muted_foreground)
+                .text_sm()
+                .into_any_element();
+        }
+
+        let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
+        let list_height = px(visible_rows as f32 * Self::SELECTION_ROW_HEIGHT);
+
+        div()
+            .id("selection-list")
+            .flex()
+            .flex_col()
+            .h(list_height)
+            .overflow_y_scroll()
+            .children(self.selected.iter().enumerate().map(|(i, feat)| {
+                let kind_label = match feat.kind {
+                    FeatureKind::Node => "Node",
+                    FeatureKind::Way => "Way",
+                };
+                let row_feat = feat.clone();
+                div()
+                    .id(("selection-row", i))
+                    .flex_shrink_0()
+                    .h(px(Self::SELECTION_ROW_HEIGHT))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .hover(|this| this.bg(cx.theme().accent))
+                    .child(format!("{} {}", kind_label, feat.id))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                            this.selected = vec![row_feat.clone()];
+                            cx.notify();
+                        }),
+                    )
+            }))
+            .into_any_element()
     }
 
     /// The Layers accordion section: a Checkbox row per layer with a right-click
@@ -992,69 +1095,45 @@ impl MapViewer {
             .into_any_element()
     }
 
-    /// The Selection/Tags accordion section: a header, an OSM link, and a
-    /// DescriptionList of the selected feature's tags (with empty states).
+    /// The Tags accordion section: tags aggregated across every selected
+    /// feature. A key with one distinct value (among features that have it)
+    /// shows that value; a key with several shows "<N values>".
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        use osm_gpui::selection::FeatureKind;
-
-        let Some(sel) = self.selected.clone() else {
-            return Label::new("Click a feature to see its tags.")
+        if self.selected.is_empty() {
+            return Label::new("No selection.")
                 .text_color(cx.theme().muted_foreground)
                 .text_sm()
                 .into_any_element();
-        };
+        }
 
-        let kind_label = match sel.kind {
-            FeatureKind::Node => "Node",
-            FeatureKind::Way => "Way",
-        };
-        let url_kind = match sel.kind {
-            FeatureKind::Node => "node",
-            FeatureKind::Way => "way",
-        };
-        let tags_vec: Vec<(String, String)> = self
-            .layer_manager
-            .find_layer(&sel.layer_name)
-            .and_then(|layer| layer.feature_tags(&sel))
-            .unwrap_or_default();
+        let per_feature: Vec<Vec<(String, String)>> = self
+            .selected
+            .iter()
+            .filter_map(|sel| {
+                self.layer_manager
+                    .find_layer(&sel.layer_name)
+                    .and_then(|layer| layer.feature_tags(sel))
+            })
+            .collect();
 
-        let header = Label::new(format!("{} #{}", kind_label, sel.id))
-            .text_lg()
-            .font_weight(gpui::FontWeight::BOLD);
+        let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
 
-        let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
-        let link = div()
-            .id(("osm-link", sel.id as usize))
-            .text_color(cx.theme().link)
-            .text_sm()
-            .cursor_pointer()
-            .child("View on openstreetmap.org ↗")
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
-                    cx.open_url(&url);
-                }),
-            );
+        if aggregated.is_empty() {
+            return DescriptionList::new()
+                .child(DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()))
+                .into_any_element();
+        }
 
-        let list = if tags_vec.is_empty() {
-            DescriptionList::new().child(
-                DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()),
-            )
-        } else {
-            DescriptionList::new().columns(1).bordered(true).children(
-                tags_vec.into_iter().map(|(k, v)| {
-                    DescriptionItem::new(k).value(Label::new(v).into_any_element())
-                }),
-            )
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(header)
-            .child(link)
-            .child(list)
+        DescriptionList::new()
+            .columns(1)
+            .bordered(true)
+            .children(aggregated.into_iter().map(|(k, v)| {
+                let value = match v {
+                    osm_gpui::selection::TagValue::Single(s) => s,
+                    osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
+                };
+                DescriptionItem::new(k).value(Label::new(value).into_any_element())
+            }))
             .into_any_element()
     }
 }
@@ -1168,7 +1247,7 @@ impl Render for MapViewer {
                                                 move |bounds, _, window, _| {
                                                     let layer_manager = unsafe { &*layer_manager };
                                                     layer_manager.render_all_canvas(&viewport_clone, bounds, window);
-                                                    if let Some(sel) = &selected {
+                                                    for sel in &selected {
                                                         layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
                                                     }
                                                 }
@@ -1217,6 +1296,24 @@ impl Render for MapViewer {
                                         .text_sm()
                                         .opacity(0.9)
                                         .child(msg)
+                                        .into_any_element()
+                                } else {
+                                    div().into_any_element()
+                                }
+                            })
+                            .child({
+                                if let Some((start, current)) = self.box_select {
+                                    let rect = normalize_rect(start, current);
+                                    div()
+                                        .absolute()
+                                        .left(rect.origin.x)
+                                        .top(rect.origin.y)
+                                        .w(rect.size.width)
+                                        .h(rect.size.height)
+                                        .bg(cx.theme().accent)
+                                        .border_1()
+                                        .border_color(cx.theme().accent)
+                                        .opacity(0.35)
                                         .into_any_element()
                                 } else {
                                     div().into_any_element()
