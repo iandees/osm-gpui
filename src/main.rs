@@ -308,7 +308,7 @@ impl MapViewer {
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
-            side_panel_open: vec![0, 1],
+            side_panel_open: vec![0, 1, 2],
         }
     }
 
@@ -887,9 +887,12 @@ impl MapViewer {
         }
     }
 
-    /// The full right-hand side panel: a themed container wrapping a collapsible
-    /// The right pane: Layers and Selection sections stacked top-to-bottom,
-    /// each collapsible and sized to its content (the whole pane scrolls).
+    const SELECTION_ROW_HEIGHT: f32 = 22.0;
+    const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
+
+    /// The right pane: Layers, Selection, and Tags sections stacked
+    /// top-to-bottom, each collapsible and sized to its content (the whole
+    /// pane scrolls).
     fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let layer_info: Vec<(String, bool)> = self
             .layer_manager
@@ -899,9 +902,18 @@ impl MapViewer {
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
+        let selection_section = self.render_selection_section(cx);
         let tags_section = self.render_tags_section(cx);
+
         let open_layers = self.side_panel_open.contains(&0);
         let open_selection = self.side_panel_open.contains(&1);
+        let open_tags = self.side_panel_open.contains(&2);
+
+        let selection_title = match self.selected.len() {
+            0 => "Selection".to_string(),
+            1 => "Selection (1 item)".to_string(),
+            n => format!("Selection ({} items)", n),
+        };
 
         div()
             .w(px(280.0))
@@ -921,12 +933,13 @@ impl MapViewer {
                     .flex_col()
                     .child(self.collapsible_section("Layers", 0, open_layers, layers_section, cx))
                     .child(self.collapsible_section(
-                        "Selection",
+                        selection_title,
                         1,
                         open_selection,
-                        tags_section,
+                        selection_section,
                         cx,
-                    )),
+                    ))
+                    .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx)),
             )
     }
 
@@ -935,7 +948,7 @@ impl MapViewer {
     /// open. Sizes to content so sections stack instead of splitting the height.
     fn collapsible_section(
         &self,
-        title: &'static str,
+        title: impl Into<gpui::SharedString>,
         index: usize,
         open: bool,
         content: gpui::AnyElement,
@@ -981,6 +994,57 @@ impl MapViewer {
             .flex_col()
             .child(header)
             .when(open, |this| this.child(div().px_2().py_1p5().child(content)))
+    }
+
+    /// The Selection accordion section: a scrollable list of the selected
+    /// features (max ~10 rows visible, then scrolls). Clicking a row narrows
+    /// the selection to just that feature.
+    fn render_selection_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::selection::FeatureKind;
+
+        if self.selected.is_empty() {
+            return Label::new("Click or drag to select.")
+                .text_color(cx.theme().muted_foreground)
+                .text_sm()
+                .into_any_element();
+        }
+
+        let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
+        let list_height = px(visible_rows as f32 * Self::SELECTION_ROW_HEIGHT);
+
+        div()
+            .id("selection-list")
+            .flex()
+            .flex_col()
+            .h(list_height)
+            .overflow_y_scroll()
+            .children(self.selected.iter().enumerate().map(|(i, feat)| {
+                let kind_label = match feat.kind {
+                    FeatureKind::Node => "Node",
+                    FeatureKind::Way => "Way",
+                };
+                let row_feat = feat.clone();
+                div()
+                    .id(("selection-row", i))
+                    .flex_shrink_0()
+                    .h(px(Self::SELECTION_ROW_HEIGHT))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .hover(|this| this.bg(cx.theme().accent))
+                    .child(format!("{} {}", kind_label, feat.id))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                            this.selected = vec![row_feat.clone()];
+                            cx.notify();
+                        }),
+                    )
+            }))
+            .into_any_element()
     }
 
     /// The Layers accordion section: a Checkbox row per layer with a right-click
@@ -1031,69 +1095,45 @@ impl MapViewer {
             .into_any_element()
     }
 
-    /// The Selection/Tags accordion section: a header, an OSM link, and a
-    /// DescriptionList of the selected feature's tags (with empty states).
+    /// The Tags accordion section: tags aggregated across every selected
+    /// feature. A key with one distinct value (among features that have it)
+    /// shows that value; a key with several shows "<N values>".
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        use osm_gpui::selection::FeatureKind;
-
-        let Some(sel) = self.selected.first().cloned() else {
-            return Label::new("Click a feature to see its tags.")
+        if self.selected.is_empty() {
+            return Label::new("No selection.")
                 .text_color(cx.theme().muted_foreground)
                 .text_sm()
                 .into_any_element();
-        };
+        }
 
-        let kind_label = match sel.kind {
-            FeatureKind::Node => "Node",
-            FeatureKind::Way => "Way",
-        };
-        let url_kind = match sel.kind {
-            FeatureKind::Node => "node",
-            FeatureKind::Way => "way",
-        };
-        let tags_vec: Vec<(String, String)> = self
-            .layer_manager
-            .find_layer(&sel.layer_name)
-            .and_then(|layer| layer.feature_tags(&sel))
-            .unwrap_or_default();
+        let per_feature: Vec<Vec<(String, String)>> = self
+            .selected
+            .iter()
+            .filter_map(|sel| {
+                self.layer_manager
+                    .find_layer(&sel.layer_name)
+                    .and_then(|layer| layer.feature_tags(sel))
+            })
+            .collect();
 
-        let header = Label::new(format!("{} #{}", kind_label, sel.id))
-            .text_lg()
-            .font_weight(gpui::FontWeight::BOLD);
+        let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
 
-        let url = format!("https://www.openstreetmap.org/{}/{}", url_kind, sel.id);
-        let link = div()
-            .id(("osm-link", sel.id as usize))
-            .text_color(cx.theme().link)
-            .text_sm()
-            .cursor_pointer()
-            .child("View on openstreetmap.org ↗")
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(move |_this, _ev: &MouseDownEvent, _, cx| {
-                    cx.open_url(&url);
-                }),
-            );
+        if aggregated.is_empty() {
+            return DescriptionList::new()
+                .child(DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()))
+                .into_any_element();
+        }
 
-        let list = if tags_vec.is_empty() {
-            DescriptionList::new().child(
-                DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()),
-            )
-        } else {
-            DescriptionList::new().columns(1).bordered(true).children(
-                tags_vec.into_iter().map(|(k, v)| {
-                    DescriptionItem::new(k).value(Label::new(v).into_any_element())
-                }),
-            )
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(header)
-            .child(link)
-            .child(list)
+        DescriptionList::new()
+            .columns(1)
+            .bordered(true)
+            .children(aggregated.into_iter().map(|(k, v)| {
+                let value = match v {
+                    osm_gpui::selection::TagValue::Single(s) => s,
+                    osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
+                };
+                DescriptionItem::new(k).value(Label::new(value).into_any_element())
+            }))
             .into_any_element()
     }
 }
