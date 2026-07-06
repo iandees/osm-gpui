@@ -249,7 +249,7 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
-    selected: Option<osm_gpui::selection::FeatureRef>,
+    selected: Vec<osm_gpui::selection::FeatureRef>,
     mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
@@ -281,7 +281,7 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
-            selected: None,
+            selected: Vec::new(),
             mouse_down_pos: None,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
@@ -469,31 +469,30 @@ impl MapViewer {
 
     fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-        self.selected = osm_gpui::selection::resolve_hits(per_layer);
+        self.selected = osm_gpui::selection::resolve_hits(per_layer)
+            .into_iter()
+            .collect();
     }
 
     fn sync_selection_to_layers(&mut self) {
-        // Clear the selection if its owning layer is gone or hidden, so the
-        // right panel never shows info for a feature not drawn on the map.
-        if let Some(sel) = &self.selected {
-            let still_live = self
-                .layer_manager
+        // Drop any selected feature whose owning layer is gone or hidden, so
+        // the right panel never shows info for a feature not drawn on the map.
+        let layer_manager = &self.layer_manager;
+        self.selected.retain(|sel| {
+            layer_manager
                 .find_layer(&sel.layer_name)
                 .map(|l| l.is_visible())
-                .unwrap_or(false);
-            if !still_live {
-                self.selected = None;
-            }
-        }
+                .unwrap_or(false)
+        });
+
         let selected = self.selected.clone();
         for layer in self.layer_manager.layers_mut() {
-            if let Some(sel) = &selected {
-                if layer.name() == sel.layer_name {
-                    layer.set_highlight(Some(sel.clone()));
-                    continue;
-                }
-            }
-            layer.set_highlight(None);
+            let matching: Vec<osm_gpui::selection::FeatureRef> = selected
+                .iter()
+                .filter(|s| s.layer_name == layer.name())
+                .cloned()
+                .collect();
+            layer.set_highlight(&matching);
         }
     }
 
@@ -997,7 +996,7 @@ impl MapViewer {
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use osm_gpui::selection::FeatureKind;
 
-        let Some(sel) = self.selected.clone() else {
+        let Some(sel) = self.selected.first().cloned() else {
             return Label::new("Click a feature to see its tags.")
                 .text_color(cx.theme().muted_foreground)
                 .text_sm()
@@ -1168,7 +1167,7 @@ impl Render for MapViewer {
                                                 move |bounds, _, window, _| {
                                                     let layer_manager = unsafe { &*layer_manager };
                                                     layer_manager.render_all_canvas(&viewport_clone, bounds, window);
-                                                    if let Some(sel) = &selected {
+                                                    for sel in &selected {
                                                         layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
                                                     }
                                                 }

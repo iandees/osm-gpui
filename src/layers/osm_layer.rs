@@ -58,7 +58,7 @@ pub struct OsmLayer {
     /// Stylesheet used to pick per-feature colors/weights from OSM tags.
     stylesheet: Arc<Stylesheet>,
     /// Feature to highlight (set each frame by MapViewer).
-    highlight: Option<FeatureRef>,
+    highlight: Vec<FeatureRef>,
     /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
     /// data changes. Used by box-select (`hit_test_rect`).
     node_index: RTree<GeomWithData<[f64; 2], i64>>,
@@ -172,7 +172,7 @@ impl OsmLayer {
             layer_bbox: None,
             node_cache: NodeCache { by_id: HashMap::new(), flat: Vec::new() },
             stylesheet: Arc::new(Stylesheet::load_default()),
-            highlight: None,
+            highlight: Vec::new(),
             node_index: RTree::new(),
             way_index: RTree::new(),
         }
@@ -193,7 +193,7 @@ impl OsmLayer {
             layer_bbox,
             node_cache,
             stylesheet: Arc::new(Stylesheet::load_default()),
-            highlight: None,
+            highlight: Vec::new(),
             node_index,
             way_index,
         }
@@ -250,8 +250,8 @@ impl MapLayer for OsmLayer {
         self.visible = visible;
     }
 
-    fn set_highlight(&mut self, feature: Option<FeatureRef>) {
-        self.highlight = feature;
+    fn set_highlight(&mut self, features: &[FeatureRef]) {
+        self.highlight = features.to_vec();
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
