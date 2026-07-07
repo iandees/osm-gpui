@@ -66,159 +66,16 @@ impl OsmParser {
     pub fn parse(&self, reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_reader(reader);
         xml_reader.config_mut().trim_text(true);
-
-        let mut osm_data = OsmData {
-            nodes: HashMap::new(),
-            ways: Vec::new(),
-            relations: Vec::new(),
-            bounds: None,
-        };
-
-        let mut buf = Vec::new();
-        let mut current_element = ElementType::None;
-        let mut current_node: Option<OsmNode> = None;
-        let mut current_way: Option<OsmWay> = None;
-        let mut current_relation: Option<OsmRelation> = None;
-
-        loop {
-            match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                    b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
-                    }
-                    b"node" => {
-                        current_element = ElementType::Node;
-                        current_node = Some(self.parse_node_start(e)?);
-                    }
-                    b"way" => {
-                        current_element = ElementType::Way;
-                        current_way = Some(self.parse_way_start(e)?);
-                    }
-                    b"relation" => {
-                        current_element = ElementType::Relation;
-                        current_relation = Some(self.parse_relation_start(e)?);
-                    }
-                    b"tag" => {
-                        let (key, value) = self.parse_tag(e)?;
-                        match current_element {
-                            ElementType::Node => {
-                                if let Some(ref mut node) = current_node {
-                                    node.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Way => {
-                                if let Some(ref mut way) = current_way {
-                                    way.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Relation => {
-                                if let Some(ref mut relation) = current_relation {
-                                    relation.tags.insert(key, value);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    b"nd" => {
-                        if let Some(ref mut way) = current_way {
-                            let node_ref = self.parse_node_ref(e)?;
-                            way.nodes.push(node_ref);
-                        }
-                    }
-                    b"member" => {
-                        if let Some(ref mut relation) = current_relation {
-                            let member = self.parse_member(e)?;
-                            relation.members.push(member);
-                        }
-                    }
-                    _ => {}
-                },
-                Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                    b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
-                    }
-                    b"node" => {
-                        let node = self.parse_node_start(e)?;
-                        osm_data.nodes.insert(node.id, node);
-                    }
-                    b"way" => {
-                        let way = self.parse_way_start(e)?;
-                        osm_data.ways.push(way);
-                    }
-                    b"relation" => {
-                        let relation = self.parse_relation_start(e)?;
-                        osm_data.relations.push(relation);
-                    }
-                    b"tag" => {
-                        let (key, value) = self.parse_tag(e)?;
-                        match current_element {
-                            ElementType::Node => {
-                                if let Some(ref mut node) = current_node {
-                                    node.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Way => {
-                                if let Some(ref mut way) = current_way {
-                                    way.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Relation => {
-                                if let Some(ref mut relation) = current_relation {
-                                    relation.tags.insert(key, value);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    b"nd" => {
-                        if let Some(ref mut way) = current_way {
-                            let node_ref = self.parse_node_ref(e)?;
-                            way.nodes.push(node_ref);
-                        }
-                    }
-                    b"member" => {
-                        if let Some(ref mut relation) = current_relation {
-                            let member = self.parse_member(e)?;
-                            relation.members.push(member);
-                        }
-                    }
-                    _ => {}
-                },
-                Ok(Event::End(ref e)) => match e.name().as_ref() {
-                    b"node" => {
-                        if let Some(node) = current_node.take() {
-                            osm_data.nodes.insert(node.id, node);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    b"way" => {
-                        if let Some(way) = current_way.take() {
-                            osm_data.ways.push(way);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    b"relation" => {
-                        if let Some(relation) = current_relation.take() {
-                            osm_data.relations.push(relation);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    _ => {}
-                },
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(OsmParseError::XmlError(e)),
-                _ => {}
-            }
-            buf.clear();
-        }
-
-        Ok(osm_data)
+        self.run(xml_reader)
     }
 
     pub fn parse_str(&self, xml_str: &str) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_str(xml_str);
         xml_reader.config_mut().trim_text(true);
+        self.run(xml_reader)
+    }
 
+    fn run<R: std::io::BufRead>(&self, mut xml_reader: Reader<R>) -> Result<OsmData, OsmParseError> {
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
             ways: Vec::new(),
