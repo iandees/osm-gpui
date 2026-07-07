@@ -187,6 +187,31 @@ pub trait EditableLayer {
     /// Re-insert a feature previously removed by `delete_feature`, using
     /// exactly the id/tags/geometry captured in `snapshot`.
     fn restore_feature(&mut self, snapshot: crate::selection::DeletedFeatureSnapshot);
+
+    /// Insert a brand-new node at `(lat, lon)` and return its id.
+    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
+
+    /// Insert a brand-new way referencing existing node ids, with the given
+    /// tags, and return its id.
+    fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64;
+
+    /// Append a node id to an existing way.
+    fn extend_way(&mut self, way_id: i64, node_id: i64);
+
+    /// Create a new node and splice it into an existing way at `index`,
+    /// returning the new node's id.
+    fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64;
+
+    /// Remove a node this layer owns (must not still be referenced by any
+    /// way).
+    fn remove_node(&mut self, node_id: i64);
+
+    /// Remove a way this layer owns (its member nodes are untouched).
+    fn remove_way(&mut self, way_id: i64);
+
+    /// Inverse of `insert_node_into_way`: remove the node at `index` from a
+    /// way's node list without deleting the node.
+    fn remove_node_from_way(&mut self, way_id: i64, index: usize);
 }
 
 /// Manager for all map layers
