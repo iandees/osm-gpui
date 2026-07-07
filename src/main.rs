@@ -1676,7 +1676,9 @@ fn main() {
         });
     }
 
-    gpui_platform::application().run(move |cx: &mut App| {
+    gpui_platform::application()
+        .with_assets(gpui_component_assets::Assets)
+        .run(move |cx: &mut App| {
         gpui_component::init(cx);
 
         // Bring the menu bar to the foreground

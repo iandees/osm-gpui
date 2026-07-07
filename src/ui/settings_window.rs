@@ -329,7 +329,8 @@ impl SettingsWindow {
                         render_custom_api_url(custom_view.clone(), input.clone(), error.clone(), window, cx)
                     }),
                 )
-                .description("The base URL of a self-hosted or alternate OSM API server."),
+                .description("The base URL of a self-hosted or alternate OSM API server.")
+                .layout(Axis::Vertical),
             );
         }
 
@@ -342,7 +343,8 @@ impl SettingsWindow {
                     render_client_id(client_id_view.clone(), client_id_input.clone(), window, cx)
                 }),
             )
-            .description("Override the OAuth client_id used for this server (leave blank for default)."),
+            .description("Override the OAuth client_id used for this server (leave blank for default).")
+            .layout(Axis::Vertical),
         );
 
         let login_view = view;
@@ -407,6 +409,7 @@ impl SettingsWindow {
                         )
                     }),
                 )
+                .layout(Axis::Vertical)
             } else {
                 let entry_view = view.clone();
                 let entry_summary: SharedString =
