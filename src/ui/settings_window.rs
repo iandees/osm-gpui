@@ -8,7 +8,7 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     radio::RadioGroup,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -18,6 +18,7 @@ use gpui_component::{
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
 use crate::settings_store::{self, ApiServerChoice, AppSettings};
+use crate::ui::modal::field_row;
 
 /// Login UI state for the currently-selected API server.
 #[derive(Clone)]
@@ -465,13 +466,6 @@ impl Focusable for SettingsWindow {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-fn field_row(label: &'static str, input: &Entity<InputState>, muted: Hsla) -> impl IntoElement {
-    v_flex()
-        .gap_1()
-        .child(Label::new(label).text_xs().text_color(muted))
-        .child(Input::new(input))
 }
 
 fn render_server_picker(

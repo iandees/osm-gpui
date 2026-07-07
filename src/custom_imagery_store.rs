@@ -3,43 +3,33 @@
 //! Entries are stored as a JSON array in `<config_dir>/osm-gpui/custom-imagery.json`.
 //! Missing, unreadable, or malformed files are treated as empty (logged to stderr).
 
+use crate::persist::{self, JsonStore, WriteOpts};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 
 /// Global in-memory cache of custom imagery entries shared between the app and settings window.
-pub static CUSTOM_IMAGERY_STORE: OnceLock<Arc<Mutex<Vec<CustomImageryEntry>>>> = OnceLock::new();
+static CUSTOM_IMAGERY_STORE: JsonStore<Vec<CustomImageryEntry>> = JsonStore::new();
 
 /// Initialize the global store with the loaded entries. Call this once at startup.
 pub fn init_store(entries: Vec<CustomImageryEntry>) {
-    let _ = CUSTOM_IMAGERY_STORE.set(Arc::new(Mutex::new(entries)));
+    CUSTOM_IMAGERY_STORE.init(entries);
 }
 
 /// Replace the in-memory store contents and persist to disk.
 pub fn update_store(entries: Vec<CustomImageryEntry>) {
-    if let Some(store) = CUSTOM_IMAGERY_STORE.get() {
-        if let Ok(mut g) = store.lock() {
-            *g = entries.clone();
-        }
-    }
+    CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| *g = entries.clone());
     save(&entries);
 }
 
 /// Return a snapshot of the current in-memory entries.
 pub fn snapshot() -> Vec<CustomImageryEntry> {
-    CUSTOM_IMAGERY_STORE
-        .get()
-        .and_then(|s| s.lock().ok().map(|g| g.clone()))
-        .unwrap_or_default()
+    CUSTOM_IMAGERY_STORE.snapshot("custom_imagery_store")
 }
 
 /// Append one entry to the in-memory store and persist to disk.
 pub fn append(entry: CustomImageryEntry) {
-    let Some(store) = CUSTOM_IMAGERY_STORE.get() else { return };
-    let snapshot = {
-        let Ok(mut g) = store.lock() else { return };
-        g.push(entry);
-        g.clone()
+    let Some(snapshot) = CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry)) else {
+        return;
     };
     save(&snapshot);
 }
@@ -55,35 +45,13 @@ pub struct CustomImageryEntry {
 /// Load entries from the given file path. Returns an empty vec on missing file,
 /// unreadable file, or parse error (logged to stderr).
 pub fn load_from(path: &Path) -> Vec<CustomImageryEntry> {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(e) => {
-            eprintln!("custom_imagery_store: read {:?} failed: {}", path, e);
-            return Vec::new();
-        }
-    };
-    match serde_json::from_slice::<Vec<CustomImageryEntry>>(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("custom_imagery_store: parse {:?} failed: {}", path, e);
-            Vec::new()
-        }
-    }
+    persist::load_json(path, "custom_imagery_store")
 }
 
-/// Atomically write entries to the given path. Writes to a sibling `.tmp` file
+/// Atomically write entries to the given path. Writes to a sibling temp file
 /// then renames into place.
 pub fn save_to(path: &Path, entries: &[CustomImageryEntry]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(entries)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    persist::save_json(path, entries, WriteOpts::default())
 }
 
 /// Default on-disk location: `<config_dir>/osm-gpui/custom-imagery.json`.

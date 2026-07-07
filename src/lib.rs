@@ -12,6 +12,7 @@ pub mod nsi;
 pub mod osm;
 pub mod osm_api;
 pub mod osm_upload;
+pub mod persist;
 pub mod script;
 pub mod selection;
 pub mod settings_store;

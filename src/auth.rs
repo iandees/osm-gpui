@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::settings_store::PRIMARY_API_URL;
@@ -494,29 +493,27 @@ pub struct TokenStore {
     tokens: HashMap<String, StoredToken>,
 }
 
-static TOKEN_STORE: OnceLock<Arc<Mutex<TokenStore>>> = OnceLock::new();
+static TOKEN_STORE: crate::persist::JsonStore<TokenStore> = crate::persist::JsonStore::new();
 
 pub fn init_store(store: TokenStore) {
-    let _ = TOKEN_STORE.set(Arc::new(Mutex::new(store)));
+    TOKEN_STORE.init(store);
 }
 
 fn set_token(oauth_base_url: &str, token: StoredToken) {
-    let Some(store) = TOKEN_STORE.get() else { return };
-    let snapshot = {
-        let Ok(mut g) = store.lock() else { return };
+    let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
         g.tokens.insert(oauth_base_url.to_string(), token);
-        g.clone()
+    }) else {
+        return;
     };
     save(&snapshot);
 }
 
 /// Remove the stored token for the given OAuth base URL, if any.
 pub fn logout(oauth_base_url: &str) {
-    let Some(store) = TOKEN_STORE.get() else { return };
-    let snapshot = {
-        let Ok(mut g) = store.lock() else { return };
+    let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
         g.tokens.remove(oauth_base_url);
-        g.clone()
+    }) else {
+        return;
     };
     keyring_delete_secret(oauth_base_url);
     save(&snapshot);
@@ -525,55 +522,22 @@ pub fn logout(oauth_base_url: &str) {
 /// The stored token for the given OAuth base URL, if the user is logged in there.
 pub fn current_token(oauth_base_url: &str) -> Option<StoredToken> {
     TOKEN_STORE
-        .get()
-        .and_then(|s| s.lock().ok())
-        .and_then(|g| g.tokens.get(oauth_base_url).cloned())
+        .read("auth", |g| g.tokens.get(oauth_base_url).cloned())
+        .flatten()
 }
 
 fn load_from(path: &Path) -> PersistedStore {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PersistedStore::default(),
-        Err(e) => {
-            eprintln!("auth: read {:?} failed: {}", path, e);
-            return PersistedStore::default();
-        }
-    };
-    match serde_json::from_slice::<PersistedStore>(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("auth: parse {:?} failed: {}", path, e);
-            PersistedStore::default()
-        }
-    }
-}
-
-/// Best-effort restriction of a file's permissions to owner-only read/write. No-op on
-/// non-unix platforms (Windows ACLs already default to the owning user).
-#[cfg(unix)]
-fn restrict_permissions(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+    crate::persist::load_json(path, "auth")
 }
 
 fn save_to(path: &Path, store: &PersistedStore) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(store)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp, json)?;
-    // May contain fallback secrets (see PersistedToken); lock it down before it's
-    // visible under its final name.
-    restrict_permissions(&tmp)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    // May contain fallback secrets (see PersistedToken); lock the file down
+    // before it's visible under its final name.
+    crate::persist::save_json(
+        path,
+        store,
+        crate::persist::WriteOpts::new().restrict_permissions(),
+    )
 }
 
 fn default_path() -> Option<PathBuf> {

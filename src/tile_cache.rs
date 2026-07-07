@@ -62,18 +62,9 @@ fn cache_filename(url: &str) -> String {
 /// file first, then `rename` into place. `rename` is atomic on POSIX
 /// filesystems (macOS/Linux), so concurrent fetches for the same cache path
 /// can never produce a torn/truncated file that a concurrent reader might
-/// load.
+/// load. See `crate::persist::write_atomic` for the shared implementation.
 fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let unique = format!(
-        "{}.tmp.{}.{:?}",
-        file_path.display(),
-        std::process::id(),
-        std::thread::current().id()
-    );
-    let tmp_path = PathBuf::from(unique);
-    fs::write(&tmp_path, bytes)?;
-    fs::rename(&tmp_path, file_path)?;
-    Ok(())
+    crate::persist::write_atomic(file_path, bytes, crate::persist::WriteOpts::default())
 }
 
 /// Called after every tile write. Bumps the running write counter and, once

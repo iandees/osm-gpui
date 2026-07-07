@@ -2,13 +2,13 @@
 //! helpers the dialog and its tests share.
 
 use crate::custom_imagery_store::CustomImageryEntry;
+use crate::ui::modal;
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, SharedString, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Window,
 };
 use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     v_flex, ActiveTheme as _,
 };
@@ -227,10 +227,10 @@ impl CustomImageryDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.submit(cx),
-            _ => {}
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.submit(cx),
+            modal::ModalKey::Other => {}
         }
     }
 }
@@ -261,84 +261,42 @@ impl Render for CustomImageryDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
 
-        let field_row = |label: &'static str, input: &Entity<InputState>| {
-            v_flex()
-                .gap_1()
-                .child(Label::new(label).text_xs().text_color(muted))
-                .child(Input::new(input))
-        };
-
         let mut body = v_flex()
             .gap_3()
-            .child(field_row("Name", &self.name))
-            .child(field_row("URL template", &self.url_template))
+            .child(modal::field_row("Name", &self.name, muted))
+            .child(modal::field_row("URL template", &self.url_template, muted))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_3()
-                    .child(div().flex_1().child(field_row("Min zoom", &self.min_zoom)))
-                    .child(div().flex_1().child(field_row("Max zoom", &self.max_zoom))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(modal::field_row("Min zoom", &self.min_zoom, muted)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(modal::field_row("Max zoom", &self.max_zoom, muted)),
+                    ),
             );
 
         if let Some(msg) = self.error.clone() {
             body = body.child(Label::new(msg).text_sm().text_color(cx.theme().danger));
         }
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("cancel")
-                    .label("Cancel")
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("add")
-                    .primary()
-                    .label("Add")
-                    .on_click(cx.listener(|this, _, _w, cx| this.submit(cx))),
-            );
+        let footer = modal::footer_row(
+            "cancel",
+            "Cancel",
+            cx.listener(|this, _, _w, cx| this.cancel(cx)),
+            "add",
+            "Add",
+            cx.listener(|this, _, _w, cx| this.submit(cx)),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("Custom Imagery"),
-            )
-            .child(div().p_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+        let frame = modal::dialog_frame(cx, gpui::px(420.0), "Custom Imagery", body, footer);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000099))
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }

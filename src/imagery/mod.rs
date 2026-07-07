@@ -116,12 +116,10 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
 }
 
 /// Write `body` to `path` atomically by writing to a sibling temp file first
-/// and renaming into place (rename is atomic on POSIX filesystems).
+/// and renaming into place (rename is atomic on POSIX filesystems). See
+/// `crate::persist::write_atomic` for the shared implementation.
 fn write_cache_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, body)?;
-    fs::rename(&tmp_path, path)?;
-    Ok(())
+    crate::persist::write_atomic(path, body.as_bytes(), crate::persist::WriteOpts::default())
 }
 
 fn cache_file_path() -> PathBuf {

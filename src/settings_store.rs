@@ -3,10 +3,10 @@
 //! Stored as JSON in `<config_dir>/osm-gpui/settings.json`. Missing, unreadable, or
 //! malformed files fall back to defaults (logged to stderr).
 
+use crate::persist::{self, JsonStore, WriteOpts};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 
 pub const PRIMARY_API_URL: &str = "https://api.openstreetmap.org";
 pub const DEV_API_URL: &str = "https://master.apis.dev.openstreetmap.org";
@@ -52,29 +52,22 @@ impl AppSettings {
 }
 
 /// Global in-memory cache of app settings shared between the app and settings window.
-pub static APP_SETTINGS: OnceLock<Arc<Mutex<AppSettings>>> = OnceLock::new();
+static APP_SETTINGS: JsonStore<AppSettings> = JsonStore::new();
 
 /// Initialize the global store with the loaded settings. Call this once at startup.
 pub fn init_store(settings: AppSettings) {
-    let _ = APP_SETTINGS.set(Arc::new(Mutex::new(settings)));
+    APP_SETTINGS.init(settings);
 }
 
 /// Replace the in-memory settings and persist to disk.
 pub fn update_store(settings: AppSettings) {
-    if let Some(store) = APP_SETTINGS.get() {
-        if let Ok(mut g) = store.lock() {
-            *g = settings.clone();
-        }
-    }
+    APP_SETTINGS.update("settings_store", |g| *g = settings.clone());
     save(&settings);
 }
 
 /// Return a snapshot of the current in-memory settings.
 pub fn snapshot() -> AppSettings {
-    APP_SETTINGS
-        .get()
-        .and_then(|s| s.lock().ok().map(|g| g.clone()))
-        .unwrap_or_default()
+    APP_SETTINGS.snapshot("settings_store")
 }
 
 /// The OSM API base URL implied by the current settings.
@@ -83,33 +76,11 @@ pub fn api_base_url() -> String {
 }
 
 pub fn load_from(path: &Path) -> AppSettings {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AppSettings::default(),
-        Err(e) => {
-            eprintln!("settings_store: read {:?} failed: {}", path, e);
-            return AppSettings::default();
-        }
-    };
-    match serde_json::from_slice::<AppSettings>(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("settings_store: parse {:?} failed: {}", path, e);
-            AppSettings::default()
-        }
-    }
+    persist::load_json(path, "settings_store")
 }
 
 pub fn save_to(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    persist::save_json(path, settings, WriteOpts::default())
 }
 
 /// Default on-disk location: `<config_dir>/osm-gpui/settings.json`.

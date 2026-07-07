@@ -20,15 +20,16 @@ mod tests {
 }
 
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, SharedString, Window,
+    prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Window,
 };
 use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    input::{Input, InputState, SelectAll},
+    input::{InputState, SelectAll},
     label::Label,
     v_flex, ActiveTheme as _,
 };
+
+use crate::ui::modal;
 
 pub enum DialogEvent {
     Submitted { key: String, value: String },
@@ -117,10 +118,10 @@ impl TagEditDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.submit(cx),
-            _ => {}
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.submit(cx),
+            modal::ModalKey::Other => {}
         }
     }
 }
@@ -135,76 +136,26 @@ impl Render for TagEditDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
 
-        let field_row = |label: &'static str, input: &Entity<InputState>| {
-            v_flex()
-                .gap_1()
-                .child(Label::new(label).text_xs().text_color(muted))
-                .child(Input::new(input))
-        };
-
         let mut body = v_flex()
             .gap_3()
-            .child(field_row("Key", &self.key))
-            .child(field_row("Value", &self.value));
+            .child(modal::field_row("Key", &self.key, muted))
+            .child(modal::field_row("Value", &self.value, muted));
 
         if let Some(msg) = self.error.clone() {
             body = body.child(Label::new(msg).text_sm().text_color(cx.theme().danger));
         }
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("cancel")
-                    .label("Cancel")
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("save")
-                    .primary()
-                    .label("Save")
-                    .on_click(cx.listener(|this, _, _w, cx| this.submit(cx))),
-            );
+        let footer = modal::footer_row(
+            "cancel",
+            "Cancel",
+            cx.listener(|this, _, _w, cx| this.cancel(cx)),
+            "save",
+            "Save",
+            cx.listener(|this, _, _w, cx| this.submit(cx)),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(360.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(self.title.clone()),
-            )
-            .child(div().p_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+        let frame = modal::dialog_frame(cx, gpui::px(360.0), self.title.clone(), body, footer);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000099))
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }

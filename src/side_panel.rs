@@ -31,10 +31,10 @@ impl MapViewer {
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
 
-        let open_layers = self.side_panel_open.contains(&0);
-        let open_selection = self.side_panel_open.contains(&1);
-        let open_tags = self.side_panel_open.contains(&2);
-        let open_history = self.side_panel_open.contains(&3);
+        let open_layers = self.side_panel_open[0];
+        let open_selection = self.side_panel_open[1];
+        let open_tags = self.side_panel_open[2];
+        let open_history = self.side_panel_open[3];
 
         let selection_title = match self.selected.len() {
             0 => "Selection".to_string(),
@@ -143,11 +143,7 @@ impl MapViewer {
                     .font_weight(gpui::FontWeight::SEMIBOLD),
             )
             .on_click(cx.listener(move |this, _ev, _window, cx| {
-                if let Some(pos) = this.side_panel_open.iter().position(|&i| i == index) {
-                    this.side_panel_open.remove(pos);
-                } else {
-                    this.side_panel_open.push(index);
-                }
+                this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
             }));
 

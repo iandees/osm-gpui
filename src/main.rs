@@ -216,8 +216,9 @@ struct MapViewer {
     pending_tag_edit_open: Option<PendingTagEditOpen>,
     /// Active NSI preset search dialog, if open.
     nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
-    /// Indices of the currently-open accordion sections in the side panel.
-    side_panel_open: Vec<usize>,
+    /// Whether each side-panel accordion section (Layers, Selection, Tags,
+    /// History, in that order) is expanded.
+    side_panel_open: [bool; 4],
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -297,7 +298,7 @@ impl MapViewer {
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
-            side_panel_open: vec![0, 1, 2],
+            side_panel_open: [true, true, true, false],
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
         }
