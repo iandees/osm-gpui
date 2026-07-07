@@ -996,17 +996,7 @@ impl MapViewer {
     fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
         let hit = osm_gpui::selection::resolve_hits(per_layer);
-
-        if shift_held {
-            let Some(feature) = hit else { return };
-            if let Some(pos) = self.selected.iter().position(|f| *f == feature) {
-                self.selected.remove(pos);
-            } else {
-                self.selected.push(feature);
-            }
-        } else {
-            self.selected = hit.into_iter().collect();
-        }
+        self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
     }
 
     fn sync_selection_to_layers(&mut self) {
