@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn invalid_utf8_attribute_value_returns_err_not_panic() {
         // Build XML bytes with an invalid UTF-8 byte (0xFF) inside a tag value,
-        // where valid UTF-8 is expected. Feeding this through the file-based
+        // where valid UTF-8 is expected. Feeding this through the byte-oriented
         // parse path must return an Err rather than panicking.
         let mut xml = Vec::new();
         xml.extend_from_slice(
@@ -562,12 +562,10 @@ mod tests {
         xml.push(0xFF);
         xml.extend_from_slice(br#""/></node></osm>"#);
 
-        let path = std::env::temp_dir().join("osm_gpui_invalid_utf8_test.osm");
-        std::fs::write(&path, &xml).expect("failed to write temp file");
-
         let parser = OsmParser::new();
-        let result = parser.parse_file(path.to_str().unwrap());
-        let _ = std::fs::remove_file(&path);
+        let mut reader = Reader::from_reader(xml.as_slice());
+        reader.config_mut().trim_text(true);
+        let result = parser.run(reader);
 
         assert!(
             result.is_err(),
