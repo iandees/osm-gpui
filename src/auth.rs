@@ -17,7 +17,10 @@ use crate::settings_store::PRIMARY_API_URL;
 
 const CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 const CLIENT_SECRET: &str = "I-lOMqaSQyvkej49oMiZx7d1fEbe-MPEYqFVO6A7okc";
-const SCOPES: &str = "read_prefs write_api";
+// Only `read_prefs` is requested for now: the app has no upload/changeset code yet, so
+// there's nothing that consumes write access. Add `write_api` back to SCOPES when
+// upload functionality lands.
+const SCOPES: &str = "read_prefs";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 
 const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
