@@ -132,17 +132,18 @@ fn compute_effective_tile_zoom(
 /// gap can ever appear between neighbors, regardless of where their
 /// (necessarily continuous, sub-pixel) edges happen to fall. Since adjacent
 /// map tiles show continuous, matching imagery at their shared edge, a
-/// few-pixel overlap of nearly-identical content is imperceptible — unlike
-/// a gap, which exposes the dark fallback background behind the tiles.
+/// small overlap of nearly-identical content is imperceptible — unlike a
+/// gap, which exposes the dark fallback background behind the tiles.
 ///
 /// Deliberately a *fixed* pixel amount, not proportional to the tile's
 /// current on-screen size: `object_fit: Cover` reacts to a larger
 /// container by magnifying the same fixed-size source image to fill it,
 /// so a bigger container doesn't extend a tile's true content into its
 /// neighbor — it just zooms that tile in past its true scale, sacrificing
-/// real edge content. A big proportional overlap made that distortion
-/// visible as a real content mismatch. Keep this fixed and small.
-const TILE_OVERLAP_PX: f32 = 3.0;
+/// real edge content. At 3px this became visible as missing edge pixels
+/// (over-magnified crop); keep this fixed and small — just enough to
+/// survive whatever sub-pixel rounding happens downstream in rendering.
+const TILE_OVERLAP_PX: f32 = 0.5;
 
 /// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
 /// directly from its XYZ grid index (no trig — the XYZ scheme is a
@@ -419,7 +420,7 @@ mod tests {
         // box, not merely on its boundary — an edge that only touches the
         // corner (margin == 0) is exactly the exact-abutment case that
         // causes an antialiased seam. Require a minimum real margin.
-        let min_margin = 0.3;
+        let min_margin = 0.2;
         for (i, tile) in tiles.iter().enumerate() {
             let (x, y, w, h) = tile_screen_rect(&viewport, tile);
             let margin_left = corner.x.as_f32() - x.as_f32();
