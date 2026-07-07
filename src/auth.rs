@@ -34,8 +34,6 @@ const SCOPES: &str = "read_prefs";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const CALLBACK_PATH: &str = "/callback";
 
-const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
-
 /// Service name under which all osm-gpui tokens are stored in the platform keyring.
 /// Accounts within that service are keyed by OAuth base URL (see module docs).
 const KEYRING_SERVICE: &str = "osm-gpui";
@@ -248,7 +246,8 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let code = code.ok_or(AuthError::NoRedirect)?;
 
     let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base))
-        .set("User-Agent", USER_AGENT)
+        .set("User-Agent", crate::USER_AGENT)
+        .timeout(Duration::from_secs(30))
         .send_form(&[
             ("grant_type", "authorization_code"),
             ("client_id", CLIENT_ID),
@@ -284,7 +283,8 @@ pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
     let refresh_token_value = existing.refresh_token.clone().ok_or(AuthError::NoRefreshToken)?;
 
     let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base_url))
-        .set("User-Agent", USER_AGENT)
+        .set("User-Agent", crate::USER_AGENT)
+        .timeout(Duration::from_secs(30))
         .send_form(&[
             ("grant_type", "refresh_token"),
             ("client_id", CLIENT_ID),
@@ -358,8 +358,9 @@ fn parse_token_response(
 fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String, u64), AuthError> {
     let url = format!("{}/api/0.6/user/details.json", api_base_url.trim_end_matches('/'));
     let response = ureq::get(&url)
-        .set("User-Agent", USER_AGENT)
+        .set("User-Agent", crate::USER_AGENT)
         .set("Authorization", &format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(30))
         .call();
 
     let body = match response {

@@ -50,8 +50,6 @@ pub(crate) fn build_url(base_url: &str, bounds: &GeoBounds) -> String {
     )
 }
 
-const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
-
 /// Synchronous fetch — call from a worker thread, not the UI thread. `token`, if
 /// present, is sent as an OAuth2 bearer token so the request is attributed to a
 /// logged-in user.
@@ -63,26 +61,59 @@ pub fn fetch_bbox(
     check_area(&bounds)?;
 
     let url = build_url(base_url, &bounds);
-    let mut request = ureq::get(&url).set("User-Agent", USER_AGENT);
-    if let Some(token) = token {
-        request = request.set("Authorization", &format!("Bearer {}", token));
-    }
-    let response = request.call();
-
-    let body = match response {
-        Ok(resp) => resp
-            .into_string()
-            .map_err(|e| OsmApiError::Network(e.to_string()))?,
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            return Err(OsmApiError::Http { status, body });
-        }
-        Err(e) => return Err(OsmApiError::Network(e.to_string())),
-    };
+    let body = fetch_with_retries(&url, token)?;
 
     OsmParser::new()
         .parse_str(&body)
         .map_err(OsmApiError::Parse)
+}
+
+/// Max number of attempts for a single bbox fetch, including the first try.
+const MAX_ATTEMPTS: u32 = 3;
+/// Delay before each retry, indexed by (attempt number - 1).
+const RETRY_DELAYS: [std::time::Duration; MAX_ATTEMPTS as usize - 1] = [
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_millis(500),
+];
+
+/// `GET url` with a small bounded retry on transport errors and retryable
+/// HTTP status codes (see `crate::is_retryable_status`). Other 4xx responses
+/// are returned immediately since retrying won't help.
+fn fetch_with_retries(url: &str, token: Option<&str>) -> Result<String, OsmApiError> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+
+        let mut request = ureq::get(url)
+            .set("User-Agent", crate::USER_AGENT)
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(token) = token {
+            request = request.set("Authorization", &format!("Bearer {}", token));
+        }
+
+        match request.call() {
+            Ok(resp) => {
+                return resp
+                    .into_string()
+                    .map_err(|e| OsmApiError::Network(e.to_string()));
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                if attempt < MAX_ATTEMPTS && crate::is_retryable_status(status) {
+                    std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
+                    continue;
+                }
+                return Err(OsmApiError::Http { status, body });
+            }
+            Err(e) => {
+                if attempt < MAX_ATTEMPTS {
+                    std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
+                    continue;
+                }
+                return Err(OsmApiError::Network(e.to_string()));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
