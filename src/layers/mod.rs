@@ -328,4 +328,63 @@ mod tests {
         apply_move(&mut v, 99, 0);
         assert_eq!(v, vec!["a", "b"]);
     }
+
+    #[test]
+    fn hit_test_selection_finds_selected_node_at_click_point() {
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::LayerManager;
+        use crate::osm::{OsmData, OsmNode};
+        use crate::selection::{FeatureKind, FeatureRef};
+        use crate::viewport::Viewport;
+        use gpui::{point, px, size};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let mut nodes = HashMap::new();
+        nodes.insert(1, node);
+        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let layer = OsmLayer::new_with_data("L", data);
+
+        let mut manager = LayerManager::new();
+        manager.add_layer(Box::new(layer));
+
+        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        let selected = vec![FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 1 }];
+
+        let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
+        assert_eq!(hit, Some(selected[0].clone()));
+    }
+
+    #[test]
+    fn hit_test_selection_ignores_unselected_features() {
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::LayerManager;
+        use crate::osm::{OsmData, OsmNode};
+        use crate::selection::{FeatureKind, FeatureRef};
+        use crate::viewport::Viewport;
+        use gpui::{point, px, size};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let mut nodes = HashMap::new();
+        nodes.insert(1, node);
+        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let layer = OsmLayer::new_with_data("L", data);
+
+        let mut manager = LayerManager::new();
+        manager.add_layer(Box::new(layer));
+
+        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        // Selection references a *different* node id than the one under the cursor.
+        let selected = vec![FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 999 }];
+
+        let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
+        assert_eq!(hit, None);
+    }
 }
