@@ -1,6 +1,7 @@
 use gpui::*;
 use std::sync::{Arc, Mutex};
 
+use crate::imagery::AttributionInfo;
 use crate::layers::MapLayer;
 use crate::viewport::Viewport;
 use crate::tile_cache::TileCache;
@@ -9,9 +10,12 @@ use crate::tiles::{get_tiles_for_bounds, url_from_template, TileCoord};
 /// The built-in OpenStreetMap Carto tile URL template.
 pub const OSM_CARTO_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
-/// Attribution required for the built-in OpenStreetMap Carto base layer.
-/// This is not sourced from the ELI index, so it's hardcoded here.
+/// Attribution text required for the built-in OpenStreetMap Carto base
+/// layer. This is not sourced from the ELI index, so it's hardcoded here.
 pub const OSM_CARTO_ATTRIBUTION: &str = "© OpenStreetMap contributors";
+
+/// Link target for the built-in OpenStreetMap Carto attribution.
+pub const OSM_CARTO_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
 
 /// Layer for rendering raster map tiles
 pub struct TileLayer {
@@ -22,7 +26,7 @@ pub struct TileLayer {
     show_boundaries: bool,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
-    attribution: Option<String>,
+    attribution: Option<AttributionInfo>,
 }
 
 impl TileLayer {
@@ -32,7 +36,10 @@ impl TileLayer {
             OSM_CARTO_TEMPLATE.to_string(),
             tile_cache,
         )
-        .with_attribution(Some(OSM_CARTO_ATTRIBUTION.to_string()))
+        .with_attribution(Some(AttributionInfo {
+            text: OSM_CARTO_ATTRIBUTION.to_string(),
+            url: Some(OSM_CARTO_ATTRIBUTION_URL.to_string()),
+        }))
     }
 
     pub fn new_with_name(name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
@@ -66,8 +73,9 @@ impl TileLayer {
         self
     }
 
-    /// Set the required source-credit text for this layer's tiles.
-    pub fn with_attribution(mut self, attribution: Option<String>) -> Self {
+    /// Set the required source-credit (text and optional link) for this
+    /// layer's tiles.
+    pub fn with_attribution(mut self, attribution: Option<AttributionInfo>) -> Self {
         self.attribution = attribution;
         self
     }
@@ -192,8 +200,8 @@ impl MapLayer for TileLayer {
         self.visible = visible;
     }
 
-    fn attribution(&self) -> Option<&str> {
-        self.attribution.as_deref()
+    fn attribution(&self) -> Option<&AttributionInfo> {
+        self.attribution.as_ref()
     }
 
     fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {

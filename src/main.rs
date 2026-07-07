@@ -81,7 +81,7 @@ enum LayerRequest {
         url_template: String,
         min_zoom: Option<u32>,
         max_zoom: Option<u32>,
-        attribution: Option<String>,
+        attribution: Option<imagery::AttributionInfo>,
     },
     /// Remove the layer at the given index in the `LayerManager`.
     Delete { index: usize },
@@ -1256,21 +1256,24 @@ impl Render for MapViewer {
                                 // Legally-required tile/imagery attribution for
                                 // every currently-visible layer that has one,
                                 // deduplicated (e.g. shared OSM Carto credit).
+                                // Entries with a link are clickable and open
+                                // it in the system browser.
                                 let mut seen = std::collections::HashSet::new();
-                                let mut credits: Vec<String> = Vec::new();
+                                let mut credits: Vec<(String, Option<String>)> = Vec::new();
                                 for layer in self.layer_manager.layers() {
                                     if !layer.is_visible() {
                                         continue;
                                     }
-                                    if let Some(text) = layer.attribution() {
-                                        if seen.insert(text.to_string()) {
-                                            credits.push(text.to_string());
+                                    if let Some(attribution) = layer.attribution() {
+                                        if seen.insert(attribution.text.clone()) {
+                                            credits.push((attribution.text.clone(), attribution.url.clone()));
                                         }
                                     }
                                 }
                                 if credits.is_empty() {
                                     div().into_any_element()
                                 } else {
+                                    let n = credits.len();
                                     div()
                                         .absolute()
                                         .bottom_4()
@@ -1282,7 +1285,28 @@ impl Render for MapViewer {
                                         .text_color(rgb(0xffffff))
                                         .text_xs()
                                         .opacity(0.75)
-                                        .child(credits.join(" | "))
+                                        .flex()
+                                        .flex_row()
+                                        .children(credits.into_iter().enumerate().map(|(i, (text, url))| {
+                                            let separator = if i + 1 < n { " | " } else { "" };
+                                            let label = format!("{text}{separator}");
+                                            if let Some(url) = url {
+                                                div()
+                                                    .id(("attribution-link", i))
+                                                    .cursor_pointer()
+                                                    .hover(|this| this.text_color(rgb(0xaad4ff)))
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        move |_ev: &MouseDownEvent, _, _| {
+                                                            let _ = open::that(&url);
+                                                        },
+                                                    )
+                                                    .child(label)
+                                                    .into_any_element()
+                                            } else {
+                                                div().child(label).into_any_element()
+                                            }
+                                        }))
                                         .into_any_element()
                                 }
                             }),
