@@ -17,6 +17,7 @@ pub struct OsmNode {
     pub id: i64,
     pub lat: f64,
     pub lon: f64,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -24,6 +25,7 @@ pub struct OsmNode {
 pub struct OsmWay {
     pub id: i64,
     pub nodes: Vec<i64>,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -31,6 +33,7 @@ pub struct OsmWay {
 pub struct OsmRelation {
     pub id: i64,
     pub members: Vec<OsmMember>,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -49,6 +52,13 @@ pub struct OsmBounds {
     pub max_lon: f64,
 }
 
+/// Interprets raw XML attribute bytes as UTF-8, mapping any invalid
+/// sequence to a descriptive `OsmParseError` instead of panicking.
+fn attr_str(bytes: &[u8]) -> Result<&str, OsmParseError> {
+    std::str::from_utf8(bytes)
+        .map_err(|e| OsmParseError::ParseError(format!("Invalid UTF-8 in XML attribute: {}", e)))
+}
+
 pub struct OsmParser;
 
 impl OsmParser {
@@ -59,159 +69,16 @@ impl OsmParser {
     pub fn parse(&self, reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_reader(reader);
         xml_reader.config_mut().trim_text(true);
-
-        let mut osm_data = OsmData {
-            nodes: HashMap::new(),
-            ways: Vec::new(),
-            relations: Vec::new(),
-            bounds: None,
-        };
-
-        let mut buf = Vec::new();
-        let mut current_element = ElementType::None;
-        let mut current_node: Option<OsmNode> = None;
-        let mut current_way: Option<OsmWay> = None;
-        let mut current_relation: Option<OsmRelation> = None;
-
-        loop {
-            match xml_reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => match e.name().as_ref() {
-                    b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
-                    }
-                    b"node" => {
-                        current_element = ElementType::Node;
-                        current_node = Some(self.parse_node_start(e)?);
-                    }
-                    b"way" => {
-                        current_element = ElementType::Way;
-                        current_way = Some(self.parse_way_start(e)?);
-                    }
-                    b"relation" => {
-                        current_element = ElementType::Relation;
-                        current_relation = Some(self.parse_relation_start(e)?);
-                    }
-                    b"tag" => {
-                        let (key, value) = self.parse_tag(e)?;
-                        match current_element {
-                            ElementType::Node => {
-                                if let Some(ref mut node) = current_node {
-                                    node.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Way => {
-                                if let Some(ref mut way) = current_way {
-                                    way.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Relation => {
-                                if let Some(ref mut relation) = current_relation {
-                                    relation.tags.insert(key, value);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    b"nd" => {
-                        if let Some(ref mut way) = current_way {
-                            let node_ref = self.parse_node_ref(e)?;
-                            way.nodes.push(node_ref);
-                        }
-                    }
-                    b"member" => {
-                        if let Some(ref mut relation) = current_relation {
-                            let member = self.parse_member(e)?;
-                            relation.members.push(member);
-                        }
-                    }
-                    _ => {}
-                },
-                Ok(Event::Empty(ref e)) => match e.name().as_ref() {
-                    b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
-                    }
-                    b"node" => {
-                        let node = self.parse_node_start(e)?;
-                        osm_data.nodes.insert(node.id, node);
-                    }
-                    b"way" => {
-                        let way = self.parse_way_start(e)?;
-                        osm_data.ways.push(way);
-                    }
-                    b"relation" => {
-                        let relation = self.parse_relation_start(e)?;
-                        osm_data.relations.push(relation);
-                    }
-                    b"tag" => {
-                        let (key, value) = self.parse_tag(e)?;
-                        match current_element {
-                            ElementType::Node => {
-                                if let Some(ref mut node) = current_node {
-                                    node.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Way => {
-                                if let Some(ref mut way) = current_way {
-                                    way.tags.insert(key, value);
-                                }
-                            }
-                            ElementType::Relation => {
-                                if let Some(ref mut relation) = current_relation {
-                                    relation.tags.insert(key, value);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    b"nd" => {
-                        if let Some(ref mut way) = current_way {
-                            let node_ref = self.parse_node_ref(e)?;
-                            way.nodes.push(node_ref);
-                        }
-                    }
-                    b"member" => {
-                        if let Some(ref mut relation) = current_relation {
-                            let member = self.parse_member(e)?;
-                            relation.members.push(member);
-                        }
-                    }
-                    _ => {}
-                },
-                Ok(Event::End(ref e)) => match e.name().as_ref() {
-                    b"node" => {
-                        if let Some(node) = current_node.take() {
-                            osm_data.nodes.insert(node.id, node);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    b"way" => {
-                        if let Some(way) = current_way.take() {
-                            osm_data.ways.push(way);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    b"relation" => {
-                        if let Some(relation) = current_relation.take() {
-                            osm_data.relations.push(relation);
-                        }
-                        current_element = ElementType::None;
-                    }
-                    _ => {}
-                },
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(OsmParseError::XmlError(e)),
-                _ => {}
-            }
-            buf.clear();
-        }
-
-        Ok(osm_data)
+        self.run(xml_reader)
     }
 
     pub fn parse_str(&self, xml_str: &str) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_str(xml_str);
         xml_reader.config_mut().trim_text(true);
+        self.run(xml_reader)
+    }
 
+    fn run<R: std::io::BufRead>(&self, mut xml_reader: Reader<R>) -> Result<OsmData, OsmParseError> {
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
             ways: Vec::new(),
@@ -374,8 +241,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "minlat" => min_lat = self.parse_f64(value)?,
@@ -398,16 +265,18 @@ impl OsmParser {
         let mut id = 0;
         let mut lat = 0.0;
         let mut lon = 0.0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "id" => id = self.parse_i64(value)?,
                 "lat" => lat = self.parse_f64(value)?,
                 "lon" => lon = self.parse_f64(value)?,
+                "version" => version = self.parse_i32(value)?,
                 _ => {}
             }
         }
@@ -416,46 +285,55 @@ impl OsmParser {
             id,
             lat,
             lon,
+            version,
             tags: HashMap::new(),
         })
     }
 
     fn parse_way_start(&self, e: &BytesStart) -> Result<OsmWay, OsmParseError> {
         let mut id = 0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
-            if key == "id" {
-                id = self.parse_i64(value)?;
+            match key {
+                "id" => id = self.parse_i64(value)?,
+                "version" => version = self.parse_i32(value)?,
+                _ => {}
             }
         }
 
         Ok(OsmWay {
             id,
             nodes: Vec::new(),
+            version,
             tags: HashMap::new(),
         })
     }
 
     fn parse_relation_start(&self, e: &BytesStart) -> Result<OsmRelation, OsmParseError> {
         let mut id = 0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
-            if key == "id" {
-                id = self.parse_i64(value)?;
+            match key {
+                "id" => id = self.parse_i64(value)?,
+                "version" => version = self.parse_i32(value)?,
+                _ => {}
             }
         }
 
         Ok(OsmRelation {
             id,
             members: Vec::new(),
+            version,
             tags: HashMap::new(),
         })
     }
@@ -466,8 +344,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let attr_key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let attr_value = std::str::from_utf8(&attr.value).unwrap();
+            let attr_key = attr_str(attr.key.as_ref())?;
+            let attr_value = attr_str(&attr.value)?;
 
             match attr_key {
                 "k" => key = attr_value.to_string(),
@@ -486,8 +364,8 @@ impl OsmParser {
     fn parse_node_ref(&self, e: &BytesStart) -> Result<i64, OsmParseError> {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             if key == "ref" {
                 return self.parse_i64(value);
@@ -504,8 +382,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "type" => member_type = value.to_string(),
@@ -525,6 +403,11 @@ impl OsmParser {
     fn parse_i64(&self, s: &str) -> Result<i64, OsmParseError> {
         s.parse()
             .map_err(|_| OsmParseError::ParseError(format!("Invalid i64: {}", s)))
+    }
+
+    fn parse_i32(&self, s: &str) -> Result<i32, OsmParseError> {
+        s.parse()
+            .map_err(|_| OsmParseError::ParseError(format!("Invalid i32: {}", s)))
     }
 
     fn parse_f64(&self, s: &str) -> Result<f64, OsmParseError> {
@@ -624,6 +507,69 @@ mod tests {
             osm_data.ways[0].nodes,
             vec![1, 2],
             "way node refs do not match"
+        );
+    }
+
+    #[test]
+    fn parse_str_reads_version_attribute() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.0" lon="-74.0" version="7"/>
+  <way id="10" version="3">
+    <nd ref="1"/>
+  </way>
+  <relation id="100" version="5">
+    <member type="way" ref="10" role="outer"/>
+  </relation>
+</osm>"#;
+
+        let parser = OsmParser::new();
+        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+
+        assert_eq!(osm_data.nodes[&1].version, 7, "node version not parsed");
+        assert_eq!(osm_data.ways[0].version, 3, "way version not parsed");
+        assert_eq!(
+            osm_data.relations[0].version, 5,
+            "relation version not parsed"
+        );
+    }
+
+    #[test]
+    fn parse_str_defaults_version_when_absent() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.0" lon="-74.0"/>
+</osm>"#;
+
+        let parser = OsmParser::new();
+        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+
+        assert_eq!(
+            osm_data.nodes[&1].version, 1,
+            "node version should default to 1 when absent"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_attribute_value_returns_err_not_panic() {
+        // Build XML bytes with an invalid UTF-8 byte (0xFF) inside a tag value,
+        // where valid UTF-8 is expected. Feeding this through the byte-oriented
+        // parse path must return an Err rather than panicking.
+        let mut xml = Vec::new();
+        xml.extend_from_slice(
+            br#"<?xml version="1.0" encoding="UTF-8"?><osm version="0.6"><node id="1" lat="40.0" lon="-74.0"><tag k="name" v=""#,
+        );
+        xml.push(0xFF);
+        xml.extend_from_slice(br#""/></node></osm>"#);
+
+        let parser = OsmParser::new();
+        let mut reader = Reader::from_reader(xml.as_slice());
+        reader.config_mut().trim_text(true);
+        let result = parser.run(reader);
+
+        assert!(
+            result.is_err(),
+            "expected an Err for invalid UTF-8 in attribute value, parser should not panic"
         );
     }
 }

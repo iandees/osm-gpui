@@ -807,9 +807,9 @@ mod tests {
     fn hit_test_node_wins_over_coincident_way() {
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
         let layer = OsmLayer::new_with_data("L", data);
@@ -824,9 +824,9 @@ mod tests {
     fn hit_test_falls_through_to_way() {
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon - 0.001, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon - 0.001, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
         let layer = OsmLayer::new_with_data("L", data);
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn hit_test_no_match_returns_empty() {
-        let n = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n], vec![]);
         let viewport = viewport_centered_on(40.0, -74.0);
         let layer = OsmLayer::new_with_data("L", data);
@@ -854,14 +854,14 @@ mod tests {
         // n1 and n2 sit exactly at the viewport center (mercator-identical);
         // n3 is a full degree away, so its mercator position is far outside
         // any modest screen-space rect around the center.
-        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon, tags: empty_tags() };
-        let n3 = OsmNode { id: 3, lat: center_lat + 1.0, lon: center_lon + 1.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon, version: 1, tags: empty_tags() };
+        let n3 = OsmNode { id: 3, lat: center_lat + 1.0, lon: center_lon + 1.0, version: 1, tags: empty_tags() };
         // way_in's bbox is the (degenerate) point at the center: fully enclosed.
-        let way_in = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let way_in = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         // way_partial's bbox spans from the center to the far node: NOT fully
         // enclosed by a modest rect around the center.
-        let way_partial = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags() };
+        let way_partial = OsmWay { id: 20, nodes: vec![1, 3], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2, n3], vec![way_in, way_partial]);
         let viewport = viewport_centered_on(center_lat, center_lon);
         let layer = OsmLayer::new_with_data("L", data);
@@ -905,9 +905,9 @@ mod tests {
 
     #[test]
     fn way_node_ids_returns_members_in_order() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let layer = OsmLayer::new_with_data("L", data);
 
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn node_lat_lon_reflects_current_data() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let layer = OsmLayer::new_with_data("L", data);
 
@@ -927,8 +927,8 @@ mod tests {
 
     #[test]
     fn commit_node_moves_updates_data_and_marks_modified() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 41.0, lon: -75.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 41.0, lon: -75.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn commit_node_moves_empty_is_noop() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn set_tag_inserts_and_overwrites_on_node() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -976,9 +976,9 @@ mod tests {
 
     #[test]
     fn set_tag_on_way() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn set_tag_missing_feature_id_is_noop() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1005,7 +1005,7 @@ mod tests {
     fn remove_tag_removes_existing_key() {
         let mut tags = empty_tags();
         tags.insert("highway".to_string(), "residential".to_string());
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn remove_tag_missing_feature_id_is_noop() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn drag_preview_does_not_mutate_data() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 

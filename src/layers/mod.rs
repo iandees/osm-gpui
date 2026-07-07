@@ -349,7 +349,7 @@ mod tests {
 
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
         let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
@@ -378,7 +378,7 @@ mod tests {
 
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
         let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
