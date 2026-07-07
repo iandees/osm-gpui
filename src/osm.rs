@@ -49,6 +49,13 @@ pub struct OsmBounds {
     pub max_lon: f64,
 }
 
+/// Interprets raw XML attribute bytes as UTF-8, mapping any invalid
+/// sequence to a descriptive `OsmParseError` instead of panicking.
+fn attr_str(bytes: &[u8]) -> Result<&str, OsmParseError> {
+    std::str::from_utf8(bytes)
+        .map_err(|e| OsmParseError::ParseError(format!("Invalid UTF-8 in XML attribute: {}", e)))
+}
+
 pub struct OsmParser;
 
 impl OsmParser {
@@ -374,8 +381,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "minlat" => min_lat = self.parse_f64(value)?,
@@ -401,8 +408,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "id" => id = self.parse_i64(value)?,
@@ -425,8 +432,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             if key == "id" {
                 id = self.parse_i64(value)?;
@@ -445,8 +452,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             if key == "id" {
                 id = self.parse_i64(value)?;
@@ -466,8 +473,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let attr_key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let attr_value = std::str::from_utf8(&attr.value).unwrap();
+            let attr_key = attr_str(attr.key.as_ref())?;
+            let attr_value = attr_str(&attr.value)?;
 
             match attr_key {
                 "k" => key = attr_value.to_string(),
@@ -486,8 +493,8 @@ impl OsmParser {
     fn parse_node_ref(&self, e: &BytesStart) -> Result<i64, OsmParseError> {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             if key == "ref" {
                 return self.parse_i64(value);
@@ -504,8 +511,8 @@ impl OsmParser {
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
-            let key = std::str::from_utf8(attr.key.as_ref()).unwrap();
-            let value = std::str::from_utf8(&attr.value).unwrap();
+            let key = attr_str(attr.key.as_ref())?;
+            let value = attr_str(&attr.value)?;
 
             match key {
                 "type" => member_type = value.to_string(),
@@ -624,6 +631,31 @@ mod tests {
             osm_data.ways[0].nodes,
             vec![1, 2],
             "way node refs do not match"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_attribute_value_returns_err_not_panic() {
+        // Build XML bytes with an invalid UTF-8 byte (0xFF) inside a tag value,
+        // where valid UTF-8 is expected. Feeding this through the file-based
+        // parse path must return an Err rather than panicking.
+        let mut xml = Vec::new();
+        xml.extend_from_slice(
+            br#"<?xml version="1.0" encoding="UTF-8"?><osm version="0.6"><node id="1" lat="40.0" lon="-74.0"><tag k="name" v=""#,
+        );
+        xml.push(0xFF);
+        xml.extend_from_slice(br#""/></node></osm>"#);
+
+        let path = std::env::temp_dir().join("osm_gpui_invalid_utf8_test.osm");
+        std::fs::write(&path, &xml).expect("failed to write temp file");
+
+        let parser = OsmParser::new();
+        let result = parser.parse_file(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            result.is_err(),
+            "expected an Err for invalid UTF-8 in attribute value, parser should not panic"
         );
     }
 }
