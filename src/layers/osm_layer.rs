@@ -620,7 +620,9 @@ impl OsmLayer {
     /// `new_with_data` and `set_osm_data` always set one, but is handled
     /// defensively by treating everything current as newly created).
     pub fn diff_for_upload(&self) -> LayerDiff {
-        let Some(current) = &self.osm_data else { return LayerDiff::default(); };
+        let Some(current) = &self.osm_data else {
+            return LayerDiff::default();
+        };
         match &self.original_data {
             Some(original) => diff_osm_data(original, current),
             None => {
@@ -651,7 +653,9 @@ impl OsmLayer {
     /// incremental-patch discipline used elsewhere isn't worth the added
     /// complexity/risk for a one-time reconciliation pass.
     pub fn apply_upload_result(&mut self, result: &UploadResult) {
-        let Some(current) = self.osm_data.clone() else { return; };
+        let Some(current) = self.osm_data.clone() else {
+            return;
+        };
         let mut data = (*current).clone();
 
         // Remap node ids (covers true creates, where old id != new id, and
@@ -2946,7 +2950,13 @@ mod tests {
 
     #[test]
     fn diff_for_upload_no_changes_is_empty() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
@@ -2955,7 +2965,13 @@ mod tests {
 
     #[test]
     fn diff_for_upload_detects_tag_edit_as_modified() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
@@ -2969,7 +2985,13 @@ mod tests {
 
     #[test]
     fn diff_for_upload_detects_move_as_modified() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
@@ -2981,7 +3003,13 @@ mod tests {
 
     #[test]
     fn apply_upload_result_updates_version_for_modified_node() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
@@ -2994,8 +3022,14 @@ mod tests {
 
         let updated = layer.get_osm_data().unwrap();
         assert_eq!(updated.nodes.get(&1).unwrap().version, 2);
-        assert!(!layer.is_modified(), "layer should be clean after a reconciled upload");
-        assert!(layer.diff_for_upload().is_empty(), "new baseline should match current data");
+        assert!(
+            !layer.is_modified(),
+            "layer should be clean after a reconciled upload"
+        );
+        assert!(
+            layer.diff_for_upload().is_empty(),
+            "new baseline should match current data"
+        );
     }
 
     #[test]
@@ -3004,7 +3038,13 @@ mod tests {
         // After upload, that node gets a real server id — the way's `nodes`
         // list must be updated to point at the new id, or its geometry
         // would silently corrupt from then on.
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
@@ -3013,10 +3053,25 @@ mod tests {
         // layer's data directly (create_node/append_way don't exist yet).
         let current = layer.get_osm_data().unwrap();
         let mut new_data = (*current).clone();
-        new_data.nodes.insert(-1, OsmNode { id: -1, lat: 40.001, lon: -74.001, version: 0, tags: empty_tags() });
-        new_data
-            .ways
-            .insert(-2, OsmWay { id: -2, nodes: vec![1, -1], version: 0, tags: empty_tags() });
+        new_data.nodes.insert(
+            -1,
+            OsmNode {
+                id: -1,
+                lat: 40.001,
+                lon: -74.001,
+                version: 0,
+                tags: empty_tags(),
+            },
+        );
+        new_data.ways.insert(
+            -2,
+            OsmWay {
+                id: -2,
+                nodes: vec![1, -1],
+                version: 0,
+                tags: empty_tags(),
+            },
+        );
         layer.set_osm_data_for_test(Arc::new(new_data));
 
         let diff = layer.diff_for_upload();
@@ -3029,18 +3084,40 @@ mod tests {
         layer.apply_upload_result(&result);
 
         let updated = layer.get_osm_data().unwrap();
-        assert!(updated.nodes.contains_key(&999), "new node id should be present");
-        assert!(!updated.nodes.contains_key(&-1), "old local id should be gone");
+        assert!(
+            updated.nodes.contains_key(&999),
+            "new node id should be present"
+        );
+        assert!(
+            !updated.nodes.contains_key(&-1),
+            "old local id should be gone"
+        );
         let way = updated.ways.get(&888).expect("way should have its new id");
-        assert_eq!(way.nodes, vec![1, 999], "way must reference the node's NEW id, not the stale local one");
+        assert_eq!(
+            way.nodes,
+            vec![1, 999],
+            "way must reference the node's NEW id, not the stale local one"
+        );
         assert!(!layer.is_modified());
         assert!(layer.diff_for_upload().is_empty());
     }
 
     #[test]
     fn apply_upload_result_confirms_delete_with_no_remap_entry() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: 40.001,
+            lon: -74.001,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1, n2], vec![]);
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 

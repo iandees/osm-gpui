@@ -490,7 +490,7 @@ fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
     #[cfg(test)]
     {
         let _ = oauth_base_url;
-        return None;
+        None
     }
     #[cfg(not(test))]
     match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {

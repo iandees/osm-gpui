@@ -142,7 +142,10 @@ fn call_with_retries(
                     std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
                     continue;
                 }
-                return Err(UploadError::Http { status, body: body_text });
+                return Err(UploadError::Http {
+                    status,
+                    body: body_text,
+                });
             }
             Err(e) => {
                 if attempt < MAX_ATTEMPTS {
@@ -157,7 +160,10 @@ fn call_with_retries(
 
 /// `PUT {base_url}/api/0.6/changeset/create`. Returns the new changeset id.
 pub fn create_changeset(base_url: &str, token: &str, comment: &str) -> Result<u64, UploadError> {
-    let url = format!("{}/api/0.6/changeset/create", base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/0.6/changeset/create",
+        base_url.trim_end_matches('/')
+    );
     let xml = build_changeset_create_xml(comment);
     let body = call_with_retries(HttpMethod::Put, &url, token, Some(xml))?;
     body.trim()
@@ -280,7 +286,11 @@ fn node_xml(n: &OsmNode, changeset_id: u64) -> String {
         n.id, n.lat, n.lon, n.version, changeset_id
     );
     for (k, v) in sorted_tags(&n.tags) {
-        s.push_str(&format!(r#"<tag k="{}" v="{}"/>"#, xml_escape(k), xml_escape(v)));
+        s.push_str(&format!(
+            r#"<tag k="{}" v="{}"/>"#,
+            xml_escape(k),
+            xml_escape(v)
+        ));
     }
     s.push_str("</node>");
     s
@@ -295,18 +305,28 @@ fn way_xml(w: &OsmWay, changeset_id: u64) -> String {
         s.push_str(&format!(r#"<nd ref="{}"/>"#, nd));
     }
     for (k, v) in sorted_tags(&w.tags) {
-        s.push_str(&format!(r#"<tag k="{}" v="{}"/>"#, xml_escape(k), xml_escape(v)));
+        s.push_str(&format!(
+            r#"<tag k="{}" v="{}"/>"#,
+            xml_escape(k),
+            xml_escape(v)
+        ));
     }
     s.push_str("</way>");
     s
 }
 
 fn delete_node_xml(id: i64, version: i32, changeset_id: u64) -> String {
-    format!(r#"<node id="{}" version="{}" changeset="{}"/>"#, id, version, changeset_id)
+    format!(
+        r#"<node id="{}" version="{}" changeset="{}"/>"#,
+        id, version, changeset_id
+    )
 }
 
 fn delete_way_xml(id: i64, version: i32, changeset_id: u64) -> String {
-    format!(r#"<way id="{}" version="{}" changeset="{}"/>"#, id, version, changeset_id)
+    format!(
+        r#"<way id="{}" version="{}" changeset="{}"/>"#,
+        id, version, changeset_id
+    )
 }
 
 /// Parse a `<diffResult>` response from `.../changeset/{id}/upload`. Each
@@ -350,7 +370,9 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
                     }
                 }
 
-                if let (Some(old_id), Some(new_id), Some(new_version)) = (old_id, new_id, new_version) {
+                if let (Some(old_id), Some(new_id), Some(new_version)) =
+                    (old_id, new_id, new_version)
+                {
                     if is_node {
                         result.node_id_remap.insert(old_id, (new_id, new_version));
                     } else {
@@ -374,7 +396,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -422,7 +447,11 @@ mod tests {
         );
         assert!(xml.contains(r#"<nd ref="-1"/>"#), "{}", xml);
         assert!(xml.contains(r#"<nd ref="5"/>"#), "{}", xml);
-        assert!(xml.contains(r#"<tag k="highway" v="residential"/>"#), "{}", xml);
+        assert!(
+            xml.contains(r#"<tag k="highway" v="residential"/>"#),
+            "{}",
+            xml
+        );
         assert!(!xml.contains("<modify>"));
         assert!(!xml.contains("<delete>"));
     }
@@ -455,8 +484,16 @@ mod tests {
         diff.deleted_way_ids.push((66, 2));
         let xml = build_osm_change_xml(9, &[("L", diff)]);
         assert!(xml.contains("<delete>"), "{}", xml);
-        assert!(xml.contains(r#"<node id="55" version="4" changeset="9"/>"#), "{}", xml);
-        assert!(xml.contains(r#"<way id="66" version="2" changeset="9"/>"#), "{}", xml);
+        assert!(
+            xml.contains(r#"<node id="55" version="4" changeset="9"/>"#),
+            "{}",
+            xml
+        );
+        assert!(
+            xml.contains(r#"<way id="66" version="2" changeset="9"/>"#),
+            "{}",
+            xml
+        );
         assert!(!xml.contains("<create>"));
         assert!(!xml.contains("<modify>"));
     }
@@ -477,7 +514,11 @@ mod tests {
             "{}",
             xml
         );
-        assert!(!xml.contains(" & "), "raw ampersand leaked into XML: {}", xml);
+        assert!(
+            !xml.contains(" & "),
+            "raw ampersand leaked into XML: {}",
+            xml
+        );
     }
 
     #[test]
@@ -493,13 +534,23 @@ mod tests {
     #[test]
     fn multiple_layers_combine_into_one_change_document() {
         let mut diff_a = LayerDiff::default();
-        diff_a.created_nodes.push(OsmNode { id: -1, lat: 0.0, lon: 0.0, version: 0, tags: HashMap::new() });
+        diff_a.created_nodes.push(OsmNode {
+            id: -1,
+            lat: 0.0,
+            lon: 0.0,
+            version: 0,
+            tags: HashMap::new(),
+        });
         let mut diff_b = LayerDiff::default();
         diff_b.deleted_node_ids.push((3, 1));
 
         let xml = build_osm_change_xml(1, &[("A", diff_a), ("B", diff_b)]);
         assert!(xml.contains(r#"<node id="-1""#), "{}", xml);
-        assert!(xml.contains(r#"<node id="3" version="1" changeset="1"/>"#), "{}", xml);
+        assert!(
+            xml.contains(r#"<node id="3" version="1" changeset="1"/>"#),
+            "{}",
+            xml
+        );
     }
 
     #[test]
@@ -516,9 +567,17 @@ mod tests {
         let result = parse_diff_result(xml).expect("should parse");
         assert_eq!(result.node_id_remap.get(&-1), Some(&(12345, 1)));
         assert_eq!(result.node_id_remap.get(&45), Some(&(45, 3)));
-        assert_eq!(result.node_id_remap.get(&99), None, "deleted node has no remap entry");
+        assert_eq!(
+            result.node_id_remap.get(&99),
+            None,
+            "deleted node has no remap entry"
+        );
         assert_eq!(result.way_id_remap.get(&-2), Some(&(678, 1)));
-        assert_eq!(result.way_id_remap.get(&10), None, "deleted way has no remap entry");
+        assert_eq!(
+            result.way_id_remap.get(&10),
+            None,
+            "deleted way has no remap entry"
+        );
     }
 
     #[test]

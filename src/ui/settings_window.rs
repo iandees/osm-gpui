@@ -333,7 +333,13 @@ impl SettingsWindow {
                 SettingItem::new(
                     "Custom API URL",
                     SettingField::render(move |_options, window, cx| {
-                        render_custom_api_url(custom_view.clone(), input.clone(), error.clone(), window, cx)
+                        render_custom_api_url(
+                            custom_view.clone(),
+                            input.clone(),
+                            error.clone(),
+                            window,
+                            cx,
+                        )
                     }),
                 )
                 .description("The base URL of a self-hosted or alternate OSM API server.")
@@ -350,7 +356,9 @@ impl SettingsWindow {
                     render_client_id(client_id_view.clone(), client_id_input.clone(), window, cx)
                 }),
             )
-            .description("Override the OAuth client_id used for this server (leave blank for default).")
+            .description(
+                "Override the OAuth client_id used for this server (leave blank for default).",
+            )
             .layout(Axis::Vertical),
         );
 
@@ -420,9 +428,11 @@ impl SettingsWindow {
                 .layout(Axis::Vertical)
             } else {
                 let entry_view = view.clone();
-                let entry_summary: SharedString =
-                    format!("{} · zoom {}–{}", entry.url_template, entry.min_zoom, entry.max_zoom)
-                        .into();
+                let entry_summary: SharedString = format!(
+                    "{} · zoom {}–{}",
+                    entry.url_template, entry.min_zoom, entry.max_zoom
+                )
+                .into();
                 let entry_name = entry.name.clone();
                 SettingItem::new(
                     title,
@@ -707,8 +717,16 @@ fn render_entry_edit_form(
         .child(
             h_flex()
                 .gap_2()
-                .child(div().flex_1().child(field_row("Min zoom", &edit_min_zoom, muted)))
-                .child(div().flex_1().child(field_row("Max zoom", &edit_max_zoom, muted))),
+                .child(
+                    div()
+                        .flex_1()
+                        .child(field_row("Min zoom", &edit_min_zoom, muted)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(field_row("Max zoom", &edit_max_zoom, muted)),
+                ),
         );
 
     if let Some(err) = edit_error {
@@ -721,14 +739,11 @@ fn render_entry_edit_form(
         .child(
             h_flex()
                 .gap_2()
-                .child(
-                    Button::new(("save", idx))
-                        .label("Save")
-                        .primary()
-                        .on_click(move |_ev, _window, cx| {
-                            save_view.update(cx, |this, cx| this.save_entry(idx, cx));
-                        }),
-                )
+                .child(Button::new(("save", idx)).label("Save").primary().on_click(
+                    move |_ev, _window, cx| {
+                        save_view.update(cx, |this, cx| this.save_entry(idx, cx));
+                    },
+                ))
                 .child(
                     Button::new(("cancel", idx))
                         .label("Cancel")

@@ -39,7 +39,9 @@ impl LayerSummary {
 
 pub enum DialogEvent {
     /// User clicked "Upload" with a non-empty comment.
-    Upload { comment: String },
+    Upload {
+        comment: String,
+    },
     Cancelled,
 }
 
@@ -53,12 +55,15 @@ impl EventEmitter<DialogEvent> for UploadDialog {}
 
 impl UploadDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, summaries: Vec<LayerSummary>) -> Self {
-        let comment = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Describe your changes (required)")
-        });
+        let comment = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Describe your changes (required)"));
         let focus_handle = cx.focus_handle();
         comment.update(cx, |state, cx| state.focus(window, cx));
-        Self { summaries, comment, focus_handle }
+        Self {
+            summaries,
+            comment,
+            focus_handle,
+        }
     }
 
     fn comment_text(&self, cx: &Context<Self>) -> String {
@@ -100,12 +105,16 @@ impl Render for UploadDialog {
         let mut summary_list = v_flex().gap_1();
         if self.summaries.is_empty() {
             summary_list = summary_list.child(
-                Label::new("No pending changes.").text_sm().text_color(muted),
+                Label::new("No pending changes.")
+                    .text_sm()
+                    .text_color(muted),
             );
         } else {
             for s in &self.summaries {
                 summary_list = summary_list.child(
-                    Label::new(s.describe()).text_sm().text_color(cx.theme().foreground),
+                    Label::new(s.describe())
+                        .text_sm()
+                        .text_color(cx.theme().foreground),
                 );
             }
         }
@@ -190,15 +199,30 @@ mod tests {
 
     #[test]
     fn layer_summary_describe_format() {
-        let s = LayerSummary { layer_name: "Downtown".to_string(), created: 2, modified: 1, deleted: 0 };
+        let s = LayerSummary {
+            layer_name: "Downtown".to_string(),
+            created: 2,
+            modified: 1,
+            deleted: 0,
+        };
         assert_eq!(s.describe(), "Downtown: 2 created, 1 modified, 0 deleted");
     }
 
     #[test]
     fn layer_summary_is_empty_when_all_zero() {
-        let s = LayerSummary { layer_name: "L".to_string(), created: 0, modified: 0, deleted: 0 };
+        let s = LayerSummary {
+            layer_name: "L".to_string(),
+            created: 0,
+            modified: 0,
+            deleted: 0,
+        };
         assert!(s.is_empty());
-        let s2 = LayerSummary { layer_name: "L".to_string(), created: 1, modified: 0, deleted: 0 };
+        let s2 = LayerSummary {
+            layer_name: "L".to_string(),
+            created: 1,
+            modified: 0,
+            deleted: 0,
+        };
         assert!(!s2.is_empty());
     }
 }

@@ -1388,22 +1388,24 @@ impl MapViewer {
             return;
         }
 
-        let dialog = cx.new(|cx| {
-            osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
-        });
-        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
-            use osm_gpui::ui::upload_dialog::DialogEvent;
-            match event {
-                DialogEvent::Cancelled => {
-                    this.upload_dialog = None;
-                    cx.notify();
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::upload_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.upload_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Upload { comment } => {
+                        this.upload_dialog = None;
+                        this.start_upload(comment.clone(), cx);
+                    }
                 }
-                DialogEvent::Upload { comment } => {
-                    this.upload_dialog = None;
-                    this.start_upload(comment.clone(), cx);
-                }
-            }
-        })
+            },
+        )
         .detach();
         self.upload_dialog = Some(dialog);
         cx.notify();
@@ -1433,7 +1435,11 @@ impl MapViewer {
             .collect();
         let diffs: Vec<osm_gpui::layers::diff::LayerDiff> = modified
             .iter()
-            .filter_map(|(id, _)| self.layer_manager.find_layer(*id).map(|l| l.diff_for_upload()))
+            .filter_map(|(id, _)| {
+                self.layer_manager
+                    .find_layer(*id)
+                    .map(|l| l.diff_for_upload())
+            })
             .collect();
 
         if diffs.iter().all(|d| d.is_empty()) {
@@ -1462,7 +1468,7 @@ impl MapViewer {
                     let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> = names_for_bg
                         .iter()
                         .map(|s| s.as_str())
-                        .zip(diffs.into_iter())
+                        .zip(diffs)
                         .collect();
                     let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
 
@@ -1932,156 +1938,160 @@ fn main() {
     gpui_platform::application()
         .with_assets(gpui_component_assets::Assets)
         .run(move |cx: &mut App| {
-        gpui_component::init(cx);
+            gpui_component::init(cx);
 
-        // Bring the menu bar to the foreground
-        cx.activate(true);
+            // Bring the menu bar to the foreground
+            cx.activate(true);
 
-        // Register the open file action
-        cx.on_action(open_osm_file);
-        cx.on_action(quit);
-        cx.on_action(add_osm_carto);
-        cx.on_action(add_coordinate_grid);
-        cx.on_action(download_from_osm);
-        cx.on_action(toggle_debug_overlay);
-        cx.on_action(add_imagery_layer);
-        cx.on_action(add_saved_custom_imagery);
-        cx.on_action(no_op_imagery_info);
-        cx.on_action(open_custom_imagery_dialog);
-        cx.on_action(open_settings);
-        cx.on_action(upload_to_osm);
+            // Register the open file action
+            cx.on_action(open_osm_file);
+            cx.on_action(quit);
+            cx.on_action(add_osm_carto);
+            cx.on_action(add_coordinate_grid);
+            cx.on_action(download_from_osm);
+            cx.on_action(toggle_debug_overlay);
+            cx.on_action(add_imagery_layer);
+            cx.on_action(add_saved_custom_imagery);
+            cx.on_action(no_op_imagery_info);
+            cx.on_action(open_custom_imagery_dialog);
+            cx.on_action(open_settings);
+            cx.on_action(upload_to_osm);
 
-        // Load persisted custom imagery entries.
-        let loaded = custom_imagery_store::load();
-        custom_imagery_store::init_store(loaded);
+            // Load persisted custom imagery entries.
+            let loaded = custom_imagery_store::load();
+            custom_imagery_store::init_store(loaded);
 
-        // Load persisted app settings (OSM API server choice) and OAuth login.
-        settings_store::init_store(settings_store::load());
-        auth::init_store(auth::load());
+            // Load persisted app settings (OSM API server choice) and OAuth login.
+            settings_store::init_store(settings_store::load());
+            auth::init_store(auth::load());
 
-        // Initial menu (before ELI loads). MapViewer's render loop will call
-        // rebuild_menus again whenever the load state or viewport changes.
-        rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
+            // Initial menu (before ELI loads). MapViewer's render loop will call
+            // rebuild_menus again whenever the load state or viewport changes.
+            rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
 
-        // Kick off background download/parse of the Editor Layer Index.
-        cx.background_executor()
-            .spawn(async move {
-                match imagery::fetch_and_cache() {
-                    Ok(body) => {
-                        let entries = imagery::parse(&body);
-                        eprintln!("imagery: loaded {} ELI entries", entries.len());
-                        if let Some(index) = IMAGERY_INDEX.get() {
-                            if let Ok(mut guard) = index.lock() {
-                                *guard = entries;
+            // Kick off background download/parse of the Editor Layer Index.
+            cx.background_executor()
+                .spawn(async move {
+                    match imagery::fetch_and_cache() {
+                        Ok(body) => {
+                            let entries = imagery::parse(&body);
+                            eprintln!("imagery: loaded {} ELI entries", entries.len());
+                            if let Some(index) = IMAGERY_INDEX.get() {
+                                if let Ok(mut guard) = index.lock() {
+                                    *guard = entries;
+                                }
+                            }
+                            if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                                if let Ok(mut g) = state.lock() {
+                                    *g = ImageryLoadState::Ready;
+                                }
                             }
                         }
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Ready;
+                        Err(e) => {
+                            eprintln!("imagery: failed to load ELI: {}", e);
+                            if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                                if let Ok(mut g) = state.lock() {
+                                    *g = ImageryLoadState::Failed;
+                                }
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("imagery: failed to load ELI: {}", e);
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Failed;
-                            }
+                })
+                .detach();
+
+            // Kick off background fetch/parse of the Name Suggestion Index.
+            osm_gpui::nsi::init_store();
+            cx.background_executor()
+                .spawn(async move {
+                    match osm_gpui::nsi::fetch_and_cache() {
+                        Ok(body) => {
+                            let entries = osm_gpui::nsi::parse(&body);
+                            eprintln!("nsi: loaded {} brand entries", entries.len());
+                            osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(
+                                entries,
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!("nsi: failed to load NSI data: {}", e);
                         }
                     }
+                })
+                .detach();
+
+            let map_window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                            origin: point(px(100.0), px(100.0)),
+                            size: size(px(win_w as f32), px(win_h as f32)),
+                        })),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some("OSM-GPUI Map Viewer".into()),
+                            appears_transparent: false,
+                            traffic_light_position: None,
+                        }),
+                        focus: true,
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        // Register keyboard bindings in the window context
+                        cx.bind_keys([
+                            KeyBinding::new("cmd-o", OpenOsmFile, None),
+                            KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
+                            KeyBinding::new("cmd-shift-u", UploadToOsm, None),
+                            KeyBinding::new("cmd-q", Quit, None),
+                            KeyBinding::new("cmd-,", OpenSettings, None),
+                            KeyBinding::new("cmd-z", Undo, None),
+                            KeyBinding::new("cmd-shift-z", Redo, None),
+                        ]);
+                        let view = cx.new(|cx| MapViewer::new(window, cx));
+
+                        // Publish a weak handle to the live view so `menu::quit` (a
+                        // free function with only `&mut App`) and the
+                        // `on_window_should_close` closure below (which only has
+                        // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
+                        // reach it and query its *live* `layer_manager` state at
+                        // decision time, rather than a cached boolean.
+                        let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
+
+                        // Intercept the OS window-close button (traffic-light / titlebar
+                        // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
+                        // hook: unlike `on_window_closed` below (which only fires *after*
+                        // the window is already gone and can't stop anything), this one
+                        // can veto the close by returning `false`. If there are unsaved
+                        // changes (checked live, per layer, via `has_unsaved_changes`)
+                        // we cancel the close and ask the live `MapViewer` to show the
+                        // same confirmation dialog as Cmd+Q, directly (this closure
+                        // already has a `Window`, so no need to go through
+                        // `with_map_viewer_in`'s window-lookup-by-entity-id path);
+                        // otherwise we let the close proceed, which triggers
+                        // `on_window_closed` -> `cx.quit()` as before.
+                        window.on_window_should_close(cx, |window, cx| {
+                            if has_unsaved_changes(cx) {
+                                if let Some(view) =
+                                    MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade())
+                                {
+                                    view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        });
+
+                        cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                    },
+                )
+                .unwrap();
+
+            let map_window_id = map_window.window_id();
+            cx.on_window_closed(move |cx, window_id| {
+                if window_id == map_window_id {
+                    cx.quit();
                 }
             })
             .detach();
-
-        // Kick off background fetch/parse of the Name Suggestion Index.
-        osm_gpui::nsi::init_store();
-        cx.background_executor()
-            .spawn(async move {
-                match osm_gpui::nsi::fetch_and_cache() {
-                    Ok(body) => {
-                        let entries = osm_gpui::nsi::parse(&body);
-                        eprintln!("nsi: loaded {} brand entries", entries.len());
-                        osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(entries));
-                    }
-                    Err(e) => {
-                        eprintln!("nsi: failed to load NSI data: {}", e);
-                    }
-                }
-            })
-            .detach();
-
-        let map_window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                        origin: point(px(100.0), px(100.0)),
-                        size: size(px(win_w as f32), px(win_h as f32)),
-                    })),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("OSM-GPUI Map Viewer".into()),
-                        appears_transparent: false,
-                        traffic_light_position: None,
-                    }),
-                    focus: true,
-                    ..Default::default()
-                },
-                |window, cx| {
-                    // Register keyboard bindings in the window context
-                    cx.bind_keys([
-                        KeyBinding::new("cmd-o", OpenOsmFile, None),
-                        KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
-                        KeyBinding::new("cmd-shift-u", UploadToOsm, None),
-                        KeyBinding::new("cmd-q", Quit, None),
-                        KeyBinding::new("cmd-,", OpenSettings, None),
-                        KeyBinding::new("cmd-z", Undo, None),
-                        KeyBinding::new("cmd-shift-z", Redo, None),
-                    ]);
-                    let view = cx.new(|cx| MapViewer::new(window, cx));
-
-                    // Publish a weak handle to the live view so `menu::quit` (a
-                    // free function with only `&mut App`) and the
-                    // `on_window_should_close` closure below (which only has
-                    // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
-                    // reach it and query its *live* `layer_manager` state at
-                    // decision time, rather than a cached boolean.
-                    let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
-
-                    // Intercept the OS window-close button (traffic-light / titlebar
-                    // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
-                    // hook: unlike `on_window_closed` below (which only fires *after*
-                    // the window is already gone and can't stop anything), this one
-                    // can veto the close by returning `false`. If there are unsaved
-                    // changes (checked live, per layer, via `has_unsaved_changes`)
-                    // we cancel the close and ask the live `MapViewer` to show the
-                    // same confirmation dialog as Cmd+Q, directly (this closure
-                    // already has a `Window`, so no need to go through
-                    // `with_map_viewer_in`'s window-lookup-by-entity-id path);
-                    // otherwise we let the close proceed, which triggers
-                    // `on_window_closed` -> `cx.quit()` as before.
-                    window.on_window_should_close(cx, |window, cx| {
-                        if has_unsaved_changes(cx) {
-                            if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                                view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
-                            }
-                            false
-                        } else {
-                            true
-                        }
-                    });
-
-                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
-                },
-            )
-            .unwrap();
-
-        let map_window_id = map_window.window_id();
-        cx.on_window_closed(move |cx, window_id| {
-            if window_id == map_window_id {
-                cx.quit();
-            }
-        })
-        .detach();
-    });
+        });
 }
 
 fn append_custom_imagery(entry: CustomImageryEntry) {

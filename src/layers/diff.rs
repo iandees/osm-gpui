@@ -110,15 +110,31 @@ mod tests {
         for w in ways {
             way_map.insert(w.id, w);
         }
-        OsmData { nodes: map, ways: way_map, relations: Vec::new(), bounds: None }
+        OsmData {
+            nodes: map,
+            ways: way_map,
+            relations: Vec::new(),
+            bounds: None,
+        }
     }
 
     fn node(id: i64, lat: f64, lon: f64, version: i32) -> OsmNode {
-        OsmNode { id, lat, lon, version, tags: empty_tags() }
+        OsmNode {
+            id,
+            lat,
+            lon,
+            version,
+            tags: empty_tags(),
+        }
     }
 
     fn way(id: i64, nodes: Vec<i64>, version: i32) -> OsmWay {
-        OsmWay { id, nodes, version, tags: empty_tags() }
+        OsmWay {
+            id,
+            nodes,
+            version,
+            tags: empty_tags(),
+        }
     }
 
     #[test]
@@ -136,8 +152,14 @@ mod tests {
         current.ways.insert(10, way(10, vec![1, 2], 1));
 
         let diff = diff_osm_data(&original, &current);
-        assert_eq!(diff.created_nodes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![2]);
-        assert_eq!(diff.created_ways.iter().map(|w| w.id).collect::<Vec<_>>(), vec![10]);
+        assert_eq!(
+            diff.created_nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(
+            diff.created_ways.iter().map(|w| w.id).collect::<Vec<_>>(),
+            vec![10]
+        );
         assert!(diff.modified_nodes.is_empty());
         assert!(diff.deleted_node_ids.is_empty());
     }
@@ -155,7 +177,10 @@ mod tests {
 
     #[test]
     fn detects_deleted_node_and_way() {
-        let original = data(vec![node(1, 1.0, 1.0, 3), node(2, 2.0, 2.0, 5)], vec![way(10, vec![1, 2], 2)]);
+        let original = data(
+            vec![node(1, 1.0, 1.0, 3), node(2, 2.0, 2.0, 5)],
+            vec![way(10, vec![1, 2], 2)],
+        );
         let mut current = original.clone();
         current.nodes.remove(&2);
         current.ways.clear();
@@ -178,14 +203,22 @@ mod tests {
         assert_eq!(diff.modified_nodes[0].lat, 1.5);
 
         let mut current2 = original.clone();
-        current2.nodes.get_mut(&1).unwrap().tags.insert("amenity".to_string(), "cafe".to_string());
+        current2
+            .nodes
+            .get_mut(&1)
+            .unwrap()
+            .tags
+            .insert("amenity".to_string(), "cafe".to_string());
         let diff2 = diff_osm_data(&original, &current2);
         assert_eq!(diff2.modified_nodes.len(), 1);
     }
 
     #[test]
     fn detects_modified_way_nodes_and_tags() {
-        let original = data(vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)], vec![way(10, vec![1, 2], 1)]);
+        let original = data(
+            vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)],
+            vec![way(10, vec![1, 2], 1)],
+        );
         let mut current = original.clone();
         current.ways.get_mut(&10).unwrap().nodes.push(1); // append a node ref -> geometry changed
 
@@ -196,7 +229,10 @@ mod tests {
 
     #[test]
     fn unchanged_elements_are_not_reported() {
-        let original = data(vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)], vec![way(10, vec![1, 2], 1)]);
+        let original = data(
+            vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)],
+            vec![way(10, vec![1, 2], 1)],
+        );
         let mut current = original.clone();
         // Only node 2 changes; node 1 and the way are untouched.
         current.nodes.get_mut(&2).unwrap().lon = 9.0;
