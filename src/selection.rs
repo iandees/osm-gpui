@@ -88,6 +88,32 @@ pub fn resolve_hits(per_layer: Vec<Vec<HitCandidate>>) -> Option<FeatureRef> {
     best.map(|(_, _, f)| f)
 }
 
+/// Resolve a plain click into a new selection, given the feature (if any)
+/// `resolve_hits` picked and whether shift was held.
+///
+/// Without shift, `hit` replaces the selection outright (0 or 1 features).
+/// With shift, a hit toggles: removed if already selected, appended
+/// otherwise; a shift-click that hits nothing leaves `current` unchanged.
+pub fn apply_click_selection(
+    current: &[FeatureRef],
+    hit: Option<FeatureRef>,
+    shift_held: bool,
+) -> Vec<FeatureRef> {
+    if !shift_held {
+        return hit.into_iter().collect();
+    }
+    let Some(feature) = hit else {
+        return current.to_vec();
+    };
+    let mut selected = current.to_vec();
+    if let Some(pos) = selected.iter().position(|f| *f == feature) {
+        selected.remove(pos);
+    } else {
+        selected.push(feature);
+    }
+    selected
+}
+
 /// A key's aggregated value across a set of features: either every feature
 /// agrees (has the key with the same value), or they don't.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +294,54 @@ mod tests {
         let winner = resolve_hits(vec![vec![a], vec![b]]).unwrap();
         assert_eq!(winner.layer_name, "top");
         assert_eq!(winner.id, 99);
+    }
+
+    #[test]
+    fn click_no_shift_replaces_selection_with_hit() {
+        let current = vec![fref("L", FeatureKind::Node, 1)];
+        let hit = fref("L", FeatureKind::Node, 2);
+        let result = apply_click_selection(&current, Some(hit.clone()), false);
+        assert_eq!(result, vec![hit]);
+    }
+
+    #[test]
+    fn click_no_shift_on_empty_space_clears_selection() {
+        let current = vec![fref("L", FeatureKind::Node, 1)];
+        let result = apply_click_selection(&current, None, false);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn shift_click_adds_unselected_feature() {
+        let a = fref("L", FeatureKind::Node, 1);
+        let b = fref("L", FeatureKind::Node, 2);
+        let current = vec![a.clone()];
+        let result = apply_click_selection(&current, Some(b.clone()), true);
+        assert_eq!(result, vec![a, b]);
+    }
+
+    #[test]
+    fn shift_click_removes_already_selected_feature() {
+        let a = fref("L", FeatureKind::Node, 1);
+        let b = fref("L", FeatureKind::Node, 2);
+        let current = vec![a.clone(), b.clone()];
+        let result = apply_click_selection(&current, Some(a), true);
+        assert_eq!(result, vec![b]);
+    }
+
+    #[test]
+    fn shift_click_on_empty_space_leaves_selection_unchanged() {
+        let current = vec![fref("L", FeatureKind::Node, 1), fref("L", FeatureKind::Node, 2)];
+        let result = apply_click_selection(&current, None, true);
+        assert_eq!(result, current);
+    }
+
+    #[test]
+    fn shift_click_only_selected_feature_empties_selection() {
+        let a = fref("L", FeatureKind::Node, 1);
+        let current = vec![a.clone()];
+        let result = apply_click_selection(&current, Some(a), true);
+        assert!(result.is_empty());
     }
 
     #[test]
