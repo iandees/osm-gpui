@@ -17,6 +17,7 @@ pub struct OsmNode {
     pub id: i64,
     pub lat: f64,
     pub lon: f64,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -24,6 +25,7 @@ pub struct OsmNode {
 pub struct OsmWay {
     pub id: i64,
     pub nodes: Vec<i64>,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -31,6 +33,7 @@ pub struct OsmWay {
 pub struct OsmRelation {
     pub id: i64,
     pub members: Vec<OsmMember>,
+    pub version: i32,
     pub tags: HashMap<String, String>,
 }
 
@@ -262,6 +265,7 @@ impl OsmParser {
         let mut id = 0;
         let mut lat = 0.0;
         let mut lon = 0.0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
@@ -272,6 +276,7 @@ impl OsmParser {
                 "id" => id = self.parse_i64(value)?,
                 "lat" => lat = self.parse_f64(value)?,
                 "lon" => lon = self.parse_f64(value)?,
+                "version" => version = self.parse_i32(value)?,
                 _ => {}
             }
         }
@@ -280,46 +285,55 @@ impl OsmParser {
             id,
             lat,
             lon,
+            version,
             tags: HashMap::new(),
         })
     }
 
     fn parse_way_start(&self, e: &BytesStart) -> Result<OsmWay, OsmParseError> {
         let mut id = 0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             let key = attr_str(attr.key.as_ref())?;
             let value = attr_str(&attr.value)?;
 
-            if key == "id" {
-                id = self.parse_i64(value)?;
+            match key {
+                "id" => id = self.parse_i64(value)?,
+                "version" => version = self.parse_i32(value)?,
+                _ => {}
             }
         }
 
         Ok(OsmWay {
             id,
             nodes: Vec::new(),
+            version,
             tags: HashMap::new(),
         })
     }
 
     fn parse_relation_start(&self, e: &BytesStart) -> Result<OsmRelation, OsmParseError> {
         let mut id = 0;
+        let mut version = 1;
 
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             let key = attr_str(attr.key.as_ref())?;
             let value = attr_str(&attr.value)?;
 
-            if key == "id" {
-                id = self.parse_i64(value)?;
+            match key {
+                "id" => id = self.parse_i64(value)?,
+                "version" => version = self.parse_i32(value)?,
+                _ => {}
             }
         }
 
         Ok(OsmRelation {
             id,
             members: Vec::new(),
+            version,
             tags: HashMap::new(),
         })
     }
@@ -389,6 +403,11 @@ impl OsmParser {
     fn parse_i64(&self, s: &str) -> Result<i64, OsmParseError> {
         s.parse()
             .map_err(|_| OsmParseError::ParseError(format!("Invalid i64: {}", s)))
+    }
+
+    fn parse_i32(&self, s: &str) -> Result<i32, OsmParseError> {
+        s.parse()
+            .map_err(|_| OsmParseError::ParseError(format!("Invalid i32: {}", s)))
     }
 
     fn parse_f64(&self, s: &str) -> Result<f64, OsmParseError> {
@@ -488,6 +507,46 @@ mod tests {
             osm_data.ways[0].nodes,
             vec![1, 2],
             "way node refs do not match"
+        );
+    }
+
+    #[test]
+    fn parse_str_reads_version_attribute() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.0" lon="-74.0" version="7"/>
+  <way id="10" version="3">
+    <nd ref="1"/>
+  </way>
+  <relation id="100" version="5">
+    <member type="way" ref="10" role="outer"/>
+  </relation>
+</osm>"#;
+
+        let parser = OsmParser::new();
+        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+
+        assert_eq!(osm_data.nodes[&1].version, 7, "node version not parsed");
+        assert_eq!(osm_data.ways[0].version, 3, "way version not parsed");
+        assert_eq!(
+            osm_data.relations[0].version, 5,
+            "relation version not parsed"
+        );
+    }
+
+    #[test]
+    fn parse_str_defaults_version_when_absent() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="40.0" lon="-74.0"/>
+</osm>"#;
+
+        let parser = OsmParser::new();
+        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+
+        assert_eq!(
+            osm_data.nodes[&1].version, 1,
+            "node version should default to 1 when absent"
         );
     }
 
