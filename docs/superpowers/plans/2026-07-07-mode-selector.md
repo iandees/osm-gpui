@@ -1660,28 +1660,7 @@ In `handle_map_mouse_down` (`src/main.rs:448-464`), add an Extrude-mode branch b
         // ... existing Select-mode body unchanged below
 ```
 
-This requires `MapLayer` to expose a downcast, since `hit_test_segment` is `OsmLayer`-specific (not a trait method — Extrude mode's segment concept doesn't apply to tile/grid layers, matching the design's "OSM-data layers only" eligibility). Add to the `MapLayer` trait (`src/layers/mod.rs`):
-
-```rust
-    /// Downcast support for callers (Extrude mode) that need `OsmLayer`-
-    /// specific methods not otherwise part of this trait. Default: `None`.
-    fn as_any(&self) -> &dyn std::any::Any {
-        // Default impl can't produce a real `&dyn Any` for `Self` without a
-        // `Sized` bound this trait doesn't have; every implementor overrides
-        // this with `self`. (Rust requires each impl to supply its own body;
-        // there is no generic default here despite the signature living on
-        // the trait.)
-        unimplemented!("implementors must override as_any")
-    }
-```
-
-and in each of `OsmLayer`, `TileLayer`, `GridLayer`'s `impl MapLayer` blocks, add:
-
-```rust
-    fn as_any(&self) -> &dyn std::any::Any { self }
-```
-
-(`TileLayer`/`GridLayer` need this override purely so the trait's `unimplemented!` default is never hit for them — Extrude mode never calls `hit_test_segment` on non-`OsmLayer` results because `find_layer` only returns the *active* layer, but the trait method must still be implemented on every type since Rust doesn't allow a truly generic default for `&dyn Any` over `Self`.)
+**Note:** `MapLayer::as_any(&self) -> &dyn std::any::Any` already exists by this point — Task 5's review found that its brief lacked an OSM-layer-type eligibility check for the active-layer row click, and the fix for that gap added `as_any` (with overrides on `OsmLayer`/`TileLayer`/`GridLayer`) ahead of schedule. Confirm it's present (`grep -n "fn as_any" src/layers/mod.rs src/layers/osm_layer.rs src/layers/tile_layer.rs src/layers/grid_layer.rs`) before this step; if for some reason it's missing, add it now following the same pattern: a trait method with no viable generic default (`unimplemented!("implementors must override as_any")`), overridden as `fn as_any(&self) -> &dyn std::any::Any { self }` in each of the three `impl MapLayer` blocks.
 
 - [ ] **Step 5: Mouse-move: update the live preview (no data mutation)**
 
