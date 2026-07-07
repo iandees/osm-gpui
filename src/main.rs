@@ -1063,19 +1063,23 @@ impl MapViewer {
                         }
                     }
                 }
-                let before = self.selected.clone();
                 self.handle_map_click(from_pt(at), event.modifiers.shift);
-                if before != self.selected {
-                    cx.notify();
-                }
+                // Always notify, regardless of whether the selection changed:
+                // `self.interaction` just transitioned back to `Idle` and the
+                // drag-preview clear above needs a repaint to actually reach
+                // the screen, or both would appear to "stick" until some
+                // unrelated redraw (e.g. a pan) happened to pick it up.
+                cx.notify();
             }
             interaction::Gesture::BoxSelected { rect } => {
                 let rect = normalize_rect(from_pt(rect.0), from_pt(rect.1));
-                let before = self.selected.clone();
                 self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
-                if before != self.selected {
-                    cx.notify();
-                }
+                // Always notify: the box-select overlay is driven off
+                // `self.interaction`, which just transitioned back to `Idle`.
+                // If the box hit nothing, `self.selected` wouldn't otherwise
+                // change and the stale rectangle would stay on screen until
+                // some unrelated redraw happened to pick up the new state.
+                cx.notify();
             }
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
