@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::layers::MapLayer;
+use crate::layers::diff::{diff_osm_data, LayerDiff};
+use crate::osm_upload::UploadResult;
 use crate::viewport::Viewport;
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
@@ -65,6 +67,14 @@ pub struct OsmLayer {
     name: String,
     visible: bool,
     osm_data: Option<Arc<OsmData>>,
+    /// The data as it was when this layer was last loaded/downloaded (or
+    /// last reconciled with a successful upload) — the stable "before"
+    /// state `diff_for_upload` compares `osm_data` against. Set in
+    /// `new_with_data` and refreshed in `set_osm_data`/
+    /// `apply_upload_result`; left untouched by in-place edit methods
+    /// (`commit_node_moves`/`set_tag`/`remove_tag`), which only mutate
+    /// `osm_data`.
+    original_data: Option<Arc<OsmData>>,
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
     way_bboxes: Vec<Option<WayBbox>>,
@@ -343,6 +353,7 @@ impl OsmLayer {
             name: "OSM Data".to_string(),
             visible: true,
             osm_data: None,
+            original_data: None,
             way_bboxes: Vec::new(),
             way_vertices: Vec::new(),
             way_styles: Vec::new(),
@@ -373,7 +384,8 @@ impl OsmLayer {
         Self {
             name: name.into(),
             visible: true,
-            osm_data: Some(osm_data),
+            osm_data: Some(osm_data.clone()),
+            original_data: Some(osm_data),
             way_bboxes,
             way_vertices,
             way_styles,
@@ -396,6 +408,11 @@ impl OsmLayer {
     /// initial download or a full reload). `commit_node_moves` uses a
     /// cheaper incremental path instead since it only ever touches a
     /// handful of nodes/ways.
+    ///
+    /// Also resets `original_data` to this new snapshot and clears
+    /// `modified`: this data is by definition the new "known-good, matches
+    /// the server" baseline, whether it arrived via a fresh download/reload
+    /// or via `apply_upload_result` reconciling a successful upload.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
         self.node_cache = compute_node_cache(&osm_data, &self.stylesheet);
         let (bboxes, verts, styles) = compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
@@ -408,7 +425,100 @@ impl OsmLayer {
         self.way_id_to_index = build_way_id_index(&osm_data.ways);
         self.node_to_ways = build_node_to_ways(&osm_data.ways);
         self.next_new_id = compute_next_new_id(&osm_data);
-        self.osm_data = Some(osm_data);
+        self.osm_data = Some(osm_data.clone());
+        self.original_data = Some(osm_data);
+        self.modified = false;
+    }
+
+    /// Compute the diff between this layer's original (last-synced)
+    /// snapshot and its current data — see `diff::diff_osm_data`. Returns
+    /// an all-empty `LayerDiff` if there's no data or no original snapshot
+    /// captured (the latter shouldn't happen in practice, since both
+    /// `new_with_data` and `set_osm_data` always set one, but is handled
+    /// defensively by treating everything current as newly created).
+    pub fn diff_for_upload(&self) -> LayerDiff {
+        let Some(current) = &self.osm_data else { return LayerDiff::default(); };
+        match &self.original_data {
+            Some(original) => diff_osm_data(original, current),
+            None => {
+                let empty = OsmData {
+                    nodes: HashMap::new(),
+                    ways: Vec::new(),
+                    relations: Vec::new(),
+                    bounds: None,
+                };
+                diff_osm_data(&empty, current)
+            }
+        }
+    }
+
+    /// Reconcile this layer's data with a successful changeset upload:
+    /// remap any locally-created node/way ids (including in a way's `nodes`
+    /// list, so a way that referenced a newly-created node's placeholder id
+    /// doesn't end up pointing at a now-meaningless id) to their real
+    /// server-assigned ids, and update every affected node/way's `version`.
+    /// Then rebuilds every derived cache from scratch via `set_osm_data`
+    /// (which also resets `original_data` to this reconciled state and
+    /// clears `modified`).
+    ///
+    /// A full rebuild — rather than incrementally patching each cache like
+    /// `commit_node_moves` does — is used here deliberately: this runs once
+    /// per upload (not a per-frame/per-drag hot path), and a bulk id remap
+    /// can touch an unbounded number of nodes/ways/index entries, so the
+    /// incremental-patch discipline used elsewhere isn't worth the added
+    /// complexity/risk for a one-time reconciliation pass.
+    pub fn apply_upload_result(&mut self, result: &UploadResult) {
+        let Some(current) = self.osm_data.clone() else { return; };
+        let mut data = (*current).clone();
+
+        // Remap node ids (covers true creates, where old id != new id, and
+        // version-only updates for modified nodes, where old id == new id).
+        let mut node_id_map: HashMap<i64, i64> = HashMap::new();
+        let mut updates: Vec<(i64, i64, i32)> = Vec::new();
+        for (&old_id, &(new_id, new_version)) in &result.node_id_remap {
+            if data.nodes.contains_key(&old_id) {
+                node_id_map.insert(old_id, new_id);
+                updates.push((old_id, new_id, new_version));
+            }
+        }
+        for (old_id, new_id, new_version) in updates {
+            if let Some(mut node) = data.nodes.remove(&old_id) {
+                node.id = new_id;
+                node.version = new_version;
+                data.nodes.insert(new_id, node);
+            }
+        }
+        if !node_id_map.is_empty() {
+            for way in &mut data.ways {
+                for nid in &mut way.nodes {
+                    if let Some(&new_id) = node_id_map.get(nid) {
+                        *nid = new_id;
+                    }
+                }
+            }
+        }
+
+        // Remap way ids/versions (same create-vs-modify unification as nodes).
+        for way in &mut data.ways {
+            if let Some(&(new_id, new_version)) = result.way_id_remap.get(&way.id) {
+                way.id = new_id;
+                way.version = new_version;
+            }
+        }
+
+        self.set_osm_data(Arc::new(data));
+    }
+
+    /// Test-only helper: replace `osm_data` directly, WITHOUT touching
+    /// `original_data` or rebuilding derived caches. Used to simulate
+    /// node/way creation and deletion in `diff_for_upload`/
+    /// `apply_upload_result` tests before `create_node`/`delete_feature`
+    /// exist on `OsmLayer` — those methods will presumably do the same
+    /// "mutate `osm_data`, leave `original_data` alone" thing themselves.
+    #[cfg(test)]
+    pub(crate) fn set_osm_data_for_test(&mut self, data: Arc<OsmData>) {
+        self.osm_data = Some(data);
+        self.modified = true;
     }
 
     /// Commit a set of node moves: clones the current `OsmData`, applies the
@@ -879,6 +989,7 @@ impl OsmLayer {
     /// Clear the OSM data
     pub fn clear_osm_data(&mut self) {
         self.osm_data = None;
+        self.original_data = None;
         self.way_bboxes.clear();
         self.way_vertices.clear();
         self.way_styles.clear();
@@ -980,6 +1091,14 @@ impl MapLayer for OsmLayer {
 
     fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
         OsmLayer::restore_feature(self, snapshot);
+    }
+
+    fn diff_for_upload(&self) -> LayerDiff {
+        OsmLayer::diff_for_upload(self)
+    }
+
+    fn apply_upload_result(&mut self, result: &UploadResult) {
+        OsmLayer::apply_upload_result(self, result);
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
@@ -2038,5 +2157,124 @@ mod tests {
         let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
         assert!((vmx - mx).abs() < 1e-6);
         assert!((vmy - my).abs() < 1e-6);
+    }
+
+    // -- Upload diff/apply-result model --
+
+    #[test]
+    fn diff_for_upload_no_changes_is_empty() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let layer = OsmLayer::new_with_data("L", data);
+
+        assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn diff_for_upload_detects_tag_edit_as_modified() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.modified_nodes.len(), 1);
+        assert_eq!(diff.modified_nodes[0].id, 1);
+        assert!(diff.created_nodes.is_empty());
+        assert!(diff.deleted_node_ids.is_empty());
+    }
+
+    #[test]
+    fn diff_for_upload_detects_move_as_modified() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.modified_nodes.len(), 1);
+        assert_eq!(diff.modified_nodes[0].lat, 41.0);
+    }
+
+    #[test]
+    fn apply_upload_result_updates_version_for_modified_node() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+        assert!(layer.is_modified());
+
+        let mut result = crate::osm_upload::UploadResult::default();
+        result.node_id_remap.insert(1, (1, 2));
+        layer.apply_upload_result(&result);
+
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(updated.nodes.get(&1).unwrap().version, 2);
+        assert!(!layer.is_modified(), "layer should be clean after a reconciled upload");
+        assert!(layer.diff_for_upload().is_empty(), "new baseline should match current data");
+    }
+
+    #[test]
+    fn apply_upload_result_remaps_created_node_id_in_referencing_way() {
+        // A way that references a newly-created (negative local id) node.
+        // After upload, that node gets a real server id — the way's `nodes`
+        // list must be updated to point at the new id, or its geometry
+        // would silently corrupt from then on.
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        // Simulate a locally-created node (-1) and a way referencing both
+        // the pre-existing node 1 and the new node -1, by mutating the
+        // layer's data directly (create_node/append_way don't exist yet).
+        let current = layer.get_osm_data().unwrap();
+        let mut new_data = (*current).clone();
+        new_data.nodes.insert(-1, OsmNode { id: -1, lat: 40.001, lon: -74.001, version: 0, tags: empty_tags() });
+        new_data.ways.push(OsmWay { id: -2, nodes: vec![1, -1], version: 0, tags: empty_tags() });
+        layer.set_osm_data_for_test(Arc::new(new_data));
+
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.created_nodes.len(), 1);
+        assert_eq!(diff.created_ways.len(), 1);
+
+        let mut result = crate::osm_upload::UploadResult::default();
+        result.node_id_remap.insert(-1, (999, 1));
+        result.way_id_remap.insert(-2, (888, 1));
+        layer.apply_upload_result(&result);
+
+        let updated = layer.get_osm_data().unwrap();
+        assert!(updated.nodes.contains_key(&999), "new node id should be present");
+        assert!(!updated.nodes.contains_key(&-1), "old local id should be gone");
+        let way = updated.ways.iter().find(|w| w.id == 888).expect("way should have its new id");
+        assert_eq!(way.nodes, vec![1, 999], "way must reference the node's NEW id, not the stale local one");
+        assert!(!layer.is_modified());
+        assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn apply_upload_result_confirms_delete_with_no_remap_entry() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        // Simulate a delete by directly removing node 2 from osm_data (the
+        // real delete_feature API doesn't exist yet).
+        let current = layer.get_osm_data().unwrap();
+        let mut new_data = (*current).clone();
+        new_data.nodes.remove(&2);
+        layer.set_osm_data_for_test(Arc::new(new_data));
+
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.deleted_node_ids, vec![(2, 1)]);
+
+        // Deletes get no remap entry in the diffResult; applying an empty
+        // result should still clear `modified` and reset the baseline so
+        // the deletion isn't reported again.
+        let result = crate::osm_upload::UploadResult::default();
+        layer.apply_upload_result(&result);
+        assert!(!layer.is_modified());
+        assert!(layer.diff_for_upload().is_empty());
     }
 }
