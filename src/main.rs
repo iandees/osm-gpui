@@ -254,6 +254,9 @@ struct MapViewer {
     /// Screen-space (start, current) points of an in-progress left-drag box
     /// select, or `None` when not dragging a box.
     box_select: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
+    /// In-progress move-drag of the current selection, or `None` when not
+    /// dragging a move.
+    move_drag: Option<MoveDrag>,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
@@ -265,6 +268,18 @@ struct MapViewer {
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
+    /// Focus handle for the map area, so it can receive key events (e.g.
+    /// Escape to cancel an in-progress move-drag).
+    focus_handle: gpui::FocusHandle,
+}
+
+/// Per-layer node ids being moved, each with its pre-drag `(lat, lon)`.
+type NodeMoveTargets = Vec<(String, Vec<(i64, f64, f64)>)>;
+
+/// Snapshot of the nodes being moved by an in-progress drag: which layer
+/// they belong to, and each affected node's id and pre-drag (lat, lon).
+struct MoveDrag {
+    per_layer: NodeMoveTargets,
 }
 
 /// Normalize two arbitrary screen points into a `Bounds` with a top-left
@@ -303,12 +318,14 @@ impl MapViewer {
             selected: Vec::new(),
             mouse_down_pos: None,
             box_select: None,
+            move_drag: None,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
             side_panel_open: vec![0, 1, 2],
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -461,8 +478,106 @@ impl MapViewer {
         self.mouse_down_pos = Some(adjusted_position);
     }
 
+    /// Left-button mouse-down: if the point hits a currently-selected
+    /// feature, start a move-drag instead of the usual box-select/click
+    /// tracking. Always records `mouse_down_pos` either way, since both
+    /// paths need it to distinguish a click from a drag on release.
+    fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
+        self.mouse_down_pos = Some(position);
+        if self.selected.is_empty() {
+            return;
+        }
+        if self
+            .layer_manager
+            .hit_test_selection(&self.viewport, position, &self.selected)
+            .is_none()
+        {
+            return;
+        }
+        let per_layer = self.resolve_move_targets();
+        if !per_layer.is_empty() {
+            self.move_drag = Some(MoveDrag { per_layer });
+        }
+    }
+
+    /// Resolve the current selection into, per owning layer, the set of node
+    /// ids to translate: a selected node contributes its own id; a selected
+    /// way contributes every one of its member node ids. Each id's current
+    /// (lat, lon) is snapshotted for use as the drag's translation anchor.
+    fn resolve_move_targets(&self) -> NodeMoveTargets {
+        use osm_gpui::selection::FeatureKind;
+        use std::collections::{HashMap, HashSet};
+
+        let mut ids_by_layer: HashMap<String, HashSet<i64>> = HashMap::new();
+        for feat in &self.selected {
+            let Some(layer) = self.layer_manager.find_layer(&feat.layer_name) else { continue; };
+            let entry = ids_by_layer.entry(feat.layer_name.clone()).or_default();
+            match feat.kind {
+                FeatureKind::Node => {
+                    entry.insert(feat.id);
+                }
+                FeatureKind::Way => {
+                    if let Some(node_ids) = layer.way_node_ids(feat.id) {
+                        entry.extend(node_ids);
+                    }
+                }
+            }
+        }
+
+        ids_by_layer
+            .into_iter()
+            .filter_map(|(layer_name, ids)| {
+                let layer = self.layer_manager.find_layer(&layer_name)?;
+                let originals: Vec<(i64, f64, f64)> = ids
+                    .into_iter()
+                    .filter_map(|id| layer.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
+                    .collect();
+                if originals.is_empty() {
+                    None
+                } else {
+                    Some((layer_name, originals))
+                }
+            })
+            .collect()
+    }
+
+    /// Cancel an in-progress move-drag: clears the preview on every affected
+    /// layer without mutating any data.
+    fn cancel_move_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(drag) = self.move_drag.take() {
+            for (layer_name, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.clear_drag_preview();
+                }
+            }
+            cx.notify();
+        }
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = event.position;
+
+        if self.move_drag.is_some() {
+            if event.pressed_button == Some(gpui::MouseButton::Left) {
+                if let Some(start) = self.mouse_down_pos {
+                    let delta = adjusted_position - start;
+                    let per_layer = self
+                        .move_drag
+                        .as_ref()
+                        .map(|d| d.per_layer.clone())
+                        .unwrap_or_default();
+                    for (layer_name, originals) in &per_layer {
+                        if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                            let ids: std::collections::HashSet<i64> =
+                                originals.iter().map(|&(id, _, _)| id).collect();
+                            layer.set_drag_preview(&ids, delta);
+                        }
+                    }
+                    cx.notify();
+                }
+            }
+            return;
+        }
 
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
@@ -483,6 +598,47 @@ impl MapViewer {
         let up_pos = event.position;
         let down_pos = self.mouse_down_pos.take();
         self.viewport.handle_mouse_up();
+
+        if let Some(drag) = self.move_drag.take() {
+            let moved = match down_pos {
+                Some(down) => (up_pos - down).magnitude() >= 4.0,
+                None => false,
+            };
+            let delta = down_pos.map(|down| up_pos - down).unwrap_or_default();
+
+            for (layer_name, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.clear_drag_preview();
+                }
+            }
+
+            if !moved {
+                // Not actually a drag: treat as a plain click on the map.
+                let before = self.selected.clone();
+                self.handle_map_click(up_pos);
+                if before != self.selected {
+                    cx.notify();
+                }
+                return;
+            }
+
+            for (layer_name, originals) in &drag.per_layer {
+                let moves: Vec<(i64, f64, f64)> = originals
+                    .iter()
+                    .map(|&(id, lat, lon)| {
+                        let anchor = self.viewport.geo_to_screen(lat, lon);
+                        let new_screen = anchor + delta;
+                        let (new_lat, new_lon) = self.viewport.screen_to_geo(new_screen);
+                        (id, new_lat, new_lon)
+                    })
+                    .collect();
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.commit_node_moves(&moves);
+                }
+            }
+            cx.notify();
+            return;
+        }
 
         if let Some((start, _)) = self.box_select.take() {
             let rect = normalize_rect(start, up_pos);
@@ -894,11 +1050,11 @@ impl MapViewer {
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
     fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let layer_info: Vec<(String, bool)> = self
+        let layer_info: Vec<(String, bool, bool)> = self
             .layer_manager
             .layers()
             .iter()
-            .map(|layer| (layer.name().to_string(), layer.is_visible()))
+            .map(|layer| (layer.name().to_string(), layer.is_visible(), layer.is_modified()))
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
@@ -1051,7 +1207,7 @@ impl MapViewer {
     /// context menu offering Move up / Move down / Delete.
     fn render_layers_section(
         &self,
-        layer_info: &[(String, bool)],
+        layer_info: &[(String, bool, bool)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -1067,11 +1223,16 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (name, is_visible))| {
+                    .map(|(index, (name, is_visible, is_modified))| {
                         let layer_name = name.clone();
+                        let label = if *is_modified {
+                            format!("{} \u{2022}", name)
+                        } else {
+                            name.clone()
+                        };
                         Checkbox::new(("layer", index))
                             .checked(*is_visible)
-                            .label(name.clone())
+                            .label(label)
                             .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
                                 this.toggle_layer_visibility(&layer_name);
                                 cx.notify();
@@ -1189,6 +1350,7 @@ impl Render for MapViewer {
                 div()
                     .flex_1()
                     .relative()
+                            .track_focus(&self.focus_handle)
                             // Right button drives panning.
                             .on_mouse_down(
                                 gpui::MouseButton::Right,
@@ -1210,13 +1372,20 @@ impl Render for MapViewer {
                                     cx.notify();
                                 }),
                             )
-                            // Left button is selection only: record the press position, decide on release.
+                            // Left button: selection, box-select, or move-drag if the
+                            // press lands on an already-selected feature.
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                                    this.mouse_down_pos = Some(ev.position);
+                                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                                    window.focus(&this.focus_handle, cx);
+                                    this.handle_map_mouse_down(ev.position);
                                 }),
                             )
+                            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    this.cancel_move_drag(cx);
+                                }
+                            }))
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseUpEvent, _, cx| {
