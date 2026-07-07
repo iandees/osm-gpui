@@ -140,15 +140,48 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-fn download() -> anyhow::Result<String> {
-    let response = ureq::get(ELI_URL)
-        .set("User-Agent", crate::USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .call()?;
+/// Max number of attempts for the ELI download, including the first try.
+const MAX_ATTEMPTS: u32 = 3;
+/// Delay before each retry, indexed by (attempt number - 1).
+const RETRY_DELAYS: [Duration; MAX_ATTEMPTS as usize - 1] = [
+    Duration::from_millis(200),
+    Duration::from_millis(500),
+];
 
-    let mut body = String::new();
-    response.into_reader().read_to_string(&mut body)?;
-    Ok(body)
+/// `GET` the ELI GeoJSON with a small bounded retry on transport errors and
+/// retryable HTTP status codes (see `crate::is_retryable_status`). Other 4xx
+/// responses are returned immediately since retrying won't help.
+fn download() -> anyhow::Result<String> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+
+        let result = ureq::get(ELI_URL)
+            .set("User-Agent", crate::USER_AGENT)
+            .timeout(Duration::from_secs(30))
+            .call();
+
+        let should_retry = match &result {
+            Ok(_) => false,
+            Err(ureq::Error::Status(status, _)) => crate::is_retryable_status(*status),
+            Err(ureq::Error::Transport(_)) => true,
+        };
+
+        match result {
+            Ok(response) => {
+                let mut body = String::new();
+                response.into_reader().read_to_string(&mut body)?;
+                return Ok(body);
+            }
+            Err(e) => {
+                if should_retry && attempt < MAX_ATTEMPTS {
+                    std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
 }
 
 /// Parse the ELI GeoJSON body into a list of `tms`-type imagery entries.
