@@ -316,7 +316,8 @@ impl SettingsWindow {
                 render_server_picker(api_choice, server_view.clone(), window, cx)
             }),
         )
-        .description("Choose which OpenStreetMap API server to use.")];
+        .description("Choose which OpenStreetMap API server to use.")
+        .layout(Axis::Vertical)];
 
         if matches!(api_choice, ApiServerChoice::Custom) {
             let custom_view = view.clone();
@@ -355,7 +356,8 @@ impl SettingsWindow {
                 render_login_state(login_view.clone(), login_state.clone(), window, cx)
             }),
         )
-        .description("Sign in with your OpenStreetMap account to edit data.");
+        .description("Sign in with your OpenStreetMap account to edit data.")
+        .layout(Axis::Vertical);
 
         SettingPage::new("Account")
             .icon(Icon::new(IconName::User))
