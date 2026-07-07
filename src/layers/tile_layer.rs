@@ -100,6 +100,22 @@ fn compute_effective_tile_zoom(
     Some(rounded)
 }
 
+/// Snap a tile's projected screen corners to the pixel grid, returning
+/// (x, y, width, height). Adjacent tiles share the same projected edge
+/// value, so rounding that shared edge once here (rather than rounding an
+/// independently computed position+size) guarantees neighboring tiles
+/// round to the same pixel and abut with no antialiased seam between them.
+fn snap_tile_rect(
+    top_left: Point<Pixels>,
+    bottom_right: Point<Pixels>,
+) -> (Pixels, Pixels, Pixels, Pixels) {
+    let left = top_left.x.round();
+    let right = bottom_right.x.round();
+    let top = top_left.y.round();
+    let bottom = bottom_right.y.round();
+    (left, top, (right - left).abs(), (bottom - top).abs())
+}
+
 impl MapLayer for TileLayer {
     fn name(&self) -> &str {
         &self.name
@@ -134,14 +150,11 @@ impl MapLayer for TileLayer {
             let screen_top_left = viewport.geo_to_screen(tile_max_lat, tile_min_lon);
             let screen_bottom_right = viewport.geo_to_screen(tile_min_lat, tile_max_lon);
 
-            // Calculate tile screen position and size
             // Note: In screen coordinates, y increases downward
             // tile_max_lat (north) -> smaller y (top)
             // tile_min_lat (south) -> larger y (bottom)
-            let tile_x = screen_top_left.x;
-            let tile_y = screen_top_left.y;
-            let tile_width = (screen_bottom_right.x - screen_top_left.x).abs();
-            let tile_height = (screen_bottom_right.y - screen_top_left.y).abs();
+            let (tile_x, tile_y, tile_width, tile_height) =
+                snap_tile_rect(screen_top_left, screen_bottom_right);
 
             // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -294,7 +307,52 @@ impl MapLayer for TileLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_effective_tile_zoom;
+    use super::{compute_effective_tile_zoom, snap_tile_rect};
+    use crate::tiles::TileCoord;
+    use crate::viewport::Viewport;
+    use gpui::{px, size};
+
+    /// Adjacent tiles must round to identical shared pixel edges, or a
+    /// hairline seam appears where the antialiased edge of each tile's
+    /// quad exposes the background behind it. A center/zoom chosen to
+    /// force a fractional (non-integer) pixel offset for the shared edge
+    /// is the regression case for that seam.
+    #[test]
+    fn adjacent_tiles_share_exact_pixel_edge() {
+        let screen_size = size(px(801.0), px(600.0));
+        let viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+
+        let z = 12;
+        let tile_a = TileCoord::new(1206, 1539, z);
+        let tile_b = TileCoord::new(1207, 1539, z);
+
+        let snapped_rect = |tile: &TileCoord| {
+            let (min_lon, min_lat, max_lon, max_lat) = tile.to_lat_lon_bounds();
+            let top_left = viewport.geo_to_screen(max_lat, min_lon);
+            let bottom_right = viewport.geo_to_screen(min_lat, max_lon);
+            snap_tile_rect(top_left, bottom_right)
+        };
+
+        let (x_a, _, width_a, _) = snapped_rect(&tile_a);
+        let (x_b, _, _, _) = snapped_rect(&tile_b);
+
+        // The corner values `Viewport::geo_to_screen` returns for this
+        // center/zoom are fractional (e.g. x ~= 356.37), which is what lets
+        // an antialiased edge seam show through at all: without snapping,
+        // each tile's quad edge falls mid-pixel and gets independently
+        // blended by the renderer. Confirm the fixed edge is whole-pixel.
+        assert_eq!(
+            x_a.as_f32().fract(),
+            0.0,
+            "snapped tile edge must land on a whole pixel, not a fractional one"
+        );
+
+        assert_eq!(
+            x_a + width_a,
+            x_b,
+            "adjacent tiles must round to the same shared pixel edge"
+        );
+    }
 
     #[test]
     fn no_bounds_passthrough() {
