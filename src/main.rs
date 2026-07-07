@@ -1251,6 +1251,40 @@ impl Render for MapViewer {
                                 } else {
                                     div().into_any_element()
                                 }
+                            })
+                            .child({
+                                // Legally-required tile/imagery attribution for
+                                // every currently-visible layer that has one,
+                                // deduplicated (e.g. shared OSM Carto credit).
+                                let mut seen = std::collections::HashSet::new();
+                                let mut credits: Vec<String> = Vec::new();
+                                for layer in self.layer_manager.layers() {
+                                    if !layer.is_visible() {
+                                        continue;
+                                    }
+                                    if let Some(text) = layer.attribution() {
+                                        if seen.insert(text.to_string()) {
+                                            credits.push(text.to_string());
+                                        }
+                                    }
+                                }
+                                if credits.is_empty() {
+                                    div().into_any_element()
+                                } else {
+                                    div()
+                                        .absolute()
+                                        .bottom_4()
+                                        .right_4()
+                                        .px_2()
+                                        .py_1()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_xs()
+                                        .opacity(0.75)
+                                        .child(credits.join(" | "))
+                                        .into_any_element()
+                                }
                             }),
                     )
             .child(
