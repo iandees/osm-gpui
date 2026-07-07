@@ -703,22 +703,29 @@ impl MapViewer {
             UndoableAction::ExtendWay { layer, way_id, node_id, lat: _, lon: _, way_created } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
                 let Some(editable) = layer.as_editable_mut() else { return };
-                if forward {
+                if !forward {
                     if *way_created {
-                        editable.add_way(vec![*node_id], Vec::new());
+                        editable.remove_way(*way_id);
+                        editable.remove_node(*node_id);
                     } else {
-                        editable.extend_way(*way_id, *node_id);
+                        let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
+                        if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
+                            editable.remove_node_from_way(*way_id, idx);
+                        }
+                        editable.remove_node(*node_id);
                     }
-                } else if *way_created {
-                    editable.remove_way(*way_id);
-                    editable.remove_node(*node_id);
-                } else {
-                    let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
-                    if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
-                        editable.remove_node_from_way(*way_id, idx);
-                    }
-                    editable.remove_node(*node_id);
                 }
+                // Redo (forward) is intentionally a no-op, matching
+                // `CreateBuilding`'s documented scope boundary: undo deletes
+                // the node this click created (and the way too, if this
+                // click created it), so a straightforward "recreate" redo
+                // would need to hand back the exact same placeholder ids —
+                // but `way_id`'s id would come from a fresh `add_way` call,
+                // not the one recorded here, breaking any later undo entry
+                // that still references the original `way_id` (e.g. a
+                // subsequent click extending the same way). Redo beyond the
+                // immediate action is out of scope for this plan (see the
+                // spec's "Out of scope" section).
             }
             UndoableAction::CreateBuilding { layer, way_id, node_ids } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
