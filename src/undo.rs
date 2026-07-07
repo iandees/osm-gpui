@@ -2,9 +2,6 @@
 
 use osm_gpui::layers::LayerId;
 
-/// Per-layer node ids being moved, each with its pre-drag `(lat, lon)`.
-pub(crate) type NodeMoveTargets = Vec<(LayerId, Vec<(i64, f64, f64)>)>;
-
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
 pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<(i64, (f64, f64), (f64, f64))>)>;
 
@@ -100,12 +97,6 @@ impl UndoStack {
         self.cursor += 1;
         Some(action)
     }
-}
-
-/// Snapshot of the nodes being moved by an in-progress drag: which layer
-/// they belong to, and each affected node's id and pre-drag (lat, lon).
-pub(crate) struct MoveDrag {
-    pub(crate) per_layer: NodeMoveTargets,
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ pub mod custom_imagery_store;
 pub mod http;
 pub mod idle_tracker;
 pub mod imagery;
+pub mod interaction;
 pub mod layers;
 pub mod nsi;
 pub mod osm;

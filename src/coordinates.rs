@@ -338,6 +338,66 @@ impl CoordinateTransform {
     }
 }
 
+/// Compute the `(center_lat, center_lon, zoom_level)` that fits a
+/// geographic bounding box within a viewport of `screen_width`×
+/// `screen_height` pixels, with a 20% margin and zoom clamped to `[1, 18]`.
+///
+/// Degenerate bounds (zero width and/or height — e.g. a single point, or
+/// all data at one latitude) are padded by a small fixed amount on the
+/// affected axis/axes before the Mercator conversion, so the zoom
+/// computation never divides by zero; the returned center still reflects
+/// the original (unpadded) point in that case.
+///
+/// This is the pure computation extracted from `MapViewer::fit_to_osm_data`
+/// — the caller is still responsible for first reducing a dataset's nodes
+/// down to a min/max lat/lon bounding box.
+pub fn fit_bounds_to_viewport(
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+    screen_width: f64,
+    screen_height: f64,
+) -> (f64, f64, f64) {
+    let mut min_lat = min_lat;
+    let mut max_lat = max_lat;
+    let mut min_lon = min_lon;
+    let mut max_lon = max_lon;
+
+    let mut center_lat = (min_lat + max_lat) / 2.0;
+    let mut center_lon = (min_lon + max_lon) / 2.0;
+
+    // If bounding box height is zero, set to a small value
+    if (max_lat - min_lat).abs() < 1e-6 {
+        center_lat = min_lat;
+        min_lat -= 0.005;
+        max_lat += 0.005;
+    }
+    if (max_lon - min_lon).abs() < 1e-6 {
+        center_lon = min_lon;
+        min_lon -= 0.005;
+        max_lon += 0.005;
+    }
+
+    // Calculate required zoom to fit bounding box
+    let margin = 1.2; // Add 20% margin
+
+    // Convert bounding box to Mercator
+    let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
+    let (max_x, max_y) = lat_lon_to_mercator(max_lat, max_lon);
+    let bbox_width = (max_x - min_x).abs();
+    let bbox_height = (max_y - min_y).abs();
+
+    // Calculate zoom to fit bbox in screen
+    let world_width_meters = 40075016.686;
+    let tile_size = 256.0;
+    let zoom_x = ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2();
+    let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
+    let zoom_level = zoom_x.min(zoom_y).max(1.0).min(18.0); // Clamp zoom to [1, 18]
+
+    (center_lat, center_lon, zoom_level)
+}
+
 /// Validates that a point has finite coordinates
 pub fn is_point_valid(point: GpuiPoint<Pixels>) -> bool {
     point.x.as_f32().is_finite() && point.y.as_f32().is_finite()
@@ -409,5 +469,46 @@ mod tests {
 
         assert!((mx - original_mx).abs() < 0.01, "mx: {} vs {}", mx, original_mx);
         assert!((my - original_my).abs() < 0.01, "my: {} vs {}", my, original_my);
+    }
+
+    #[test]
+    fn fit_bounds_centers_on_the_bbox_midpoint() {
+        let (center_lat, center_lon, zoom) =
+            fit_bounds_to_viewport(40.0, 41.0, -74.5, -73.5, 800.0, 600.0);
+        assert!((center_lat - 40.5).abs() < 1e-9);
+        assert!((center_lon - (-74.0)).abs() < 1e-9);
+        assert!(zoom >= 1.0 && zoom <= 18.0);
+    }
+
+    #[test]
+    fn fit_bounds_zoom_clamped_to_max_for_a_tiny_bbox() {
+        let (_, _, zoom) = fit_bounds_to_viewport(40.7127, 40.7129, -74.0061, -74.0059, 800.0, 600.0);
+        assert!((zoom - 18.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fit_bounds_zoom_clamped_to_min_for_a_huge_bbox() {
+        let (_, _, zoom) = fit_bounds_to_viewport(-85.0, 85.0, -180.0, 180.0, 800.0, 600.0);
+        assert!((zoom - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fit_bounds_degenerate_single_point_does_not_panic_and_centers_correctly() {
+        let (center_lat, center_lon, zoom) =
+            fit_bounds_to_viewport(40.7128, 40.7128, -74.0060, -74.0060, 800.0, 600.0);
+        assert!((center_lat - 40.7128).abs() < 1e-9);
+        assert!((center_lon - (-74.0060)).abs() < 1e-9);
+        assert!(zoom.is_finite());
+        assert!(zoom >= 1.0 && zoom <= 18.0);
+    }
+
+    #[test]
+    fn fit_bounds_degenerate_zero_height_only() {
+        // Same latitude, distinct longitudes: only the lat axis is padded.
+        let (center_lat, center_lon, zoom) =
+            fit_bounds_to_viewport(40.0, 40.0, -75.0, -73.0, 800.0, 600.0);
+        assert!((center_lat - 40.0).abs() < 1e-9);
+        assert!((center_lon - (-74.0)).abs() < 1e-9);
+        assert!(zoom.is_finite());
     }
 }

@@ -18,12 +18,12 @@ use crate::menu::{
     open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
-use crate::undo::{MoveDrag, NodeMoveTargets, NodeMoveUndoEntries, UndoStack, UndoableAction};
+use crate::undo::{NodeMoveUndoEntries, UndoStack, UndoableAction};
 
 use osm_gpui::auth;
 use osm_gpui::settings_store;
-use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::idle_tracker::IdleTracker;
+use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::tile_cache::TileCache;
@@ -188,13 +188,11 @@ struct MapViewer {
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
-    mouse_down_pos: Option<gpui::Point<gpui::Pixels>>,
-    /// Screen-space (start, current) points of an in-progress left-drag box
-    /// select, or `None` when not dragging a box.
-    box_select: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
-    /// In-progress move-drag of the current selection, or `None` when not
-    /// dragging a move.
-    move_drag: Option<MoveDrag>,
+    /// Current mouse interaction: idle, a pending press, an in-progress
+    /// box-select, or an in-progress move-drag of the selection. See
+    /// `osm_gpui::interaction` for the pure click/drag/box-select decision
+    /// tree this drives.
+    interaction: Interaction,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
@@ -251,19 +249,29 @@ struct PendingTagEditOpen {
     is_add: bool,
 }
 
+/// Convert a gpui screen point to the plain `(f32, f32)` pair the pure
+/// `interaction` module operates on.
+fn to_pt(p: gpui::Point<gpui::Pixels>) -> interaction::Pt {
+    (p.x.as_f32(), p.y.as_f32())
+}
+
+/// Convert a plain `(f32, f32)` pair back to a gpui screen point (or
+/// vector/delta — `gpui::Point<Pixels>` doubles as both).
+fn from_pt(p: interaction::Pt) -> gpui::Point<gpui::Pixels> {
+    gpui::point(px(p.0), px(p.1))
+}
+
 /// Normalize two arbitrary screen points into a `Bounds` with a top-left
-/// origin and non-negative size, regardless of drag direction.
+/// origin and non-negative size, regardless of drag direction. Thin gpui
+/// wrapper around `interaction::normalize_rect`.
 fn normalize_rect(
     a: gpui::Point<gpui::Pixels>,
     b: gpui::Point<gpui::Pixels>,
 ) -> gpui::Bounds<gpui::Pixels> {
-    let min_x = a.x.as_f32().min(b.x.as_f32());
-    let max_x = a.x.as_f32().max(b.x.as_f32());
-    let min_y = a.y.as_f32().min(b.y.as_f32());
-    let max_y = a.y.as_f32().max(b.y.as_f32());
+    let rect = interaction::normalize_rect(to_pt(a), to_pt(b));
     gpui::Bounds {
-        origin: gpui::point(px(min_x), px(min_y)),
-        size: gpui::size(px(max_x - min_x), px(max_y - min_y)),
+        origin: gpui::point(px(rect.x), px(rect.y)),
+        size: gpui::size(px(rect.width), px(rect.height)),
     }
 }
 
@@ -285,9 +293,7 @@ impl MapViewer {
             first_dataset_fitted: false,
             status_message: None,
             selected: Vec::new(),
-            mouse_down_pos: None,
-            box_select: None,
-            move_drag: None,
+            interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
@@ -376,39 +382,11 @@ impl MapViewer {
         }
 
         if min_lat != f64::INFINITY {
-            let mut center_lat = (min_lat + max_lat) / 2.0;
-            let mut center_lon = (min_lon + max_lon) / 2.0;
-
-            // If bounding box height is zero, set to a small value
-            if (max_lat - min_lat).abs() < 1e-6 {
-                center_lat = min_lat;
-                min_lat -= 0.005;
-                max_lat += 0.005;
-            }
-            if (max_lon - min_lon).abs() < 1e-6 {
-                center_lon = min_lon;
-                min_lon -= 0.005;
-                max_lon += 0.005;
-            }
-
-            // Calculate required zoom to fit bounding box
-            let margin = 1.2; // Add 20% margin
-            let viewport = &self.viewport;
-            let screen_width = viewport.transform.screen_size.width.to_f64();
-            let screen_height = viewport.transform.screen_size.height.to_f64();
-
-            // Convert bounding box to Mercator
-            let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
-            let (max_x, max_y) = lat_lon_to_mercator(max_lat, max_lon);
-            let bbox_width = (max_x - min_x).abs();
-            let bbox_height = (max_y - min_y).abs();
-
-            // Calculate zoom to fit bbox in screen
-            let world_width_meters = 40075016.686;
-            let tile_size = 256.0;
-            let zoom_x = ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2();
-            let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
-            let zoom_level = zoom_x.min(zoom_y).max(1.0).min(18.0); // Clamp zoom to [1, 18]
+            let screen_width = self.viewport.transform.screen_size.width.to_f64();
+            let screen_height = self.viewport.transform.screen_size.height.to_f64();
+            let (center_lat, center_lon, zoom_level) = osm_gpui::coordinates::fit_bounds_to_viewport(
+                min_lat, max_lat, min_lon, max_lon, screen_width, screen_height,
+            );
 
             self.viewport.pan_to(center_lat, center_lon);
             self.viewport.set_zoom(zoom_level);
@@ -450,29 +428,27 @@ impl MapViewer {
         let adjusted_position = event.position;
 
         self.viewport.handle_mouse_down(adjusted_position);
-        self.mouse_down_pos = Some(adjusted_position);
+        self.interaction = interaction::record_mouse_down(&self.interaction, to_pt(adjusted_position));
     }
 
     /// Left-button mouse-down: if the point hits a currently-selected
     /// feature, start a move-drag instead of the usual box-select/click
-    /// tracking. Always records `mouse_down_pos` either way, since both
-    /// paths need it to distinguish a click from a drag on release.
+    /// tracking. Always records the mouse-down position either way, since
+    /// both paths need it to distinguish a click from a drag on release.
     fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
-        self.mouse_down_pos = Some(position);
-        if self.selected.is_empty() {
-            return;
-        }
-        if self
+        let hit_move_targets = if self.selected.is_empty() {
+            None
+        } else if self
             .layer_manager
             .hit_test_selection(&self.viewport, position, &self.selected)
             .is_none()
         {
-            return;
-        }
-        let per_layer = self.resolve_move_targets();
-        if !per_layer.is_empty() {
-            self.move_drag = Some(MoveDrag { per_layer });
-        }
+            None
+        } else {
+            let per_layer = self.resolve_move_targets();
+            if per_layer.is_empty() { None } else { Some(per_layer) }
+        };
+        self.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
     }
 
     /// Resolve the current selection into, per owning layer, the set of node
@@ -521,8 +497,8 @@ impl MapViewer {
     /// Cancel an in-progress move-drag: clears the preview on every affected
     /// layer without mutating any data.
     fn cancel_move_drag(&mut self, cx: &mut Context<Self>) {
-        if let Some(drag) = self.move_drag.take() {
-            for (layer_id, _) in &drag.per_layer {
+        if let Some(targets) = interaction::cancel_move_drag(&mut self.interaction) {
+            for (layer_id, _) in &targets {
                 if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                     if let Some(editable) = layer.as_editable_mut() {
                         editable.clear_drag_preview();
@@ -910,27 +886,22 @@ impl MapViewer {
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = event.position;
+        let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
 
-        if self.move_drag.is_some() {
-            if event.pressed_button == Some(gpui::MouseButton::Left) {
-                if let Some(start) = self.mouse_down_pos {
-                    let delta = adjusted_position - start;
-                    let per_layer = self
-                        .move_drag
-                        .as_ref()
-                        .map(|d| d.per_layer.clone())
-                        .unwrap_or_default();
-                    for (layer_id, originals) in &per_layer {
-                        if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                            if let Some(editable) = layer.as_editable_mut() {
-                                let ids: std::collections::HashSet<i64> =
-                                    originals.iter().map(|&(id, _, _)| id).collect();
-                                editable.set_drag_preview(&ids, delta);
-                            }
+        if let Interaction::MoveDrag { down, targets } = &self.interaction {
+            if let Some(delta_pt) = interaction::move_drag_delta(*down, to_pt(adjusted_position), left_pressed) {
+                let delta = from_pt(delta_pt);
+                let targets = targets.clone();
+                for (layer_id, originals) in &targets {
+                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            let ids: std::collections::HashSet<i64> =
+                                originals.iter().map(|&(id, _, _)| id).collect();
+                            editable.set_drag_preview(&ids, delta);
                         }
                     }
-                    cx.notify();
                 }
+                cx.notify();
             }
             return;
         }
@@ -939,90 +910,77 @@ impl MapViewer {
             cx.notify();
         }
 
-        if event.pressed_button == Some(gpui::MouseButton::Left) {
-            if let Some(start) = self.mouse_down_pos {
-                let moved = (adjusted_position - start).magnitude() >= 4.0;
-                if moved || self.box_select.is_some() {
-                    self.box_select = Some((start, adjusted_position));
-                    cx.notify();
-                }
-            }
+        if interaction::update_box_select(&mut self.interaction, to_pt(adjusted_position), left_pressed) {
+            cx.notify();
         }
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = event.position;
-        let down_pos = self.mouse_down_pos.take();
         self.viewport.handle_mouse_up();
 
-        if let Some(drag) = self.move_drag.take() {
-            let moved = match down_pos {
-                Some(down) => (up_pos - down).magnitude() >= 4.0,
-                None => false,
-            };
-            let delta = down_pos.map(|down| up_pos - down).unwrap_or_default();
-
-            for (layer_id, _) in &drag.per_layer {
-                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                    if let Some(editable) = layer.as_editable_mut() {
-                        editable.clear_drag_preview();
+        match interaction::on_mouse_up(&mut self.interaction, to_pt(up_pos)) {
+            interaction::Gesture::MoveCommitted { targets, delta } => {
+                let delta = from_pt(delta);
+                for (layer_id, _) in &targets {
+                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            editable.clear_drag_preview();
+                        }
                     }
                 }
-            }
 
-            if !moved {
-                // Not actually a drag: treat as a plain click on the map.
+                let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
+                for (layer_id, originals) in &targets {
+                    let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
+                    let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> = Vec::with_capacity(originals.len());
+                    for &(id, lat, lon) in originals {
+                        let anchor = self.viewport.geo_to_screen(lat, lon);
+                        let new_screen = anchor + delta;
+                        let (new_lat, new_lon) = self.viewport.screen_to_geo(new_screen);
+                        moves.push((id, new_lat, new_lon));
+                        undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
+                    }
+                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            editable.commit_node_moves(&moves);
+                        }
+                    }
+                    undo_per_layer.push((*layer_id, undo_entries));
+                }
+                self.undo_stack.push(UndoableAction::MoveNodes { per_layer: undo_per_layer });
+                cx.notify();
+            }
+            interaction::Gesture::MoveCancelledAsClick { targets, at } => {
+                for (layer_id, _) in &targets {
+                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            editable.clear_drag_preview();
+                        }
+                    }
+                }
                 let before = self.selected.clone();
-                self.handle_map_click(up_pos, event.modifiers.shift);
+                self.handle_map_click(from_pt(at), event.modifiers.shift);
                 if before != self.selected {
                     cx.notify();
                 }
-                return;
             }
-
-            let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
-            for (layer_id, originals) in &drag.per_layer {
-                let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
-                let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> = Vec::with_capacity(originals.len());
-                for &(id, lat, lon) in originals {
-                    let anchor = self.viewport.geo_to_screen(lat, lon);
-                    let new_screen = anchor + delta;
-                    let (new_lat, new_lon) = self.viewport.screen_to_geo(new_screen);
-                    moves.push((id, new_lat, new_lon));
-                    undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
+            interaction::Gesture::BoxSelected { rect } => {
+                let rect = normalize_rect(from_pt(rect.0), from_pt(rect.1));
+                let before = self.selected.clone();
+                self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
+                if before != self.selected {
+                    cx.notify();
                 }
-                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                    if let Some(editable) = layer.as_editable_mut() {
-                        editable.commit_node_moves(&moves);
-                    }
+            }
+            interaction::Gesture::Click { at } => {
+                let before = self.selected.clone();
+                self.handle_map_click(from_pt(at), event.modifiers.shift);
+                if before != self.selected {
+                    cx.notify();
                 }
-                undo_per_layer.push((*layer_id, undo_entries));
             }
-            self.undo_stack.push(UndoableAction::MoveNodes { per_layer: undo_per_layer });
-            cx.notify();
-            return;
-        }
-
-        if let Some((start, _)) = self.box_select.take() {
-            let rect = normalize_rect(start, up_pos);
-            let before = self.selected.clone();
-            self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
-            if before != self.selected {
-                cx.notify();
-            }
-            return;
-        }
-
-        let was_click = match down_pos {
-            Some(down) => (up_pos - down).magnitude() < 4.0,
-            None => false,
-        };
-        if was_click {
-            let before = self.selected.clone();
-            self.handle_map_click(up_pos, event.modifiers.shift);
-            if before != self.selected {
-                cx.notify();
-            }
+            interaction::Gesture::None => {}
         }
     }
 
@@ -1692,8 +1650,8 @@ impl Render for MapViewer {
                                 }
                             })
                             .child({
-                                if let Some((start, current)) = self.box_select {
-                                    let rect = normalize_rect(start, current);
+                                if let Some((start, current)) = self.interaction.box_select_rect() {
+                                    let rect = normalize_rect(from_pt(start), from_pt(current));
                                     div()
                                         .absolute()
                                         .left(rect.origin.x)
@@ -1715,18 +1673,13 @@ impl Render for MapViewer {
                                 // deduplicated (e.g. shared OSM Carto credit).
                                 // Entries with a link are clickable and open
                                 // it in the system browser.
-                                let mut seen = std::collections::HashSet::new();
-                                let mut credits: Vec<(String, Option<String>)> = Vec::new();
-                                for layer in self.layer_manager.layers() {
+                                let raw_credits = self.layer_manager.layers().iter().filter_map(|layer| {
                                     if !layer.is_visible() {
-                                        continue;
+                                        return None;
                                     }
-                                    if let Some(attribution) = layer.attribution() {
-                                        if seen.insert(attribution.text.clone()) {
-                                            credits.push((attribution.text.clone(), attribution.url.clone()));
-                                        }
-                                    }
-                                }
+                                    layer.attribution().map(|a| (a.text.clone(), a.url.clone()))
+                                });
+                                let credits = interaction::dedupe_attributions(raw_credits);
                                 if credits.is_empty() {
                                     div().into_any_element()
                                 } else {
