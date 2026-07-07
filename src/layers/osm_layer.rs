@@ -7,15 +7,24 @@ use crate::viewport::Viewport;
 use crate::osm::{OsmData, OsmWay};
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::selection::{FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
-use crate::style::Stylesheet;
+use crate::style::{Stylesheet, NodeStyle, WayStyle};
 use rstar::{RTree, AABB, primitives::{GeomWithData, Rectangle}};
 
 const SELECTION_ACCENT: u32 = 0xFF4081;
 
+/// Minimum on-screen length (in pixels) a way segment must accumulate before
+/// it's emitted as its own quad. Segments shorter than this while zoomed out
+/// are skipped (their span just gets absorbed into the next emitted
+/// segment), cutting emitted vertices with no visible geometry change. The
+/// way's final vertex is always emitted exactly regardless of this
+/// threshold, so endpoints/junctions and hit-testing (which reads the
+/// undecimated cached geometry, not this render-only path) are unaffected.
+const MIN_SEGMENT_PX: f32 = 1.0;
+
 /// Per-way axis-aligned bounding box in Web Mercator meters. Used to cull
 /// offscreen ways with a cheap min/max compare against the viewport's
 /// mercator-space view bounds — no trig per frame.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct WayBbox {
     min_x: f64,
     max_x: f64,
@@ -23,18 +32,32 @@ struct WayBbox {
     max_y: f64,
 }
 
+impl WayBbox {
+    /// Conservatively grow this bbox to include `(x, y)`. Never shrinks.
+    fn extend(&mut self, x: f64, y: f64) {
+        if x < self.min_x { self.min_x = x; }
+        if x > self.max_x { self.max_x = x; }
+        if y < self.min_y { self.min_y = y; }
+        if y > self.max_y { self.max_y = y; }
+    }
+}
+
 /// Pre-projected node coordinates (Web Mercator meters) aligned with the
 /// iteration order used by the render loops. Computing this once at
 /// `set_osm_data` time eliminates the per-frame `lat_lon_to_mercator` (tan+ln)
-/// from every node and way vertex.
+/// from every node and way vertex. Also caches each node's resolved style
+/// (color/size), resolved once from the stylesheet + tags here instead of
+/// every frame in the render loop.
 #[derive(Debug, Clone)]
 struct NodeCache {
-    /// (mercator_x, mercator_y) keyed by node id. Used by the way-vertex
-    /// build pass.
-    by_id: HashMap<i64, (f64, f64)>,
+    /// node id -> index into `flat`/`styles`. Used by the way-vertex build
+    /// pass and by incremental cache updates (`commit_node_moves`).
+    index_by_id: HashMap<i64, usize>,
     /// Flat list of all nodes as `(id, mercator_x, mercator_y)` for cache-
     /// friendly iteration in the node paint loop.
     flat: Vec<(i64, f64, f64)>,
+    /// Resolved style per node, aligned with `flat` by index.
+    styles: Vec<NodeStyle>,
 }
 
 /// Layer for rendering OSM vector data (nodes and ways)
@@ -51,24 +74,38 @@ pub struct OsmLayer {
     /// id. The node id is carried alongside the position so the render loop
     /// can match vertices against an active `drag_preview` set.
     way_vertices: Vec<Vec<(i64, f64, f64)>>,
+    /// Resolved per-way style, aligned with `osm_data.ways`/`way_vertices` by
+    /// index. Resolved once (here) instead of every frame in the render
+    /// loop.
+    way_styles: Vec<WayStyle>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
     layer_bbox: Option<WayBbox>,
-    /// Precomputed mercator positions for every node.
+    /// Precomputed mercator positions (+ resolved style) for every node.
     node_cache: NodeCache,
     /// Stylesheet used to pick per-feature colors/weights from OSM tags.
     stylesheet: Arc<Stylesheet>,
     /// Feature to highlight (set each frame by MapViewer).
     highlight: Vec<FeatureRef>,
     /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
-    /// data changes. Used by box-select (`hit_test_rect`).
+    /// data changes. Used by box-select (`hit_test_rect`) and indexed
+    /// point-click hit-testing (`hit_test`).
     node_index: RTree<GeomWithData<[f64; 2], i64>>,
     /// Spatial index of all way bounding boxes (mercator meters -> way id),
     /// rebuilt whenever data changes. `locate_in_envelope` on this index
     /// returns ways whose bbox is fully contained in the query rect, which is
-    /// exactly the "fully enclosed" box-select rule for ways.
+    /// exactly the "fully enclosed" box-select rule for ways. Also used as a
+    /// coarse candidate filter for indexed point-click hit-testing.
     way_index: RTree<GeomWithData<Rectangle<[f64; 2]>, i64>>,
+    /// OSM way id -> index into `way_vertices`/`way_bboxes`/`way_styles`.
+    /// Lets `hit_test` go from an R-tree candidate (way id) straight to its
+    /// cached geometry without a linear scan of `osm_data.ways`.
+    way_id_to_index: HashMap<i64, usize>,
+    /// node id -> indices of ways (into `way_vertices`/`way_bboxes`) that
+    /// reference it. Built once at load time; lets `commit_node_moves`
+    /// recompute only the affected ways' caches instead of every way.
+    node_to_ways: HashMap<i64, Vec<usize>>,
     /// Transient screen-space offset applied to the given node ids while
     /// rendering, for live drag feedback. Never touches `osm_data`.
     drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
@@ -76,17 +113,19 @@ pub struct OsmLayer {
     modified: bool,
 }
 
-fn compute_node_cache(data: &OsmData) -> NodeCache {
-    let mut by_id = HashMap::with_capacity(data.nodes.len());
+fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> NodeCache {
+    let mut index_by_id = HashMap::with_capacity(data.nodes.len());
     let mut flat = Vec::with_capacity(data.nodes.len());
+    let mut styles = Vec::with_capacity(data.nodes.len());
     for node in data.nodes.values() {
         if let Some((lat, lon)) = validate_coords(node.lat, node.lon) {
             let (mx, my) = lat_lon_to_mercator(lat, lon);
-            by_id.insert(node.id, (mx, my));
+            index_by_id.insert(node.id, flat.len());
             flat.push((node.id, mx, my));
+            styles.push(stylesheet.node_style(&node.tags));
         }
     }
-    NodeCache { by_id, flat }
+    NodeCache { index_by_id, flat, styles }
 }
 
 fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
@@ -107,15 +146,17 @@ fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
     }
 }
 
-/// Build per-way bboxes and pre-projected vertex lists in a single pass so
-/// neither the bbox pass nor the render path has to walk the node HashMap
-/// per vertex.
+/// Build per-way bboxes, pre-projected vertex lists, and resolved styles in
+/// a single pass so neither the bbox pass nor the render path has to walk
+/// the node HashMap (or the stylesheet) per vertex/way.
 fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
-) -> (Vec<Option<WayBbox>>, Vec<Vec<(i64, f64, f64)>>) {
+    stylesheet: &Stylesheet,
+) -> (Vec<Option<WayBbox>>, Vec<Vec<(i64, f64, f64)>>, Vec<WayStyle>) {
     let mut bboxes = Vec::with_capacity(data.ways.len());
     let mut vertices = Vec::with_capacity(data.ways.len());
+    let mut styles = Vec::with_capacity(data.ways.len());
     for way in &data.ways {
         let mut min_x = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
@@ -123,7 +164,8 @@ fn compute_way_tables(
         let mut max_y = f64::NEG_INFINITY;
         let mut verts = Vec::with_capacity(way.nodes.len());
         for nid in &way.nodes {
-            if let Some(&(mx, my)) = node_cache.by_id.get(nid) {
+            if let Some(&idx) = node_cache.index_by_id.get(nid) {
+                let (_, mx, my) = node_cache.flat[idx];
                 if mx < min_x { min_x = mx; }
                 if mx > max_x { max_x = mx; }
                 if my < min_y { min_y = my; }
@@ -137,8 +179,59 @@ fn compute_way_tables(
             bboxes.push(Some(WayBbox { min_x, max_x, min_y, max_y }));
         }
         vertices.push(verts);
+        styles.push(stylesheet.way_style(&way.tags));
     }
-    (bboxes, vertices)
+    (bboxes, vertices, styles)
+}
+
+/// node id -> OSM way id, for every way that references it. Built once at
+/// data-load time so `commit_node_moves` can find exactly which ways need
+/// their cached vertex/bbox tables recomputed after a node move, instead of
+/// rescanning every way.
+fn build_node_to_ways(ways: &[OsmWay]) -> HashMap<i64, Vec<usize>> {
+    let mut map: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (idx, way) in ways.iter().enumerate() {
+        for nid in &way.nodes {
+            map.entry(*nid).or_default().push(idx);
+        }
+    }
+    map
+}
+
+/// OSM way id -> index into `way_vertices`/`way_bboxes`/`way_styles`. Lets
+/// hot paths (indexed hit-testing, incremental move updates) go straight to
+/// the cached arrays instead of a linear `Vec::iter().find()` scan.
+fn build_way_id_index(ways: &[OsmWay]) -> HashMap<i64, usize> {
+    ways.iter().enumerate().map(|(idx, w)| (w.id, idx)).collect()
+}
+
+/// Decide which segments of an already-projected screen-space polyline to
+/// actually emit: skip interior vertices until the pending segment (measured
+/// from the last emitted "anchor" point) has accumulated at least `min_px`
+/// screen pixels, but always emit a final segment ending at the last point
+/// so way endpoints are never rounded away. Returns `(anchor_idx, end_idx)`
+/// pairs indexing into `pts`.
+///
+/// Pure/allocation-light and independent of `Window`/`Path` so it can be
+/// unit-tested directly.
+fn decimate_segments(pts: &[Point<Pixels>], min_px: f32) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if pts.len() < 2 {
+        return out;
+    }
+    let min_px2 = min_px * min_px;
+    let mut anchor = 0usize;
+    let last = pts.len() - 1;
+    for i in 1..pts.len() {
+        let dx = f32::from(pts[i].x - pts[anchor].x);
+        let dy = f32::from(pts[i].y - pts[anchor].y);
+        let dist2 = dx * dx + dy * dy;
+        if i == last || dist2 >= min_px2 {
+            out.push((anchor, i));
+            anchor = i;
+        }
+    }
+    out
 }
 
 /// Push an oriented rectangle covering the segment `p0`-`p1` (as two raw
@@ -238,55 +331,83 @@ impl OsmLayer {
             osm_data: None,
             way_bboxes: Vec::new(),
             way_vertices: Vec::new(),
+            way_styles: Vec::new(),
             layer_bbox: None,
-            node_cache: NodeCache { by_id: HashMap::new(), flat: Vec::new() },
+            node_cache: NodeCache { index_by_id: HashMap::new(), flat: Vec::new(), styles: Vec::new() },
             stylesheet: Arc::new(Stylesheet::load_default()),
             highlight: Vec::new(),
             node_index: RTree::new(),
             way_index: RTree::new(),
+            way_id_to_index: HashMap::new(),
+            node_to_ways: HashMap::new(),
             drag_preview: None,
             modified: false,
         }
     }
 
     pub fn new_with_data<N: Into<String>>(name: N, osm_data: Arc<OsmData>) -> Self {
-        let node_cache = compute_node_cache(&osm_data);
-        let (way_bboxes, way_vertices) = compute_way_tables(&osm_data, &node_cache);
+        let stylesheet = Arc::new(Stylesheet::load_default());
+        let node_cache = compute_node_cache(&osm_data, &stylesheet);
+        let (way_bboxes, way_vertices, way_styles) = compute_way_tables(&osm_data, &node_cache, &stylesheet);
         let layer_bbox = compute_layer_bbox(&node_cache);
         let node_index = build_node_index(&node_cache);
         let way_index = build_way_index(&way_bboxes, &osm_data.ways);
+        let way_id_to_index = build_way_id_index(&osm_data.ways);
+        let node_to_ways = build_node_to_ways(&osm_data.ways);
         Self {
             name: name.into(),
             visible: true,
             osm_data: Some(osm_data),
             way_bboxes,
             way_vertices,
+            way_styles,
             layer_bbox,
             node_cache,
-            stylesheet: Arc::new(Stylesheet::load_default()),
+            stylesheet,
             highlight: Vec::new(),
             node_index,
             way_index,
+            way_id_to_index,
+            node_to_ways,
             drag_preview: None,
             modified: false,
         }
     }
 
-    /// Set the OSM data for this layer
+    /// Set the OSM data for this layer. Rebuilds every derived cache/index
+    /// from scratch — this is the path used for bulk data loads (e.g. an
+    /// initial download or a full reload). `commit_node_moves` uses a
+    /// cheaper incremental path instead since it only ever touches a
+    /// handful of nodes/ways.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
-        self.node_cache = compute_node_cache(&osm_data);
-        let (bboxes, verts) = compute_way_tables(&osm_data, &self.node_cache);
+        self.node_cache = compute_node_cache(&osm_data, &self.stylesheet);
+        let (bboxes, verts, styles) = compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
+        self.way_styles = styles;
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
         self.node_index = build_node_index(&self.node_cache);
         self.way_index = build_way_index(&self.way_bboxes, &osm_data.ways);
+        self.way_id_to_index = build_way_id_index(&osm_data.ways);
+        self.node_to_ways = build_node_to_ways(&osm_data.ways);
         self.osm_data = Some(osm_data);
     }
 
     /// Commit a set of node moves: clones the current `OsmData`, applies the
     /// given `(node_id, new_lat, new_lon)` updates, marks the layer modified,
-    /// and rebuilds every derived cache/index once via `set_osm_data`.
+    /// and incrementally patches the derived caches/indices in place:
+    /// - `node_cache` entries for the moved node ids only.
+    /// - `way_vertices`/`way_bboxes`/`way_styles` for exactly the ways
+    ///   referencing a moved node (via `node_to_ways`), not every way.
+    /// - `node_index`/`way_index` via targeted remove+insert, not a full
+    ///   `bulk_load`.
+    /// - `layer_bbox`, extended conservatively (never shrinks).
+    ///
+    /// A full `OsmData` clone is still unavoidable here without deeper
+    /// restructuring, but the expensive part this replaces is the
+    /// *derived-cache rebuild* (rebuilding every way's vertex/bbox table and
+    /// bulk-loading both R-trees from scratch), not the clone itself.
+    ///
     /// No-op if this layer has no data or `moves` is empty.
     pub fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
         if moves.is_empty() {
@@ -294,21 +415,140 @@ impl OsmLayer {
         }
         let Some(current) = self.osm_data.clone() else { return; };
         let mut data = (*current).clone();
+
+        let mut moved_ids: Vec<i64> = Vec::with_capacity(moves.len());
         for &(id, lat, lon) in moves {
             if let Some(node) = data.nodes.get_mut(&id) {
                 node.lat = lat;
                 node.lon = lon;
+                moved_ids.push(id);
             }
         }
         self.modified = true;
-        self.set_osm_data(Arc::new(data));
+        if moved_ids.is_empty() {
+            // None of the moved ids were actually present; nothing to patch.
+            self.osm_data = Some(Arc::new(data));
+            return;
+        }
+
+        // Ways referencing any moved node — these are the only ones whose
+        // cached vertex list/bbox can possibly have changed.
+        let mut touched_ways: HashSet<usize> = HashSet::new();
+        for &id in &moved_ids {
+            if let Some(way_idxs) = self.node_to_ways.get(&id) {
+                touched_ways.extend(way_idxs.iter().copied());
+            }
+        }
+
+        // -- Patch node_cache + node_index for each moved node. --
+        for &id in &moved_ids {
+            // Remove the stale R-tree entry (old mercator position) first —
+            // we need the OLD position, which is still in node_cache here.
+            if let Some(&old_idx) = self.node_cache.index_by_id.get(&id) {
+                let (_, old_mx, old_my) = self.node_cache.flat[old_idx];
+                self.node_index.remove(&GeomWithData::new([old_mx, old_my], id));
+            }
+
+            let Some(node) = data.nodes.get(&id) else { continue };
+            match validate_coords(node.lat, node.lon) {
+                Some((lat, lon)) => {
+                    let (mx, my) = lat_lon_to_mercator(lat, lon);
+                    let style = self.stylesheet.node_style(&node.tags);
+                    if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
+                        self.node_cache.flat[idx] = (id, mx, my);
+                        self.node_cache.styles[idx] = style;
+                    } else {
+                        let idx = self.node_cache.flat.len();
+                        self.node_cache.flat.push((id, mx, my));
+                        self.node_cache.styles.push(style);
+                        self.node_cache.index_by_id.insert(id, idx);
+                    }
+                    self.node_index.insert(GeomWithData::new([mx, my], id));
+
+                    // Conservatively extend layer_bbox — never shrinks, so a
+                    // move away from a bbox extreme won't shrink it back
+                    // (harmless: it just means slightly less aggressive
+                    // off-screen culling until the next full reload).
+                    match &mut self.layer_bbox {
+                        Some(lb) => lb.extend(mx, my),
+                        None => self.layer_bbox = Some(WayBbox { min_x: mx, max_x: mx, min_y: my, max_y: my }),
+                    }
+                }
+                None => {
+                    // New coords are invalid: drop this node from the
+                    // position caches/index (mirrors compute_node_cache,
+                    // which never included invalid-coordinate nodes).
+                    if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
+                        self.node_cache.flat.remove(idx);
+                        self.node_cache.styles.remove(idx);
+                        // Removing from the middle of `flat` shifts every
+                        // later index by one; fix up index_by_id.
+                        for v in self.node_cache.index_by_id.values_mut() {
+                            if *v > idx { *v -= 1; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -- Patch way_vertices/way_bboxes/way_styles + way_index for the
+        // touched ways only. --
+        for &way_idx in &touched_ways {
+            let way = &data.ways[way_idx];
+
+            // Remove the way's stale R-tree entry (old bbox), if any.
+            if let Some(old_bbox) = self.way_bboxes[way_idx] {
+                self.way_index.remove(&GeomWithData::new(
+                    Rectangle::from_corners([old_bbox.min_x, old_bbox.min_y], [old_bbox.max_x, old_bbox.max_y]),
+                    way.id,
+                ));
+            }
+
+            let mut min_x = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            let mut verts = Vec::with_capacity(way.nodes.len());
+            for nid in &way.nodes {
+                if let Some(&idx) = self.node_cache.index_by_id.get(nid) {
+                    let (_, mx, my) = self.node_cache.flat[idx];
+                    if mx < min_x { min_x = mx; }
+                    if mx > max_x { max_x = mx; }
+                    if my < min_y { min_y = my; }
+                    if my > max_y { max_y = my; }
+                    verts.push((*nid, mx, my));
+                }
+            }
+            let new_bbox = if verts.is_empty() {
+                None
+            } else {
+                Some(WayBbox { min_x, max_x, min_y, max_y })
+            };
+            if let Some(b) = new_bbox {
+                self.way_index.insert(GeomWithData::new(
+                    Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
+                    way.id,
+                ));
+                match &mut self.layer_bbox {
+                    Some(lb) => { lb.extend(b.min_x, b.min_y); lb.extend(b.max_x, b.max_y); }
+                    None => self.layer_bbox = Some(b),
+                }
+            }
+            self.way_vertices[way_idx] = verts;
+            self.way_bboxes[way_idx] = new_bbox;
+            self.way_styles[way_idx] = self.stylesheet.way_style(&way.tags);
+        }
+
+        self.osm_data = Some(Arc::new(data));
     }
 
     /// Set (insert or overwrite) a single tag on one node or way this layer
     /// owns. Marks the layer modified whenever the feature is found (same
     /// precedent as `commit_node_moves`: called at all implies modified,
     /// no finer no-op distinction). Doesn't rebuild geometry caches since
-    /// tags don't affect them. No-op if the feature isn't found.
+    /// tags don't affect vertex positions, but DOES refresh the cached
+    /// resolved style for the affected feature, since that's tag-derived.
+    /// No-op if the feature isn't found.
     pub fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
         let Some(current) = self.osm_data.clone() else { return; };
         let mut data = (*current).clone();
@@ -319,11 +559,13 @@ impl OsmLayer {
         let Some(tags) = tags else { return; };
         tags.insert(key.to_string(), value.to_string());
         self.modified = true;
+        self.refresh_cached_style(kind, id, &data);
         self.osm_data = Some(Arc::new(data));
     }
 
     /// Remove a single tag key from one node or way this layer owns. Marks
     /// the layer modified whenever the feature is found, same precedent as
+    /// `set_tag`. Also refreshes the cached resolved style, same as
     /// `set_tag`. No-op if the feature isn't found.
     pub fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
         let Some(current) = self.osm_data.clone() else { return; };
@@ -335,7 +577,27 @@ impl OsmLayer {
         let Some(tags) = tags else { return; };
         tags.remove(key);
         self.modified = true;
+        self.refresh_cached_style(kind, id, &data);
         self.osm_data = Some(Arc::new(data));
+    }
+
+    /// Recompute and store the cached resolved style for a single feature
+    /// after its tags changed. `data` must already reflect the new tags.
+    fn refresh_cached_style(&mut self, kind: FeatureKind, id: i64, data: &OsmData) {
+        match kind {
+            FeatureKind::Node => {
+                let Some(node) = data.nodes.get(&id) else { return; };
+                if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
+                    self.node_cache.styles[idx] = self.stylesheet.node_style(&node.tags);
+                }
+            }
+            FeatureKind::Way => {
+                let Some(way) = data.ways.iter().find(|w| w.id == id) else { return; };
+                if let Some(&idx) = self.way_id_to_index.get(&id) {
+                    self.way_styles[idx] = self.stylesheet.way_style(&way.tags);
+                }
+            }
+        }
     }
 
     /// Get the OSM data from this layer
@@ -348,11 +610,15 @@ impl OsmLayer {
         self.osm_data = None;
         self.way_bboxes.clear();
         self.way_vertices.clear();
+        self.way_styles.clear();
         self.layer_bbox = None;
-        self.node_cache.by_id.clear();
+        self.node_cache.index_by_id.clear();
         self.node_cache.flat.clear();
+        self.node_cache.styles.clear();
         self.node_index = RTree::new();
         self.way_index = RTree::new();
+        self.way_id_to_index.clear();
+        self.node_to_ways.clear();
         self.drag_preview = None;
         self.modified = false;
     }
@@ -362,9 +628,22 @@ impl OsmLayer {
         self.osm_data.is_some()
     }
 
-    /// Replace the stylesheet used for per-feature styling.
+    /// Replace the stylesheet used for per-feature styling. Re-resolves
+    /// every cached per-feature style against the new stylesheet (a full
+    /// pass over the data, but this is a rare/explicit action, not a
+    /// per-frame or per-drag hot path).
     pub fn set_stylesheet(&mut self, stylesheet: Arc<Stylesheet>) {
         self.stylesheet = stylesheet;
+        if let Some(data) = self.osm_data.clone() {
+            self.node_cache = compute_node_cache(&data, &self.stylesheet);
+            let (bboxes, verts, styles) = compute_way_tables(&data, &self.node_cache, &self.stylesheet);
+            self.way_bboxes = bboxes;
+            self.way_vertices = verts;
+            self.way_styles = styles;
+            self.layer_bbox = compute_layer_bbox(&self.node_cache);
+            self.node_index = build_node_index(&self.node_cache);
+            self.way_index = build_way_index(&self.way_bboxes, &data.ways);
+        }
     }
 }
 
@@ -427,7 +706,7 @@ impl MapLayer for OsmLayer {
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
-        let Some(ref osm_data) = self.osm_data else { return; };
+        if self.osm_data.is_none() { return; }
 
         let origin_x = bounds.origin.x;
         let origin_y = bounds.origin.y;
@@ -474,6 +753,12 @@ impl MapLayer for OsmLayer {
         }
         let mut way_groups: HashMap<(u32, u32), WayGroup> = HashMap::new();
 
+        // Reused scratch buffer for each way's projected screen points, so
+        // decimation (below) can look ahead/behind without per-way
+        // allocation churn across the (potentially thousands of) visible
+        // ways in a frame.
+        let mut scratch_pts: Vec<Point<Pixels>> = Vec::new();
+
         for (i, verts) in self.way_vertices.iter().enumerate() {
             if verts.len() < 2 {
                 continue;
@@ -490,8 +775,11 @@ impl MapLayer for OsmLayer {
                 continue;
             }
 
-            let way_tags = &osm_data.ways[i].tags;
-            let style = self.stylesheet.way_style(way_tags);
+            // Style is resolved once per way at data-load time
+            // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
+            // not here — no stylesheet lookup or tags HashMap access in this
+            // per-frame loop.
+            let style = self.way_styles[i];
             let key = (style.color, style.width.to_bits());
             let group = way_groups.entry(key).or_insert_with(|| WayGroup {
                 color: style.color,
@@ -500,7 +788,7 @@ impl MapLayer for OsmLayer {
                 bounds_min_max: (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
             });
 
-            let mut prev: Option<Point<Pixels>> = None;
+            scratch_pts.clear();
             for &(node_id, mx, my) in verts {
                 let mut sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) { continue; }
@@ -509,11 +797,20 @@ impl MapLayer for OsmLayer {
                         sp += delta;
                     }
                 }
-                let p = point(sp.x + origin_x, sp.y + origin_y);
-                if let Some(p0) = prev {
-                    push_segment_quad(&mut group.path, &mut group.bounds_min_max, p0, p, group.half_width);
-                }
-                prev = Some(p);
+                scratch_pts.push(point(sp.x + origin_x, sp.y + origin_y));
+            }
+            if scratch_pts.len() < 2 {
+                continue;
+            }
+
+            // Decimate: skip segments under ~1 screen pixel while zoomed
+            // out (no visible geometry change), but always emit a segment
+            // ending at the way's final projected vertex so junctions/
+            // endpoints are never rounded away. This is purely a rendering
+            // optimization — `way_vertices` (read by hit-testing and
+            // selection highlight) is untouched.
+            for (a, b) in decimate_segments(&scratch_pts, MIN_SEGMENT_PX) {
+                push_segment_quad(&mut group.path, &mut group.bounds_min_max, scratch_pts[a], scratch_pts[b], group.half_width);
             }
         }
 
@@ -535,8 +832,11 @@ impl MapLayer for OsmLayer {
         // fill path was tried and turned out much slower — Lyon's fill
         // tessellator is not tuned for thousands of tiny rectangles.
         //
-        // Per-node style comes from the stylesheet via the node's tags.
-        for &(id, mx, my) in &self.node_cache.flat {
+        // Per-node style is resolved once at data-load time (see
+        // `compute_node_cache`/`commit_node_moves`/`set_stylesheet`) and
+        // just read here — no stylesheet call or tags HashMap lookup per
+        // node per frame.
+        for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
             }
@@ -547,10 +847,7 @@ impl MapLayer for OsmLayer {
                     sp += delta;
                 }
             }
-            let style = match osm_data.nodes.get(&id) {
-                Some(n) => self.stylesheet.node_style(&n.tags),
-                None => crate::style::NodeStyle::default(),
-            };
+            let style = self.node_cache.styles[idx];
             let half = px(style.size / 2.0);
             let quad_bounds = Bounds {
                 origin: point(
@@ -581,61 +878,86 @@ impl MapLayer for OsmLayer {
     ) -> Vec<HitCandidate> {
         const NODE_TOL: f32 = 8.0;
         const WAY_TOL: f32 = 6.0;
+        // Generous multiplier on the query envelope vs. the exact pixel
+        // tolerance above: the R-tree query is only a coarse candidate
+        // filter, the refinement loops below do the exact distance check,
+        // so over-including candidates costs a little extra refinement work
+        // but never causes a missed hit. Mirrors the box-select envelope
+        // approach in `hit_test_rect`.
+        const ENVELOPE_PAD_FACTOR: f32 = 4.0;
 
-        let Some(ref data) = self.osm_data else { return Vec::new(); };
+        if self.osm_data.is_none() { return Vec::new(); }
 
-        // Phase 1: nodes within NODE_TOL.
+        let max_tol = NODE_TOL.max(WAY_TOL);
+        let pad = px(max_tol * ENVELOPE_PAD_FACTOR);
+        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let envelope = AABB::from_corners(
+            [ex1.min(ex2), ey1.min(ey2)],
+            [ex1.max(ex2), ey1.max(ey2)],
+        );
+
+        // Phase 1: nodes within NODE_TOL. Candidates come from the point
+        // R-tree (already built for box-select); refinement reads the
+        // cached mercator position and projects with `mercator_to_screen`
+        // (no trig) instead of `geo_to_screen`.
         let mut node_hits: Vec<HitCandidate> = Vec::new();
-        for node in data.nodes.values() {
-            if let Some((lat, lon)) = validate_coords(node.lat, node.lon) {
-                if !viewport.is_visible(lat, lon) { continue; }
-                let sp = viewport.geo_to_screen(lat, lon);
-                if !is_point_valid(sp) { continue; }
-                let dist = (sp - screen_pt).magnitude() as f32;
-                if dist <= NODE_TOL {
-                    node_hits.push(HitCandidate {
-                        feature: FeatureRef {
-                            layer_name: self.name.clone(),
-                            kind: FeatureKind::Node,
-                            id: node.id,
-                        },
+        for item in self.node_index.locate_in_envelope(envelope) {
+            let id = item.data;
+            let Some(&idx) = self.node_cache.index_by_id.get(&id) else { continue };
+            let (_, mx, my) = self.node_cache.flat[idx];
+            let sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) { continue; }
+            let dist = (sp - screen_pt).magnitude() as f32;
+            if dist <= NODE_TOL {
+                node_hits.push(HitCandidate {
+                    feature: FeatureRef {
+                        layer_name: self.name.clone(),
                         kind: FeatureKind::Node,
-                        dist_px: dist,
-                    });
-                }
+                        id,
+                    },
+                    kind: FeatureKind::Node,
+                    dist_px: dist,
+                });
             }
         }
         if !node_hits.is_empty() {
             return node_hits;
         }
 
-        // Phase 2: ways within WAY_TOL. Compute shortest segment distance per way.
+        // Phase 2: ways within WAY_TOL. Candidates come from the way-bbox
+        // R-tree. Note this uses `locate_in_envelope_intersecting` (not
+        // `locate_in_envelope`, which requires the candidate's bbox to be
+        // fully CONTAINED in the query envelope — the right semantics for
+        // box-select in `hit_test_rect`, but wrong here: a long way's bbox
+        // can be much bigger than our small click-envelope even when the
+        // click lands right on the way). An intersection is guaranteed
+        // whenever the closest point on the way is within `pad` of the
+        // click, since pad >= WAY_TOL. Refinement walks the cached
+        // (already-projected-to-mercator) vertex list for exactly that way.
         let mut way_hits: Vec<HitCandidate> = Vec::new();
-        for way in data.ways.iter() {
-            if way.nodes.len() < 2 { continue; }
-            let mut projected: Vec<Point<Pixels>> = Vec::with_capacity(way.nodes.len());
-            for node_id in &way.nodes {
-                if let Some(n) = data.nodes.get(node_id) {
-                    if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
-                        let sp = viewport.geo_to_screen(lat, lon);
-                        if is_point_valid(sp) {
-                            projected.push(sp);
-                        }
-                    }
-                }
-            }
-            if projected.len() < 2 { continue; }
+        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+            let way_id = item.data;
+            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { continue };
+            let verts = &self.way_vertices[way_idx];
+            if verts.len() < 2 { continue; }
             let mut best = f32::INFINITY;
-            for w in projected.windows(2) {
-                let d = point_to_segment_distance(screen_pt, w[0], w[1]);
-                if d < best { best = d; }
+            let mut prev: Option<Point<Pixels>> = None;
+            for &(_, mx, my) in verts {
+                let sp = viewport.mercator_to_screen(mx, my);
+                if !is_point_valid(sp) { continue; }
+                if let Some(p0) = prev {
+                    let d = point_to_segment_distance(screen_pt, p0, sp);
+                    if d < best { best = d; }
+                }
+                prev = Some(sp);
             }
             if best <= WAY_TOL {
                 way_hits.push(HitCandidate {
                     feature: FeatureRef {
                         layer_name: self.name.clone(),
                         kind: FeatureKind::Way,
-                        id: way.id,
+                        id: way_id,
                     },
                     kind: FeatureKind::Way,
                     dist_px: best,
@@ -1042,5 +1364,208 @@ mod tests {
         layer.clear_drag_preview();
         let still_unchanged = layer.get_osm_data().unwrap();
         assert_eq!(still_unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
+    }
+
+    // -- Segment decimation (`decimate_segments`) --
+
+    #[test]
+    fn decimate_segments_skips_short_interior_but_keeps_endpoints() {
+        // Interior points are within 1px of each other (well under the 1.0
+        // threshold); the last point is far away. Decimation should collapse
+        // the tightly-clustered interior points but the emitted segments
+        // must still start at the true first point and end at the true
+        // last point.
+        let pts = vec![
+            point(px(0.0), px(0.0)),
+            point(px(0.2), px(0.0)),
+            point(px(0.4), px(0.0)),
+            point(px(0.6), px(0.0)),
+            point(px(100.0), px(0.0)),
+        ];
+        let segments = super::decimate_segments(&pts, 1.0);
+        assert_eq!(segments.first().unwrap().0, 0, "first segment must anchor at the true first vertex");
+        assert_eq!(segments.last().unwrap().1, pts.len() - 1, "last segment must end at the true last vertex");
+        assert!(
+            segments.len() < pts.len() - 1,
+            "expected fewer emitted segments than raw vertex count: {:?}",
+            segments
+        );
+
+        // The endpoint screen positions among the emitted segments must
+        // exactly match the undecimated (raw) projected positions — no
+        // rounding/averaging, decimation only skips emitting some segments.
+        let (first_anchor, _) = segments[0];
+        assert_eq!(pts[first_anchor], pts[0]);
+        let (_, last_end) = *segments.last().unwrap();
+        assert_eq!(pts[last_end], pts[pts.len() - 1]);
+    }
+
+    #[test]
+    fn decimate_segments_no_decimation_when_all_far_apart() {
+        let pts = vec![
+            point(px(0.0), px(0.0)),
+            point(px(10.0), px(0.0)),
+            point(px(20.0), px(0.0)),
+        ];
+        let segments = super::decimate_segments(&pts, 1.0);
+        assert_eq!(segments, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn decimate_segments_two_points_always_emits_even_if_close() {
+        let pts = vec![point(px(0.0), px(0.0)), point(px(0.1), px(0.0))];
+        let segments = super::decimate_segments(&pts, 1.0);
+        assert_eq!(segments, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn decimate_segments_empty_or_single_point_emits_nothing() {
+        assert!(super::decimate_segments(&[], 1.0).is_empty());
+        assert!(super::decimate_segments(&[point(px(0.0), px(0.0))], 1.0).is_empty());
+    }
+
+    // -- Incremental `commit_node_moves` cache/index correctness --
+
+    #[test]
+    fn commit_node_moves_updates_both_referencing_ways_and_indices() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        let n3 = OsmNode { id: 3, lat: 40.002, lon: -74.002, tags: empty_tags() };
+        // Both ways reference node 1.
+        let way_a = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags() };
+        let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let old_bbox_a = layer.way_bboxes[0];
+        let old_bbox_b = layer.way_bboxes[1];
+
+        let new_lat = 41.0;
+        let new_lon = -75.0;
+        layer.commit_node_moves(&[(1, new_lat, new_lon)]);
+
+        assert!(layer.is_modified());
+
+        // Both ways' cached bboxes must reflect the new position.
+        assert_ne!(layer.way_bboxes[0], old_bbox_a, "way A's bbox should have changed");
+        assert_ne!(layer.way_bboxes[1], old_bbox_b, "way B's bbox should have changed");
+
+        // Both ways' cached vertex lists must carry node 1's new mercator
+        // position.
+        let (new_mx, new_my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
+        for verts in [&layer.way_vertices[0], &layer.way_vertices[1]] {
+            let &(_, mx, my) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
+            assert!((mx - new_mx).abs() < 1e-6);
+            assert!((my - new_my).abs() < 1e-6);
+        }
+
+        // hit_test at the NEW location finds node 1 (and, via node priority,
+        // stops there — but the way-vertex assertions above already prove
+        // the way geometry moved too).
+        let viewport_new = viewport_centered_on(new_lat, new_lon);
+        let hits_new = layer.hit_test(&viewport_new, point(px(400.0), px(300.0)));
+        assert!(
+            hits_new.iter().any(|h| h.kind == FeatureKind::Node && h.feature.id == 1),
+            "expected node 1 at its new location: {:?}", hits_new
+        );
+
+        // hit_test at the OLD location must NOT find node 1 anymore.
+        let viewport_old = viewport_centered_on(40.0, -74.0);
+        let hits_old = layer.hit_test(&viewport_old, point(px(400.0), px(300.0)));
+        assert!(
+            !hits_old.iter().any(|h| h.feature.id == 1),
+            "node 1 should no longer be hit-testable at its old location: {:?}", hits_old
+        );
+    }
+
+    #[test]
+    fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let new_lat = 50.0;
+        let new_lon = -80.0;
+        layer.commit_node_moves(&[(1, new_lat, new_lon)]);
+
+        let viewport = viewport_centered_on(new_lat, new_lon);
+
+        let point_hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
+        assert!(point_hits.iter().any(|h| h.feature.id == 1), "got {:?}", point_hits);
+
+        let rect = Bounds {
+            origin: point(px(300.0), px(200.0)),
+            size: size(px(200.0), px(200.0)),
+        };
+        let rect_hits = layer.hit_test_rect(&viewport, rect);
+        assert!(
+            rect_hits.iter().any(|f| f.kind == FeatureKind::Node && f.id == 1),
+            "got {:?}", rect_hits
+        );
+    }
+
+    #[test]
+    fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        // n3 is a standalone POI node, not referenced by any way.
+        let n3 = OsmNode { id: 3, lat: 41.0, lon: -75.0, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let data = data_with(vec![n1, n2, n3], vec![way]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let way_vertices_before = layer.way_vertices.clone();
+        let way_bboxes_before = layer.way_bboxes.clone();
+
+        let new_lat = 42.0;
+        let new_lon = -76.0;
+        layer.commit_node_moves(&[(3, new_lat, new_lon)]);
+
+        assert!(layer.is_modified());
+        assert_eq!(layer.way_vertices, way_vertices_before, "unrelated way vertices must be untouched");
+        assert_eq!(layer.way_bboxes, way_bboxes_before, "unrelated way bboxes must be untouched");
+
+        let (mx, my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
+        let idx = *layer.node_cache.index_by_id.get(&3).unwrap();
+        let (_, cached_mx, cached_my) = layer.node_cache.flat[idx];
+        assert!((cached_mx - mx).abs() < 1e-6);
+        assert!((cached_my - my).abs() < 1e-6);
+    }
+
+    // -- Cached style refresh on tag edit --
+
+    #[test]
+    fn set_tag_refreshes_cached_way_style() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let default_style = layer.way_styles[0];
+        layer.set_tag(FeatureKind::Way, 10, "highway", "residential");
+        let updated_style = layer.way_styles[0];
+
+        assert_ne!(
+            default_style, updated_style,
+            "cached way style must be re-resolved after a tag edit, not left stale"
+        );
+    }
+
+    #[test]
+    fn set_tag_refreshes_cached_node_style() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let idx = *layer.node_cache.index_by_id.get(&1).unwrap();
+        let default_style = layer.node_cache.styles[idx];
+        layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+        let updated_style = layer.node_cache.styles[idx];
+
+        assert_ne!(
+            default_style, updated_style,
+            "cached node style must be re-resolved after a tag edit, not left stale"
+        );
     }
 }
