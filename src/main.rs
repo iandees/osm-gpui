@@ -21,8 +21,8 @@ use osm_gpui::script::{self, runner::{AppHandle, Runner}};
 use osm_gpui::capture;
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    description_list::{DescriptionItem, DescriptionList},
     label::Label,
     menu::ContextMenuExt,
 };
@@ -266,6 +266,12 @@ struct MapViewer {
     show_debug_overlay: bool,
     /// Active custom imagery dialog, if open.
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
+    /// Active tag-edit dialog, if open, plus the context needed to apply
+    /// its result.
+    tag_edit_dialog: Option<(gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>, TagEditContext)>,
+    /// A dialog-open request recorded by a row/button click, to be acted on
+    /// during the next `render()` — see `PendingTagEditOpen`'s doc comment.
+    pending_tag_edit_open: Option<PendingTagEditOpen>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
     /// Focus handle for the map area, so it can receive key events (e.g.
@@ -280,6 +286,31 @@ type NodeMoveTargets = Vec<(String, Vec<(i64, f64, f64)>)>;
 
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
 type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f64))>)>;
+
+/// Which features a `TagEditDialog` targets and the row's original text
+/// (used to detect whether the value box was actually touched before
+/// applying — see `compute_tag_edit_entries`). `original_key`/
+/// `original_value` are both empty for the "Add tag" flow.
+struct TagEditContext {
+    features: Vec<osm_gpui::selection::FeatureRef>,
+    original_key: String,
+    original_value: String,
+    is_add: bool,
+}
+
+/// Recorded by a row's double-click or the "Add tag" button; consumed by
+/// `check_for_pending_tag_edit_dialog` (called from `Render::render`) to
+/// actually construct the dialog. This indirection exists so the dialog is
+/// always built from inside a render pass — never directly inside a click
+/// handler — which `TagEditDialog`'s deferred select-all-on-open (Task 4)
+/// depends on.
+struct PendingTagEditOpen {
+    features: Vec<osm_gpui::selection::FeatureRef>,
+    original_key: String,
+    original_value: String,
+    select: osm_gpui::ui::tag_edit_dialog::TagEditField,
+    is_add: bool,
+}
 
 /// A single reversible data mutation, recorded on the global undo stack.
 /// Only one kind exists today (produced by committing a drag-to-move), but
@@ -509,6 +540,8 @@ impl MapViewer {
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
+            tag_edit_dialog: None,
+            pending_tag_edit_open: None,
             side_panel_open: vec![0, 1, 2],
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
@@ -771,6 +804,127 @@ impl MapViewer {
                 }
             }
         }
+    }
+
+    /// Snapshot every currently-selected feature's tags from its owning
+    /// layer, as `(FeatureRef, Vec<(String, String)>)` — the shape
+    /// `compute_tag_edit_entries` expects.
+    fn selected_feature_tag_snapshots(&self) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+        self.selected
+            .iter()
+            .filter_map(|sel| {
+                self.layer_manager
+                    .find_layer(&sel.layer_name)
+                    .and_then(|layer| layer.feature_tags(sel))
+                    .map(|tags| (sel.clone(), tags))
+            })
+            .collect()
+    }
+
+    /// If a row/button click recorded a pending tag-edit-dialog open
+    /// request, construct the dialog now. Called from `Render::render` (see
+    /// Step 6) — never call this, or construct `TagEditDialog` directly,
+    /// from inside a click/action listener: `TagEditDialog`'s deferred
+    /// select-all-on-open (Task 4) only lands correctly when the dialog is
+    /// built during the same draw pass that first paints it, exactly like
+    /// `check_for_dialog_queue` builds `CustomImageryDialog`.
+    fn check_for_pending_tag_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_tag_edit_open.take() else { return };
+        if self.tag_edit_dialog.is_some() {
+            return; // one at a time; drop the request rather than queue it
+        }
+        let PendingTagEditOpen { features, original_key, original_value, select, is_add } = pending;
+        let title = if is_add { "Add tag" } else { "Edit tag" };
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::tag_edit_dialog::TagEditDialog::new(
+                window,
+                cx,
+                title,
+                original_key.clone(),
+                original_value.clone(),
+                select,
+            )
+        });
+        cx.subscribe(&dialog, |this, _entity, event, cx| {
+            use osm_gpui::ui::tag_edit_dialog::DialogEvent;
+            match event {
+                DialogEvent::Cancelled => {
+                    this.tag_edit_dialog = None;
+                    cx.notify();
+                }
+                DialogEvent::Submitted { key, value } => {
+                    this.apply_tag_edit(key, value);
+                    this.tag_edit_dialog = None;
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        self.tag_edit_dialog = Some((
+            dialog,
+            TagEditContext { features, original_key, original_value, is_add },
+        ));
+        cx.notify();
+    }
+
+    /// Apply a submitted tag-edit dialog result: compute the per-feature
+    /// mutations via `compute_tag_edit_entries`, apply them immediately,
+    /// and push one `UndoableAction::SetTags` (skipped entirely if there
+    /// were no actual changes).
+    fn apply_tag_edit(&mut self, key: &str, value: &str) {
+        let Some((_, ctx)) = self.tag_edit_dialog.take() else { return };
+        let snapshots: Vec<_> = self
+            .selected_feature_tag_snapshots()
+            .into_iter()
+            .filter(|(f, _)| ctx.features.contains(f))
+            .collect();
+
+        let entries = osm_gpui::selection::compute_tag_edit_entries(
+            &snapshots,
+            &ctx.original_key,
+            &ctx.original_value,
+            key,
+            value,
+            ctx.is_add,
+        );
+        if entries.is_empty() {
+            return;
+        }
+
+        for (feature, k, _before, after) in &entries {
+            let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue };
+            match after {
+                Some(v) => layer.set_tag(feature.kind, feature.id, k, v),
+                None => layer.remove_tag(feature.kind, feature.id, k),
+            }
+        }
+        self.undo_stack.push(UndoableAction::SetTags { entries });
+    }
+
+    /// Delete `key` from every currently-selected feature that has it,
+    /// applying immediately and pushing one `UndoableAction::SetTags` (no
+    /// dialog involved).
+    fn delete_tag(&mut self, key: &str, cx: &mut Context<Self>) {
+        let entries: Vec<_> = self
+            .selected_feature_tag_snapshots()
+            .into_iter()
+            .filter_map(|(feature, tags)| {
+                tags.into_iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| (feature, key.to_string(), Some(v), None))
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+
+        for (feature, k, _before, _after) in &entries {
+            if let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) {
+                layer.remove_tag(feature.kind, feature.id, k);
+            }
+        }
+        self.undo_stack.push(UndoableAction::SetTags { entries });
+        cx.notify();
     }
 
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1531,8 +1685,13 @@ impl MapViewer {
 
     /// The Tags accordion section: tags aggregated across every selected
     /// feature. A key with one distinct value (among features that have it)
-    /// shows that value; a key with several shows "<N values>".
+    /// shows that value; a key with several shows "<N values>". Double-
+    /// clicking the key or value opens the tag-edit dialog with that field
+    /// pre-selected; the trailing "x" removes the tag immediately. An "Add
+    /// tag" button below the list opens the same dialog with empty fields.
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::ui::tag_edit_dialog::TagEditField;
+
         if self.selected.is_empty() {
             return Label::new("No selection.")
                 .text_color(cx.theme().muted_foreground)
@@ -1551,24 +1710,127 @@ impl MapViewer {
             .collect();
 
         let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
+        let selection = self.selected.clone();
+
+        let mut list = div().flex().flex_col();
 
         if aggregated.is_empty() {
-            return DescriptionList::new()
-                .child(DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()))
-                .into_any_element();
-        }
-
-        DescriptionList::new()
-            .columns(1)
-            .bordered(true)
-            .children(aggregated.into_iter().map(|(k, v)| {
-                let value = match v {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("(no tags)"),
+            );
+        } else {
+            list = list.children(aggregated.into_iter().map(|(k, v)| {
+                let value_text = match v {
                     osm_gpui::selection::TagValue::Single(s) => s,
                     osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
                 };
-                DescriptionItem::new(k).value(Label::new(value).into_any_element())
-            }))
-            .into_any_element()
+
+                let key_for_key_click = k.clone();
+                let value_for_key_click = value_text.clone();
+                let selection_for_key_click = selection.clone();
+
+                let key_for_value_click = k.clone();
+                let value_for_value_click = value_text.clone();
+                let selection_for_value_click = selection.clone();
+
+                let key_for_delete = k.clone();
+
+                div()
+                    .id(SharedString::from(format!("tag-row-{k}")))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .cursor_pointer()
+                            .child(k.clone())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    if ev.click_count == 2 {
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_key_click.clone(),
+                                            original_key: key_for_key_click.clone(),
+                                            original_value: value_for_key_click.clone(),
+                                            select: TagEditField::Key,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .cursor_pointer()
+                            .child(value_text.clone())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    if ev.click_count == 2 {
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_value_click.clone(),
+                                            original_key: key_for_value_click.clone(),
+                                            original_value: value_for_value_click.clone(),
+                                            select: TagEditField::Value,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("tag-delete-{k}")))
+                            .cursor_pointer()
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|this| this.text_color(cx.theme().danger))
+                            .child("x")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                                    this.delete_tag(&key_for_delete, cx);
+                                }),
+                            ),
+                    )
+                    .into_any_element()
+            }));
+        }
+
+        let add_selection = selection.clone();
+        list.child(
+            Button::new("add-tag")
+                .label("Add tag")
+                .primary()
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                        features: add_selection.clone(),
+                        original_key: String::new(),
+                        original_value: String::new(),
+                        select: TagEditField::None,
+                        is_add: true,
+                    });
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
     }
 }
 
@@ -1585,6 +1847,7 @@ impl Render for MapViewer {
         self.check_for_download_requests(cx);
         self.check_for_toggle_debug_overlay(cx);
         self.check_for_dialog_queue(window, cx);
+        self.check_for_pending_tag_edit_dialog(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -1771,6 +2034,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .children(self.custom_imagery_dialog.clone())
+            .children(self.tag_edit_dialog.as_ref().map(|(dialog, _)| dialog.clone()))
     }
 }
 
