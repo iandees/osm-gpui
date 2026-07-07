@@ -1,15 +1,15 @@
 //! The right-hand side panel: Layers, Selection, Tags, and History sections.
 
-use gpui::{div, prelude::*, px, Context, MouseDownEvent};
+use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable,
+    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    description_list::{DescriptionItem, DescriptionList},
     label::Label,
     menu::ContextMenuExt,
 };
 
-use crate::{DeleteLayer, MapViewer, MoveLayer};
+use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
 
 impl MapViewer {
     const SELECTION_ROW_HEIGHT: f32 = 22.0;
@@ -263,9 +263,15 @@ impl MapViewer {
     }
 
     /// The Tags accordion section: tags aggregated across every selected
-    /// feature. A key with one distinct value (among features that have it)
-    /// shows that value; a key with several shows "<N values>".
+    /// feature. A key shows its value only if every selected feature has
+    /// that exact same value (a feature missing the key counts as its own
+    /// distinct state); otherwise it shows "<N values>". Double-
+    /// clicking the key or value opens the tag-edit dialog with that field
+    /// pre-selected; the trailing "x" removes the tag immediately. An "Add
+    /// tag" button below the list opens the same dialog with empty fields.
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::ui::tag_edit_dialog::TagEditField;
+
         if self.selected.is_empty() {
             return Label::new("No selection.")
                 .text_color(cx.theme().muted_foreground)
@@ -284,23 +290,126 @@ impl MapViewer {
             .collect();
 
         let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
+        let selection = self.selected.clone();
+
+        let mut list = div().flex().flex_col();
 
         if aggregated.is_empty() {
-            return DescriptionList::new()
-                .child(DescriptionItem::new("").value(Label::new("(no tags)").into_any_element()))
-                .into_any_element();
-        }
-
-        DescriptionList::new()
-            .columns(1)
-            .bordered(true)
-            .children(aggregated.into_iter().map(|(k, v)| {
-                let value = match v {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("(no tags)"),
+            );
+        } else {
+            list = list.children(aggregated.into_iter().map(|(k, v)| {
+                let value_text = match v {
                     osm_gpui::selection::TagValue::Single(s) => s,
                     osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
                 };
-                DescriptionItem::new(k).value(Label::new(value).into_any_element())
-            }))
-            .into_any_element()
+
+                let key_for_key_click = k.clone();
+                let value_for_key_click = value_text.clone();
+                let selection_for_key_click = selection.clone();
+
+                let key_for_value_click = k.clone();
+                let value_for_value_click = value_text.clone();
+                let selection_for_value_click = selection.clone();
+
+                let key_for_delete = k.clone();
+
+                div()
+                    .id(SharedString::from(format!("tag-row-{k}")))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .cursor_pointer()
+                            .child(k.clone())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    if ev.click_count == 2 {
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_key_click.clone(),
+                                            original_key: key_for_key_click.clone(),
+                                            original_value: value_for_key_click.clone(),
+                                            select: TagEditField::Key,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .cursor_pointer()
+                            .child(value_text.clone())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    if ev.click_count == 2 {
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_value_click.clone(),
+                                            original_key: key_for_value_click.clone(),
+                                            original_value: value_for_value_click.clone(),
+                                            select: TagEditField::Value,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("tag-delete-{k}")))
+                            .cursor_pointer()
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|this| this.text_color(cx.theme().danger))
+                            .child("x")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
+                                    this.delete_tag(&key_for_delete, cx);
+                                }),
+                            ),
+                    )
+                    .into_any_element()
+            }));
+        }
+
+        let add_selection = selection.clone();
+        list.child(
+            Button::new("add-tag")
+                .label("Add tag")
+                .primary()
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                        features: add_selection.clone(),
+                        original_key: String::new(),
+                        original_value: String::new(),
+                        select: TagEditField::None,
+                        is_add: true,
+                    });
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
     }
 }

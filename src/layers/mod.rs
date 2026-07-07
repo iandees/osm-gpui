@@ -102,6 +102,13 @@ pub trait MapLayer: Send + Sync {
     /// Commit a set of `(node_id, new_lat, new_lon)` moves into this layer's
     /// data, rebuilding derived caches once. Default: no-op.
     fn commit_node_moves(&mut self, _moves: &[(i64, f64, f64)]) {}
+
+    /// Set (insert or overwrite) a single tag on a feature this layer owns.
+    /// Default: no-op.
+    fn set_tag(&mut self, _kind: crate::selection::FeatureKind, _id: i64, _key: &str, _value: &str) {}
+
+    /// Remove a single tag key from a feature this layer owns. Default: no-op.
+    fn remove_tag(&mut self, _kind: crate::selection::FeatureKind, _id: i64, _key: &str) {}
 }
 
 /// Manager for all map layers
