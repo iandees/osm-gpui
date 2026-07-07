@@ -81,6 +81,7 @@ enum LayerRequest {
         url_template: String,
         min_zoom: Option<u32>,
         max_zoom: Option<u32>,
+        attribution: Option<String>,
     },
     /// Remove the layer at the given index in the `LayerManager`.
     Delete { index: usize },
@@ -866,7 +867,7 @@ impl MapViewer {
                                 self.layer_manager.add_layer(Box::new(GridLayer::new()));
                             }
                         }
-                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom } => {
+                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
                             // Ensure unique name
                             let mut candidate = name.clone();
                             let mut i = 2;
@@ -880,7 +881,8 @@ impl MapViewer {
                                 self.tile_cache.clone(),
                             )
                             .with_min_zoom(min_zoom)
-                            .with_max_zoom(max_zoom);
+                            .with_max_zoom(max_zoom)
+                            .with_attribution(attribution);
                             self.layer_manager.add_layer(Box::new(layer));
                         }
                     }
@@ -982,6 +984,7 @@ impl MapViewer {
                                     url_template: entry.url_template.clone(),
                                     min_zoom: Some(entry.min_zoom),
                                     max_zoom: Some(entry.max_zoom),
+                                    attribution: None,
                                 });
                             }
                         }

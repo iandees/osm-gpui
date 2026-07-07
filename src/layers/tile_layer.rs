@@ -9,6 +9,10 @@ use crate::tiles::{get_tiles_for_bounds, url_from_template};
 /// The built-in OpenStreetMap Carto tile URL template.
 pub const OSM_CARTO_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
+/// Attribution required for the built-in OpenStreetMap Carto base layer.
+/// This is not sourced from the ELI index, so it's hardcoded here.
+pub const OSM_CARTO_ATTRIBUTION: &str = "© OpenStreetMap contributors";
+
 /// Layer for rendering raster map tiles
 pub struct TileLayer {
     name: String,
@@ -18,6 +22,7 @@ pub struct TileLayer {
     show_boundaries: bool,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
+    attribution: Option<String>,
 }
 
 impl TileLayer {
@@ -27,6 +32,7 @@ impl TileLayer {
             OSM_CARTO_TEMPLATE.to_string(),
             tile_cache,
         )
+        .with_attribution(Some(OSM_CARTO_ATTRIBUTION.to_string()))
     }
 
     pub fn new_with_name(name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
@@ -46,6 +52,7 @@ impl TileLayer {
             show_boundaries: false,
             min_zoom: None,
             max_zoom: None,
+            attribution: None,
         }
     }
 
@@ -56,6 +63,12 @@ impl TileLayer {
 
     pub fn with_max_zoom(mut self, max_zoom: Option<u32>) -> Self {
         self.max_zoom = max_zoom;
+        self
+    }
+
+    /// Set the required source-credit text for this layer's tiles.
+    pub fn with_attribution(mut self, attribution: Option<String>) -> Self {
+        self.attribution = attribution;
         self
     }
 
@@ -111,6 +124,10 @@ impl MapLayer for TileLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn attribution(&self) -> Option<&str> {
+        self.attribution.as_deref()
     }
 
     fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {
