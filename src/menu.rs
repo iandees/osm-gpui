@@ -9,8 +9,9 @@ use osm_gpui::osm::OsmParser;
 use crate::{
     AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto, AddSavedCustomImagery,
     DownloadFromOsm, ImageryLoadState, LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo,
-    ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS, IMAGERY_INDEX, LAYER_REQUESTS,
-    OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA, TOGGLE_DEBUG_OVERLAY,
+    ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS, HAS_UNSAVED_CHANGES, IMAGERY_INDEX,
+    LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA, SHOW_QUIT_CONFIRM,
+    TOGGLE_DEBUG_OVERLAY,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -55,9 +56,22 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
         .detach();
 }
 
-// Define the quit function that is registered with the App
+// Define the quit function that is registered with the App (Cmd+Q / File >
+// Quit). If any layer has unsaved changes, don't quit immediately — instead
+// enqueue a request for `MapViewer::check_for_quit_confirm_dialog` to show a
+// confirmation dialog (this free function only has `&mut App`, not the
+// view's `layer_manager`, so it can't build the dialog directly).
 pub(crate) fn quit(_: &Quit, cx: &mut App) {
-    cx.quit();
+    if !HAS_UNSAVED_CHANGES.load(std::sync::atomic::Ordering::Relaxed) {
+        cx.quit();
+        return;
+    }
+    if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
+        if let Ok(mut q) = queue.lock() {
+            q.push(());
+        }
+    }
+    cx.refresh_windows();
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {

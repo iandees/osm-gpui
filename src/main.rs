@@ -117,6 +117,20 @@ static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
 
 static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
+/// Published once per frame by `MapViewer::render` from
+/// `layer_manager.layers().any(|l| l.is_modified())`. Read by `menu::quit`
+/// (a free function with only `&mut App`, no access to the view's
+/// `layer_manager`) to decide whether Cmd+Q / File > Quit should quit
+/// immediately or show a confirmation dialog first.
+pub(crate) static HAS_UNSAVED_CHANGES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Queue of requests to show the "unsaved changes" quit-confirmation dialog,
+/// pushed by `menu::quit` and drained once per frame by
+/// `MapViewer::check_for_quit_confirm_dialog` — same shape as
+/// `OPEN_CUSTOM_IMAGERY_DIALOG`.
+pub(crate) static SHOW_QUIT_CONFIRM: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
+
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
 
@@ -172,6 +186,8 @@ struct MapViewer {
     show_debug_overlay: bool,
     /// Active custom imagery dialog, if open.
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
+    /// Active "unsaved changes" quit-confirmation dialog, if open.
+    quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     /// Active tag-edit dialog, if open, plus the context needed to apply
     /// its result.
     tag_edit_dialog: Option<(gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>, TagEditContext)>,
@@ -254,6 +270,7 @@ impl MapViewer {
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
+            quit_confirm_dialog: None,
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             side_panel_open: vec![0, 1, 2],
@@ -1000,6 +1017,45 @@ impl MapViewer {
         }
     }
 
+    /// Drain `SHOW_QUIT_CONFIRM` (pushed by `menu::quit` when there are
+    /// unsaved changes) and open the confirmation dialog, mirroring
+    /// `check_for_dialog_queue`'s pattern for `CustomImageryDialog`.
+    fn check_for_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let should_open = if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
+            if let Ok(mut g) = queue.try_lock() {
+                let had_requests = !g.is_empty();
+                g.clear();
+                had_requests && self.quit_confirm_dialog.is_none()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if should_open {
+            let dialog = cx.new(|cx| {
+                osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog::new(window, cx)
+            });
+            cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::quit_confirm_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.quit_confirm_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::ConfirmQuit => {
+                        this.quit_confirm_dialog = None;
+                        cx.quit();
+                    }
+                }
+            })
+            .detach();
+            self.quit_confirm_dialog = Some(dialog);
+            cx.notify();
+        }
+    }
+
     fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
         let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
         let pending = if let Ok(mut guard) = requests.try_lock() {
@@ -1076,7 +1132,15 @@ impl Render for MapViewer {
         self.check_for_toggle_debug_overlay(cx);
         self.check_for_dialog_queue(window, cx);
         self.check_for_pending_tag_edit_dialog(window, cx);
+        self.check_for_quit_confirm_dialog(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
+
+        // Publish current unsaved-changes state for `menu::quit` (a free
+        // function with only `&mut App`) to read.
+        HAS_UNSAVED_CHANGES.store(
+            self.layer_manager.layers().iter().any(|l| l.is_modified()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
@@ -1321,6 +1385,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_redo))
             .children(self.custom_imagery_dialog.clone())
             .children(self.tag_edit_dialog.as_ref().map(|(dialog, _)| dialog.clone()))
+            .children(self.quit_confirm_dialog.clone())
     }
 }
 
@@ -1346,6 +1411,7 @@ fn main() {
     DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     let _ = OPEN_CUSTOM_IMAGERY_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
+    let _ = SHOW_QUIT_CONFIRM.set(Arc::new(Mutex::new(Vec::new())));
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1502,6 +1568,31 @@ fn main() {
                     KeyBinding::new("cmd-shift-z", Redo, None),
                 ]);
                 let view = cx.new(|cx| MapViewer::new(window, cx));
+
+                // Intercept the OS window-close button (traffic-light / titlebar
+                // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
+                // hook: unlike `on_window_closed` below (which only fires *after*
+                // the window is already gone and can't stop anything), this one
+                // can veto the close by returning `false`. If there are unsaved
+                // changes we cancel the close and enqueue a request for
+                // `MapViewer::check_for_quit_confirm_dialog` to show the same
+                // confirmation dialog as Cmd+Q; otherwise we let the close
+                // proceed, which triggers `on_window_closed` -> `cx.quit()` as
+                // before.
+                window.on_window_should_close(cx, |_window, cx| {
+                    if HAS_UNSAVED_CHANGES.load(std::sync::atomic::Ordering::Relaxed) {
+                        if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
+                            if let Ok(mut g) = queue.lock() {
+                                g.push(());
+                            }
+                        }
+                        cx.refresh_windows();
+                        false
+                    } else {
+                        true
+                    }
+                });
+
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             },
         )
