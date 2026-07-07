@@ -132,19 +132,9 @@ fn compute_effective_tile_zoom(
 /// gap can ever appear between neighbors, regardless of where their
 /// (necessarily continuous, sub-pixel) edges happen to fall. Since adjacent
 /// map tiles show continuous, matching imagery at their shared edge, a
-/// small overlap of nearly-identical content is imperceptible — unlike a
+/// 1px overlap of nearly-identical content is imperceptible — unlike a
 /// gap, which exposes the dark fallback background behind the tiles.
-///
-/// Expressed as a *fraction of the tile's current on-screen size* rather
-/// than a fixed pixel count: a fixed overlap shrinks relative to the tile
-/// the more it's magnified (e.g. overzoomed well past its native size), so
-/// a margin that's comfortable at native zoom can become too thin to mask
-/// a seam once the tile is stretched several times larger.
-const TILE_OVERLAP_FRACTION: f32 = 0.015;
-
-/// Floor for the overlap in actual screen pixels, so small/native-size
-/// tiles still get a comfortable minimum margin.
-const TILE_OVERLAP_MIN_PX: f32 = 1.0;
+const TILE_OVERLAP_PX: f32 = 1.0;
 
 /// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
 /// directly from its XYZ grid index (no trig — the XYZ scheme is a
@@ -169,31 +159,22 @@ fn tile_mercator_bounds(tile: &TileCoord) -> (f64, f64, f64, f64) {
 /// exact lockstep as the viewport pans or zooms, with no per-tile or
 /// per-frame quantization to desync.
 ///
-/// The box is then grown by an overlap split evenly on *all four* sides
-/// (not just grown rightward/downward), so it overlaps every neighbor —
-/// including diagonally, at the corner where four tiles meet. Growing
-/// one-sided only would let a tile overlap its right/bottom neighbor but
-/// not its left/top one, leaving the shared corner of a 2×2 tile block
-/// uncovered from every direction — visible as a faint cross where the
-/// dark fallback background shows through at that one point.
+/// The box is then grown by `TILE_OVERLAP_PX` split evenly on *all four*
+/// sides (not just grown rightward/downward), so it overlaps every
+/// neighbor — including diagonally, at the corner where four tiles meet.
+/// Growing one-sided only would let a tile overlap its right/bottom
+/// neighbor but not its left/top one, leaving the shared corner of a 2×2
+/// tile block uncovered from every direction — visible as a faint cross
+/// where the dark fallback background shows through at that one point.
 fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
     let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(tile);
     let top_left = viewport.mercator_to_screen(min_x, max_y);
     let bottom_right = viewport.mercator_to_screen(max_x, min_y);
 
-    let raw_width = (bottom_right.x - top_left.x).abs().as_f32();
-    let raw_height = (bottom_right.y - top_left.y).abs().as_f32();
-    let overlap_x = (raw_width * TILE_OVERLAP_FRACTION).max(TILE_OVERLAP_MIN_PX);
-    let overlap_y = (raw_height * TILE_OVERLAP_FRACTION).max(TILE_OVERLAP_MIN_PX);
-
-    let width = px(raw_width + overlap_x);
-    let height = px(raw_height + overlap_y);
-    (
-        top_left.x - px(overlap_x / 2.0),
-        top_left.y - px(overlap_y / 2.0),
-        width,
-        height,
-    )
+    let half_overlap = px(TILE_OVERLAP_PX / 2.0);
+    let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
+    let height = (bottom_right.y - top_left.y).abs() + px(TILE_OVERLAP_PX);
+    (top_left.x - half_overlap, top_left.y - half_overlap, width, height)
 }
 
 impl MapLayer for TileLayer {
@@ -395,7 +376,7 @@ impl MapLayer for TileLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect};
+    use super::{compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect, TILE_OVERLAP_PX};
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
     use gpui::{px, size};
@@ -470,12 +451,11 @@ mod tests {
             x_a + width_a,
             x_b
         );
-        // ...and the overlap shouldn't be a large fraction of the tile —
-        // a generous upper bound guarding against a real position bug,
-        // not a tight check on the exact (now size-proportional) margin.
+        // ...and the overlap shouldn't be more than the deliberate margin
+        // plus a small tolerance for floating point error.
         assert!(
-            (x_a + width_a).as_f32() - x_b.as_f32() <= width_a.as_f32() * 0.05,
-            "overlap is larger than expected — likely a real position bug"
+            (x_a + width_a).as_f32() - x_b.as_f32() <= TILE_OVERLAP_PX + 0.01,
+            "overlap is larger than the deliberate margin — likely a real position bug"
         );
     }
 
