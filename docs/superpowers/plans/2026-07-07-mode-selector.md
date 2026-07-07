@@ -570,26 +570,14 @@ git commit -m "Add extend_way/insert_node_into_way/remove_node_from_way + MapLay
 
 **Interfaces:**
 - Consumes: `OsmLayer`/`MapLayer` methods from Task 1 (`add_node`, `add_way`, `extend_way`, `insert_node_into_way`, `remove_node`, `remove_way`, `remove_node_from_way`), via `LayerManager::find_layer_mut` (`src/layers/mod.rs:205`).
-- Produces (used by Tasks 6, 7, 8): 5 new `UndoableAction` variants below, plus their `apply_undo_action` match arms — later tasks push these via `self.undo_stack.push(UndoableAction::X { .. })` exactly like existing `MoveNodes`/`SetTags` pushes.
+- **Note (discovered after Task 1 landed):** PR #61 (already on `main`, merged concurrently with this plan's brainstorming) added `OsmLayer::create_node`/`delete_feature`/`restore_feature` plus existing `UndoableAction::CreateNode`/`DeleteFeature` variants and a Cmd+Click "create node" gesture (`create_node_at_screen_point`/`create_node_on_target_layer` in `src/main.rs`), explicitly documented as a stopgap meant to be replaced by a real Add mode. Per product decision, Add mode **retires** that Cmd+Click gesture (Task 6 removes it) and **reuses** the existing `UndoableAction::CreateNode` variant for its first-click lone-node placement, instead of adding a new `PlaceNode` variant — avoiding a duplicate undo action for the same underlying `create_node` mutation. This task therefore adds only 4 new variants, not 5.
+- Produces (used by Tasks 6, 7, 8): 4 new `UndoableAction` variants below, plus their `apply_undo_action` match arms — later tasks push these via `self.undo_stack.push(UndoableAction::X { .. })` exactly like existing `MoveNodes`/`SetTags`/`CreateNode` pushes.
 
 - [ ] **Step 1: Write failing undo-stack tests**
 
 Add to `src/undo.rs`'s `#[cfg(test)] mod undo_stack_tests`:
 
 ```rust
-    #[test]
-    fn place_node_description_and_round_trip() {
-        let action = UndoableAction::PlaceNode {
-            layer_name: "L".to_string(), node_id: -1, lat: 40.0, lon: -74.0,
-        };
-        assert_eq!(action.description(), "Placed 1 node");
-
-        let mut stack = UndoStack::default();
-        stack.push(action);
-        let undone = stack.undo().unwrap();
-        assert_eq!(undone.description(), "Placed 1 node");
-    }
-
     #[test]
     fn create_building_description() {
         let action = UndoableAction::CreateBuilding {
@@ -609,22 +597,14 @@ Add to `src/undo.rs`'s `#[cfg(test)] mod undo_stack_tests`:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test --lib undo_stack_tests::place_node_description_and_round_trip`
+Run: `cargo test --lib undo_stack_tests::create_building_description`
 Expected: FAIL to compile — variants don't exist.
 
-- [ ] **Step 3: Add the 5 variants + `description()` arms**
+- [ ] **Step 3: Add the 4 variants + `description()` arms**
 
-In `src/undo.rs`, extend the `UndoableAction` enum:
+In `src/undo.rs`, **add** 4 new variants to the existing `UndoableAction` enum — do NOT touch the existing `MoveNodes`/`SetTags`/`CreateNode`/`DeleteFeature` variants, which stay exactly as they are:
 
 ```rust
-#[derive(Clone)]
-pub(crate) enum UndoableAction {
-    MoveNodes { per_layer: NodeMoveUndoEntries },
-    SetTags {
-        entries: Vec<(osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>)>,
-    },
-    /// A single lone node placed by Add mode's first click. Undo removes it.
-    PlaceNode { layer_name: String, node_id: i64, lat: f64, lon: f64 },
     /// Add mode's 2nd+ click: a new node appended to a way (creating the
     /// way first if `way_created`). Undo removes the node from the way
     /// (and deletes the way too if `way_created`), then deletes the node.
@@ -642,10 +622,9 @@ pub(crate) enum UndoableAction {
 }
 ```
 
-Extend `description()`:
+Extend `description()` (add these arms; leave the existing `CreateNode`/`DeleteFeature`/etc. arms untouched):
 
 ```rust
-            UndoableAction::PlaceNode { .. } => "Placed 1 node".to_string(),
             UndoableAction::ExtendWay { .. } => "Extended a way".to_string(),
             UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
             UndoableAction::ExtrudeWay { .. } => "Extruded a building".to_string(),
@@ -659,21 +638,9 @@ Expected: PASS
 
 - [ ] **Step 5: Wire `apply_undo_action` in `src/main.rs`**
 
-In `apply_undo_action` (`src/main.rs:524-551`), add match arms. Redo (`forward = true`) replays the same creation; undo (`forward = false`) deletes what was created. Since redo must recreate with the *same* id (not a fresh placeholder), redo re-inserts directly rather than calling `add_node`/`add_way` again (which would hand out a new, different id):
+In `apply_undo_action` (`src/main.rs:524-551`), add match arms — the existing `MoveNodes`/`SetTags`/`CreateNode`/`DeleteFeature` arms stay as-is (Add mode's lone-node placement in Task 6 reuses `CreateNode`, whose arm already exists). Redo (`forward = true`) replays the same creation; undo (`forward = false`) deletes what was created. Since redo must recreate with the *same* id (not a fresh placeholder), redo re-inserts directly rather than calling `add_node`/`add_way` again (which would hand out a new, different id):
 
 ```rust
-            UndoableAction::PlaceNode { layer_name, node_id, lat, lon } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
-                if forward {
-                    // Redo: re-create the node (id is only correct if this
-                    // is the very next placeholder id the layer would hand
-                    // out — true here since nothing else can consume ids
-                    // between an undo and its redo within one session).
-                    layer.add_node(*lat, *lon);
-                } else {
-                    layer.remove_node(*node_id);
-                }
-            }
             UndoableAction::ExtendWay { layer_name, way_id, node_id, lat, lon, way_created } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
                 if forward {
@@ -737,7 +704,7 @@ Expected: builds clean (unused-variable warnings, if any, resolved by prefixing 
 
 ```bash
 git add src/undo.rs src/main.rs
-git commit -m "Add PlaceNode/ExtendWay/CreateBuilding/ExtrudeWay/InsertNodeIntoWay undo actions"
+git commit -m "Add ExtendWay/CreateBuilding/ExtrudeWay/InsertNodeIntoWay undo actions"
 ```
 
 ---
@@ -1201,11 +1168,16 @@ git commit -m "Add click-to-activate layer with persistent highlight"
 ### Task 6: Add mode interaction
 
 **Files:**
-- Modify: `src/main.rs` (`MapViewer` struct, `handle_map_click`/`handle_mouse_up`/key-down handler, `render()`)
+- Modify: `src/main.rs` (`MapViewer` struct, `handle_map_click`/`handle_mouse_up`/key-down handler, `render()`, and removal of the pre-existing Cmd+Click "create node" gesture from PR #61)
 
 **Interfaces:**
-- Consumes: `EditMode`/`active_layer` (Task 4/5), `OsmLayer::add_node`/`add_way`/`extend_way` (Task 1), `UndoableAction::PlaceNode`/`ExtendWay` (Task 2).
+- Consumes: `EditMode`/`active_layer` (Task 4/5), `OsmLayer::add_node`/`add_way`/`extend_way` (Task 1), `UndoableAction::CreateNode` (pre-existing, from PR #61)/`ExtendWay` (Task 2).
 - Produces (used by nothing later — Add mode is self-contained): none.
+- **This task also removes** the pre-existing Cmd+Click "create node" gesture (`create_node_at_screen_point`, `create_node_on_target_layer`, and the Cmd+Click detection in the map area's mouse-down handling) — see Step 0 below. Add mode fully replaces it per product decision; `OsmLayer::create_node`/`delete_feature`/`restore_feature` themselves are untouched (Task 1's `add_node` already delegates to `create_node`, and `delete_feature` is an unrelated, still-needed feature — only the Cmd+Click *trigger* and its two call-site functions go away).
+
+- [ ] **Step 0: Remove the Cmd+Click create-node gesture**
+
+In `src/main.rs`, delete the `create_node_at_screen_point` and `create_node_on_target_layer` methods (find them via `grep -n "fn create_node_at_screen_point\|fn create_node_on_target_layer" src/main.rs` — they live near `delete_selected_features`), and remove whatever Cmd+Click detection in the map area's `on_mouse_down`/key-modifier handling currently calls `create_node_at_screen_point` (search for its call site with `grep -n "create_node_at_screen_point" src/main.rs`). Leave `delete_selected_features`, `UndoableAction::CreateNode`/`DeleteFeature`, and `OsmLayer::create_node`/`delete_feature`/`restore_feature` untouched — only the Cmd+Click trigger path is removed. Run `cargo build` after this step alone to confirm nothing else referenced the removed functions before proceeding to Step 1.
 
 - [ ] **Step 1: Add `AddProgress` struct and `MapViewer` field**
 
@@ -1292,22 +1264,38 @@ Update `on_set_mode` (Task 4, Step 3):
             }
         }
 
-        let Some(layer) = self.layer_manager.find_layer_mut(&layer_name) else { return };
-        let new_id = layer.add_node(lat, lon);
-        self.undo_stack.push(UndoableAction::PlaceNode {
-            layer_name: layer_name.clone(), node_id: new_id, lat, lon,
-        });
-
+        // Note: `find_layer_mut` is re-called in each arm below (rather than
+        // binding `layer` once above the match) so its mutable borrow ends
+        // before the arm needs `&mut self` again for `self.add_progress`/
+        // `self.add_extend_or_start_way`/`self.undo_stack` — binding it once
+        // outside the match would keep the borrow alive across those calls
+        // and fail to compile.
         match self.add_progress.take() {
             None => {
+                // First click of a fresh continuation: a lone node, no way
+                // yet. Reuses the pre-existing `CreateNode` undo action
+                // (same one the retired Cmd+Click gesture used to push) —
+                // this is the same underlying mutation, just triggered by
+                // Add mode instead.
+                let Some(layer) = self.layer_manager.find_layer_mut(&layer_name) else { return };
+                let new_id = layer.add_node(lat, lon);
+                self.undo_stack.push(UndoableAction::CreateNode {
+                    layer: layer_name.clone(), id: new_id, lat, lon,
+                });
                 self.add_progress = Some(AddProgress { way_id: None, last_node_id: new_id });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_name, kind: osm_gpui::selection::FeatureKind::Node, id: new_id,
                 }];
             }
             Some(progress) => {
+                // 2nd+ click: create the node and fold it into the way in
+                // one step — `add_extend_or_start_way` pushes the single
+                // `ExtendWay` undo entry that covers both the node creation
+                // and the way mutation (one click = one undo step).
+                let Some(layer) = self.layer_manager.find_layer_mut(&layer_name) else { return };
+                let new_id = layer.add_node(lat, lon);
+                self.add_progress = Some(progress);
                 let way_id = self.add_extend_or_start_way(&layer_name, new_id, lat, lon, /*existing=*/false);
-                let _ = progress;
                 self.add_progress = Some(AddProgress { way_id: Some(way_id), last_node_id: new_id });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_name, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
