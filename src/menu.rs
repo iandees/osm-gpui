@@ -86,8 +86,8 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
     let settings_window = cx.open_window(
         WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                origin: point(px(200.0), px(200.0)),
-                size: size(px(600.0), px(500.0)),
+                origin: point(px(150.0), px(150.0)),
+                size: size(px(850.0), px(600.0)),
             })),
             titlebar: Some(gpui::TitlebarOptions {
                 title: Some("Settings".into()),
