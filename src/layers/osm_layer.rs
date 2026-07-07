@@ -177,6 +177,38 @@ fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
     }
 }
 
+/// Project one way's member nodes into mercator-space vertices (paired with
+/// their node ids, so callers can match against an active `drag_preview`
+/// set) and compute its bbox, both from `node_cache` in a single pass. Node
+/// ids not present in `node_cache` (invalid coords, or a currently-deleted
+/// node) are skipped, same as `compute_way_tables` always did. Shared by
+/// `compute_way_tables` (full rebuild), `commit_node_moves` (per-touched-way
+/// patch), and `restore_way` (single restored way) so the projection math
+/// lives in exactly one place.
+fn project_way_vertices(way: &OsmWay, node_cache: &NodeCache) -> (Vec<(i64, f64, f64)>, Option<WayBbox>) {
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut verts = Vec::with_capacity(way.nodes.len());
+    for nid in &way.nodes {
+        if let Some(&idx) = node_cache.index_by_id.get(nid) {
+            let (_, mx, my) = node_cache.flat[idx];
+            if mx < min_x { min_x = mx; }
+            if mx > max_x { max_x = mx; }
+            if my < min_y { min_y = my; }
+            if my > max_y { max_y = my; }
+            verts.push((*nid, mx, my));
+        }
+    }
+    let bbox = if verts.is_empty() {
+        None
+    } else {
+        Some(WayBbox { min_x, max_x, min_y, max_y })
+    };
+    (verts, bbox)
+}
+
 /// Build per-way bboxes, pre-projected vertex lists, and resolved styles in
 /// a single pass so neither the bbox pass nor the render path has to walk
 /// the node HashMap (or the stylesheet) per vertex/way.
@@ -190,31 +222,45 @@ fn compute_way_tables(
     let mut vertices = Vec::with_capacity(data.ways.len());
     let mut styles = Vec::with_capacity(data.ways.len());
     for way in sorted_ways(data) {
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        let mut verts = Vec::with_capacity(way.nodes.len());
-        for nid in &way.nodes {
-            if let Some(&idx) = node_cache.index_by_id.get(nid) {
-                let (_, mx, my) = node_cache.flat[idx];
-                if mx < min_x { min_x = mx; }
-                if mx > max_x { max_x = mx; }
-                if my < min_y { min_y = my; }
-                if my > max_y { max_y = my; }
-                verts.push((*nid, mx, my));
-            }
-        }
-        if verts.is_empty() {
-            bboxes.push(None);
-        } else {
-            bboxes.push(Some(WayBbox { min_x, max_x, min_y, max_y }));
-        }
+        let (verts, bbox) = project_way_vertices(way, node_cache);
         ids.push(way.id);
+        bboxes.push(bbox);
         vertices.push(verts);
         styles.push(stylesheet.way_style(&way.tags));
     }
     (ids, bboxes, vertices, styles)
+}
+
+/// Recompute and return the resolved style for a single already-mutated
+/// feature's tags, for the caller to store into the appropriate cache slot.
+/// Shared by `set_tag`/`remove_tag` (identical "look up which cache array
+/// entry this feature's style lives at" dispatch, previously duplicated).
+/// Free function (not a method) so it can be called while the caller still
+/// holds a live `&mut OsmData` borrowed out of `self.osm_data` via
+/// `Arc::make_mut` — a `&mut self` method call wouldn't type-check there.
+fn apply_style_refresh(
+    kind: FeatureKind,
+    id: i64,
+    data: &OsmData,
+    node_cache: &mut NodeCache,
+    way_id_to_index: &HashMap<i64, usize>,
+    way_styles: &mut [WayStyle],
+    stylesheet: &Stylesheet,
+) {
+    match kind {
+        FeatureKind::Node => {
+            let Some(node) = data.nodes.get(&id) else { return; };
+            if let Some(&idx) = node_cache.index_by_id.get(&id) {
+                node_cache.styles[idx] = stylesheet.node_style(&node.tags);
+            }
+        }
+        FeatureKind::Way => {
+            let Some(way) = data.ways.get(&id) else { return; };
+            if let Some(&idx) = way_id_to_index.get(&id) {
+                way_styles[idx] = stylesheet.way_style(&way.tags);
+            }
+        }
+    }
 }
 
 /// Return every way in `data.ways` sorted by id. `OsmData.ways` is a
@@ -575,18 +621,29 @@ impl OsmLayer {
     ///   `bulk_load`.
     /// - `layer_bbox`, extended conservatively (never shrinks).
     ///
-    /// A full `OsmData` clone is still unavoidable here without deeper
-    /// restructuring, but the expensive part this replaces is the
+    /// Mutates `osm_data` via `Arc::make_mut` — in place, with no dataset
+    /// clone at all, as long as this is the only live `Arc<OsmData>`
+    /// reference (true for every production call path: nothing outside
+    /// tests holds a second clone of the layer's `Arc<OsmData>` across an
+    /// edit; see `get_osm_data`'s doc comment). If some other clone *is*
+    /// alive (e.g. a test snapshot taken before this call), `make_mut`
+    /// transparently falls back to cloning once, preserving the old
+    /// snapshot-isolation semantics that the previous always-clone code
+    /// gave by construction.
+    ///
+    /// The expensive part this whole function replaces was always the
     /// *derived-cache rebuild* (rebuilding every way's vertex/bbox table and
-    /// bulk-loading both R-trees from scratch), not the clone itself.
+    /// bulk-loading both R-trees from scratch), not the `OsmData` clone —
+    /// that rebuild is still avoided here by patching only the touched
+    /// nodes/ways.
     ///
     /// No-op if this layer has no data or `moves` is empty.
     pub fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
         if moves.is_empty() {
             return;
         }
-        let Some(current) = self.osm_data.clone() else { return; };
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return; };
+        let data = Arc::make_mut(arc);
 
         let mut moved_ids: Vec<i64> = Vec::with_capacity(moves.len());
         for &(id, lat, lon) in moves {
@@ -599,7 +656,6 @@ impl OsmLayer {
         self.modified = true;
         if moved_ids.is_empty() {
             // None of the moved ids were actually present; nothing to patch.
-            self.osm_data = Some(Arc::new(data));
             return;
         }
 
@@ -677,26 +733,7 @@ impl OsmLayer {
                 ));
             }
 
-            let mut min_x = f64::INFINITY;
-            let mut max_x = f64::NEG_INFINITY;
-            let mut min_y = f64::INFINITY;
-            let mut max_y = f64::NEG_INFINITY;
-            let mut verts = Vec::with_capacity(way.nodes.len());
-            for nid in &way.nodes {
-                if let Some(&idx) = self.node_cache.index_by_id.get(nid) {
-                    let (_, mx, my) = self.node_cache.flat[idx];
-                    if mx < min_x { min_x = mx; }
-                    if mx > max_x { max_x = mx; }
-                    if my < min_y { min_y = my; }
-                    if my > max_y { max_y = my; }
-                    verts.push((*nid, mx, my));
-                }
-            }
-            let new_bbox = if verts.is_empty() {
-                None
-            } else {
-                Some(WayBbox { min_x, max_x, min_y, max_y })
-            };
+            let (verts, new_bbox) = project_way_vertices(way, &self.node_cache);
             if let Some(b) = new_bbox {
                 self.way_index.insert(GeomWithData::new(
                     Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
@@ -711,8 +748,6 @@ impl OsmLayer {
             self.way_bboxes[way_idx] = new_bbox;
             self.way_styles[way_idx] = self.stylesheet.way_style(&way.tags);
         }
-
-        self.osm_data = Some(Arc::new(data));
     }
 
     /// Set (insert or overwrite) a single tag on one node or way this layer
@@ -723,8 +758,8 @@ impl OsmLayer {
     /// resolved style for the affected feature, since that's tag-derived.
     /// No-op if the feature isn't found.
     pub fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
-        let Some(current) = self.osm_data.clone() else { return; };
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return; };
+        let data = Arc::make_mut(arc);
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
             FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
@@ -732,8 +767,7 @@ impl OsmLayer {
         let Some(tags) = tags else { return; };
         tags.insert(key.to_string(), value.to_string());
         self.modified = true;
-        self.refresh_cached_style(kind, id, &data);
-        self.osm_data = Some(Arc::new(data));
+        apply_style_refresh(kind, id, data, &mut self.node_cache, &self.way_id_to_index, &mut self.way_styles, &self.stylesheet);
     }
 
     /// Remove a single tag key from one node or way this layer owns. Marks
@@ -741,8 +775,8 @@ impl OsmLayer {
     /// `set_tag`. Also refreshes the cached resolved style, same as
     /// `set_tag`. No-op if the feature isn't found.
     pub fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
-        let Some(current) = self.osm_data.clone() else { return; };
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return; };
+        let data = Arc::make_mut(arc);
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
             FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
@@ -750,27 +784,7 @@ impl OsmLayer {
         let Some(tags) = tags else { return; };
         tags.remove(key);
         self.modified = true;
-        self.refresh_cached_style(kind, id, &data);
-        self.osm_data = Some(Arc::new(data));
-    }
-
-    /// Recompute and store the cached resolved style for a single feature
-    /// after its tags changed. `data` must already reflect the new tags.
-    fn refresh_cached_style(&mut self, kind: FeatureKind, id: i64, data: &OsmData) {
-        match kind {
-            FeatureKind::Node => {
-                let Some(node) = data.nodes.get(&id) else { return; };
-                if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
-                    self.node_cache.styles[idx] = self.stylesheet.node_style(&node.tags);
-                }
-            }
-            FeatureKind::Way => {
-                let Some(way) = data.ways.get(&id) else { return; };
-                if let Some(&idx) = self.way_id_to_index.get(&id) {
-                    self.way_styles[idx] = self.stylesheet.way_style(&way.tags);
-                }
-            }
-        }
+        apply_style_refresh(kind, id, data, &mut self.node_cache, &self.way_id_to_index, &mut self.way_styles, &self.stylesheet);
     }
 
     /// Create a new, tag-less node at `(lat, lon)`. If `id` is `None`, a
@@ -810,8 +824,8 @@ impl OsmLayer {
     /// from a redo). Marks the layer modified. No-op if this layer has no
     /// data loaded.
     fn insert_node(&mut self, id: i64, lat: f64, lon: f64, tags: HashMap<String, String>) {
-        let Some(current) = self.osm_data.clone() else { return; };
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return; };
+        let data = Arc::make_mut(arc);
         let node = OsmNode { id, lat, lon, version: 0, tags };
         data.nodes.insert(id, node.clone());
 
@@ -838,7 +852,6 @@ impl OsmLayer {
             self.next_new_id = id - 1;
         }
         self.modified = true;
-        self.osm_data = Some(Arc::new(data));
     }
 
     /// Delete a node or way this layer owns. Dispatches to `delete_node`/
@@ -869,8 +882,8 @@ impl OsmLayer {
         if self.node_to_ways.get(&id).is_some_and(|ways| !ways.is_empty()) {
             return None;
         }
-        let Some(current) = self.osm_data.clone() else { return None; };
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return None; };
+        let data = Arc::make_mut(arc);
         let node = data.nodes.remove(&id)?;
 
         if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
@@ -892,7 +905,6 @@ impl OsmLayer {
             way_nodes: Vec::new(),
             node_lat_lon: Some((node.lat, node.lon)),
         };
-        self.osm_data = Some(Arc::new(data));
         Some(snapshot)
     }
 
@@ -908,9 +920,9 @@ impl OsmLayer {
     /// itself is a `HashMap` and needs no shifting). Marks the layer modified.
     /// `None` if the way isn't found.
     fn delete_way(&mut self, id: i64) -> Option<DeletedFeatureSnapshot> {
-        let Some(current) = self.osm_data.clone() else { return None; };
-        let mut data = (*current).clone();
         let way_idx = *self.way_id_to_index.get(&id)?;
+        let Some(arc) = self.osm_data.as_mut() else { return None; };
+        let data = Arc::make_mut(arc);
         let way = data.ways.remove(&id)?;
 
         if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
@@ -943,7 +955,6 @@ impl OsmLayer {
             way_nodes: way.nodes,
             node_lat_lon: None,
         };
-        self.osm_data = Some(Arc::new(data));
         Some(snapshot)
     }
 
@@ -973,11 +984,11 @@ impl OsmLayer {
     /// as `compute_way_tables` skipping unresolvable node ids), and adds this
     /// way's fresh index to each member node's `node_to_ways` entry.
     fn restore_way(&mut self, snapshot: DeletedFeatureSnapshot) {
-        let Some(current) = self.osm_data.clone() else { return; };
         if self.way_id_to_index.contains_key(&snapshot.id) {
             return;
         }
-        let mut data = (*current).clone();
+        let Some(arc) = self.osm_data.as_mut() else { return; };
+        let data = Arc::make_mut(arc);
         let way = OsmWay {
             id: snapshot.id,
             nodes: snapshot.way_nodes,
@@ -985,26 +996,7 @@ impl OsmLayer {
             tags: snapshot.tags.into_iter().collect(),
         };
 
-        let mut min_x = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        let mut verts = Vec::with_capacity(way.nodes.len());
-        for nid in &way.nodes {
-            if let Some(&idx) = self.node_cache.index_by_id.get(nid) {
-                let (_, mx, my) = self.node_cache.flat[idx];
-                if mx < min_x { min_x = mx; }
-                if mx > max_x { max_x = mx; }
-                if my < min_y { min_y = my; }
-                if my > max_y { max_y = my; }
-                verts.push((*nid, mx, my));
-            }
-        }
-        let bbox = if verts.is_empty() {
-            None
-        } else {
-            Some(WayBbox { min_x, max_x, min_y, max_y })
-        };
+        let (verts, bbox) = project_way_vertices(&way, &self.node_cache);
         if let Some(b) = bbox {
             self.way_index.insert(GeomWithData::new(
                 Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
@@ -1027,10 +1019,19 @@ impl OsmLayer {
         self.way_styles.push(self.stylesheet.way_style(&way.tags));
         data.ways.insert(way.id, way);
         self.modified = true;
-        self.osm_data = Some(Arc::new(data));
     }
 
-    /// Get the OSM data from this layer
+    /// Get the OSM data from this layer, as a snapshot `Arc`.
+    ///
+    /// The returned `Arc<OsmData>` is a stable snapshot: layer edits
+    /// (`commit_node_moves`, `set_tag`, `delete_feature`, ...) go through
+    /// `Arc::make_mut`, which clones the dataset once if — and only if — a
+    /// snapshot like this one is still alive, so holders always keep seeing
+    /// the pre-edit state, never a mutation under their feet. Conversely,
+    /// while nobody holds a snapshot (the normal in-app case: no production
+    /// code path currently retains one across an edit — only tests do),
+    /// edits mutate in place with no dataset clone at all. Keeping
+    /// snapshots short-lived is therefore also what keeps edits cheap.
     pub fn get_osm_data(&self) -> Option<Arc<OsmData>> {
         self.osm_data.clone()
     }
@@ -1077,6 +1078,19 @@ impl OsmLayer {
             self.layer_bbox = compute_layer_bbox(&self.node_cache);
             self.node_index = build_node_index(&self.node_cache);
             self.way_index = build_way_index(&self.way_bboxes, &sorted_ways(&data));
+        }
+    }
+
+    /// The screen-space offset to apply to `node_id`'s projected position
+    /// this frame, if it's part of an active `drag_preview` — zero
+    /// otherwise. Shared by every render/highlight path that projects node
+    /// positions (`render_canvas`'s way and node passes, `render_highlight`'s
+    /// node and way cases), which previously each repeated the same
+    /// "`drag_preview` set-membership + offset" check inline.
+    fn drag_preview_offset(&self, node_id: i64) -> Point<Pixels> {
+        match &self.drag_preview {
+            Some((ids, delta)) if ids.contains(&node_id) => *delta,
+            _ => Point::default(),
         }
     }
 }
@@ -1210,11 +1224,7 @@ impl MapLayer for OsmLayer {
             for &(node_id, mx, my) in verts {
                 let mut sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) { continue; }
-                if let Some((ref ids, delta)) = self.drag_preview {
-                    if ids.contains(&node_id) {
-                        sp += delta;
-                    }
-                }
+                sp += self.drag_preview_offset(node_id);
                 scratch_pts.push(point(sp.x + origin_x, sp.y + origin_y));
             }
             if scratch_pts.len() < 2 {
@@ -1260,11 +1270,7 @@ impl MapLayer for OsmLayer {
             }
             let mut sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) { continue; }
-            if let Some((ref ids, delta)) = self.drag_preview {
-                if ids.contains(&id) {
-                    sp += delta;
-                }
-            }
+            sp += self.drag_preview_offset(id);
             let style = self.node_cache.styles[idx];
             let half = px(style.size / 2.0);
             let quad_bounds = Bounds {
@@ -1500,11 +1506,7 @@ impl EditableLayer for OsmLayer {
                 let Some((lat, lon)) = validate_coords(n.lat, n.lon) else { return; };
                 let mut sp = viewport.geo_to_screen(lat, lon);
                 if !is_point_valid(sp) { return; }
-                if let Some((ref ids, delta)) = self.drag_preview {
-                    if ids.contains(&feature.id) {
-                        sp += delta;
-                    }
-                }
+                sp += self.drag_preview_offset(feature.id);
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let ring_size = node_style.size * 2.0;
                 let half = px(ring_size / 2.0);
@@ -1534,11 +1536,7 @@ impl EditableLayer for OsmLayer {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
                             let mut sp = viewport.geo_to_screen(lat, lon);
                             if is_point_valid(sp) {
-                                if let Some((ref ids, delta)) = self.drag_preview {
-                                    if ids.contains(node_id) {
-                                        sp += delta;
-                                    }
-                                }
+                                sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
                             }
                         }
@@ -1837,6 +1835,44 @@ mod tests {
         layer.clear_drag_preview();
         let still_unchanged = layer.get_osm_data().unwrap();
         assert_eq!(still_unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
+    }
+
+    /// Mutations now go through `Arc::make_mut` instead of always deep-
+    /// cloning `OsmData` — but that must not change observable data-sharing
+    /// semantics. A snapshot `Arc<OsmData>` taken *before* an edit (e.g. via
+    /// `get_osm_data`, exactly like an in-flight background save/export
+    /// would hold) still sees the pre-edit state afterward: `make_mut`
+    /// clones once, transparently, the moment it discovers a second live
+    /// `Arc` reference, so old snapshots are never mutated out from under
+    /// their holder. This is the same snapshot isolation the old
+    /// always-clone code gave by construction.
+    #[test]
+    fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        // Take a snapshot Arc *before* the edit — a second live reference to
+        // the same underlying OsmData, exactly the case make_mut must clone
+        // for rather than mutate in place.
+        let snapshot = layer.get_osm_data().unwrap();
+        assert_eq!(snapshot.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
+
+        layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+
+        // The live layer sees the move...
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(updated.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((41.0, -75.0)));
+        // ...but the old snapshot, held separately, still sees the original
+        // position: it was never mutated in place.
+        assert_eq!(snapshot.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
+
+        // Also true for tag edits, not just node moves.
+        let snapshot2 = layer.get_osm_data().unwrap();
+        layer.set_tag(FeatureKind::Node, 1, "name", "Test");
+        assert_eq!(snapshot2.nodes.get(&1).and_then(|n| n.tags.get("name")), None);
+        let updated2 = layer.get_osm_data().unwrap();
+        assert_eq!(updated2.nodes.get(&1).and_then(|n| n.tags.get("name")).map(String::as_str), Some("Test"));
     }
 
     // -- Segment decimation (`decimate_segments`) --

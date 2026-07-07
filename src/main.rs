@@ -1548,13 +1548,20 @@ impl Render for MapViewer {
                                             |_, _, _| {},
                                             {
                                                 let viewport_clone = self.viewport.clone();
-                                                let layer_manager = std::ptr::addr_of!(self.layer_manager);
+                                                // Rather than aliasing `&self.layer_manager` with a
+                                                // raw pointer (the paint closure runs after `render`
+                                                // returns, so a borrow can't outlive this function),
+                                                // capture a cheap `Entity<Self>` handle and re-borrow
+                                                // `self` safely through it once paint actually runs —
+                                                // the `&mut App` the canvas API hands the paint
+                                                // closure is exactly what `Entity::read` needs.
+                                                let entity = cx.entity();
                                                 let selected = self.selected.clone();
-                                                move |bounds, _, window, _| {
-                                                    let layer_manager = unsafe { &*layer_manager };
-                                                    layer_manager.render_all_canvas(&viewport_clone, bounds, window);
+                                                move |bounds, _, window, cx| {
+                                                    let this = entity.read(cx);
+                                                    this.layer_manager.render_all_canvas(&viewport_clone, bounds, window);
                                                     for sel in &selected {
-                                                        layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
+                                                        this.layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
                                                     }
                                                 }
                                             }

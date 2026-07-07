@@ -329,10 +329,29 @@ fn main() {
     });
 
     println!("\n-- edit commit path --");
-    bench("commit_node_moves: 1 node (clone + full rebuild)", 10, || {
+    // `data` (this closure's captured outer Arc) stays alive for the rest of
+    // `main`, so every `data.clone()` here makes the fresh layer's Arc the
+    // *second* live reference to the same OsmData -> Arc::make_mut can't
+    // mutate in place and clones once per call, same cost profile as the
+    // old always-full-clone code. This is the pessimistic case: some other
+    // long-lived Arc (a snapshot, an in-flight export) is alive across the
+    // edit.
+    bench("commit_node_moves: 1 node, Arc SHARED (make_mut clones once)", 10, || {
         let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
         l.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
         l.is_modified() as u64
+    });
+    // Production reality: nothing outside tests ever holds a second
+    // Arc<OsmData> clone across an edit (see OsmLayer::get_osm_data's doc
+    // comment), so the layer's Arc is uniquely held -> Arc::make_mut
+    // mutates in place, no dataset clone at all. Give this bench its own
+    // OsmData (a one-time deep clone, not timed) so it's fully decoupled
+    // from the `data` Arc kept alive elsewhere in `main`.
+    let unique_data: Arc<OsmData> = Arc::new((*data).clone());
+    let mut l_unique = OsmLayer::new_with_data(LayerId(1), "bench-unique", unique_data);
+    bench("commit_node_moves: 1 node, Arc UNIQUE (make_mut, in place)", 30, || {
+        l_unique.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
+        l_unique.is_modified() as u64
     });
     bench("set_osm_data rebuild alone", 10, || {
         let mut l = OsmLayer::new(LayerId(1));
