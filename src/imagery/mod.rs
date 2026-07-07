@@ -125,10 +125,7 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
 
 fn download() -> anyhow::Result<String> {
     let response = ureq::get(ELI_URL)
-        .set(
-            "User-Agent",
-            "osm-gpui/0.1.0 (https://github.com/iandees/osm-gpui)",
-        )
+        .set("User-Agent", crate::USER_AGENT)
         .timeout(Duration::from_secs(30))
         .call()?;
 

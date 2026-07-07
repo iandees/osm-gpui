@@ -353,7 +353,7 @@ impl Asset for TileAsset {
 fn download_file_sync(url: &str) -> Result<Vec<u8>, TileFetchError> {
     // Use ureq for synchronous HTTP requests that don't require Tokio
     let result = ureq::get(url)
-        .set("User-Agent", "osm-gpui/0.1.0 (https://github.com/iandees/osm-gpui) Rust/GPUI")
+        .set("User-Agent", crate::USER_AGENT)
         .set("Referer", "https://github.com/iandees/osm-gpui")
         .timeout(std::time::Duration::from_secs(30))
         .call();

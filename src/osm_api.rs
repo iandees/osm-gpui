@@ -50,8 +50,6 @@ pub(crate) fn build_url(base_url: &str, bounds: &GeoBounds) -> String {
     )
 }
 
-const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
-
 /// Synchronous fetch — call from a worker thread, not the UI thread. `token`, if
 /// present, is sent as an OAuth2 bearer token so the request is attributed to a
 /// logged-in user.
@@ -64,7 +62,7 @@ pub fn fetch_bbox(
 
     let url = build_url(base_url, &bounds);
     let mut request = ureq::get(&url)
-        .set("User-Agent", USER_AGENT)
+        .set("User-Agent", crate::USER_AGENT)
         .timeout(std::time::Duration::from_secs(30));
     if let Some(token) = token {
         request = request.set("Authorization", &format!("Bearer {}", token));
