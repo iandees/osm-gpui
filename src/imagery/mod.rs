@@ -134,7 +134,8 @@ fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String>
     let req = crate::http::HttpRequest::get(ELI_URL);
     let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    resp.into_string().map_err(|e| anyhow::anyhow!(e.to_string()))
+    resp.into_string()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 /// Parse the ELI GeoJSON body into a list of `tms`-type imagery entries.
@@ -167,7 +168,11 @@ fn parse_feature(feature: &serde_json::Value) -> Option<ImageryEntry> {
     if typ != "tms" {
         return None;
     }
-    if props.get("overlay").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if props
+        .get("overlay")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     let url_template = props.get("url").and_then(|v| v.as_str())?.to_string();
@@ -338,8 +343,8 @@ fn point_in_ring(x: f64, y: f64, ring: &[(f64, f64)]) -> bool {
     for i in 0..n {
         let (xi, yi) = ring[i];
         let (xj, yj) = ring[j];
-        let intersects = ((yi > y) != (yj > y))
-            && (x < (xj - xi) * (y - yi) / (yj - yi + f64::EPSILON) + xi);
+        let intersects =
+            ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + f64::EPSILON) + xi);
         if intersects {
             inside = !inside;
         }

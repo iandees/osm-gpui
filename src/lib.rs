@@ -24,8 +24,8 @@ pub mod tiles;
 pub mod ui;
 pub mod viewport;
 
-pub use osm::{MemberType, OsmBounds, OsmData, OsmMember, OsmNode, OsmParser, OsmRelation, OsmWay};
 pub use gpui;
+pub use osm::{MemberType, OsmBounds, OsmData, OsmMember, OsmNode, OsmParser, OsmRelation, OsmWay};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

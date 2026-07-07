@@ -229,8 +229,16 @@ impl CoordinateTransform {
         let merc_y = self.mercator_center_y
             - (point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
 
-        let merc_x = if merc_x.is_finite() { merc_x } else { self.mercator_center_x };
-        let merc_y = if merc_y.is_finite() { merc_y } else { self.mercator_center_y };
+        let merc_x = if merc_x.is_finite() {
+            merc_x
+        } else {
+            self.mercator_center_x
+        };
+        let merc_y = if merc_y.is_finite() {
+            merc_y
+        } else {
+            self.mercator_center_y
+        };
 
         (merc_x, merc_y)
     }
@@ -273,7 +281,8 @@ impl CoordinateTransform {
         // Step 1: Convert screen point to Mercator coordinates at current zoom
         let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
         let dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
-        let dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
+        let dy =
+            -(screen_point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
         let mouse_merc_x = center_merc_x + dx;
         let mouse_merc_y = center_merc_y + dy;
 
@@ -282,11 +291,14 @@ impl CoordinateTransform {
         let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
 
         // Step 3: Calculate new center so mouse_merc_x/y stays under the same screen pixel
-        let new_dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / new_transform.pixels_per_meter_x;
-        let new_dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64() / new_transform.pixels_per_meter_y;
+        let new_dx = (screen_point.x - self.screen_size.width * 0.5).to_f64()
+            / new_transform.pixels_per_meter_x;
+        let new_dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64()
+            / new_transform.pixels_per_meter_y;
         let new_center_merc_x = mouse_merc_x - new_dx;
         let new_center_merc_y = mouse_merc_y - new_dy;
-        let (new_center_lat, new_center_lon) = mercator_to_lat_lon(new_center_merc_x, new_center_merc_y);
+        let (new_center_lat, new_center_lon) =
+            mercator_to_lat_lon(new_center_merc_x, new_center_merc_y);
 
         *self = Self::new(new_center_lat, new_center_lon, new_zoom, self.screen_size);
     }
@@ -467,8 +479,18 @@ mod tests {
         let screen_point = transform.mercator_to_screen(original_mx, original_my);
         let (mx, my) = transform.screen_to_mercator(screen_point);
 
-        assert!((mx - original_mx).abs() < 0.01, "mx: {} vs {}", mx, original_mx);
-        assert!((my - original_my).abs() < 0.01, "my: {} vs {}", my, original_my);
+        assert!(
+            (mx - original_mx).abs() < 0.01,
+            "mx: {} vs {}",
+            mx,
+            original_mx
+        );
+        assert!(
+            (my - original_my).abs() < 0.01,
+            "my: {} vs {}",
+            my,
+            original_my
+        );
     }
 
     #[test]
@@ -482,7 +504,8 @@ mod tests {
 
     #[test]
     fn fit_bounds_zoom_clamped_to_max_for_a_tiny_bbox() {
-        let (_, _, zoom) = fit_bounds_to_viewport(40.7127, 40.7129, -74.0061, -74.0059, 800.0, 600.0);
+        let (_, _, zoom) =
+            fit_bounds_to_viewport(40.7127, 40.7129, -74.0061, -74.0059, 800.0, 600.0);
         assert!((zoom - 18.0).abs() < 1e-9);
     }
 

@@ -135,8 +135,10 @@ impl HttpClient for UreqClient {
 
         let result = match &req.body {
             Some(Body::Form(pairs)) => {
-                let pairs: Vec<(&str, &str)> =
-                    pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                let pairs: Vec<(&str, &str)> = pairs
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
                 builder.send_form(&pairs)
             }
             None => builder.call(),
@@ -153,7 +155,10 @@ impl HttpClient for UreqClient {
             }
             Err(ureq::Error::Status(status, resp)) => {
                 let mut body = Vec::new();
-                let _ = resp.into_reader().take(MAX_ERROR_BODY_BYTES).read_to_end(&mut body);
+                let _ = resp
+                    .into_reader()
+                    .take(MAX_ERROR_BODY_BYTES)
+                    .read_to_end(&mut body);
                 Err(HttpError::Status { status, body })
             }
             Err(ureq::Error::Transport(t)) => Err(HttpError::Transport(t.to_string())),
@@ -181,7 +186,10 @@ impl RetryPolicy {
 
     /// A single attempt, no retries.
     pub fn none() -> Self {
-        RetryPolicy { max_attempts: 1, delays: Vec::new() }
+        RetryPolicy {
+            max_attempts: 1,
+            delays: Vec::new(),
+        }
     }
 }
 
@@ -256,11 +264,17 @@ pub mod fake {
     }
 
     pub fn ok(status: u16, body: impl Into<Vec<u8>>) -> Result<HttpResponse, HttpError> {
-        Ok(HttpResponse { status, body: body.into() })
+        Ok(HttpResponse {
+            status,
+            body: body.into(),
+        })
     }
 
     pub fn status_err(status: u16, body: impl Into<Vec<u8>>) -> Result<HttpResponse, HttpError> {
-        Err(HttpError::Status { status, body: body.into() })
+        Err(HttpError::Status {
+            status,
+            body: body.into(),
+        })
     }
 
     pub fn transport_err(msg: &str) -> Result<HttpResponse, HttpError> {

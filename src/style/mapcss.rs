@@ -34,7 +34,10 @@ pub struct NodeStyle {
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self { color: DEFAULT_NODE_COLOR, size: DEFAULT_NODE_SIZE }
+        Self {
+            color: DEFAULT_NODE_COLOR,
+            size: DEFAULT_NODE_SIZE,
+        }
     }
 }
 
@@ -47,7 +50,10 @@ pub struct WayStyle {
 
 impl Default for WayStyle {
     fn default() -> Self {
-        Self { color: DEFAULT_WAY_COLOR, width: DEFAULT_WAY_WIDTH }
+        Self {
+            color: DEFAULT_WAY_COLOR,
+            width: DEFAULT_WAY_WIDTH,
+        }
     }
 }
 
@@ -127,7 +133,11 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MapCSS parse error at {}: {}", self.position, self.message)
+        write!(
+            f,
+            "MapCSS parse error at {}: {}",
+            self.position, self.message
+        )
     }
 }
 
@@ -168,7 +178,11 @@ impl Stylesheet {
     pub fn node_style(&self, tags: &HashMap<String, String>) -> NodeStyle {
         let mut s = NodeStyle::default();
         for rule in &self.rules {
-            if !rule.selectors.iter().any(|sel| sel.matches(TargetKind::Node, tags)) {
+            if !rule
+                .selectors
+                .iter()
+                .any(|sel| sel.matches(TargetKind::Node, tags))
+            {
                 continue;
             }
             for d in &rule.declarations {
@@ -177,7 +191,11 @@ impl Stylesheet {
                     Declaration::SymbolSize(w) => s.size = *w,
                     // `width` on a pure-node rule aliases to symbol-size.
                     Declaration::Width(w) => {
-                        if rule.selectors.iter().all(|sel| sel.kind == TargetKind::Node) {
+                        if rule
+                            .selectors
+                            .iter()
+                            .all(|sel| sel.kind == TargetKind::Node)
+                        {
                             s.size = *w;
                         }
                     }
@@ -191,7 +209,11 @@ impl Stylesheet {
     pub fn way_style(&self, tags: &HashMap<String, String>) -> WayStyle {
         let mut s = WayStyle::default();
         for rule in &self.rules {
-            if !rule.selectors.iter().any(|sel| sel.matches(TargetKind::Way, tags)) {
+            if !rule
+                .selectors
+                .iter()
+                .any(|sel| sel.matches(TargetKind::Way, tags))
+            {
                 continue;
             }
             for d in &rule.declarations {
@@ -277,7 +299,10 @@ impl<'a> Parser<'a> {
     }
 
     fn err(&self, msg: impl Into<String>) -> ParseError {
-        ParseError { message: msg.into(), position: self.pos }
+        ParseError {
+            message: msg.into(),
+            position: self.pos,
+        }
     }
 
     /// Parse one rule. Returns `Ok(None)` if the rule was skipped
@@ -305,7 +330,10 @@ impl<'a> Parser<'a> {
         if skip_rule || selectors.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(Rule { selectors, declarations: decls }))
+            Ok(Some(Rule {
+                selectors,
+                declarations: decls,
+            }))
         }
     }
 
@@ -348,7 +376,9 @@ impl<'a> Parser<'a> {
                 Some('|') | Some(':') => {
                     // Zoom selector or pseudo-class — not supported. Skip.
                     if !*warned {
-                        eprintln!("mapcss: ignoring unsupported selector suffix (zoom or pseudo-class)");
+                        eprintln!(
+                            "mapcss: ignoring unsupported selector suffix (zoom or pseudo-class)"
+                        );
                         *warned = true;
                     }
                     self.skip_selector_tail();
@@ -573,7 +603,10 @@ mod tests {
     use super::*;
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -615,8 +648,14 @@ mod tests {
     #[test]
     fn tag_present_matches_any_value() {
         let s = Stylesheet::parse("way[highway] { color: orange; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[("highway", "residential")])).color, 0xFFA500);
-        assert_eq!(s.way_style(&tags(&[("highway", "footway")])).color, 0xFFA500);
+        assert_eq!(
+            s.way_style(&tags(&[("highway", "residential")])).color,
+            0xFFA500
+        );
+        assert_eq!(
+            s.way_style(&tags(&[("highway", "footway")])).color,
+            0xFFA500
+        );
         // No tag => default way color.
         assert_eq!(s.way_style(&tags(&[])).color, DEFAULT_WAY_COLOR);
     }
@@ -681,10 +720,7 @@ mod tests {
             s.way_style(&tags(&[("highway", "footway")])).color,
             0x8b4513
         );
-        assert_eq!(
-            s.node_style(&tags(&[("amenity", "pub")])).color,
-            0xff1493
-        );
+        assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff1493);
     }
 
     #[test]

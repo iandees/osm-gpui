@@ -1,6 +1,8 @@
 use crate::coordinates::GeoBounds;
-use crate::http::{fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient};
-use crate::osm::{OsmData, OsmParser, OsmParseError};
+use crate::http::{
+    fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+};
+use crate::osm::{OsmData, OsmParseError, OsmParser};
 
 const MAX_AREA_SQ_DEG: f64 = 0.25;
 
@@ -47,7 +49,10 @@ pub(crate) fn build_url(base_url: &str, bounds: &GeoBounds) -> String {
     format!(
         "{}/api/0.6/map?bbox={:.7},{:.7},{:.7},{:.7}",
         base_url.trim_end_matches('/'),
-        bounds.min_lon, bounds.min_lat, bounds.max_lon, bounds.max_lat
+        bounds.min_lon,
+        bounds.min_lat,
+        bounds.max_lon,
+        bounds.max_lat
     )
 }
 
@@ -83,7 +88,11 @@ pub(crate) fn fetch_bbox_with(
 /// `GET url` with a small bounded retry on transport errors and retryable HTTP
 /// status codes (see `crate::is_retryable_status`). Other 4xx responses are
 /// returned immediately since retrying won't help.
-fn fetch_map_body(client: &dyn HttpClient, url: &str, token: Option<&str>) -> Result<String, OsmApiError> {
+fn fetch_map_body(
+    client: &dyn HttpClient,
+    url: &str,
+    token: Option<&str>,
+) -> Result<String, OsmApiError> {
     let mut req = HttpRequest::get(url);
     if let Some(token) = token {
         req = req.bearer(token);
@@ -109,7 +118,10 @@ mod tests {
     #[test]
     fn area_check_rejects_large_bbox() {
         let b = GeoBounds::new(40.0, 41.0, -75.0, -74.0);
-        assert!(matches!(check_area(&b), Err(OsmApiError::AreaTooLarge { .. })));
+        assert!(matches!(
+            check_area(&b),
+            Err(OsmApiError::AreaTooLarge { .. })
+        ));
     }
 
     #[test]
@@ -147,24 +159,42 @@ mod tests {
     #[test]
     fn display_area_too_large_is_user_readable() {
         let e = OsmApiError::AreaTooLarge { area_sq_deg: 1.0 };
-        assert_eq!(e.to_string(), "Area too large for OSM API (zoom in and try again)");
+        assert_eq!(
+            e.to_string(),
+            "Area too large for OSM API (zoom in and try again)"
+        );
     }
 
     #[test]
     fn display_http_400_mentions_smaller_area() {
-        let e = OsmApiError::Http { status: 400, body: "too many nodes".into() };
-        assert_eq!(e.to_string(), "OSM API rejected request (400) — try a smaller area");
+        let e = OsmApiError::Http {
+            status: 400,
+            body: "too many nodes".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "OSM API rejected request (400) — try a smaller area"
+        );
     }
 
     #[test]
     fn display_http_509_mentions_rate_limit() {
-        let e = OsmApiError::Http { status: 509, body: String::new() };
-        assert_eq!(e.to_string(), "OSM API rate-limited (509) — try again later");
+        let e = OsmApiError::Http {
+            status: 509,
+            body: String::new(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "OSM API rate-limited (509) — try again later"
+        );
     }
 
     #[test]
     fn display_http_other_uses_first_body_line() {
-        let e = OsmApiError::Http { status: 503, body: "Service down\nretry later".into() };
+        let e = OsmApiError::Http {
+            status: 503,
+            body: "Service down\nretry later".into(),
+        };
         assert_eq!(e.to_string(), "OSM API error 503: Service down");
     }
 
@@ -189,7 +219,8 @@ mod tests {
             status_err(509, "rate limited"),
         ]);
         let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
-        let err = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap_err();
+        let err =
+            fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap_err();
         assert!(matches!(err, OsmApiError::Http { status: 509, .. }));
     }
 
@@ -197,7 +228,8 @@ mod tests {
     fn fetch_bbox_with_area_too_large_never_makes_a_request() {
         let client = FakeClient::new(vec![]);
         let bounds = GeoBounds::new(40.0, 41.0, -75.0, -74.0);
-        let err = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap_err();
+        let err =
+            fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap_err();
         assert!(matches!(err, OsmApiError::AreaTooLarge { .. }));
     }
 
@@ -205,7 +237,13 @@ mod tests {
     fn fetch_bbox_with_sends_bearer_token() {
         let client = FakeClient::new(vec![ok(200, MINIMAL_OSM_XML)]);
         let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
-        fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", Some("tok123")).unwrap();
+        fetch_bbox_with(
+            &client,
+            bounds,
+            "https://api.openstreetmap.org",
+            Some("tok123"),
+        )
+        .unwrap();
         let requests = client.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert!(requests[0]

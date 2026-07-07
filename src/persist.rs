@@ -27,7 +27,9 @@ pub struct WriteOpts {
 
 impl WriteOpts {
     pub const fn new() -> Self {
-        Self { restrict_permissions: false }
+        Self {
+            restrict_permissions: false,
+        }
     }
 
     pub const fn restrict_permissions(mut self) -> Self {
@@ -99,7 +101,11 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path, label: &str) -> T {
 
 /// Serialize `value` as pretty JSON and atomically write it to `path` (see
 /// [`write_atomic`]).
-pub fn save_json<T: Serialize + ?Sized>(path: &Path, value: &T, opts: WriteOpts) -> std::io::Result<()> {
+pub fn save_json<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    opts: WriteOpts,
+) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_atomic(path, &json, opts)
@@ -116,7 +122,9 @@ pub struct JsonStore<T> {
 
 impl<T> JsonStore<T> {
     pub const fn new() -> Self {
-        Self { cell: OnceLock::new() }
+        Self {
+            cell: OnceLock::new(),
+        }
     }
 
     /// Initialize the store with `value`. Call this once at startup; later
@@ -154,7 +162,9 @@ impl<T> JsonStore<T> {
     where
         T: Clone + Default,
     {
-        let Some(store) = self.cell.get() else { return T::default() };
+        let Some(store) = self.cell.get() else {
+            return T::default();
+        };
         match store.lock() {
             Ok(g) => g.clone(),
             Err(e) => {
@@ -291,7 +301,10 @@ mod tests {
     fn json_round_trip() {
         let dir = tmp_dir("json-round-trip");
         let path = dir.join("sample.json");
-        let value = Sample { name: "alice".into(), count: 7 };
+        let value = Sample {
+            name: "alice".into(),
+            count: 7,
+        };
         save_json(&path, &value, WriteOpts::default()).unwrap();
         let loaded: Sample = load_json(&path, "test");
         assert_eq!(loaded, value);
@@ -323,18 +336,42 @@ mod tests {
     #[test]
     fn json_store_init_update_snapshot_round_trip() {
         let store: JsonStore<Sample> = JsonStore::new();
-        store.init(Sample { name: "bob".into(), count: 1 });
-        assert_eq!(store.snapshot("test"), Sample { name: "bob".into(), count: 1 });
+        store.init(Sample {
+            name: "bob".into(),
+            count: 1,
+        });
+        assert_eq!(
+            store.snapshot("test"),
+            Sample {
+                name: "bob".into(),
+                count: 1
+            }
+        );
 
         let updated = store.update("test", |v| v.count += 1);
-        assert_eq!(updated, Some(Sample { name: "bob".into(), count: 2 }));
-        assert_eq!(store.snapshot("test"), Sample { name: "bob".into(), count: 2 });
+        assert_eq!(
+            updated,
+            Some(Sample {
+                name: "bob".into(),
+                count: 2
+            })
+        );
+        assert_eq!(
+            store.snapshot("test"),
+            Sample {
+                name: "bob".into(),
+                count: 2
+            }
+        );
     }
 
     #[test]
     fn json_store_read_derives_without_full_clone_semantics() {
         let store: JsonStore<Sample> = JsonStore::new();
-        store.init(Sample { name: "carol".into(), count: 3 });
+        store.init(Sample {
+            name: "carol".into(),
+            count: 3,
+        });
         let name_len = store.read("test", |v| v.name.len());
         assert_eq!(name_len, Some(5));
     }
@@ -354,8 +391,20 @@ mod tests {
     #[test]
     fn json_store_second_init_is_ignored() {
         let store: JsonStore<Sample> = JsonStore::new();
-        store.init(Sample { name: "first".into(), count: 1 });
-        store.init(Sample { name: "second".into(), count: 2 });
-        assert_eq!(store.snapshot("test"), Sample { name: "first".into(), count: 1 });
+        store.init(Sample {
+            name: "first".into(),
+            count: 1,
+        });
+        store.init(Sample {
+            name: "second".into(),
+            count: 2,
+        });
+        assert_eq!(
+            store.snapshot("test"),
+            Sample {
+                name: "first".into(),
+                count: 1
+            }
+        );
     }
 }

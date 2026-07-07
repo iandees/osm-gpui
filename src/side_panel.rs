@@ -2,11 +2,11 @@
 
 use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     label::Label,
     menu::ContextMenuExt,
+    ActiveTheme, Icon, IconName, Sizable,
 };
 
 use osm_gpui::layers::LayerId;
@@ -25,7 +25,14 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
-            .map(|layer| (layer.id(), layer.name().to_string(), layer.is_visible(), layer.is_modified()))
+            .map(|layer| {
+                (
+                    layer.id(),
+                    layer.name().to_string(),
+                    layer.is_visible(),
+                    layer.is_modified(),
+                )
+            })
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
@@ -69,7 +76,13 @@ impl MapViewer {
                         cx,
                     ))
                     .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx))
-                    .child(self.collapsible_section("History", 3, open_history, history_section, cx)),
+                    .child(self.collapsible_section(
+                        "History",
+                        3,
+                        open_history,
+                        history_section,
+                        cx,
+                    )),
             )
     }
 
@@ -89,21 +102,23 @@ impl MapViewer {
         div()
             .flex()
             .flex_col()
-            .children(self.undo_stack.actions.iter().enumerate().map(|(i, action)| {
-                let is_current = i + 1 == cursor;
-                let is_future = i >= cursor;
-                let mut row = div()
-                    .px_1()
-                    .py_0p5()
-                    .text_sm()
-                    .child(action.description());
-                if is_current {
-                    row = row.bg(cx.theme().accent);
-                } else if is_future {
-                    row = row.text_color(cx.theme().muted_foreground).italic();
-                }
-                row
-            }))
+            .children(
+                self.undo_stack
+                    .actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, action)| {
+                        let is_current = i + 1 == cursor;
+                        let is_future = i >= cursor;
+                        let mut row = div().px_1().py_0p5().text_sm().child(action.description());
+                        if is_current {
+                            row = row.bg(cx.theme().accent);
+                        } else if is_future {
+                            row = row.text_color(cx.theme().muted_foreground).italic();
+                        }
+                        row
+                    }),
+            )
             .into_any_element()
     }
 
@@ -149,11 +164,9 @@ impl MapViewer {
                 cx.notify();
             }));
 
-        div()
-            .flex()
-            .flex_col()
-            .child(header)
-            .when(open, |this| this.child(div().px_2().py_1p5().child(content)))
+        div().flex().flex_col().child(header).when(open, |this| {
+            this.child(div().px_2().py_1p5().child(content))
+        })
     }
 
     /// The Selection accordion section: a scrollable list of the selected

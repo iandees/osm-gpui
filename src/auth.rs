@@ -58,7 +58,10 @@ const KEYRING_SERVICE: &str = "osm-gpui";
 #[derive(Debug)]
 pub enum AuthError {
     Network(String),
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+    },
     Parse(String),
     NoRedirect,
     StateMismatch,
@@ -66,7 +69,9 @@ pub enum AuthError {
     /// The user (or OSM) explicitly denied/rejected the authorization request, e.g. by
     /// clicking "Cancel" on the consent screen. Distinct from a timeout so the UI can
     /// show a clear, non-misleading message.
-    Denied { reason: String },
+    Denied {
+        reason: String,
+    },
     /// `ensure_fresh_token` was called for a server with no stored login.
     NotLoggedIn,
     /// The stored token is expired and there's no refresh token to renew it with; the
@@ -89,7 +94,10 @@ impl std::fmt::Display for AuthError {
             AuthError::Denied { reason } => write!(f, "Sign in was not completed: {}", reason),
             AuthError::NotLoggedIn => write!(f, "Not logged in"),
             AuthError::NoRefreshToken => {
-                write!(f, "Login expired and can't be refreshed; please sign in again")
+                write!(
+                    f,
+                    "Login expired and can't be refreshed; please sign in again"
+                )
             }
         }
     }
@@ -160,7 +168,9 @@ fn parse_callback_query(url: &str) -> HashMap<String, String> {
     };
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
-            let decoded = urlencoding::decode(v).map(|s| s.into_owned()).unwrap_or_else(|_| v.to_string());
+            let decoded = urlencoding::decode(v)
+                .map(|s| s.into_owned())
+                .unwrap_or_else(|_| v.to_string());
             params.insert(k.to_string(), decoded);
         }
     }
@@ -206,8 +216,8 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let oauth_base = oauth_base_for(api_base_url);
     let client_id = client_id_for(&oauth_base);
 
-    let server = tiny_http::Server::http("127.0.0.1:0")
-        .map_err(|e| AuthError::Network(e.to_string()))?;
+    let server =
+        tiny_http::Server::http("127.0.0.1:0").map_err(|e| AuthError::Network(e.to_string()))?;
     let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
     let redirect_uri = format!("http://127.0.0.1:{}{}", port, CALLBACK_PATH);
 
@@ -243,18 +253,16 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     } else {
         "<html><body><h3>Sign in failed.</h3>You can close this tab and return to osm-gpui.</body></html>"
     };
-    let response = tiny_http::Response::from_string(response_body)
-        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap());
+    let response = tiny_http::Response::from_string(response_body).with_header(
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap(),
+    );
     let _ = request.respond(response);
 
     // OSM redirects with `error=access_denied` (and no `code`) when the user declines
     // authorization on the consent screen. Report that distinctly rather than letting it
     // fall through to a generic "no redirect" / timeout error.
     if let Some(error) = error {
-        let reason = params
-            .get("error_description")
-            .cloned()
-            .unwrap_or(error);
+        let reason = params.get("error_description").cloned().unwrap_or(error);
         return Err(AuthError::Denied { reason });
     }
 
@@ -301,9 +309,15 @@ pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
 
 /// Same as `refresh`, but against an injected `HttpClient` so it's testable without a
 /// real network. Kept `pub(crate)` since tests are the only other caller.
-pub(crate) fn refresh_with(client: &dyn HttpClient, oauth_base_url: &str) -> Result<StoredToken, AuthError> {
+pub(crate) fn refresh_with(
+    client: &dyn HttpClient,
+    oauth_base_url: &str,
+) -> Result<StoredToken, AuthError> {
     let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
-    let refresh_token_value = existing.refresh_token.clone().ok_or(AuthError::NoRefreshToken)?;
+    let refresh_token_value = existing
+        .refresh_token
+        .clone()
+        .ok_or(AuthError::NoRefreshToken)?;
     let client_id = client_id_for(oauth_base_url);
 
     let (access_token, refresh_token, expires_at) = token_request_with(
@@ -393,9 +407,10 @@ fn parse_token_response(
                 .map(|secs| now_unix() + secs);
             Ok((access_token, refresh_token, expires_at))
         }
-        Err(HttpError::Status { status, body }) => {
-            Err(AuthError::Http { status, body: String::from_utf8_lossy(&body).into_owned() })
-        }
+        Err(HttpError::Status { status, body }) => Err(AuthError::Http {
+            status,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        }),
         Err(HttpError::Transport(msg)) => Err(AuthError::Network(msg)),
     }
 }
@@ -412,14 +427,22 @@ fn fetch_user_details_with(
     api_base_url: &str,
     access_token: &str,
 ) -> Result<(String, u64), AuthError> {
-    let url = format!("{}/api/0.6/user/details.json", api_base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/0.6/user/details.json",
+        api_base_url.trim_end_matches('/')
+    );
     let req = HttpRequest::get(url).bearer(access_token);
     let response = crate::http::fetch_with_retries(client, &req, &RetryPolicy::none());
 
     let body = match response {
-        Ok(resp) => resp.into_string().map_err(|e| AuthError::Network(e.to_string()))?,
+        Ok(resp) => resp
+            .into_string()
+            .map_err(|e| AuthError::Network(e.to_string()))?,
         Err(HttpError::Status { status, body }) => {
-            return Err(AuthError::Http { status, body: String::from_utf8_lossy(&body).into_owned() });
+            return Err(AuthError::Http {
+                status,
+                body: String::from_utf8_lossy(&body).into_owned(),
+            });
         }
         Err(HttpError::Transport(msg)) => return Err(AuthError::Network(msg)),
     };
@@ -473,7 +496,10 @@ fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
     match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {
         Ok(entry) => Some(entry),
         Err(e) => {
-            eprintln!("auth: keyring unavailable ({}), falling back to file storage", e);
+            eprintln!(
+                "auth: keyring unavailable ({}), falling back to file storage",
+                e
+            );
             None
         }
     }
@@ -489,7 +515,10 @@ fn keyring_store_secret(oauth_base_url: &str, secret: &TokenSecret) -> bool {
     match entry.set_password(&json) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("auth: keyring set_password failed ({}), falling back to file storage", e);
+            eprintln!(
+                "auth: keyring set_password failed ({}), falling back to file storage",
+                e
+            );
             false
         }
     }
@@ -671,7 +700,10 @@ mod tests {
 
     #[test]
     fn oauth_base_for_primary_api_is_website() {
-        assert_eq!(oauth_base_for("https://api.openstreetmap.org"), "https://www.openstreetmap.org");
+        assert_eq!(
+            oauth_base_for("https://api.openstreetmap.org"),
+            "https://www.openstreetmap.org"
+        );
     }
 
     #[test]
@@ -697,7 +729,9 @@ mod tests {
     fn generate_url_safe_token_has_expected_length_and_charset() {
         let tok = generate_url_safe_token(32);
         assert!(tok.len() >= 40);
-        assert!(tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(tok
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]
@@ -744,8 +778,14 @@ mod tests {
         save_to(&path, &store).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.tokens.len(), 1);
-        assert_eq!(loaded.tokens["https://www.openstreetmap.org"].display_name, "alice");
-        assert_eq!(loaded.tokens["https://www.openstreetmap.org"].expires_at, Some(1_700_000_000));
+        assert_eq!(
+            loaded.tokens["https://www.openstreetmap.org"].display_name,
+            "alice"
+        );
+        assert_eq!(
+            loaded.tokens["https://www.openstreetmap.org"].expires_at,
+            Some(1_700_000_000)
+        );
     }
 
     #[test]
@@ -782,13 +822,16 @@ mod tests {
     fn ensure_fresh_token_with_returns_unexpired_token_without_network() {
         init_store(TokenStore::default());
         let oauth_base = "https://auth-test-valid.example";
-        set_token(oauth_base, StoredToken {
-            access_token: "valid-token".into(),
-            display_name: "alice".into(),
-            user_id: 1,
-            refresh_token: Some("refresh-tok".into()),
-            expires_at: Some(now_unix() + 3600),
-        });
+        set_token(
+            oauth_base,
+            StoredToken {
+                access_token: "valid-token".into(),
+                display_name: "alice".into(),
+                user_id: 1,
+                refresh_token: Some("refresh-tok".into()),
+                expires_at: Some(now_unix() + 3600),
+            },
+        );
         let client = crate::http::fake::FakeClient::new(vec![]);
         let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
         assert_eq!(token.access_token, "valid-token");
@@ -799,13 +842,16 @@ mod tests {
     fn ensure_fresh_token_with_refreshes_expired_token() {
         init_store(TokenStore::default());
         let oauth_base = "https://auth-test-expired-ok.example";
-        set_token(oauth_base, StoredToken {
-            access_token: "old-token".into(),
-            display_name: "alice".into(),
-            user_id: 1,
-            refresh_token: Some("refresh-tok".into()),
-            expires_at: Some(now_unix() - 10),
-        });
+        set_token(
+            oauth_base,
+            StoredToken {
+                access_token: "old-token".into(),
+                display_name: "alice".into(),
+                user_id: 1,
+                refresh_token: Some("refresh-tok".into()),
+                expires_at: Some(now_unix() - 10),
+            },
+        );
         let body = r#"{"access_token":"new-token","expires_in":3600}"#;
         let client = crate::http::fake::FakeClient::new(vec![crate::http::fake::ok(200, body)]);
         let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
@@ -820,15 +866,20 @@ mod tests {
     fn ensure_fresh_token_with_propagates_refresh_failure() {
         init_store(TokenStore::default());
         let oauth_base = "https://auth-test-expired-fail.example";
-        set_token(oauth_base, StoredToken {
-            access_token: "old-token".into(),
-            display_name: "alice".into(),
-            user_id: 1,
-            refresh_token: Some("refresh-tok".into()),
-            expires_at: Some(now_unix() - 10),
-        });
-        let client =
-            crate::http::fake::FakeClient::new(vec![crate::http::fake::status_err(400, "invalid_grant")]);
+        set_token(
+            oauth_base,
+            StoredToken {
+                access_token: "old-token".into(),
+                display_name: "alice".into(),
+                user_id: 1,
+                refresh_token: Some("refresh-tok".into()),
+                expires_at: Some(now_unix() - 10),
+            },
+        );
+        let client = crate::http::fake::FakeClient::new(vec![crate::http::fake::status_err(
+            400,
+            "invalid_grant",
+        )]);
         let err = ensure_fresh_token_with(&client, oauth_base).unwrap_err();
         assert!(matches!(err, AuthError::Http { status: 400, .. }));
     }
@@ -837,7 +888,8 @@ mod tests {
     fn ensure_fresh_token_with_not_logged_in_is_an_error() {
         init_store(TokenStore::default());
         let client = crate::http::fake::FakeClient::new(vec![]);
-        let err = ensure_fresh_token_with(&client, "https://auth-test-nologin.example").unwrap_err();
+        let err =
+            ensure_fresh_token_with(&client, "https://auth-test-nologin.example").unwrap_err();
         assert!(matches!(err, AuthError::NotLoggedIn));
     }
 

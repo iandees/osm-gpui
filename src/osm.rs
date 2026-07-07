@@ -169,7 +169,10 @@ impl OsmParser {
         Ok(())
     }
 
-    fn run<R: std::io::BufRead>(&self, mut xml_reader: Reader<R>) -> Result<OsmData, OsmParseError> {
+    fn run<R: std::io::BufRead>(
+        &self,
+        mut xml_reader: Reader<R>,
+    ) -> Result<OsmData, OsmParseError> {
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
             ways: HashMap::new(),
@@ -433,7 +436,8 @@ impl OsmParser {
         }
 
         Ok(OsmMember {
-            member_type: member_type.ok_or_else(|| OsmParseError::MissingAttribute("type".to_string()))?,
+            member_type: member_type
+                .ok_or_else(|| OsmParseError::MissingAttribute("type".to_string()))?,
             reference,
             role,
         })
@@ -754,7 +758,10 @@ mod tests {
 
         let way = osm_data.ways.get(&42).expect("way 42 should be present");
         assert_eq!(way.nodes, vec![1, 2]);
-        assert!(osm_data.ways.get(&999).is_none(), "way 999 should not exist");
+        assert!(
+            osm_data.ways.get(&999).is_none(),
+            "way 999 should not exist"
+        );
     }
 
     #[test]

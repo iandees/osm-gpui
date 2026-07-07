@@ -1,8 +1,8 @@
 use gpui::*;
 
+use crate::coordinates::{is_point_valid, validate_coords};
 use crate::layers::{LayerId, MapLayer};
 use crate::viewport::Viewport;
-use crate::coordinates::{is_point_valid, validate_coords};
 
 /// Layer for rendering coordinate grid lines
 pub struct GridLayer {
@@ -125,10 +125,15 @@ impl MapLayer for GridLayer {
     fn stats(&self) -> Vec<(String, String)> {
         vec![
             ("Grid Spacing".to_string(), "Dynamic".to_string()),
-            ("Color".to_string(), format!("#{:06x}",
-                (self.grid_color.r * 255.0) as u32 * 65536 +
-                (self.grid_color.g * 255.0) as u32 * 256 +
-                (self.grid_color.b * 255.0) as u32)),
+            (
+                "Color".to_string(),
+                format!(
+                    "#{:06x}",
+                    (self.grid_color.r * 255.0) as u32 * 65536
+                        + (self.grid_color.g * 255.0) as u32 * 256
+                        + (self.grid_color.b * 255.0) as u32
+                ),
+            ),
         ]
     }
 }

@@ -219,7 +219,8 @@ fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String>
     let req = crate::http::HttpRequest::get(NSI_URL);
     let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    resp.into_string().map_err(|e| anyhow::anyhow!(e.to_string()))
+    resp.into_string()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 /// Global in-memory index, populated by a background fetch at startup.
@@ -434,7 +435,10 @@ mod tests {
             "final cache file should contain the written body"
         );
         let tmp = path.with_extension("json.tmp");
-        assert!(!tmp.exists(), "tmp sibling should be renamed away, not left behind");
+        assert!(
+            !tmp.exists(),
+            "tmp sibling should be renamed away, not left behind"
+        );
     }
 
     #[test]

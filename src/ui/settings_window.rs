@@ -112,7 +112,12 @@ impl SettingsWindow {
             .update(cx, |state, cx| state.set_value(value, window, cx));
     }
 
-    fn set_api_server(&mut self, choice: ApiServerChoice, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_api_server(
+        &mut self,
+        choice: ApiServerChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.app_settings.api_server = choice;
         settings_store::update_store(self.app_settings.clone());
         self.login_state = Self::current_login_state(&self.app_settings);

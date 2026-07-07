@@ -1,6 +1,9 @@
 //! Menu bar construction and the free-function menu action handlers.
 
-use gpui::{actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType, WindowOptions};
+use gpui::{
+    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType,
+    WindowOptions,
+};
 
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
@@ -51,7 +54,11 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 
         match result {
             Ok(osm_data) => {
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("OSM")
+                    .to_string();
                 let _ = cx.update(|cx| {
                     if let Some(view) = crate::MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
                         let _ = view.update(cx, |v, cx| v.add_osm_dataset(stem, osm_data, cx));
@@ -85,26 +92,28 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
     }
     SETTINGS_WINDOW_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let settings_window = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                origin: point(px(150.0), px(150.0)),
-                size: size(px(850.0), px(600.0)),
-            })),
-            titlebar: Some(gpui::TitlebarOptions {
-                title: Some("Settings".into()),
-                appears_transparent: false,
-                traffic_light_position: None,
-            }),
-            focus: true,
-            ..Default::default()
-        },
-        |window, cx| {
-            let view = cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
-            cx.new(|cx| gpui_component::Root::new(view, window, cx))
-        },
-    )
-    .unwrap();
+    let settings_window = cx
+        .open_window(
+            WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                    origin: point(px(200.0), px(200.0)),
+                    size: size(px(600.0), px(500.0)),
+                })),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Settings".into()),
+                    appears_transparent: false,
+                    traffic_light_position: None,
+                }),
+                focus: true,
+                ..Default::default()
+            },
+            |window, cx| {
+                let view =
+                    cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            },
+        )
+        .unwrap();
 
     let settings_window_id = settings_window.window_id();
     cx.on_window_closed(move |_cx, window_id| {
@@ -131,14 +140,18 @@ pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
 
 // Handle the Imagery > OpenStreetMap Carto menu action
 pub(crate) fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
-    with_map_viewer(cx, |v, cx| v.apply_layer_request(LayerRequest::OsmCarto, cx));
+    with_map_viewer(cx, |v, cx| {
+        v.apply_layer_request(LayerRequest::OsmCarto, cx)
+    });
 }
 
 // Handle an ELI imagery menu action. Looks up the entry in the loaded index
 // and applies it as a layer request directly to the live `MapViewer`.
 pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
     let id = action.id.to_string();
-    let Some(index) = IMAGERY_INDEX.get() else { return };
+    let Some(index) = IMAGERY_INDEX.get() else {
+        return;
+    };
     let entry = {
         let guard = match index.lock() {
             Ok(g) => g,
@@ -194,16 +207,21 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
 
 // Handle the Imagery > Coordinate Grid menu action
 pub(crate) fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
-    with_map_viewer(cx, |v, cx| v.apply_layer_request(LayerRequest::CoordinateGrid, cx));
+    with_map_viewer(cx, |v, cx| {
+        v.apply_layer_request(LayerRequest::CoordinateGrid, cx)
+    });
 }
 
 /// Build and install the menu bar, using the current viewport center to filter
 /// the Imagery menu to relevant ELI entries.
-pub(crate) fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryLoadState) {
+pub(crate) fn rebuild_menus(
+    cx: &mut App,
+    center_lat: f64,
+    center_lon: f64,
+    state: ImageryLoadState,
+) {
     let custom = custom_imagery_snapshot();
-    let mut custom_items: Vec<MenuItem> = vec![
-        MenuItem::action("Add…", AddCustomImagery),
-    ];
+    let mut custom_items: Vec<MenuItem> = vec![MenuItem::action("Add…", AddCustomImagery)];
     if !custom.is_empty() {
         custom_items.push(MenuItem::separator());
         for (idx, entry) in custom.iter().enumerate() {
@@ -305,9 +323,7 @@ pub(crate) fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, stat
         },
         Menu {
             name: "View".into(),
-            items: vec![
-                MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
-            ],
+            items: vec![MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay)],
             disabled: false,
         },
     ]);

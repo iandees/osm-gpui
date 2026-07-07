@@ -199,10 +199,7 @@ impl Render for NsiPresetDialog {
                 .into_any_element()
         };
 
-        let body = v_flex()
-            .gap_3()
-            .child(Input::new(&self.query))
-            .child(list);
+        let body = v_flex().gap_3().child(Input::new(&self.query)).child(list);
 
         let frame = v_flex()
             .w(gpui::px(420.0))

@@ -5,7 +5,9 @@
 //! centered card, so clicks on the scrim don't pass through to whatever is
 //! underneath (see PR #50).
 
-use gpui::{div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window};
+use gpui::{
+    div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window,
+};
 use gpui_component::ActiveTheme as _;
 
 use crate::ui::modal;

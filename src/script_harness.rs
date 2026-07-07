@@ -1,7 +1,10 @@
 //! Cross-thread scripting plumbing: the script runner runs on a background
 //! thread and drives the live app on the gpui main thread via `ScriptBus`.
 
-use gpui::{point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, Window};
+use gpui::{
+    point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
+    ScrollWheelEvent, Window,
+};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -82,19 +85,19 @@ impl ScriptBus {
             *lock = Some(cmd);
         }
         // Wait until the command is consumed.
-        let _guard = self.done_cv.wait_while(
-            self.pending.lock().unwrap(),
-            |opt| opt.is_some(),
-        ).unwrap();
+        let _guard = self
+            .done_cv
+            .wait_while(self.pending.lock().unwrap(), |opt| opt.is_some())
+            .unwrap();
     }
 
     /// Wait until at least one more render frame has completed.
     fn wait_frame(&self) {
         let current = *self.frame_count.lock().unwrap();
-        let _guard = self.frame_cv.wait_while(
-            self.frame_count.lock().unwrap(),
-            |fc| *fc <= current,
-        ).unwrap();
+        let _guard = self
+            .frame_cv
+            .wait_while(self.frame_count.lock().unwrap(), |fc| *fc <= current)
+            .unwrap();
     }
 
     /// Called by MapViewer::render to drain and process the pending command.
@@ -149,7 +152,11 @@ impl MapViewer {
                     self.viewport.pan_to(lat, lon);
                     self.viewport.set_zoom(zoom);
                     // Ensure tile layer exists
-                    if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
+                    if self
+                        .layer_manager
+                        .layer_named("OpenStreetMap Carto")
+                        .is_none()
+                    {
                         let layer_id = self.layer_manager.alloc_id();
                         let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
                         self.layer_manager.add_layer(Box::new(tile_layer));
@@ -187,7 +194,11 @@ impl MapViewer {
                     cx.notify();
                 }
                 ScriptCommand::Click { x, y, right } => {
-                    let btn = if right { gpui::MouseButton::Right } else { gpui::MouseButton::Left };
+                    let btn = if right {
+                        gpui::MouseButton::Right
+                    } else {
+                        gpui::MouseButton::Left
+                    };
                     let ev = MouseDownEvent {
                         button: btn,
                         position: point(px(x), px(y)),
@@ -208,7 +219,10 @@ impl MapViewer {
                 ScriptCommand::Scroll { x, y, dx, dy } => {
                     let ev = ScrollWheelEvent {
                         position: point(px(x), px(y)),
-                        delta: ScrollDelta::Pixels(gpui::Point { x: px(dx), y: px(dy) }),
+                        delta: ScrollDelta::Pixels(gpui::Point {
+                            x: px(dx),
+                            y: px(dy),
+                        }),
                         modifiers: gpui::Modifiers::none(),
                         touch_phase: gpui::TouchPhase::Moved,
                     };
@@ -265,7 +279,11 @@ impl AppHandle for LiveApp {
     }
 
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32) {
-        self.bus.submit(ScriptCommand::SetViewport { lat, lon, zoom: zoom as f64 });
+        self.bus.submit(ScriptCommand::SetViewport {
+            lat,
+            lon,
+            zoom: zoom as f64,
+        });
     }
 
     fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration) {
@@ -275,11 +293,20 @@ impl AppHandle for LiveApp {
 
     fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton) {
         let right = matches!(button, script::MouseButton::Right);
-        self.bus.submit(ScriptCommand::Click { x: at.0, y: at.1, right });
+        self.bus.submit(ScriptCommand::Click {
+            x: at.0,
+            y: at.1,
+            right,
+        });
     }
 
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32) {
-        self.bus.submit(ScriptCommand::Scroll { x: at.0, y: at.1, dx, dy });
+        self.bus.submit(ScriptCommand::Scroll {
+            x: at.0,
+            y: at.1,
+            dx,
+            dy,
+        });
     }
 
     fn dispatch_key(&mut self, chord: &script::Chord) {
@@ -312,7 +339,11 @@ impl AppHandle for LiveApp {
         let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
         let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("OSM")
+            .to_string();
         // `submit` blocks until the main thread has processed the command
         // (i.e. `MapViewer::add_osm_dataset` has run), so the layer exists
         // as soon as this returns — no separate `wait_frame` needed.
@@ -321,7 +352,9 @@ impl AppHandle for LiveApp {
     }
 
     fn capture(&mut self, path: &std::path::Path) -> Result<(), String> {
-        self.bus.submit(ScriptCommand::Capture { path: path.to_path_buf() });
+        self.bus.submit(ScriptCommand::Capture {
+            path: path.to_path_buf(),
+        });
         self.bus.take_capture_result()
     }
 }

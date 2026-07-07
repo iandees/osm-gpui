@@ -1,7 +1,11 @@
-use gpui::{actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window, WindowOptions};
-use serde::Deserialize;
-use schemars::JsonSchema;
 use gpui::Action;
+use gpui::{
+    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window,
+    WindowOptions,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,23 +24,41 @@ use crate::menu::{
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, UndoStack, UndoableAction};
 
+use gpui_component::ActiveTheme;
 use osm_gpui::auth;
-use osm_gpui::settings_store;
-use osm_gpui::idle_tracker::IdleTracker;
-use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
-use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
-use osm_gpui::tile_cache::TileCache;
+use osm_gpui::idle_tracker::IdleTracker;
+use osm_gpui::imagery::{self, ImageryEntry};
+use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
+use osm_gpui::layers::{
+    grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, LayerId, LayerManager,
+};
 use osm_gpui::osm::OsmData;
-use osm_gpui::viewport::Viewport;
-use osm_gpui::layers::{LayerId, LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
-use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::osm_upload;
 use osm_gpui::script::{self, runner::Runner};
-use gpui_component::ActiveTheme;
+use osm_gpui::settings_store;
+use osm_gpui::tile_cache::TileCache;
+use osm_gpui::tiles;
+use osm_gpui::viewport::Viewport;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo, ApplyNsiPreset, UploadToOsm]);
+actions!(
+    osm_gpui,
+    [
+        OpenOsmFile,
+        Quit,
+        AddOsmCarto,
+        AddCoordinateGrid,
+        DownloadFromOsm,
+        ToggleDebugOverlay,
+        AddCustomImagery,
+        OpenSettings,
+        Undo,
+        Redo,
+        ApplyNsiPreset,
+        UploadToOsm
+    ]
+);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -117,7 +139,13 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
     MAP_VIEWER_HANDLE
         .get()
         .and_then(|handle| handle.upgrade())
-        .map(|view| view.read(cx).layer_manager.layers().iter().any(|l| l.is_modified()))
+        .map(|view| {
+            view.read(cx)
+                .layer_manager
+                .layers()
+                .iter()
+                .any(|l| l.is_modified())
+        })
         .unwrap_or(false)
 }
 
@@ -125,7 +153,10 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
 /// still exists. This is the standard way for menu action handlers (which
 /// only have `&mut App`) to call an ordinary `MapViewer` method — replacing
 /// the old push-into-a-queue-and-wait-for-render-to-drain-it pattern.
-pub(crate) fn with_map_viewer(cx: &mut App, f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>)) {
+pub(crate) fn with_map_viewer(
+    cx: &mut App,
+    f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>),
+) {
     if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
         let _ = view.update(cx, f);
     }
@@ -163,9 +194,7 @@ fn parse_cli_args() -> CliArgs {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--script" => {
-                out.script = Some(PathBuf::from(
-                    args.next().expect("--script needs a path"),
-                ))
+                out.script = Some(PathBuf::from(args.next().expect("--script needs a path")))
             }
             "--window-size" => {
                 let v = args.next().expect("--window-size needs WxH");
@@ -199,14 +228,18 @@ struct MapViewer {
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
     /// Active custom imagery dialog, if open.
-    custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
+    custom_imagery_dialog:
+        Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
     /// Active tag-edit dialog, if open, plus the context needed to apply
     /// its result.
-    tag_edit_dialog: Option<(gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>, TagEditContext)>,
+    tag_edit_dialog: Option<(
+        gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>,
+        TagEditContext,
+    )>,
     /// A dialog-open request recorded by a row/button click, to be acted on
     /// during the next `render()` — see `PendingTagEditOpen`'s doc comment.
     pending_tag_edit_open: Option<PendingTagEditOpen>,
@@ -382,9 +415,15 @@ impl MapViewer {
         if min_lat != f64::INFINITY {
             let screen_width = self.viewport.transform.screen_size.width.to_f64();
             let screen_height = self.viewport.transform.screen_size.height.to_f64();
-            let (center_lat, center_lon, zoom_level) = osm_gpui::coordinates::fit_bounds_to_viewport(
-                min_lat, max_lat, min_lon, max_lon, screen_width, screen_height,
-            );
+            let (center_lat, center_lon, zoom_level) =
+                osm_gpui::coordinates::fit_bounds_to_viewport(
+                    min_lat,
+                    max_lat,
+                    min_lon,
+                    max_lon,
+                    screen_width,
+                    screen_height,
+                );
 
             self.viewport.pan_to(center_lat, center_lon);
             self.viewport.set_zoom(zoom_level);
@@ -424,7 +463,8 @@ impl MapViewer {
         let adjusted_position = event.position;
 
         self.viewport.handle_mouse_down(adjusted_position);
-        self.interaction = interaction::record_mouse_down(&self.interaction, to_pt(adjusted_position));
+        self.interaction =
+            interaction::record_mouse_down(&self.interaction, to_pt(adjusted_position));
     }
 
     /// Left-button mouse-down: if the point hits a currently-selected
@@ -442,7 +482,11 @@ impl MapViewer {
             None
         } else {
             let per_layer = self.resolve_move_targets();
-            if per_layer.is_empty() { None } else { Some(per_layer) }
+            if per_layer.is_empty() {
+                None
+            } else {
+                Some(per_layer)
+            }
         };
         self.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
     }
@@ -457,8 +501,12 @@ impl MapViewer {
 
         let mut ids_by_layer: HashMap<LayerId, HashSet<i64>> = HashMap::new();
         for feat in &self.selected {
-            let Some(layer) = self.layer_manager.find_layer(feat.layer_id) else { continue; };
-            let Some(editable) = layer.as_editable() else { continue; };
+            let Some(layer) = self.layer_manager.find_layer(feat.layer_id) else {
+                continue;
+            };
+            let Some(editable) = layer.as_editable() else {
+                continue;
+            };
             let entry = ids_by_layer.entry(feat.layer_id).or_default();
             match feat.kind {
                 FeatureKind::Node => {
@@ -529,8 +577,12 @@ impl MapViewer {
             }
             UndoableAction::SetTags { entries } => {
                 for (feature, key, before, after) in entries {
-                    let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue; };
-                    let Some(editable) = layer.as_editable_mut() else { continue; };
+                    let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
+                        continue;
+                    };
+                    let Some(editable) = layer.as_editable_mut() else {
+                        continue;
+                    };
                     let value = if forward { after } else { before };
                     match value {
                         Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
@@ -538,9 +590,18 @@ impl MapViewer {
                     }
                 }
             }
-            UndoableAction::CreateNode { layer, id, lat, lon } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return; };
-                let Some(editable) = layer.as_editable_mut() else { return; };
+            UndoableAction::CreateNode {
+                layer,
+                id,
+                lat,
+                lon,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if forward {
                     // Redo: recreate the node at the exact same id, so any
                     // later action referencing this id (e.g. a subsequent
@@ -551,8 +612,12 @@ impl MapViewer {
                 }
             }
             UndoableAction::DeleteFeature { layer, snapshot } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return; };
-                let Some(editable) = layer.as_editable_mut() else { return; };
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if forward {
                     editable.delete_feature(snapshot.kind, snapshot.id);
                 } else {
@@ -583,7 +648,9 @@ impl MapViewer {
 
     /// Snapshot every currently-selected feature's tags — see
     /// `feature_tag_snapshots`.
-    fn selected_feature_tag_snapshots(&self) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+    fn selected_feature_tag_snapshots(
+        &self,
+    ) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
         self.feature_tag_snapshots(&self.selected)
     }
 
@@ -598,11 +665,19 @@ impl MapViewer {
     /// from `MapViewer::open_custom_imagery_dialog` /
     /// `show_quit_confirm_dialog` outside of `render()`.
     fn check_for_pending_tag_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pending) = self.pending_tag_edit_open.take() else { return };
+        let Some(pending) = self.pending_tag_edit_open.take() else {
+            return;
+        };
         if self.tag_edit_dialog.is_some() {
             return; // one at a time; drop the request rather than queue it
         }
-        let PendingTagEditOpen { features, original_key, original_value, select, is_add } = pending;
+        let PendingTagEditOpen {
+            features,
+            original_key,
+            original_value,
+            select,
+            is_add,
+        } = pending;
         let title = if is_add { "Add tag" } else { "Edit tag" };
         let dialog = cx.new(|cx| {
             osm_gpui::ui::tag_edit_dialog::TagEditDialog::new(
@@ -631,7 +706,12 @@ impl MapViewer {
         .detach();
         self.tag_edit_dialog = Some((
             dialog,
-            TagEditContext { features, original_key, original_value, is_add },
+            TagEditContext {
+                features,
+                original_key,
+                original_value,
+                is_add,
+            },
         ));
         cx.notify();
     }
@@ -641,7 +721,9 @@ impl MapViewer {
     /// and push one `UndoableAction::SetTags` (skipped entirely if there
     /// were no actual changes).
     fn apply_tag_edit(&mut self, key: &str, value: &str) {
-        let Some((_, ctx)) = self.tag_edit_dialog.take() else { return };
+        let Some((_, ctx)) = self.tag_edit_dialog.take() else {
+            return;
+        };
         let snapshots = self.feature_tag_snapshots(&ctx.features);
 
         let entries = osm_gpui::selection::compute_tag_edit_entries(
@@ -657,8 +739,12 @@ impl MapViewer {
         }
 
         for (feature, k, _before, after) in &entries {
-            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue };
-            let Some(editable) = layer.as_editable_mut() else { continue };
+            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
+                continue;
+            };
+            let Some(editable) = layer.as_editable_mut() else {
+                continue;
+            };
             match after {
                 Some(v) => editable.set_tag(feature.kind, feature.id, k, v),
                 None => editable.remove_tag(feature.kind, feature.id, k),
@@ -710,8 +796,12 @@ impl MapViewer {
         let features = std::mem::take(&mut self.selected);
         let mut deleted = 0usize;
         for feature in &features {
-            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue };
-            let Some(editable) = layer.as_editable_mut() else { continue };
+            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
+                continue;
+            };
+            let Some(editable) = layer.as_editable_mut() else {
+                continue;
+            };
             if let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) {
                 self.undo_stack.push(UndoableAction::DeleteFeature {
                     layer: feature.layer_id,
@@ -739,7 +829,11 @@ impl MapViewer {
     /// should replace this gesture. No-op (with a status message) if no
     /// layer is willing to accept a new node — see
     /// `create_node_on_target_layer`.
-    fn create_node_at_screen_point(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    fn create_node_at_screen_point(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         let (lat, lon) = self.viewport.screen_to_geo(position);
         let Some((layer_id, id)) = self.create_node_on_target_layer(lat, lon) else {
             self.set_status("No layer to add a node to");
@@ -860,7 +954,10 @@ impl MapViewer {
             .into_iter()
             .filter_map(|key| {
                 let after = preset_tags.get(key).cloned();
-                let before = existing.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                let before = existing
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.clone());
                 if before == after {
                     return None;
                 }
@@ -888,7 +985,9 @@ impl MapViewer {
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
-            if let Some(delta_pt) = interaction::move_drag_delta(*down, to_pt(adjusted_position), left_pressed) {
+            if let Some(delta_pt) =
+                interaction::move_drag_delta(*down, to_pt(adjusted_position), left_pressed)
+            {
                 let delta = from_pt(delta_pt);
                 let targets = targets.clone();
                 for (layer_id, originals) in &targets {
@@ -909,7 +1008,11 @@ impl MapViewer {
             cx.notify();
         }
 
-        if interaction::update_box_select(&mut self.interaction, to_pt(adjusted_position), left_pressed) {
+        if interaction::update_box_select(
+            &mut self.interaction,
+            to_pt(adjusted_position),
+            left_pressed,
+        ) {
             cx.notify();
         }
     }
@@ -932,7 +1035,8 @@ impl MapViewer {
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
                     let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
-                    let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> = Vec::with_capacity(originals.len());
+                    let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> =
+                        Vec::with_capacity(originals.len());
                     for &(id, lat, lon) in originals {
                         let anchor = self.viewport.geo_to_screen(lat, lon);
                         let new_screen = anchor + delta;
@@ -947,7 +1051,9 @@ impl MapViewer {
                     }
                     undo_per_layer.push((*layer_id, undo_entries));
                 }
-                self.undo_stack.push(UndoableAction::MoveNodes { per_layer: undo_per_layer });
+                self.undo_stack.push(UndoableAction::MoveNodes {
+                    per_layer: undo_per_layer,
+                });
                 cx.notify();
             }
             interaction::Gesture::MoveCancelledAsClick { targets, at } => {
@@ -1007,7 +1113,9 @@ impl MapViewer {
         let selected = self.selected.clone();
         for layer in self.layer_manager.layers_mut() {
             let layer_id = layer.id();
-            let Some(editable) = layer.as_editable_mut() else { continue };
+            let Some(editable) = layer.as_editable_mut() else {
+                continue;
+            };
             let matching: Vec<osm_gpui::selection::FeatureRef> = selected
                 .iter()
                 .filter(|s| s.layer_id == layer_id)
@@ -1041,7 +1149,11 @@ impl MapViewer {
     /// the script harness's `ScriptCommand::LoadOsm` — replaces the old
     /// `SHARED_OSM_DATA` queue drained once per frame.
     pub(crate) fn add_osm_dataset(&mut self, name: String, data: OsmData, cx: &mut Context<Self>) {
-        let file_name = if name.is_empty() { "OSM".to_string() } else { name };
+        let file_name = if name.is_empty() {
+            "OSM".to_string()
+        } else {
+            name
+        };
         let candidate = self.layer_manager.unique_name(&file_name);
         let data_arc = Arc::new(data.clone());
         let layer_id = self.layer_manager.alloc_id();
@@ -1062,7 +1174,11 @@ impl MapViewer {
     fn apply_layer_request(&mut self, req: LayerRequest, cx: &mut Context<Self>) {
         match req {
             LayerRequest::OsmCarto => {
-                if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
+                if self
+                    .layer_manager
+                    .layer_named("OpenStreetMap Carto")
+                    .is_none()
+                {
                     let layer_id = self.layer_manager.alloc_id();
                     let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
                     self.layer_manager.add_layer(Box::new(tile_layer));
@@ -1071,10 +1187,17 @@ impl MapViewer {
             LayerRequest::CoordinateGrid => {
                 if self.layer_manager.layer_named("Coordinate Grid").is_none() {
                     let layer_id = self.layer_manager.alloc_id();
-                    self.layer_manager.add_layer(Box::new(GridLayer::new(layer_id)));
+                    self.layer_manager
+                        .add_layer(Box::new(GridLayer::new(layer_id)));
                 }
             }
-            LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
+            LayerRequest::Imagery {
+                name,
+                url_template,
+                min_zoom,
+                max_zoom,
+                attribution,
+            } => {
                 let candidate = self.layer_manager.unique_name(&name);
                 let layer_id = self.layer_manager.alloc_id();
                 let layer = TileLayer::new_with_template(
@@ -1114,7 +1237,11 @@ impl MapViewer {
         let tile_zoom = zoom_level.round().max(0.0).min(18.0) as u32;
         let bounds_geo = self.viewport.visible_bounds();
         let visible_tiles = tiles::get_tiles_for_bounds(
-            bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon, tile_zoom
+            bounds_geo.min_lat,
+            bounds_geo.min_lon,
+            bounds_geo.max_lat,
+            bounds_geo.max_lon,
+            tile_zoom,
         );
         let total_tiles = visible_tiles.len();
 
@@ -1148,38 +1275,44 @@ impl MapViewer {
     /// tag-edit dialog, this dialog has no post-paint focus requirement, so
     /// it's safe to construct straight from the menu-triggered `update_in`
     /// call rather than deferring to the next render pass.
-    pub(crate) fn open_custom_imagery_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_custom_imagery_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.custom_imagery_dialog.is_some() {
             return;
         }
-        let dialog = cx.new(|cx| {
-            osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new(window, cx)
-        });
-        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
-            use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
-            match event {
-                DialogEvent::Cancelled => {
-                    this.custom_imagery_dialog = None;
-                    cx.notify();
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.custom_imagery_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(entry) => {
+                        append_custom_imagery(entry.clone());
+                        this.apply_layer_request(
+                            LayerRequest::Imagery {
+                                name: entry.name.clone(),
+                                url_template: entry.url_template.clone(),
+                                min_zoom: Some(entry.min_zoom),
+                                max_zoom: Some(entry.max_zoom),
+                                attribution: None,
+                            },
+                            cx,
+                        );
+                        this.custom_imagery_dialog = None;
+                        this.last_menu_center = None;
+                        cx.notify();
+                    }
                 }
-                DialogEvent::Submitted(entry) => {
-                    append_custom_imagery(entry.clone());
-                    this.apply_layer_request(
-                        LayerRequest::Imagery {
-                            name: entry.name.clone(),
-                            url_template: entry.url_template.clone(),
-                            min_zoom: Some(entry.min_zoom),
-                            max_zoom: Some(entry.max_zoom),
-                            attribution: None,
-                        },
-                        cx,
-                    );
-                    this.custom_imagery_dialog = None;
-                    this.last_menu_center = None;
-                    cx.notify();
-                }
-            }
-        })
+            },
+        )
         .detach();
         self.custom_imagery_dialog = Some(dialog);
         cx.notify();
@@ -1196,22 +1329,24 @@ impl MapViewer {
         if self.quit_confirm_dialog.is_some() {
             return;
         }
-        let dialog = cx.new(|cx| {
-            osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog::new(window, cx)
-        });
-        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::quit_confirm_dialog::DialogEvent, cx| {
-            use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
-            match event {
-                DialogEvent::Cancelled => {
-                    this.quit_confirm_dialog = None;
-                    cx.notify();
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::quit_confirm_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.quit_confirm_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::ConfirmQuit => {
+                        this.quit_confirm_dialog = None;
+                        cx.quit();
+                    }
                 }
-                DialogEvent::ConfirmQuit => {
-                    this.quit_confirm_dialog = None;
-                    cx.quit();
-                }
-            }
-        })
+            },
+        )
         .detach();
         self.quit_confirm_dialog = Some(dialog);
         cx.notify();
@@ -1452,10 +1587,7 @@ impl Render for MapViewer {
         // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
-        let map_size = gpui::size(
-            window_size.width - panel_width,
-            window_size.height,
-        );
+        let map_size = gpui::size(window_size.width - panel_width, window_size.height);
         self.viewport.update_size(map_size);
 
         self.expire_status();
@@ -1479,216 +1611,228 @@ impl Render for MapViewer {
                 div()
                     .flex_1()
                     .relative()
-                            .track_focus(&self.focus_handle)
-                            // Right button drives panning.
-                            .on_mouse_down(
-                                gpui::MouseButton::Right,
-                                cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                                    this.handle_mouse_down(ev);
-                                }),
-                            )
-                            .on_mouse_up(
-                                gpui::MouseButton::Right,
-                                cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
-                                    this.viewport.handle_mouse_up();
-                                    cx.notify();
-                                }),
-                            )
-                            .on_mouse_up_out(
-                                gpui::MouseButton::Right,
-                                cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
-                                    this.viewport.handle_mouse_up();
-                                    cx.notify();
-                                }),
-                            )
-                            // Left button: selection, box-select, or move-drag if the
-                            // press lands on an already-selected feature.
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                                    window.focus(&this.focus_handle, cx);
-                                    // v1 "create node" gesture: Cmd+Click (see
-                                    // `create_node_at_screen_point`'s doc comment).
-                                    if ev.modifiers.platform {
-                                        this.create_node_at_screen_point(ev.position, cx);
-                                    } else {
-                                        this.handle_map_mouse_down(ev.position);
-                                    }
-                                }),
-                            )
-                            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
-                                if ev.keystroke.key == "escape" {
-                                    this.cancel_move_drag(cx);
-                                } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
-                                    this.delete_selected_features(cx);
-                                }
-                            }))
-                            .on_mouse_up(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
-                                    this.handle_mouse_up(ev, cx);
-                                }),
-                            )
-                            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                                this.handle_mouse_move(ev, cx);
-                            }))
-                            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                                this.handle_scroll(ev, cx);
-                            }))
-                            .child(
-                                div()
-                                    .size_full()
-                                    .relative()
-                                    .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
-                                    // Render all layer elements (raster content like tiles)
-                                    .children(self.layer_manager.render_all_elements(&self.viewport))
-                                    // Render canvas layers (vector content)
-                                    .child(
-                                        canvas(
-                                            |_, _, _| {},
-                                            {
-                                                let viewport_clone = self.viewport.clone();
-                                                // Rather than aliasing `&self.layer_manager` with a
-                                                // raw pointer (the paint closure runs after `render`
-                                                // returns, so a borrow can't outlive this function),
-                                                // capture a cheap `Entity<Self>` handle and re-borrow
-                                                // `self` safely through it once paint actually runs —
-                                                // the `&mut App` the canvas API hands the paint
-                                                // closure is exactly what `Entity::read` needs.
-                                                let entity = cx.entity();
-                                                let selected = self.selected.clone();
-                                                move |bounds, _, window, cx| {
-                                                    let this = entity.read(cx);
-                                                    this.layer_manager.render_all_canvas(&viewport_clone, bounds, window);
-                                                    for sel in &selected {
-                                                        this.layer_manager.render_highlight(sel, &viewport_clone, bounds, window);
-                                                    }
-                                                }
-                                            }
-                                        )
-                                        .absolute()
-                                        .size_full() // Ensure canvas fills the entire map area
-                                    )
-                            )
-                            .child({
-                                // Debug info overlay (toggleable via View menu)
-                                if self.show_debug_overlay {
-                                    div()
-                                        .absolute()
-                                        .top_4()
-                                        .left_4()
-                                        .p_3()
-                                        .bg(gpui::black())
-                                        .rounded_lg()
-                                        .text_color(rgb(0xffffff))
-                                        .text_sm()
-                                        .opacity(0.9)
-                                        .min_w_64()
-                                        .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                                        .child(format!("🌍 Center: {:.4}°N, {:.4}°W", center_lat, center_lon.abs()))
-                                        .child(format!("📊 Objects: {}", osm_objects))
-                                        .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                                        .child(format!("💾 Cache: {} files", cached_files))
-                                        .child(format!("⚡ FPS: {:.0}", fps))
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }
-                            })
-                            .child({
-                                let status = self.status_message.clone();
-                                if let Some((msg, _)) = status {
-                                    div()
-                                        .absolute()
-                                        .top_4()
-                                        .right_4()
-                                        .p_3()
-                                        .bg(gpui::black())
-                                        .rounded_lg()
-                                        .text_color(rgb(0xffffff))
-                                        .text_sm()
-                                        .opacity(0.9)
-                                        .child(msg)
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }
-                            })
-                            .child({
-                                if let Some((start, current)) = self.interaction.box_select_rect() {
-                                    let rect = normalize_rect(from_pt(start), from_pt(current));
-                                    div()
-                                        .absolute()
-                                        .left(rect.origin.x)
-                                        .top(rect.origin.y)
-                                        .w(rect.size.width)
-                                        .h(rect.size.height)
-                                        .bg(cx.theme().accent)
-                                        .border_1()
-                                        .border_color(cx.theme().accent)
-                                        .opacity(0.35)
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }
-                            })
-                            .child({
-                                // Legally-required tile/imagery attribution for
-                                // every currently-visible layer that has one,
-                                // deduplicated (e.g. shared OSM Carto credit).
-                                // Entries with a link are clickable and open
-                                // it in the system browser.
-                                let raw_credits = self.layer_manager.layers().iter().filter_map(|layer| {
-                                    if !layer.is_visible() {
-                                        return None;
-                                    }
-                                    layer.attribution().map(|a| (a.text.clone(), a.url.clone()))
-                                });
-                                let credits = interaction::dedupe_attributions(raw_credits);
-                                if credits.is_empty() {
-                                    div().into_any_element()
-                                } else {
-                                    let n = credits.len();
-                                    div()
-                                        .absolute()
-                                        .bottom_4()
-                                        .right_4()
-                                        .px_2()
-                                        .py_1()
-                                        .bg(gpui::black())
-                                        .rounded_lg()
-                                        .text_color(rgb(0xffffff))
-                                        .text_xs()
-                                        .opacity(0.75)
-                                        .flex()
-                                        .flex_row()
-                                        .children(credits.into_iter().enumerate().map(|(i, (text, url))| {
-                                            let separator = if i + 1 < n { " | " } else { "" };
-                                            let label = format!("{text}{separator}");
-                                            if let Some(url) = url {
-                                                div()
-                                                    .id(("attribution-link", i))
-                                                    .cursor_pointer()
-                                                    .hover(|this| this.text_color(rgb(0xaad4ff)))
-                                                    .on_mouse_down(
-                                                        gpui::MouseButton::Left,
-                                                        move |_ev: &MouseDownEvent, _, _| {
-                                                            let _ = open::that(&url);
-                                                        },
-                                                    )
-                                                    .child(label)
-                                                    .into_any_element()
-                                            } else {
-                                                div().child(label).into_any_element()
-                                            }
-                                        }))
-                                        .into_any_element()
-                                }
-                            }),
+                    .track_focus(&self.focus_handle)
+                    // Right button drives panning.
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                            this.handle_mouse_down(ev);
+                        }),
                     )
+                    .on_mouse_up(
+                        gpui::MouseButton::Right,
+                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                            this.viewport.handle_mouse_up();
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        gpui::MouseButton::Right,
+                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                            this.viewport.handle_mouse_up();
+                            cx.notify();
+                        }),
+                    )
+                    // Left button: selection, box-select, or move-drag if the
+                    // press lands on an already-selected feature.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            window.focus(&this.focus_handle, cx);
+                            // v1 "create node" gesture: Cmd+Click (see
+                            // `create_node_at_screen_point`'s doc comment).
+                            if ev.modifiers.platform {
+                                this.create_node_at_screen_point(ev.position, cx);
+                            } else {
+                                this.handle_map_mouse_down(ev.position);
+                            }
+                        }),
+                    )
+                    .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                        if ev.keystroke.key == "escape" {
+                            this.cancel_move_drag(cx);
+                        } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
+                            this.delete_selected_features(cx);
+                        }
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                            this.handle_mouse_up(ev, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                        this.handle_mouse_move(ev, cx);
+                    }))
+                    .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
+                        this.handle_scroll(ev, cx);
+                    }))
+                    .child(
+                        div()
+                            .size_full()
+                            .relative()
+                            .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
+                            // Render all layer elements (raster content like tiles)
+                            .children(self.layer_manager.render_all_elements(&self.viewport))
+                            // Render canvas layers (vector content)
+                            .child(
+                                canvas(|_, _, _| {}, {
+                                    let viewport_clone = self.viewport.clone();
+                                    // Rather than aliasing `&self.layer_manager` with a
+                                    // raw pointer (the paint closure runs after `render`
+                                    // returns, so a borrow can't outlive this function),
+                                    // capture a cheap `Entity<Self>` handle and re-borrow
+                                    // `self` safely through it once paint actually runs —
+                                    // the `&mut App` the canvas API hands the paint
+                                    // closure is exactly what `Entity::read` needs.
+                                    let entity = cx.entity();
+                                    let selected = self.selected.clone();
+                                    move |bounds, _, window, cx| {
+                                        let this = entity.read(cx);
+                                        this.layer_manager.render_all_canvas(
+                                            &viewport_clone,
+                                            bounds,
+                                            window,
+                                        );
+                                        for sel in &selected {
+                                            this.layer_manager.render_highlight(
+                                                sel,
+                                                &viewport_clone,
+                                                bounds,
+                                                window,
+                                            );
+                                        }
+                                    }
+                                })
+                                .absolute()
+                                .size_full(), // Ensure canvas fills the entire map area
+                            ),
+                    )
+                    .child({
+                        // Debug info overlay (toggleable via View menu)
+                        if self.show_debug_overlay {
+                            div()
+                                .absolute()
+                                .top_4()
+                                .left_4()
+                                .p_3()
+                                .bg(gpui::black())
+                                .rounded_lg()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .opacity(0.9)
+                                .min_w_64()
+                                .child(format!("🔍 Zoom: {:.1}", zoom_level))
+                                .child(format!(
+                                    "🌍 Center: {:.4}°N, {:.4}°W",
+                                    center_lat,
+                                    center_lon.abs()
+                                ))
+                                .child(format!("📊 Objects: {}", osm_objects))
+                                .child(format!("🗺️ Tiles: {} visible", total_tiles))
+                                .child(format!("💾 Cache: {} files", cached_files))
+                                .child(format!("⚡ FPS: {:.0}", fps))
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    })
+                    .child({
+                        let status = self.status_message.clone();
+                        if let Some((msg, _)) = status {
+                            div()
+                                .absolute()
+                                .top_4()
+                                .right_4()
+                                .p_3()
+                                .bg(gpui::black())
+                                .rounded_lg()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .opacity(0.9)
+                                .child(msg)
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    })
+                    .child({
+                        if let Some((start, current)) = self.interaction.box_select_rect() {
+                            let rect = normalize_rect(from_pt(start), from_pt(current));
+                            div()
+                                .absolute()
+                                .left(rect.origin.x)
+                                .top(rect.origin.y)
+                                .w(rect.size.width)
+                                .h(rect.size.height)
+                                .bg(cx.theme().accent)
+                                .border_1()
+                                .border_color(cx.theme().accent)
+                                .opacity(0.35)
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }
+                    })
+                    .child({
+                        // Legally-required tile/imagery attribution for
+                        // every currently-visible layer that has one,
+                        // deduplicated (e.g. shared OSM Carto credit).
+                        // Entries with a link are clickable and open
+                        // it in the system browser.
+                        let raw_credits = self.layer_manager.layers().iter().filter_map(|layer| {
+                            if !layer.is_visible() {
+                                return None;
+                            }
+                            layer.attribution().map(|a| (a.text.clone(), a.url.clone()))
+                        });
+                        let credits = interaction::dedupe_attributions(raw_credits);
+                        if credits.is_empty() {
+                            div().into_any_element()
+                        } else {
+                            let n = credits.len();
+                            div()
+                                .absolute()
+                                .bottom_4()
+                                .right_4()
+                                .px_2()
+                                .py_1()
+                                .bg(gpui::black())
+                                .rounded_lg()
+                                .text_color(rgb(0xffffff))
+                                .text_xs()
+                                .opacity(0.75)
+                                .flex()
+                                .flex_row()
+                                .children(credits.into_iter().enumerate().map(
+                                    |(i, (text, url))| {
+                                        let separator = if i + 1 < n { " | " } else { "" };
+                                        let label = format!("{text}{separator}");
+                                        if let Some(url) = url {
+                                            div()
+                                                .id(("attribution-link", i))
+                                                .cursor_pointer()
+                                                .hover(|this| this.text_color(rgb(0xaad4ff)))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    move |_ev: &MouseDownEvent, _, _| {
+                                                        let _ = open::that(&url);
+                                                    },
+                                                )
+                                                .child(label)
+                                                .into_any_element()
+                                        } else {
+                                            div().child(label).into_any_element()
+                                        }
+                                    },
+                                ))
+                                .into_any_element()
+                        }
+                    }),
+            )
             .child(
                 // Right panel with layer controls
-                self.render_side_panel(cx)
+                self.render_side_panel(cx),
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
@@ -1696,7 +1840,11 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
             .children(self.custom_imagery_dialog.clone())
-            .children(self.tag_edit_dialog.as_ref().map(|(dialog, _)| dialog.clone()))
+            .children(
+                self.tag_edit_dialog
+                    .as_ref()
+                    .map(|(dialog, _)| dialog.clone()),
+            )
             .children(self.quit_confirm_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.upload_dialog.clone())
@@ -1859,68 +2007,70 @@ fn main() {
             })
             .detach();
 
-        let map_window = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                    origin: point(px(100.0), px(100.0)),
-                    size: size(px(win_w as f32), px(win_h as f32)),
-                })),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("OSM-GPUI Map Viewer".into()),
-                    appears_transparent: false,
-                    traffic_light_position: None,
-                }),
-                focus: true,
-                ..Default::default()
-            },
-            |window, cx| {
-                // Register keyboard bindings in the window context
-                cx.bind_keys([
-                    KeyBinding::new("cmd-o", OpenOsmFile, None),
-                    KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
-                    KeyBinding::new("cmd-shift-u", UploadToOsm, None),
-                    KeyBinding::new("cmd-q", Quit, None),
-                    KeyBinding::new("cmd-,", OpenSettings, None),
-                    KeyBinding::new("cmd-z", Undo, None),
-                    KeyBinding::new("cmd-shift-z", Redo, None),
-                ]);
-                let view = cx.new(|cx| MapViewer::new(window, cx));
+        let map_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                        origin: point(px(100.0), px(100.0)),
+                        size: size(px(win_w as f32), px(win_h as f32)),
+                    })),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("OSM-GPUI Map Viewer".into()),
+                        appears_transparent: false,
+                        traffic_light_position: None,
+                    }),
+                    focus: true,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    // Register keyboard bindings in the window context
+                    cx.bind_keys([
+                        KeyBinding::new("cmd-o", OpenOsmFile, None),
+                        KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
+                        KeyBinding::new("cmd-shift-u", UploadToOsm, None),
+                        KeyBinding::new("cmd-q", Quit, None),
+                        KeyBinding::new("cmd-,", OpenSettings, None),
+                        KeyBinding::new("cmd-z", Undo, None),
+                        KeyBinding::new("cmd-shift-z", Redo, None),
+                    ]);
+                    let view = cx.new(|cx| MapViewer::new(window, cx));
 
-                // Publish a weak handle to the live view so `menu::quit` (a
-                // free function with only `&mut App`) and the
-                // `on_window_should_close` closure below (which only has
-                // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
-                // reach it and query its *live* `layer_manager` state at
-                // decision time, rather than a cached boolean.
-                let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
+                    // Publish a weak handle to the live view so `menu::quit` (a
+                    // free function with only `&mut App`) and the
+                    // `on_window_should_close` closure below (which only has
+                    // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
+                    // reach it and query its *live* `layer_manager` state at
+                    // decision time, rather than a cached boolean.
+                    let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
 
-                // Intercept the OS window-close button (traffic-light / titlebar
-                // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
-                // hook: unlike `on_window_closed` below (which only fires *after*
-                // the window is already gone and can't stop anything), this one
-                // can veto the close by returning `false`. If there are unsaved
-                // changes (checked live, per layer, via `has_unsaved_changes`)
-                // we cancel the close and ask the live `MapViewer` to show the
-                // same confirmation dialog as Cmd+Q, directly (this closure
-                // already has a `Window`, so no need to go through
-                // `with_map_viewer_in`'s window-lookup-by-entity-id path);
-                // otherwise we let the close proceed, which triggers
-                // `on_window_closed` -> `cx.quit()` as before.
-                window.on_window_should_close(cx, |window, cx| {
-                    if has_unsaved_changes(cx) {
-                        if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                            let _ = view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
+                    // Intercept the OS window-close button (traffic-light / titlebar
+                    // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
+                    // hook: unlike `on_window_closed` below (which only fires *after*
+                    // the window is already gone and can't stop anything), this one
+                    // can veto the close by returning `false`. If there are unsaved
+                    // changes (checked live, per layer, via `has_unsaved_changes`)
+                    // we cancel the close and ask the live `MapViewer` to show the
+                    // same confirmation dialog as Cmd+Q, directly (this closure
+                    // already has a `Window`, so no need to go through
+                    // `with_map_viewer_in`'s window-lookup-by-entity-id path);
+                    // otherwise we let the close proceed, which triggers
+                    // `on_window_closed` -> `cx.quit()` as before.
+                    window.on_window_should_close(cx, |window, cx| {
+                        if has_unsaved_changes(cx) {
+                            if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                                let _ =
+                                    view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
+                            }
+                            false
+                        } else {
+                            true
                         }
-                        false
-                    } else {
-                        true
-                    }
-                });
+                    });
 
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
-            },
-        )
-        .unwrap();
+                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                },
+            )
+            .unwrap();
 
         let map_window_id = map_window.window_id();
         cx.on_window_closed(move |cx, window_id| {

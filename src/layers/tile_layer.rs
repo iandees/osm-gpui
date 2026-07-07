@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::imagery::AttributionInfo;
 use crate::layers::{LayerId, MapLayer};
-use crate::viewport::Viewport;
 use crate::tile_cache::TileCache;
 use crate::tiles::{get_tiles_for_bounds, url_from_template, TileCoord};
+use crate::viewport::Viewport;
 
 /// The built-in OpenStreetMap Carto tile URL template.
 pub const OSM_CARTO_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -221,7 +221,10 @@ impl MapLayer for TileLayer {
         };
         let bounds_geo = viewport.visible_bounds();
         let (min_lat, min_lon, max_lat, max_lon) = (
-            bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
+            bounds_geo.min_lat,
+            bounds_geo.min_lon,
+            bounds_geo.max_lat,
+            bounds_geo.max_lon,
         );
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
         let Some(geom) = compute_tile_grid_geometry(viewport, &visible_tiles, tile_zoom) else {
@@ -252,8 +255,8 @@ impl MapLayer for TileLayer {
                         img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                             window.use_asset::<crate::tile_cache::TileAsset>(&parent_url, cx)
                         })
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover),
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Cover),
                     )
                     .into_any_element()
             });
@@ -285,29 +288,29 @@ impl MapLayer for TileLayer {
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                         window.use_asset::<crate::tile_cache::TileAsset>(&asset_url, cx)
                     })
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover)
-                        .with_fallback(move || {
-                            let reason = crate::tile_cache::last_error(&fallback_url)
-                                .unwrap_or_else(|| "Failed".to_string());
-                            let display = crate::tile_cache::truncate_middle(&reason, char_budget);
-                            div()
-                                .size_full()
-                                .bg(rgb(0x9f1239))
-                                .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .text_color(rgb(0xffffff))
-                                        .text_xs()
-                                        .whitespace_nowrap()
-                                        .child(display)
-                                )
-                                .into_any_element()
-                        })
-                        .into_any_element()
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+                    .with_fallback(move || {
+                        let reason = crate::tile_cache::last_error(&fallback_url)
+                            .unwrap_or_else(|| "Failed".to_string());
+                        let display = crate::tile_cache::truncate_middle(&reason, char_budget);
+                        div()
+                            .size_full()
+                            .bg(rgb(0x9f1239))
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_color(rgb(0xffffff))
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .child(display),
+                            )
+                            .into_any_element()
+                    })
+                    .into_any_element(),
                 )
                 .into_any_element();
 
@@ -329,7 +332,10 @@ impl MapLayer for TileLayer {
         };
         let bounds_geo = viewport.visible_bounds();
         let (min_lat, min_lon, max_lat, max_lon) = (
-            bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
+            bounds_geo.min_lat,
+            bounds_geo.min_lon,
+            bounds_geo.max_lat,
+            bounds_geo.max_lon,
         );
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
         let Some(geom) = compute_tile_grid_geometry(viewport, &visible_tiles, tile_zoom) else {
@@ -371,7 +377,10 @@ impl MapLayer for TileLayer {
         let mut stats = vec![
             ("Cached Files".to_string(), cached_files.to_string()),
             ("Active Downloads".to_string(), active_downloads.to_string()),
-            ("Show Boundaries".to_string(), self.show_boundaries.to_string()),
+            (
+                "Show Boundaries".to_string(),
+                self.show_boundaries.to_string(),
+            ),
         ];
         if let Some(min_z) = self.min_zoom {
             stats.push(("Min Zoom".to_string(), min_z.to_string()));
@@ -514,9 +523,18 @@ mod tests {
     fn min_and_max_combined() {
         assert_eq!(compute_effective_tile_zoom(4.0, Some(5), Some(14)), None);
         assert_eq!(compute_effective_tile_zoom(5.0, Some(5), Some(14)), Some(5));
-        assert_eq!(compute_effective_tile_zoom(10.0, Some(5), Some(14)), Some(10));
-        assert_eq!(compute_effective_tile_zoom(14.0, Some(5), Some(14)), Some(14));
-        assert_eq!(compute_effective_tile_zoom(15.0, Some(5), Some(14)), Some(14));
+        assert_eq!(
+            compute_effective_tile_zoom(10.0, Some(5), Some(14)),
+            Some(10)
+        );
+        assert_eq!(
+            compute_effective_tile_zoom(14.0, Some(5), Some(14)),
+            Some(14)
+        );
+        assert_eq!(
+            compute_effective_tile_zoom(15.0, Some(5), Some(14)),
+            Some(14)
+        );
         assert_eq!(compute_effective_tile_zoom(16.0, Some(5), Some(14)), None);
     }
 }

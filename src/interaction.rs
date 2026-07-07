@@ -99,8 +99,14 @@ impl Interaction {
 /// shared field written by both buttons' down handlers.
 pub fn record_mouse_down(interaction: &Interaction, pos: Pt) -> Interaction {
     match interaction {
-        Interaction::BoxSelect { current, .. } => Interaction::BoxSelect { down: pos, current: *current },
-        Interaction::MoveDrag { targets, .. } => Interaction::MoveDrag { down: pos, targets: targets.clone() },
+        Interaction::BoxSelect { current, .. } => Interaction::BoxSelect {
+            down: pos,
+            current: *current,
+        },
+        Interaction::MoveDrag { targets, .. } => Interaction::MoveDrag {
+            down: pos,
+            targets: targets.clone(),
+        },
         Interaction::Idle | Interaction::Pending { .. } => Interaction::Pending { down: pos },
     }
 }
@@ -181,10 +187,15 @@ pub fn on_mouse_up(interaction: &mut Interaction, up_pos: Pt) -> Gesture {
             if magnitude(down, up_pos) >= DRAG_THRESHOLD {
                 Gesture::MoveCommitted { targets, delta }
             } else {
-                Gesture::MoveCancelledAsClick { targets, at: up_pos }
+                Gesture::MoveCancelledAsClick {
+                    targets,
+                    at: up_pos,
+                }
             }
         }
-        Interaction::BoxSelect { down, .. } => Gesture::BoxSelected { rect: (down, up_pos) },
+        Interaction::BoxSelect { down, .. } => Gesture::BoxSelected {
+            rect: (down, up_pos),
+        },
         Interaction::Pending { down } => {
             if magnitude(down, up_pos) < DRAG_THRESHOLD {
                 Gesture::Click { at: up_pos }
@@ -294,7 +305,10 @@ mod tests {
         assert!(update_box_select(&mut interaction, (5.0, 0.0), true));
         assert_eq!(
             interaction,
-            Interaction::BoxSelect { down: (0.0, 0.0), current: (5.0, 0.0) }
+            Interaction::BoxSelect {
+                down: (0.0, 0.0),
+                current: (5.0, 0.0)
+            }
         );
     }
 
@@ -309,28 +323,48 @@ mod tests {
 
     #[test]
     fn box_select_updates_every_move_once_started_even_below_threshold() {
-        let mut interaction = Interaction::BoxSelect { down: (0.0, 0.0), current: (5.0, 0.0) };
+        let mut interaction = Interaction::BoxSelect {
+            down: (0.0, 0.0),
+            current: (5.0, 0.0),
+        };
         // Once box-selecting, `already_boxing` keeps updating regardless of
         // per-move distance from `down`.
         assert!(update_box_select(&mut interaction, (0.5, 0.0), true));
         assert_eq!(
             interaction,
-            Interaction::BoxSelect { down: (0.0, 0.0), current: (0.5, 0.0) }
+            Interaction::BoxSelect {
+                down: (0.0, 0.0),
+                current: (0.5, 0.0)
+            }
         );
     }
 
     #[test]
     fn box_select_completes_on_mouse_up() {
-        let mut interaction = Interaction::BoxSelect { down: (1.0, 2.0), current: (9.0, 9.0) };
+        let mut interaction = Interaction::BoxSelect {
+            down: (1.0, 2.0),
+            current: (9.0, 9.0),
+        };
         let gesture = on_mouse_up(&mut interaction, (20.0, 30.0));
-        assert_eq!(gesture, Gesture::BoxSelected { rect: ((1.0, 2.0), (20.0, 30.0)) });
+        assert_eq!(
+            gesture,
+            Gesture::BoxSelected {
+                rect: ((1.0, 2.0), (20.0, 30.0))
+            }
+        );
         assert_eq!(interaction, Interaction::Idle);
     }
 
     #[test]
     fn box_select_rect_reads_current_state_for_overlay() {
-        let interaction = Interaction::BoxSelect { down: (1.0, 2.0), current: (3.0, 4.0) };
-        assert_eq!(interaction.box_select_rect(), Some(((1.0, 2.0), (3.0, 4.0))));
+        let interaction = Interaction::BoxSelect {
+            down: (1.0, 2.0),
+            current: (3.0, 4.0),
+        };
+        assert_eq!(
+            interaction.box_select_rect(),
+            Some(((1.0, 2.0), (3.0, 4.0)))
+        );
         assert_eq!(Interaction::Idle.box_select_rect(), None);
     }
 
@@ -340,7 +374,13 @@ mod tests {
     fn move_drag_starts_on_hit_and_tracks_delta_while_held() {
         let t = targets(1, &[10, 11]);
         let interaction = on_left_mouse_down((5.0, 5.0), Some(t.clone()));
-        assert_eq!(interaction, Interaction::MoveDrag { down: (5.0, 5.0), targets: t });
+        assert_eq!(
+            interaction,
+            Interaction::MoveDrag {
+                down: (5.0, 5.0),
+                targets: t
+            }
+        );
 
         let delta = move_drag_delta((5.0, 5.0), (8.0, 6.0), true);
         assert_eq!(delta, Some((3.0, 1.0)));
@@ -357,18 +397,36 @@ mod tests {
     #[test]
     fn move_drag_commits_past_threshold() {
         let t = targets(2, &[1]);
-        let mut interaction = Interaction::MoveDrag { down: (0.0, 0.0), targets: t.clone() };
+        let mut interaction = Interaction::MoveDrag {
+            down: (0.0, 0.0),
+            targets: t.clone(),
+        };
         let gesture = on_mouse_up(&mut interaction, (10.0, 0.0));
-        assert_eq!(gesture, Gesture::MoveCommitted { targets: t, delta: (10.0, 0.0) });
+        assert_eq!(
+            gesture,
+            Gesture::MoveCommitted {
+                targets: t,
+                delta: (10.0, 0.0)
+            }
+        );
         assert_eq!(interaction, Interaction::Idle);
     }
 
     #[test]
     fn move_drag_under_threshold_cancels_as_click() {
         let t = targets(2, &[1]);
-        let mut interaction = Interaction::MoveDrag { down: (0.0, 0.0), targets: t.clone() };
+        let mut interaction = Interaction::MoveDrag {
+            down: (0.0, 0.0),
+            targets: t.clone(),
+        };
         let gesture = on_mouse_up(&mut interaction, (1.0, 0.0)); // magnitude 1.0 < 4.0
-        assert_eq!(gesture, Gesture::MoveCancelledAsClick { targets: t, at: (1.0, 0.0) });
+        assert_eq!(
+            gesture,
+            Gesture::MoveCancelledAsClick {
+                targets: t,
+                at: (1.0, 0.0)
+            }
+        );
         assert_eq!(interaction, Interaction::Idle);
     }
 
@@ -377,15 +435,27 @@ mod tests {
         // Original used `>= 4.0` for the move-drag "moved" check (distinct
         // from the plain-click `< 4.0`), so exactly-at-threshold commits.
         let t = targets(2, &[1]);
-        let mut interaction = Interaction::MoveDrag { down: (0.0, 0.0), targets: t.clone() };
+        let mut interaction = Interaction::MoveDrag {
+            down: (0.0, 0.0),
+            targets: t.clone(),
+        };
         let gesture = on_mouse_up(&mut interaction, (4.0, 0.0));
-        assert_eq!(gesture, Gesture::MoveCommitted { targets: t, delta: (4.0, 0.0) });
+        assert_eq!(
+            gesture,
+            Gesture::MoveCommitted {
+                targets: t,
+                delta: (4.0, 0.0)
+            }
+        );
     }
 
     #[test]
     fn cancel_move_drag_clears_state_and_returns_targets() {
         let t = targets(3, &[7, 8]);
-        let mut interaction = Interaction::MoveDrag { down: (0.0, 0.0), targets: t.clone() };
+        let mut interaction = Interaction::MoveDrag {
+            down: (0.0, 0.0),
+            targets: t.clone(),
+        };
         let cancelled = cancel_move_drag(&mut interaction);
         assert_eq!(cancelled, Some(t));
         assert_eq!(interaction, Interaction::Idle);
@@ -393,7 +463,10 @@ mod tests {
 
     #[test]
     fn cancel_move_drag_is_a_no_op_outside_a_move_drag() {
-        let mut interaction = Interaction::BoxSelect { down: (0.0, 0.0), current: (1.0, 1.0) };
+        let mut interaction = Interaction::BoxSelect {
+            down: (0.0, 0.0),
+            current: (1.0, 1.0),
+        };
         assert_eq!(cancel_move_drag(&mut interaction), None);
         // Unaffected: cancel only acts on MoveDrag.
         assert!(matches!(interaction, Interaction::BoxSelect { .. }));
@@ -409,17 +482,35 @@ mod tests {
 
     #[test]
     fn record_mouse_down_overwrites_down_but_preserves_box_select_current() {
-        let interaction = Interaction::BoxSelect { down: (1.0, 1.0), current: (9.0, 9.0) };
+        let interaction = Interaction::BoxSelect {
+            down: (1.0, 1.0),
+            current: (9.0, 9.0),
+        };
         let updated = record_mouse_down(&interaction, (2.0, 2.0));
-        assert_eq!(updated, Interaction::BoxSelect { down: (2.0, 2.0), current: (9.0, 9.0) });
+        assert_eq!(
+            updated,
+            Interaction::BoxSelect {
+                down: (2.0, 2.0),
+                current: (9.0, 9.0)
+            }
+        );
     }
 
     #[test]
     fn record_mouse_down_overwrites_down_but_preserves_move_drag_targets() {
         let t = targets(1, &[1]);
-        let interaction = Interaction::MoveDrag { down: (1.0, 1.0), targets: t.clone() };
+        let interaction = Interaction::MoveDrag {
+            down: (1.0, 1.0),
+            targets: t.clone(),
+        };
         let updated = record_mouse_down(&interaction, (2.0, 2.0));
-        assert_eq!(updated, Interaction::MoveDrag { down: (2.0, 2.0), targets: t });
+        assert_eq!(
+            updated,
+            Interaction::MoveDrag {
+                down: (2.0, 2.0),
+                targets: t
+            }
+        );
     }
 
     // -- normalize_rect ---------------------------------------------------
@@ -428,11 +519,21 @@ mod tests {
     fn normalize_rect_handles_any_drag_direction() {
         assert_eq!(
             normalize_rect((10.0, 20.0), (2.0, 5.0)),
-            Rect { x: 2.0, y: 5.0, width: 8.0, height: 15.0 }
+            Rect {
+                x: 2.0,
+                y: 5.0,
+                width: 8.0,
+                height: 15.0
+            }
         );
         assert_eq!(
             normalize_rect((2.0, 5.0), (10.0, 20.0)),
-            Rect { x: 2.0, y: 5.0, width: 8.0, height: 15.0 }
+            Rect {
+                x: 2.0,
+                y: 5.0,
+                width: 8.0,
+                height: 15.0
+            }
         );
     }
 
@@ -440,7 +541,12 @@ mod tests {
     fn normalize_rect_zero_size_at_a_point() {
         assert_eq!(
             normalize_rect((5.0, 5.0), (5.0, 5.0)),
-            Rect { x: 5.0, y: 5.0, width: 0.0, height: 0.0 }
+            Rect {
+                x: 5.0,
+                y: 5.0,
+                width: 0.0,
+                height: 0.0
+            }
         );
     }
 
@@ -451,7 +557,10 @@ mod tests {
         let items = vec![
             ("OSM Carto".to_string(), Some("https://osm.org".to_string())),
             ("Imagery Inc".to_string(), None),
-            ("OSM Carto".to_string(), Some("https://different.example".to_string())),
+            (
+                "OSM Carto".to_string(),
+                Some("https://different.example".to_string()),
+            ),
         ];
         let credits = dedupe_attributions(items);
         assert_eq!(

@@ -3,7 +3,10 @@
 //! full-window scrim, the bordered card chrome (title / body / footer), and
 //! the standard Cancel + primary-confirm footer button row.
 
-use gpui::{div, prelude::*, rgba, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent, Pixels, SharedString, Window};
+use gpui::{
+    div, prelude::*, rgba, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent,
+    Pixels, SharedString, Window,
+};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},

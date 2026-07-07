@@ -3,10 +3,10 @@ use std::collections::HashSet;
 
 use crate::viewport::Viewport;
 
-pub mod tile_layer;
-pub mod osm_layer;
-pub mod grid_layer;
 pub mod diff;
+pub mod grid_layer;
+pub mod osm_layer;
+pub mod tile_layer;
 
 /// Stable identity for a layer, independent of its (user-visible, possibly
 /// renamed-for-uniqueness) display name. Allocated monotonically by
@@ -129,10 +129,8 @@ pub trait EditableLayer {
     fn set_highlight(&mut self, features: &[crate::selection::FeatureRef]);
 
     /// Return key/value tags for the given feature if this layer owns it.
-    fn feature_tags(
-        &self,
-        feature: &crate::selection::FeatureRef,
-    ) -> Option<Vec<(String, String)>>;
+    fn feature_tags(&self, feature: &crate::selection::FeatureRef)
+        -> Option<Vec<(String, String)>>;
 
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
     fn render_highlight(
@@ -253,7 +251,10 @@ impl LayerManager {
 
     /// Find a layer by id (immutable)
     pub fn find_layer(&self, id: LayerId) -> Option<&dyn MapLayer> {
-        self.layers.iter().find(|layer| layer.id() == id).map(|b| b.as_ref())
+        self.layers
+            .iter()
+            .find(|layer| layer.id() == id)
+            .map(|b| b.as_ref())
     }
 
     /// Find a layer by id (mutable)
@@ -269,7 +270,10 @@ impl LayerManager {
     /// exist" checks at creation time, where there's no id yet to look up by
     /// — everywhere else, identity flows through `LayerId`.
     pub fn layer_named(&self, name: &str) -> Option<&dyn MapLayer> {
-        self.layers.iter().find(|layer| layer.name() == name).map(|b| b.as_ref())
+        self.layers
+            .iter()
+            .find(|layer| layer.name() == name)
+            .map(|b| b.as_ref())
     }
 
     /// Return a display name based on `base` that's unique among current
@@ -303,7 +307,12 @@ impl LayerManager {
     }
 
     /// Render all visible layers using canvas drawing
-    pub fn render_all_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
+    pub fn render_all_canvas(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
         for layer in &self.layers {
             if layer.is_visible() {
                 layer.render_canvas(viewport, bounds, window);
@@ -510,7 +519,10 @@ mod tests {
         let id_b = manager.layers()[1].id();
 
         assert_eq!(manager.find_layer(id_b).map(|l| l.name()), Some("b"));
-        assert_eq!(manager.find_layer_mut(id_a).map(|l| l.name().to_string()), Some("a".to_string()));
+        assert_eq!(
+            manager.find_layer_mut(id_a).map(|l| l.name().to_string()),
+            Some("a".to_string())
+        );
     }
 
     #[test]
@@ -551,10 +563,21 @@ mod tests {
 
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
+        let node = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon,
+            version: 1,
+            tags: HashMap::new(),
+        };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
-        let data = Arc::new(OsmData { nodes, ways: HashMap::new(), relations: Vec::new(), bounds: None });
+        let data = Arc::new(OsmData {
+            nodes,
+            ways: HashMap::new(),
+            relations: Vec::new(),
+            bounds: None,
+        });
 
         let mut manager = LayerManager::new();
         let layer_id = manager.alloc_id();
@@ -562,7 +585,11 @@ mod tests {
         manager.add_layer(Box::new(layer));
 
         let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
-        let selected = vec![FeatureRef { layer_id, kind: FeatureKind::Node, id: 1 }];
+        let selected = vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id: 1,
+        }];
 
         let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
         assert_eq!(hit, Some(selected[0].clone()));
@@ -581,10 +608,21 @@ mod tests {
 
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
+        let node = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon,
+            version: 1,
+            tags: HashMap::new(),
+        };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
-        let data = Arc::new(OsmData { nodes, ways: HashMap::new(), relations: Vec::new(), bounds: None });
+        let data = Arc::new(OsmData {
+            nodes,
+            ways: HashMap::new(),
+            relations: Vec::new(),
+            bounds: None,
+        });
 
         let mut manager = LayerManager::new();
         let layer_id = manager.alloc_id();
@@ -593,7 +631,11 @@ mod tests {
 
         let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
         // Selection references a *different* node id than the one under the cursor.
-        let selected = vec![FeatureRef { layer_id, kind: FeatureKind::Node, id: 999 }];
+        let selected = vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id: 999,
+        }];
 
         let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
         assert_eq!(hit, None);

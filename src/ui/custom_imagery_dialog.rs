@@ -7,11 +7,7 @@ use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     SharedString, Window,
 };
-use gpui_component::{
-    input::InputState,
-    label::Label,
-    v_flex, ActiveTheme as _,
-};
+use gpui_component::{input::InputState, label::Label, v_flex, ActiveTheme as _};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
@@ -104,7 +100,10 @@ mod tests {
 
     #[test]
     fn name_must_be_nonempty() {
-        assert_eq!(validate("  ", TMPL, "", ""), Err(ValidationError::NameEmpty));
+        assert_eq!(
+            validate("  ", TMPL, "", ""),
+            Err(ValidationError::NameEmpty)
+        );
     }
 
     #[test]
@@ -242,9 +241,7 @@ pub fn error_message(e: &ValidationError) -> &'static str {
         ValidationError::TemplateMissingPlaceholder => {
             "URL template must contain {z}, {x}, and {y} (or {-y})."
         }
-        ValidationError::TemplateYAndMinusY => {
-            "URL template must use {y} or {-y}, not both."
-        }
+        ValidationError::TemplateYAndMinusY => "URL template must use {y} or {-y}, not both.",
         ValidationError::MinZoomInvalid => "Min zoom must be a whole number from 0 to 24.",
         ValidationError::MaxZoomInvalid => "Max zoom must be a whole number from 0 to 24.",
         ValidationError::MinZoomAboveMax => "Min zoom must be ≤ max zoom.",
@@ -270,16 +267,16 @@ impl Render for CustomImageryDialog {
                     .flex()
                     .flex_row()
                     .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(modal::field_row("Min zoom", &self.min_zoom, muted)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(modal::field_row("Max zoom", &self.max_zoom, muted)),
-                    ),
+                    .child(div().flex_1().child(modal::field_row(
+                        "Min zoom",
+                        &self.min_zoom,
+                        muted,
+                    )))
+                    .child(div().flex_1().child(modal::field_row(
+                        "Max zoom",
+                        &self.max_zoom,
+                        muted,
+                    ))),
             );
 
         if let Some(msg) = self.error.clone() {

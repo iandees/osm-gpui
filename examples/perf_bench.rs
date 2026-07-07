@@ -24,7 +24,10 @@ const CENTER_LON: f64 = -93.2650;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0
     }
     fn f64(&mut self) -> f64 {
@@ -33,7 +36,10 @@ impl Lcg {
 }
 
 fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 /// Ways are spatially compact chains (random anchor + ~10m steps), like real
@@ -53,7 +59,16 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
         for _ in 0..nodes_per_way {
             let id = next_id;
             next_id += 1;
-            nodes.insert(id, OsmNode { id, lat, lon, tags: HashMap::new(), version: 1 });
+            nodes.insert(
+                id,
+                OsmNode {
+                    id,
+                    lat,
+                    lon,
+                    tags: HashMap::new(),
+                    version: 1,
+                },
+            );
             node_ids.push(id);
             lat += (rng.f64() - 0.5) * 2.0 * STEP;
             lon += (rng.f64() - 0.5) * 2.0 * STEP;
@@ -65,7 +80,15 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             8 => tags(&[("waterway", "stream")]),
             _ => HashMap::new(),
         };
-        ways.insert(wid, OsmWay { id: wid, nodes: node_ids, tags: t, version: 1 });
+        ways.insert(
+            wid,
+            OsmWay {
+                id: wid,
+                nodes: node_ids,
+                tags: t,
+                version: 1,
+            },
+        );
     }
     for _ in 0..n_poi_nodes {
         let id = next_id;
@@ -77,9 +100,23 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             1 => tags(&[("shop", "convenience")]),
             _ => HashMap::new(),
         };
-        nodes.insert(id, OsmNode { id, lat, lon, tags: t, version: 1 });
+        nodes.insert(
+            id,
+            OsmNode {
+                id,
+                lat,
+                lon,
+                tags: t,
+                version: 1,
+            },
+        );
     }
-    Arc::new(OsmData { nodes, ways, relations: Vec::new(), bounds: None })
+    Arc::new(OsmData {
+        nodes,
+        ways,
+        relations: Vec::new(),
+        bounds: None,
+    })
 }
 
 fn bench<F: FnMut() -> u64>(name: &str, iters: usize, mut f: F) {
@@ -124,7 +161,9 @@ fn render_ways_cpu(
         if verts.len() < 2 {
             continue;
         }
-        let Some((min_x, max_x, min_y, max_y)) = way_bboxes[i] else { continue };
+        let Some((min_x, max_x, min_y, max_y)) = way_bboxes[i] else {
+            continue;
+        };
         if max_x < vmin_x || min_x > vmax_x || max_y < vmin_y || min_y > vmax_y {
             continue;
         }
@@ -170,7 +209,12 @@ fn render_ways_cpu(
     visible.wrapping_add(verts_total)
 }
 
-fn push_quad(path: &mut Option<Path<Pixels>>, p0: Point<Pixels>, p1: Point<Pixels>, half_width: f32) {
+fn push_quad(
+    path: &mut Option<Path<Pixels>>,
+    p0: Point<Pixels>,
+    p1: Point<Pixels>,
+    half_width: f32,
+) {
     let x0 = f32::from(p0.x);
     let y0 = f32::from(p0.y);
     let x1 = f32::from(p1.x);
@@ -263,18 +307,34 @@ fn main() {
     let mut way_bboxes: Vec<Option<(f64, f64, f64, f64)>> = Vec::with_capacity(data.ways.len());
     for w in &ways_sorted {
         let mut vs = Vec::with_capacity(w.nodes.len());
-        let (mut min_x, mut max_x, mut min_y, mut max_y) =
-            (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
         for nid in &w.nodes {
             if let Some(&(mx, my)) = merc.get(nid) {
                 vs.push((*nid, mx, my));
-                if mx < min_x { min_x = mx; }
-                if mx > max_x { max_x = mx; }
-                if my < min_y { min_y = my; }
-                if my > max_y { max_y = my; }
+                if mx < min_x {
+                    min_x = mx;
+                }
+                if mx > max_x {
+                    max_x = mx;
+                }
+                if my < min_y {
+                    min_y = my;
+                }
+                if my > max_y {
+                    max_y = my;
+                }
             }
         }
-        way_bboxes.push(if vs.is_empty() { None } else { Some((min_x, max_x, min_y, max_y)) });
+        way_bboxes.push(if vs.is_empty() {
+            None
+        } else {
+            Some((min_x, max_x, min_y, max_y))
+        });
         way_vertices.push(vs);
     }
     let cached_way_styles: Vec<(u32, f32)> = ways_sorted
@@ -287,26 +347,68 @@ fn main() {
 
     println!("\n-- per-frame render CPU (everything except GPU submit) --");
     bench("ways z14 all visible: current", 30, || {
-        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, None, 0.0)
+        render_ways_cpu(
+            &ways_sorted,
+            &way_vertices,
+            &way_bboxes,
+            &viewport,
+            &stylesheet,
+            None,
+            0.0,
+        )
     });
     bench("ways z14: precomputed styles (proposed)", 30, || {
-        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 0.0)
+        render_ways_cpu(
+            &ways_sorted,
+            &way_vertices,
+            &way_bboxes,
+            &viewport,
+            &stylesheet,
+            Some(&cached_way_styles),
+            0.0,
+        )
     });
-    bench("ways z14: cached styles + 1px decimation (proposed)", 30, || {
-        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 1.0)
-    });
+    bench(
+        "ways z14: cached styles + 1px decimation (proposed)",
+        30,
+        || {
+            render_ways_cpu(
+                &ways_sorted,
+                &way_vertices,
+                &way_bboxes,
+                &viewport,
+                &stylesheet,
+                Some(&cached_way_styles),
+                1.0,
+            )
+        },
+    );
     bench("ways z17 (culling active): current", 30, || {
-        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport_z17, &stylesheet, None, 0.0)
+        render_ways_cpu(
+            &ways_sorted,
+            &way_vertices,
+            &way_bboxes,
+            &viewport_z17,
+            &stylesheet,
+            None,
+            0.0,
+        )
     });
     bench("nodes: cull+hashmap+style (current)", 30, || {
         render_nodes_cpu(&data, &flat, &viewport, &stylesheet, false)
     });
-    bench("nodes: cull only, style skipped (proposed cache)", 30, || {
-        render_nodes_cpu(&data, &flat, &viewport, &stylesheet, true)
-    });
+    bench(
+        "nodes: cull only, style skipped (proposed cache)",
+        30,
+        || render_nodes_cpu(&data, &flat, &viewport, &stylesheet, true),
+    );
 
     println!("\n-- style resolution microbench --");
-    let hw_tags = tags(&[("highway", "residential"), ("name", "X"), ("surface", "asphalt")]);
+    let hw_tags = tags(&[
+        ("highway", "residential"),
+        ("name", "X"),
+        ("surface", "asphalt"),
+    ]);
     bench("way_style x 8k calls", 30, || {
         let mut acc = 0u64;
         for _ in 0..8_000 {
@@ -336,11 +438,15 @@ fn main() {
     // old always-full-clone code. This is the pessimistic case: some other
     // long-lived Arc (a snapshot, an in-flight export) is alive across the
     // edit.
-    bench("commit_node_moves: 1 node, Arc SHARED (make_mut clones once)", 10, || {
-        let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
-        l.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
-        l.is_modified() as u64
-    });
+    bench(
+        "commit_node_moves: 1 node, Arc SHARED (make_mut clones once)",
+        10,
+        || {
+            let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
+            l.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
+            l.is_modified() as u64
+        },
+    );
     // Production reality: nothing outside tests ever holds a second
     // Arc<OsmData> clone across an edit (see OsmLayer::get_osm_data's doc
     // comment), so the layer's Arc is uniquely held -> Arc::make_mut
@@ -349,10 +455,14 @@ fn main() {
     // from the `data` Arc kept alive elsewhere in `main`.
     let unique_data: Arc<OsmData> = Arc::new((*data).clone());
     let mut l_unique = OsmLayer::new_with_data(LayerId(1), "bench-unique", unique_data);
-    bench("commit_node_moves: 1 node, Arc UNIQUE (make_mut, in place)", 30, || {
-        l_unique.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
-        l_unique.is_modified() as u64
-    });
+    bench(
+        "commit_node_moves: 1 node, Arc UNIQUE (make_mut, in place)",
+        30,
+        || {
+            l_unique.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
+            l_unique.is_modified() as u64
+        },
+    );
     bench("set_osm_data rebuild alone", 10, || {
         let mut l = OsmLayer::new(LayerId(1));
         l.set_osm_data(data.clone());

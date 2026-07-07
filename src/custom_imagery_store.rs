@@ -28,7 +28,8 @@ pub fn snapshot() -> Vec<CustomImageryEntry> {
 
 /// Append one entry to the in-memory store and persist to disk.
 pub fn append(entry: CustomImageryEntry) {
-    let Some(snapshot) = CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry)) else {
+    let Some(snapshot) = CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry))
+    else {
         return;
     };
     save(&snapshot);
@@ -57,7 +58,11 @@ pub fn save_to(path: &Path, entries: &[CustomImageryEntry]) -> std::io::Result<(
 /// Default on-disk location: `<config_dir>/osm-gpui/custom-imagery.json`.
 /// Returns `None` if the OS has no conventional config dir (e.g., exotic platforms).
 pub fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("osm-gpui").join("custom-imagery.json"))
+    Some(
+        dirs::config_dir()?
+            .join("osm-gpui")
+            .join("custom-imagery.json"),
+    )
 }
 
 /// Load from the default path. Empty vec if unavailable.
