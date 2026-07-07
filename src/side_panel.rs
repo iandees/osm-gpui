@@ -222,6 +222,18 @@ impl MapViewer {
 
     /// The Layers accordion section: a Checkbox row per layer with a right-click
     /// context menu offering Move up / Move down / Delete.
+    ///
+    /// The toggle is driven by a plain `on_mouse_down` on a wrapping row
+    /// rather than `Checkbox::on_click` + `.context_menu(...)` on the
+    /// `Checkbox` itself: `Checkbox::on_click` relies on gpui's paired
+    /// mouse-down/mouse-up click detection on one hitbox, but
+    /// `.context_menu(...)` wraps that same element in an *extra* hitbox
+    /// layer (`ContextMenu::prepaint` inserts its own hitbox covering the
+    /// whole row). That combination is fragile — it manifested as the first
+    /// click on a layer checkbox doing nothing (only the second registered)
+    /// and the right-click menu dismissing itself when the cursor moved.
+    /// `Checkbox` is kept purely for its visual (box + check icon + label);
+    /// the wrapping row owns both the click-to-toggle and the context menu.
     fn render_layers_section(
         &self,
         layer_info: &[(LayerId, String, bool, bool)],
@@ -247,13 +259,21 @@ impl MapViewer {
                         } else {
                             name.clone()
                         };
-                        Checkbox::new(("layer", index))
-                            .checked(*is_visible)
-                            .label(label)
-                            .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
-                                this.toggle_layer_visibility(layer_id);
-                                cx.notify();
-                            }))
+                        div()
+                            .id(("layer-row", index))
+                            .cursor_pointer()
+                            .child(
+                                Checkbox::new(("layer", index))
+                                    .checked(*is_visible)
+                                    .label(label),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.toggle_layer_visibility(layer_id);
+                                    cx.notify();
+                                }),
+                            )
                             .context_menu(move |menu, _window, _cx| {
                                 let mut menu = menu;
                                 if index > 0 {
