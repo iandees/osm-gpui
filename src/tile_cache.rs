@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::idle_tracker::IdleTracker;
 
@@ -30,6 +30,24 @@ fn cache_filename(url: &str) -> String {
     hasher.update(url.as_bytes());
     let digest = hasher.finalize();
     format!("tile_{:x}.png", digest)
+}
+
+/// Atomically write `bytes` to `file_path`: write to a unique sibling temp
+/// file first, then `rename` into place. `rename` is atomic on POSIX
+/// filesystems (macOS/Linux), so concurrent fetches for the same cache path
+/// can never produce a torn/truncated file that a concurrent reader might
+/// load.
+fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let unique = format!(
+        "{}.tmp.{}.{:?}",
+        file_path.display(),
+        std::process::id(),
+        std::thread::current().id()
+    );
+    let tmp_path = PathBuf::from(unique);
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(&tmp_path, file_path)?;
+    Ok(())
 }
 
 /// Global IdleTracker shared between TileCache and TileAsset::load.
@@ -183,8 +201,10 @@ impl Asset for TileAsset {
                             return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
                         }
 
-                        // Write to file
-                        if let Err(e) = fs::write(&file_path, &bytes) {
+                        // Write to file atomically (temp file + rename) so a
+                        // concurrent fetch for the same cache path can never
+                        // observe a torn/truncated file.
+                        if let Err(e) = write_atomic(&file_path, &bytes) {
                             let reason = TileFetchError::Io(format!("write: {}", e)).to_string();
                             record_error(&url, reason.clone());
                             return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
@@ -421,5 +441,52 @@ mod tests {
             let url = format!("https://server-{}.example.test/{}/{}/{}.png", i % 5, i, i + 1, i + 2);
             assert!(seen.insert(cache_filename(&url)), "collision for {url}");
         }
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_tmp_files_and_full_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-write-atomic-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let target = dir.join("tile_test.png");
+
+        let payload = vec![0xABu8; 4096];
+        write_atomic(&target, &payload).expect("atomic write should succeed");
+
+        // Target file exists with the full, untruncated content.
+        let written = fs::read(&target).expect("target file should exist");
+        assert_eq!(written, payload);
+
+        // No leftover .tmp.* siblings.
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover temp files: {:?}", leftovers);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_overwrites_existing_file_fully() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-write-atomic-overwrite-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let target = dir.join("tile_test.png");
+
+        write_atomic(&target, &vec![0x11u8; 10]).unwrap();
+        write_atomic(&target, &vec![0x22u8; 20]).unwrap();
+
+        let written = fs::read(&target).unwrap();
+        assert_eq!(written, vec![0x22u8; 20]);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
