@@ -8,10 +8,10 @@ use osm_gpui::osm::OsmParser;
 
 use crate::{
     has_unsaved_changes, AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto,
-    AddSavedCustomImagery, DownloadFromOsm, ImageryLoadState, LayerRequest, OpenOsmFile,
-    OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS, IMAGERY_INDEX,
-    LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA, SHOW_QUIT_CONFIRM,
-    TOGGLE_DEBUG_OVERLAY,
+    AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm, ImageryLoadState, LayerRequest,
+    OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS,
+    IMAGERY_INDEX, LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA,
+    SHOW_QUIT_CONFIRM, TOGGLE_DEBUG_OVERLAY,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -306,6 +306,8 @@ pub(crate) fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, stat
             items: vec![
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
+                MenuItem::separator(),
+                MenuItem::action("Apply NSI Preset…", ApplyNsiPreset),
             ],
             disabled: false,
         },
