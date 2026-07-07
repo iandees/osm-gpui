@@ -304,6 +304,40 @@ impl OsmLayer {
         self.set_osm_data(Arc::new(data));
     }
 
+    /// Set (insert or overwrite) a single tag on one node or way this layer
+    /// owns. Marks the layer modified whenever the feature is found (same
+    /// precedent as `commit_node_moves`: called at all implies modified,
+    /// no finer no-op distinction). Doesn't rebuild geometry caches since
+    /// tags don't affect them. No-op if the feature isn't found.
+    pub fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
+        let Some(current) = self.osm_data.clone() else { return; };
+        let mut data = (*current).clone();
+        let tags = match kind {
+            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
+            FeatureKind::Way => data.ways.iter_mut().find(|w| w.id == id).map(|w| &mut w.tags),
+        };
+        let Some(tags) = tags else { return; };
+        tags.insert(key.to_string(), value.to_string());
+        self.modified = true;
+        self.osm_data = Some(Arc::new(data));
+    }
+
+    /// Remove a single tag key from one node or way this layer owns. Marks
+    /// the layer modified whenever the feature is found, same precedent as
+    /// `set_tag`. No-op if the feature isn't found.
+    pub fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
+        let Some(current) = self.osm_data.clone() else { return; };
+        let mut data = (*current).clone();
+        let tags = match kind {
+            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
+            FeatureKind::Way => data.ways.iter_mut().find(|w| w.id == id).map(|w| &mut w.tags),
+        };
+        let Some(tags) = tags else { return; };
+        tags.remove(key);
+        self.modified = true;
+        self.osm_data = Some(Arc::new(data));
+    }
+
     /// Get the OSM data from this layer
     pub fn get_osm_data(&self) -> Option<Arc<OsmData>> {
         self.osm_data.clone()
@@ -375,6 +409,14 @@ impl MapLayer for OsmLayer {
 
     fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
         OsmLayer::commit_node_moves(self, moves);
+    }
+
+    fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
+        OsmLayer::set_tag(self, kind, id, key, value);
+    }
+
+    fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
+        OsmLayer::remove_tag(self, kind, id, key);
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
@@ -907,6 +949,79 @@ mod tests {
         let mut layer = OsmLayer::new_with_data("L", data);
 
         layer.commit_node_moves(&[]);
+        assert!(!layer.is_modified());
+    }
+
+    #[test]
+    fn set_tag_inserts_and_overwrites_on_node() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.set_tag(FeatureKind::Node, 1, "highway", "residential");
+        assert!(layer.is_modified());
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(
+            updated.nodes.get(&1).unwrap().tags.get("highway"),
+            Some(&"residential".to_string())
+        );
+
+        layer.set_tag(FeatureKind::Node, 1, "highway", "trunk");
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(
+            updated.nodes.get(&1).unwrap().tags.get("highway"),
+            Some(&"trunk".to_string())
+        );
+    }
+
+    #[test]
+    fn set_tag_on_way() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.set_tag(FeatureKind::Way, 10, "surface", "paved");
+        assert!(layer.is_modified());
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(
+            updated.ways[0].tags.get("surface"),
+            Some(&"paved".to_string())
+        );
+    }
+
+    #[test]
+    fn set_tag_missing_feature_id_is_noop() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.set_tag(FeatureKind::Node, 999, "highway", "residential");
+        assert!(!layer.is_modified());
+    }
+
+    #[test]
+    fn remove_tag_removes_existing_key() {
+        let mut tags = empty_tags();
+        tags.insert("highway".to_string(), "residential".to_string());
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.remove_tag(FeatureKind::Node, 1, "highway");
+        assert!(layer.is_modified());
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(updated.nodes.get(&1).unwrap().tags.get("highway"), None);
+    }
+
+    #[test]
+    fn remove_tag_missing_feature_id_is_noop() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.remove_tag(FeatureKind::Node, 999, "highway");
         assert!(!layer.is_modified());
     }
 
