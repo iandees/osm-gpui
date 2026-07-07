@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -350,7 +350,65 @@ impl Asset for TileAsset {
     }
 }
 
+/// Max number of tile downloads allowed to be in flight at once, process-wide.
+///
+/// The OSM tile usage policy asks clients to keep to ~2 concurrent connections
+/// per host. Tracking connections *per host* would require threading a host
+/// key through the whole asset-loading path (URLs for custom imagery sources
+/// can point anywhere), so as a simpler and still effective approximation we
+/// cap total concurrent tile downloads process-wide. In practice almost all
+/// traffic goes to a single tile host at a time, so this behaves close to a
+/// per-host cap while being much simpler to reason about.
+const MAX_CONCURRENT_TILE_DOWNLOADS: usize = 4;
+
+/// A simple blocking counting semaphore built on `Mutex` + `Condvar`, used to
+/// cap concurrent tile downloads without pulling in an async runtime.
+struct Semaphore {
+    count: Mutex<usize>,
+    cond: Condvar,
+    max: usize,
+}
+
+impl Semaphore {
+    fn new(max: usize) -> Self {
+        Self { count: Mutex::new(0), cond: Condvar::new(), max }
+    }
+
+    /// Block until a permit is available, then hold it until the returned
+    /// guard is dropped.
+    fn acquire(&self) -> SemaphoreGuard<'_> {
+        let mut count = self.count.lock().unwrap();
+        while *count >= self.max {
+            count = self.cond.wait(count).unwrap();
+        }
+        *count += 1;
+        SemaphoreGuard { sem: self }
+    }
+}
+
+struct SemaphoreGuard<'a> {
+    sem: &'a Semaphore,
+}
+
+impl Drop for SemaphoreGuard<'_> {
+    fn drop(&mut self) {
+        let mut count = self.sem.count.lock().unwrap();
+        *count = count.saturating_sub(1);
+        self.sem.cond.notify_one();
+    }
+}
+
+static TILE_DOWNLOAD_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+
+fn tile_download_semaphore() -> &'static Semaphore {
+    TILE_DOWNLOAD_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_TILE_DOWNLOADS))
+}
+
 fn download_file_sync(url: &str) -> Result<Vec<u8>, TileFetchError> {
+    // Cap concurrent in-flight tile downloads (see MAX_CONCURRENT_TILE_DOWNLOADS).
+    // Held for the duration of the request below.
+    let _permit = tile_download_semaphore().acquire();
+
     // Use ureq for synchronous HTTP requests that don't require Tokio
     let result = ureq::get(url)
         .set("User-Agent", crate::USER_AGENT)
@@ -441,6 +499,37 @@ impl TileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semaphore_caps_concurrent_holders() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let sem = Arc::new(Semaphore::new(2));
+        let current = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let sem = sem.clone();
+                let current = current.clone();
+                let max_seen = max_seen.clone();
+                thread::spawn(move || {
+                    let _permit = sem.acquire();
+                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(now, Ordering::SeqCst);
+                    thread::sleep(std::time::Duration::from_millis(10));
+                    current.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert!(max_seen.load(Ordering::SeqCst) <= 2);
+    }
 
     #[test]
     fn truncate_middle_short() {
