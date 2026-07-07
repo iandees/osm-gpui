@@ -16,7 +16,12 @@ use std::time::Duration;
 use crate::settings_store::PRIMARY_API_URL;
 
 const CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
-const CLIENT_SECRET: &str = "I-lOMqaSQyvkej49oMiZx7d1fEbe-MPEYqFVO6A7okc";
+// This is a PKCE loopback flow, i.e. a public client: the code_verifier already proves
+// possession of the authorization code, so no client_secret is needed (and one embedded
+// in a public repo would protect nothing anyway). If OSM's token endpoint ever rejects
+// requests for lack of a client_secret, the fix is to re-register the OSM OAuth
+// application as a public/PKCE client, not to bring the secret back.
+//
 // Only `read_prefs` is requested for now: the app has no upload/changeset code yet, so
 // there's nothing that consumes write access. Add `write_api` back to SCOPES when
 // upload functionality lands.
@@ -160,7 +165,6 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         .send_form(&[
             ("grant_type", "authorization_code"),
             ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
             ("code", &code),
             ("redirect_uri", &redirect_uri),
             ("code_verifier", &code_verifier),
