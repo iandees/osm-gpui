@@ -547,6 +547,25 @@ impl MapViewer {
                     }
                 }
             }
+            UndoableAction::CreateNode { layer, id, lat, lon } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer) else { return; };
+                if forward {
+                    // Redo: recreate the node at the exact same id, so any
+                    // later action referencing this id (e.g. a subsequent
+                    // tag edit) still targets the right feature.
+                    layer.create_node(*lat, *lon, Some(*id));
+                } else {
+                    layer.delete_feature(osm_gpui::selection::FeatureKind::Node, *id);
+                }
+            }
+            UndoableAction::DeleteFeature { layer, snapshot } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer) else { return; };
+                if forward {
+                    layer.delete_feature(snapshot.kind, snapshot.id);
+                } else {
+                    layer.restore_feature(snapshot.clone());
+                }
+            }
         }
     }
 
@@ -674,6 +693,86 @@ impl MapViewer {
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
         cx.notify();
+    }
+
+    /// Delete every currently-selected feature (Delete/Backspace key).
+    /// Node deletion is refused per-feature if the node is still referenced
+    /// by a way — see `OsmLayer::delete_feature`'s doc comment for that v1
+    /// limitation (a future version might offer to also delete the way, or
+    /// warn specifically, like JOSM/iD). Refused/not-found features are
+    /// simply skipped rather than surfacing a per-feature error; one
+    /// `DeleteFeature` undo action is pushed per feature actually deleted,
+    /// so undo restores them one at a time (in reverse order).
+    fn delete_selected_features(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        let features = std::mem::take(&mut self.selected);
+        let mut deleted = 0usize;
+        for feature in &features {
+            let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue };
+            if let Some(snapshot) = layer.delete_feature(feature.kind, feature.id) {
+                self.undo_stack.push(UndoableAction::DeleteFeature {
+                    layer: feature.layer_name.clone(),
+                    snapshot,
+                });
+                deleted += 1;
+            }
+        }
+        if deleted == 0 {
+            self.set_status("Nothing to delete");
+        } else if deleted == 1 {
+            self.set_status("Deleted 1 feature");
+        } else {
+            self.set_status(format!("Deleted {} features", deleted));
+        }
+        cx.notify();
+    }
+
+    /// v1 "create node" gesture: Cmd+Click (the platform modifier) on the
+    /// map creates a new, tag-less standalone node at the clicked point,
+    /// selects it, and pushes a `CreateNode` undo action. This is a
+    /// deliberately minimal, discoverable-only-via-this-comment interaction
+    /// since the app has no toolbar/mode-toggle concept yet; a real
+    /// "Add Node" mode (like JOSM/iD) would be a better long-term UX and
+    /// should replace this gesture. No-op (with a status message) if no
+    /// layer is willing to accept a new node — see
+    /// `create_node_on_target_layer`.
+    fn create_node_at_screen_point(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let (lat, lon) = self.viewport.screen_to_geo(position);
+        let Some((layer_name, id)) = self.create_node_on_target_layer(lat, lon) else {
+            self.set_status("No layer to add a node to");
+            cx.notify();
+            return;
+        };
+        self.undo_stack.push(UndoableAction::CreateNode {
+            layer: layer_name.clone(),
+            id,
+            lat,
+            lon,
+        });
+        self.selected = vec![osm_gpui::selection::FeatureRef {
+            layer_name,
+            kind: osm_gpui::selection::FeatureKind::Node,
+            id,
+        }];
+        self.set_status(format!("Created node {}", id));
+        cx.notify();
+    }
+
+    /// Pick the target layer for a newly created node: the first layer (in
+    /// draw/layer-list order) that accepts it, i.e. the first `OsmLayer`
+    /// with data loaded — mirrors how move/tag edits always operate on
+    /// whichever layer already owns the feature, just with "owns" relaxed to
+    /// "has OSM data at all" since a brand-new node has no owning layer yet.
+    /// `None` if no layer accepts (e.g. no OSM data loaded anywhere).
+    fn create_node_on_target_layer(&mut self, lat: f64, lon: f64) -> Option<(String, i64)> {
+        for layer in self.layer_manager.layers_mut() {
+            if let Some(id) = layer.create_node(lat, lon, None) {
+                return Some((layer.name().to_string(), id));
+            }
+        }
+        None
     }
 
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1212,12 +1311,20 @@ impl Render for MapViewer {
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                                     window.focus(&this.focus_handle, cx);
-                                    this.handle_map_mouse_down(ev.position);
+                                    // v1 "create node" gesture: Cmd+Click (see
+                                    // `create_node_at_screen_point`'s doc comment).
+                                    if ev.modifiers.platform {
+                                        this.create_node_at_screen_point(ev.position, cx);
+                                    } else {
+                                        this.handle_map_mouse_down(ev.position);
+                                    }
                                 }),
                             )
                             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                                 if ev.keystroke.key == "escape" {
                                     this.cancel_move_drag(cx);
+                                } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
+                                    this.delete_selected_features(cx);
                                 }
                             }))
                             .on_mouse_up(

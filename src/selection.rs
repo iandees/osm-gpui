@@ -22,6 +22,21 @@ pub struct HitCandidate {
     pub dist_px: f32,
 }
 
+/// Enough information to fully restore a deleted node or way, produced by
+/// `MapLayer::delete_feature` and consumed by `MapLayer::restore_feature`
+/// (the undo path for a delete).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedFeatureSnapshot {
+    pub kind: FeatureKind,
+    pub id: i64,
+    /// The feature's tags at the time of deletion, as (key, value) pairs.
+    pub tags: Vec<(String, String)>,
+    /// For a way: its ordered member node ids. Empty/unused for a node.
+    pub way_nodes: Vec<i64>,
+    /// For a node: its (lat, lon) at the time of deletion. `None` for a way.
+    pub node_lat_lon: Option<(f64, f64)>,
+}
+
 /// Shortest distance (in screen pixels) from point `p` to line segment `a`-`b`.
 /// Handles zero-length segments by returning the distance to the single point.
 pub fn point_to_segment_distance(

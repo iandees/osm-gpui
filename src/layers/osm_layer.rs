@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::layers::MapLayer;
 use crate::viewport::Viewport;
-use crate::osm::{OsmData, OsmWay};
+use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
-use crate::selection::{FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
+use crate::selection::{DeletedFeatureSnapshot, FeatureKind, FeatureRef, HitCandidate, point_to_segment_distance};
 use crate::style::{Stylesheet, NodeStyle, WayStyle};
 use rstar::{RTree, AABB, primitives::{GeomWithData, Rectangle}};
 
@@ -111,6 +111,20 @@ pub struct OsmLayer {
     drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
     /// Whether this layer has had a committed move since it was loaded.
     modified: bool,
+    /// Next id to hand out to an auto-allocated new node (`create_node`
+    /// called with `id: None`), always negative per OSM's not-yet-uploaded
+    /// convention. Initialized from `min(existing node ids) - 1` so a
+    /// reloaded, previously-saved-locally file (which might already contain
+    /// negative ids) can't collide; decremented on every allocation.
+    next_new_id: i64,
+}
+
+/// Starting point for `next_new_id`: one below the most negative existing
+/// node id, or `-1` if every existing id is non-negative (the normal case
+/// for freshly downloaded OSM data).
+fn compute_next_new_id(data: &OsmData) -> i64 {
+    let min_existing = data.nodes.keys().copied().min().unwrap_or(0);
+    if min_existing < 0 { min_existing - 1 } else { -1 }
 }
 
 fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> NodeCache {
@@ -342,6 +356,7 @@ impl OsmLayer {
             node_to_ways: HashMap::new(),
             drag_preview: None,
             modified: false,
+            next_new_id: -1,
         }
     }
 
@@ -354,6 +369,7 @@ impl OsmLayer {
         let way_index = build_way_index(&way_bboxes, &osm_data.ways);
         let way_id_to_index = build_way_id_index(&osm_data.ways);
         let node_to_ways = build_node_to_ways(&osm_data.ways);
+        let next_new_id = compute_next_new_id(&osm_data);
         Self {
             name: name.into(),
             visible: true,
@@ -371,6 +387,7 @@ impl OsmLayer {
             node_to_ways,
             drag_preview: None,
             modified: false,
+            next_new_id,
         }
     }
 
@@ -390,6 +407,7 @@ impl OsmLayer {
         self.way_index = build_way_index(&self.way_bboxes, &osm_data.ways);
         self.way_id_to_index = build_way_id_index(&osm_data.ways);
         self.node_to_ways = build_node_to_ways(&osm_data.ways);
+        self.next_new_id = compute_next_new_id(&osm_data);
         self.osm_data = Some(osm_data);
     }
 
@@ -600,6 +618,259 @@ impl OsmLayer {
         }
     }
 
+    /// Create a new, tag-less node at `(lat, lon)`. If `id` is `None`, a
+    /// fresh negative (not-yet-uploaded) id is allocated via `next_new_id`;
+    /// if `Some(id)` is given (the redo path, so a recreated node reuses its
+    /// original id), the call is refused (`None`) if a node with that id
+    /// already exists. Incrementally patches `node_cache`/`node_index`
+    /// exactly the way `commit_node_moves` does when it discovers a node
+    /// needs a fresh cache entry — no full rebuild. No-op (`None`) if this
+    /// layer has no data loaded at all.
+    pub fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
+        if self.osm_data.is_none() {
+            return None;
+        }
+        let new_id = match id {
+            Some(id) => {
+                if self.osm_data.as_ref().map_or(false, |d| d.nodes.contains_key(&id)) {
+                    return None;
+                }
+                id
+            }
+            None => {
+                let id = self.next_new_id;
+                self.next_new_id -= 1;
+                id
+            }
+        };
+        self.insert_node(new_id, lat, lon, HashMap::new());
+        Some(new_id)
+    }
+
+    /// Insert (or overwrite) a node with `id`/`lat`/`lon`/`tags` into
+    /// `osm_data.nodes` and incrementally patch `node_cache`/`node_index`/
+    /// `layer_bbox`, mirroring the "new cache entry" branch of
+    /// `commit_node_moves`. Keeps `next_new_id` below `id` so a later
+    /// auto-allocation never collides with an explicitly-inserted id (e.g.
+    /// from a redo). Marks the layer modified. No-op if this layer has no
+    /// data loaded.
+    fn insert_node(&mut self, id: i64, lat: f64, lon: f64, tags: HashMap<String, String>) {
+        let Some(current) = self.osm_data.clone() else { return; };
+        let mut data = (*current).clone();
+        let node = OsmNode { id, lat, lon, version: 0, tags };
+        data.nodes.insert(id, node.clone());
+
+        if let Some((vlat, vlon)) = validate_coords(node.lat, node.lon) {
+            let (mx, my) = lat_lon_to_mercator(vlat, vlon);
+            let style = self.stylesheet.node_style(&node.tags);
+            if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
+                self.node_cache.flat[idx] = (id, mx, my);
+                self.node_cache.styles[idx] = style;
+            } else {
+                let idx = self.node_cache.flat.len();
+                self.node_cache.flat.push((id, mx, my));
+                self.node_cache.styles.push(style);
+                self.node_cache.index_by_id.insert(id, idx);
+            }
+            self.node_index.insert(GeomWithData::new([mx, my], id));
+            match &mut self.layer_bbox {
+                Some(lb) => lb.extend(mx, my),
+                None => self.layer_bbox = Some(WayBbox { min_x: mx, max_x: mx, min_y: my, max_y: my }),
+            }
+        }
+
+        if id <= self.next_new_id {
+            self.next_new_id = id - 1;
+        }
+        self.modified = true;
+        self.osm_data = Some(Arc::new(data));
+    }
+
+    /// Delete a node or way this layer owns. Dispatches to `delete_node`/
+    /// `delete_way` — see each for its specific rules. Returns a snapshot
+    /// sufficient to restore the feature via `restore_feature`, or `None` if
+    /// nothing was deleted.
+    pub fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
+        match kind {
+            FeatureKind::Node => self.delete_node(id),
+            FeatureKind::Way => self.delete_way(id),
+        }
+    }
+
+    /// Delete a standalone node.
+    ///
+    /// **v1 limitation:** refuses (`None`) to delete a node that's still
+    /// referenced by any way (checked via `node_to_ways`), rather than also
+    /// editing the way or breaking its geometry. Real editors (JOSM/iD)
+    /// offer to delete the way too, or warn specifically about this; that's
+    /// future work here. Callers wanting to delete such a node must delete
+    /// the referencing way(s) first.
+    ///
+    /// On success, incrementally removes the node from `node_cache`/
+    /// `node_index` (fixing up shifted indices exactly like
+    /// `commit_node_moves`'s invalid-coordinate branch) and marks the layer
+    /// modified.
+    fn delete_node(&mut self, id: i64) -> Option<DeletedFeatureSnapshot> {
+        if self.node_to_ways.get(&id).is_some_and(|ways| !ways.is_empty()) {
+            return None;
+        }
+        let Some(current) = self.osm_data.clone() else { return None; };
+        let mut data = (*current).clone();
+        let node = data.nodes.remove(&id)?;
+
+        if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
+            let (_, mx, my) = self.node_cache.flat[idx];
+            self.node_index.remove(&GeomWithData::new([mx, my], id));
+            self.node_cache.flat.remove(idx);
+            self.node_cache.styles.remove(idx);
+            for v in self.node_cache.index_by_id.values_mut() {
+                if *v > idx { *v -= 1; }
+            }
+        }
+        self.node_to_ways.remove(&id);
+        self.modified = true;
+
+        let snapshot = DeletedFeatureSnapshot {
+            kind: FeatureKind::Node,
+            id,
+            tags: node.tags.into_iter().collect(),
+            way_nodes: Vec::new(),
+            node_lat_lon: Some((node.lat, node.lon)),
+        };
+        self.osm_data = Some(Arc::new(data));
+        Some(snapshot)
+    }
+
+    /// Delete a way's own record (tags + ordered node-id list) but leave its
+    /// member nodes in place as ordinary standalone nodes — deleting a way
+    /// never cascades to delete shared nodes, matching common editor
+    /// behavior. Incrementally removes the way's entries from
+    /// `way_vertices`/`way_bboxes`/`way_styles`/`way_index`/`way_id_to_index`
+    /// and drops this way's index from every node's `node_to_ways` entry
+    /// (shifting every index greater than the removed way's, since removing
+    /// from the middle of `data.ways` shifts everything after it). Marks the
+    /// layer modified. `None` if the way isn't found.
+    fn delete_way(&mut self, id: i64) -> Option<DeletedFeatureSnapshot> {
+        let Some(current) = self.osm_data.clone() else { return None; };
+        let mut data = (*current).clone();
+        let way_idx = *self.way_id_to_index.get(&id)?;
+        let way = data.ways.remove(way_idx);
+
+        if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
+            self.way_index.remove(&GeomWithData::new(
+                Rectangle::from_corners([old_bbox.min_x, old_bbox.min_y], [old_bbox.max_x, old_bbox.max_y]),
+                id,
+            ));
+        }
+        self.way_vertices.remove(way_idx);
+        self.way_bboxes.remove(way_idx);
+        self.way_styles.remove(way_idx);
+        self.way_id_to_index.remove(&id);
+        for v in self.way_id_to_index.values_mut() {
+            if *v > way_idx { *v -= 1; }
+        }
+        for ways in self.node_to_ways.values_mut() {
+            ways.retain(|&w| w != way_idx);
+            for w in ways.iter_mut() {
+                if *w > way_idx { *w -= 1; }
+            }
+        }
+        self.node_to_ways.retain(|_, ways| !ways.is_empty());
+        self.modified = true;
+
+        let snapshot = DeletedFeatureSnapshot {
+            kind: FeatureKind::Way,
+            id,
+            tags: way.tags.into_iter().collect(),
+            way_nodes: way.nodes,
+            node_lat_lon: None,
+        };
+        self.osm_data = Some(Arc::new(data));
+        Some(snapshot)
+    }
+
+    /// Re-insert a feature previously removed by `delete_feature`, using
+    /// exactly the id/tags/geometry captured in `snapshot`. A restored way
+    /// is appended at the end of `osm_data.ways` (not necessarily its
+    /// original position) — draw/iteration order isn't semantically
+    /// meaningful here, only correctness of the restored data and caches.
+    /// No-op if a feature with that id already exists (defensive; shouldn't
+    /// happen in the normal undo/redo flow).
+    pub fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
+        match snapshot.kind {
+            FeatureKind::Node => {
+                let Some((lat, lon)) = snapshot.node_lat_lon else { return; };
+                if self.osm_data.as_ref().map_or(false, |d| d.nodes.contains_key(&snapshot.id)) {
+                    return;
+                }
+                self.insert_node(snapshot.id, lat, lon, snapshot.tags.into_iter().collect());
+            }
+            FeatureKind::Way => self.restore_way(snapshot),
+        }
+    }
+
+    /// `restore_feature`'s way case: rebuilds the way's vertex list/bbox from
+    /// whatever member nodes are currently cached (nodes that were also
+    /// deleted and not yet restored simply won't contribute a vertex, same
+    /// as `compute_way_tables` skipping unresolvable node ids), and adds this
+    /// way's fresh index to each member node's `node_to_ways` entry.
+    fn restore_way(&mut self, snapshot: DeletedFeatureSnapshot) {
+        let Some(current) = self.osm_data.clone() else { return; };
+        if self.way_id_to_index.contains_key(&snapshot.id) {
+            return;
+        }
+        let mut data = (*current).clone();
+        let way = OsmWay {
+            id: snapshot.id,
+            nodes: snapshot.way_nodes,
+            version: 0,
+            tags: snapshot.tags.into_iter().collect(),
+        };
+
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        let mut verts = Vec::with_capacity(way.nodes.len());
+        for nid in &way.nodes {
+            if let Some(&idx) = self.node_cache.index_by_id.get(nid) {
+                let (_, mx, my) = self.node_cache.flat[idx];
+                if mx < min_x { min_x = mx; }
+                if mx > max_x { max_x = mx; }
+                if my < min_y { min_y = my; }
+                if my > max_y { max_y = my; }
+                verts.push((*nid, mx, my));
+            }
+        }
+        let bbox = if verts.is_empty() {
+            None
+        } else {
+            Some(WayBbox { min_x, max_x, min_y, max_y })
+        };
+        if let Some(b) = bbox {
+            self.way_index.insert(GeomWithData::new(
+                Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
+                way.id,
+            ));
+            match &mut self.layer_bbox {
+                Some(lb) => { lb.extend(b.min_x, b.min_y); lb.extend(b.max_x, b.max_y); }
+                None => self.layer_bbox = Some(b),
+            }
+        }
+
+        let way_idx = data.ways.len();
+        self.way_id_to_index.insert(way.id, way_idx);
+        for nid in &way.nodes {
+            self.node_to_ways.entry(*nid).or_default().push(way_idx);
+        }
+        self.way_vertices.push(verts);
+        self.way_bboxes.push(bbox);
+        self.way_styles.push(self.stylesheet.way_style(&way.tags));
+        data.ways.push(way);
+        self.modified = true;
+        self.osm_data = Some(Arc::new(data));
+    }
+
     /// Get the OSM data from this layer
     pub fn get_osm_data(&self) -> Option<Arc<OsmData>> {
         self.osm_data.clone()
@@ -621,6 +892,7 @@ impl OsmLayer {
         self.node_to_ways.clear();
         self.drag_preview = None;
         self.modified = false;
+        self.next_new_id = -1;
     }
 
     /// Check if this layer has data
@@ -696,6 +968,18 @@ impl MapLayer for OsmLayer {
 
     fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
         OsmLayer::remove_tag(self, kind, id, key);
+    }
+
+    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
+        OsmLayer::create_node(self, lat, lon, id)
+    }
+
+    fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
+        OsmLayer::delete_feature(self, kind, id)
+    }
+
+    fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
+        OsmLayer::restore_feature(self, snapshot);
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
@@ -1567,5 +1851,192 @@ mod tests {
             default_style, updated_style,
             "cached node style must be re-resolved after a tag edit, not left stale"
         );
+    }
+
+    // -- `create_node` / `delete_feature` / `restore_feature` --
+
+    #[test]
+    fn create_node_allocates_noncolliding_negative_id_and_is_hit_testable() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let new_lat = 40.5;
+        let new_lon = -74.5;
+        let id = layer.create_node(new_lat, new_lon, None).expect("should allocate an id");
+        assert!(id < 0, "new node id must be negative, got {}", id);
+        assert!(layer.is_modified());
+
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(updated.nodes.get(&id).map(|n| (n.lat, n.lon)), Some((new_lat, new_lon)));
+        assert!(updated.nodes.get(&id).unwrap().tags.is_empty());
+
+        let viewport = viewport_centered_on(new_lat, new_lon);
+        let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
+        assert!(hits.iter().any(|h| h.kind == FeatureKind::Node && h.feature.id == id), "got {:?}", hits);
+
+        // A second auto-allocation must not collide with the first.
+        let id2 = layer.create_node(new_lat, new_lon, None).unwrap();
+        assert_ne!(id, id2);
+    }
+
+    #[test]
+    fn create_node_starts_below_existing_negative_ids() {
+        // Simulates a reloaded, previously-saved-locally file that already
+        // contains negative (not-yet-uploaded) ids.
+        let n1 = OsmNode { id: -5, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 0 };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let id = layer.create_node(41.0, -75.0, None).unwrap();
+        assert!(id < -5, "new id ({}) must not collide with existing negative id -5", id);
+    }
+
+    #[test]
+    fn create_node_with_explicit_id_fails_on_collision() {
+        let n1 = OsmNode { id: -1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 0 };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        assert_eq!(layer.create_node(41.0, -75.0, Some(-1)), None);
+        assert_eq!(layer.create_node(41.0, -75.0, Some(-99)), Some(-99));
+    }
+
+    #[test]
+    fn delete_feature_refuses_node_referenced_by_way_but_succeeds_once_way_deleted() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        assert_eq!(
+            layer.delete_feature(FeatureKind::Node, 1),
+            None,
+            "node still referenced by a way must be refused"
+        );
+        assert!(!layer.is_modified());
+
+        assert!(layer.delete_feature(FeatureKind::Way, 10).is_some());
+        // Now node 1 is no longer referenced by any way.
+        let snapshot = layer.delete_feature(FeatureKind::Node, 1).expect("standalone node should delete");
+        assert_eq!(snapshot.kind, FeatureKind::Node);
+        assert_eq!(snapshot.id, 1);
+        assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
+
+        let updated = layer.get_osm_data().unwrap();
+        assert!(updated.nodes.get(&1).is_none());
+    }
+
+    #[test]
+    fn delete_feature_standalone_node_succeeds_directly() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let snapshot = layer.delete_feature(FeatureKind::Node, 1).expect("standalone node should delete");
+        assert!(layer.is_modified());
+        assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
+        assert!(layer.get_osm_data().unwrap().nodes.get(&1).is_none());
+        assert!(layer.node_cache.index_by_id.get(&1).is_none());
+
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
+        assert!(!hits.iter().any(|h| h.feature.id == 1), "deleted node must not be hit-testable: {:?}", hits);
+    }
+
+    #[test]
+    fn delete_feature_way_removes_way_but_keeps_nodes_and_fixes_other_ways() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
+        let n3 = OsmNode { id: 3, lat: 40.002, lon: -74.002, tags: empty_tags(), version: 1 };
+        let mut tags10 = empty_tags();
+        tags10.insert("highway".to_string(), "residential".to_string());
+        let way_a = OsmWay { id: 10, nodes: vec![1, 2], tags: tags10, version: 1 };
+        // way_b also references node 1, to verify node_to_ways stays correct
+        // for the surviving way after way_a is removed.
+        let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags(), version: 1 };
+        let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let snapshot = layer.delete_feature(FeatureKind::Way, 10).expect("way should delete");
+        assert!(layer.is_modified());
+        assert_eq!(snapshot.kind, FeatureKind::Way);
+        assert_eq!(snapshot.way_nodes, vec![1, 2]);
+        assert_eq!(snapshot.tags, vec![("highway".to_string(), "residential".to_string())]);
+
+        let updated = layer.get_osm_data().unwrap();
+        assert!(updated.ways.iter().all(|w| w.id != 10), "way 10 must be gone");
+        assert!(updated.ways.iter().any(|w| w.id == 20), "way 20 must remain");
+        // Member nodes of the deleted way are left in place.
+        assert!(updated.nodes.contains_key(&1));
+        assert!(updated.nodes.contains_key(&2));
+
+        // way_b (still referencing node 1) must still be findable/correct.
+        assert_eq!(layer.way_node_ids(20), Some(vec![1, 3]));
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
+        assert!(hits.iter().any(|h| h.feature.id == 1 && h.kind == FeatureKind::Node));
+    }
+
+    #[test]
+    fn delete_feature_missing_id_returns_none() {
+        let data = data_with(vec![], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+        assert_eq!(layer.delete_feature(FeatureKind::Node, 999), None);
+        assert_eq!(layer.delete_feature(FeatureKind::Way, 999), None);
+        assert!(!layer.is_modified());
+    }
+
+    #[test]
+    fn restore_feature_round_trips_deleted_node() {
+        let mut tags = empty_tags();
+        tags.insert("amenity".to_string(), "cafe".to_string());
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags, version: 1 };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let snapshot = layer.delete_feature(FeatureKind::Node, 1).unwrap();
+        assert!(layer.get_osm_data().unwrap().nodes.get(&1).is_none());
+
+        layer.restore_feature(snapshot);
+        let restored = layer.get_osm_data().unwrap();
+        let node = restored.nodes.get(&1).expect("node should be restored");
+        assert_eq!((node.lat, node.lon), (40.0, -74.0));
+        assert_eq!(node.tags.get("amenity"), Some(&"cafe".to_string()));
+
+        // Hit-testable again after restore.
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
+        assert!(hits.iter().any(|h| h.feature.id == 1 && h.kind == FeatureKind::Node));
+    }
+
+    #[test]
+    fn restore_feature_round_trips_deleted_way() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
+        let mut tags = empty_tags();
+        tags.insert("highway".to_string(), "residential".to_string());
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags, version: 1 };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
+        assert!(layer.way_node_ids(10).is_none());
+
+        layer.restore_feature(snapshot);
+        assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
+        let restored = layer.get_osm_data().unwrap();
+        let way = restored.ways.iter().find(|w| w.id == 10).unwrap();
+        assert_eq!(way.tags.get("highway"), Some(&"residential".to_string()));
+
+        // node_to_ways was patched so the restored way is picked up by a
+        // node-move on one of its members.
+        layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+        let (mx, my) = crate::coordinates::lat_lon_to_mercator(41.0, -75.0);
+        let verts = layer.way_vertices[*layer.way_id_to_index.get(&10).unwrap()].clone();
+        let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
+        assert!((vmx - mx).abs() < 1e-6);
+        assert!((vmy - my).abs() < 1e-6);
     }
 }
