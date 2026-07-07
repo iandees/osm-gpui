@@ -1648,6 +1648,38 @@ impl OsmLayer {
             _ => Point::default(),
         }
     }
+
+    /// Find the way segment nearest `screen_pt`, within `tol_px`, returning
+    /// `(way_id, node_id_a, node_id_b, segment_index)` for its two endpoints
+    /// (in the way's node-list order) if within tolerance. Used by Extrude
+    /// mode, which needs the segment's endpoints rather than just a
+    /// `FeatureRef` to the whole way (unlike `hit_test`).
+    pub fn hit_test_segment(&self, viewport: &Viewport, screen_pt: Point<Pixels>, tol_px: f32) -> Option<(i64, i64, i64, usize)> {
+        if self.osm_data.is_none() { return None; }
+        let pad = px(tol_px * 4.0);
+        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let envelope = AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
+
+        let mut best: Option<(f32, i64, i64, i64, usize)> = None;
+        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+            let way_id = item.data;
+            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { continue };
+            let verts = &self.way_vertices[way_idx];
+            for i in 0..verts.len().saturating_sub(1) {
+                let (id_a, ax, ay) = verts[i];
+                let (id_b, bx, by) = verts[i + 1];
+                let sp_a = viewport.mercator_to_screen(ax, ay);
+                let sp_b = viewport.mercator_to_screen(bx, by);
+                if !is_point_valid(sp_a) || !is_point_valid(sp_b) { continue; }
+                let d = point_to_segment_distance(screen_pt, sp_a, sp_b);
+                if d <= tol_px && best.as_ref().map_or(true, |&(bd, ..)| d < bd) {
+                    best = Some((d, way_id, id_a, id_b, i));
+                }
+            }
+        }
+        best.map(|(_, way_id, a, b, idx)| (way_id, a, b, idx))
+    }
 }
 
 impl MapLayer for OsmLayer {
@@ -2386,6 +2418,34 @@ mod tests {
 
         let hits = layer.hit_test(&viewport, point(px(50.0), px(50.0)));
         assert!(hits.is_empty(), "unexpected hits: {:?}", hits);
+    }
+
+    #[test]
+    fn hit_test_segment_finds_nearest_segment_and_endpoint_indices() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon - 0.001, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let hit = layer.hit_test_segment(&viewport, point(px(400.0), px(300.0)), 6.0);
+        assert_eq!(hit, Some((10, 1, 2, 0)));
+    }
+
+    #[test]
+    fn hit_test_segment_none_when_out_of_tolerance() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.001, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let hit = layer.hit_test_segment(&viewport, point(px(0.0), px(0.0)), 6.0);
+        assert!(hit.is_none());
     }
 
     #[test]

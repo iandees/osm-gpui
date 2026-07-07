@@ -151,6 +151,20 @@ struct BuildingProgress {
     corner_b: Option<(f64, f64)>,
 }
 
+/// Extrude mode's in-progress drag: the way segment being extruded from,
+/// and the two endpoint node ids used to build the preview/final rectangle.
+struct ExtrudeDrag {
+    layer: LayerId,
+    way_id: i64,
+    node_a: i64,
+    node_b: i64,
+    /// Screen position of the mouse-down that started this drag — needed
+    /// for the click/drag threshold check on release, since (unlike Select
+    /// mode's move-drag) this doesn't go through the shared `Interaction`
+    /// state machine.
+    down: gpui::Point<gpui::Pixels>,
+}
+
 /// Request to add a new layer, applied directly to the live `MapViewer` (via
 /// `MapViewer::apply_layer_request`) by menu handlers and the custom-imagery
 /// dialog's `Submitted` event.
@@ -326,6 +340,9 @@ struct MapViewer {
     /// mouse-move; used to drive the live Building-mode preview (which
     /// needs a cursor position outside of a drag) during `render()`.
     last_mouse_pos: Option<gpui::Point<gpui::Pixels>>,
+    /// Extrude mode's in-progress drag, or `None` when not dragging (see
+    /// `ExtrudeDrag`).
+    extrude_drag: Option<ExtrudeDrag>,
 }
 
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -416,6 +433,7 @@ impl MapViewer {
             add_progress: None,
             building_progress: None,
             last_mouse_pos: None,
+            extrude_drag: None,
         }
     }
 
@@ -551,6 +569,7 @@ impl MapViewer {
         self.mode = action.mode.into();
         self.add_progress = None;
         self.building_progress = None;
+        self.extrude_drag = None;
         cx.notify();
     }
 
@@ -567,6 +586,23 @@ impl MapViewer {
     /// tracking. Always records the mouse-down position either way, since
     /// both paths need it to distinguish a click from a drag on release.
     fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
+        if self.mode == EditMode::Extrude {
+            if let Some(layer_id) = self.active_layer {
+                if let Some(layer) = self.layer_manager.find_layer(layer_id) {
+                    if let Some(osm_layer) = layer.as_any().downcast_ref::<OsmLayer>() {
+                        if let Some((way_id, node_a, node_b, _idx)) =
+                            osm_layer.hit_test_segment(&self.viewport, position, 6.0)
+                        {
+                            self.extrude_drag = Some(ExtrudeDrag {
+                                layer: layer_id, way_id, node_a, node_b, down: position,
+                            });
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         let hit_move_targets = if self.selected.is_empty()
             || self
                 .layer_manager
@@ -1086,8 +1122,8 @@ impl MapViewer {
         let adjusted_position = event.position;
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
-        if self.building_progress.is_some() {
-            cx.notify(); // repaint the live preview every move while building
+        if self.building_progress.is_some() || self.extrude_drag.is_some() {
+            cx.notify(); // repaint the live preview every move while building/extruding
         }
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
@@ -1126,6 +1162,17 @@ impl MapViewer {
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = event.position;
         self.viewport.handle_mouse_up();
+
+        if let Some(drag) = self.extrude_drag.take() {
+            let moved = (up_pos - drag.down).magnitude() >= 4.0;
+            if moved {
+                self.commit_extrude(&drag, up_pos);
+            } else if event.click_count == 2 {
+                self.insert_node_on_segment(&drag, up_pos);
+            }
+            cx.notify();
+            return;
+        }
 
         match interaction::on_mouse_up(&mut self.interaction, to_pt(up_pos)) {
             interaction::Gesture::MoveCommitted { targets, delta } => {
@@ -1258,6 +1305,53 @@ impl MapViewer {
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
         }];
+    }
+
+    /// Commit an Extrude drag: compute the far 2 corners via
+    /// `rectangle_from_edge` (using `up_pos` for the perpendicular offset),
+    /// create 2 new nodes + a closed `building=yes` way, push one
+    /// `ExtrudeWay` undo action.
+    fn commit_extrude(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        let Some(layer) = self.layer_manager.find_layer(drag.layer) else { return };
+        let Some(editable) = layer.as_editable() else { return };
+        let Some(a_geo) = editable.node_lat_lon(drag.node_a) else { return };
+        let Some(b_geo) = editable.node_lat_lon(drag.node_b) else { return };
+        let cursor_geo = self.viewport.screen_to_geo(up_pos);
+
+        let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(a_geo, b_geo, cursor_geo);
+        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else { return };
+        let Some(editable) = layer.as_editable_mut() else { return };
+        let new_a = editable.add_node(far_a.0, far_a.1);
+        let new_b = editable.add_node(far_b.0, far_b.1);
+        let way_id = editable.add_way(
+            vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a],
+            vec![("building".to_string(), "yes".to_string())],
+        );
+
+        self.undo_stack.push(UndoableAction::ExtrudeWay {
+            layer: drag.layer, way_id, new_node_ids: [new_a, new_b],
+        });
+        self.selected = vec![osm_gpui::selection::FeatureRef {
+            layer_id: drag.layer, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+        }];
+    }
+
+    /// Double-click on a segment (no drag): insert a new node at the
+    /// double-click position, splitting that segment.
+    fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        let (lat, lon) = self.viewport.screen_to_geo(up_pos);
+        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else { return };
+        let Some(editable) = layer.as_editable_mut() else { return };
+        // The segment's start index within the way's node list: `node_a`'s
+        // position (the segment is node_a -> node_b, consecutive).
+        let Some(node_ids) = editable.way_node_ids(drag.way_id) else { return };
+        let Some(idx_a) = node_ids.iter().position(|&id| id == drag.node_a) else { return };
+        let insert_index = idx_a + 1;
+
+        let new_id = editable.insert_node_into_way(drag.way_id, insert_index, lat, lon);
+        self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
+            layer: drag.layer, way_id: drag.way_id, index: insert_index, node_id: new_id, lat, lon,
+        });
     }
 
     /// Resolve a plain click into a selection change. `shift_held` toggles
@@ -2027,6 +2121,43 @@ impl Render for MapViewer {
                                                     }
                                                     if let Ok(path) = builder.build() {
                                                         window.paint_path(path, rgb(0x3b82f6));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(drag) = &this.extrude_drag {
+                                            if let Some(mouse_pos) = this.last_mouse_pos {
+                                                if let Some(layer) = this.layer_manager.find_layer(drag.layer) {
+                                                    if let Some(editable) = layer.as_editable() {
+                                                        if let (Some(a_geo), Some(b_geo)) = (
+                                                            editable.node_lat_lon(drag.node_a),
+                                                            editable.node_lat_lon(drag.node_b),
+                                                        ) {
+                                                            let origin_x = bounds.origin.x;
+                                                            let origin_y = bounds.origin.y;
+                                                            let cursor_geo = viewport_clone.screen_to_geo(mouse_pos);
+                                                            let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(
+                                                                a_geo, b_geo, cursor_geo,
+                                                            );
+                                                            let a_screen = viewport_clone.geo_to_screen(a_geo.0, a_geo.1);
+                                                            let b_screen = viewport_clone.geo_to_screen(b_geo.0, b_geo.1);
+                                                            let far_a_screen = viewport_clone.geo_to_screen(far_a.0, far_a.1);
+                                                            let far_b_screen = viewport_clone.geo_to_screen(far_b.0, far_b.1);
+                                                            let pts = [a_screen, b_screen, far_b_screen, far_a_screen, a_screen];
+                                                            let mut builder = PathBuilder::stroke(px(2.0));
+                                                            for (i, p) in pts.iter().enumerate() {
+                                                                let p = point(p.x + origin_x, p.y + origin_y);
+                                                                if i == 0 {
+                                                                    builder.move_to(p);
+                                                                } else {
+                                                                    builder.line_to(p);
+                                                                }
+                                                            }
+                                                            if let Ok(path) = builder.build() {
+                                                                window.paint_path(path, rgb(0x3b82f6));
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
