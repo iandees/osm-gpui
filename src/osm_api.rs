@@ -63,7 +63,9 @@ pub fn fetch_bbox(
     check_area(&bounds)?;
 
     let url = build_url(base_url, &bounds);
-    let mut request = ureq::get(&url).set("User-Agent", USER_AGENT);
+    let mut request = ureq::get(&url)
+        .set("User-Agent", USER_AGENT)
+        .timeout(std::time::Duration::from_secs(30));
     if let Some(token) = token {
         request = request.set("Authorization", &format!("Bearer {}", token));
     }

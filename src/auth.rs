@@ -249,6 +249,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
 
     let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base))
         .set("User-Agent", USER_AGENT)
+        .timeout(Duration::from_secs(30))
         .send_form(&[
             ("grant_type", "authorization_code"),
             ("client_id", CLIENT_ID),
@@ -360,6 +361,7 @@ fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String,
     let response = ureq::get(&url)
         .set("User-Agent", USER_AGENT)
         .set("Authorization", &format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(30))
         .call();
 
     let body = match response {
