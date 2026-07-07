@@ -1,4 +1,4 @@
-# Mode selector: Select / Add / Building
+# Mode selector: Select / Add / Building / Extrude
 
 ## Goal
 
@@ -6,7 +6,9 @@ Introduce editing modes, surfaced as a new toolbar panel to the left of the
 map. **Select** is today's existing click/drag/box-select behavior. **Add**
 places nodes and chains them into a way with successive clicks. **Building**
 places a rectangular `building=yes` way via a 3-click perpendicular-rectangle
-gesture, with a live preview.
+gesture, with a live preview. **Extrude** draws a rectangular `building=yes`
+way off an existing way segment by dragging perpendicular to it, and also
+lets you insert a node into a way by double-clicking a segment.
 
 ## Scope
 
@@ -17,24 +19,26 @@ gesture, with a live preview.
   (`src/main.rs:1177-1181`), i.e. to the left of the map area. The
   `panel_width`/`map_size` calculation (`src/main.rs:1159-1164`) is extended
   to also subtract this panel's width.
-- Three icon buttons: Select, Add, Building. The active mode is highlighted
-  (accent background). Add/Building are disabled (with a tooltip explaining
-  why) when `active_layer` is `None`.
+- Four icon buttons: Select, Add, Building, Extrude. The active mode is
+  highlighted (accent background). Add/Building/Extrude are disabled (with a
+  tooltip explaining why) when `active_layer` is `None`.
 - New enum on `MapViewer`:
   ```rust
-  enum EditMode { Select, Add, Building }
+  enum EditMode { Select, Add, Building, Extrude }
   ```
   Field `mode: EditMode`, default `Select`. Switching modes (via toolbar click,
   keybinding, or the Escape fallback below) clears any in-progress
-  `add_progress` / `building_progress` state without committing it.
+  `add_progress` / `building_progress` / `extrude_drag` state without
+  committing it.
 - New parameterized action (same pattern as `MoveLayer`/`DeleteLayer`):
   ```rust
   #[action(namespace = mode)]
   struct SetMode { mode: EditMode }
   ```
-  dispatched from toolbar buttons and from two new keybindings:
-  `KeyBinding::new("a", SetMode { mode: EditMode::Add }, None)` and
-  `KeyBinding::new("b", SetMode { mode: EditMode::Building }, None)`,
+  dispatched from toolbar buttons and from three new keybindings:
+  `KeyBinding::new("a", SetMode { mode: EditMode::Add }, None)`,
+  `KeyBinding::new("b", SetMode { mode: EditMode::Building }, None)`, and
+  `KeyBinding::new("x", SetMode { mode: EditMode::Extrude }, None)`,
   registered alongside the existing `cmd-z`/`cmd-shift-z` bindings
   (`src/main.rs:~1573`). No dedicated keybinding for Select; Escape returns to
   Select when there is no in-progress state to cancel (see below).
@@ -117,6 +121,54 @@ struct BuildingProgress {
   decision) — switching modes away from Building abandons `building_progress`
   silently (nothing was committed, so there's nothing to undo).
 
+### Extrude mode
+
+Internal state:
+
+```rust
+struct ExtrudeDrag {
+    layer_name: String,
+    way_id: i64,
+    // Indices into way.nodes of the two segment endpoints (adjacent, a < b).
+    seg_start_idx: usize,
+    seg_end_idx: usize,
+    node_a: i64,
+    node_b: i64,
+}
+```
+
+`MapViewer` gains `extrude_drag: Option<ExtrudeDrag>`.
+
+- Hit-testing a "way segment under the cursor" reuses
+  `selection::point_to_segment_distance` against each way's consecutive node
+  pairs (same tolerance as existing hit-testing), returning the owning way id
+  and the segment's two node ids/indices.
+- Mouse-down on a way segment (not a node) in Extrude mode: record
+  `extrude_drag` with that segment's two endpoint node ids/indices. This does
+  not select anything and does not start a box-select.
+- Mouse-drag: compute the perpendicular offset of the current cursor position
+  relative to the segment `node_a`–`node_b` (project the drag vector onto the
+  segment's perpendicular, mirroring the perpendicular-offset math used for
+  Building mode's rectangle). Render a live preview rectangle: `node_a`,
+  `node_b` as one fixed edge, two new points offset perpendicular by that
+  amount as the other edge — same transient-preview mechanism as Building
+  mode (no `OsmData` mutation yet).
+- Mouse-up past the existing 4px click/drag threshold: commit. Create 2 new
+  nodes (placeholder ids) at the offset positions, create a new closed way
+  `[node_a, node_b, new_far_b, new_far_a, node_a]` tagged `building=yes` in
+  the active layer, as one undo action (`ExtrudeWay`). Clear `extrude_drag`,
+  select the new way, remain in Extrude mode. `node_a`/`node_b` (the original
+  segment's nodes) are untouched — they remain shared between the original
+  way and the new building way.
+- Mouse-up at or below the threshold: no-op (treated as an aborted drag, not
+  a click — Extrude mode has no plain-click behavior of its own).
+- Double-click on a way segment in Extrude mode (not a drag): insert a new
+  node (placeholder id) into that way's node list, between the segment's two
+  endpoint indices, at the double-click position. This is a single undo
+  action (`InsertNodeIntoWay`) and does not change `mode` or selection. This
+  behavior is specific to Extrude mode (out of scope for Select mode, see
+  below).
+
 ### Placeholder ids
 
 - `OsmLayer` gains two counters, `next_placeholder_node_id: i64` and
@@ -141,12 +193,22 @@ New methods, following the existing clone-mutate-patch-caches pattern used by
 - `extend_way(&mut self, way_id: i64, node_id: i64)` — appends `node_id` to an
   existing way's node list and patches the same derived caches as `add_way`
   for that one way.
+- `insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64`
+  — clones `OsmData`, inserts a new `OsmNode` at the next placeholder id,
+  splices it into `way.nodes` at `index`, patches the same derived caches as
+  `extend_way` (this way's `way_vertices`/`way_bboxes`/`way_styles`,
+  `node_cache`, `node_index`, `node_to_ways`), sets `modified = true`, returns
+  the new node id.
 - `remove_node(&mut self, node_id: i64)` / `remove_way(&mut self, way_id: i64)`
   — inverse operations, used only by undo (below); patch caches symmetrically.
+- `remove_node_from_way(&mut self, way_id: i64, index: usize)` — inverse of
+  `insert_node_into_way`; splices the node out of `way.nodes` at `index` and
+  patches caches (does not itself delete the node — callers combine with
+  `remove_node`).
 
 ### Undo (`src/undo.rs`)
 
-Three new `UndoableAction` variants:
+Five new `UndoableAction` variants:
 
 - `PlaceNode { layer_name: String, node_id: i64, lat: f64, lon: f64 }` — undo
   calls `remove_node`.
@@ -155,29 +217,38 @@ Three new `UndoableAction` variants:
   `way_created`), then `remove_node(node_id)`.
 - `CreateBuilding { layer_name: String, way_id: i64, node_ids: [i64; 4] }` —
   undo calls `remove_way` then `remove_node` for each of the 4 ids.
+- `ExtrudeWay { layer_name: String, way_id: i64, new_node_ids: [i64; 2] }` —
+  undo calls `remove_way` then `remove_node` for each of the 2 new ids
+  (`node_a`/`node_b`, belonging to the original segment, are untouched).
+- `InsertNodeIntoWay { layer_name: String, way_id: i64, index: usize, node_id: i64, lat: f64, lon: f64 }`
+  — undo calls `remove_node_from_way(way_id, index)` then `remove_node(node_id)`.
 
 ## Out of scope
 
-- Deleting/undoing an in-progress Building preview via Escape.
-- Any mode besides Select/Add/Building (e.g. delete-feature mode).
+- Deleting/undoing an in-progress Building or Extrude preview via Escape.
+- Any mode besides Select/Add/Building/Extrude (e.g. delete-feature mode).
 - Persisting/uploading newly created features (no `.osm` writer, no
   changeset upload) — same boundary as existing move/tag-edit work.
 - Snapping newly placed nodes onto nearby existing nodes/ways except the
   explicit "click an existing node/way to finish" gesture in Add mode.
 - Undo/redo for `active_layer` selection itself (not an undoable action).
-- Multi-layer Add/Building (always targets the single `active_layer`).
+- Multi-layer Add/Building/Extrude (always targets the single `active_layer`).
+- Double-click-to-insert-a-node in Select mode (Extrude mode only, per design
+  decision).
 
 ## Testing
 
-- `selection.rs` or a new module: pure functions for computing the Building
-  mode rectangle's 4 corners from `corner_a`, `corner_b`, and a
-  perpendicular-offset point — unit tested directly (geometry math, no GUI).
-- `osm_layer.rs`: unit tests for `add_node`/`add_way`/`extend_way` and their
-  inverses (`remove_node`/`remove_way`), verifying both `OsmData` and derived
-  caches (`node_cache`, `node_index`, `way_index`, `way_vertices`, etc.) stay
+- `selection.rs` or a new module: pure functions for computing the Building/
+  Extrude rectangle's corners from a fixed edge and a perpendicular-offset
+  point — unit tested directly (geometry math, no GUI). Shared between the
+  two modes since the math is identical.
+- `osm_layer.rs`: unit tests for `add_node`/`add_way`/`extend_way`/
+  `insert_node_into_way` and their inverses (`remove_node`/`remove_way`/
+  `remove_node_from_way`), verifying both `OsmData` and derived caches
+  (`node_cache`, `node_index`, `way_index`, `way_vertices`, etc.) stay
   consistent after each operation and after undoing it.
-- `undo.rs`: unit tests that `PlaceNode`/`ExtendWay`/`CreateBuilding` push and
-  invert correctly against a layer.
+- `undo.rs`: unit tests that `PlaceNode`/`ExtendWay`/`CreateBuilding`/
+  `ExtrudeWay`/`InsertNodeIntoWay` push and invert correctly against a layer.
 - No GUI automation available in this sandbox (documented limitation): the
   end-to-end click sequence isn't exercised by tests, only the underlying
   mutation/geometry logic. Verify with `cargo build`/`cargo test`/`cargo
