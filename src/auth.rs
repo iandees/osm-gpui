@@ -1,8 +1,13 @@
 //! OAuth2 (PKCE) login against an OpenStreetMap server.
 //!
-//! Tokens are persisted as JSON in `<config_dir>/osm-gpui/oauth.json`, keyed by the
-//! OAuth server's base URL, so switching between the primary and dev API servers keeps
-//! separate logins. See https://wiki.openstreetmap.org/wiki/OAuth for the flow this
+//! Access/refresh tokens are secrets and are stored in the platform credential store
+//! (macOS Keychain / Secret Service / Windows Credential Manager) via the `keyring`
+//! crate, keyed by the OAuth server's base URL so switching between the primary and dev
+//! API servers keeps separate logins and switching servers can't collide tokens.
+//! Non-secret bookkeeping (display name, user id, expiry) is cached as JSON in
+//! `<config_dir>/osm-gpui/oauth.json`. If the platform keyring is unavailable, the
+//! access/refresh tokens fall back to that same file, written with restrictive (0600)
+//! permissions. See https://wiki.openstreetmap.org/wiki/OAuth for the flow this
 //! implements.
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +35,10 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const CALLBACK_PATH: &str = "/callback";
 
 const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
+
+/// Service name under which all osm-gpui tokens are stored in the platform keyring.
+/// Accounts within that service are keyed by OAuth base URL (see module docs).
+const KEYRING_SERVICE: &str = "osm-gpui";
 
 #[derive(Debug)]
 pub enum AuthError {
@@ -82,7 +91,7 @@ pub fn oauth_base_for(api_base_url: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredToken {
     pub access_token: String,
     pub display_name: String,
@@ -383,12 +392,86 @@ fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String,
     Ok((display_name, id))
 }
 
-// --- Token persistence, following the same OnceLock + JSON-file pattern as
-// custom_imagery_store / settings_store. ---
+// --- Token persistence. ---
+//
+// Secrets (access_token, refresh_token) live in the platform keyring, one entry per
+// OAuth base URL under the `osm-gpui` service. Non-secret bookkeeping (display name,
+// user id, expiry) is cached in a small JSON file so we know which servers have a login
+// without querying the keyring for all of them. If the keyring can't be used (e.g. no
+// platform secret store available), the secrets fall back into that same file, which is
+// then chmod'd 0600.
+
+/// A secret payload for one OAuth base URL, as stored in the keyring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TokenSecret {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
+    match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {
+        Ok(entry) => Some(entry),
+        Err(e) => {
+            eprintln!("auth: keyring unavailable ({}), falling back to file storage", e);
+            None
+        }
+    }
+}
+
+fn keyring_store_secret(oauth_base_url: &str, secret: &TokenSecret) -> bool {
+    let Some(entry) = keyring_entry(oauth_base_url) else {
+        return false;
+    };
+    let Ok(json) = serde_json::to_string(secret) else {
+        return false;
+    };
+    match entry.set_password(&json) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("auth: keyring set_password failed ({}), falling back to file storage", e);
+            false
+        }
+    }
+}
+
+fn keyring_load_secret(oauth_base_url: &str) -> Option<TokenSecret> {
+    let entry = keyring_entry(oauth_base_url)?;
+    let json = entry.get_password().ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn keyring_delete_secret(oauth_base_url: &str) {
+    if let Some(entry) = keyring_entry(oauth_base_url) {
+        // NoEntry (nothing to delete) is fine; anything else is just logged.
+        if let Err(e) = entry.delete_credential() {
+            eprintln!("auth: keyring delete failed: {}", e);
+        }
+    }
+}
+
+/// Non-secret, on-disk bookkeeping for one OAuth base URL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PersistedToken {
+    display_name: String,
+    user_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    expires_at: Option<i64>,
+    /// Only populated when the platform keyring couldn't be used; the file this lives
+    /// in is chmod'd 0600 before any secret is written to it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    access_token_fallback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    refresh_token_fallback: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TokenStore {
+struct PersistedStore {
     /// Keyed by OAuth base URL (e.g. "https://www.openstreetmap.org").
+    tokens: HashMap<String, PersistedToken>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenStore {
     tokens: HashMap<String, StoredToken>,
 }
 
@@ -416,6 +499,7 @@ pub fn logout(oauth_base_url: &str) {
         g.tokens.remove(oauth_base_url);
         g.clone()
     };
+    keyring_delete_secret(oauth_base_url);
     save(&snapshot);
 }
 
@@ -427,25 +511,38 @@ pub fn current_token(oauth_base_url: &str) -> Option<StoredToken> {
         .and_then(|g| g.tokens.get(oauth_base_url).cloned())
 }
 
-fn load_from(path: &Path) -> TokenStore {
+fn load_from(path: &Path) -> PersistedStore {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return TokenStore::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PersistedStore::default(),
         Err(e) => {
             eprintln!("auth: read {:?} failed: {}", path, e);
-            return TokenStore::default();
+            return PersistedStore::default();
         }
     };
-    match serde_json::from_slice::<TokenStore>(&bytes) {
+    match serde_json::from_slice::<PersistedStore>(&bytes) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("auth: parse {:?} failed: {}", path, e);
-            TokenStore::default()
+            PersistedStore::default()
         }
     }
 }
 
-fn save_to(path: &Path, store: &TokenStore) -> std::io::Result<()> {
+/// Best-effort restriction of a file's permissions to owner-only read/write. No-op on
+/// non-unix platforms (Windows ACLs already default to the owning user).
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn save_to(path: &Path, store: &PersistedStore) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -453,6 +550,9 @@ fn save_to(path: &Path, store: &TokenStore) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(store)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(&tmp, json)?;
+    // May contain fallback secrets (see PersistedToken); lock it down before it's
+    // visible under its final name.
+    restrict_permissions(&tmp)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -462,18 +562,69 @@ fn default_path() -> Option<PathBuf> {
 }
 
 pub fn load() -> TokenStore {
-    match default_path() {
+    let persisted = match default_path() {
         Some(p) => load_from(&p),
-        None => TokenStore::default(),
+        None => PersistedStore::default(),
+    };
+
+    let mut tokens = HashMap::new();
+    for (oauth_base_url, meta) in persisted.tokens {
+        let (access_token, refresh_token) = match keyring_load_secret(&oauth_base_url) {
+            Some(secret) => (secret.access_token, secret.refresh_token),
+            None => match meta.access_token_fallback.clone() {
+                Some(access_token) => (access_token, meta.refresh_token_fallback.clone()),
+                // No secret available anywhere for this entry; drop the stale
+                // metadata rather than surface a token-less "logged in" state.
+                None => continue,
+            },
+        };
+        tokens.insert(
+            oauth_base_url,
+            StoredToken {
+                access_token,
+                display_name: meta.display_name,
+                user_id: meta.user_id,
+                refresh_token,
+                expires_at: meta.expires_at,
+            },
+        );
     }
+    TokenStore { tokens }
 }
 
 fn save(store: &TokenStore) {
+    let mut persisted = PersistedStore::default();
+    for (oauth_base_url, token) in &store.tokens {
+        let secret = TokenSecret {
+            access_token: token.access_token.clone(),
+            refresh_token: token.refresh_token.clone(),
+        };
+        let stored_in_keyring = keyring_store_secret(oauth_base_url, &secret);
+        persisted.tokens.insert(
+            oauth_base_url.clone(),
+            PersistedToken {
+                display_name: token.display_name.clone(),
+                user_id: token.user_id,
+                expires_at: token.expires_at,
+                access_token_fallback: if stored_in_keyring {
+                    None
+                } else {
+                    Some(token.access_token.clone())
+                },
+                refresh_token_fallback: if stored_in_keyring {
+                    None
+                } else {
+                    token.refresh_token.clone()
+                },
+            },
+        );
+    }
+
     let Some(p) = default_path() else {
         eprintln!("auth: no config dir, skipping save");
         return;
     };
-    if let Err(e) = save_to(&p, store) {
+    if let Err(e) = save_to(&p, &persisted) {
         eprintln!("auth: save {:?} failed: {}", p, e);
     }
 }
@@ -550,24 +701,25 @@ mod tests {
     }
 
     #[test]
-    fn token_store_round_trip() {
+    fn persisted_store_round_trip() {
         let dir = tmp_dir("round-trip");
         let path = dir.join("oauth.json");
-        let mut store = TokenStore::default();
+        let mut store = PersistedStore::default();
         store.tokens.insert(
             "https://www.openstreetmap.org".to_string(),
-            StoredToken {
-                access_token: "tok".into(),
+            PersistedToken {
                 display_name: "alice".into(),
                 user_id: 42,
-                refresh_token: None,
-                expires_at: None,
+                expires_at: Some(1_700_000_000),
+                access_token_fallback: None,
+                refresh_token_fallback: None,
             },
         );
         save_to(&path, &store).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.tokens.len(), 1);
         assert_eq!(loaded.tokens["https://www.openstreetmap.org"].display_name, "alice");
+        assert_eq!(loaded.tokens["https://www.openstreetmap.org"].expires_at, Some(1_700_000_000));
     }
 
     #[test]
@@ -576,6 +728,28 @@ mod tests {
         let path = dir.join("oauth.json");
         let loaded = load_from(&path);
         assert!(loaded.tokens.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_file_has_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir("perms");
+        let path = dir.join("oauth.json");
+        let mut store = PersistedStore::default();
+        store.tokens.insert(
+            "https://www.openstreetmap.org".to_string(),
+            PersistedToken {
+                display_name: "alice".into(),
+                user_id: 42,
+                expires_at: None,
+                access_token_fallback: Some("fallback-secret".into()),
+                refresh_token_fallback: None,
+            },
+        );
+        save_to(&path, &store).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
