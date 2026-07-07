@@ -799,14 +799,16 @@ git commit -m "Add TagEditDialog component"
 
 ### Task 5: Wire the dialog into `MapViewer`
 
+**IMPORTANT architectural constraint** (discovered during Task 4's review): `TagEditDialog` MUST be constructed from *inside* a `Render::render` pass, never directly from a click/action handler. Task 4's dialog defers its "select all on open" behavior via `window.on_next_frame(...)`, which only lands correctly if the dialog's first paint happens in the *same* draw pass that constructs it — exactly how the existing `CustomImageryDialog` is built via `check_for_dialog_queue` (called at the top of `Render::render`, main.rs:1530), never from inside a click handler. If `TagEditDialog` is instead constructed directly inside an `on_mouse_down`/`on_click` listener (outside of `render()`), the deferred select-all silently fails (it would fire one frame too early, before the dialog's first paint). This task therefore uses a **pending-open-request** pattern: click/button handlers only record *that* a dialog should open (into a new `pending_tag_edit_open: Option<PendingTagEditOpen>` field), and a new method — checked at the top of `render()`, alongside `check_for_dialog_queue` — is what actually constructs the dialog.
+
 **Files:**
 - Modify: `src/main.rs`:
   - `use gpui_component::{...}` block (lines 22-28): add `button::{Button, ButtonVariants as _}`.
-  - `struct MapViewer` (lines 246-276): add `tag_edit_dialog` field.
-  - `MapViewer::new` (lines 450-468): initialize the new field.
-  - `render_tags_section` (lines 1478-1515): rewrite rows as custom double-click-aware `div`s, add delete icon per row, add "Add tag" button.
-  - New methods: `open_tag_edit_dialog`, `apply_tag_edit`, `delete_tag`.
-  - `impl Render for MapViewer` (around line 1716, `.children(self.custom_imagery_dialog.clone())`): also render `.children(self.tag_edit_dialog.clone().map(|(d, _)| d))`.
+  - `struct MapViewer` (lines 246-276): add `tag_edit_dialog` and `pending_tag_edit_open` fields.
+  - `MapViewer::new` (lines 450-468): initialize both new fields.
+  - `render_tags_section` (lines 1478-1515): rewrite rows as custom double-click-aware `div`s, add delete icon per row, add "Add tag" button — each interaction sets `pending_tag_edit_open`, none construct the dialog directly.
+  - New methods: `check_for_pending_tag_edit_dialog`, `apply_tag_edit`, `delete_tag`.
+  - `impl Render for MapViewer`: call `self.check_for_pending_tag_edit_dialog(window, cx);` alongside the existing `self.check_for_dialog_queue(window, cx);` call (main.rs:1530); also render `.children(self.tag_edit_dialog.clone().map(|(d, _)| d))` next to `.children(self.custom_imagery_dialog.clone())` (around line 1716).
 
 **Interfaces:**
 - Consumes: `osm_gpui::ui::tag_edit_dialog::{TagEditDialog, TagEditField, DialogEvent}` (Task 4), `osm_gpui::selection::compute_tag_edit_entries` (Task 3), `UndoableAction::SetTags` (Task 2), `layer.set_tag`/`layer.remove_tag` (Task 1), `layer.feature_tags` (existing), `osm_gpui::selection::{FeatureRef, TagValue, aggregate_tags}` (existing).
@@ -827,7 +829,7 @@ use gpui_component::{
 };
 ```
 
-Add a context struct right after the `NodeMoveUndoEntries` type alias (currently line 282, before the `UndoableAction` enum):
+Add two structs right after the `NodeMoveUndoEntries` type alias (currently line 282, before the `UndoableAction` enum):
 
 ```rust
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -840,6 +842,20 @@ struct TagEditContext {
     original_value: String,
     is_add: bool,
 }
+
+/// Recorded by a row's double-click or the "Add tag" button; consumed by
+/// `check_for_pending_tag_edit_dialog` (called from `Render::render`) to
+/// actually construct the dialog. This indirection exists so the dialog is
+/// always built from inside a render pass — never directly inside a click
+/// handler — which `TagEditDialog`'s deferred select-all-on-open (Task 4)
+/// depends on.
+struct PendingTagEditOpen {
+    features: Vec<osm_gpui::selection::FeatureRef>,
+    original_key: String,
+    original_value: String,
+    select: osm_gpui::ui::tag_edit_dialog::TagEditField,
+    is_add: bool,
+}
 ```
 
 In `struct MapViewer` (currently lines 246-276), add after `custom_imagery_dialog` (line 268):
@@ -848,12 +864,16 @@ In `struct MapViewer` (currently lines 246-276), add after `custom_imagery_dialo
     /// Active tag-edit dialog, if open, plus the context needed to apply
     /// its result.
     tag_edit_dialog: Option<(gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>, TagEditContext)>,
+    /// A dialog-open request recorded by a row/button click, to be acted on
+    /// during the next `render()` — see `PendingTagEditOpen`'s doc comment.
+    pending_tag_edit_open: Option<PendingTagEditOpen>,
 ```
 
 In `MapViewer::new` (currently lines 450-468), add after `custom_imagery_dialog: None,` (line 464):
 
 ```rust
             tag_edit_dialog: None,
+            pending_tag_edit_open: None,
 ```
 
 - [ ] **Step 2: Run a build to check the field wiring compiles**
@@ -861,7 +881,7 @@ In `MapViewer::new` (currently lines 450-468), add after `custom_imagery_dialog:
 Run: `cargo build`
 Expected: builds cleanly (new field is `None`-initialized and not yet read/written elsewhere).
 
-- [ ] **Step 3: Add `open_tag_edit_dialog`, `apply_tag_edit`, `delete_tag`**
+- [ ] **Step 3: Add `check_for_pending_tag_edit_dialog`, `apply_tag_edit`, `delete_tag`**
 
 Add these methods to `impl MapViewer`, near `apply_undo_action` (after it, i.e. after line 717 in the pre-Task-2 numbering — place directly below the method added in Task 2):
 
@@ -881,22 +901,19 @@ Add these methods to `impl MapViewer`, near `apply_undo_action` (after it, i.e. 
             .collect()
     }
 
-    /// Open the tag-edit dialog. `original_key`/`original_value` empty and
-    /// `is_add: true` means the "Add tag" flow (empty fields, targets the
-    /// whole selection); otherwise this edits/renames an existing row for
-    /// just `features` (which may be a subset of `self.selected` if a
-    /// future caller narrows it, though today it's always the full
-    /// selection).
-    fn open_tag_edit_dialog(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        features: Vec<osm_gpui::selection::FeatureRef>,
-        original_key: String,
-        original_value: String,
-        select: osm_gpui::ui::tag_edit_dialog::TagEditField,
-        is_add: bool,
-    ) {
+    /// If a row/button click recorded a pending tag-edit-dialog open
+    /// request, construct the dialog now. Called from `Render::render` (see
+    /// Step 6) — never call this, or construct `TagEditDialog` directly,
+    /// from inside a click/action listener: `TagEditDialog`'s deferred
+    /// select-all-on-open (Task 4) only lands correctly when the dialog is
+    /// built during the same draw pass that first paints it, exactly like
+    /// `check_for_dialog_queue` builds `CustomImageryDialog`.
+    fn check_for_pending_tag_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_tag_edit_open.take() else { return };
+        if self.tag_edit_dialog.is_some() {
+            return; // one at a time; drop the request rather than queue it
+        }
+        let PendingTagEditOpen { features, original_key, original_value, select, is_add } = pending;
         let title = if is_add { "Add tag" } else { "Edit tag" };
         let dialog = cx.new(|cx| {
             osm_gpui::ui::tag_edit_dialog::TagEditDialog::new(
@@ -1007,7 +1024,7 @@ Replace `render_tags_section` (currently lines 1478-1515) with:
     /// clicking the key or value opens the tag-edit dialog with that field
     /// pre-selected; the trailing "x" removes the tag immediately. An "Add
     /// tag" button below the list opens the same dialog with empty fields.
-    fn render_tags_section(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use osm_gpui::ui::tag_edit_dialog::TagEditField;
 
         if self.selected.is_empty() {
@@ -1077,17 +1094,16 @@ Replace `render_tags_section` (currently lines 1478-1515) with:
                             .child(k.clone())
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
                                     if ev.click_count == 2 {
-                                        this.open_tag_edit_dialog(
-                                            window,
-                                            cx,
-                                            selection_for_key_click.clone(),
-                                            key_for_key_click.clone(),
-                                            value_for_key_click.clone(),
-                                            TagEditField::Key,
-                                            false,
-                                        );
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_key_click.clone(),
+                                            original_key: key_for_key_click.clone(),
+                                            original_value: value_for_key_click.clone(),
+                                            select: TagEditField::Key,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
                                     }
                                 }),
                             ),
@@ -1101,17 +1117,16 @@ Replace `render_tags_section` (currently lines 1478-1515) with:
                             .child(value_text.clone())
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
                                     if ev.click_count == 2 {
-                                        this.open_tag_edit_dialog(
-                                            window,
-                                            cx,
-                                            selection_for_value_click.clone(),
-                                            key_for_value_click.clone(),
-                                            value_for_value_click.clone(),
-                                            TagEditField::Value,
-                                            false,
-                                        );
+                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                            features: selection_for_value_click.clone(),
+                                            original_key: key_for_value_click.clone(),
+                                            original_value: value_for_value_click.clone(),
+                                            select: TagEditField::Value,
+                                            is_add: false,
+                                        });
+                                        cx.notify();
                                     }
                                 }),
                             ),
@@ -1138,16 +1153,15 @@ Replace `render_tags_section` (currently lines 1478-1515) with:
         list.child(
             Button::new("add-tag")
                 .label("Add tag")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_tag_edit_dialog(
-                        window,
-                        cx,
-                        add_selection.clone(),
-                        String::new(),
-                        String::new(),
-                        TagEditField::None,
-                        true,
-                    );
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                        features: add_selection.clone(),
+                        original_key: String::new(),
+                        original_value: String::new(),
+                        select: TagEditField::None,
+                        is_add: true,
+                    });
+                    cx.notify();
                 })),
         )
         .into_any_element()
@@ -1156,15 +1170,16 @@ Replace `render_tags_section` (currently lines 1478-1515) with:
 
 Note this drops the `DescriptionList`/`DescriptionItem` usage entirely in favor of plain `div` rows (needed for the double-click handlers, which `DescriptionItem` doesn't support). Remove the now-unused `description_list::{DescriptionItem, DescriptionList}` import from the `gpui_component` use block (lines 22-28) **only if** nothing else in `main.rs` still uses them — check with `grep -n "DescriptionList\|DescriptionItem" src/main.rs` first; if another section still renders a `DescriptionList` (e.g. `render_selection_section` or elsewhere), keep the import.
 
-- [ ] **Step 6: Update the call site and render wiring**
+- [ ] **Step 6: Wire `check_for_pending_tag_edit_dialog` into `render()` and update the call site**
 
-`render_tags_section` now takes `window`. Update its call site (currently `let tags_section = self.render_tags_section(cx);` around line 1241) to:
+`render_tags_section`'s call site (currently `let tags_section = self.render_tags_section(cx);` around line 1241) is unchanged — it still only takes `cx`, since it no longer constructs the dialog directly.
+
+In `Render::render`, add a call to `check_for_pending_tag_edit_dialog` right after the existing `self.check_for_dialog_queue(window, cx);` (main.rs:1530):
 
 ```rust
-        let tags_section = self.render_tags_section(window, cx);
+        self.check_for_dialog_queue(window, cx);
+        self.check_for_pending_tag_edit_dialog(window, cx);
 ```
-
-(`window` is already in scope in `Render::render`, lines 1519 onward.)
 
 Add the dialog to the render tree, next to the existing `.children(self.custom_imagery_dialog.clone())` (around line 1716):
 
