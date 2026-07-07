@@ -100,70 +100,56 @@ fn compute_effective_tile_zoom(
     Some(rounded)
 }
 
-/// Shared per-frame geometry for a set of same-zoom tiles: one rounded
-/// anchor position plus a rounded, uniform tile size. Every tile's screen
-/// rect is derived from this by pure integer tile-index arithmetic (see
-/// `tile_screen_rect`), rather than each tile independently projecting and
-/// rounding its own corners.
-///
-/// This matters during panning: independently rounding each tile's own
-/// (continuously changing) float position means different tiles cross
-/// their own rounding boundary at different moments, so the grid visibly
-/// jiggles — neighboring tiles pop by a pixel at different times relative
-/// to the same drag motion. Deriving every tile from one shared anchor and
-/// tile size means the whole grid snaps together at once: no per-tile
-/// desync, and (since all tiles at a given zoom are the same size on the
-/// Web Mercator grid) no antialiased seam either.
-struct TileGridGeometry {
-    anchor_x: Pixels,
-    anchor_y: Pixels,
-    tile_width: Pixels,
-    tile_height: Pixels,
-    min_x: u32,
-    min_y: u32,
-}
+/// A small, deliberate overlap added to every tile's rendered size so
+/// adjacent tiles overlap slightly instead of exactly abutting. This is the
+/// standard technique tile-based map renderers use (e.g. Leaflet sizes
+/// tiles a pixel larger than their exact geometric size) to guarantee no
+/// gap can ever appear between neighbors, regardless of where their
+/// (necessarily continuous, sub-pixel) edges happen to fall. Since adjacent
+/// map tiles show continuous, matching imagery at their shared edge, a
+/// 1px overlap of nearly-identical content is imperceptible — unlike a
+/// gap, which exposes the dark fallback background behind the tiles.
+const TILE_OVERLAP_PX: f32 = 1.0;
 
-fn compute_tile_grid_geometry(
-    viewport: &Viewport,
-    visible_tiles: &[TileCoord],
-    tile_zoom: u32,
-) -> Option<TileGridGeometry> {
-    let min_x = visible_tiles.iter().map(|t| t.x).min()?;
-    let min_y = visible_tiles.iter().map(|t| t.y).min()?;
-
-    // Web Mercator (EPSG:3857) half-width in meters, matching the constant
-    // used by `coordinates::lat_lon_to_mercator`. The XYZ tile scheme is a
-    // uniform grid directly in this projected space, so every tile at a
-    // given zoom is exactly the same size — no trig needed to find it.
+/// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
+/// directly from its XYZ grid index (no trig — the XYZ scheme is a
+/// uniform grid in this projected space, so every tile at a given zoom is
+/// exactly the same size). Matches the constant used by
+/// `coordinates::lat_lon_to_mercator`.
+fn tile_mercator_bounds(tile: &TileCoord) -> (f64, f64, f64, f64) {
     let world_half = 20037508.34_f64;
-    let n = 2.0_f64.powi(tile_zoom as i32);
+    let n = 2.0_f64.powi(tile.z as i32);
     let tile_size_m = (world_half * 2.0) / n;
 
-    let anchor_merc_x = -world_half + min_x as f64 * tile_size_m;
-    let anchor_merc_y = world_half - min_y as f64 * tile_size_m;
-    let anchor_raw = viewport.mercator_to_screen(anchor_merc_x, anchor_merc_y);
-
-    let raw_tile_width = tile_size_m * viewport.transform.pixels_per_meter_x;
-    let raw_tile_height = tile_size_m * viewport.transform.pixels_per_meter_y;
-
-    Some(TileGridGeometry {
-        anchor_x: anchor_raw.x.round(),
-        anchor_y: anchor_raw.y.round(),
-        tile_width: px(raw_tile_width.round() as f32),
-        tile_height: px(raw_tile_height.round() as f32),
-        min_x,
-        min_y,
-    })
+    let min_x = -world_half + tile.x as f64 * tile_size_m;
+    let max_x = min_x + tile_size_m;
+    let max_y = world_half - tile.y as f64 * tile_size_m;
+    let min_y = max_y - tile_size_m;
+    (min_x, min_y, max_x, max_y)
 }
 
-/// Screen rect (x, y, width, height) for one tile, derived from the shared
-/// grid geometry by integer tile-index arithmetic only.
-fn tile_screen_rect(geom: &TileGridGeometry, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
-    let delta_col = (tile.x - geom.min_x) as f32;
-    let delta_row = (tile.y - geom.min_y) as f32;
-    let x = geom.anchor_x + geom.tile_width * delta_col;
-    let y = geom.anchor_y + geom.tile_height * delta_row;
-    (x, y, geom.tile_width, geom.tile_height)
+/// Screen rect (x, y, width, height) for one tile: each tile is projected
+/// independently at its exact, continuous (sub-pixel) screen position —
+/// deliberately *not* rounded, so tiles move perfectly smoothly and in
+/// exact lockstep as the viewport pans or zooms, with no per-tile or
+/// per-frame quantization to desync.
+///
+/// The box is then grown by `TILE_OVERLAP_PX` split evenly on *all four*
+/// sides (not just grown rightward/downward), so it overlaps every
+/// neighbor — including diagonally, at the corner where four tiles meet.
+/// Growing one-sided only would let a tile overlap its right/bottom
+/// neighbor but not its left/top one, leaving the shared corner of a 2×2
+/// tile block uncovered from every direction — visible as a faint cross
+/// where the dark fallback background shows through at that one point.
+fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
+    let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(tile);
+    let top_left = viewport.mercator_to_screen(min_x, max_y);
+    let bottom_right = viewport.mercator_to_screen(max_x, min_y);
+
+    let half_overlap = px(TILE_OVERLAP_PX / 2.0);
+    let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
+    let height = (bottom_right.y - top_left.y).abs() + px(TILE_OVERLAP_PX);
+    (top_left.x - half_overlap, top_left.y - half_overlap, width, height)
 }
 
 impl MapLayer for TileLayer {
@@ -191,14 +177,9 @@ impl MapLayer for TileLayer {
             bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
         );
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
-        let Some(geom) = compute_tile_grid_geometry(viewport, &visible_tiles, tile_zoom) else {
-            return elements;
-        };
 
         for tile_coord in &visible_tiles {
-            // Calculate tile screen position and size from the shared grid
-            // geometry (integer tile-index arithmetic; see `TileGridGeometry`).
-            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(&geom, tile_coord);
+            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(viewport, tile_coord);
 
             // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -299,14 +280,11 @@ impl MapLayer for TileLayer {
             bounds_geo.min_lat, bounds_geo.min_lon, bounds_geo.max_lat, bounds_geo.max_lon
         );
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
-        let Some(geom) = compute_tile_grid_geometry(viewport, &visible_tiles, tile_zoom) else {
-            return;
-        };
 
         let tile_color = rgb(0x4a5568);
         for tile_coord in &visible_tiles {
-            // Use the same grid geometry as render_elements for consistency
-            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(&geom, tile_coord);
+            // Use the same positioning as render_elements for consistency
+            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(viewport, tile_coord);
             let screen_top_left = point(tile_x, tile_y);
             let screen_bottom_right = point(tile_x + tile_width, tile_y + tile_height);
 
@@ -352,74 +330,105 @@ impl MapLayer for TileLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_effective_tile_zoom, compute_tile_grid_geometry, tile_screen_rect};
+    use super::{compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect, TILE_OVERLAP_PX};
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
     use gpui::{px, size};
 
-    fn tiles_and_geom(viewport: &Viewport, z: u32) -> (Vec<TileCoord>, super::TileGridGeometry) {
-        let tiles = vec![
+    fn adjacent_tiles(z: u32) -> [TileCoord; 4] {
+        [
             TileCoord::new(1206, 1539, z),
             TileCoord::new(1207, 1539, z),
             TileCoord::new(1206, 1540, z),
             TileCoord::new(1207, 1540, z),
-        ];
-        let geom = compute_tile_grid_geometry(viewport, &tiles, z).unwrap();
-        (tiles, geom)
+        ]
     }
 
-    /// Adjacent tiles must land on identical shared pixel edges, or a
-    /// hairline seam appears where the antialiased edge of each tile's
-    /// quad exposes the background behind it. A center/zoom chosen to
-    /// force a fractional (non-integer) pixel offset for the underlying
-    /// projection is the regression case for that seam.
+    /// The single point where four tiles meet (top-right corner of the
+    /// top-left tile) must be covered by every one of the four tiles'
+    /// rendered boxes, regardless of paint order. Growing a tile's box only
+    /// rightward/downward covers its right and bottom neighbors but leaves
+    /// this exact corner uncovered by the tiles above/left of it — visible
+    /// as a faint cross where the dark fallback background shows through.
     #[test]
-    fn adjacent_tiles_share_exact_pixel_edge() {
+    fn shared_corner_of_four_tiles_is_covered_from_every_side() {
         let screen_size = size(px(801.0), px(600.0));
         let viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
-        let (tiles, geom) = tiles_and_geom(&viewport, 12);
+        let tiles = adjacent_tiles(12);
 
-        let (x_a, _, width_a, _) = tile_screen_rect(&geom, &tiles[0]);
-        let (x_b, _, _, _) = tile_screen_rect(&geom, &tiles[1]);
+        // Corner mercator coordinate shared by all four tiles: top-left
+        // tile's right edge / bottom edge.
+        let (_, min_y_a, max_x_a, _) = tile_mercator_bounds(&tiles[0]);
+        let corner = viewport.mercator_to_screen(max_x_a, min_y_a);
 
-        assert_eq!(
-            x_a.as_f32().fract(),
-            0.0,
-            "tile edge must land on a whole pixel, not a fractional one"
-        );
-        assert_eq!(
+        for (i, tile) in tiles.iter().enumerate() {
+            let (x, y, w, h) = tile_screen_rect(&viewport, tile);
+            let tol = 0.01;
+            assert!(
+                corner.x.as_f32() >= x.as_f32() - tol
+                    && corner.x.as_f32() <= (x + w).as_f32() + tol
+                    && corner.y.as_f32() >= y.as_f32() - tol
+                    && corner.y.as_f32() <= (y + h).as_f32() + tol,
+                "tile {i} ({tile:?}) does not cover the shared 4-tile corner at {corner:?}: \
+                 tile rect = ({x:?}, {y:?}, {w:?}, {h:?})"
+            );
+        }
+    }
+
+    /// Adjacent tiles must overlap (or at minimum touch) at their shared
+    /// edge — never leave a gap, or the dark fallback background behind
+    /// the tiles shows through as a hairline seam.
+    #[test]
+    fn adjacent_tiles_overlap_with_no_gap() {
+        let screen_size = size(px(801.0), px(600.0));
+        let viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let tiles = adjacent_tiles(12);
+
+        let (x_a, _, width_a, _) = tile_screen_rect(&viewport, &tiles[0]);
+        let (x_b, _, _, _) = tile_screen_rect(&viewport, &tiles[1]);
+
+        // tile_a's right edge must reach at least as far as tile_b's left
+        // edge (overlap allowed, gap is not).
+        assert!(
+            (x_a + width_a).as_f32() >= x_b.as_f32(),
+            "adjacent tiles must overlap or touch, not leave a gap: \
+             tile_a right={:?} tile_b left={:?}",
             x_a + width_a,
-            x_b,
-            "adjacent tiles must share the same pixel edge"
+            x_b
+        );
+        // ...and the overlap shouldn't be more than the deliberate margin
+        // plus a small tolerance for floating point error.
+        assert!(
+            (x_a + width_a).as_f32() - x_b.as_f32() <= TILE_OVERLAP_PX + 0.01,
+            "overlap is larger than the deliberate margin — likely a real position bug"
         );
     }
 
-    /// During a drag, every visible tile must shift by the *same* amount
-    /// each frame. If each tile independently rounds its own continuously
-    /// changing screen position, different tiles cross their own rounding
-    /// boundary at different moments — visible as tiles jiggling relative
-    /// to each other mid-drag, even though they line up at any single rest
-    /// frame. Simulate a slow drag and assert all tiles move in lockstep.
+    /// During a pure pan, every visible tile must shift by the *same*
+    /// amount each frame — no per-tile quantization to desync. Since tile
+    /// positions are now projected independently at full precision (no
+    /// rounding), this holds automatically; this test locks that in as a
+    /// regression guard. Tiles here are multiple columns/rows apart, which
+    /// would have caught the earlier (since-reverted) `anchor + index *
+    /// rounded_width` design: that scheme jumped a tile by an amount
+    /// proportional to its distance from the anchor whenever the rounded
+    /// width ticked over.
     #[test]
     fn tiles_pan_in_lockstep_without_relative_jiggle() {
         let screen_size = size(px(801.0), px(600.0));
         let mut viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
-        let z = 12;
+        let tiles = adjacent_tiles(12);
 
-        let (tiles, geom0) = tiles_and_geom(&viewport, z);
         let mut prev_x: Vec<f32> = tiles
             .iter()
-            .map(|t| tile_screen_rect(&geom0, t).0.as_f32())
+            .map(|t| tile_screen_rect(&viewport, t).0.as_f32())
             .collect();
 
-        // Small sub-pixel steps, the exact case that exposed independent
-        // per-tile rounding drift.
         for _ in 0..40 {
             viewport.transform.pan_by_pixels(px(0.3), px(0.0));
-            let geom = compute_tile_grid_geometry(&viewport, &tiles, z).unwrap();
             let cur_x: Vec<f32> = tiles
                 .iter()
-                .map(|t| tile_screen_rect(&geom, t).0.as_f32())
+                .map(|t| tile_screen_rect(&viewport, t).0.as_f32())
                 .collect();
 
             let deltas: Vec<f32> = cur_x
@@ -429,12 +438,45 @@ mod tests {
                 .collect();
             let first = deltas[0];
             for (i, d) in deltas.iter().enumerate() {
-                assert_eq!(
-                    *d, first,
+                assert!(
+                    (*d - first).abs() < 0.001,
                     "tile {i} moved by {d}px but tile 0 moved by {first}px in the same frame \
                      (tiles desynced during pan)"
                 );
             }
+            prev_x = cur_x;
+        }
+    }
+
+    /// During a slow zoom, a tile's position must change *smoothly* — no
+    /// disproportionate per-frame jump. Zooming legitimately moves
+    /// different tiles by different amounts (it scales distances from the
+    /// viewport center, so a lockstep-equal-delta check does not apply
+    /// here, unlike panning). What must hold is that each small zoom step
+    /// produces a correspondingly small position change; a quantization
+    /// scheme that rounds tile size once and multiplies by tile-index
+    /// distance from some anchor would instead show sudden jumps whenever
+    /// the rounded size ticks over — bigger for tiles farther from the
+    /// anchor. This tile is several tiles away from the viewport center,
+    /// which is exactly the case that would expose that.
+    #[test]
+    fn tiles_zoom_smoothly_without_disproportionate_jumps() {
+        let screen_size = size(px(801.0), px(600.0));
+        let mut viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let tile = TileCoord::new(1206, 1539, 12);
+
+        let mut prev_x = tile_screen_rect(&viewport, &tile).0.as_f32();
+        for _ in 0..60 {
+            let next_zoom = viewport.transform.zoom_level + 0.002;
+            viewport.transform.zoom_to(next_zoom);
+            let cur_x = tile_screen_rect(&viewport, &tile).0.as_f32();
+
+            let delta = (cur_x - prev_x).abs();
+            assert!(
+                delta < 2.0,
+                "tile position jumped {delta}px for a 0.002 zoom-level step — \
+                 expected a smooth, small change"
+            );
             prev_x = cur_x;
         }
     }
