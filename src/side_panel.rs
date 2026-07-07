@@ -21,16 +21,18 @@ impl MapViewer {
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
     pub(crate) fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let layer_info: Vec<(LayerId, String, bool, bool)> = self
+        let layer_info: Vec<(LayerId, String, bool, bool, bool)> = self
             .layer_manager
             .layers()
             .iter()
             .map(|layer| {
+                let is_osm = layer.as_editable().is_some();
                 (
                     layer.id(),
                     layer.name().to_string(),
                     layer.is_visible(),
                     layer.is_modified(),
+                    is_osm,
                 )
             })
             .collect();
@@ -236,7 +238,7 @@ impl MapViewer {
     /// the wrapping row owns both the click-to-toggle and the context menu.
     fn render_layers_section(
         &self,
-        layer_info: &[(LayerId, String, bool, bool)],
+        layer_info: &[(LayerId, String, bool, bool, bool)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -252,8 +254,9 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (layer_id, name, is_visible, is_modified))| {
+                    .map(|(index, (layer_id, name, is_visible, is_modified, is_osm))| {
                         let layer_id = *layer_id;
+                        let is_osm = *is_osm;
                         let is_active = self.active_layer == Some(layer_id);
                         let label = if *is_modified {
                             format!("{} \u{2022}", name)
@@ -278,7 +281,9 @@ impl MapViewer {
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                     this.toggle_layer_visibility(layer_id);
-                                    this.active_layer = Some(layer_id);
+                                    if is_osm {
+                                        this.active_layer = Some(layer_id);
+                                    }
                                     cx.notify();
                                 }),
                             )

@@ -34,6 +34,13 @@ pub trait MapLayer: Send + Sync {
     /// This layer's stable identity. See `LayerId`.
     fn id(&self) -> LayerId;
 
+    /// Downcast support for callers that need `OsmLayer`-specific methods
+    /// not otherwise part of this trait or `EditableLayer` (e.g. Extrude
+    /// mode's segment hit-testing). For a simple "does this layer support
+    /// editing at all" check, prefer `as_editable`/`as_editable_mut`
+    /// instead — `is_some()` there already answers that without a downcast.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
 
