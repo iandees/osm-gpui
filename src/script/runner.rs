@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::capture;
 use crate::idle_tracker::IdleTracker;
 use crate::script::{Op, Step};
 
@@ -22,6 +21,8 @@ pub trait AppHandle {
     fn wait_frame(&mut self);
     /// Parse and load an OSM file, making it a new layer on the map.
     fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String>;
+    /// Render the current frame in-process and save it as a PNG.
+    fn capture(&mut self, path: &std::path::Path) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -38,7 +39,6 @@ impl std::fmt::Display for RunError {
 
 pub struct Runner {
     pub idle: Arc<IdleTracker>,
-    pub window_id: u32,
 }
 
 impl Runner {
@@ -67,7 +67,7 @@ impl Runner {
             Op::Key { chord } => { app.dispatch_key(chord); Ok(()) }
             Op::Capture { path } => {
                 let pb = PathBuf::from(path);
-                capture::capture(self.window_id, &pb)
+                app.capture(&pb)
                     .map_err(|e| RunError { line_no: step.line_no, message: format!("capture: {}", e) })?;
                 println!("  -> {}", path);
                 Ok(())
@@ -158,13 +158,14 @@ mod tests {
             }
         }
         fn load_osm(&mut self, _p: &std::path::Path) -> Result<(), String> { Ok(()) }
+        fn capture(&mut self, _p: &std::path::Path) -> Result<(), String> { Ok(()) }
     }
 
     #[test]
     fn wait_idle_requires_two_consecutive_idle_frames() {
         let idle = IdleTracker::new();
         let mut fake = Fake { frames_waited: 0, idle_after_frame: 3, idle: idle.clone() };
-        let runner = Runner { idle, window_id: 0 };
+        let runner = Runner { idle };
         runner.wait_idle(&mut fake, Duration::from_secs(5), 1).unwrap();
         assert!(fake.frames_waited >= 4, "should wait at least one extra frame after idle");
     }
@@ -174,7 +175,7 @@ mod tests {
         let idle = IdleTracker::new();
         idle.tile_fetch_started();
         let mut fake = Fake { frames_waited: 0, idle_after_frame: u32::MAX, idle: idle.clone() };
-        let runner = Runner { idle, window_id: 0 };
+        let runner = Runner { idle };
         let e = runner.wait_idle(&mut fake, Duration::from_millis(50), 7).unwrap_err();
         assert_eq!(e.line_no, 7);
         assert!(e.message.contains("timed out"));

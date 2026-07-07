@@ -33,7 +33,6 @@ use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer,
 use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::script::{self, runner::Runner};
-use osm_gpui::capture;
 use gpui_component::ActiveTheme;
 
 actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo, ApplyNsiPreset]);
@@ -1630,17 +1629,8 @@ fn main() {
 
         std::thread::spawn(move || {
             SCRIPT_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
-            // Wait for the window to be on-screen.
+            // Wait for the app to complete its first render pass.
             std::thread::sleep(Duration::from_millis(500));
-
-            // Find the window's OS-level ID.
-            let window_id = match capture::find_own_window_id() {
-                Ok(id) => id,
-                Err(e) => {
-                    eprintln!("script: could not find window id: {}", e);
-                    std::process::exit(1);
-                }
-            };
 
             // Parse the script file.
             let script_text = match std::fs::read_to_string(&script_path) {
@@ -1660,13 +1650,11 @@ fn main() {
 
             let runner = Runner {
                 idle: idle_for_runner,
-                window_id,
             };
 
             let mut live_app = LiveApp {
                 _idle: idle.clone(),
                 bus: bus_for_runner,
-                _window_id: window_id,
             };
 
             match runner.run(&mut live_app, &steps) {

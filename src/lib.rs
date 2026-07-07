@@ -3,7 +3,6 @@
 //! A high-performance map rendering system built with Rust and the GPUI framework.
 
 pub mod auth;
-pub mod capture;
 pub mod coordinates;
 pub mod custom_imagery_store;
 pub mod idle_tracker;
