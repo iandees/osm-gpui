@@ -1,4 +1,5 @@
-//! Settings window with custom imagery management.
+//! Settings window with custom imagery management, OSM API server selection, and
+//! OpenStreetMap OAuth login.
 
 use gpui::*;
 
@@ -7,10 +8,21 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     label::Label,
+    radio::RadioGroup,
     v_flex, ActiveTheme as _, StyledExt as _,
 };
 
+use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
+use crate::settings_store::{self, ApiServerChoice, AppSettings};
+
+/// Login UI state for the currently-selected API server.
+enum LoginState {
+    LoggedOut,
+    LoggingIn,
+    LoggedIn(StoredToken),
+    Error(SharedString),
+}
 
 pub struct SettingsWindow {
     focus_handle: FocusHandle,
@@ -22,10 +34,24 @@ pub struct SettingsWindow {
     edit_min_zoom: Option<Entity<InputState>>,
     edit_max_zoom: Option<Entity<InputState>>,
     edit_error: Option<SharedString>,
+
+    app_settings: AppSettings,
+    custom_api_url_input: Entity<InputState>,
+    custom_url_error: Option<SharedString>,
+
+    login_state: LoginState,
 }
 
 impl SettingsWindow {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let app_settings = settings_store::snapshot();
+        let custom_api_url_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://example.com")
+                .default_value(app_settings.custom_api_url.clone())
+        });
+        let login_state = Self::current_login_state(&app_settings);
+
         Self {
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
@@ -36,7 +62,76 @@ impl SettingsWindow {
             edit_min_zoom: None,
             edit_max_zoom: None,
             edit_error: None,
+
+            app_settings,
+            custom_api_url_input,
+            custom_url_error: None,
+
+            login_state,
         }
+    }
+
+    fn current_login_state(settings: &AppSettings) -> LoginState {
+        let oauth_base = auth::oauth_base_for(&settings.api_base_url());
+        match auth::current_token(&oauth_base) {
+            Some(token) => LoginState::LoggedIn(token),
+            None => LoginState::LoggedOut,
+        }
+    }
+
+    fn set_api_server(&mut self, choice: ApiServerChoice, cx: &mut Context<Self>) {
+        self.app_settings.api_server = choice;
+        settings_store::update_store(self.app_settings.clone());
+        self.login_state = Self::current_login_state(&self.app_settings);
+        cx.notify();
+    }
+
+    fn save_custom_api_url(&mut self, cx: &mut Context<Self>) {
+        let url = self.custom_api_url_input.read(cx).value().to_string();
+        let url = url.trim();
+        if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
+            self.custom_url_error = Some("Enter a valid http(s) URL".into());
+            cx.notify();
+            return;
+        }
+        self.custom_url_error = None;
+        self.app_settings.custom_api_url = url.trim_end_matches('/').to_string();
+        settings_store::update_store(self.app_settings.clone());
+        self.login_state = Self::current_login_state(&self.app_settings);
+        cx.notify();
+    }
+
+    fn start_login(&mut self, cx: &mut Context<Self>) {
+        self.login_state = LoginState::LoggingIn;
+        cx.notify();
+
+        let api_base_url = self.app_settings.api_base_url();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { auth::login(&api_base_url) })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(login) => {
+                        this.login_state = LoginState::LoggedIn(login.token);
+                    }
+                    Err(e) => {
+                        this.login_state = LoginState::Error(e.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn logout(&mut self, cx: &mut Context<Self>) {
+        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        auth::logout(&oauth_base);
+        self.login_state = LoginState::LoggedOut;
+        cx.notify();
     }
 
     fn start_editing(
@@ -162,13 +257,119 @@ impl Render for SettingsWindow {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         let border = cx.theme().border;
+        let foreground = cx.theme().foreground;
 
-        let mut content = v_flex().gap_2().child(
-            Label::new("Custom Imagery Sources")
-                .text_sm()
-                .font_semibold()
-                .text_color(cx.theme().foreground),
-        );
+        let api_choice = self.app_settings.api_server;
+        let selected_index = match api_choice {
+            ApiServerChoice::Primary => 0,
+            ApiServerChoice::Dev => 1,
+            ApiServerChoice::Custom => 2,
+        };
+
+        let mut api_section = v_flex()
+            .gap_2()
+            .child(
+                Label::new("OSM API Server")
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(foreground),
+            )
+            .child(
+                RadioGroup::vertical("api-server")
+                    .selected_index(Some(selected_index))
+                    .on_click(cx.listener(|this, idx: &usize, _window, cx| {
+                        let choice = match idx {
+                            0 => ApiServerChoice::Primary,
+                            1 => ApiServerChoice::Dev,
+                            _ => ApiServerChoice::Custom,
+                        };
+                        this.set_api_server(choice, cx);
+                    }))
+                    .child("Primary (api.openstreetmap.org)")
+                    .child("Dev / testing (master.apis.dev.openstreetmap.org)")
+                    .child("Custom"),
+            );
+
+        if matches!(api_choice, ApiServerChoice::Custom) {
+            let mut custom_row = v_flex()
+                .gap_1()
+                .pl_6()
+                .child(field_row("Custom API URL", &self.custom_api_url_input, muted));
+            if let Some(err) = &self.custom_url_error {
+                custom_row = custom_row.child(Label::new(err.clone()).text_sm().text_color(danger));
+            }
+            custom_row = custom_row.child(
+                Button::new("save-custom-api-url")
+                    .label("Save")
+                    .primary()
+                    .compact()
+                    .on_click(cx.listener(|this, _ev, _window, cx| this.save_custom_api_url(cx))),
+            );
+            api_section = api_section.child(custom_row);
+        }
+
+        let login_section = v_flex()
+            .gap_2()
+            .child(
+                Label::new("OpenStreetMap Account")
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(foreground),
+            )
+            .child(match &self.login_state {
+                LoginState::LoggedOut => Button::new("login")
+                    .label("Sign in with OpenStreetMap")
+                    .primary()
+                    .on_click(cx.listener(|this, _ev, _window, cx| this.start_login(cx)))
+                    .into_any_element(),
+                LoginState::LoggingIn => h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new("Signing in… complete login in your browser.")
+                            .text_sm()
+                            .text_color(muted),
+                    )
+                    .into_any_element(),
+                LoginState::LoggedIn(token) => h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Label::new(format!("✅ Logged in as {}", token.display_name))
+                            .text_sm()
+                            .text_color(foreground),
+                    )
+                    .child(
+                        Button::new("logout")
+                            .label("Sign out")
+                            .ghost()
+                            .compact()
+                            .on_click(cx.listener(|this, _ev, _window, cx| this.logout(cx))),
+                    )
+                    .into_any_element(),
+                LoginState::Error(msg) => v_flex()
+                    .gap_2()
+                    .child(Label::new(msg.clone()).text_sm().text_color(danger))
+                    .child(
+                        Button::new("login-retry")
+                            .label("Try again")
+                            .primary()
+                            .compact()
+                            .on_click(cx.listener(|this, _ev, _window, cx| this.start_login(cx))),
+                    )
+                    .into_any_element(),
+            });
+
+        let mut content = v_flex()
+            .gap_4()
+            .child(api_section)
+            .child(login_section)
+            .child(
+                Label::new("Custom Imagery Sources")
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground),
+            );
 
         if self.entries.is_empty() {
             content = content.child(
