@@ -65,6 +65,39 @@ pub fn point_to_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pi
     (ex * ex + ey * ey).sqrt()
 }
 
+/// Given one fixed rectangle edge `a`-`b` and a third point `offset_point`
+/// (typically the current cursor), compute the two far corners of the
+/// perpendicular rectangle: project `offset_point` onto the line
+/// perpendicular to `a`-`b`, and offset both `a` and `b` by that
+/// perpendicular vector. Returns `(far_a, far_b)`, so `a, b, far_b, far_a`
+/// traces a closed rectangle. Degenerate (zero-length `a`-`b`) input returns
+/// `(a, b)` unchanged (no perpendicular direction to offset along).
+pub fn rectangle_from_edge(
+    a: (f64, f64),
+    b: (f64, f64),
+    offset_point: (f64, f64),
+) -> ((f64, f64), (f64, f64)) {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < f64::EPSILON {
+        return (a, b);
+    }
+    // Unit vector perpendicular to a-b.
+    let nx = -dy / len;
+    let ny = dx / len;
+
+    // Signed distance of offset_point from the infinite line through a-b,
+    // projected onto the perpendicular direction.
+    let vx = offset_point.0 - a.0;
+    let vy = offset_point.1 - a.1;
+    let dist = vx * nx + vy * ny;
+
+    let far_a = (a.0 + nx * dist, a.1 + ny * dist);
+    let far_b = (b.0 + nx * dist, b.1 + ny * dist);
+    (far_a, far_b)
+}
+
 /// Pick the winning feature across all visible OSM layers.
 ///
 /// `per_layer` is expected in draw order (earliest-drawn first, topmost last).
@@ -616,5 +649,31 @@ mod tests {
         let features = vec![(a, tags(&[("surface", "paved")]))];
         let entries = compute_tag_edit_entries(&features, "", "", "surface", "paved", true);
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn rectangle_from_edge_computes_perpendicular_offset() {
+        // Edge along the x-axis from (0,0) to (10,0). Offset point at
+        // (5, 4) is 4 units above the line -> far corners 4 units above
+        // each original corner.
+        let (far_a, far_b) = rectangle_from_edge((0.0, 0.0), (10.0, 0.0), (5.0, 4.0));
+        assert!((far_a.0 - 0.0).abs() < 1e-9 && (far_a.1 - 4.0).abs() < 1e-9, "got {:?}", far_a);
+        assert!((far_b.0 - 10.0).abs() < 1e-9 && (far_b.1 - 4.0).abs() < 1e-9, "got {:?}", far_b);
+    }
+
+    #[test]
+    fn rectangle_from_edge_offset_below_line_goes_negative() {
+        let (far_a, far_b) = rectangle_from_edge((0.0, 0.0), (10.0, 0.0), (5.0, -3.0));
+        assert!((far_a.1 + 3.0).abs() < 1e-9, "got {:?}", far_a);
+        assert!((far_b.1 + 3.0).abs() < 1e-9, "got {:?}", far_b);
+    }
+
+    #[test]
+    fn rectangle_from_edge_handles_diagonal_edge() {
+        // Edge from (0,0) to (0,10) (vertical); offset point at (3, 5) is 3
+        // units to the right of the line -> far corners shift +3 in x.
+        let (far_a, far_b) = rectangle_from_edge((0.0, 0.0), (0.0, 10.0), (3.0, 5.0));
+        assert!((far_a.0 - 3.0).abs() < 1e-9 && (far_a.1 - 0.0).abs() < 1e-9, "got {:?}", far_a);
+        assert!((far_b.0 - 3.0).abs() < 1e-9 && (far_b.1 - 10.0).abs() < 1e-9, "got {:?}", far_b);
     }
 }
