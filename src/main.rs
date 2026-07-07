@@ -754,18 +754,28 @@ impl MapViewer {
                     editable.restore_feature(snapshot.clone());
                 }
             }
-            UndoableAction::ExtendWay { layer, way_id, node_id, lat: _, lon: _, way_created } => {
+            UndoableAction::ExtendWay { layer, way_id, node_id, lat: _, lon: _, way_created, node_created } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
                 let Some(editable) = layer.as_editable_mut() else { return };
                 if !forward {
+                    // Detach `node_id` from the way: if this click created
+                    // the way, the whole way goes away (no need to also
+                    // remove the node from a way that's being deleted);
+                    // otherwise just pull it out of the existing way's node
+                    // list.
                     if *way_created {
                         editable.remove_way(*way_id);
-                        editable.remove_node(*node_id);
                     } else {
                         let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
                         if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
                             editable.remove_node_from_way(*way_id, idx);
                         }
+                    }
+                    // Only delete the node itself if this click created it —
+                    // a pre-existing node the user connected to may be
+                    // shared with other ways or carry its own tags, so undo
+                    // must leave it alone.
+                    if *node_created {
                         editable.remove_node(*node_id);
                     }
                 }
@@ -806,6 +816,12 @@ impl MapViewer {
                         editable.remove_node(*id);
                     }
                 }
+                // Redo (forward) is intentionally a no-op, same as
+                // `ExtendWay`/`CreateBuilding`: undo deletes the way and its
+                // new nodes, but a redo-by-recreation would allocate fresh
+                // placeholder ids rather than reproducing `way_id`/
+                // `new_node_ids`, breaking any later undo entry that still
+                // references them. Out of scope for this plan.
             }
             UndoableAction::InsertNodeIntoWay { layer, way_id, index, node_id, .. } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
@@ -814,6 +830,11 @@ impl MapViewer {
                     editable.remove_node_from_way(*way_id, *index);
                     editable.remove_node(*node_id);
                 }
+                // Redo (forward) is intentionally a no-op, same reasoning as
+                // `ExtendWay`/`CreateBuilding`/`ExtrudeWay`: recreating the
+                // node via a fresh `add_node` call wouldn't reproduce the
+                // original `node_id`, breaking any later undo entry that
+                // still references it. Out of scope for this plan.
             }
         }
     }
@@ -1377,7 +1398,7 @@ impl MapViewer {
             if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
                 if hit.layer_id == layer_id {
                     if let osm_gpui::selection::FeatureKind::Node = hit.kind {
-                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, lat, lon);
+                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, lat, lon, false);
                         self.add_progress = None;
                         self.selected = vec![osm_gpui::selection::FeatureRef {
                             layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
@@ -1421,7 +1442,7 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else { return };
                 let new_id = editable.add_node(lat, lon);
                 self.add_progress = Some(progress);
-                let way_id = self.add_extend_or_start_way(layer_id, new_id, lat, lon);
+                let way_id = self.add_extend_or_start_way(layer_id, new_id, lat, lon, true);
                 self.add_progress = Some(AddProgress { way_id: Some(way_id), last_node_id: new_id });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
@@ -1433,8 +1454,11 @@ impl MapViewer {
     /// Shared by the "continue clicking" and "connect to existing feature"
     /// paths: start a new 2-node way if none exists yet, or extend the
     /// existing one, pushing the matching `ExtendWay` undo entry. Returns
-    /// the way id (new or existing).
-    fn add_extend_or_start_way(&mut self, layer_id: LayerId, node_id: i64, lat: f64, lon: f64) -> i64 {
+    /// the way id (new or existing). `node_created` must reflect whether
+    /// `node_id` was just created by this click (vs. an existing node the
+    /// user clicked to connect) — it's recorded on the undo entry so undo
+    /// never deletes a node it didn't create.
+    fn add_extend_or_start_way(&mut self, layer_id: LayerId, node_id: i64, lat: f64, lon: f64, node_created: bool) -> i64 {
         let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
         let last_node_id = self.add_progress.as_ref().map(|p| p.last_node_id).unwrap_or(node_id);
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return progress_way_id.unwrap_or(0) };
@@ -1444,14 +1468,14 @@ impl MapViewer {
             Some(way_id) => {
                 editable.extend_way(way_id, node_id);
                 self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id, way_id, node_id, lat, lon, way_created: false,
+                    layer: layer_id, way_id, node_id, lat, lon, way_created: false, node_created,
                 });
                 way_id
             }
             None => {
                 let way_id = editable.add_way(vec![last_node_id, node_id], Vec::new());
                 self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id, way_id, node_id, lat, lon, way_created: true,
+                    layer: layer_id, way_id, node_id, lat, lon, way_created: true, node_created,
                 });
                 way_id
             }
@@ -2012,7 +2036,7 @@ impl Render for MapViewer {
                             this.handle_map_mouse_down(ev.position);
                         }),
                     )
-                    .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         if ev.keystroke.key == "escape" {
                             this.cancel_move_drag(cx);
                             if this.mode == EditMode::Add {
@@ -2029,6 +2053,16 @@ impl Render for MapViewer {
                             }
                         } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
                             this.delete_selected_features(cx);
+                        } else if ev.keystroke.key == "a" {
+                            // Mode-switch shortcuts are handled here rather
+                            // than as global key bindings so they only fire
+                            // while the map area has focus (see the comment
+                            // by `cx.bind_keys` in `main()`).
+                            this.on_set_mode(&SetMode { mode: EditModeAction::Add }, window, cx);
+                        } else if ev.keystroke.key == "b" {
+                            this.on_set_mode(&SetMode { mode: EditModeAction::Building }, window, cx);
+                        } else if ev.keystroke.key == "x" {
+                            this.on_set_mode(&SetMode { mode: EditModeAction::Extrude }, window, cx);
                         }
                     }))
                     .on_mouse_up(
@@ -2495,9 +2529,16 @@ fn main() {
                             KeyBinding::new("cmd-,", OpenSettings, None),
                             KeyBinding::new("cmd-z", Undo, None),
                             KeyBinding::new("cmd-shift-z", Redo, None),
-                            KeyBinding::new("a", SetMode { mode: EditModeAction::Add }, None),
-                            KeyBinding::new("b", SetMode { mode: EditModeAction::Building }, None),
-                            KeyBinding::new("x", SetMode { mode: EditModeAction::Extrude }, None),
+                            // Note: the "a"/"b"/"x" mode-switch shortcuts are
+                            // deliberately NOT registered here as global key
+                            // bindings. Unlike the cmd-modified bindings above,
+                            // these are plain unmodified letter keys, which would
+                            // otherwise risk firing while the user is typing into a
+                            // text input elsewhere in the app (e.g. the tag-edit
+                            // dialog's key/value fields). Instead they're handled in
+                            // the map area's local `on_key_down` handler below,
+                            // which only fires when the map area itself has focus —
+                            // see the `on_key_down` closure in `render()`.
                         ]);
                         let view = cx.new(|cx| MapViewer::new(window, cx));
 
