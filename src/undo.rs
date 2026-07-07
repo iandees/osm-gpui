@@ -1,10 +1,12 @@
 //! Undo/redo model for committed data mutations.
 
-/// Per-layer node ids being moved, each with its pre-drag `(lat, lon)`.
-pub(crate) type NodeMoveTargets = Vec<(String, Vec<(i64, f64, f64)>)>;
+use osm_gpui::layers::LayerId;
+
+/// A single node move: its id, (lat, lon) before, and (lat, lon) after.
+pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
 
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
-pub(crate) type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f64))>)>;
+pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 
 /// A single reversible data mutation, recorded on the global undo stack.
 /// Only one kind exists today (produced by committing a drag-to-move), but
@@ -12,23 +14,35 @@ pub(crate) type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f
 /// without restructuring the stack.
 #[derive(Clone)]
 pub(crate) enum UndoableAction {
-    MoveNodes { per_layer: NodeMoveUndoEntries },
+    MoveNodes {
+        per_layer: NodeMoveUndoEntries,
+    },
     /// One entry per affected feature: which key, and its value before/
     /// after (`None` = key was/becomes absent). A key rename is modeled as
     /// two entries for the same feature — remove-old plus add-new — so
     /// this stays a single uniform apply loop.
     SetTags {
-        entries: Vec<(osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>)>,
+        entries: Vec<(
+            osm_gpui::selection::FeatureRef,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
     },
     /// A node created at `(lat, lon)` on `layer`. Undo deletes it (via
     /// `delete_feature`); redo recreates it at the same id (via
     /// `create_node`'s explicit-id form), so redo reproduces the exact same
     /// node rather than allocating a fresh one.
-    CreateNode { layer: String, id: i64, lat: f64, lon: f64 },
+    CreateNode {
+        layer: LayerId,
+        id: i64,
+        lat: f64,
+        lon: f64,
+    },
     /// A node or way deleted from `layer`. Undo restores it (via
     /// `restore_feature`); redo deletes it again (via `delete_feature`).
     DeleteFeature {
-        layer: String,
+        layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
     },
 }
@@ -100,19 +114,13 @@ impl UndoStack {
     }
 }
 
-/// Snapshot of the nodes being moved by an in-progress drag: which layer
-/// they belong to, and each affected node's id and pre-drag (lat, lon).
-pub(crate) struct MoveDrag {
-    pub(crate) per_layer: NodeMoveTargets,
-}
-
 #[cfg(test)]
 mod undo_stack_tests {
-    use super::{UndoStack, UndoableAction};
+    use super::{LayerId, UndoStack, UndoableAction};
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
         UndoableAction::MoveNodes {
-            per_layer: vec![("L".to_string(), vec![(id, before, after)])],
+            per_layer: vec![(LayerId(1), vec![(id, before, after)])],
         }
     }
 
@@ -123,11 +131,8 @@ mod undo_stack_tests {
 
         let two = UndoableAction::MoveNodes {
             per_layer: vec![(
-                "L".to_string(),
-                vec![
-                    (1, (0.0, 0.0), (1.0, 1.0)),
-                    (2, (0.0, 0.0), (1.0, 1.0)),
-                ],
+                LayerId(1),
+                vec![(1, (0.0, 0.0), (1.0, 1.0)), (2, (0.0, 0.0), (1.0, 1.0))],
             )],
         };
         assert_eq!(two.description(), "Moved 2 nodes");
@@ -153,7 +158,10 @@ mod undo_stack_tests {
 
         let redone = stack.redo().expect("should be able to redo after undo");
         assert_eq!(redone.description(), "Moved 1 node");
-        assert!(stack.redo().is_none(), "back at the tip, nothing left to redo");
+        assert!(
+            stack.redo().is_none(),
+            "back at the tip, nothing left to redo"
+        );
     }
 
     #[test]
@@ -179,7 +187,12 @@ mod undo_stack_tests {
         key: &str,
         before: Option<&str>,
         after: Option<&str>,
-    ) -> (osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>) {
+    ) -> (
+        osm_gpui::selection::FeatureRef,
+        String,
+        Option<String>,
+        Option<String>,
+    ) {
         (
             feature,
             key.to_string(),
@@ -191,16 +204,20 @@ mod undo_stack_tests {
     #[test]
     fn set_tags_description_singular_and_plural() {
         use osm_gpui::selection::{FeatureKind, FeatureRef};
-        let f = FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 1 };
+        let f = FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Node,
+            id: 1,
+        };
 
         let one = UndoableAction::SetTags {
-            entries: vec![tag_change(f.clone(), "highway", None, Some("residential"))],
+            entries: vec![tag_change(f, "highway", None, Some("residential"))],
         };
         assert_eq!(one.description(), "Changed 1 tag");
 
         let two = UndoableAction::SetTags {
             entries: vec![
-                tag_change(f.clone(), "highway", None, Some("residential")),
+                tag_change(f, "highway", None, Some("residential")),
                 tag_change(f, "surface", None, Some("paved")),
             ],
         };
@@ -210,7 +227,7 @@ mod undo_stack_tests {
     #[test]
     fn create_node_description() {
         let action = UndoableAction::CreateNode {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             id: -1,
             lat: 40.0,
             lon: -74.0,
@@ -222,7 +239,7 @@ mod undo_stack_tests {
     fn create_node_undo_redo_round_trips() {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::CreateNode {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             id: -1,
             lat: 40.0,
             lon: -74.0,
@@ -260,13 +277,13 @@ mod undo_stack_tests {
     #[test]
     fn delete_feature_description_node_vs_way() {
         let node_action = UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: node_snapshot(1),
         };
         assert_eq!(node_action.description(), "Deleted 1 node");
 
         let way_action = UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: way_snapshot(10),
         };
         assert_eq!(way_action.description(), "Deleted 1 way");
@@ -276,7 +293,7 @@ mod undo_stack_tests {
     fn delete_feature_undo_redo_round_trips() {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: way_snapshot(10),
         });
 

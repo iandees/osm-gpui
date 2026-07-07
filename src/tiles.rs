@@ -77,8 +77,7 @@ pub fn url_from_template(template: &str, tile: &TileCoord) -> String {
         if list.is_empty() {
             return String::new();
         }
-        let idx = ((x as u64).wrapping_mul(31) ^ (y as u64).wrapping_mul(17) ^ z as u64)
-            as usize
+        let idx = ((x as u64).wrapping_mul(31) ^ (y as u64).wrapping_mul(17) ^ z as u64) as usize
             % list.len();
         list[idx].to_string()
     };
@@ -216,11 +215,8 @@ pub struct Tile {
 
 impl Tile {
     pub fn new(coord: TileCoord) -> Self {
-        let url = url_from_template(
-            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-            &coord,
-        )
-        .into();
+        let url =
+            url_from_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png", &coord).into();
         Self {
             coord,
             state: TileLoadState::NotLoaded,
@@ -239,6 +235,12 @@ pub enum TileMessage {
 
 // Legacy TileManager - no longer used with GPUI assets
 pub struct TileManager;
+
+impl Default for TileManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TileManager {
     pub fn new() -> Self {
@@ -300,8 +302,14 @@ mod tests {
     #[test]
     fn test_tile_parent() {
         assert_eq!(TileCoord::new(0, 0, 0).parent(), None);
-        assert_eq!(TileCoord::new(2, 3, 2).parent(), Some(TileCoord::new(1, 1, 1)));
-        assert_eq!(TileCoord::new(5, 7, 3).parent(), Some(TileCoord::new(2, 3, 2)));
+        assert_eq!(
+            TileCoord::new(2, 3, 2).parent(),
+            Some(TileCoord::new(1, 1, 1))
+        );
+        assert_eq!(
+            TileCoord::new(5, 7, 3).parent(),
+            Some(TileCoord::new(2, 3, 2))
+        );
     }
 
     #[test]
@@ -329,15 +337,16 @@ mod tests {
             "https://{switch:alpha,beta,gamma}.example/{z}/{x}/{y}.png",
             &tile,
         );
-        let prefix_ok = ["https://alpha.example/", "https://beta.example/", "https://gamma.example/"]
-            .iter()
-            .any(|p| u.starts_with(p));
+        let prefix_ok = [
+            "https://alpha.example/",
+            "https://beta.example/",
+            "https://gamma.example/",
+        ]
+        .iter()
+        .any(|p| u.starts_with(p));
         assert!(prefix_ok, "got {}", u);
         // {s} paired with {switch:...} is also substituted
-        let u = url_from_template(
-            "https://{switch:a,b,c}.example/{s}/{z}/{x}/{y}.png",
-            &tile,
-        );
+        let u = url_from_template("https://{switch:a,b,c}.example/{s}/{z}/{x}/{y}.png", &tile);
         let inner = u.trim_start_matches("https://");
         let first = inner.split('.').next().unwrap();
         assert!(u.contains(&format!("/{}/", first)), "got {}", u);

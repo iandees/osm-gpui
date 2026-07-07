@@ -1,16 +1,19 @@
 //! Cross-thread scripting plumbing: the script runner runs on a background
 //! thread and drives the live app on the gpui main thread via `ScriptBus`.
 
-use gpui::{point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, Window};
+use gpui::{
+    point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
+    ScrollWheelEvent, Window,
+};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::layers::tile_layer::TileLayer;
-use osm_gpui::osm::OsmParser;
+use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::script::{self, runner::AppHandle};
 
-use crate::{MapViewer, SHARED_OSM_DATA};
+use crate::MapViewer;
 
 // Set to true while a script runner thread is active
 pub(crate) static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
@@ -45,6 +48,9 @@ pub(crate) enum ScriptCommand {
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
     /// Render the current frame in-process and save it as a PNG at `path`
     Capture { path: std::path::PathBuf },
+    /// Add a parsed OSM dataset as a new layer (parsing itself happens on
+    /// the runner thread, before this is submitted — see `load_osm` below).
+    LoadOsm { name: String, data: OsmData },
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -79,19 +85,19 @@ impl ScriptBus {
             *lock = Some(cmd);
         }
         // Wait until the command is consumed.
-        let _guard = self.done_cv.wait_while(
-            self.pending.lock().unwrap(),
-            |opt| opt.is_some(),
-        ).unwrap();
+        let _guard = self
+            .done_cv
+            .wait_while(self.pending.lock().unwrap(), |opt| opt.is_some())
+            .unwrap();
     }
 
     /// Wait until at least one more render frame has completed.
     fn wait_frame(&self) {
         let current = *self.frame_count.lock().unwrap();
-        let _guard = self.frame_cv.wait_while(
-            self.frame_count.lock().unwrap(),
-            |fc| *fc <= current,
-        ).unwrap();
+        let _guard = self
+            .frame_cv
+            .wait_while(self.frame_count.lock().unwrap(), |fc| *fc <= current)
+            .unwrap();
     }
 
     /// Called by MapViewer::render to drain and process the pending command.
@@ -146,8 +152,13 @@ impl MapViewer {
                     self.viewport.pan_to(lat, lon);
                     self.viewport.set_zoom(zoom);
                     // Ensure tile layer exists
-                    if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
-                        let tile_layer = TileLayer::new(self.tile_cache.clone());
+                    if self
+                        .layer_manager
+                        .layer_named("OpenStreetMap Carto")
+                        .is_none()
+                    {
+                        let layer_id = self.layer_manager.alloc_id();
+                        let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
                         self.layer_manager.add_layer(Box::new(tile_layer));
                     }
                     cx.notify();
@@ -183,7 +194,11 @@ impl MapViewer {
                     cx.notify();
                 }
                 ScriptCommand::Click { x, y, right } => {
-                    let btn = if right { gpui::MouseButton::Right } else { gpui::MouseButton::Left };
+                    let btn = if right {
+                        gpui::MouseButton::Right
+                    } else {
+                        gpui::MouseButton::Left
+                    };
                     let ev = MouseDownEvent {
                         button: btn,
                         position: point(px(x), px(y)),
@@ -204,7 +219,10 @@ impl MapViewer {
                 ScriptCommand::Scroll { x, y, dx, dy } => {
                     let ev = ScrollWheelEvent {
                         position: point(px(x), px(y)),
-                        delta: ScrollDelta::Pixels(gpui::Point { x: px(dx), y: px(dy) }),
+                        delta: ScrollDelta::Pixels(gpui::Point {
+                            x: px(dx),
+                            y: px(dy),
+                        }),
                         modifiers: gpui::Modifiers::none(),
                         touch_phase: gpui::TouchPhase::Moved,
                     };
@@ -222,6 +240,9 @@ impl MapViewer {
                     })();
                     bus.set_capture_result(result);
                 }
+                ScriptCommand::LoadOsm { name, data } => {
+                    self.add_osm_dataset(name, data, cx);
+                }
             }
         }
 
@@ -229,7 +250,7 @@ impl MapViewer {
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
             if let Ok(mut guard) = ks_queue.try_lock() {
                 for ks in guard.drain(..) {
-                    window.dispatch_keystroke(ks, &mut **cx);
+                    window.dispatch_keystroke(ks, cx);
                 }
             }
         }
@@ -258,7 +279,11 @@ impl AppHandle for LiveApp {
     }
 
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32) {
-        self.bus.submit(ScriptCommand::SetViewport { lat, lon, zoom: zoom as f64 });
+        self.bus.submit(ScriptCommand::SetViewport {
+            lat,
+            lon,
+            zoom: zoom as f64,
+        });
     }
 
     fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration) {
@@ -268,11 +293,20 @@ impl AppHandle for LiveApp {
 
     fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton) {
         let right = matches!(button, script::MouseButton::Right);
-        self.bus.submit(ScriptCommand::Click { x: at.0, y: at.1, right });
+        self.bus.submit(ScriptCommand::Click {
+            x: at.0,
+            y: at.1,
+            right,
+        });
     }
 
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32) {
-        self.bus.submit(ScriptCommand::Scroll { x: at.0, y: at.1, dx, dy });
+        self.bus.submit(ScriptCommand::Scroll {
+            x: at.0,
+            y: at.1,
+            dx,
+            dy,
+        });
     }
 
     fn dispatch_key(&mut self, chord: &script::Chord) {
@@ -305,24 +339,22 @@ impl AppHandle for LiveApp {
         let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
         let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
-        if let Some(q) = SHARED_OSM_DATA.get() {
-            if let Ok(mut guard) = q.lock() {
-                guard.push((stem, data));
-            } else {
-                return Err("SHARED_OSM_DATA mutex poisoned".into());
-            }
-        } else {
-            return Err("SHARED_OSM_DATA not initialized".into());
-        }
-        // Thanks to the reorder in render(), the next frame drains the queue
-        // before signalling — so after wait_frame the layer exists.
-        self.bus.wait_frame();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("OSM")
+            .to_string();
+        // `submit` blocks until the main thread has processed the command
+        // (i.e. `MapViewer::add_osm_dataset` has run), so the layer exists
+        // as soon as this returns — no separate `wait_frame` needed.
+        self.bus.submit(ScriptCommand::LoadOsm { name: stem, data });
         Ok(())
     }
 
     fn capture(&mut self, path: &std::path::Path) -> Result<(), String> {
-        self.bus.submit(ScriptCommand::Capture { path: path.to_path_buf() });
+        self.bus.submit(ScriptCommand::Capture {
+            path: path.to_path_buf(),
+        });
         self.bus.take_capture_result()
     }
 }

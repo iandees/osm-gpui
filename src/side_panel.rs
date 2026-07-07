@@ -2,12 +2,14 @@
 
 use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     label::Label,
     menu::ContextMenuExt,
+    ActiveTheme, Icon, IconName, Sizable,
 };
+
+use osm_gpui::layers::LayerId;
 
 use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
 
@@ -19,11 +21,18 @@ impl MapViewer {
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
     pub(crate) fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let layer_info: Vec<(String, bool, bool)> = self
+        let layer_info: Vec<(LayerId, String, bool, bool)> = self
             .layer_manager
             .layers()
             .iter()
-            .map(|layer| (layer.name().to_string(), layer.is_visible(), layer.is_modified()))
+            .map(|layer| {
+                (
+                    layer.id(),
+                    layer.name().to_string(),
+                    layer.is_visible(),
+                    layer.is_modified(),
+                )
+            })
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
@@ -31,10 +40,10 @@ impl MapViewer {
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
 
-        let open_layers = self.side_panel_open.contains(&0);
-        let open_selection = self.side_panel_open.contains(&1);
-        let open_tags = self.side_panel_open.contains(&2);
-        let open_history = self.side_panel_open.contains(&3);
+        let open_layers = self.side_panel_open[0];
+        let open_selection = self.side_panel_open[1];
+        let open_tags = self.side_panel_open[2];
+        let open_history = self.side_panel_open[3];
 
         let selection_title = match self.selected.len() {
             0 => "Selection".to_string(),
@@ -67,7 +76,13 @@ impl MapViewer {
                         cx,
                     ))
                     .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx))
-                    .child(self.collapsible_section("History", 3, open_history, history_section, cx)),
+                    .child(self.collapsible_section(
+                        "History",
+                        3,
+                        open_history,
+                        history_section,
+                        cx,
+                    )),
             )
     }
 
@@ -87,21 +102,23 @@ impl MapViewer {
         div()
             .flex()
             .flex_col()
-            .children(self.undo_stack.actions.iter().enumerate().map(|(i, action)| {
-                let is_current = i + 1 == cursor;
-                let is_future = i >= cursor;
-                let mut row = div()
-                    .px_1()
-                    .py_0p5()
-                    .text_sm()
-                    .child(action.description());
-                if is_current {
-                    row = row.bg(cx.theme().accent);
-                } else if is_future {
-                    row = row.text_color(cx.theme().muted_foreground).italic();
-                }
-                row
-            }))
+            .children(
+                self.undo_stack
+                    .actions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, action)| {
+                        let is_current = i + 1 == cursor;
+                        let is_future = i >= cursor;
+                        let mut row = div().px_1().py_0p5().text_sm().child(action.description());
+                        if is_current {
+                            row = row.bg(cx.theme().accent);
+                        } else if is_future {
+                            row = row.text_color(cx.theme().muted_foreground).italic();
+                        }
+                        row
+                    }),
+            )
             .into_any_element()
     }
 
@@ -143,19 +160,13 @@ impl MapViewer {
                     .font_weight(gpui::FontWeight::SEMIBOLD),
             )
             .on_click(cx.listener(move |this, _ev, _window, cx| {
-                if let Some(pos) = this.side_panel_open.iter().position(|&i| i == index) {
-                    this.side_panel_open.remove(pos);
-                } else {
-                    this.side_panel_open.push(index);
-                }
+                this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
             }));
 
-        div()
-            .flex()
-            .flex_col()
-            .child(header)
-            .when(open, |this| this.child(div().px_2().py_1p5().child(content)))
+        div().flex().flex_col().child(header).when(open, |this| {
+            this.child(div().px_2().py_1p5().child(content))
+        })
     }
 
     /// The Selection accordion section: a scrollable list of the selected
@@ -185,7 +196,7 @@ impl MapViewer {
                     FeatureKind::Node => "Node",
                     FeatureKind::Way => "Way",
                 };
-                let row_feat = feat.clone();
+                let row_feat = *feat;
                 div()
                     .id(("selection-row", i))
                     .flex_shrink_0()
@@ -201,7 +212,7 @@ impl MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                            this.selected = vec![row_feat.clone()];
+                            this.selected = vec![row_feat];
                             cx.notify();
                         }),
                     )
@@ -211,9 +222,21 @@ impl MapViewer {
 
     /// The Layers accordion section: a Checkbox row per layer with a right-click
     /// context menu offering Move up / Move down / Delete.
+    ///
+    /// The toggle is driven by a plain `on_mouse_down` on a wrapping row
+    /// rather than `Checkbox::on_click` + `.context_menu(...)` on the
+    /// `Checkbox` itself: `Checkbox::on_click` relies on gpui's paired
+    /// mouse-down/mouse-up click detection on one hitbox, but
+    /// `.context_menu(...)` wraps that same element in an *extra* hitbox
+    /// layer (`ContextMenu::prepaint` inserts its own hitbox covering the
+    /// whole row). That combination is fragile — it manifested as the first
+    /// click on a layer checkbox doing nothing (only the second registered)
+    /// and the right-click menu dismissing itself when the cursor moved.
+    /// `Checkbox` is kept purely for its visual (box + check icon + label);
+    /// the wrapping row owns both the click-to-toggle and the context menu.
     fn render_layers_section(
         &self,
-        layer_info: &[(String, bool, bool)],
+        layer_info: &[(LayerId, String, bool, bool)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -229,20 +252,28 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (name, is_visible, is_modified))| {
-                        let layer_name = name.clone();
+                    .map(|(index, (layer_id, name, is_visible, is_modified))| {
+                        let layer_id = *layer_id;
                         let label = if *is_modified {
                             format!("{} \u{2022}", name)
                         } else {
                             name.clone()
                         };
-                        Checkbox::new(("layer", index))
-                            .checked(*is_visible)
-                            .label(label)
-                            .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
-                                this.toggle_layer_visibility(&layer_name);
-                                cx.notify();
-                            }))
+                        div()
+                            .id(("layer-row", index))
+                            .cursor_pointer()
+                            .child(
+                                Checkbox::new(("layer", index))
+                                    .checked(*is_visible)
+                                    .label(label),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.toggle_layer_visibility(layer_id);
+                                    cx.notify();
+                                }),
+                            )
                             .context_menu(move |menu, _window, _cx| {
                                 let mut menu = menu;
                                 if index > 0 {
@@ -284,8 +315,9 @@ impl MapViewer {
             .iter()
             .filter_map(|sel| {
                 self.layer_manager
-                    .find_layer(&sel.layer_name)
-                    .and_then(|layer| layer.feature_tags(sel))
+                    .find_layer(sel.layer_id)
+                    .and_then(|layer| layer.as_editable())
+                    .and_then(|editable| editable.feature_tags(sel))
             })
             .collect();
 

@@ -54,35 +54,65 @@ impl Runner {
 
     fn run_step<A: AppHandle>(&self, app: &mut A, step: &Step) -> Result<(), RunError> {
         match &step.op {
-            Op::Window { w, h } => { app.set_window_size(*w, *h); Ok(()) }
-            Op::Viewport { lat, lon, zoom } => { app.set_viewport(*lat, *lon, *zoom); Ok(()) }
-            Op::Wait { duration } => { std::thread::sleep(*duration); Ok(()) }
+            Op::Window { w, h } => {
+                app.set_window_size(*w, *h);
+                Ok(())
+            }
+            Op::Viewport { lat, lon, zoom } => {
+                app.set_viewport(*lat, *lon, *zoom);
+                Ok(())
+            }
+            Op::Wait { duration } => {
+                std::thread::sleep(*duration);
+                Ok(())
+            }
             Op::WaitIdle { timeout } => self.wait_idle(app, *timeout, step.line_no),
             Op::Drag { from, to, duration } => {
                 app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration);
                 Ok(())
             }
-            Op::Click { at, button } => { app.dispatch_click((at.x, at.y), *button); Ok(()) }
-            Op::Scroll { at, dx, dy } => { app.dispatch_scroll((at.x, at.y), *dx, *dy); Ok(()) }
-            Op::Key { chord } => { app.dispatch_key(chord); Ok(()) }
+            Op::Click { at, button } => {
+                app.dispatch_click((at.x, at.y), *button);
+                Ok(())
+            }
+            Op::Scroll { at, dx, dy } => {
+                app.dispatch_scroll((at.x, at.y), *dx, *dy);
+                Ok(())
+            }
+            Op::Key { chord } => {
+                app.dispatch_key(chord);
+                Ok(())
+            }
             Op::Capture { path } => {
                 let pb = PathBuf::from(path);
-                app.capture(&pb)
-                    .map_err(|e| RunError { line_no: step.line_no, message: format!("capture: {}", e) })?;
+                app.capture(&pb).map_err(|e| RunError {
+                    line_no: step.line_no,
+                    message: format!("capture: {}", e),
+                })?;
                 println!("  -> {}", path);
                 Ok(())
             }
-            Op::Log { message } => { println!("{}", message); Ok(()) }
+            Op::Log { message } => {
+                println!("{}", message);
+                Ok(())
+            }
             Op::LoadOsm { path } => {
                 let pb = std::path::PathBuf::from(path);
-                app.load_osm(&pb)
-                    .map_err(|e| RunError { line_no: step.line_no, message: format!("load_osm: {}", e) })?;
+                app.load_osm(&pb).map_err(|e| RunError {
+                    line_no: step.line_no,
+                    message: format!("load_osm: {}", e),
+                })?;
                 Ok(())
             }
         }
     }
 
-    fn wait_idle<A: AppHandle>(&self, app: &mut A, timeout: Duration, line_no: usize) -> Result<(), RunError> {
+    fn wait_idle<A: AppHandle>(
+        &self,
+        app: &mut A,
+        timeout: Duration,
+        line_no: usize,
+    ) -> Result<(), RunError> {
         // Number of frames to wait unconditionally before we start checking
         // for idle. This gives gpui time to run at least one render cycle so
         // tile-fetch work has been submitted to the background executor.
@@ -98,7 +128,9 @@ impl Runner {
             if frame > PRIMING_FRAMES {
                 if self.idle.is_idle() {
                     consecutive_idle += 1;
-                    if consecutive_idle >= 2 { return Ok(()); }
+                    if consecutive_idle >= 2 {
+                        return Ok(());
+                    }
                 } else {
                     consecutive_idle = 0;
                 }
@@ -157,26 +189,45 @@ mod tests {
                 self.idle.tile_fetch_finished();
             }
         }
-        fn load_osm(&mut self, _p: &std::path::Path) -> Result<(), String> { Ok(()) }
-        fn capture(&mut self, _p: &std::path::Path) -> Result<(), String> { Ok(()) }
+        fn load_osm(&mut self, _p: &std::path::Path) -> Result<(), String> {
+            Ok(())
+        }
+        fn capture(&mut self, _p: &std::path::Path) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[test]
     fn wait_idle_requires_two_consecutive_idle_frames() {
         let idle = IdleTracker::new();
-        let mut fake = Fake { frames_waited: 0, idle_after_frame: 3, idle: idle.clone() };
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: 3,
+            idle: idle.clone(),
+        };
         let runner = Runner { idle };
-        runner.wait_idle(&mut fake, Duration::from_secs(5), 1).unwrap();
-        assert!(fake.frames_waited >= 4, "should wait at least one extra frame after idle");
+        runner
+            .wait_idle(&mut fake, Duration::from_secs(5), 1)
+            .unwrap();
+        assert!(
+            fake.frames_waited >= 4,
+            "should wait at least one extra frame after idle"
+        );
     }
 
     #[test]
     fn wait_idle_times_out() {
         let idle = IdleTracker::new();
         idle.tile_fetch_started();
-        let mut fake = Fake { frames_waited: 0, idle_after_frame: u32::MAX, idle: idle.clone() };
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: u32::MAX,
+            idle: idle.clone(),
+        };
         let runner = Runner { idle };
-        let e = runner.wait_idle(&mut fake, Duration::from_millis(50), 7).unwrap_err();
+        let e = runner
+            .wait_idle(&mut fake, Duration::from_millis(50), 7)
+            .unwrap_err();
         assert_eq!(e.line_no, 7);
         assert!(e.message.contains("timed out"));
     }

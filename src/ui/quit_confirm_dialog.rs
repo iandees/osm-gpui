@@ -6,13 +6,11 @@
 //! underneath (see PR #50).
 
 use gpui::{
-    div, prelude::*, rgba, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    Window,
+    div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window,
 };
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    v_flex, ActiveTheme as _,
-};
+use gpui_component::ActiveTheme as _;
+
+use crate::ui::modal;
 
 pub enum DialogEvent {
     /// The user chose "Quit" — caller should actually call `cx.quit()`.
@@ -43,10 +41,10 @@ impl QuitConfirmDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.confirm(cx),
-            _ => {}
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.confirm(cx),
+            modal::ModalKey::Other => {}
         }
     }
 }
@@ -59,65 +57,21 @@ impl Focusable for QuitConfirmDialog {
 
 impl Render for QuitConfirmDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("quit-cancel")
-                    .label("Cancel")
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("quit-confirm")
-                    .primary()
-                    .label("Quit")
-                    .on_click(cx.listener(|this, _, _w, cx| this.confirm(cx))),
-            );
+        let footer = modal::footer_row(
+            "quit-cancel",
+            "Cancel",
+            cx.listener(|this, _, _w, cx| this.cancel(cx)),
+            "quit-confirm",
+            "Quit",
+            cx.listener(|this, _, _w, cx| this.confirm(cx)),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(360.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("Unsaved Changes"),
-            )
-            .child(
-                div()
-                    .p_4()
-                    .text_color(cx.theme().foreground)
-                    .child("You have unsaved changes. Quit anyway?"),
-            )
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+        let body = div()
+            .text_color(cx.theme().foreground)
+            .child("You have unsaved changes. Quit anyway?");
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000099))
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        let frame = modal::dialog_frame(cx, gpui::px(360.0), "Unsaved Changes", body, footer);
+
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }

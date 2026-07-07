@@ -6,31 +6,14 @@
 //! supported — WMS, Bing, and other types are filtered out.
 
 use std::fs;
-use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+use crate::coordinates::GeoBounds;
 
 const ELI_URL: &str = "https://osmlab.github.io/editor-layer-index/imagery.geojson";
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
 const MAX_MENU_ENTRIES: usize = 30;
-
-/// Axis-aligned latitude/longitude bounding box (inclusive).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GeoBounds {
-    pub min_lat: f64,
-    pub min_lon: f64,
-    pub max_lat: f64,
-    pub max_lon: f64,
-}
-
-impl GeoBounds {
-    pub fn contains(&self, lat: f64, lon: f64) -> bool {
-        lat >= self.min_lat
-            && lat <= self.max_lat
-            && lon >= self.min_lon
-            && lon <= self.max_lon
-    }
-}
 
 /// Attribution text (and optional link) required to be displayed alongside
 /// tiles from an imagery source, per the ELI schema's `properties.attribution`.
@@ -116,12 +99,10 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
 }
 
 /// Write `body` to `path` atomically by writing to a sibling temp file first
-/// and renaming into place (rename is atomic on POSIX filesystems).
-fn write_cache_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, body)?;
-    fs::rename(&tmp_path, path)?;
-    Ok(())
+/// and renaming into place (rename is atomic on POSIX filesystems). See
+/// `crate::persist::write_atomic` for the shared implementation.
+fn write_cache_atomic(path: &Path, body: &str) -> std::io::Result<()> {
+    crate::persist::write_atomic(path, body.as_bytes(), crate::persist::WriteOpts::default())
 }
 
 fn cache_file_path() -> PathBuf {
@@ -140,48 +121,21 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// Max number of attempts for the ELI download, including the first try.
-const MAX_ATTEMPTS: u32 = 3;
-/// Delay before each retry, indexed by (attempt number - 1).
-const RETRY_DELAYS: [Duration; MAX_ATTEMPTS as usize - 1] = [
-    Duration::from_millis(200),
-    Duration::from_millis(500),
-];
-
 /// `GET` the ELI GeoJSON with a small bounded retry on transport errors and
 /// retryable HTTP status codes (see `crate::is_retryable_status`). Other 4xx
 /// responses are returned immediately since retrying won't help.
 fn download() -> anyhow::Result<String> {
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
+    download_with(&crate::http::UreqClient::new())
+}
 
-        let result = ureq::get(ELI_URL)
-            .set("User-Agent", crate::USER_AGENT)
-            .timeout(Duration::from_secs(30))
-            .call();
-
-        let should_retry = match &result {
-            Ok(_) => false,
-            Err(ureq::Error::Status(status, _)) => crate::is_retryable_status(*status),
-            Err(ureq::Error::Transport(_)) => true,
-        };
-
-        match result {
-            Ok(response) => {
-                let mut body = String::new();
-                response.into_reader().read_to_string(&mut body)?;
-                return Ok(body);
-            }
-            Err(e) => {
-                if should_retry && attempt < MAX_ATTEMPTS {
-                    std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
-                } else {
-                    return Err(e.into());
-                }
-            }
-        }
-    }
+/// Same as `download`, but against an injected `HttpClient` so it's testable
+/// without a real network.
+fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
+    let req = crate::http::HttpRequest::get(ELI_URL);
+    let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    resp.into_string()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 /// Parse the ELI GeoJSON body into a list of `tms`-type imagery entries.
@@ -214,7 +168,11 @@ fn parse_feature(feature: &serde_json::Value) -> Option<ImageryEntry> {
     if typ != "tms" {
         return None;
     }
-    if props.get("overlay").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if props
+        .get("overlay")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     let url_template = props.get("url").and_then(|v| v.as_str())?.to_string();
@@ -298,7 +256,11 @@ fn parse_attribution(value: &serde_json::Value) -> Option<AttributionInfo> {
     None
 }
 
-fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<Vec<Vec<(f64, f64)>>>) {
+/// Polygon rings decoded from GeoJSON coordinates: each ring is a sequence
+/// of (lon, lat) points.
+type GeoRings = Vec<Vec<(f64, f64)>>;
+
+fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRings>) {
     let typ = geom.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let coords = match geom.get("coordinates") {
         Some(c) => c,
@@ -354,12 +316,7 @@ fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<Vec<Ve
     }
 
     (
-        Some(GeoBounds {
-            min_lat,
-            min_lon,
-            max_lat,
-            max_lon,
-        }),
+        Some(GeoBounds::new(min_lat, max_lat, min_lon, max_lon)),
         Some(rings),
     )
 }
@@ -390,8 +347,8 @@ fn point_in_ring(x: f64, y: f64, ring: &[(f64, f64)]) -> bool {
     for i in 0..n {
         let (xi, yi) = ring[i];
         let (xj, yj) = ring[j];
-        let intersects = ((yi > y) != (yj > y))
-            && (x < (xj - xi) * (y - yi) / (yj - yi + f64::EPSILON) + xi);
+        let intersects =
+            ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + f64::EPSILON) + xi);
         if intersects {
             inside = !inside;
         }
@@ -427,6 +384,24 @@ pub fn entries_for_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_with_retries_then_succeeds() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(503, "busy"), ok(200, "geojson body")]);
+        let body = download_with(&client).unwrap();
+        assert_eq!(body, "geojson body");
+        assert_eq!(client.request_count(), 2);
+    }
+
+    #[test]
+    fn download_with_does_not_retry_non_retryable_status() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(400, "bad request")]);
+        let err = download_with(&client);
+        assert!(err.is_err());
+        assert_eq!(client.request_count(), 1);
+    }
 
     #[test]
     fn write_cache_atomic_writes_full_content_and_no_tmp_left_behind() {

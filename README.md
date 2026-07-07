@@ -1,24 +1,30 @@
 # osm-gpui
 
-Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industries/zed) (the framework behind Zed). The long-term goal is a JOSM-class editor that feels smoother and more native. Right now it's a viewer — editing is not implemented.
+Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industries/zed) (the framework behind Zed). The long-term goal is a JOSM-class editor that feels smoother and more native.
 
 ## Status (honest)
 
 **Working**
 - Pan (left-drag) and zoom (scroll wheel, zoom-at-cursor), clamped to zoom 1–20.
 - Web Mercator projection (EPSG:3857) with lat clamped to ±85.051°.
-- OSM XML loading via **File > Open** (⌘O). Renders nodes as yellow squares and ways as blue polylines. First loaded file auto-fits viewport.
-- Raster tiles via **Imagery > OpenStreetMap Carto**. Async download with `ureq`, PNG cached to `/tmp/osm-gpui-tiles/`, loaded through GPUI's asset system.
-- Adaptive lat/lon grid overlay (always on by default).
+- OSM XML loading via **File > Open** (⌘O). Renders nodes as squares and ways as polylines. First loaded file auto-fits viewport.
+- Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
+- Adaptive lat/lon grid overlay (configurable via settings).
 - Layer list in right panel with click-to-toggle visibility.
 - Debug overlay: zoom, center coords, object/tile counts, cache stats.
-- Feature picking: click a node or way to select it; right panel shows feature type, OSM link, and all tags. Selected features are highlighted (magenta ring for nodes, magenta stroke for ways).
+- Feature selection: click a node or way to select it; Shift-click to toggle; rectangular box-select. Right panel shows feature type, OSM link, and all tags.
+- **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tag editing via dialog on click or side-panel edit. Create nodes (negative ID for new). Delete features. Edit multi-select to batch-apply tag changes.
+- **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
+- **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit). Unsaved-changes warning on quit.
+- Settings window: choose OSM API server (prod/dev/custom), per-server OAuth client IDs, custom imagery sources.
+- **MapCSS-subset styling** (node/way selectors with `[k]`/`[k=v]`/`[k!=v]`, zoom-range `|z12-`, color, width, casing, dashes, fill-color).
+- **Scripted screenshot harness** for visual regression and automation. `.osmscript` DSL with viewport, click, drag, key, load_osm, capture, wait_idle ops.
 
 **Not implemented**
-- Any editing (node/way create, modify, delete, upload).
-- Relation rendering (parsed, but unused).
-- GeoJSON loading in the UI (code exists in `src/data.rs` but is dead).
-- Layer reordering, style editing, search, export, undo/redo.
+- Relation rendering or editing (parsed, but unused in display/selection).
+- Upload to OSM (no changeset creation or upload path yet).
+- Text labels, POI icons, one-way arrows.
+- Search, export, full MapCSS (e.g., text, z-index, pattern fills).
 
 ## Build & run
 
@@ -43,31 +49,30 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 
 | Module | Purpose |
 |---|---|
-| `src/main.rs` | GPUI app entry. `MapViewer` component, menus, key bindings, event wiring, layer panel UI. Uses `OnceLock<Mutex<…>>` queues (`SHARED_OSM_DATA`, `LAYER_REQUESTS`) to hand file-dialog results back to the main thread. |
+| `src/main.rs` | GPUI app entry. `MapViewer` component, menus, key bindings, event wiring, layer & tag-edit & quit-confirm dialogs. Undo/redo queue, selection state, edit-context tracking. |
+| `src/undo.rs` | `UndoStack`, `UndoableAction` enum (`MoveNodes`, `SetTags`, `CreateNode`, `DeleteFeature`), `NodeMoveTargets`, `MoveDrag` state machine for drag-to-completion. |
 | `src/viewport.rs` | `Viewport` — pan/zoom state, mouse & scroll handling. Wraps `CoordinateTransform`. |
 | `src/coordinates.rs` | `CoordinateTransform` (Web Mercator), `GeoBounds`, and `validate_coords` / `safe_point` helpers used to keep NaN out of Lyon paths. |
+| `src/selection.rs` | `FeatureRef`, `Selection` (individual or multi-select across layers), hit-test logic, selection-update rules. |
 | `src/osm.rs` | OSM XML parser (`quick-xml`). Types: `OsmData`, `OsmNode`, `OsmWay`, `OsmRelation`, `OsmParser`, `OsmParseError`. |
-| `src/tiles.rs` | Tile math only — `TileCoord`, `lat_lon_to_tile`, `get_tiles_for_bounds`. (Legacy `TileManager`/`Tile`/`TileLoadState` types in this file are stubs; ignore.) |
-| `src/tile_cache.rs` | `TileAsset` implementing GPUI's `Asset` trait. Downloads PNGs with `ureq`, validates magic bytes, caches to `/tmp/osm-gpui-tiles/`, converts RGBA→BGRA for GPUI. |
-| `src/layers/mod.rs` | `MapLayer` trait (`render_elements` for raster, `render_canvas` for vector paths, plus `name`/`is_visible`/`update`/`stats`) and `LayerManager`. |
-| `src/layers/tile_layer.rs` | Raster tile layer — calculates visible tiles, emits `img()` elements via `window.use_asset::<TileAsset>`. |
-| `src/layers/osm_layer.rs` | Vector OSM layer. Holds `Arc<OsmData>` plus precomputed render caches (per-node mercator, per-way mercator vertex lists and bboxes, layer-level bbox). Nodes paint as canvas `paint_quad`s; all visible ways batch into one `PathBuilder` + `window.paint_path` call per frame. See *Performance notes* below. |
-| `src/layers/grid_layer.rs` | Lat/lon grid. Spacing adapts to zoom (10° → 0.001°). |
-| `src/idle_tracker.rs` | `IdleTracker` — atomic counters for in-flight tile fetches. Powers `wait_idle` in the script harness. |
-| `src/script/` | Line-DSL parser and runner for scripted screenshot sessions. See *Scripted screenshots* below. |
-
-### Dead code — do not extend without asking
-
-These files compile but aren't wired into the app. Left over from refactors; candidates for deletion.
-
-| Module | Why dead |
-|---|---|
-| `src/map.rs` | Old `MapView` component, fully replaced by `MapViewer` in `main.rs`. |
-| `src/mercator.rs` | Duplicate Mercator math; `coordinates.rs` is canonical. |
-| `src/background.rs` | Old tile renderer, references removed `TileManager` API. |
-| `src/http_image_loader.rs` | Async `reqwest` downloader; superseded by `ureq` in `tile_cache.rs`. |
-| `src/data.rs` | GeoJSON loader + `MapDataLoader` sample data; never called. |
-| `examples/` | Empty/stale. The stale examples referenced in older docs don't exist. |
+| `src/tiles.rs` | Tile math only — `TileCoord`, `lat_lon_to_tile`, `get_tiles_for_bounds`. |
+| `src/tile_cache.rs` | `TileAsset` implementing GPUI's `Asset` trait. Downloads PNGs with `ureq`, validates magic bytes, caches with bounded eviction (oldest-mtime), converts RGBA→BGRA for GPUI. Concurrent fetches capped at 4 by a counting semaphore. |
+| `src/osm_api.rs` | OSM API client: `/capabilities`, `/bbox/...` download, 30-second request timeout. |
+| `src/auth.rs` | OAuth loopback browser flow (PKCE), bearer-token refresh logic, keyring + fallback-file storage with file permissions and atomic writes. |
+| `src/imagery/mod.rs` | Editor Layer Index (ELI) fetch, parse, and cache. Per-imagery `ImageryEntry` with attribution. |
+| `src/layers/mod.rs` | `MapLayer` trait (render, update, stats, modified-flag) and `LayerManager`. |
+| `src/layers/tile_layer.rs` | Raster tile layer — calculates visible tiles, emits `img()` elements. |
+| `src/layers/osm_layer.rs` | Vector OSM layer. Caches mercator coords, way vertices, style (color/width per feature). Hit-test via R-tree. Node/way paint using `paint_quad` + `paint_path` batching. |
+| `src/layers/grid_layer.rs` | Lat/lon grid with zoom-adaptive spacing. |
+| `src/style/mapcss.rs` | MapCSS-subset parser and matcher (node/way selectors, `[k]`/`[k=v]`, zoom ranges `|z12-`, color, width, casing, dashes, fill). |
+| `src/nsi.rs` | NSI (Name Suggestion Index) integration (name/brand autocomplete — not yet wired to UI). |
+| `src/custom_imagery_store.rs` | Persistent store for user-added imagery sources. |
+| `src/settings_store.rs` | Persistent user settings (OSM API server choice, per-server OAuth client IDs). |
+| `src/idle_tracker.rs` | `IdleTracker` — counts in-flight tile fetches. Powers `wait_idle` in the script harness. |
+| `src/script/` | Line-DSL `.osmscript` parser and runner for scripted session capture. Ops: viewport, click, drag, key, load_osm, capture, wait_idle, etc. |
+| `src/script_harness.rs` | Runner bridge from `script/` to the live `App` via the `AppHandle` trait. |
+| `src/menu.rs` | Menu bar structure and action handlers (Open, Download, Settings, Help, About). |
+| `src/ui/` | GPUI components for side panels (layers, tags, history), dialogs (tag-edit, quit-confirm, custom-imagery, settings), settings window. |
 
 ### Runtime flow
 

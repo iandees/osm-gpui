@@ -8,7 +8,7 @@ use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     radio::RadioGroup,
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -18,6 +18,7 @@ use gpui_component::{
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
 use crate::settings_store::{self, ApiServerChoice, AppSettings};
+use crate::ui::modal::field_row;
 
 /// Login UI state for the currently-selected API server.
 #[derive(Clone)]
@@ -111,7 +112,12 @@ impl SettingsWindow {
             .update(cx, |state, cx| state.set_value(value, window, cx));
     }
 
-    fn set_api_server(&mut self, choice: ApiServerChoice, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_api_server(
+        &mut self,
+        choice: ApiServerChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.app_settings.api_server = choice;
         settings_store::update_store(self.app_settings.clone());
         self.login_state = Self::current_login_state(&self.app_settings);
@@ -327,7 +333,13 @@ impl SettingsWindow {
                 SettingItem::new(
                     "Custom API URL",
                     SettingField::render(move |_options, window, cx| {
-                        render_custom_api_url(custom_view.clone(), input.clone(), error.clone(), window, cx)
+                        render_custom_api_url(
+                            custom_view.clone(),
+                            input.clone(),
+                            error.clone(),
+                            window,
+                            cx,
+                        )
                     }),
                 )
                 .description("The base URL of a self-hosted or alternate OSM API server.")
@@ -344,7 +356,9 @@ impl SettingsWindow {
                     render_client_id(client_id_view.clone(), client_id_input.clone(), window, cx)
                 }),
             )
-            .description("Override the OAuth client_id used for this server (leave blank for default).")
+            .description(
+                "Override the OAuth client_id used for this server (leave blank for default).",
+            )
             .layout(Axis::Vertical),
         );
 
@@ -414,9 +428,11 @@ impl SettingsWindow {
                 .layout(Axis::Vertical)
             } else {
                 let entry_view = view.clone();
-                let entry_summary: SharedString =
-                    format!("{} · zoom {}–{}", entry.url_template, entry.min_zoom, entry.max_zoom)
-                        .into();
+                let entry_summary: SharedString = format!(
+                    "{} · zoom {}–{}",
+                    entry.url_template, entry.min_zoom, entry.max_zoom
+                )
+                .into();
                 let entry_name = entry.name.clone();
                 SettingItem::new(
                     title,
@@ -465,13 +481,6 @@ impl Focusable for SettingsWindow {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-fn field_row(label: &'static str, input: &Entity<InputState>, muted: Hsla) -> impl IntoElement {
-    v_flex()
-        .gap_1()
-        .child(Label::new(label).text_xs().text_color(muted))
-        .child(Input::new(input))
 }
 
 fn render_server_picker(
@@ -708,8 +717,16 @@ fn render_entry_edit_form(
         .child(
             h_flex()
                 .gap_2()
-                .child(div().flex_1().child(field_row("Min zoom", &edit_min_zoom, muted)))
-                .child(div().flex_1().child(field_row("Max zoom", &edit_max_zoom, muted))),
+                .child(
+                    div()
+                        .flex_1()
+                        .child(field_row("Min zoom", &edit_min_zoom, muted)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(field_row("Max zoom", &edit_max_zoom, muted)),
+                ),
         );
 
     if let Some(err) = edit_error {
@@ -722,14 +739,11 @@ fn render_entry_edit_form(
         .child(
             h_flex()
                 .gap_2()
-                .child(
-                    Button::new(("save", idx))
-                        .label("Save")
-                        .primary()
-                        .on_click(move |_ev, _window, cx| {
-                            save_view.update(cx, |this, cx| this.save_entry(idx, cx));
-                        }),
-                )
+                .child(Button::new(("save", idx)).label("Save").primary().on_click(
+                    move |_ev, _window, cx| {
+                        save_view.update(cx, |this, cx| this.save_entry(idx, cx));
+                    },
+                ))
                 .child(
                     Button::new(("cancel", idx))
                         .label("Cancel")

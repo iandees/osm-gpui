@@ -5,13 +5,16 @@
 pub mod auth;
 pub mod coordinates;
 pub mod custom_imagery_store;
+pub mod http;
 pub mod idle_tracker;
 pub mod imagery;
+pub mod interaction;
 pub mod layers;
 pub mod nsi;
 pub mod osm;
 pub mod osm_api;
 pub mod osm_upload;
+pub mod persist;
 pub mod script;
 pub mod selection;
 pub mod settings_store;
@@ -21,8 +24,8 @@ pub mod tiles;
 pub mod ui;
 pub mod viewport;
 
-pub use osm::{OsmBounds, OsmData, OsmNode, OsmParser, OsmRelation, OsmWay};
 pub use gpui;
+pub use osm::{MemberType, OsmBounds, OsmData, OsmMember, OsmNode, OsmParser, OsmRelation, OsmWay};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

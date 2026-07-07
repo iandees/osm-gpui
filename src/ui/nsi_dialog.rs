@@ -30,41 +30,6 @@ pub fn format_tag_preview(entry: &NsiEntry) -> String {
         .join(", ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(tags: &[(&str, &str)]) -> NsiEntry {
-        NsiEntry {
-            display_name: "Test".to_string(),
-            tags: tags
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            match_names: vec![],
-        }
-    }
-
-    #[test]
-    fn preview_sorts_by_key_and_caps_at_three() {
-        let e = entry(&[
-            ("name", "Starbucks"),
-            ("amenity", "cafe"),
-            ("brand", "Starbucks"),
-            ("brand:wikidata", "Q37158"),
-        ]);
-        assert_eq!(
-            format_tag_preview(&e),
-            "amenity=cafe, brand=Starbucks, brand:wikidata=Q37158"
-        );
-    }
-
-    #[test]
-    fn preview_empty_tags_is_empty_string() {
-        assert_eq!(format_tag_preview(&entry(&[])), "");
-    }
-}
-
 pub enum DialogEvent {
     Submitted(HashMap<String, String>),
     Cancelled,
@@ -199,10 +164,7 @@ impl Render for NsiPresetDialog {
                 .into_any_element()
         };
 
-        let body = v_flex()
-            .gap_3()
-            .child(Input::new(&self.query))
-            .child(list);
+        let body = v_flex().gap_3().child(Input::new(&self.query)).child(list);
 
         let frame = v_flex()
             .w(gpui::px(420.0))
@@ -237,5 +199,40 @@ impl Render for NsiPresetDialog {
             .justify_center()
             .items_center()
             .child(frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(tags: &[(&str, &str)]) -> NsiEntry {
+        NsiEntry {
+            display_name: "Test".to_string(),
+            tags: tags
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            match_names: vec![],
+        }
+    }
+
+    #[test]
+    fn preview_sorts_by_key_and_caps_at_three() {
+        let e = entry(&[
+            ("name", "Starbucks"),
+            ("amenity", "cafe"),
+            ("brand", "Starbucks"),
+            ("brand:wikidata", "Q37158"),
+        ]);
+        assert_eq!(
+            format_tag_preview(&e),
+            "amenity=cafe, brand=Starbucks, brand:wikidata=Q37158"
+        );
+    }
+
+    #[test]
+    fn preview_empty_tags_is_empty_string() {
+        assert_eq!(format_tag_preview(&entry(&[])), "");
     }
 }

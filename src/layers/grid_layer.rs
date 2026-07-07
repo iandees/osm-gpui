@@ -1,18 +1,20 @@
 use gpui::*;
 
-use crate::layers::MapLayer;
-use crate::viewport::Viewport;
 use crate::coordinates::{is_point_valid, validate_coords};
+use crate::layers::{LayerId, MapLayer};
+use crate::viewport::Viewport;
 
 /// Layer for rendering coordinate grid lines
 pub struct GridLayer {
+    id: LayerId,
     visible: bool,
     grid_color: Rgba,
 }
 
 impl GridLayer {
-    pub fn new() -> Self {
+    pub fn new(id: LayerId) -> Self {
         Self {
+            id,
             visible: true,
             grid_color: rgb(0x374151),
         }
@@ -41,6 +43,10 @@ impl GridLayer {
 impl MapLayer for GridLayer {
     fn name(&self) -> &'static str {
         "Coordinate Grid"
+    }
+
+    fn id(&self) -> LayerId {
+        self.id
     }
 
     fn is_visible(&self) -> bool {
@@ -119,10 +125,15 @@ impl MapLayer for GridLayer {
     fn stats(&self) -> Vec<(String, String)> {
         vec![
             ("Grid Spacing".to_string(), "Dynamic".to_string()),
-            ("Color".to_string(), format!("#{:06x}",
-                (self.grid_color.r * 255.0) as u32 * 65536 +
-                (self.grid_color.g * 255.0) as u32 * 256 +
-                (self.grid_color.b * 255.0) as u32)),
+            (
+                "Color".to_string(),
+                format!(
+                    "#{:06x}",
+                    (self.grid_color.r * 255.0) as u32 * 65536
+                        + (self.grid_color.g * 255.0) as u32 * 256
+                        + (self.grid_color.b * 255.0) as u32
+                ),
+            ),
         ]
     }
 }

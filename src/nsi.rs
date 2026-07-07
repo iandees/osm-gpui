@@ -142,7 +142,6 @@ fn parse_item(item: &serde_json::Value) -> Option<NsiEntry> {
 }
 
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
@@ -208,18 +207,20 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
+/// `GET` the NSI dist build with a small bounded retry on transport errors and
+/// retryable HTTP status codes (see `crate::is_retryable_status`).
 fn download() -> anyhow::Result<String> {
-    let response = ureq::get(NSI_URL)
-        .set(
-            "User-Agent",
-            "osm-gpui/0.1.0 (https://github.com/iandees/osm-gpui)",
-        )
-        .timeout(Duration::from_secs(60))
-        .call()?;
+    download_with(&crate::http::UreqClient::new())
+}
 
-    let mut body = String::new();
-    response.into_reader().read_to_string(&mut body)?;
-    Ok(body)
+/// Same as `download`, but against an injected `HttpClient` so it's testable
+/// without a real network.
+fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
+    let req = crate::http::HttpRequest::get(NSI_URL);
+    let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    resp.into_string()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 /// Global in-memory index, populated by a background fetch at startup.
@@ -434,7 +435,10 @@ mod tests {
             "final cache file should contain the written body"
         );
         let tmp = path.with_extension("json.tmp");
-        assert!(!tmp.exists(), "tmp sibling should be renamed away, not left behind");
+        assert!(
+            !tmp.exists(),
+            "tmp sibling should be renamed away, not left behind"
+        );
     }
 
     #[test]
@@ -444,6 +448,24 @@ mod tests {
         fs::write(&path, "stale-content").unwrap();
         write_cache_atomically(&path, "fresh-content");
         assert_eq!(fs::read_to_string(&path).unwrap(), "fresh-content");
+    }
+
+    #[test]
+    fn download_with_retries_then_succeeds() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(503, "busy"), ok(200, "nsi body")]);
+        let body = download_with(&client).unwrap();
+        assert_eq!(body, "nsi body");
+        assert_eq!(client.request_count(), 2);
+    }
+
+    #[test]
+    fn download_with_does_not_retry_non_retryable_status() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(400, "bad request")]);
+        let err = download_with(&client);
+        assert!(err.is_err());
+        assert_eq!(client.request_count(), 1);
     }
 
     #[test]

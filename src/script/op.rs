@@ -25,17 +25,47 @@ pub struct Chord {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    Window { w: u32, h: u32 },
-    Viewport { lat: f64, lon: f64, zoom: f32 },
-    WaitIdle { timeout: Duration },
-    Wait { duration: Duration },
-    Drag { from: Point2, to: Point2, duration: Duration },
-    Click { at: Point2, button: MouseButton },
-    Scroll { at: Point2, dx: f32, dy: f32 },
-    Key { chord: Chord },
-    Capture { path: String },
-    Log { message: String },
-    LoadOsm { path: String },
+    Window {
+        w: u32,
+        h: u32,
+    },
+    Viewport {
+        lat: f64,
+        lon: f64,
+        zoom: f32,
+    },
+    WaitIdle {
+        timeout: Duration,
+    },
+    Wait {
+        duration: Duration,
+    },
+    Drag {
+        from: Point2,
+        to: Point2,
+        duration: Duration,
+    },
+    Click {
+        at: Point2,
+        button: MouseButton,
+    },
+    Scroll {
+        at: Point2,
+        dx: f32,
+        dy: f32,
+    },
+    Key {
+        chord: Chord,
+    },
+    Capture {
+        path: String,
+    },
+    Log {
+        message: String,
+    },
+    LoadOsm {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -2,16 +2,12 @@
 //! helpers the dialog and its tests share.
 
 use crate::custom_imagery_store::CustomImageryEntry;
+use crate::ui::modal;
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, SharedString, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Window,
 };
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    input::{Input, InputState},
-    label::Label,
-    v_flex, ActiveTheme as _,
-};
+use gpui_component::{input::InputState, label::Label, v_flex, ActiveTheme as _};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationError {
@@ -72,97 +68,6 @@ fn parse_zoom(raw: &str, default_if_blank: u32) -> Result<u32, ()> {
         return Err(());
     }
     Ok(v)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TMPL: &str = "https://tile.example.com/{z}/{x}/{y}.png";
-
-    #[test]
-    fn happy_path_defaults() {
-        let e = validate("Example", TMPL, "", "").unwrap();
-        assert_eq!(e.name, "Example");
-        assert_eq!(e.url_template, TMPL);
-        assert_eq!(e.min_zoom, 0);
-        assert_eq!(e.max_zoom, 19);
-    }
-
-    #[test]
-    fn happy_path_minus_y() {
-        let e = validate(
-            "Foo",
-            "https://tile.example.com/{z}/{x}/{-y}.png",
-            "4",
-            "18",
-        )
-        .unwrap();
-        assert_eq!(e.min_zoom, 4);
-        assert_eq!(e.max_zoom, 18);
-    }
-
-    #[test]
-    fn name_must_be_nonempty() {
-        assert_eq!(validate("  ", TMPL, "", ""), Err(ValidationError::NameEmpty));
-    }
-
-    #[test]
-    fn template_required() {
-        assert_eq!(
-            validate("Example", "  ", "", ""),
-            Err(ValidationError::TemplateEmpty)
-        );
-    }
-
-    #[test]
-    fn template_missing_z_x_y() {
-        assert_eq!(
-            validate("Example", "https://example.com/a/b/c.png", "", ""),
-            Err(ValidationError::TemplateMissingPlaceholder)
-        );
-    }
-
-    #[test]
-    fn template_cannot_contain_both_y_variants() {
-        assert_eq!(
-            validate(
-                "Example",
-                "https://example.com/{z}/{x}/{y}/{-y}.png",
-                "",
-                ""
-            ),
-            Err(ValidationError::TemplateYAndMinusY)
-        );
-    }
-
-    #[test]
-    fn min_above_max_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "15", "10"),
-            Err(ValidationError::MinZoomAboveMax)
-        );
-    }
-
-    #[test]
-    fn out_of_range_zoom_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "25", ""),
-            Err(ValidationError::MinZoomInvalid)
-        );
-        assert_eq!(
-            validate("Example", TMPL, "", "99"),
-            Err(ValidationError::MaxZoomInvalid)
-        );
-    }
-
-    #[test]
-    fn non_numeric_zoom_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "abc", ""),
-            Err(ValidationError::MinZoomInvalid)
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,10 +132,10 @@ impl CustomImageryDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.submit(cx),
-            _ => {}
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.submit(cx),
+            modal::ModalKey::Other => {}
         }
     }
 }
@@ -242,9 +147,7 @@ pub fn error_message(e: &ValidationError) -> &'static str {
         ValidationError::TemplateMissingPlaceholder => {
             "URL template must contain {z}, {x}, and {y} (or {-y})."
         }
-        ValidationError::TemplateYAndMinusY => {
-            "URL template must use {y} or {-y}, not both."
-        }
+        ValidationError::TemplateYAndMinusY => "URL template must use {y} or {-y}, not both.",
         ValidationError::MinZoomInvalid => "Min zoom must be a whole number from 0 to 24.",
         ValidationError::MaxZoomInvalid => "Max zoom must be a whole number from 0 to 24.",
         ValidationError::MinZoomAboveMax => "Min zoom must be ≤ max zoom.",
@@ -261,84 +164,136 @@ impl Render for CustomImageryDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
 
-        let field_row = |label: &'static str, input: &Entity<InputState>| {
-            v_flex()
-                .gap_1()
-                .child(Label::new(label).text_xs().text_color(muted))
-                .child(Input::new(input))
-        };
-
         let mut body = v_flex()
             .gap_3()
-            .child(field_row("Name", &self.name))
-            .child(field_row("URL template", &self.url_template))
+            .child(modal::field_row("Name", &self.name, muted))
+            .child(modal::field_row("URL template", &self.url_template, muted))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_3()
-                    .child(div().flex_1().child(field_row("Min zoom", &self.min_zoom)))
-                    .child(div().flex_1().child(field_row("Max zoom", &self.max_zoom))),
+                    .child(div().flex_1().child(modal::field_row(
+                        "Min zoom",
+                        &self.min_zoom,
+                        muted,
+                    )))
+                    .child(div().flex_1().child(modal::field_row(
+                        "Max zoom",
+                        &self.max_zoom,
+                        muted,
+                    ))),
             );
 
         if let Some(msg) = self.error.clone() {
             body = body.child(Label::new(msg).text_sm().text_color(cx.theme().danger));
         }
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("cancel")
-                    .label("Cancel")
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("add")
-                    .primary()
-                    .label("Add")
-                    .on_click(cx.listener(|this, _, _w, cx| this.submit(cx))),
-            );
+        let footer = modal::footer_row(
+            "cancel",
+            "Cancel",
+            cx.listener(|this, _, _w, cx| this.cancel(cx)),
+            "add",
+            "Add",
+            cx.listener(|this, _, _w, cx| this.submit(cx)),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("Custom Imagery"),
-            )
-            .child(div().p_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+        let frame = modal::dialog_frame(cx, gpui::px(420.0), "Custom Imagery", body, footer);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(rgba(0x00000099))
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TMPL: &str = "https://tile.example.com/{z}/{x}/{y}.png";
+
+    #[test]
+    fn happy_path_defaults() {
+        let e = validate("Example", TMPL, "", "").unwrap();
+        assert_eq!(e.name, "Example");
+        assert_eq!(e.url_template, TMPL);
+        assert_eq!(e.min_zoom, 0);
+        assert_eq!(e.max_zoom, 19);
+    }
+
+    #[test]
+    fn happy_path_minus_y() {
+        let e = validate(
+            "Foo",
+            "https://tile.example.com/{z}/{x}/{-y}.png",
+            "4",
+            "18",
+        )
+        .unwrap();
+        assert_eq!(e.min_zoom, 4);
+        assert_eq!(e.max_zoom, 18);
+    }
+
+    #[test]
+    fn name_must_be_nonempty() {
+        assert_eq!(
+            validate("  ", TMPL, "", ""),
+            Err(ValidationError::NameEmpty)
+        );
+    }
+
+    #[test]
+    fn template_required() {
+        assert_eq!(
+            validate("Example", "  ", "", ""),
+            Err(ValidationError::TemplateEmpty)
+        );
+    }
+
+    #[test]
+    fn template_missing_z_x_y() {
+        assert_eq!(
+            validate("Example", "https://example.com/a/b/c.png", "", ""),
+            Err(ValidationError::TemplateMissingPlaceholder)
+        );
+    }
+
+    #[test]
+    fn template_cannot_contain_both_y_variants() {
+        assert_eq!(
+            validate(
+                "Example",
+                "https://example.com/{z}/{x}/{y}/{-y}.png",
+                "",
+                ""
+            ),
+            Err(ValidationError::TemplateYAndMinusY)
+        );
+    }
+
+    #[test]
+    fn min_above_max_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "15", "10"),
+            Err(ValidationError::MinZoomAboveMax)
+        );
+    }
+
+    #[test]
+    fn out_of_range_zoom_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "25", ""),
+            Err(ValidationError::MinZoomInvalid)
+        );
+        assert_eq!(
+            validate("Example", TMPL, "", "99"),
+            Err(ValidationError::MaxZoomInvalid)
+        );
+    }
+
+    #[test]
+    fn non_numeric_zoom_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "abc", ""),
+            Err(ValidationError::MinZoomInvalid)
+        );
     }
 }
