@@ -66,14 +66,25 @@ impl TagEditDialog {
         });
         let focus_handle = cx.focus_handle();
 
+        // `Window::dispatch_action` resolves the target element by looking it up in
+        // `self.rendered_frame` (the last *painted* frame). At construction time this
+        // dialog has never been rendered, so the input's focus handle can't be found
+        // there yet and the action would be dispatched against the wrong node (or
+        // dropped). Deferring the dispatch to `on_next_frame` runs it right after the
+        // dialog's first paint, by which point the focused input is present in
+        // `rendered_frame` and `SelectAll` reaches the right `InputState`.
         match select {
             TagEditField::Key => {
                 key.update(cx, |state, cx| state.focus(window, cx));
-                window.dispatch_action(Box::new(SelectAll), cx);
+                window.on_next_frame(|window, cx| {
+                    window.dispatch_action(Box::new(SelectAll), cx);
+                });
             }
             TagEditField::Value => {
                 value.update(cx, |state, cx| state.focus(window, cx));
-                window.dispatch_action(Box::new(SelectAll), cx);
+                window.on_next_frame(|window, cx| {
+                    window.dispatch_action(Box::new(SelectAll), cx);
+                });
             }
             TagEditField::None => {
                 key.update(cx, |state, cx| state.focus(window, cx));
