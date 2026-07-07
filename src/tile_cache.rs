@@ -1,11 +1,36 @@
 use gpui::{Asset, BackgroundExecutor, RenderImage, ImageCacheError};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::io::Read;
+use std::path::PathBuf;
 
 use crate::idle_tracker::IdleTracker;
+
+/// Returns the on-disk tile cache directory: a real, user-visible cache
+/// location (via the `dirs` crate) rather than the OS temp dir, which can be
+/// wiped at any time and isn't where users expect persistent cache data to
+/// live.
+fn cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("osm-gpui")
+        .join("tiles")
+}
+
+/// Derive a cache filename for `url` from a SHA-256 hash of the full URL.
+/// Using a strong, unseeded-collision-resistant hash (rather than
+/// `DefaultHasher`, which is unseeded and not designed to be collision
+/// resistant) ensures two different tile servers/templates can never
+/// collide on the same cache file.
+fn cache_filename(url: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(url.as_bytes());
+    let digest = hasher.finalize();
+    format!("tile_{:x}.png", digest)
+}
 
 /// Global IdleTracker shared between TileCache and TileAsset::load.
 /// Set once when TileCache is constructed with an IdleTracker.
@@ -109,18 +134,11 @@ impl Asset for TileAsset {
             // We await the spawned future and call tile_fetch_finished exactly once
             // after it resolves, covering all success and error paths.
             let result = executor.spawn(async move {
-                let cache_dir = std::env::temp_dir().join("osm-gpui-tiles");
+                let cache_dir = cache_dir();
 
-                // Create a safe filename from the URL
-                let filename = if let Some(parts) = url.strip_prefix("https://tile.openstreetmap.org/") {
-                    parts.replace('/', "_")
-                } else {
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    url.hash(&mut hasher);
-                    format!("tile_{:x}.png", hasher.finish())
-                };
+                // Derive a collision-resistant filename from the full URL so
+                // different tile servers/templates can never collide.
+                let filename = cache_filename(&url);
 
                 let file_path = cache_dir.join(&filename);
 
@@ -279,9 +297,9 @@ impl TileCache {
 
     /// Get statistics about the cache
     pub fn stats(&self) -> (usize, usize) {
-        let cache_dir = std::env::temp_dir().join("osm-gpui-tiles");
-        let cached_files = if cache_dir.exists() {
-            std::fs::read_dir(&cache_dir)
+        let dir = cache_dir();
+        let cached_files = if dir.exists() {
+            std::fs::read_dir(&dir)
                 .map(|entries| entries.count())
                 .unwrap_or(0)
         } else {
@@ -368,5 +386,40 @@ mod tests {
         assert_eq!(last_error(url).as_deref(), Some("HTTP 418"));
         clear_error(url);
         assert_eq!(last_error(url), None);
+    }
+
+    #[test]
+    fn cache_filename_is_deterministic() {
+        let url = "https://tile.example.test/1/2/3.png";
+        assert_eq!(cache_filename(url), cache_filename(url));
+    }
+
+    #[test]
+    fn cache_filename_differs_for_different_urls() {
+        let a = cache_filename("https://tile-a.example.test/1/2/3.png");
+        let b = cache_filename("https://tile-b.example.test/1/2/3.png");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn cache_filename_has_expected_shape() {
+        let name = cache_filename("https://tile.example.test/1/2/3.png");
+        assert!(name.starts_with("tile_"));
+        assert!(name.ends_with(".png"));
+        // "tile_" + 64 hex chars (SHA-256) + ".png"
+        assert_eq!(name.len(), "tile_".len() + 64 + ".png".len());
+    }
+
+    /// Two different tile-server URLs must never produce the same cache
+    /// filename, unlike the old unseeded-DefaultHasher scheme which could
+    /// theoretically collide.
+    #[test]
+    fn cache_filename_no_collision_across_many_urls() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for i in 0..500 {
+            let url = format!("https://server-{}.example.test/{}/{}/{}.png", i % 5, i, i + 1, i + 2);
+            assert!(seen.insert(cache_filename(&url)), "collision for {url}");
+        }
     }
 }
