@@ -9,6 +9,8 @@ use gpui_component::{
     menu::ContextMenuExt,
 };
 
+use osm_gpui::layers::LayerId;
+
 use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
 
 impl MapViewer {
@@ -19,11 +21,11 @@ impl MapViewer {
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
     pub(crate) fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let layer_info: Vec<(String, bool, bool)> = self
+        let layer_info: Vec<(LayerId, String, bool, bool)> = self
             .layer_manager
             .layers()
             .iter()
-            .map(|layer| (layer.name().to_string(), layer.is_visible(), layer.is_modified()))
+            .map(|layer| (layer.id(), layer.name().to_string(), layer.is_visible(), layer.is_modified()))
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
@@ -209,7 +211,7 @@ impl MapViewer {
     /// context menu offering Move up / Move down / Delete.
     fn render_layers_section(
         &self,
-        layer_info: &[(String, bool, bool)],
+        layer_info: &[(LayerId, String, bool, bool)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -225,8 +227,8 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (name, is_visible, is_modified))| {
-                        let layer_name = name.clone();
+                    .map(|(index, (layer_id, name, is_visible, is_modified))| {
+                        let layer_id = *layer_id;
                         let label = if *is_modified {
                             format!("{} \u{2022}", name)
                         } else {
@@ -236,7 +238,7 @@ impl MapViewer {
                             .checked(*is_visible)
                             .label(label)
                             .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
-                                this.toggle_layer_visibility(&layer_name);
+                                this.toggle_layer_visibility(layer_id);
                                 cx.notify();
                             }))
                             .context_menu(move |menu, _window, _cx| {
@@ -280,8 +282,9 @@ impl MapViewer {
             .iter()
             .filter_map(|sel| {
                 self.layer_manager
-                    .find_layer(&sel.layer_name)
-                    .and_then(|layer| layer.feature_tags(sel))
+                    .find_layer(sel.layer_id)
+                    .and_then(|layer| layer.as_editable())
+                    .and_then(|editable| editable.feature_tags(sel))
             })
             .collect();
 

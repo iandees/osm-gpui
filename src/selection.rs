@@ -2,15 +2,17 @@
 
 use gpui::{Pixels, Point};
 
+use crate::layers::LayerId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureKind {
     Node,
     Way,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeatureRef {
-    pub layer_name: String,
+    pub layer_id: LayerId,
     pub kind: FeatureKind,
     pub id: i64,
 }
@@ -198,7 +200,7 @@ pub fn compute_tag_edit_entries(
         if is_add {
             let before = current(new_key);
             if before.as_deref() != Some(new_value) {
-                out.push((feature.clone(), new_key.to_string(), before, Some(new_value.to_string())));
+                out.push((*feature, new_key.to_string(), before, Some(new_value.to_string())));
             }
             continue;
         }
@@ -207,18 +209,18 @@ pub fn compute_tag_edit_entries(
             let Some(old_before) = current(original_key) else {
                 continue; // never had the key being renamed — nothing to do
             };
-            out.push((feature.clone(), original_key.to_string(), Some(old_before.clone()), None));
+            out.push((*feature, original_key.to_string(), Some(old_before.clone()), None));
 
             let new_before = current(new_key);
             let after_value = if value_touched { new_value.to_string() } else { old_before };
             if new_before.as_deref() != Some(after_value.as_str()) {
-                out.push((feature.clone(), new_key.to_string(), new_before, Some(after_value)));
+                out.push((*feature, new_key.to_string(), new_before, Some(after_value)));
             }
         } else {
             let before = current(original_key);
             let after = if value_touched { Some(new_value.to_string()) } else { before.clone() };
             if before != after {
-                out.push((feature.clone(), original_key.to_string(), before, after));
+                out.push((*feature, original_key.to_string(), before, after));
             }
         }
     }
@@ -235,8 +237,8 @@ mod tests {
         point(px(x), px(y))
     }
 
-    fn fref(name: &str, kind: FeatureKind, id: i64) -> FeatureRef {
-        FeatureRef { layer_name: name.into(), kind, id }
+    fn fref(layer: u64, kind: FeatureKind, id: i64) -> FeatureRef {
+        FeatureRef { layer_id: LayerId(layer), kind, id }
     }
 
     #[test]
@@ -266,12 +268,12 @@ mod tests {
     #[test]
     fn resolve_picks_nearest() {
         let a = HitCandidate {
-            feature: fref("L0", FeatureKind::Node, 1),
+            feature: fref(10, FeatureKind::Node, 1),
             kind: FeatureKind::Node,
             dist_px: 5.0,
         };
         let b = HitCandidate {
-            feature: fref("L0", FeatureKind::Way, 2),
+            feature: fref(10, FeatureKind::Way, 2),
             kind: FeatureKind::Way,
             dist_px: 3.0,
         };
@@ -282,39 +284,39 @@ mod tests {
     #[test]
     fn resolve_tie_prefers_later_layer() {
         let a = HitCandidate {
-            feature: fref("bottom", FeatureKind::Node, 1),
+            feature: fref(1, FeatureKind::Node, 1),
             kind: FeatureKind::Node,
             dist_px: 2.0,
         };
         let b = HitCandidate {
-            feature: fref("top", FeatureKind::Node, 99),
+            feature: fref(2, FeatureKind::Node, 99),
             kind: FeatureKind::Node,
             dist_px: 2.0,
         };
         let winner = resolve_hits(vec![vec![a], vec![b]]).unwrap();
-        assert_eq!(winner.layer_name, "top");
+        assert_eq!(winner.layer_id, LayerId(2));
         assert_eq!(winner.id, 99);
     }
 
     #[test]
     fn click_no_shift_replaces_selection_with_hit() {
-        let current = vec![fref("L", FeatureKind::Node, 1)];
-        let hit = fref("L", FeatureKind::Node, 2);
+        let current = vec![fref(1, FeatureKind::Node, 1)];
+        let hit = fref(1, FeatureKind::Node, 2);
         let result = apply_click_selection(&current, Some(hit.clone()), false);
         assert_eq!(result, vec![hit]);
     }
 
     #[test]
     fn click_no_shift_on_empty_space_clears_selection() {
-        let current = vec![fref("L", FeatureKind::Node, 1)];
+        let current = vec![fref(1, FeatureKind::Node, 1)];
         let result = apply_click_selection(&current, None, false);
         assert!(result.is_empty());
     }
 
     #[test]
     fn shift_click_adds_unselected_feature() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let current = vec![a.clone()];
         let result = apply_click_selection(&current, Some(b.clone()), true);
         assert_eq!(result, vec![a, b]);
@@ -322,8 +324,8 @@ mod tests {
 
     #[test]
     fn shift_click_removes_already_selected_feature() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let current = vec![a.clone(), b.clone()];
         let result = apply_click_selection(&current, Some(a), true);
         assert_eq!(result, vec![b]);
@@ -331,14 +333,14 @@ mod tests {
 
     #[test]
     fn shift_click_on_empty_space_leaves_selection_unchanged() {
-        let current = vec![fref("L", FeatureKind::Node, 1), fref("L", FeatureKind::Node, 2)];
+        let current = vec![fref(1, FeatureKind::Node, 1), fref(1, FeatureKind::Node, 2)];
         let result = apply_click_selection(&current, None, true);
         assert_eq!(result, current);
     }
 
     #[test]
     fn shift_click_only_selected_feature_empties_selection() {
-        let a = fref("L", FeatureKind::Node, 1);
+        let a = fref(1, FeatureKind::Node, 1);
         let current = vec![a.clone()];
         let result = apply_click_selection(&current, Some(a), true);
         assert!(result.is_empty());
@@ -419,8 +421,8 @@ mod tests {
 
     #[test]
     fn edit_same_key_uniform_value_when_touched() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
             (a.clone(), tags(&[("highway", "residential")])),
             (b.clone(), tags(&[("highway", "trunk")])),
@@ -437,8 +439,8 @@ mod tests {
 
     #[test]
     fn edit_same_key_untouched_value_preserves_per_feature() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
             (a.clone(), tags(&[("highway", "residential")])),
             (b.clone(), tags(&[("highway", "trunk")])),
@@ -450,7 +452,7 @@ mod tests {
 
     #[test]
     fn edit_same_key_noop_produces_no_entries() {
-        let a = fref("L", FeatureKind::Node, 1);
+        let a = fref(1, FeatureKind::Node, 1);
         let features = vec![(a, tags(&[("highway", "residential")]))];
         let entries = compute_tag_edit_entries(&features, "highway", "residential", "highway", "residential", false);
         assert!(entries.is_empty());
@@ -458,8 +460,8 @@ mod tests {
 
     #[test]
     fn rename_moves_value_and_skips_features_without_key() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
             (a.clone(), tags(&[("highway", "residential")])),
             (b.clone(), tags(&[])), // b never had "highway"
@@ -477,7 +479,7 @@ mod tests {
 
     #[test]
     fn rename_with_touched_value_uses_new_value() {
-        let a = fref("L", FeatureKind::Node, 1);
+        let a = fref(1, FeatureKind::Node, 1);
         let features = vec![(a.clone(), tags(&[("highway", "residential")]))];
         let entries = compute_tag_edit_entries(&features, "highway", "residential", "highway_type", "trunk", false);
         assert_eq!(
@@ -491,8 +493,8 @@ mod tests {
 
     #[test]
     fn add_sets_new_key_on_all_features_overwriting_existing() {
-        let a = fref("L", FeatureKind::Node, 1);
-        let b = fref("L", FeatureKind::Node, 2);
+        let a = fref(1, FeatureKind::Node, 1);
+        let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
             (a.clone(), tags(&[])),
             (b.clone(), tags(&[("surface", "gravel")])),
@@ -509,7 +511,7 @@ mod tests {
 
     #[test]
     fn add_noop_when_value_already_matches() {
-        let a = fref("L", FeatureKind::Node, 1);
+        let a = fref(1, FeatureKind::Node, 1);
         let features = vec![(a, tags(&[("surface", "paved")]))];
         let entries = compute_tag_edit_entries(&features, "", "", "surface", "paved", true);
         assert!(entries.is_empty());

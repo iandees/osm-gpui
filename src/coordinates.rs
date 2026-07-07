@@ -1,8 +1,8 @@
 use gpui::{px, Pixels, Point as GpuiPoint, Size};
 use std::f64::consts::PI;
 
-/// Represents a geographic bounding box
-#[derive(Debug, Clone, Copy)]
+/// Represents a geographic bounding box (axis-aligned, inclusive).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoBounds {
     pub min_lat: f64,
     pub max_lat: f64,

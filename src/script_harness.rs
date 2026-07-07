@@ -146,8 +146,9 @@ impl MapViewer {
                     self.viewport.pan_to(lat, lon);
                     self.viewport.set_zoom(zoom);
                     // Ensure tile layer exists
-                    if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
-                        let tile_layer = TileLayer::new(self.tile_cache.clone());
+                    if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
+                        let layer_id = self.layer_manager.alloc_id();
+                        let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
                         self.layer_manager.add_layer(Box::new(tile_layer));
                     }
                     cx.notify();

@@ -9,7 +9,7 @@
 
 use gpui::{point, px, size, Path, PathVertex, Pixels, Point};
 use osm_gpui::layers::osm_layer::OsmLayer;
-use osm_gpui::layers::MapLayer;
+use osm_gpui::layers::{EditableLayer, LayerId, MapLayer};
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
 use osm_gpui::style::Stylesheet;
 use osm_gpui::viewport::Viewport;
@@ -238,7 +238,7 @@ fn main() {
         nodes_per_way,
         n_poi
     );
-    let layer = OsmLayer::new_with_data("bench", data.clone());
+    let layer = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
     let stylesheet = Stylesheet::load_default();
 
     // Zoom 14 puts the whole 0.05-degree box on screen -> ~everything visible.
@@ -330,12 +330,12 @@ fn main() {
 
     println!("\n-- edit commit path --");
     bench("commit_node_moves: 1 node (clone + full rebuild)", 10, || {
-        let mut l = OsmLayer::new_with_data("bench", data.clone());
+        let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
         l.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
         l.is_modified() as u64
     });
     bench("set_osm_data rebuild alone", 10, || {
-        let mut l = OsmLayer::new();
+        let mut l = OsmLayer::new(LayerId(1));
         l.set_osm_data(data.clone());
         l.has_data() as u64
     });

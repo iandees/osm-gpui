@@ -29,7 +29,7 @@ use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::osm::OsmData;
 use osm_gpui::viewport::Viewport;
-use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
+use osm_gpui::layers::{LayerId, LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 use osm_gpui::tiles;
 use osm_gpui::osm_api;
 use osm_gpui::osm_upload;
@@ -415,8 +415,8 @@ impl MapViewer {
         }
     }
 
-    fn toggle_layer_visibility(&mut self, layer_name: &str) {
-        if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+    fn toggle_layer_visibility(&mut self, layer_id: LayerId) {
+        if let Some(layer) = self.layer_manager.find_layer_mut(layer_id) {
             let current_visibility = layer.is_visible();
             layer.set_visible(!current_visibility);
         }
@@ -483,16 +483,17 @@ impl MapViewer {
         use osm_gpui::selection::FeatureKind;
         use std::collections::{HashMap, HashSet};
 
-        let mut ids_by_layer: HashMap<String, HashSet<i64>> = HashMap::new();
+        let mut ids_by_layer: HashMap<LayerId, HashSet<i64>> = HashMap::new();
         for feat in &self.selected {
-            let Some(layer) = self.layer_manager.find_layer(&feat.layer_name) else { continue; };
-            let entry = ids_by_layer.entry(feat.layer_name.clone()).or_default();
+            let Some(layer) = self.layer_manager.find_layer(feat.layer_id) else { continue; };
+            let Some(editable) = layer.as_editable() else { continue; };
+            let entry = ids_by_layer.entry(feat.layer_id).or_default();
             match feat.kind {
                 FeatureKind::Node => {
                     entry.insert(feat.id);
                 }
                 FeatureKind::Way => {
-                    if let Some(node_ids) = layer.way_node_ids(feat.id) {
+                    if let Some(node_ids) = editable.way_node_ids(feat.id) {
                         entry.extend(node_ids);
                     }
                 }
@@ -501,16 +502,17 @@ impl MapViewer {
 
         ids_by_layer
             .into_iter()
-            .filter_map(|(layer_name, ids)| {
-                let layer = self.layer_manager.find_layer(&layer_name)?;
+            .filter_map(|(layer_id, ids)| {
+                let layer = self.layer_manager.find_layer(layer_id)?;
+                let editable = layer.as_editable()?;
                 let originals: Vec<(i64, f64, f64)> = ids
                     .into_iter()
-                    .filter_map(|id| layer.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
+                    .filter_map(|id| editable.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
                     .collect();
                 if originals.is_empty() {
                     None
                 } else {
-                    Some((layer_name, originals))
+                    Some((layer_id, originals))
                 }
             })
             .collect()
@@ -520,9 +522,11 @@ impl MapViewer {
     /// layer without mutating any data.
     fn cancel_move_drag(&mut self, cx: &mut Context<Self>) {
         if let Some(drag) = self.move_drag.take() {
-            for (layer_name, _) in &drag.per_layer {
-                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
-                    layer.clear_drag_preview();
+            for (layer_id, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                    if let Some(editable) = layer.as_editable_mut() {
+                        editable.clear_drag_preview();
+                    }
                 }
             }
             cx.notify();
@@ -536,7 +540,7 @@ impl MapViewer {
     fn apply_undo_action(&mut self, action: &UndoableAction, forward: bool) {
         match action {
             UndoableAction::MoveNodes { per_layer } => {
-                for (layer_name, entries) in per_layer {
+                for (layer_id, entries) in per_layer {
                     let moves: Vec<(i64, f64, f64)> = entries
                         .iter()
                         .map(|&(id, before, after)| {
@@ -544,38 +548,43 @@ impl MapViewer {
                             (id, lat, lon)
                         })
                         .collect();
-                    if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
-                        layer.commit_node_moves(&moves);
+                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            editable.commit_node_moves(&moves);
+                        }
                     }
                 }
             }
             UndoableAction::SetTags { entries } => {
                 for (feature, key, before, after) in entries {
-                    let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue; };
+                    let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue; };
+                    let Some(editable) = layer.as_editable_mut() else { continue; };
                     let value = if forward { after } else { before };
                     match value {
-                        Some(v) => layer.set_tag(feature.kind, feature.id, key, v),
-                        None => layer.remove_tag(feature.kind, feature.id, key),
+                        Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
+                        None => editable.remove_tag(feature.kind, feature.id, key),
                     }
                 }
             }
             UndoableAction::CreateNode { layer, id, lat, lon } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer) else { return; };
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return; };
+                let Some(editable) = layer.as_editable_mut() else { return; };
                 if forward {
                     // Redo: recreate the node at the exact same id, so any
                     // later action referencing this id (e.g. a subsequent
                     // tag edit) still targets the right feature.
-                    layer.create_node(*lat, *lon, Some(*id));
+                    editable.create_node(*lat, *lon, Some(*id));
                 } else {
-                    layer.delete_feature(osm_gpui::selection::FeatureKind::Node, *id);
+                    editable.delete_feature(osm_gpui::selection::FeatureKind::Node, *id);
                 }
             }
             UndoableAction::DeleteFeature { layer, snapshot } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer) else { return; };
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return; };
+                let Some(editable) = layer.as_editable_mut() else { return; };
                 if forward {
-                    layer.delete_feature(snapshot.kind, snapshot.id);
+                    editable.delete_feature(snapshot.kind, snapshot.id);
                 } else {
-                    layer.restore_feature(snapshot.clone());
+                    editable.restore_feature(snapshot.clone());
                 }
             }
         }
@@ -592,8 +601,9 @@ impl MapViewer {
             .iter()
             .filter_map(|sel| {
                 self.layer_manager
-                    .find_layer(&sel.layer_name)
-                    .and_then(|layer| layer.feature_tags(sel))
+                    .find_layer(sel.layer_id)
+                    .and_then(|layer| layer.as_editable())
+                    .and_then(|editable| editable.feature_tags(sel))
                     .map(|tags| (sel.clone(), tags))
             })
             .collect()
@@ -672,10 +682,11 @@ impl MapViewer {
         }
 
         for (feature, k, _before, after) in &entries {
-            let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue };
+            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue };
+            let Some(editable) = layer.as_editable_mut() else { continue };
             match after {
-                Some(v) => layer.set_tag(feature.kind, feature.id, k, v),
-                None => layer.remove_tag(feature.kind, feature.id, k),
+                Some(v) => editable.set_tag(feature.kind, feature.id, k, v),
+                None => editable.remove_tag(feature.kind, feature.id, k),
             }
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
@@ -699,8 +710,10 @@ impl MapViewer {
         }
 
         for (feature, k, _before, _after) in &entries {
-            if let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) {
-                layer.remove_tag(feature.kind, feature.id, k);
+            if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
+                if let Some(editable) = layer.as_editable_mut() {
+                    editable.remove_tag(feature.kind, feature.id, k);
+                }
             }
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
@@ -722,10 +735,11 @@ impl MapViewer {
         let features = std::mem::take(&mut self.selected);
         let mut deleted = 0usize;
         for feature in &features {
-            let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue };
-            if let Some(snapshot) = layer.delete_feature(feature.kind, feature.id) {
+            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else { continue };
+            let Some(editable) = layer.as_editable_mut() else { continue };
+            if let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) {
                 self.undo_stack.push(UndoableAction::DeleteFeature {
-                    layer: feature.layer_name.clone(),
+                    layer: feature.layer_id,
                     snapshot,
                 });
                 deleted += 1;
@@ -752,19 +766,19 @@ impl MapViewer {
     /// `create_node_on_target_layer`.
     fn create_node_at_screen_point(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let (lat, lon) = self.viewport.screen_to_geo(position);
-        let Some((layer_name, id)) = self.create_node_on_target_layer(lat, lon) else {
+        let Some((layer_id, id)) = self.create_node_on_target_layer(lat, lon) else {
             self.set_status("No layer to add a node to");
             cx.notify();
             return;
         };
         self.undo_stack.push(UndoableAction::CreateNode {
-            layer: layer_name.clone(),
+            layer: layer_id,
             id,
             lat,
             lon,
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
-            layer_name,
+            layer_id,
             kind: osm_gpui::selection::FeatureKind::Node,
             id,
         }];
@@ -778,10 +792,13 @@ impl MapViewer {
     /// whichever layer already owns the feature, just with "owns" relaxed to
     /// "has OSM data at all" since a brand-new node has no owning layer yet.
     /// `None` if no layer accepts (e.g. no OSM data loaded anywhere).
-    fn create_node_on_target_layer(&mut self, lat: f64, lon: f64) -> Option<(String, i64)> {
+    fn create_node_on_target_layer(&mut self, lat: f64, lon: f64) -> Option<(LayerId, i64)> {
         for layer in self.layer_manager.layers_mut() {
-            if let Some(id) = layer.create_node(lat, lon, None) {
-                return Some((layer.name().to_string(), id));
+            let layer_id = layer.id();
+            if let Some(editable) = layer.as_editable_mut() {
+                if let Some(id) = editable.create_node(lat, lon, None) {
+                    return Some((layer_id, id));
+                }
             }
         }
         None
@@ -851,10 +868,13 @@ impl MapViewer {
         target: &osm_gpui::selection::FeatureRef,
         preset_tags: std::collections::HashMap<String, String>,
     ) {
-        let Some(layer) = self.layer_manager.find_layer(&target.layer_name) else {
+        let Some(layer) = self.layer_manager.find_layer(target.layer_id) else {
             return;
         };
-        let Some(existing) = layer.feature_tags(target) else {
+        let Some(editable) = layer.as_editable() else {
+            return;
+        };
+        let Some(existing) = editable.feature_tags(target) else {
             return;
         };
 
@@ -877,9 +897,11 @@ impl MapViewer {
         }
 
         for (feature, key, _before, after) in &entries {
-            if let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) {
-                if let Some(v) = after {
-                    layer.set_tag(feature.kind, feature.id, key, v);
+            if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
+                if let Some(editable) = layer.as_editable_mut() {
+                    if let Some(v) = after {
+                        editable.set_tag(feature.kind, feature.id, key, v);
+                    }
                 }
             }
         }
@@ -898,11 +920,13 @@ impl MapViewer {
                         .as_ref()
                         .map(|d| d.per_layer.clone())
                         .unwrap_or_default();
-                    for (layer_name, originals) in &per_layer {
-                        if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
-                            let ids: std::collections::HashSet<i64> =
-                                originals.iter().map(|&(id, _, _)| id).collect();
-                            layer.set_drag_preview(&ids, delta);
+                    for (layer_id, originals) in &per_layer {
+                        if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                            if let Some(editable) = layer.as_editable_mut() {
+                                let ids: std::collections::HashSet<i64> =
+                                    originals.iter().map(|&(id, _, _)| id).collect();
+                                editable.set_drag_preview(&ids, delta);
+                            }
                         }
                     }
                     cx.notify();
@@ -938,9 +962,11 @@ impl MapViewer {
             };
             let delta = down_pos.map(|down| up_pos - down).unwrap_or_default();
 
-            for (layer_name, _) in &drag.per_layer {
-                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
-                    layer.clear_drag_preview();
+            for (layer_id, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                    if let Some(editable) = layer.as_editable_mut() {
+                        editable.clear_drag_preview();
+                    }
                 }
             }
 
@@ -955,7 +981,7 @@ impl MapViewer {
             }
 
             let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
-            for (layer_name, originals) in &drag.per_layer {
+            for (layer_id, originals) in &drag.per_layer {
                 let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
                 let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> = Vec::with_capacity(originals.len());
                 for &(id, lat, lon) in originals {
@@ -965,10 +991,12 @@ impl MapViewer {
                     moves.push((id, new_lat, new_lon));
                     undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
                 }
-                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
-                    layer.commit_node_moves(&moves);
+                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                    if let Some(editable) = layer.as_editable_mut() {
+                        editable.commit_node_moves(&moves);
+                    }
                 }
-                undo_per_layer.push((layer_name.clone(), undo_entries));
+                undo_per_layer.push((*layer_id, undo_entries));
             }
             self.undo_stack.push(UndoableAction::MoveNodes { per_layer: undo_per_layer });
             cx.notify();
@@ -1014,19 +1042,21 @@ impl MapViewer {
         let layer_manager = &self.layer_manager;
         self.selected.retain(|sel| {
             layer_manager
-                .find_layer(&sel.layer_name)
+                .find_layer(sel.layer_id)
                 .map(|l| l.is_visible())
                 .unwrap_or(false)
         });
 
         let selected = self.selected.clone();
         for layer in self.layer_manager.layers_mut() {
+            let layer_id = layer.id();
+            let Some(editable) = layer.as_editable_mut() else { continue };
             let matching: Vec<osm_gpui::selection::FeatureRef> = selected
                 .iter()
-                .filter(|s| s.layer_name == layer.name())
+                .filter(|s| s.layer_id == layer_id)
                 .cloned()
                 .collect();
-            layer.set_highlight(&matching);
+            editable.set_highlight(&matching);
         }
     }
 
@@ -1055,15 +1085,10 @@ impl MapViewer {
                 if guard.is_empty() { return; }
                 for (name, data) in guard.drain(..) {
                     let file_name = if name.is_empty() { "OSM".to_string() } else { name };
-                    // Ensure unique layer name
-                    let mut candidate = file_name.clone();
-                    let mut i = 2;
-                    while self.layer_manager.find_layer(&candidate).is_some() {
-                        candidate = format!("{} ({})", file_name, i);
-                        i += 1;
-                    }
+                    let candidate = self.layer_manager.unique_name(&file_name);
                     let data_arc = Arc::new(data.clone());
-                    let layer = OsmLayer::new_with_data(candidate.clone(), data_arc.clone());
+                    let layer_id = self.layer_manager.alloc_id();
+                    let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
                     self.layer_manager.add_layer(Box::new(layer));
                     if !self.first_dataset_fitted {
                         self.fit_to_osm_data(&data);
@@ -1083,8 +1108,9 @@ impl MapViewer {
                 for req in guard.drain(..) {
                     match req {
                         LayerRequest::OsmCarto => {
-                            if self.layer_manager.find_layer("OpenStreetMap Carto").is_none() {
-                                let tile_layer = TileLayer::new(self.tile_cache.clone());
+                            if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
+                                let layer_id = self.layer_manager.alloc_id();
+                                let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
                                 self.layer_manager.add_layer(Box::new(tile_layer));
                             }
                         }
@@ -1092,19 +1118,16 @@ impl MapViewer {
                             let _ = self.layer_manager.remove_at(index);
                         }
                         LayerRequest::CoordinateGrid => {
-                            if self.layer_manager.find_layer("Coordinate Grid").is_none() {
-                                self.layer_manager.add_layer(Box::new(GridLayer::new()));
+                            if self.layer_manager.layer_named("Coordinate Grid").is_none() {
+                                let layer_id = self.layer_manager.alloc_id();
+                                self.layer_manager.add_layer(Box::new(GridLayer::new(layer_id)));
                             }
                         }
                         LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
-                            // Ensure unique name
-                            let mut candidate = name.clone();
-                            let mut i = 2;
-                            while self.layer_manager.find_layer(&candidate).is_some() {
-                                candidate = format!("{} ({})", name, i);
-                                i += 1;
-                            }
+                            let candidate = self.layer_manager.unique_name(&name);
+                            let layer_id = self.layer_manager.alloc_id();
                             let layer = TileLayer::new_with_template(
+                                layer_id,
                                 candidate,
                                 url_template,
                                 self.tile_cache.clone(),
@@ -1469,13 +1492,9 @@ impl MapViewer {
                 match result {
                     Ok(data) => {
                         let data_arc = Arc::new(data);
-                        let mut candidate = label.clone();
-                        let mut i = 2;
-                        while this.layer_manager.find_layer(&candidate).is_some() {
-                            candidate = format!("{} ({})", label, i);
-                            i += 1;
-                        }
-                        let layer = OsmLayer::new_with_data(candidate, data_arc);
+                        let candidate = this.layer_manager.unique_name(&label);
+                        let layer_id = this.layer_manager.alloc_id();
+                        let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
                         this.layer_manager.add_layer(Box::new(layer));
                         this.status_message = None;
                     }

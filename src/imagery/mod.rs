@@ -9,27 +9,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
+use crate::coordinates::GeoBounds;
+
 const ELI_URL: &str = "https://osmlab.github.io/editor-layer-index/imagery.geojson";
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
 const MAX_MENU_ENTRIES: usize = 30;
-
-/// Axis-aligned latitude/longitude bounding box (inclusive).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GeoBounds {
-    pub min_lat: f64,
-    pub min_lon: f64,
-    pub max_lat: f64,
-    pub max_lon: f64,
-}
-
-impl GeoBounds {
-    pub fn contains(&self, lat: f64, lon: f64) -> bool {
-        lat >= self.min_lat
-            && lat <= self.max_lat
-            && lon >= self.min_lon
-            && lon <= self.max_lon
-    }
-}
 
 /// Attribution text (and optional link) required to be displayed alongside
 /// tiles from an imagery source, per the ELI schema's `properties.attribution`.
@@ -323,12 +307,7 @@ fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<Vec<Ve
     }
 
     (
-        Some(GeoBounds {
-            min_lat,
-            min_lon,
-            max_lat,
-            max_lon,
-        }),
+        Some(GeoBounds::new(min_lat, max_lat, min_lon, max_lon)),
         Some(rings),
     )
 }

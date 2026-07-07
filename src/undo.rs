@@ -1,10 +1,12 @@
 //! Undo/redo model for committed data mutations.
 
+use osm_gpui::layers::LayerId;
+
 /// Per-layer node ids being moved, each with its pre-drag `(lat, lon)`.
-pub(crate) type NodeMoveTargets = Vec<(String, Vec<(i64, f64, f64)>)>;
+pub(crate) type NodeMoveTargets = Vec<(LayerId, Vec<(i64, f64, f64)>)>;
 
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
-pub(crate) type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f64))>)>;
+pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<(i64, (f64, f64), (f64, f64))>)>;
 
 /// A single reversible data mutation, recorded on the global undo stack.
 /// Only one kind exists today (produced by committing a drag-to-move), but
@@ -24,11 +26,11 @@ pub(crate) enum UndoableAction {
     /// `delete_feature`); redo recreates it at the same id (via
     /// `create_node`'s explicit-id form), so redo reproduces the exact same
     /// node rather than allocating a fresh one.
-    CreateNode { layer: String, id: i64, lat: f64, lon: f64 },
+    CreateNode { layer: LayerId, id: i64, lat: f64, lon: f64 },
     /// A node or way deleted from `layer`. Undo restores it (via
     /// `restore_feature`); redo deletes it again (via `delete_feature`).
     DeleteFeature {
-        layer: String,
+        layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
     },
 }
@@ -108,11 +110,11 @@ pub(crate) struct MoveDrag {
 
 #[cfg(test)]
 mod undo_stack_tests {
-    use super::{UndoStack, UndoableAction};
+    use super::{UndoStack, UndoableAction, LayerId};
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
         UndoableAction::MoveNodes {
-            per_layer: vec![("L".to_string(), vec![(id, before, after)])],
+            per_layer: vec![(LayerId(1), vec![(id, before, after)])],
         }
     }
 
@@ -123,7 +125,7 @@ mod undo_stack_tests {
 
         let two = UndoableAction::MoveNodes {
             per_layer: vec![(
-                "L".to_string(),
+                LayerId(1),
                 vec![
                     (1, (0.0, 0.0), (1.0, 1.0)),
                     (2, (0.0, 0.0), (1.0, 1.0)),
@@ -191,7 +193,7 @@ mod undo_stack_tests {
     #[test]
     fn set_tags_description_singular_and_plural() {
         use osm_gpui::selection::{FeatureKind, FeatureRef};
-        let f = FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 1 };
+        let f = FeatureRef { layer_id: LayerId(1), kind: FeatureKind::Node, id: 1 };
 
         let one = UndoableAction::SetTags {
             entries: vec![tag_change(f.clone(), "highway", None, Some("residential"))],
@@ -210,7 +212,7 @@ mod undo_stack_tests {
     #[test]
     fn create_node_description() {
         let action = UndoableAction::CreateNode {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             id: -1,
             lat: 40.0,
             lon: -74.0,
@@ -222,7 +224,7 @@ mod undo_stack_tests {
     fn create_node_undo_redo_round_trips() {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::CreateNode {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             id: -1,
             lat: 40.0,
             lon: -74.0,
@@ -260,13 +262,13 @@ mod undo_stack_tests {
     #[test]
     fn delete_feature_description_node_vs_way() {
         let node_action = UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: node_snapshot(1),
         };
         assert_eq!(node_action.description(), "Deleted 1 node");
 
         let way_action = UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: way_snapshot(10),
         };
         assert_eq!(way_action.description(), "Deleted 1 way");
@@ -276,7 +278,7 @@ mod undo_stack_tests {
     fn delete_feature_undo_redo_round_trips() {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::DeleteFeature {
-            layer: "L".to_string(),
+            layer: LayerId(1),
             snapshot: way_snapshot(10),
         });
 

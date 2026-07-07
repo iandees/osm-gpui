@@ -2,8 +2,8 @@ use gpui::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::layers::MapLayer;
 use crate::layers::diff::{diff_osm_data, LayerDiff};
+use crate::layers::{EditableLayer, LayerId, MapLayer};
 use crate::osm_upload::UploadResult;
 use crate::viewport::Viewport;
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -64,6 +64,7 @@ struct NodeCache {
 
 /// Layer for rendering OSM vector data (nodes and ways)
 pub struct OsmLayer {
+    id: LayerId,
     name: String,
     visible: bool,
     osm_data: Option<Arc<OsmData>>,
@@ -369,8 +370,9 @@ fn build_way_index(way_bboxes: &[Option<WayBbox>], ways: &[&OsmWay]) -> RTree<Ge
 }
 
 impl OsmLayer {
-    pub fn new() -> Self {
+    pub fn new(id: LayerId) -> Self {
         Self {
+            id,
             name: "OSM Data".to_string(),
             visible: true,
             osm_data: None,
@@ -393,7 +395,7 @@ impl OsmLayer {
         }
     }
 
-    pub fn new_with_data<N: Into<String>>(name: N, osm_data: Arc<OsmData>) -> Self {
+    pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
         let stylesheet = Arc::new(Stylesheet::load_default());
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         let (way_ids, way_bboxes, way_vertices, way_styles) = compute_way_tables(&osm_data, &node_cache, &stylesheet);
@@ -405,6 +407,7 @@ impl OsmLayer {
         let node_to_ways = build_node_to_ways(&ways_sorted);
         let next_new_id = compute_next_new_id(&osm_data);
         Self {
+            id,
             name: name.into(),
             visible: true,
             osm_data: Some(osm_data.clone()),
@@ -1081,6 +1084,10 @@ impl OsmLayer {
 impl MapLayer for OsmLayer {
     fn name(&self) -> &str { &self.name }
 
+    fn id(&self) -> LayerId {
+        self.id
+    }
+
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -1089,56 +1096,16 @@ impl MapLayer for OsmLayer {
         self.visible = visible;
     }
 
-    fn set_highlight(&mut self, features: &[FeatureRef]) {
-        self.highlight = features.to_vec();
-    }
-
-    fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
-        self.drag_preview = Some((node_ids.clone(), delta));
-    }
-
-    fn clear_drag_preview(&mut self) {
-        self.drag_preview = None;
-    }
-
     fn is_modified(&self) -> bool {
         self.modified
     }
 
-    fn node_lat_lon(&self, node_id: i64) -> Option<(f64, f64)> {
-        let data = self.osm_data.as_ref()?;
-        let n = data.nodes.get(&node_id)?;
-        Some((n.lat, n.lon))
+    fn as_editable(&self) -> Option<&dyn EditableLayer> {
+        Some(self)
     }
 
-    fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>> {
-        let data = self.osm_data.as_ref()?;
-        let way = data.ways.get(&way_id)?;
-        Some(way.nodes.clone())
-    }
-
-    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
-        OsmLayer::commit_node_moves(self, moves);
-    }
-
-    fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
-        OsmLayer::set_tag(self, kind, id, key, value);
-    }
-
-    fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
-        OsmLayer::remove_tag(self, kind, id, key);
-    }
-
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
-        OsmLayer::create_node(self, lat, lon, id)
-    }
-
-    fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
-        OsmLayer::delete_feature(self, kind, id)
-    }
-
-    fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
-        OsmLayer::restore_feature(self, snapshot);
+    fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
+        Some(self)
     }
 
     fn diff_for_upload(&self) -> LayerDiff {
@@ -1322,6 +1289,57 @@ impl MapLayer for OsmLayer {
         }
     }
 
+}
+
+impl EditableLayer for OsmLayer {
+    fn set_highlight(&mut self, features: &[FeatureRef]) {
+        self.highlight = features.to_vec();
+    }
+
+    fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
+        self.drag_preview = Some((node_ids.clone(), delta));
+    }
+
+    fn clear_drag_preview(&mut self) {
+        self.drag_preview = None;
+    }
+
+    fn node_lat_lon(&self, node_id: i64) -> Option<(f64, f64)> {
+        let data = self.osm_data.as_ref()?;
+        let n = data.nodes.get(&node_id)?;
+        Some((n.lat, n.lon))
+    }
+
+    fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>> {
+        let data = self.osm_data.as_ref()?;
+        let way = data.ways.get(&way_id)?;
+        Some(way.nodes.clone())
+    }
+
+    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
+        OsmLayer::commit_node_moves(self, moves);
+    }
+
+    fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
+        OsmLayer::set_tag(self, kind, id, key, value);
+    }
+
+    fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
+        OsmLayer::remove_tag(self, kind, id, key);
+    }
+
+    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
+        OsmLayer::create_node(self, lat, lon, id)
+    }
+
+    fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
+        OsmLayer::delete_feature(self, kind, id)
+    }
+
+    fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
+        OsmLayer::restore_feature(self, snapshot);
+    }
+
     fn hit_test(
         &self,
         viewport: &Viewport,
@@ -1363,7 +1381,7 @@ impl MapLayer for OsmLayer {
             if dist <= NODE_TOL {
                 node_hits.push(HitCandidate {
                     feature: FeatureRef {
-                        layer_name: self.name.clone(),
+                        layer_id: self.id,
                         kind: FeatureKind::Node,
                         id,
                     },
@@ -1406,7 +1424,7 @@ impl MapLayer for OsmLayer {
             if best <= WAY_TOL {
                 way_hits.push(HitCandidate {
                     feature: FeatureRef {
-                        layer_name: self.name.clone(),
+                        layer_id: self.id,
                         kind: FeatureKind::Way,
                         id: way_id,
                     },
@@ -1433,14 +1451,14 @@ impl MapLayer for OsmLayer {
         let mut out = Vec::new();
         for item in self.node_index.locate_in_envelope(envelope) {
             out.push(FeatureRef {
-                layer_name: self.name.clone(),
+                layer_id: self.id,
                 kind: FeatureKind::Node,
                 id: item.data,
             });
         }
         for item in self.way_index.locate_in_envelope(envelope) {
             out.push(FeatureRef {
-                layer_name: self.name.clone(),
+                layer_id: self.id,
                 kind: FeatureKind::Way,
                 id: item.data,
             });
@@ -1449,7 +1467,7 @@ impl MapLayer for OsmLayer {
     }
 
     fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
-        if feature.layer_name != self.name { return None; }
+        if feature.layer_id != self.id { return None; }
         let data = self.osm_data.as_ref()?;
         let tags = match feature.kind {
             FeatureKind::Node => {
@@ -1473,7 +1491,7 @@ impl MapLayer for OsmLayer {
         window: &mut Window,
         feature: &FeatureRef,
     ) {
-        if feature.layer_name != self.name { return; }
+        if feature.layer_id != self.id { return; }
         let Some(ref osm_data) = self.osm_data else { return; };
 
         match feature.kind {
@@ -1544,7 +1562,7 @@ impl MapLayer for OsmLayer {
 #[cfg(test)]
 mod tests {
     use crate::layers::osm_layer::OsmLayer;
-    use crate::layers::MapLayer;
+    use crate::layers::{EditableLayer, LayerId, MapLayer};
     use crate::osm::{OsmData, OsmNode, OsmWay};
     use crate::selection::FeatureKind;
     use crate::viewport::Viewport;
@@ -1589,7 +1607,7 @@ mod tests {
         let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
         assert_eq!(hits.len(), 1);
@@ -1606,7 +1624,7 @@ mod tests {
         let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
         assert!(hits.iter().all(|h| h.kind == FeatureKind::Way));
@@ -1618,7 +1636,7 @@ mod tests {
         let n = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n], vec![]);
         let viewport = viewport_centered_on(40.0, -74.0);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let hits = layer.hit_test(&viewport, point(px(50.0), px(50.0)));
         assert!(hits.is_empty(), "unexpected hits: {:?}", hits);
@@ -1641,7 +1659,7 @@ mod tests {
         let way_partial = OsmWay { id: 20, nodes: vec![1, 3], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2, n3], vec![way_in, way_partial]);
         let viewport = viewport_centered_on(center_lat, center_lon);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         // A screen-space box symmetric around the viewport's center screen
         // point (400, 300) — always brackets the center's mercator position
@@ -1671,7 +1689,7 @@ mod tests {
 
     #[test]
     fn hit_test_rect_empty_when_no_data() {
-        let layer = OsmLayer::new();
+        let layer = OsmLayer::new(LayerId(1));
         let viewport = viewport_centered_on(40.0, -74.0);
         let rect = Bounds {
             origin: point(px(0.0), px(0.0)),
@@ -1686,7 +1704,7 @@ mod tests {
         let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
         let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
         assert_eq!(layer.way_node_ids(999), None);
@@ -1696,7 +1714,7 @@ mod tests {
     fn node_lat_lon_reflects_current_data() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert_eq!(layer.node_lat_lon(1), Some((40.0, -74.0)));
         assert_eq!(layer.node_lat_lon(999), None);
@@ -1707,7 +1725,7 @@ mod tests {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let n2 = OsmNode { id: 2, lat: 41.0, lon: -75.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert!(!layer.is_modified());
         layer.commit_node_moves(&[(1, 40.5, -74.5)]);
@@ -1723,7 +1741,7 @@ mod tests {
     fn commit_node_moves_empty_is_noop() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.commit_node_moves(&[]);
         assert!(!layer.is_modified());
@@ -1733,7 +1751,7 @@ mod tests {
     fn set_tag_inserts_and_overwrites_on_node() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.set_tag(FeatureKind::Node, 1, "highway", "residential");
         assert!(layer.is_modified());
@@ -1757,7 +1775,7 @@ mod tests {
         let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
         let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![way]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.set_tag(FeatureKind::Way, 10, "surface", "paved");
         assert!(layer.is_modified());
@@ -1772,7 +1790,7 @@ mod tests {
     fn set_tag_missing_feature_id_is_noop() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.set_tag(FeatureKind::Node, 999, "highway", "residential");
         assert!(!layer.is_modified());
@@ -1784,7 +1802,7 @@ mod tests {
         tags.insert("highway".to_string(), "residential".to_string());
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.remove_tag(FeatureKind::Node, 1, "highway");
         assert!(layer.is_modified());
@@ -1796,7 +1814,7 @@ mod tests {
     fn remove_tag_missing_feature_id_is_noop() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.remove_tag(FeatureKind::Node, 999, "highway");
         assert!(!layer.is_modified());
@@ -1806,7 +1824,7 @@ mod tests {
     fn drag_preview_does_not_mutate_data() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let mut ids = std::collections::HashSet::new();
         ids.insert(1);
@@ -1890,7 +1908,7 @@ mod tests {
         let way_a = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let old_bbox_a = layer.way_bboxes[0];
         let old_bbox_b = layer.way_bboxes[1];
@@ -1937,7 +1955,7 @@ mod tests {
     fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let new_lat = 50.0;
         let new_lon = -80.0;
@@ -1967,7 +1985,7 @@ mod tests {
         let n3 = OsmNode { id: 3, lat: 41.0, lon: -75.0, tags: empty_tags(), version: 1 };
         let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2, n3], vec![way]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let way_vertices_before = layer.way_vertices.clone();
         let way_bboxes_before = layer.way_bboxes.clone();
@@ -1995,7 +2013,7 @@ mod tests {
         let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
         let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2], vec![way]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let default_style = layer.way_styles[0];
         layer.set_tag(FeatureKind::Way, 10, "highway", "residential");
@@ -2011,7 +2029,7 @@ mod tests {
     fn set_tag_refreshes_cached_node_style() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let idx = *layer.node_cache.index_by_id.get(&1).unwrap();
         let default_style = layer.node_cache.styles[idx];
@@ -2030,7 +2048,7 @@ mod tests {
     fn create_node_allocates_noncolliding_negative_id_and_is_hit_testable() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let new_lat = 40.5;
         let new_lon = -74.5;
@@ -2057,7 +2075,7 @@ mod tests {
         // contains negative (not-yet-uploaded) ids.
         let n1 = OsmNode { id: -5, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 0 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let id = layer.create_node(41.0, -75.0, None).unwrap();
         assert!(id < -5, "new id ({}) must not collide with existing negative id -5", id);
@@ -2067,7 +2085,7 @@ mod tests {
     fn create_node_with_explicit_id_fails_on_collision() {
         let n1 = OsmNode { id: -1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 0 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert_eq!(layer.create_node(41.0, -75.0, Some(-1)), None);
         assert_eq!(layer.create_node(41.0, -75.0, Some(-99)), Some(-99));
@@ -2079,7 +2097,7 @@ mod tests {
         let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
         let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2], vec![way]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert_eq!(
             layer.delete_feature(FeatureKind::Node, 1),
@@ -2103,7 +2121,7 @@ mod tests {
     fn delete_feature_standalone_node_succeeds_directly() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let snapshot = layer.delete_feature(FeatureKind::Node, 1).expect("standalone node should delete");
         assert!(layer.is_modified());
@@ -2128,7 +2146,7 @@ mod tests {
         // for the surviving way after way_a is removed.
         let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let snapshot = layer.delete_feature(FeatureKind::Way, 10).expect("way should delete");
         assert!(layer.is_modified());
@@ -2153,7 +2171,7 @@ mod tests {
     #[test]
     fn delete_feature_missing_id_returns_none() {
         let data = data_with(vec![], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
         assert_eq!(layer.delete_feature(FeatureKind::Node, 999), None);
         assert_eq!(layer.delete_feature(FeatureKind::Way, 999), None);
         assert!(!layer.is_modified());
@@ -2165,7 +2183,7 @@ mod tests {
         tags.insert("amenity".to_string(), "cafe".to_string());
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags, version: 1 };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let snapshot = layer.delete_feature(FeatureKind::Node, 1).unwrap();
         assert!(layer.get_osm_data().unwrap().nodes.get(&1).is_none());
@@ -2190,7 +2208,7 @@ mod tests {
         tags.insert("highway".to_string(), "residential".to_string());
         let way = OsmWay { id: 10, nodes: vec![1, 2], tags, version: 1 };
         let data = data_with(vec![n1, n2], vec![way]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
         assert!(layer.way_node_ids(10).is_none());

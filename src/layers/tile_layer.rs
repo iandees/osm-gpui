@@ -2,7 +2,7 @@ use gpui::*;
 use std::sync::{Arc, Mutex};
 
 use crate::imagery::AttributionInfo;
-use crate::layers::MapLayer;
+use crate::layers::{LayerId, MapLayer};
 use crate::viewport::Viewport;
 use crate::tile_cache::TileCache;
 use crate::tiles::{get_tiles_for_bounds, url_from_template, TileCoord};
@@ -19,6 +19,7 @@ pub const OSM_CARTO_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyr
 
 /// Layer for rendering raster map tiles
 pub struct TileLayer {
+    id: LayerId,
     name: String,
     url_template: String,
     visible: bool,
@@ -30,8 +31,9 @@ pub struct TileLayer {
 }
 
 impl TileLayer {
-    pub fn new(tile_cache: Arc<Mutex<TileCache>>) -> Self {
+    pub fn new(id: LayerId, tile_cache: Arc<Mutex<TileCache>>) -> Self {
         Self::new_with_template(
+            id,
             "OpenStreetMap Carto".to_string(),
             OSM_CARTO_TEMPLATE.to_string(),
             tile_cache,
@@ -42,16 +44,18 @@ impl TileLayer {
         }))
     }
 
-    pub fn new_with_name(name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
-        Self::new_with_template(name, OSM_CARTO_TEMPLATE.to_string(), tile_cache)
+    pub fn new_with_name(id: LayerId, name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
+        Self::new_with_template(id, name, OSM_CARTO_TEMPLATE.to_string(), tile_cache)
     }
 
     pub fn new_with_template(
+        id: LayerId,
         name: String,
         url_template: String,
         tile_cache: Arc<Mutex<TileCache>>,
     ) -> Self {
         Self {
+            id,
             name,
             url_template,
             visible: true,
@@ -190,6 +194,10 @@ fn tile_screen_rect(geom: &TileGridGeometry, tile: &TileCoord) -> (Pixels, Pixel
 impl MapLayer for TileLayer {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn id(&self) -> LayerId {
+        self.id
     }
 
     fn is_visible(&self) -> bool {
