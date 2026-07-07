@@ -110,10 +110,11 @@ pub trait MapLayer: Send + Sync {
     /// Remove a single tag key from a feature this layer owns. Default: no-op.
     fn remove_tag(&mut self, _kind: crate::selection::FeatureKind, _id: i64, _key: &str) {}
 
-    /// Required source-credit text for this layer's content, if any (e.g.
-    /// "© OpenStreetMap contributors"). Default: `None`. Layers that render
-    /// tiles from a source requiring attribution should override this.
-    fn attribution(&self) -> Option<&str> {
+    /// Required source-credit (text and optional link) for this layer's
+    /// content, if any (e.g. "© OpenStreetMap contributors"). Default:
+    /// `None`. Layers that render tiles from a source requiring attribution
+    /// should override this.
+    fn attribution(&self) -> Option<&crate::imagery::AttributionInfo> {
         None
     }
 }

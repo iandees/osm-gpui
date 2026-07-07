@@ -138,7 +138,7 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
                 url_template: entry.url_template,
                 min_zoom: entry.min_zoom,
                 max_zoom: entry.max_zoom,
-                attribution: entry.attribution.map(|a| a.text),
+                attribution: entry.attribution,
             });
         }
     }
