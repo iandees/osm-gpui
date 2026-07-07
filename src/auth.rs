@@ -38,6 +38,11 @@ pub enum AuthError {
     NoRedirect,
     StateMismatch,
     NoConfigDir,
+    /// `ensure_fresh_token` was called for a server with no stored login.
+    NotLoggedIn,
+    /// The stored token is expired and there's no refresh token to renew it with; the
+    /// user needs to log in again.
+    NoRefreshToken,
 }
 
 impl std::fmt::Display for AuthError {
@@ -52,6 +57,10 @@ impl std::fmt::Display for AuthError {
             AuthError::NoRedirect => write!(f, "Login timed out waiting for browser redirect"),
             AuthError::StateMismatch => write!(f, "Login failed (state mismatch)"),
             AuthError::NoConfigDir => write!(f, "No config directory available to store login"),
+            AuthError::NotLoggedIn => write!(f, "Not logged in"),
+            AuthError::NoRefreshToken => {
+                write!(f, "Login expired and can't be refreshed; please sign in again")
+            }
         }
     }
 }
@@ -72,11 +81,32 @@ pub struct StoredToken {
     pub access_token: String,
     pub display_name: String,
     pub user_id: u64,
+    pub refresh_token: Option<String>,
+    /// Unix timestamp (seconds) at which `access_token` expires, if the server told us.
+    pub expires_at: Option<i64>,
+}
+
+impl StoredToken {
+    /// Whether `access_token` is past its known expiry. Tokens with no known expiry
+    /// (`expires_at: None`) are treated as never expiring.
+    pub fn is_expired(&self) -> bool {
+        match self.expires_at {
+            Some(exp) => now_unix() >= exp,
+            None => false,
+        }
+    }
 }
 
 pub struct LoginResult {
     pub oauth_base_url: String,
     pub token: StoredToken,
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn generate_url_safe_token(num_bytes: usize) -> String {
@@ -170,24 +200,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
             ("code_verifier", &code_verifier),
         ]);
 
-    let access_token = match token_response {
-        Ok(resp) => {
-            let body = resp
-                .into_string()
-                .map_err(|e| AuthError::Network(e.to_string()))?;
-            let json: serde_json::Value =
-                serde_json::from_str(&body).map_err(|e| AuthError::Parse(e.to_string()))?;
-            json.get("access_token")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AuthError::Parse("missing access_token".to_string()))?
-                .to_string()
-        }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            return Err(AuthError::Http { status, body });
-        }
-        Err(e) => return Err(AuthError::Network(e.to_string())),
-    };
+    let (access_token, refresh_token, expires_at) = parse_token_response(token_response)?;
 
     let (display_name, user_id) = fetch_user_details(api_base_url, &access_token)?;
 
@@ -195,6 +208,8 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         access_token,
         display_name,
         user_id,
+        refresh_token,
+        expires_at,
     };
     set_token(&oauth_base, token.clone());
 
@@ -202,6 +217,84 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         oauth_base_url: oauth_base,
         token,
     })
+}
+
+/// Exchange a refresh token for a new access token via the `refresh_token` grant,
+/// keeping the previously-known display name/user id (the token endpoint doesn't return
+/// those). Returns the new stored token and persists it.
+pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
+    let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
+    let refresh_token_value = existing.refresh_token.clone().ok_or(AuthError::NoRefreshToken)?;
+
+    let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base_url))
+        .set("User-Agent", USER_AGENT)
+        .send_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", CLIENT_ID),
+            ("refresh_token", &refresh_token_value),
+        ]);
+
+    let (access_token, refresh_token, expires_at) = parse_token_response(token_response)?;
+
+    let token = StoredToken {
+        access_token,
+        display_name: existing.display_name,
+        user_id: existing.user_id,
+        // Some servers rotate the refresh token on use and some don't return a new one
+        // at all; keep the old one if the response didn't include a replacement.
+        refresh_token: refresh_token.or(existing.refresh_token),
+        expires_at,
+    };
+    set_token(oauth_base_url, token.clone());
+    Ok(token)
+}
+
+/// Return the current token for `oauth_base_url`, transparently refreshing it first if
+/// it's expired and a refresh token is available. Callers that need a valid bearer token
+/// (e.g. osm_api.rs call sites, once wired up) should use this instead of
+/// `current_token` directly.
+pub fn ensure_fresh_token(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
+    let token = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
+    if !token.is_expired() {
+        return Ok(token);
+    }
+    refresh(oauth_base_url)
+}
+
+/// Parse an access/refresh/expiry triple out of a token-endpoint response, handling the
+/// ureq result and OSM's JSON body shape. Shared by the initial code exchange and the
+/// refresh-token grant.
+fn parse_token_response(
+    token_response: Result<ureq::Response, ureq::Error>,
+) -> Result<(String, Option<String>, Option<i64>), AuthError> {
+    match token_response {
+        Ok(resp) => {
+            let body = resp
+                .into_string()
+                .map_err(|e| AuthError::Network(e.to_string()))?;
+            let json: serde_json::Value =
+                serde_json::from_str(&body).map_err(|e| AuthError::Parse(e.to_string()))?;
+            let access_token = json
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AuthError::Parse("missing access_token".to_string()))?
+                .to_string();
+            let refresh_token = json
+                .get("refresh_token")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let expires_at = json
+                .get("expires_in")
+                .and_then(|v| v.as_i64())
+                .map(|secs| now_unix() + secs);
+            Ok((access_token, refresh_token, expires_at))
+        }
+        Err(ureq::Error::Status(status, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(AuthError::Http { status, body })
+        }
+        Err(e) => Err(AuthError::Network(e.to_string())),
+    }
 }
 
 /// `GET /api/0.6/user/details.json` with the given bearer token. Returns (display_name, id).
@@ -396,7 +489,13 @@ mod tests {
         let mut store = TokenStore::default();
         store.tokens.insert(
             "https://www.openstreetmap.org".to_string(),
-            StoredToken { access_token: "tok".into(), display_name: "alice".into(), user_id: 42 },
+            StoredToken {
+                access_token: "tok".into(),
+                display_name: "alice".into(),
+                user_id: 42,
+                refresh_token: None,
+                expires_at: None,
+            },
         );
         save_to(&path, &store).unwrap();
         let loaded = load_from(&path);
@@ -410,5 +509,23 @@ mod tests {
         let path = dir.join("oauth.json");
         let loaded = load_from(&path);
         assert!(loaded.tokens.is_empty());
+    }
+
+    #[test]
+    fn stored_token_expiry() {
+        let mut token = StoredToken {
+            access_token: "tok".into(),
+            display_name: "alice".into(),
+            user_id: 1,
+            refresh_token: None,
+            expires_at: None,
+        };
+        assert!(!token.is_expired(), "no expiry means never expired");
+
+        token.expires_at = Some(now_unix() - 10);
+        assert!(token.is_expired());
+
+        token.expires_at = Some(now_unix() + 3600);
+        assert!(!token.is_expired());
     }
 }
