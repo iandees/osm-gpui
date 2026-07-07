@@ -297,9 +297,9 @@ struct MapViewer {
     undo_stack: UndoStack,
     /// The current map-interaction mode (Select/Add/Building/Extrude).
     mode: EditMode,
-    /// Name of the OSM layer that Add/Building/Extrude write into, or
-    /// `None` if no layer is designated (those modes are disabled then).
-    active_layer: Option<String>,
+    /// Id of the OSM layer that Add/Building/Extrude write into, or `None`
+    /// if no layer is designated (those modes are disabled then).
+    active_layer: Option<LayerId>,
 }
 
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -504,6 +504,11 @@ impl MapViewer {
     /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
     /// than going through `LayerRequest`.
     fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.layer_manager.layers().get(action.index).map(|l| l.id()) {
+            if self.active_layer == Some(id) {
+                self.active_layer = None;
+            }
+        }
         let _ = self.layer_manager.remove_at(action.index);
         cx.notify();
     }

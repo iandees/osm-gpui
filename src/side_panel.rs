@@ -254,6 +254,7 @@ impl MapViewer {
                     .enumerate()
                     .map(|(index, (layer_id, name, is_visible, is_modified))| {
                         let layer_id = *layer_id;
+                        let is_active = self.active_layer == Some(layer_id);
                         let label = if *is_modified {
                             format!("{} \u{2022}", name)
                         } else {
@@ -261,7 +262,13 @@ impl MapViewer {
                         };
                         div()
                             .id(("layer-row", index))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .px_1()
+                            .rounded_md()
                             .cursor_pointer()
+                            .when(is_active, |this| this.bg(cx.theme().accent))
                             .child(
                                 Checkbox::new(("layer", index))
                                     .checked(*is_visible)
@@ -271,6 +278,7 @@ impl MapViewer {
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                     this.toggle_layer_visibility(layer_id);
+                                    this.active_layer = Some(layer_id);
                                     cx.notify();
                                 }),
                             )
@@ -287,6 +295,7 @@ impl MapViewer {
                                 menu.separator()
                                     .menu("Delete", Box::new(DeleteLayer { index }))
                             })
+                            .into_any_element()
                     })
                     .collect::<Vec<_>>(),
             )
