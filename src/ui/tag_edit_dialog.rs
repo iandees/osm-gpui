@@ -200,6 +200,7 @@ impl Render for TagEditDialog {
             .on_key_down(cx.listener(Self::on_key_down))
             .absolute()
             .inset_0()
+            .occlude()
             .bg(rgba(0x00000099))
             .flex()
             .justify_center()
