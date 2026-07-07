@@ -92,7 +92,15 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
             if let Some(parent) = cache_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = fs::write(&cache_path, &body);
+            // Write atomically: a crash or kill mid-write to the real cache
+            // path would leave a truncated file that still passes the
+            // age-based freshness check on the next run, silently loading as
+            // corrupt/empty. Writing to a temp file and renaming into place
+            // means the cache file is always either the old complete
+            // contents or the new complete contents, never partial.
+            if let Err(e) = write_cache_atomic(&cache_path, &body) {
+                eprintln!("imagery: failed to write ELI cache: {}", e);
+            }
             Ok(body)
         }
         Err(e) => {
@@ -105,6 +113,15 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
             }
         }
     }
+}
+
+/// Write `body` to `path` atomically by writing to a sibling temp file first
+/// and renaming into place (rename is atomic on POSIX filesystems).
+fn write_cache_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, body)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 fn cache_file_path() -> PathBuf {
@@ -377,6 +394,29 @@ pub fn entries_for_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_cache_atomic_writes_full_content_and_no_tmp_left_behind() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-imagery-atomic-write-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("imagery.geojson");
+
+        write_cache_atomic(&path, "hello world").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world");
+        assert!(!path.with_extension("tmp").exists());
+
+        // Overwriting replaces the full contents, not a partial merge.
+        write_cache_atomic(&path, "goodbye").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye");
+        assert!(!path.with_extension("tmp").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     const SAMPLE_GEOJSON: &str = r#"{
         "type": "FeatureCollection",
