@@ -135,6 +135,14 @@ impl From<EditModeAction> for EditMode {
     }
 }
 
+/// Add mode's in-progress way-building state: the last-placed node, and
+/// which way (if any) it belongs to. `None` on `MapViewer` means "no node
+/// placed yet in this continuation" — the next click starts fresh.
+struct AddProgress {
+    way_id: Option<i64>,
+    last_node_id: i64,
+}
+
 /// Request to add a new layer, applied directly to the live `MapViewer` (via
 /// `MapViewer::apply_layer_request`) by menu handlers and the custom-imagery
 /// dialog's `Submitted` event.
@@ -300,6 +308,9 @@ struct MapViewer {
     /// Id of the OSM layer that Add/Building/Extrude write into, or `None`
     /// if no layer is designated (those modes are disabled then).
     active_layer: Option<LayerId>,
+    /// In-progress Add-mode way-building state, or `None` between
+    /// continuations (see `AddProgress`).
+    add_progress: Option<AddProgress>,
 }
 
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -387,6 +398,7 @@ impl MapViewer {
             undo_stack: UndoStack::default(),
             mode: EditMode::Select,
             active_layer: None,
+            add_progress: None,
         }
     }
 
@@ -520,6 +532,7 @@ impl MapViewer {
     /// extended in each later task).
     fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
         self.mode = action.mode.into();
+        self.add_progress = None;
         cx.notify();
     }
 
@@ -937,59 +950,6 @@ impl MapViewer {
         cx.notify();
     }
 
-    /// v1 "create node" gesture: Cmd+Click (the platform modifier) on the
-    /// map creates a new, tag-less standalone node at the clicked point,
-    /// selects it, and pushes a `CreateNode` undo action. This is a
-    /// deliberately minimal, discoverable-only-via-this-comment interaction
-    /// since the app has no toolbar/mode-toggle concept yet; a real
-    /// "Add Node" mode (like JOSM/iD) would be a better long-term UX and
-    /// should replace this gesture. No-op (with a status message) if no
-    /// layer is willing to accept a new node — see
-    /// `create_node_on_target_layer`.
-    fn create_node_at_screen_point(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        let (lat, lon) = self.viewport.screen_to_geo(position);
-        let Some((layer_id, id)) = self.create_node_on_target_layer(lat, lon) else {
-            self.set_status("No layer to add a node to");
-            cx.notify();
-            return;
-        };
-        self.undo_stack.push(UndoableAction::CreateNode {
-            layer: layer_id,
-            id,
-            lat,
-            lon,
-        });
-        self.selected = vec![osm_gpui::selection::FeatureRef {
-            layer_id,
-            kind: osm_gpui::selection::FeatureKind::Node,
-            id,
-        }];
-        self.set_status(format!("Created node {}", id));
-        cx.notify();
-    }
-
-    /// Pick the target layer for a newly created node: the first layer (in
-    /// draw/layer-list order) that accepts it, i.e. the first `OsmLayer`
-    /// with data loaded — mirrors how move/tag edits always operate on
-    /// whichever layer already owns the feature, just with "owns" relaxed to
-    /// "has OSM data at all" since a brand-new node has no owning layer yet.
-    /// `None` if no layer accepts (e.g. no OSM data loaded anywhere).
-    fn create_node_on_target_layer(&mut self, lat: f64, lon: f64) -> Option<(LayerId, i64)> {
-        for layer in self.layer_manager.layers_mut() {
-            let layer_id = layer.id();
-            if let Some(editable) = layer.as_editable_mut() {
-                if let Some(id) = editable.create_node(lat, lon, None) {
-                    return Some((layer_id, id));
-                }
-            }
-        }
-        None
-    }
-
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = self.undo_stack.undo() {
             self.apply_undo_action(&action, false);
@@ -1210,14 +1170,122 @@ impl MapViewer {
         }
     }
 
+    /// Dispatch a plain map click by the current `EditMode`.
+    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
+        match self.mode {
+            EditMode::Select => self.handle_select_click(screen_pt, shift_held),
+            EditMode::Add => self.handle_add_click(screen_pt),
+            EditMode::Building | EditMode::Extrude => {
+                // Building/Extrude don't use the plain-click path (Tasks 7/8
+                // hook mouse-down/mouse-move/mouse-up directly); a stray
+                // click here (e.g. a zero-movement mouse-up while building)
+                // is a no-op.
+            }
+        }
+    }
+
     /// Resolve a plain click into a selection change. `shift_held` toggles
     /// the hit feature in/out of the existing selection (add if absent,
     /// remove if already selected) instead of replacing it; a shift-click
     /// that hits nothing is a no-op, leaving the existing selection intact.
-    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
+    fn handle_select_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
         let hit = osm_gpui::selection::resolve_hits(per_layer);
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
+    }
+
+    /// Add mode: place a node, or extend/connect the in-progress way. See
+    /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode".
+    fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+        let Some(layer_id) = self.active_layer else { return };
+        let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
+
+        // Clicking an existing node/way finishes the in-progress way by
+        // connecting to it.
+        if self.add_progress.is_some() {
+            let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
+            if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
+                if hit.layer_id == layer_id {
+                    if let osm_gpui::selection::FeatureKind::Node = hit.kind {
+                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, lat, lon);
+                        self.add_progress = None;
+                        self.selected = vec![osm_gpui::selection::FeatureRef {
+                            layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+                        }];
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Note: `find_layer_mut` is re-called in each arm below (rather than
+        // binding `layer` once above the match) so its mutable borrow ends
+        // before the arm needs `&mut self` again for `self.add_progress`/
+        // `self.add_extend_or_start_way`/`self.undo_stack` — binding it once
+        // outside the match would keep the borrow alive across those calls
+        // and fail to compile.
+        match self.add_progress.take() {
+            None => {
+                // First click of a fresh continuation: a lone node, no way
+                // yet. Reuses the pre-existing `CreateNode` undo action
+                // (same one the retired Cmd+Click gesture used to push) —
+                // this is the same underlying mutation, just triggered by
+                // Add mode instead.
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
+                let new_id = editable.add_node(lat, lon);
+                self.undo_stack.push(UndoableAction::CreateNode {
+                    layer: layer_id, id: new_id, lat, lon,
+                });
+                self.add_progress = Some(AddProgress { way_id: None, last_node_id: new_id });
+                self.selected = vec![osm_gpui::selection::FeatureRef {
+                    layer_id, kind: osm_gpui::selection::FeatureKind::Node, id: new_id,
+                }];
+            }
+            Some(progress) => {
+                // 2nd+ click: create the node and fold it into the way in
+                // one step — `add_extend_or_start_way` pushes the single
+                // `ExtendWay` undo entry that covers both the node creation
+                // and the way mutation (one click = one undo step).
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
+                let new_id = editable.add_node(lat, lon);
+                self.add_progress = Some(progress);
+                let way_id = self.add_extend_or_start_way(layer_id, new_id, lat, lon);
+                self.add_progress = Some(AddProgress { way_id: Some(way_id), last_node_id: new_id });
+                self.selected = vec![osm_gpui::selection::FeatureRef {
+                    layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+                }];
+            }
+        }
+    }
+
+    /// Shared by the "continue clicking" and "connect to existing feature"
+    /// paths: start a new 2-node way if none exists yet, or extend the
+    /// existing one, pushing the matching `ExtendWay` undo entry. Returns
+    /// the way id (new or existing).
+    fn add_extend_or_start_way(&mut self, layer_id: LayerId, node_id: i64, lat: f64, lon: f64) -> i64 {
+        let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
+        let last_node_id = self.add_progress.as_ref().map(|p| p.last_node_id).unwrap_or(node_id);
+        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return progress_way_id.unwrap_or(0) };
+        let Some(editable) = layer.as_editable_mut() else { return progress_way_id.unwrap_or(0) };
+
+        match progress_way_id {
+            Some(way_id) => {
+                editable.extend_way(way_id, node_id);
+                self.undo_stack.push(UndoableAction::ExtendWay {
+                    layer: layer_id, way_id, node_id, lat, lon, way_created: false,
+                });
+                way_id
+            }
+            None => {
+                let way_id = editable.add_way(vec![last_node_id, node_id], Vec::new());
+                self.undo_stack.push(UndoableAction::ExtendWay {
+                    layer: layer_id, way_id, node_id, lat, lon, way_created: true,
+                });
+                way_id
+            }
+        }
     }
 
     fn sync_selection_to_layers(&mut self) {
@@ -1771,18 +1839,24 @@ impl Render for MapViewer {
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             window.focus(&this.focus_handle, cx);
-                            // v1 "create node" gesture: Cmd+Click (see
-                            // `create_node_at_screen_point`'s doc comment).
-                            if ev.modifiers.platform {
-                                this.create_node_at_screen_point(ev.position, cx);
-                            } else {
-                                this.handle_map_mouse_down(ev.position);
-                            }
+                            this.handle_map_mouse_down(ev.position);
                         }),
                     )
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                         if ev.keystroke.key == "escape" {
                             this.cancel_move_drag(cx);
+                            if this.mode == EditMode::Add {
+                                if this.add_progress.take().is_some() {
+                                    cx.notify();
+                                } else {
+                                    this.mode = EditMode::Select;
+                                    cx.notify();
+                                }
+                            }
+                        } else if ev.keystroke.key == "enter" && this.mode == EditMode::Add {
+                            if this.add_progress.take().is_some() {
+                                cx.notify();
+                            }
                         } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
                             this.delete_selected_features(cx);
                         }
