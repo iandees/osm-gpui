@@ -20,7 +20,10 @@ use std::time::{Duration, Instant};
 
 use crate::settings_store::PRIMARY_API_URL;
 
-const CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
+/// Client ID used when no per-server override is configured in settings (see
+/// `client_id_for`). Registered on the primary OSM instance; the dev instance has its
+/// own separate app database and generally needs its own registered client_id.
+const DEFAULT_CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 // This is a PKCE loopback flow, i.e. a public client: the code_verifier already proves
 // possession of the authorization code, so no client_secret is needed (and one embedded
 // in a public repo would protect nothing anyway). If OSM's token endpoint ever rejects
@@ -31,6 +34,19 @@ const CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 // there's nothing that consumes write access. Add `write_api` back to SCOPES when
 // upload functionality lands.
 const SCOPES: &str = "read_prefs";
+
+/// The client_id to use for a given OAuth base URL: the user's configured override for
+/// that server if one is set in settings, otherwise `DEFAULT_CLIENT_ID`. OSM's primary
+/// and dev instances have separate app registrations, so a client_id valid on one is
+/// unknown to the other ("invalid_client") and each server may need its own.
+pub fn client_id_for(oauth_base_url: &str) -> String {
+    crate::settings_store::snapshot()
+        .client_ids
+        .get(oauth_base_url)
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
+}
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const CALLBACK_PATH: &str = "/callback";
 
@@ -187,6 +203,7 @@ fn wait_for_callback(
 /// redirect. Call this from a background thread, not the UI thread.
 pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let oauth_base = oauth_base_for(api_base_url);
+    let client_id = client_id_for(&oauth_base);
 
     let server = tiny_http::Server::http("127.0.0.1:0")
         .map_err(|e| AuthError::Network(e.to_string()))?;
@@ -200,7 +217,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let authorize_url = format!(
         "{}/oauth2/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         oauth_base,
-        urlencoding::encode(CLIENT_ID),
+        urlencoding::encode(&client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(SCOPES),
         urlencoding::encode(&state),
@@ -250,7 +267,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         .timeout(Duration::from_secs(30))
         .send_form(&[
             ("grant_type", "authorization_code"),
-            ("client_id", CLIENT_ID),
+            ("client_id", &client_id),
             ("code", &code),
             ("redirect_uri", &redirect_uri),
             ("code_verifier", &code_verifier),
@@ -281,13 +298,14 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
 pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
     let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
     let refresh_token_value = existing.refresh_token.clone().ok_or(AuthError::NoRefreshToken)?;
+    let client_id = client_id_for(oauth_base_url);
 
     let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base_url))
         .set("User-Agent", crate::USER_AGENT)
         .timeout(Duration::from_secs(30))
         .send_form(&[
             ("grant_type", "refresh_token"),
-            ("client_id", CLIENT_ID),
+            ("client_id", &client_id),
             ("refresh_token", &refresh_token_value),
         ]);
 

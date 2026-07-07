@@ -38,6 +38,7 @@ pub struct SettingsWindow {
     app_settings: AppSettings,
     custom_api_url_input: Entity<InputState>,
     custom_url_error: Option<SharedString>,
+    client_id_input: Entity<InputState>,
 
     login_state: LoginState,
 }
@@ -49,6 +50,18 @@ impl SettingsWindow {
             InputState::new(window, cx)
                 .placeholder("https://example.com")
                 .default_value(app_settings.custom_api_url.clone())
+        });
+        let oauth_base = auth::oauth_base_for(&app_settings.api_base_url());
+        let client_id_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Default")
+                .default_value(
+                    app_settings
+                        .client_ids
+                        .get(&oauth_base)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
         });
         let login_state = Self::current_login_state(&app_settings);
 
@@ -66,6 +79,7 @@ impl SettingsWindow {
             app_settings,
             custom_api_url_input,
             custom_url_error: None,
+            client_id_input,
 
             login_state,
         }
@@ -79,14 +93,29 @@ impl SettingsWindow {
         }
     }
 
-    fn set_api_server(&mut self, choice: ApiServerChoice, cx: &mut Context<Self>) {
+    /// Refresh `client_id_input`'s displayed value to match the currently-selected
+    /// server's configured override (or blank, if using the default client_id).
+    fn refresh_client_id_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        let value = self
+            .app_settings
+            .client_ids
+            .get(&oauth_base)
+            .cloned()
+            .unwrap_or_default();
+        self.client_id_input
+            .update(cx, |state, cx| state.set_value(value, window, cx));
+    }
+
+    fn set_api_server(&mut self, choice: ApiServerChoice, window: &mut Window, cx: &mut Context<Self>) {
         self.app_settings.api_server = choice;
         settings_store::update_store(self.app_settings.clone());
         self.login_state = Self::current_login_state(&self.app_settings);
+        self.refresh_client_id_input(window, cx);
         cx.notify();
     }
 
-    fn save_custom_api_url(&mut self, cx: &mut Context<Self>) {
+    fn save_custom_api_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.custom_api_url_input.read(cx).value().to_string();
         let url = url.trim();
         if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
@@ -98,6 +127,19 @@ impl SettingsWindow {
         self.app_settings.custom_api_url = url.trim_end_matches('/').to_string();
         settings_store::update_store(self.app_settings.clone());
         self.login_state = Self::current_login_state(&self.app_settings);
+        self.refresh_client_id_input(window, cx);
+        cx.notify();
+    }
+
+    fn save_client_id(&mut self, cx: &mut Context<Self>) {
+        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        let client_id = self.client_id_input.read(cx).value().trim().to_string();
+        if client_id.is_empty() {
+            self.app_settings.client_ids.remove(&oauth_base);
+        } else {
+            self.app_settings.client_ids.insert(oauth_base, client_id);
+        }
+        settings_store::update_store(self.app_settings.clone());
         cx.notify();
     }
 
@@ -277,13 +319,13 @@ impl Render for SettingsWindow {
             .child(
                 RadioGroup::vertical("api-server")
                     .selected_index(Some(selected_index))
-                    .on_click(cx.listener(|this, idx: &usize, _window, cx| {
+                    .on_click(cx.listener(|this, idx: &usize, window, cx| {
                         let choice = match idx {
                             0 => ApiServerChoice::Primary,
                             1 => ApiServerChoice::Dev,
                             _ => ApiServerChoice::Custom,
                         };
-                        this.set_api_server(choice, cx);
+                        this.set_api_server(choice, window, cx);
                     }))
                     .child("Primary (api.openstreetmap.org)")
                     .child("Dev / testing (master.apis.dev.openstreetmap.org)")
@@ -303,10 +345,23 @@ impl Render for SettingsWindow {
                     .label("Save")
                     .primary()
                     .compact()
-                    .on_click(cx.listener(|this, _ev, _window, cx| this.save_custom_api_url(cx))),
+                    .on_click(cx.listener(|this, _ev, window, cx| this.save_custom_api_url(window, cx))),
             );
             api_section = api_section.child(custom_row);
         }
+
+        let mut client_id_row = v_flex()
+            .gap_1()
+            .pl_6()
+            .child(field_row("OAuth Client ID (leave blank for default)", &self.client_id_input, muted));
+        client_id_row = client_id_row.child(
+            Button::new("save-client-id")
+                .label("Save")
+                .primary()
+                .compact()
+                .on_click(cx.listener(|this, _ev, _window, cx| this.save_client_id(cx))),
+        );
+        api_section = api_section.child(client_id_row);
 
         let login_section = v_flex()
             .gap_2()
