@@ -14,19 +14,25 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
 dirs = "6"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 image = "0.25"
+open = "5"
 quick-xml = "0.37"
+rand = "0.8"
 rfd = "0.15"
 rstar = "0.13"
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 smallvec = "1.0"
+tiny_http = "0.12"
 ureq = { version = "2.12", features = ["json"] }
+urlencoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

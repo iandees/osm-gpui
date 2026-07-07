@@ -42,23 +42,32 @@ pub fn check_area(bounds: &GeoBounds) -> Result<(), OsmApiError> {
     }
 }
 
-pub(crate) fn build_url(bounds: &GeoBounds) -> String {
+pub(crate) fn build_url(base_url: &str, bounds: &GeoBounds) -> String {
     format!(
-        "https://api.openstreetmap.org/api/0.6/map?bbox={:.7},{:.7},{:.7},{:.7}",
+        "{}/api/0.6/map?bbox={:.7},{:.7},{:.7},{:.7}",
+        base_url.trim_end_matches('/'),
         bounds.min_lon, bounds.min_lat, bounds.max_lon, bounds.max_lat
     )
 }
 
 const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
 
-/// Synchronous fetch — call from a worker thread, not the UI thread.
-pub fn fetch_bbox(bounds: GeoBounds) -> Result<OsmData, OsmApiError> {
+/// Synchronous fetch — call from a worker thread, not the UI thread. `token`, if
+/// present, is sent as an OAuth2 bearer token so the request is attributed to a
+/// logged-in user.
+pub fn fetch_bbox(
+    bounds: GeoBounds,
+    base_url: &str,
+    token: Option<&str>,
+) -> Result<OsmData, OsmApiError> {
     check_area(&bounds)?;
 
-    let url = build_url(&bounds);
-    let response = ureq::get(&url)
-        .set("User-Agent", USER_AGENT)
-        .call();
+    let url = build_url(base_url, &bounds);
+    let mut request = ureq::get(&url).set("User-Agent", USER_AGENT);
+    if let Some(token) = token {
+        request = request.set("Authorization", &format!("Bearer {}", token));
+    }
+    let response = request.call();
 
     let body = match response {
         Ok(resp) => resp
@@ -101,7 +110,17 @@ mod tests {
     #[test]
     fn url_is_min_lon_min_lat_max_lon_max_lat() {
         let b = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
-        let url = build_url(&b);
+        let url = build_url("https://api.openstreetmap.org", &b);
+        assert_eq!(
+            url,
+            "https://api.openstreetmap.org/api/0.6/map?bbox=-74.0200000,40.7000000,-73.9800000,40.7500000"
+        );
+    }
+
+    #[test]
+    fn url_trims_trailing_slash_from_base() {
+        let b = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
+        let url = build_url("https://api.openstreetmap.org/", &b);
         assert_eq!(
             url,
             "https://api.openstreetmap.org/api/0.6/map?bbox=-74.0200000,40.7000000,-73.9800000,40.7500000"

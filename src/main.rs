@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use osm_gpui::auth;
+use osm_gpui::settings_store;
 use osm_gpui::coordinates::lat_lon_to_mercator;
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
@@ -1095,10 +1097,14 @@ impl MapViewer {
             bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
         );
 
+        let base_url = settings_store::api_base_url();
+        let token = auth::current_token(&auth::oauth_base_for(&base_url))
+            .map(|t| t.access_token);
+
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { osm_api::fetch_bbox(bounds) })
+                .spawn(async move { osm_api::fetch_bbox(bounds, &base_url, token.as_deref()) })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
@@ -1912,6 +1918,10 @@ fn main() {
         let loaded = custom_imagery_store::load();
         custom_imagery_store::init_store(loaded);
 
+        // Load persisted app settings (OSM API server choice) and OAuth login.
+        settings_store::init_store(settings_store::load());
+        auth::init_store(auth::load());
+
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
         rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
@@ -2054,7 +2064,7 @@ fn open_settings(_: &OpenSettings, cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            let view = cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(cx));
+            let view = cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
             cx.new(|cx| gpui_component::Root::new(view, window, cx))
         },
     )

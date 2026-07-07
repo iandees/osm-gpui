@@ -2,6 +2,7 @@
 //!
 //! A high-performance map rendering system built with Rust and the GPUI framework.
 
+pub mod auth;
 pub mod capture;
 pub mod coordinates;
 pub mod custom_imagery_store;
@@ -12,6 +13,7 @@ pub mod osm;
 pub mod osm_api;
 pub mod script;
 pub mod selection;
+pub mod settings_store;
 pub mod style;
 pub mod tile_cache;
 pub mod tiles;
