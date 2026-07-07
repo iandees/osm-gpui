@@ -45,6 +45,20 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
     },
+    /// Add mode's 2nd+ click: a new node appended to a way (creating the
+    /// way first if `way_created`). Undo removes the node from the way
+    /// (and deletes the way too if `way_created`), then deletes the node.
+    ExtendWay { layer_name: String, way_id: i64, node_id: i64, lat: f64, lon: f64, way_created: bool },
+    /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
+    /// way, committed atomically. Undo deletes the way then all 4 nodes.
+    CreateBuilding { layer_name: String, way_id: i64, node_ids: [i64; 4] },
+    /// Extrude mode's drag commit: 2 new nodes + one closed `building=yes`
+    /// way off an existing segment. The segment's own 2 nodes are untouched.
+    /// Undo deletes the way then the 2 new nodes.
+    ExtrudeWay { layer_name: String, way_id: i64, new_node_ids: [i64; 2] },
+    /// Extrude mode's double-click: one new node spliced into an existing
+    /// way at `index`. Undo removes it from the way, then deletes it.
+    InsertNodeIntoWay { layer_name: String, way_id: i64, index: usize, node_id: i64, lat: f64, lon: f64 },
 }
 
 impl UndoableAction {
@@ -71,6 +85,10 @@ impl UndoableAction {
                 osm_gpui::selection::FeatureKind::Node => "Deleted 1 node".to_string(),
                 osm_gpui::selection::FeatureKind::Way => "Deleted 1 way".to_string(),
             },
+            UndoableAction::ExtendWay { .. } => "Extended a way".to_string(),
+            UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
+            UndoableAction::ExtrudeWay { .. } => "Extruded a building".to_string(),
+            UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
         }
     }
 }
@@ -304,5 +322,21 @@ mod undo_stack_tests {
         let redone = stack.redo().expect("should be able to redo after undo");
         assert_eq!(redone.description(), "Deleted 1 way");
         assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn create_building_description() {
+        let action = UndoableAction::CreateBuilding {
+            layer_name: "L".to_string(), way_id: -1, node_ids: [-1, -2, -3, -4],
+        };
+        assert_eq!(action.description(), "Created a building");
+    }
+
+    #[test]
+    fn extrude_way_description() {
+        let action = UndoableAction::ExtrudeWay {
+            layer_name: "L".to_string(), way_id: -1, new_node_ids: [-1, -2],
+        };
+        assert_eq!(action.description(), "Extruded a building");
     }
 }

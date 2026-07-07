@@ -623,6 +623,56 @@ impl MapViewer {
                     editable.restore_feature(snapshot.clone());
                 }
             }
+            UndoableAction::ExtendWay { layer_name, way_id, node_id, lat: _, lon: _, way_created } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+                if forward {
+                    if *way_created {
+                        layer.add_way(vec![*node_id], Vec::new());
+                    } else {
+                        layer.extend_way(*way_id, *node_id);
+                    }
+                } else if *way_created {
+                    layer.remove_way(*way_id);
+                    layer.remove_node(*node_id);
+                } else {
+                    let node_ids = layer.way_node_ids(*way_id).unwrap_or_default();
+                    if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
+                        layer.remove_node_from_way(*way_id, idx);
+                    }
+                    layer.remove_node(*node_id);
+                }
+            }
+            UndoableAction::CreateBuilding { layer_name, way_id, node_ids } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+                if !forward {
+                    layer.remove_way(*way_id);
+                    for id in node_ids {
+                        layer.remove_node(*id);
+                    }
+                }
+                // Redo (forward) is out of scope for Building mode's atomic
+                // commit path in this plan: Building mode always creates a
+                // *new* placeholder id on each commit, so a straightforward
+                // redo-by-recreation isn't id-stable across a redo after
+                // other edits. Matches this plan's scope (see spec's "Out
+                // of scope": undo/redo depth beyond the immediate action).
+            }
+            UndoableAction::ExtrudeWay { layer_name, way_id, new_node_ids } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+                if !forward {
+                    layer.remove_way(*way_id);
+                    for id in new_node_ids {
+                        layer.remove_node(*id);
+                    }
+                }
+            }
+            UndoableAction::InsertNodeIntoWay { layer_name, way_id, index, node_id, .. } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+                if !forward {
+                    layer.remove_node_from_way(*way_id, *index);
+                    layer.remove_node(*node_id);
+                }
+            }
         }
     }
 
