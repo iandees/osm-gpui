@@ -938,7 +938,7 @@ impl MapViewer {
             if !moved {
                 // Not actually a drag: treat as a plain click on the map.
                 let before = self.selected.clone();
-                self.handle_map_click(up_pos);
+                self.handle_map_click(up_pos, event.modifiers.shift);
                 if before != self.selected {
                     cx.notify();
                 }
@@ -982,18 +982,31 @@ impl MapViewer {
         };
         if was_click {
             let before = self.selected.clone();
-            self.handle_map_click(up_pos);
+            self.handle_map_click(up_pos, event.modifiers.shift);
             if before != self.selected {
                 cx.notify();
             }
         }
     }
 
-    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+    /// Resolve a plain click into a selection change. `shift_held` toggles
+    /// the hit feature in/out of the existing selection (add if absent,
+    /// remove if already selected) instead of replacing it; a shift-click
+    /// that hits nothing is a no-op, leaving the existing selection intact.
+    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-        self.selected = osm_gpui::selection::resolve_hits(per_layer)
-            .into_iter()
-            .collect();
+        let hit = osm_gpui::selection::resolve_hits(per_layer);
+
+        if shift_held {
+            let Some(feature) = hit else { return };
+            if let Some(pos) = self.selected.iter().position(|f| *f == feature) {
+                self.selected.remove(pos);
+            } else {
+                self.selected.push(feature);
+            }
+        } else {
+            self.selected = hit.into_iter().collect();
+        }
     }
 
     fn sync_selection_to_layers(&mut self) {
