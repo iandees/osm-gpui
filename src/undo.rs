@@ -20,6 +20,17 @@ pub(crate) enum UndoableAction {
     SetTags {
         entries: Vec<(osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>)>,
     },
+    /// A node created at `(lat, lon)` on `layer`. Undo deletes it (via
+    /// `delete_feature`); redo recreates it at the same id (via
+    /// `create_node`'s explicit-id form), so redo reproduces the exact same
+    /// node rather than allocating a fresh one.
+    CreateNode { layer: String, id: i64, lat: f64, lon: f64 },
+    /// A node or way deleted from `layer`. Undo restores it (via
+    /// `restore_feature`); redo deletes it again (via `delete_feature`).
+    DeleteFeature {
+        layer: String,
+        snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
+    },
 }
 
 impl UndoableAction {
@@ -41,6 +52,11 @@ impl UndoableAction {
                     format!("Changed {} tags", entries.len())
                 }
             }
+            UndoableAction::CreateNode { .. } => "Created 1 node".to_string(),
+            UndoableAction::DeleteFeature { snapshot, .. } => match snapshot.kind {
+                osm_gpui::selection::FeatureKind::Node => "Deleted 1 node".to_string(),
+                osm_gpui::selection::FeatureKind::Way => "Deleted 1 way".to_string(),
+            },
         }
     }
 }
@@ -189,5 +205,87 @@ mod undo_stack_tests {
             ],
         };
         assert_eq!(two.description(), "Changed 2 tags");
+    }
+
+    #[test]
+    fn create_node_description() {
+        let action = UndoableAction::CreateNode {
+            layer: "L".to_string(),
+            id: -1,
+            lat: 40.0,
+            lon: -74.0,
+        };
+        assert_eq!(action.description(), "Created 1 node");
+    }
+
+    #[test]
+    fn create_node_undo_redo_round_trips() {
+        let mut stack = UndoStack::default();
+        stack.push(UndoableAction::CreateNode {
+            layer: "L".to_string(),
+            id: -1,
+            lat: 40.0,
+            lon: -74.0,
+        });
+
+        let undone = stack.undo().expect("should have one action to undo");
+        assert_eq!(undone.description(), "Created 1 node");
+        assert!(stack.undo().is_none());
+
+        let redone = stack.redo().expect("should be able to redo after undo");
+        assert_eq!(redone.description(), "Created 1 node");
+        assert!(stack.redo().is_none());
+    }
+
+    fn node_snapshot(id: i64) -> osm_gpui::selection::DeletedFeatureSnapshot {
+        osm_gpui::selection::DeletedFeatureSnapshot {
+            kind: osm_gpui::selection::FeatureKind::Node,
+            id,
+            tags: vec![("amenity".to_string(), "cafe".to_string())],
+            way_nodes: Vec::new(),
+            node_lat_lon: Some((40.0, -74.0)),
+        }
+    }
+
+    fn way_snapshot(id: i64) -> osm_gpui::selection::DeletedFeatureSnapshot {
+        osm_gpui::selection::DeletedFeatureSnapshot {
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id,
+            tags: vec![("highway".to_string(), "residential".to_string())],
+            way_nodes: vec![1, 2],
+            node_lat_lon: None,
+        }
+    }
+
+    #[test]
+    fn delete_feature_description_node_vs_way() {
+        let node_action = UndoableAction::DeleteFeature {
+            layer: "L".to_string(),
+            snapshot: node_snapshot(1),
+        };
+        assert_eq!(node_action.description(), "Deleted 1 node");
+
+        let way_action = UndoableAction::DeleteFeature {
+            layer: "L".to_string(),
+            snapshot: way_snapshot(10),
+        };
+        assert_eq!(way_action.description(), "Deleted 1 way");
+    }
+
+    #[test]
+    fn delete_feature_undo_redo_round_trips() {
+        let mut stack = UndoStack::default();
+        stack.push(UndoableAction::DeleteFeature {
+            layer: "L".to_string(),
+            snapshot: way_snapshot(10),
+        });
+
+        let undone = stack.undo().expect("should have one action to undo");
+        assert_eq!(undone.description(), "Deleted 1 way");
+        assert!(stack.undo().is_none());
+
+        let redone = stack.redo().expect("should be able to redo after undo");
+        assert_eq!(redone.description(), "Deleted 1 way");
+        assert!(stack.redo().is_none());
     }
 }
