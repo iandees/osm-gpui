@@ -132,9 +132,17 @@ fn compute_effective_tile_zoom(
 /// gap can ever appear between neighbors, regardless of where their
 /// (necessarily continuous, sub-pixel) edges happen to fall. Since adjacent
 /// map tiles show continuous, matching imagery at their shared edge, a
-/// 1px overlap of nearly-identical content is imperceptible — unlike a
-/// gap, which exposes the dark fallback background behind the tiles.
-const TILE_OVERLAP_PX: f32 = 1.0;
+/// few-pixel overlap of nearly-identical content is imperceptible — unlike
+/// a gap, which exposes the dark fallback background behind the tiles.
+///
+/// Deliberately a *fixed* pixel amount, not proportional to the tile's
+/// current on-screen size: `object_fit: Cover` reacts to a larger
+/// container by magnifying the same fixed-size source image to fill it,
+/// so a bigger container doesn't extend a tile's true content into its
+/// neighbor — it just zooms that tile in past its true scale, sacrificing
+/// real edge content. A big proportional overlap made that distortion
+/// visible as a real content mismatch. Keep this fixed and small.
+const TILE_OVERLAP_PX: f32 = 3.0;
 
 /// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
 /// directly from its XYZ grid index (no trig — the XYZ scheme is a
