@@ -1,8 +1,8 @@
 use gpui::Action;
 use gpui::{
-    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window,
-    WindowOptions,
+    actions, canvas, div, fill, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollWheelEvent,
+    SharedString, Window, WindowOptions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -141,6 +141,14 @@ impl From<EditModeAction> for EditMode {
 struct AddProgress {
     way_id: Option<i64>,
     last_node_id: i64,
+}
+
+/// Building mode's in-progress rectangle: corner A is fixed after click 1;
+/// corner B after click 2. Both are geo (lat, lon) coordinates.
+#[derive(Clone, Copy)]
+struct BuildingProgress {
+    corner_a: (f64, f64),
+    corner_b: Option<(f64, f64)>,
 }
 
 /// Request to add a new layer, applied directly to the live `MapViewer` (via
@@ -311,6 +319,13 @@ struct MapViewer {
     /// In-progress Add-mode way-building state, or `None` between
     /// continuations (see `AddProgress`).
     add_progress: Option<AddProgress>,
+    /// In-progress Building-mode rectangle state, or `None` between
+    /// continuations (see `BuildingProgress`).
+    building_progress: Option<BuildingProgress>,
+    /// Last known mouse position within the map area, updated on every
+    /// mouse-move; used to drive the live Building-mode preview (which
+    /// needs a cursor position outside of a drag) during `render()`.
+    last_mouse_pos: Option<gpui::Point<gpui::Pixels>>,
 }
 
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -399,6 +414,8 @@ impl MapViewer {
             mode: EditMode::Select,
             active_layer: None,
             add_progress: None,
+            building_progress: None,
+            last_mouse_pos: None,
         }
     }
 
@@ -533,6 +550,7 @@ impl MapViewer {
     fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
         self.mode = action.mode.into();
         self.add_progress = None;
+        self.building_progress = None;
         cx.notify();
     }
 
@@ -1067,6 +1085,10 @@ impl MapViewer {
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = event.position;
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
+        self.last_mouse_pos = Some(adjusted_position);
+        if self.building_progress.is_some() {
+            cx.notify(); // repaint the live preview every move while building
+        }
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
             if let Some(delta_pt) =
@@ -1182,13 +1204,60 @@ impl MapViewer {
         match self.mode {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held),
             EditMode::Add => self.handle_add_click(screen_pt),
-            EditMode::Building | EditMode::Extrude => {
-                // Building/Extrude don't use the plain-click path (Tasks 7/8
-                // hook mouse-down/mouse-move/mouse-up directly); a stray
-                // click here (e.g. a zero-movement mouse-up while building)
-                // is a no-op.
+            EditMode::Building => self.handle_building_click(screen_pt),
+            EditMode::Extrude => {
+                // Extrude doesn't use the plain-click path (Task 8 hooks
+                // mouse-down/mouse-move/mouse-up directly); a stray click
+                // here (e.g. a zero-movement mouse-up while extruding) is a
+                // no-op.
             }
         }
+    }
+
+    /// Building mode: click 1 sets corner A, click 2 sets corner B (fixing
+    /// the first edge), click 3 commits the rectangle. See
+    /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Building mode".
+    fn handle_building_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+        let Some(layer_id) = self.active_layer else { return };
+        let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
+
+        match self.building_progress.take() {
+            None => {
+                self.building_progress = Some(BuildingProgress { corner_a: (lat, lon), corner_b: None });
+            }
+            Some(BuildingProgress { corner_a, corner_b: None }) => {
+                self.building_progress = Some(BuildingProgress { corner_a, corner_b: Some((lat, lon)) });
+            }
+            Some(BuildingProgress { corner_a, corner_b: Some(corner_b) }) => {
+                self.commit_building(layer_id, corner_a, corner_b, (lat, lon));
+                self.building_progress = None;
+            }
+        }
+    }
+
+    /// Compute the final rectangle (corner_a, corner_b as one edge, offset
+    /// by `cursor`'s perpendicular distance) and commit 4 new nodes + a
+    /// closed `building=yes` way as one undo action.
+    fn commit_building(&mut self, layer_id: LayerId, corner_a: (f64, f64), corner_b: (f64, f64), cursor: (f64, f64)) {
+        let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(corner_a, corner_b, cursor);
+        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
+        let Some(editable) = layer.as_editable_mut() else { return };
+
+        let n0 = editable.add_node(corner_a.0, corner_a.1);
+        let n1 = editable.add_node(corner_b.0, corner_b.1);
+        let n2 = editable.add_node(far_b.0, far_b.1);
+        let n3 = editable.add_node(far_a.0, far_a.1);
+        let way_id = editable.add_way(
+            vec![n0, n1, n2, n3, n0],
+            vec![("building".to_string(), "yes".to_string())],
+        );
+
+        self.undo_stack.push(UndoableAction::CreateBuilding {
+            layer: layer_id, way_id, node_ids: [n0, n1, n2, n3],
+        });
+        self.selected = vec![osm_gpui::selection::FeatureRef {
+            layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+        }];
     }
 
     /// Resolve a plain click into a selection change. `shift_held` toggles
@@ -1914,6 +1983,53 @@ impl Render for MapViewer {
                                                 bounds,
                                                 window,
                                             );
+                                        }
+
+                                        if let Some(progress) = this.building_progress {
+                                            let origin_x = bounds.origin.x;
+                                            let origin_y = bounds.origin.y;
+                                            let a_screen = viewport_clone
+                                                .geo_to_screen(progress.corner_a.0, progress.corner_a.1);
+                                            match progress.corner_b {
+                                                None => {
+                                                    // Only corner A placed: draw a small marker at
+                                                    // the fixed corner (no edge yet to offset from).
+                                                    let half = px(4.0);
+                                                    let quad_bounds = Bounds {
+                                                        origin: point(
+                                                            a_screen.x + origin_x - half,
+                                                            a_screen.y + origin_y - half,
+                                                        ),
+                                                        size: size(px(8.0), px(8.0)),
+                                                    };
+                                                    window.paint_quad(fill(quad_bounds, rgb(0x3b82f6)));
+                                                }
+                                                Some(corner_b) => {
+                                                    let cursor_geo = this
+                                                        .last_mouse_pos
+                                                        .map(|p| viewport_clone.screen_to_geo(p))
+                                                        .unwrap_or(corner_b);
+                                                    let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(
+                                                        progress.corner_a, corner_b, cursor_geo,
+                                                    );
+                                                    let b_screen = viewport_clone.geo_to_screen(corner_b.0, corner_b.1);
+                                                    let far_a_screen = viewport_clone.geo_to_screen(far_a.0, far_a.1);
+                                                    let far_b_screen = viewport_clone.geo_to_screen(far_b.0, far_b.1);
+                                                    let pts = [a_screen, b_screen, far_b_screen, far_a_screen, a_screen];
+                                                    let mut builder = PathBuilder::stroke(px(2.0));
+                                                    for (i, p) in pts.iter().enumerate() {
+                                                        let p = point(p.x + origin_x, p.y + origin_y);
+                                                        if i == 0 {
+                                                            builder.move_to(p);
+                                                        } else {
+                                                            builder.line_to(p);
+                                                        }
+                                                    }
+                                                    if let Ok(path) = builder.build() {
+                                                        window.paint_path(path, rgb(0x3b82f6));
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 })
