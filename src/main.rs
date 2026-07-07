@@ -806,11 +806,14 @@ impl MapViewer {
         }
     }
 
-    /// Snapshot every currently-selected feature's tags from its owning
-    /// layer, as `(FeatureRef, Vec<(String, String)>)` — the shape
+    /// Snapshot each of `features`' tags from its owning layer, as
+    /// `(FeatureRef, Vec<(String, String)>)` — the shape
     /// `compute_tag_edit_entries` expects.
-    fn selected_feature_tag_snapshots(&self) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
-        self.selected
+    fn feature_tag_snapshots(
+        &self,
+        features: &[osm_gpui::selection::FeatureRef],
+    ) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+        features
             .iter()
             .filter_map(|sel| {
                 self.layer_manager
@@ -819,6 +822,12 @@ impl MapViewer {
                     .map(|tags| (sel.clone(), tags))
             })
             .collect()
+    }
+
+    /// Snapshot every currently-selected feature's tags — see
+    /// `feature_tag_snapshots`.
+    fn selected_feature_tag_snapshots(&self) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+        self.feature_tag_snapshots(&self.selected)
     }
 
     /// If a row/button click recorded a pending tag-edit-dialog open
@@ -853,8 +862,8 @@ impl MapViewer {
                     cx.notify();
                 }
                 DialogEvent::Submitted { key, value } => {
+                    // apply_tag_edit already clears tag_edit_dialog via take().
                     this.apply_tag_edit(key, value);
-                    this.tag_edit_dialog = None;
                     cx.notify();
                 }
             }
@@ -873,11 +882,7 @@ impl MapViewer {
     /// were no actual changes).
     fn apply_tag_edit(&mut self, key: &str, value: &str) {
         let Some((_, ctx)) = self.tag_edit_dialog.take() else { return };
-        let snapshots: Vec<_> = self
-            .selected_feature_tag_snapshots()
-            .into_iter()
-            .filter(|(f, _)| ctx.features.contains(f))
-            .collect();
+        let snapshots = self.feature_tag_snapshots(&ctx.features);
 
         let entries = osm_gpui::selection::compute_tag_edit_entries(
             &snapshots,
@@ -1684,8 +1689,9 @@ impl MapViewer {
     }
 
     /// The Tags accordion section: tags aggregated across every selected
-    /// feature. A key with one distinct value (among features that have it)
-    /// shows that value; a key with several shows "<N values>". Double-
+    /// feature. A key shows its value only if every selected feature has
+    /// that exact same value (a feature missing the key counts as its own
+    /// distinct state); otherwise it shows "<N values>". Double-
     /// clicking the key or value opens the tag-edit dialog with that field
     /// pre-selected; the trailing "x" removes the tag immediately. An "Add
     /// tag" button below the list opens the same dialog with empty fields.

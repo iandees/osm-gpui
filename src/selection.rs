@@ -74,7 +74,7 @@ pub fn resolve_hits(per_layer: Vec<Vec<HitCandidate>>) -> Option<FeatureRef> {
 }
 
 /// A key's aggregated value across a set of features: either every feature
-/// that has the key agrees on one value, or they don't.
+/// agrees (has the key with the same value), or they don't.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagValue {
     Single(String),
@@ -82,28 +82,38 @@ pub enum TagValue {
 }
 
 /// Aggregate tags across multiple features' tag lists. Keys are the union
-/// across all features. For each key, distinct values are counted only
-/// among the features that *have* that key: exactly one distinct value
-/// yields `Single(value)`; more than one yields `Multiple(distinct_count)`.
-/// A feature missing a key does not affect that key's aggregation. Sorted
-/// by key.
+/// across all features. For each key, every feature contributes a state —
+/// `Some(value)` if it has the key, `None` if it doesn't — and these states
+/// are compared across *all* features, not just the ones that have the key:
+/// exactly one distinct state (necessarily `Some(value)`, since the key
+/// came from the union) yields `Single(value)`; more than one distinct
+/// state yields `Multiple(distinct_count)`. A feature missing the key counts
+/// as its own distinct state, so a key present on some features and absent
+/// on others is `Multiple`, never `Single`. Sorted by key.
 pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, TagValue)> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
-    let mut by_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut keys: BTreeSet<String> = BTreeSet::new();
     for tags in per_feature {
-        for (k, v) in tags {
-            by_key.entry(k.clone()).or_default().insert(v.clone());
+        for (k, _) in tags {
+            keys.insert(k.clone());
         }
     }
 
-    by_key
-        .into_iter()
-        .map(|(k, values)| {
-            let value = if values.len() == 1 {
-                TagValue::Single(values.into_iter().next().unwrap())
+    keys.into_iter()
+        .map(|k| {
+            let states: BTreeSet<Option<String>> = per_feature
+                .iter()
+                .map(|tags| tags.iter().find(|(tk, _)| *tk == k).map(|(_, v)| v.clone()))
+                .collect();
+
+            let value = if states.len() == 1 {
+                match states.into_iter().next().unwrap() {
+                    Some(v) => TagValue::Single(v),
+                    None => unreachable!("key came from the union of features' present tags"),
+                }
             } else {
-                TagValue::Multiple(values.len())
+                TagValue::Multiple(states.len())
             };
             (k, value)
         })
@@ -267,30 +277,44 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_missing_key_on_some_features_is_ignored() {
+    fn aggregate_missing_key_on_some_features_counts_as_distinct_value() {
         let per_feature = vec![
             vec![("name".to_string(), "Main St".to_string())],
             vec![], // no tags at all on this feature
         ];
         let result = aggregate_tags(&per_feature);
-        assert_eq!(
-            result,
-            vec![("name".to_string(), TagValue::Single("Main St".to_string()))]
-        );
+        assert_eq!(result, vec![("name".to_string(), TagValue::Multiple(2))]);
+    }
+
+    #[test]
+    fn aggregate_untagged_feature_makes_key_multiple_even_with_one_shared_value() {
+        // A node with no tags plus a node with building=yes must not show as
+        // "yes" — the untagged node's absence of the key counts as its own
+        // distinct state, so this is Multiple(2), never Single.
+        let per_feature = vec![
+            vec![], // untagged node
+            vec![("building".to_string(), "yes".to_string())],
+        ];
+        let result = aggregate_tags(&per_feature);
+        assert_eq!(result, vec![("building".to_string(), TagValue::Multiple(2))]);
     }
 
     #[test]
     fn aggregate_union_of_keys_across_features() {
         let per_feature = vec![
+            vec![
+                ("highway".to_string(), "residential".to_string()),
+                ("surface".to_string(), "paved".to_string()),
+            ],
             vec![("highway".to_string(), "residential".to_string())],
-            vec![("surface".to_string(), "paved".to_string())],
         ];
         let result = aggregate_tags(&per_feature);
         assert_eq!(
             result,
             vec![
                 ("highway".to_string(), TagValue::Single("residential".to_string())),
-                ("surface".to_string(), TagValue::Single("paved".to_string())),
+                // Present on the first feature but absent on the second.
+                ("surface".to_string(), TagValue::Multiple(2)),
             ]
         );
     }
