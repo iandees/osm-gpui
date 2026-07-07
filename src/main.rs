@@ -288,6 +288,13 @@ type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f64))>)>;
 #[derive(Clone)]
 enum UndoableAction {
     MoveNodes { per_layer: NodeMoveUndoEntries },
+    /// One entry per affected feature: which key, and its value before/
+    /// after (`None` = key was/becomes absent). A key rename is modeled as
+    /// two entries for the same feature — remove-old plus add-new — so
+    /// this stays a single uniform apply loop.
+    SetTags {
+        entries: Vec<(osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>)>,
+    },
 }
 
 impl UndoableAction {
@@ -300,6 +307,13 @@ impl UndoableAction {
                     "Moved 1 node".to_string()
                 } else {
                     format!("Moved {} nodes", count)
+                }
+            }
+            UndoableAction::SetTags { entries } => {
+                if entries.len() == 1 {
+                    "Changed 1 tag".to_string()
+                } else {
+                    format!("Changed {} tags", entries.len())
                 }
             }
         }
@@ -411,6 +425,39 @@ mod undo_stack_tests {
         let undone_1 = stack.undo().unwrap();
         assert_eq!(undone_1.description(), "Moved 1 node");
         assert!(stack.undo().is_none());
+    }
+
+    fn tag_change(
+        feature: osm_gpui::selection::FeatureRef,
+        key: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+    ) -> (osm_gpui::selection::FeatureRef, String, Option<String>, Option<String>) {
+        (
+            feature,
+            key.to_string(),
+            before.map(|s| s.to_string()),
+            after.map(|s| s.to_string()),
+        )
+    }
+
+    #[test]
+    fn set_tags_description_singular_and_plural() {
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+        let f = FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 1 };
+
+        let one = UndoableAction::SetTags {
+            entries: vec![tag_change(f.clone(), "highway", None, Some("residential"))],
+        };
+        assert_eq!(one.description(), "Changed 1 tag");
+
+        let two = UndoableAction::SetTags {
+            entries: vec![
+                tag_change(f.clone(), "highway", None, Some("residential")),
+                tag_change(f, "surface", None, Some("paved")),
+            ],
+        };
+        assert_eq!(two.description(), "Changed 2 tags");
     }
 }
 
@@ -710,6 +757,16 @@ impl MapViewer {
                         .collect();
                     if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
                         layer.commit_node_moves(&moves);
+                    }
+                }
+            }
+            UndoableAction::SetTags { entries } => {
+                for (feature, key, before, after) in entries {
+                    let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) else { continue; };
+                    let value = if forward { after } else { before };
+                    match value {
+                        Some(v) => layer.set_tag(feature.kind, feature.id, key, v),
+                        None => layer.remove_tag(feature.kind, feature.id, key),
                     }
                 }
             }
