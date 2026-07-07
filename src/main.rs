@@ -36,7 +36,7 @@ use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::capture;
 use gpui_component::ActiveTheme;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo, ApplyNsiPreset]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -207,6 +207,8 @@ struct MapViewer {
     /// A dialog-open request recorded by a row/button click, to be acted on
     /// during the next `render()` — see `PendingTagEditOpen`'s doc comment.
     pending_tag_edit_open: Option<PendingTagEditOpen>,
+    /// Active NSI preset search dialog, if open.
+    nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
     /// Focus handle for the map area, so it can receive key events (e.g.
@@ -286,6 +288,7 @@ impl MapViewer {
             quit_confirm_dialog: None,
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
+            nsi_dialog: None,
             side_panel_open: vec![0, 1, 2],
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
@@ -787,6 +790,91 @@ impl MapViewer {
             self.apply_undo_action(&action, true);
             cx.notify();
         }
+    }
+
+    /// Handle the `ApplyNsiPreset` menu action / keybinding. Only opens the
+    /// dialog when exactly one feature is selected — GPUI has no built-in
+    /// disabled-menu-item support (see `no_op_imagery_info`), so this is a
+    /// no-op otherwise rather than a disabled menu entry.
+    fn on_apply_nsi_preset(
+        &mut self,
+        _: &ApplyNsiPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected.len() != 1 || self.nsi_dialog.is_some() {
+            return;
+        }
+        let target = self.selected[0].clone();
+
+        let dialog = cx.new(|cx| osm_gpui::ui::nsi_dialog::NsiPresetDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            move |this: &mut Self, _entity, event: &osm_gpui::ui::nsi_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::nsi_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.nsi_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(preset_tags) => {
+                        this.apply_nsi_preset(&target, preset_tags.clone());
+                        this.nsi_dialog = None;
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+        self.nsi_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Apply `preset_tags` to `target`: for each preset key whose value
+    /// differs from what the feature already has, set it via `set_tag` and
+    /// record a `(feature, key, before, after)` entry; push one
+    /// `UndoableAction::SetTags` covering every changed key (skipped
+    /// entirely if the preset didn't actually change anything). Existing
+    /// tags the preset doesn't mention (e.g. `addr:*`) are left untouched —
+    /// this only ever adds/overwrites keys, never removes any.
+    fn apply_nsi_preset(
+        &mut self,
+        target: &osm_gpui::selection::FeatureRef,
+        preset_tags: std::collections::HashMap<String, String>,
+    ) {
+        let Some(layer) = self.layer_manager.find_layer(&target.layer_name) else {
+            return;
+        };
+        let Some(existing) = layer.feature_tags(target) else {
+            return;
+        };
+
+        let mut keys: Vec<&String> = preset_tags.keys().collect();
+        keys.sort();
+
+        let entries: Vec<_> = keys
+            .into_iter()
+            .filter_map(|key| {
+                let after = preset_tags.get(key).cloned();
+                let before = existing.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                if before == after {
+                    return None;
+                }
+                Some((target.clone(), key.clone(), before, after))
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+
+        for (feature, key, _before, after) in &entries {
+            if let Some(layer) = self.layer_manager.find_layer_mut(&feature.layer_name) {
+                if let Some(v) = after {
+                    layer.set_tag(feature.kind, feature.id, key, v);
+                }
+            }
+        }
+        self.undo_stack.push(UndoableAction::SetTags { entries });
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -1496,9 +1584,11 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
+            .on_action(cx.listener(Self::on_apply_nsi_preset))
             .children(self.custom_imagery_dialog.clone())
             .children(self.tag_edit_dialog.as_ref().map(|(dialog, _)| dialog.clone()))
             .children(self.quit_confirm_dialog.clone())
+            .children(self.nsi_dialog.clone())
     }
 }
 
@@ -1651,6 +1741,23 @@ fn main() {
                                 *g = ImageryLoadState::Failed;
                             }
                         }
+                    }
+                }
+            })
+            .detach();
+
+        // Kick off background fetch/parse of the Name Suggestion Index.
+        osm_gpui::nsi::init_store();
+        cx.background_executor()
+            .spawn(async move {
+                match osm_gpui::nsi::fetch_and_cache() {
+                    Ok(body) => {
+                        let entries = osm_gpui::nsi::parse(&body);
+                        eprintln!("nsi: loaded {} brand entries", entries.len());
+                        osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(entries));
+                    }
+                    Err(e) => {
+                        eprintln!("nsi: failed to load NSI data: {}", e);
                     }
                 }
             })
