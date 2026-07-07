@@ -138,6 +138,7 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
                 url_template: entry.url_template,
                 min_zoom: entry.min_zoom,
                 max_zoom: entry.max_zoom,
+                attribution: entry.attribution.map(|a| a.text),
             });
         }
     }
@@ -177,6 +178,7 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
                 url_template: entry.url_template,
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
+                attribution: None,
             });
         }
     }

@@ -32,6 +32,14 @@ impl GeoBounds {
     }
 }
 
+/// Attribution text (and optional link) required to be displayed alongside
+/// tiles from an imagery source, per the ELI schema's `properties.attribution`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributionInfo {
+    pub text: String,
+    pub url: Option<String>,
+}
+
 /// A single imagery source from the Editor Layer Index.
 #[derive(Debug, Clone)]
 pub struct ImageryEntry {
@@ -48,6 +56,8 @@ pub struct ImageryEntry {
     pub best: bool,
     pub country_code: Option<String>,
     pub icon_url: Option<String>,
+    /// Required source-credit text, if the ELI entry specifies one.
+    pub attribution: Option<AttributionInfo>,
 }
 
 impl ImageryEntry {
@@ -188,6 +198,7 @@ fn parse_feature(feature: &serde_json::Value) -> Option<ImageryEntry> {
         .get("icon")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let attribution = props.get("attribution").and_then(parse_attribution);
 
     let (bbox, polygon) = match feature.get("geometry") {
         Some(g) if !g.is_null() => parse_geometry(g),
@@ -205,7 +216,39 @@ fn parse_feature(feature: &serde_json::Value) -> Option<ImageryEntry> {
         best,
         country_code,
         icon_url,
+        attribution,
     })
+}
+
+/// Parse the ELI `properties.attribution` value into an `AttributionInfo`.
+/// Per the ELI schema this is usually an object `{"text": ..., "url": ...}`,
+/// but some entries (or older schema versions) use a plain string instead.
+/// Returns `None` if the value is present but not usable, rather than
+/// failing the whole feature parse.
+fn parse_attribution(value: &serde_json::Value) -> Option<AttributionInfo> {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        return Some(AttributionInfo {
+            text: text.to_string(),
+            url: None,
+        });
+    }
+    if let Some(obj) = value.as_object() {
+        let text = obj
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        let url = obj
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        return Some(AttributionInfo { text, url });
+    }
+    None
 }
 
 fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<Vec<Vec<(f64, f64)>>>) {
@@ -448,6 +491,71 @@ mod tests {
         let global = entries.iter().find(|e| e.id == "global_tms").unwrap();
         assert!(global.covers(0.0, 0.0));
         assert!(global.covers(-80.0, 179.0));
+    }
+
+    #[test]
+    fn attribution_string_form_parses() {
+        let feature = serde_json::json!({
+            "type": "Feature",
+            "properties": {
+                "id": "attr_string",
+                "name": "Attr String",
+                "type": "tms",
+                "url": "https://example.com/{z}/{x}/{y}.png",
+                "attribution": "© Example Contributors"
+            },
+            "geometry": null
+        });
+        let entry = parse_feature(&feature).expect("should parse");
+        assert_eq!(
+            entry.attribution,
+            Some(AttributionInfo {
+                text: "© Example Contributors".to_string(),
+                url: None,
+            })
+        );
+    }
+
+    #[test]
+    fn attribution_object_form_parses() {
+        let feature = serde_json::json!({
+            "type": "Feature",
+            "properties": {
+                "id": "attr_object",
+                "name": "Attr Object",
+                "type": "tms",
+                "url": "https://example.com/{z}/{x}/{y}.png",
+                "attribution": {
+                    "text": "© Example Contributors",
+                    "url": "https://example.com/copyright"
+                }
+            },
+            "geometry": null
+        });
+        let entry = parse_feature(&feature).expect("should parse");
+        assert_eq!(
+            entry.attribution,
+            Some(AttributionInfo {
+                text: "© Example Contributors".to_string(),
+                url: Some("https://example.com/copyright".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn attribution_absent_is_none() {
+        let feature = serde_json::json!({
+            "type": "Feature",
+            "properties": {
+                "id": "attr_absent",
+                "name": "Attr Absent",
+                "type": "tms",
+                "url": "https://example.com/{z}/{x}/{y}.png"
+            },
+            "geometry": null
+        });
+        let entry = parse_feature(&feature).expect("should parse");
+        assert_eq!(entry.attribution, None);
     }
 
     #[test]

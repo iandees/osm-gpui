@@ -81,6 +81,7 @@ enum LayerRequest {
         url_template: String,
         min_zoom: Option<u32>,
         max_zoom: Option<u32>,
+        attribution: Option<String>,
     },
     /// Remove the layer at the given index in the `LayerManager`.
     Delete { index: usize },
@@ -866,7 +867,7 @@ impl MapViewer {
                                 self.layer_manager.add_layer(Box::new(GridLayer::new()));
                             }
                         }
-                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom } => {
+                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
                             // Ensure unique name
                             let mut candidate = name.clone();
                             let mut i = 2;
@@ -880,7 +881,8 @@ impl MapViewer {
                                 self.tile_cache.clone(),
                             )
                             .with_min_zoom(min_zoom)
-                            .with_max_zoom(max_zoom);
+                            .with_max_zoom(max_zoom)
+                            .with_attribution(attribution);
                             self.layer_manager.add_layer(Box::new(layer));
                         }
                     }
@@ -982,6 +984,7 @@ impl MapViewer {
                                     url_template: entry.url_template.clone(),
                                     min_zoom: Some(entry.min_zoom),
                                     max_zoom: Some(entry.max_zoom),
+                                    attribution: None,
                                 });
                             }
                         }
@@ -1247,6 +1250,40 @@ impl Render for MapViewer {
                                         .into_any_element()
                                 } else {
                                     div().into_any_element()
+                                }
+                            })
+                            .child({
+                                // Legally-required tile/imagery attribution for
+                                // every currently-visible layer that has one,
+                                // deduplicated (e.g. shared OSM Carto credit).
+                                let mut seen = std::collections::HashSet::new();
+                                let mut credits: Vec<String> = Vec::new();
+                                for layer in self.layer_manager.layers() {
+                                    if !layer.is_visible() {
+                                        continue;
+                                    }
+                                    if let Some(text) = layer.attribution() {
+                                        if seen.insert(text.to_string()) {
+                                            credits.push(text.to_string());
+                                        }
+                                    }
+                                }
+                                if credits.is_empty() {
+                                    div().into_any_element()
+                                } else {
+                                    div()
+                                        .absolute()
+                                        .bottom_4()
+                                        .right_4()
+                                        .px_2()
+                                        .py_1()
+                                        .bg(gpui::black())
+                                        .rounded_lg()
+                                        .text_color(rgb(0xffffff))
+                                        .text_xs()
+                                        .opacity(0.75)
+                                        .child(credits.join(" | "))
+                                        .into_any_element()
                                 }
                             }),
                     )
