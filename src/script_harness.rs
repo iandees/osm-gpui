@@ -43,6 +43,8 @@ pub(crate) enum ScriptCommand {
     Click { x: f32, y: f32, right: bool },
     /// Synthesize a scroll event
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
+    /// Render the current frame in-process and save it as a PNG at `path`
+    Capture { path: std::path::PathBuf },
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -55,6 +57,8 @@ pub(crate) struct ScriptBus {
     frame_count: Mutex<u64>,
     /// Signalled each time a frame is rendered.
     frame_cv: Condvar,
+    /// Result of the most recently processed `Capture` command.
+    capture_result: Mutex<Option<Result<(), String>>>,
 }
 
 impl ScriptBus {
@@ -64,6 +68,7 @@ impl ScriptBus {
             done_cv: Condvar::new(),
             frame_count: Mutex::new(0),
             frame_cv: Condvar::new(),
+            capture_result: Mutex::new(None),
         })
     }
 
@@ -101,6 +106,21 @@ impl ScriptBus {
         let mut fc = self.frame_count.lock().unwrap();
         *fc += 1;
         self.frame_cv.notify_all();
+    }
+
+    /// Called by MapViewer::render when handling a `Capture` command, before
+    /// `signal_done_and_frame` wakes the waiting runner thread.
+    fn set_capture_result(&self, result: Result<(), String>) {
+        *self.capture_result.lock().unwrap() = Some(result);
+    }
+
+    /// Called by the runner thread after `submit(Capture { .. })` returns.
+    fn take_capture_result(&self) -> Result<(), String> {
+        self.capture_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Err("capture: no result recorded".to_string()))
     }
 }
 
@@ -190,6 +210,18 @@ impl MapViewer {
                     };
                     self.handle_scroll(&ev, cx);
                 }
+                ScriptCommand::Capture { path } => {
+                    let result = (|| -> Result<(), String> {
+                        let image = window.render_to_image().map_err(|e| e.to_string())?;
+                        if let Some(parent) = path.parent() {
+                            if !parent.as_os_str().is_empty() {
+                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                        }
+                        image.save(&path).map_err(|e| e.to_string())
+                    })();
+                    bus.set_capture_result(result);
+                }
             }
         }
 
@@ -218,7 +250,6 @@ impl MapViewer {
 pub(crate) struct LiveApp {
     pub(crate) _idle: Arc<IdleTracker>,
     pub(crate) bus: Arc<ScriptBus>,
-    pub(crate) _window_id: u32,
 }
 
 impl AppHandle for LiveApp {
@@ -288,5 +319,10 @@ impl AppHandle for LiveApp {
         // before signalling — so after wait_frame the layer exists.
         self.bus.wait_frame();
         Ok(())
+    }
+
+    fn capture(&mut self, path: &std::path::Path) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::Capture { path: path.to_path_buf() });
+        self.bus.take_capture_result()
     }
 }

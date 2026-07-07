@@ -55,7 +55,6 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 | `src/layers/grid_layer.rs` | Lat/lon grid. Spacing adapts to zoom (10° → 0.001°). |
 | `src/idle_tracker.rs` | `IdleTracker` — atomic counters for in-flight tile fetches. Powers `wait_idle` in the script harness. |
 | `src/script/` | Line-DSL parser and runner for scripted screenshot sessions. See *Scripted screenshots* below. |
-| `src/capture.rs` | macOS window-id lookup (CGWindowList) + `screencapture` subprocess wrapper. |
 
 ### Dead code — do not extend without asking
 
@@ -119,7 +118,7 @@ wait 250ms
 
 Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `key CHORD` (e.g. `cmd+shift+a`), `load_osm PATH`, `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
 
-`wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` shells out to macOS `screencapture -l <windowid>` so the app window doesn't need focus and can even be occluded. **macOS only** — the capture path is Mac-specific.
+`wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` renders the current frame straight to a Metal texture and reads the pixels back in-process (via gpui's `Window::render_to_image`, enabled by the `test-support` feature) — no OS screenshot permission needed, and the window doesn't need focus or even to be on-screen.
 
 `load_osm PATH` parses an OSM XML file and pushes it onto the dataset queue, the same pipeline used by **File > Open**. Follow it with `wait_idle` so the next frame creates the layer before subsequent clicks run.
 
