@@ -30,10 +30,10 @@ const DEFAULT_CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 // requests for lack of a client_secret, the fix is to re-register the OSM OAuth
 // application as a public/PKCE client, not to bring the secret back.
 //
-// Only `read_prefs` is requested for now: the app has no upload/changeset code yet, so
-// there's nothing that consumes write access. Add `write_api` back to SCOPES when
-// upload functionality lands.
-const SCOPES: &str = "read_prefs";
+// `write_api` is required to create/upload/close changesets (see `osm_upload.rs`).
+// Existing logins made before this scope was added won't have write access; the user
+// will need to log in again (re-authorizing grants the new scope) before uploading.
+const SCOPES: &str = "read_prefs write_api";
 
 /// The client_id to use for a given OAuth base URL: the user's configured override for
 /// that server if one is set in settings, otherwise `DEFAULT_CLIENT_ID`. OSM's primary

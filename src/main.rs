@@ -15,7 +15,7 @@ mod undo;
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{MoveDrag, NodeMoveTargets, NodeMoveUndoEntries, UndoStack, UndoableAction};
@@ -32,10 +32,11 @@ use osm_gpui::viewport::Viewport;
 use osm_gpui::layers::{LayerManager, tile_layer::TileLayer, osm_layer::OsmLayer, grid_layer::GridLayer};
 use osm_gpui::tiles;
 use osm_gpui::osm_api;
+use osm_gpui::osm_upload;
 use osm_gpui::script::{self, runner::Runner};
 use gpui_component::ActiveTheme;
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo, ApplyNsiPreset]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo, ApplyNsiPreset, UploadToOsm]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -131,6 +132,11 @@ pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = Onc
 /// `OPEN_CUSTOM_IMAGERY_DIALOG`.
 pub(crate) static SHOW_QUIT_CONFIRM: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
+/// Queue of requests to show the upload-review dialog, pushed by
+/// `menu::upload_to_osm` and drained once per frame by
+/// `MapViewer::check_for_upload_dialog` — same shape as `SHOW_QUIT_CONFIRM`.
+pub(crate) static SHOW_UPLOAD_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
+
 /// Ask the live `MapViewer` (via `MAP_VIEWER_HANDLE`) whether any layer
 /// currently has unsaved changes. This performs a fresh per-layer
 /// `is_modified()` query against the real view every time it's called — no
@@ -200,6 +206,8 @@ struct MapViewer {
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
+    /// Active upload-review dialog, if open.
+    upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
     /// Active tag-edit dialog, if open, plus the context needed to apply
     /// its result.
     tag_edit_dialog: Option<(gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>, TagEditContext)>,
@@ -285,6 +293,7 @@ impl MapViewer {
             show_debug_overlay: false,
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
+            upload_dialog: None,
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
@@ -1258,6 +1267,159 @@ impl MapViewer {
         }
     }
 
+    /// Drain `SHOW_UPLOAD_DIALOG` (pushed by `menu::upload_to_osm`) and
+    /// either show the "nothing to upload" status or open the upload-review
+    /// dialog, mirroring `check_for_quit_confirm_dialog`'s pattern.
+    fn check_for_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let should_check = if let Some(queue) = SHOW_UPLOAD_DIALOG.get() {
+            if let Ok(mut g) = queue.try_lock() {
+                let had_requests = !g.is_empty();
+                g.clear();
+                had_requests
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !should_check || self.upload_dialog.is_some() {
+            return;
+        }
+
+        let summaries: Vec<osm_gpui::ui::upload_dialog::LayerSummary> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|l| l.is_modified())
+            .map(|l| {
+                let (created, modified, deleted) = l.diff_for_upload().counts();
+                osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: l.name().to_string(),
+                    created,
+                    modified,
+                    deleted,
+                }
+            })
+            .collect();
+
+        if summaries.is_empty() || summaries.iter().all(|s| s.is_empty()) {
+            self.set_status("Nothing to upload");
+            cx.notify();
+            return;
+        }
+
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
+        });
+        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
+            use osm_gpui::ui::upload_dialog::DialogEvent;
+            match event {
+                DialogEvent::Cancelled => {
+                    this.upload_dialog = None;
+                    cx.notify();
+                }
+                DialogEvent::Upload { comment } => {
+                    this.upload_dialog = None;
+                    this.start_upload(comment.clone(), cx);
+                }
+            }
+        })
+        .detach();
+        self.upload_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Run the full upload sequence (create changeset -> build+upload
+    /// osmChange -> close changeset -> reconcile local layers) on the
+    /// background executor, mirroring `check_for_download_requests`'s
+    /// `cx.spawn`/`background_executor().spawn` structure.
+    ///
+    /// Known v1 limitation: if the changeset is created but the upload
+    /// itself fails, we do NOT attempt automatic rollback/retry — the
+    /// changeset is left open on the server (harmless; it auto-closes after
+    /// a period of inactivity, or the user can close it manually) and the
+    /// status message includes its id so it isn't silently lost track of.
+    fn start_upload(&mut self, comment: String, cx: &mut Context<Self>) {
+        let layer_names: Vec<String> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|l| l.is_modified())
+            .map(|l| l.name().to_string())
+            .collect();
+        let diffs: Vec<osm_gpui::layers::diff::LayerDiff> = layer_names
+            .iter()
+            .filter_map(|name| self.layer_manager.find_layer(name).map(|l| l.diff_for_upload()))
+            .collect();
+
+        if diffs.iter().all(|d| d.is_empty()) {
+            self.set_status("Nothing to upload");
+            cx.notify();
+            return;
+        }
+
+        self.set_status("Uploading…");
+        cx.notify();
+
+        let base_url = settings_store::api_base_url();
+        let oauth_base = auth::oauth_base_for(&base_url);
+        let names_for_bg = layer_names.clone();
+
+        cx.spawn(async move |this, cx| {
+            let result: Result<(u64, osm_upload::UploadResult), String> = cx
+                .background_executor()
+                .spawn(async move {
+                    let token = auth::ensure_fresh_token(&oauth_base).map_err(|e| e.to_string())?;
+                    let changeset_id =
+                        osm_upload::create_changeset(&base_url, &token.access_token, &comment)
+                            .map_err(|e| e.to_string())?;
+
+                    let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> = names_for_bg
+                        .iter()
+                        .map(|s| s.as_str())
+                        .zip(diffs.into_iter())
+                        .collect();
+                    let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
+
+                    match osm_upload::upload_changes(&base_url, &token.access_token, changeset_id, &xml) {
+                        Ok(upload_result) => {
+                            // Best-effort close: a failure here doesn't
+                            // undo the (already-applied) upload, so it
+                            // isn't treated as a fatal error — the
+                            // changeset just stays open, which OSM handles
+                            // fine (manual or automatic close later).
+                            let _ = osm_upload::close_changeset(&base_url, &token.access_token, changeset_id);
+                            Ok((changeset_id, upload_result))
+                        }
+                        Err(e) => Err(format!(
+                            "{} (changeset {} was opened but not uploaded — you may want to close it manually)",
+                            e, changeset_id
+                        )),
+                    }
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok((changeset_id, upload_result)) => {
+                        for name in &layer_names {
+                            if let Some(layer) = this.layer_manager.find_layer_mut(name) {
+                                layer.apply_upload_result(&upload_result);
+                            }
+                        }
+                        this.set_status(format!("Uploaded changes (changeset {})", changeset_id));
+                    }
+                    Err(e) => {
+                        this.set_status(e);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
         let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
         let pending = if let Ok(mut guard) = requests.try_lock() {
@@ -1335,6 +1497,7 @@ impl Render for MapViewer {
         self.check_for_dialog_queue(window, cx);
         self.check_for_pending_tag_edit_dialog(window, cx);
         self.check_for_quit_confirm_dialog(window, cx);
+        self.check_for_upload_dialog(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -1591,6 +1754,7 @@ impl Render for MapViewer {
             .children(self.tag_edit_dialog.as_ref().map(|(dialog, _)| dialog.clone()))
             .children(self.quit_confirm_dialog.clone())
             .children(self.nsi_dialog.clone())
+            .children(self.upload_dialog.clone())
     }
 }
 
@@ -1617,6 +1781,7 @@ fn main() {
     TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     let _ = OPEN_CUSTOM_IMAGERY_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
     let _ = SHOW_QUIT_CONFIRM.set(Arc::new(Mutex::new(Vec::new())));
+    let _ = SHOW_UPLOAD_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1694,6 +1859,7 @@ fn main() {
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
         cx.on_action(open_settings);
+        cx.on_action(upload_to_osm);
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
@@ -1773,6 +1939,7 @@ fn main() {
                 cx.bind_keys([
                     KeyBinding::new("cmd-o", OpenOsmFile, None),
                     KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
+                    KeyBinding::new("cmd-shift-u", UploadToOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
                     KeyBinding::new("cmd-,", OpenSettings, None),
                     KeyBinding::new("cmd-z", Undo, None),

@@ -5,3 +5,4 @@ pub mod nsi_dialog;
 pub mod quit_confirm_dialog;
 pub mod settings_window;
 pub mod tag_edit_dialog;
+pub mod upload_dialog;

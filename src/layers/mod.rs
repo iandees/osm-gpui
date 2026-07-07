@@ -5,6 +5,7 @@ use crate::viewport::Viewport;
 pub mod tile_layer;
 pub mod osm_layer;
 pub mod grid_layer;
+pub mod diff;
 
 /// Trait that all map layers must implement
 pub trait MapLayer: Send + Sync {
@@ -147,6 +148,19 @@ pub trait MapLayer: Send + Sync {
     fn attribution(&self) -> Option<&crate::imagery::AttributionInfo> {
         None
     }
+
+    /// Compute the set of created/modified/deleted nodes/ways needed to
+    /// bring the server up to date with this layer's current data, relative
+    /// to whatever snapshot it was last loaded/synced from. Default: an
+    /// empty diff (nothing to upload). Only `OsmLayer` overrides this.
+    fn diff_for_upload(&self) -> crate::layers::diff::LayerDiff {
+        crate::layers::diff::LayerDiff::default()
+    }
+
+    /// Apply a successful changeset upload's result (server-assigned ids/
+    /// versions) back into this layer's data, then mark it clean. Default:
+    /// no-op. Only `OsmLayer` overrides this.
+    fn apply_upload_result(&mut self, _result: &crate::osm_upload::UploadResult) {}
 }
 
 /// Manager for all map layers
