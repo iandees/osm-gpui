@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod menu;
+mod mode_panel;
 mod script_harness;
 mod side_panel;
 mod undo;
@@ -91,6 +92,47 @@ struct MoveLayer {
 #[serde(deny_unknown_fields)]
 struct DeleteLayer {
     index: usize,
+}
+
+/// The current map-interaction mode. `Select` is today's existing click/
+/// drag/box-select behavior; the others place new geometry (see
+/// docs/superpowers/specs/2026-07-07-mode-selector-design.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditMode {
+    Select,
+    Add,
+    Building,
+    Extrude,
+}
+
+/// Action to switch the current `EditMode`.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = mode)]
+#[serde(deny_unknown_fields)]
+struct SetMode {
+    mode: EditModeAction,
+}
+
+/// `EditMode` isn't itself `Deserialize`/`JsonSchema` (gpui's `Action` derive
+/// requires both on every field); this mirrors it 1:1 purely so `SetMode`
+/// can carry a mode value through the action-dispatch system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+enum EditModeAction {
+    Select,
+    Add,
+    Building,
+    Extrude,
+}
+
+impl From<EditModeAction> for EditMode {
+    fn from(a: EditModeAction) -> Self {
+        match a {
+            EditModeAction::Select => EditMode::Select,
+            EditModeAction::Add => EditMode::Add,
+            EditModeAction::Building => EditMode::Building,
+            EditModeAction::Extrude => EditMode::Extrude,
+        }
+    }
 }
 
 /// Request to add a new layer, applied directly to the live `MapViewer` (via
@@ -253,6 +295,11 @@ struct MapViewer {
     focus_handle: gpui::FocusHandle,
     /// Global undo/redo history of committed data mutations.
     undo_stack: UndoStack,
+    /// The current map-interaction mode (Select/Add/Building/Extrude).
+    mode: EditMode,
+    /// Name of the OSM layer that Add/Building/Extrude write into, or
+    /// `None` if no layer is designated (those modes are disabled then).
+    active_layer: Option<String>,
 }
 
 /// Which features a `TagEditDialog` targets and the row's original text
@@ -338,6 +385,8 @@ impl MapViewer {
             side_panel_open: [true, true, true, false],
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
+            mode: EditMode::Select,
+            active_layer: None,
         }
     }
 
@@ -456,6 +505,16 @@ impl MapViewer {
     /// than going through `LayerRequest`.
     fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.layer_manager.remove_at(action.index);
+        cx.notify();
+    }
+
+    /// Handle the `SetMode` action: switch modes, discarding any
+    /// in-progress add/building/extrude state without committing it (Tasks
+    /// 6-8 populate these fields; they don't exist until then, so this
+    /// handler is added here as a no-op placeholder for those clears and
+    /// extended in each later task).
+    fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
+        self.mode = action.mode.into();
         cx.notify();
     }
 
@@ -623,31 +682,33 @@ impl MapViewer {
                     editable.restore_feature(snapshot.clone());
                 }
             }
-            UndoableAction::ExtendWay { layer_name, way_id, node_id, lat: _, lon: _, way_created } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+            UndoableAction::ExtendWay { layer, way_id, node_id, lat: _, lon: _, way_created } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
                 if forward {
                     if *way_created {
-                        layer.add_way(vec![*node_id], Vec::new());
+                        editable.add_way(vec![*node_id], Vec::new());
                     } else {
-                        layer.extend_way(*way_id, *node_id);
+                        editable.extend_way(*way_id, *node_id);
                     }
                 } else if *way_created {
-                    layer.remove_way(*way_id);
-                    layer.remove_node(*node_id);
+                    editable.remove_way(*way_id);
+                    editable.remove_node(*node_id);
                 } else {
-                    let node_ids = layer.way_node_ids(*way_id).unwrap_or_default();
+                    let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
                     if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
-                        layer.remove_node_from_way(*way_id, idx);
+                        editable.remove_node_from_way(*way_id, idx);
                     }
-                    layer.remove_node(*node_id);
+                    editable.remove_node(*node_id);
                 }
             }
-            UndoableAction::CreateBuilding { layer_name, way_id, node_ids } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+            UndoableAction::CreateBuilding { layer, way_id, node_ids } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
                 if !forward {
-                    layer.remove_way(*way_id);
+                    editable.remove_way(*way_id);
                     for id in node_ids {
-                        layer.remove_node(*id);
+                        editable.remove_node(*id);
                     }
                 }
                 // Redo (forward) is out of scope for Building mode's atomic
@@ -657,20 +718,22 @@ impl MapViewer {
                 // other edits. Matches this plan's scope (see spec's "Out
                 // of scope": undo/redo depth beyond the immediate action).
             }
-            UndoableAction::ExtrudeWay { layer_name, way_id, new_node_ids } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+            UndoableAction::ExtrudeWay { layer, way_id, new_node_ids } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
                 if !forward {
-                    layer.remove_way(*way_id);
+                    editable.remove_way(*way_id);
                     for id in new_node_ids {
-                        layer.remove_node(*id);
+                        editable.remove_node(*id);
                     }
                 }
             }
-            UndoableAction::InsertNodeIntoWay { layer_name, way_id, index, node_id, .. } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_name) else { return };
+            UndoableAction::InsertNodeIntoWay { layer, way_id, index, node_id, .. } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
+                let Some(editable) = layer.as_editable_mut() else { return };
                 if !forward {
-                    layer.remove_node_from_way(*way_id, *index);
-                    layer.remove_node(*node_id);
+                    editable.remove_node_from_way(*way_id, *index);
+                    editable.remove_node(*node_id);
                 }
             }
         }
@@ -1646,7 +1709,11 @@ impl Render for MapViewer {
         // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
         let panel_width = px(280.0);
-        let map_size = gpui::size(window_size.width - panel_width, window_size.height);
+        let left_panel_width = px(Self::MODE_PANEL_WIDTH);
+        let map_size = gpui::size(
+            window_size.width - panel_width - left_panel_width,
+            window_size.height,
+        );
         self.viewport.update_size(map_size);
 
         self.expire_status();
@@ -1665,6 +1732,7 @@ impl Render for MapViewer {
             .bg(rgb(0x1a202c))
             .flex()
             .flex_row()
+            .child(self.render_mode_panel(cx))
             .child(
                 // Map area
                 div()
@@ -1895,6 +1963,7 @@ impl Render for MapViewer {
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
+            .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
@@ -2093,6 +2162,9 @@ fn main() {
                             KeyBinding::new("cmd-,", OpenSettings, None),
                             KeyBinding::new("cmd-z", Undo, None),
                             KeyBinding::new("cmd-shift-z", Redo, None),
+                            KeyBinding::new("a", SetMode { mode: EditModeAction::Add }, None),
+                            KeyBinding::new("b", SetMode { mode: EditModeAction::Building }, None),
+                            KeyBinding::new("x", SetMode { mode: EditModeAction::Extrude }, None),
                         ]);
                         let view = cx.new(|cx| MapViewer::new(window, cx));
 
