@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::settings_store::PRIMARY_API_URL;
 
@@ -27,6 +27,7 @@ const CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 // upload functionality lands.
 const SCOPES: &str = "read_prefs";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
+const CALLBACK_PATH: &str = "/callback";
 
 const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
 
@@ -38,6 +39,10 @@ pub enum AuthError {
     NoRedirect,
     StateMismatch,
     NoConfigDir,
+    /// The user (or OSM) explicitly denied/rejected the authorization request, e.g. by
+    /// clicking "Cancel" on the consent screen. Distinct from a timeout so the UI can
+    /// show a clear, non-misleading message.
+    Denied { reason: String },
     /// `ensure_fresh_token` was called for a server with no stored login.
     NotLoggedIn,
     /// The stored token is expired and there's no refresh token to renew it with; the
@@ -57,6 +62,7 @@ impl std::fmt::Display for AuthError {
             AuthError::NoRedirect => write!(f, "Login timed out waiting for browser redirect"),
             AuthError::StateMismatch => write!(f, "Login failed (state mismatch)"),
             AuthError::NoConfigDir => write!(f, "No config directory available to store login"),
+            AuthError::Denied { reason } => write!(f, "Sign in was not completed: {}", reason),
             AuthError::NotLoggedIn => write!(f, "Not logged in"),
             AuthError::NoRefreshToken => {
                 write!(f, "Login expired and can't be refreshed; please sign in again")
@@ -137,6 +143,38 @@ fn parse_callback_query(url: &str) -> HashMap<String, String> {
     params
 }
 
+/// The path portion of a request URL (i.e. everything before `?`).
+fn url_path(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
+/// Block on the loopback server until a request whose path is our OAuth callback path
+/// arrives, or the overall deadline passes. Any other request (favicon probes, browser
+/// preconnects, etc.) is answered with a bare 404 and discarded rather than being
+/// mistaken for the OAuth response.
+fn wait_for_callback(
+    server: &tiny_http::Server,
+    deadline: Instant,
+) -> Result<tiny_http::Request, AuthError> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AuthError::NoRedirect);
+        }
+        let request = server
+            .recv_timeout(remaining)
+            .map_err(|e| AuthError::Network(e.to_string()))?
+            .ok_or(AuthError::NoRedirect)?;
+
+        if url_path(request.url()).starts_with(CALLBACK_PATH) {
+            return Ok(request);
+        }
+
+        let response = tiny_http::Response::empty(404);
+        let _ = request.respond(response);
+    }
+}
+
 /// Run the full OAuth2 PKCE login flow, blocking until it completes or times out.
 /// Opens the user's browser and runs a local HTTP server on 127.0.0.1 to catch the
 /// redirect. Call this from a background thread, not the UI thread.
@@ -146,7 +184,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let server = tiny_http::Server::http("127.0.0.1:0")
         .map_err(|e| AuthError::Network(e.to_string()))?;
     let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
+    let redirect_uri = format!("http://127.0.0.1:{}{}", port, CALLBACK_PATH);
 
     let code_verifier = generate_url_safe_token(32);
     let challenge = code_challenge(&code_verifier);
@@ -167,14 +205,13 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         eprintln!("auth: open this URL to sign in: {}", authorize_url);
     }
 
-    let request = server
-        .recv_timeout(CALLBACK_TIMEOUT)
-        .map_err(|e| AuthError::Network(e.to_string()))?
-        .ok_or(AuthError::NoRedirect)?;
+    let deadline = Instant::now() + CALLBACK_TIMEOUT;
+    let request = wait_for_callback(&server, deadline)?;
 
     let params = parse_callback_query(request.url());
     let code = params.get("code").cloned();
     let got_state = params.get("state").cloned();
+    let error = params.get("error").cloned();
 
     let response_body = if code.is_some() {
         "<html><body><h3>Signed in to OpenStreetMap.</h3>You can close this tab and return to osm-gpui.</body></html>"
@@ -184,6 +221,17 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let response = tiny_http::Response::from_string(response_body)
         .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap());
     let _ = request.respond(response);
+
+    // OSM redirects with `error=access_denied` (and no `code`) when the user declines
+    // authorization on the consent screen. Report that distinctly rather than letting it
+    // fall through to a generic "no redirect" / timeout error.
+    if let Some(error) = error {
+        let reason = params
+            .get("error_description")
+            .cloned()
+            .unwrap_or(error);
+        return Err(AuthError::Denied { reason });
+    }
 
     if got_state.as_deref() != Some(state.as_str()) {
         return Err(AuthError::StateMismatch);
@@ -480,6 +528,25 @@ mod tests {
         let params = parse_callback_query("/callback?code=abc&state=xyz");
         assert_eq!(params.get("code"), Some(&"abc".to_string()));
         assert_eq!(params.get("state"), Some(&"xyz".to_string()));
+    }
+
+    #[test]
+    fn parse_callback_query_extracts_error() {
+        let params = parse_callback_query(
+            "/callback?error=access_denied&error_description=User%20denied%20access&state=xyz",
+        );
+        assert_eq!(params.get("error"), Some(&"access_denied".to_string()));
+        assert_eq!(
+            params.get("error_description"),
+            Some(&"User denied access".to_string())
+        );
+    }
+
+    #[test]
+    fn url_path_strips_query_string() {
+        assert_eq!(url_path("/callback?code=abc"), "/callback");
+        assert_eq!(url_path("/callback"), "/callback");
+        assert_eq!(url_path("/favicon.ico"), "/favicon.ico");
     }
 
     #[test]
