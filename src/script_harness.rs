@@ -250,7 +250,7 @@ impl MapViewer {
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
             if let Ok(mut guard) = ks_queue.try_lock() {
                 for ks in guard.drain(..) {
-                    window.dispatch_keystroke(ks, &mut **cx);
+                    window.dispatch_keystroke(ks, cx);
                 }
             }
         }

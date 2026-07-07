@@ -196,7 +196,7 @@ impl MapViewer {
                     FeatureKind::Node => "Node",
                     FeatureKind::Way => "Way",
                 };
-                let row_feat = feat.clone();
+                let row_feat = *feat;
                 div()
                     .id(("selection-row", i))
                     .flex_shrink_0()
@@ -212,7 +212,7 @@ impl MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                            this.selected = vec![row_feat.clone()];
+                            this.selected = vec![row_feat];
                             cx.notify();
                         }),
                     )

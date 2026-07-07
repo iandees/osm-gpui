@@ -6,7 +6,7 @@
 //! supported — WMS, Bing, and other types are filtered out.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::coordinates::GeoBounds;
@@ -101,7 +101,7 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
 /// Write `body` to `path` atomically by writing to a sibling temp file first
 /// and renaming into place (rename is atomic on POSIX filesystems). See
 /// `crate::persist::write_atomic` for the shared implementation.
-fn write_cache_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
+fn write_cache_atomic(path: &Path, body: &str) -> std::io::Result<()> {
     crate::persist::write_atomic(path, body.as_bytes(), crate::persist::WriteOpts::default())
 }
 
@@ -256,7 +256,11 @@ fn parse_attribution(value: &serde_json::Value) -> Option<AttributionInfo> {
     None
 }
 
-fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<Vec<Vec<(f64, f64)>>>) {
+/// Polygon rings decoded from GeoJSON coordinates: each ring is a sequence
+/// of (lon, lat) points.
+type GeoRings = Vec<Vec<(f64, f64)>>;
+
+fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRings>) {
     let typ = geom.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let coords = match geom.get("coordinates") {
         Some(c) => c,

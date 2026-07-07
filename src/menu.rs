@@ -59,9 +59,9 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
                     .and_then(|s| s.to_str())
                     .unwrap_or("OSM")
                     .to_string();
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     if let Some(view) = crate::MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                        let _ = view.update(cx, |v, cx| v.add_osm_dataset(stem, osm_data, cx));
+                        view.update(cx, |v, cx| v.add_osm_dataset(stem, osm_data, cx));
                     }
                 });
             }

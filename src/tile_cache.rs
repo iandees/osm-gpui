@@ -76,7 +76,7 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// external deletion, which a periodic authoritative scan handles for free.
 fn maybe_evict(dir: &Path) {
     let count = WRITES_SINCE_EVICTION.fetch_add(1, Ordering::Relaxed) + 1;
-    if count % WRITES_BETWEEN_EVICTION_CHECKS == 0 {
+    if count.is_multiple_of(WRITES_BETWEEN_EVICTION_CHECKS) {
         evict_if_over_budget(dir, MAX_CACHE_BYTES);
     }
 }
@@ -489,7 +489,7 @@ fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, Stri
     }
 
     // Create a frame for the image
-    let frame = image::Frame::new(rgba.into());
+    let frame = image::Frame::new(rgba);
     let mut frames = smallvec::SmallVec::new();
     frames.push(frame);
     Ok(RenderImage::new(frames))
@@ -760,8 +760,8 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let target = dir.join("tile_test.png");
 
-        write_atomic(&target, &vec![0x11u8; 10]).unwrap();
-        write_atomic(&target, &vec![0x22u8; 20]).unwrap();
+        write_atomic(&target, &[0x11u8; 10]).unwrap();
+        write_atomic(&target, &[0x22u8; 20]).unwrap();
 
         let written = fs::read(&target).unwrap();
         assert_eq!(written, vec![0x22u8; 20]);

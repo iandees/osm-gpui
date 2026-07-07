@@ -2,8 +2,11 @@
 
 use osm_gpui::layers::LayerId;
 
+/// A single node move: its id, (lat, lon) before, and (lat, lon) after.
+pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
+
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
-pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<(i64, (f64, f64), (f64, f64))>)>;
+pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 
 /// A single reversible data mutation, recorded on the global undo stack.
 /// Only one kind exists today (produced by committing a drag-to-move), but
@@ -208,13 +211,13 @@ mod undo_stack_tests {
         };
 
         let one = UndoableAction::SetTags {
-            entries: vec![tag_change(f.clone(), "highway", None, Some("residential"))],
+            entries: vec![tag_change(f, "highway", None, Some("residential"))],
         };
         assert_eq!(one.description(), "Changed 1 tag");
 
         let two = UndoableAction::SetTags {
             entries: vec![
-                tag_change(f.clone(), "highway", None, Some("residential")),
+                tag_change(f, "highway", None, Some("residential")),
                 tag_change(f, "surface", None, Some("paved")),
             ],
         };

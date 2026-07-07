@@ -320,7 +320,7 @@ mod tests {
     fn click_no_shift_replaces_selection_with_hit() {
         let current = vec![fref(1, FeatureKind::Node, 1)];
         let hit = fref(1, FeatureKind::Node, 2);
-        let result = apply_click_selection(&current, Some(hit.clone()), false);
+        let result = apply_click_selection(&current, Some(hit), false);
         assert_eq!(result, vec![hit]);
     }
 
@@ -335,8 +335,8 @@ mod tests {
     fn shift_click_adds_unselected_feature() {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
-        let current = vec![a.clone()];
-        let result = apply_click_selection(&current, Some(b.clone()), true);
+        let current = vec![a];
+        let result = apply_click_selection(&current, Some(b), true);
         assert_eq!(result, vec![a, b]);
     }
 
@@ -344,7 +344,7 @@ mod tests {
     fn shift_click_removes_already_selected_feature() {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
-        let current = vec![a.clone(), b.clone()];
+        let current = vec![a, b];
         let result = apply_click_selection(&current, Some(a), true);
         assert_eq!(result, vec![b]);
     }
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn shift_click_only_selected_feature_empties_selection() {
         let a = fref(1, FeatureKind::Node, 1);
-        let current = vec![a.clone()];
+        let current = vec![a];
         let result = apply_click_selection(&current, Some(a), true);
         assert!(result.is_empty());
     }
@@ -454,8 +454,8 @@ mod tests {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
-            (a.clone(), tags(&[("highway", "residential")])),
-            (b.clone(), tags(&[("highway", "trunk")])),
+            (a, tags(&[("highway", "residential")])),
+            (b, tags(&[("highway", "trunk")])),
         ];
         let entries = compute_tag_edit_entries(
             &features,
@@ -489,8 +489,8 @@ mod tests {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
-            (a.clone(), tags(&[("highway", "residential")])),
-            (b.clone(), tags(&[("highway", "trunk")])),
+            (a, tags(&[("highway", "residential")])),
+            (b, tags(&[("highway", "trunk")])),
         ];
         // Value box left showing the original "<2 values>" placeholder text.
         let entries = compute_tag_edit_entries(
@@ -528,8 +528,8 @@ mod tests {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
         let features = vec![
-            (a.clone(), tags(&[("highway", "residential")])),
-            (b.clone(), tags(&[])), // b never had "highway"
+            (a, tags(&[("highway", "residential")])),
+            (b, tags(&[])), // b never had "highway"
         ];
         let entries = compute_tag_edit_entries(
             &features,
@@ -543,7 +543,7 @@ mod tests {
             entries,
             vec![
                 (
-                    a.clone(),
+                    a,
                     "highway".to_string(),
                     Some("residential".to_string()),
                     None
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn rename_with_touched_value_uses_new_value() {
         let a = fref(1, FeatureKind::Node, 1);
-        let features = vec![(a.clone(), tags(&[("highway", "residential")]))];
+        let features = vec![(a, tags(&[("highway", "residential")]))];
         let entries = compute_tag_edit_entries(
             &features,
             "highway",
@@ -575,7 +575,7 @@ mod tests {
             entries,
             vec![
                 (
-                    a.clone(),
+                    a,
                     "highway".to_string(),
                     Some("residential".to_string()),
                     None
@@ -594,10 +594,7 @@ mod tests {
     fn add_sets_new_key_on_all_features_overwriting_existing() {
         let a = fref(1, FeatureKind::Node, 1);
         let b = fref(1, FeatureKind::Node, 2);
-        let features = vec![
-            (a.clone(), tags(&[])),
-            (b.clone(), tags(&[("surface", "gravel")])),
-        ];
+        let features = vec![(a, tags(&[])), (b, tags(&[("surface", "gravel")]))];
         let entries = compute_tag_edit_entries(&features, "", "", "surface", "paved", true);
         assert_eq!(
             entries,

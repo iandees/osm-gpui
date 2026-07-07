@@ -22,7 +22,7 @@ use crate::menu::{
     open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
-use crate::undo::{NodeMoveUndoEntries, UndoStack, UndoableAction};
+use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
 
 use gpui_component::ActiveTheme;
 use osm_gpui::auth;
@@ -158,7 +158,7 @@ pub(crate) fn with_map_viewer(
     f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>),
 ) {
     if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-        let _ = view.update(cx, f);
+        view.update(cx, f);
     }
 }
 
@@ -472,12 +472,11 @@ impl MapViewer {
     /// tracking. Always records the mouse-down position either way, since
     /// both paths need it to distinguish a click from a drag on release.
     fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
-        let hit_move_targets = if self.selected.is_empty() {
-            None
-        } else if self
-            .layer_manager
-            .hit_test_selection(&self.viewport, position, &self.selected)
-            .is_none()
+        let hit_move_targets = if self.selected.is_empty()
+            || self
+                .layer_manager
+                .hit_test_selection(&self.viewport, position, &self.selected)
+                .is_none()
         {
             None
         } else {
@@ -641,7 +640,7 @@ impl MapViewer {
                     .find_layer(sel.layer_id)
                     .and_then(|layer| layer.as_editable())
                     .and_then(|editable| editable.feature_tags(sel))
-                    .map(|tags| (sel.clone(), tags))
+                    .map(|tags| (*sel, tags))
             })
             .collect()
     }
@@ -900,7 +899,7 @@ impl MapViewer {
         if self.selected.len() != 1 || self.nsi_dialog.is_some() {
             return;
         }
-        let target = self.selected[0].clone();
+        let target = self.selected[0];
 
         let dialog = cx.new(|cx| osm_gpui::ui::nsi_dialog::NsiPresetDialog::new(window, cx));
         cx.subscribe(
@@ -961,7 +960,7 @@ impl MapViewer {
                 if before == after {
                     return None;
                 }
-                Some((target.clone(), key.clone(), before, after))
+                Some((*target, key.clone(), before, after))
             })
             .collect();
         if entries.is_empty() {
@@ -1035,7 +1034,7 @@ impl MapViewer {
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
                     let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
-                    let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> =
+                    let mut undo_entries: Vec<NodeMoveUndoEntry> =
                         Vec::with_capacity(originals.len());
                     for &(id, lat, lon) in originals {
                         let anchor = self.viewport.geo_to_screen(lat, lon);
@@ -1234,7 +1233,7 @@ impl MapViewer {
 
         // Calculate visible tiles
         let zoom_level = self.viewport.zoom_level();
-        let tile_zoom = zoom_level.round().max(0.0).min(18.0) as u32;
+        let tile_zoom = zoom_level.round().clamp(0.0, 18.0) as u32;
         let bounds_geo = self.viewport.visible_bounds();
         let visible_tiles = tiles::get_tiles_for_bounds(
             bounds_geo.min_lat,
@@ -2058,8 +2057,7 @@ fn main() {
                     window.on_window_should_close(cx, |window, cx| {
                         if has_unsaved_changes(cx) {
                             if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                                let _ =
-                                    view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
+                                view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
                             }
                             false
                         } else {

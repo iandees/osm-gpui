@@ -70,100 +70,6 @@ fn parse_zoom(raw: &str, default_if_blank: u32) -> Result<u32, ()> {
     Ok(v)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TMPL: &str = "https://tile.example.com/{z}/{x}/{y}.png";
-
-    #[test]
-    fn happy_path_defaults() {
-        let e = validate("Example", TMPL, "", "").unwrap();
-        assert_eq!(e.name, "Example");
-        assert_eq!(e.url_template, TMPL);
-        assert_eq!(e.min_zoom, 0);
-        assert_eq!(e.max_zoom, 19);
-    }
-
-    #[test]
-    fn happy_path_minus_y() {
-        let e = validate(
-            "Foo",
-            "https://tile.example.com/{z}/{x}/{-y}.png",
-            "4",
-            "18",
-        )
-        .unwrap();
-        assert_eq!(e.min_zoom, 4);
-        assert_eq!(e.max_zoom, 18);
-    }
-
-    #[test]
-    fn name_must_be_nonempty() {
-        assert_eq!(
-            validate("  ", TMPL, "", ""),
-            Err(ValidationError::NameEmpty)
-        );
-    }
-
-    #[test]
-    fn template_required() {
-        assert_eq!(
-            validate("Example", "  ", "", ""),
-            Err(ValidationError::TemplateEmpty)
-        );
-    }
-
-    #[test]
-    fn template_missing_z_x_y() {
-        assert_eq!(
-            validate("Example", "https://example.com/a/b/c.png", "", ""),
-            Err(ValidationError::TemplateMissingPlaceholder)
-        );
-    }
-
-    #[test]
-    fn template_cannot_contain_both_y_variants() {
-        assert_eq!(
-            validate(
-                "Example",
-                "https://example.com/{z}/{x}/{y}/{-y}.png",
-                "",
-                ""
-            ),
-            Err(ValidationError::TemplateYAndMinusY)
-        );
-    }
-
-    #[test]
-    fn min_above_max_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "15", "10"),
-            Err(ValidationError::MinZoomAboveMax)
-        );
-    }
-
-    #[test]
-    fn out_of_range_zoom_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "25", ""),
-            Err(ValidationError::MinZoomInvalid)
-        );
-        assert_eq!(
-            validate("Example", TMPL, "", "99"),
-            Err(ValidationError::MaxZoomInvalid)
-        );
-    }
-
-    #[test]
-    fn non_numeric_zoom_rejected() {
-        assert_eq!(
-            validate("Example", TMPL, "abc", ""),
-            Err(ValidationError::MinZoomInvalid)
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Dialog entity
 // ---------------------------------------------------------------------------
@@ -295,5 +201,99 @@ impl Render for CustomImageryDialog {
         let frame = modal::dialog_frame(cx, gpui::px(420.0), "Custom Imagery", body, footer);
 
         modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TMPL: &str = "https://tile.example.com/{z}/{x}/{y}.png";
+
+    #[test]
+    fn happy_path_defaults() {
+        let e = validate("Example", TMPL, "", "").unwrap();
+        assert_eq!(e.name, "Example");
+        assert_eq!(e.url_template, TMPL);
+        assert_eq!(e.min_zoom, 0);
+        assert_eq!(e.max_zoom, 19);
+    }
+
+    #[test]
+    fn happy_path_minus_y() {
+        let e = validate(
+            "Foo",
+            "https://tile.example.com/{z}/{x}/{-y}.png",
+            "4",
+            "18",
+        )
+        .unwrap();
+        assert_eq!(e.min_zoom, 4);
+        assert_eq!(e.max_zoom, 18);
+    }
+
+    #[test]
+    fn name_must_be_nonempty() {
+        assert_eq!(
+            validate("  ", TMPL, "", ""),
+            Err(ValidationError::NameEmpty)
+        );
+    }
+
+    #[test]
+    fn template_required() {
+        assert_eq!(
+            validate("Example", "  ", "", ""),
+            Err(ValidationError::TemplateEmpty)
+        );
+    }
+
+    #[test]
+    fn template_missing_z_x_y() {
+        assert_eq!(
+            validate("Example", "https://example.com/a/b/c.png", "", ""),
+            Err(ValidationError::TemplateMissingPlaceholder)
+        );
+    }
+
+    #[test]
+    fn template_cannot_contain_both_y_variants() {
+        assert_eq!(
+            validate(
+                "Example",
+                "https://example.com/{z}/{x}/{y}/{-y}.png",
+                "",
+                ""
+            ),
+            Err(ValidationError::TemplateYAndMinusY)
+        );
+    }
+
+    #[test]
+    fn min_above_max_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "15", "10"),
+            Err(ValidationError::MinZoomAboveMax)
+        );
+    }
+
+    #[test]
+    fn out_of_range_zoom_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "25", ""),
+            Err(ValidationError::MinZoomInvalid)
+        );
+        assert_eq!(
+            validate("Example", TMPL, "", "99"),
+            Err(ValidationError::MaxZoomInvalid)
+        );
+    }
+
+    #[test]
+    fn non_numeric_zoom_rejected() {
+        assert_eq!(
+            validate("Example", TMPL, "abc", ""),
+            Err(ValidationError::MinZoomInvalid)
+        );
     }
 }

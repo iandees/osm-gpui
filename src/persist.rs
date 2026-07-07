@@ -245,8 +245,8 @@ mod tests {
     fn write_atomic_overwrites_existing_file_fully() {
         let dir = tmp_dir("overwrite");
         let target = dir.join("file.bin");
-        write_atomic(&target, &vec![0x11u8; 10], WriteOpts::default()).unwrap();
-        write_atomic(&target, &vec![0x22u8; 20], WriteOpts::default()).unwrap();
+        write_atomic(&target, &[0x11u8; 10], WriteOpts::default()).unwrap();
+        write_atomic(&target, &[0x22u8; 20], WriteOpts::default()).unwrap();
         assert_eq!(fs::read(&target).unwrap(), vec![0x22u8; 20]);
     }
 

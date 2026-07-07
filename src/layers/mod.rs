@@ -197,6 +197,12 @@ pub struct LayerManager {
     next_id: u64,
 }
 
+impl Default for LayerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LayerManager {
     pub fn new() -> Self {
         Self {
@@ -592,7 +598,7 @@ mod tests {
         }];
 
         let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
-        assert_eq!(hit, Some(selected[0].clone()));
+        assert_eq!(hit, Some(selected[0]));
     }
 
     #[test]

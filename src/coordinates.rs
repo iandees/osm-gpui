@@ -43,7 +43,7 @@ impl GeoBounds {
 /// Web Mercator projection utilities
 pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     // Clamp latitude to avoid projection issues at poles
-    let clamped_lat = lat.max(-85.051128779807).min(85.051128779807);
+    let clamped_lat = lat.clamp(-85.051128779807, 85.051128779807);
 
     // Standard Web Mercator projection (EPSG:3857)
     let x = lon * 20037508.34 / 180.0;
@@ -62,12 +62,12 @@ fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
 
     // Ensure finite values and clamp to valid ranges
     let lat = if lat.is_finite() {
-        lat.max(-85.051128779807).min(85.051128779807)
+        lat.clamp(-85.051128779807, 85.051128779807)
     } else {
         0.0
     };
     let lon = if lon.is_finite() {
-        lon.max(-180.0).min(180.0)
+        lon.clamp(-180.0, 180.0)
     } else {
         0.0
     };
@@ -247,12 +247,12 @@ impl CoordinateTransform {
     pub fn pan_to(&mut self, new_center_lat: f64, new_center_lon: f64) {
         // Validate inputs before updating
         let lat = if new_center_lat.is_finite() {
-            new_center_lat.max(-85.0).min(85.0)
+            new_center_lat.clamp(-85.0, 85.0)
         } else {
             self.center_lat
         };
         let lon = if new_center_lon.is_finite() {
-            new_center_lon.max(-180.0).min(180.0)
+            new_center_lon.clamp(-180.0, 180.0)
         } else {
             self.center_lon
         };
@@ -264,7 +264,7 @@ impl CoordinateTransform {
     pub fn zoom_to(&mut self, new_zoom_level: f64) {
         // Validate zoom level
         let zoom = if new_zoom_level.is_finite() {
-            new_zoom_level.max(1.0).min(20.0)
+            new_zoom_level.clamp(1.0, 20.0)
         } else {
             self.zoom_level
         };
@@ -287,7 +287,7 @@ impl CoordinateTransform {
         let mouse_merc_y = center_merc_y + dy;
 
         // Step 2: Update zoom level
-        let new_zoom = (self.zoom_level + zoom_delta).max(1.0).min(20.0);
+        let new_zoom = (self.zoom_level + zoom_delta).clamp(1.0, 20.0);
         let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
 
         // Step 3: Calculate new center so mouse_merc_x/y stays under the same screen pixel
@@ -346,7 +346,7 @@ impl CoordinateTransform {
 
     /// Get the current zoom level as used by tile servers (integer)
     pub fn tile_zoom_level(&self) -> u32 {
-        self.zoom_level.round().max(0.0).min(20.0) as u32
+        self.zoom_level.round().clamp(0.0, 20.0) as u32
     }
 }
 
@@ -405,7 +405,7 @@ pub fn fit_bounds_to_viewport(
     let tile_size = 256.0;
     let zoom_x = ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2();
     let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
-    let zoom_level = zoom_x.min(zoom_y).max(1.0).min(18.0); // Clamp zoom to [1, 18]
+    let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0); // Clamp zoom to [1, 18]
 
     (center_lat, center_lon, zoom_level)
 }
@@ -429,10 +429,8 @@ pub fn safe_point(x: f32, y: f32, default_x: f32, default_y: f32) -> GpuiPoint<P
 pub fn validate_coords(lat: f64, lon: f64) -> Option<(f64, f64)> {
     if lat.is_finite()
         && lon.is_finite()
-        && lat >= -90.0
-        && lat <= 90.0
-        && lon >= -180.0
-        && lon <= 180.0
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
     {
         Some((lat, lon))
     } else {
@@ -499,7 +497,7 @@ mod tests {
             fit_bounds_to_viewport(40.0, 41.0, -74.5, -73.5, 800.0, 600.0);
         assert!((center_lat - 40.5).abs() < 1e-9);
         assert!((center_lon - (-74.0)).abs() < 1e-9);
-        assert!(zoom >= 1.0 && zoom <= 18.0);
+        assert!((1.0..=18.0).contains(&zoom));
     }
 
     #[test]
@@ -522,7 +520,7 @@ mod tests {
         assert!((center_lat - 40.7128).abs() < 1e-9);
         assert!((center_lon - (-74.0060)).abs() < 1e-9);
         assert!(zoom.is_finite());
-        assert!(zoom >= 1.0 && zoom <= 18.0);
+        assert!((1.0..=18.0).contains(&zoom));
     }
 
     #[test]

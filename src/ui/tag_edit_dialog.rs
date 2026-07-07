@@ -8,17 +8,6 @@ pub enum TagEditField {
     None,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn field_variants_are_distinct() {
-        assert_ne!(TagEditField::Key, TagEditField::Value);
-        assert_ne!(TagEditField::Value, TagEditField::None);
-    }
-}
-
 use gpui::{
     prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     SharedString, Window,
@@ -157,5 +146,16 @@ impl Render for TagEditDialog {
         let frame = modal::dialog_frame(cx, gpui::px(360.0), self.title.clone(), body, footer);
 
         modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_variants_are_distinct() {
+        assert_ne!(TagEditField::Key, TagEditField::Value);
+        assert_ne!(TagEditField::Value, TagEditField::None);
     }
 }

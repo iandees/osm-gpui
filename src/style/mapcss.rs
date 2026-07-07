@@ -157,9 +157,8 @@ impl Stylesheet {
             if p.at_end() {
                 break;
             }
-            match p.parse_rule(&mut warned)? {
-                Some(rule) => rules.push(rule),
-                None => {}
+            if let Some(rule) = p.parse_rule(&mut warned)? {
+                rules.push(rule)
             }
         }
         Ok(Self { rules })

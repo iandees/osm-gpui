@@ -99,6 +99,12 @@ fn attr_str(bytes: &[u8]) -> Result<&str, OsmParseError> {
 
 pub struct OsmParser;
 
+impl Default for OsmParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OsmParser {
     pub fn new() -> Self {
         Self
@@ -759,7 +765,7 @@ mod tests {
         let way = osm_data.ways.get(&42).expect("way 42 should be present");
         assert_eq!(way.nodes, vec![1, 2]);
         assert!(
-            osm_data.ways.get(&999).is_none(),
+            !osm_data.ways.contains_key(&999),
             "way 999 should not exist"
         );
     }

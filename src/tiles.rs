@@ -236,6 +236,12 @@ pub enum TileMessage {
 // Legacy TileManager - no longer used with GPUI assets
 pub struct TileManager;
 
+impl Default for TileManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TileManager {
     pub fn new() -> Self {
         Self

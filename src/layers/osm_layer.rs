@@ -259,6 +259,16 @@ fn project_way_vertices(
     (verts, bbox)
 }
 
+/// Per-way tables produced by [`compute_way_tables`]: parallel vectors of
+/// way ids, bounding boxes, pre-projected `(node_id, x, y)` vertex lists,
+/// and resolved styles, all indexed identically.
+type WayTables = (
+    Vec<i64>,
+    Vec<Option<WayBbox>>,
+    Vec<Vec<(i64, f64, f64)>>,
+    Vec<WayStyle>,
+);
+
 /// Build per-way bboxes, pre-projected vertex lists, and resolved styles in
 /// a single pass so neither the bbox pass nor the render path has to walk
 /// the node HashMap (or the stylesheet) per vertex/way.
@@ -266,12 +276,7 @@ fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
     stylesheet: &Stylesheet,
-) -> (
-    Vec<i64>,
-    Vec<Option<WayBbox>>,
-    Vec<Vec<(i64, f64, f64)>>,
-    Vec<WayStyle>,
-) {
+) -> WayTables {
     let mut ids = Vec::with_capacity(data.ways.len());
     let mut bboxes = Vec::with_capacity(data.ways.len());
     let mut vertices = Vec::with_capacity(data.ways.len());
@@ -945,15 +950,13 @@ impl OsmLayer {
     /// needs a fresh cache entry — no full rebuild. No-op (`None`) if this
     /// layer has no data loaded at all.
     pub fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
-        if self.osm_data.is_none() {
-            return None;
-        }
+        self.osm_data.as_ref()?;
         let new_id = match id {
             Some(id) => {
                 if self
                     .osm_data
                     .as_ref()
-                    .map_or(false, |d| d.nodes.contains_key(&id))
+                    .is_some_and(|d| d.nodes.contains_key(&id))
                 {
                     return None;
                 }
@@ -1054,9 +1057,7 @@ impl OsmLayer {
         {
             return None;
         }
-        let Some(arc) = self.osm_data.as_mut() else {
-            return None;
-        };
+        let arc = self.osm_data.as_mut()?;
         let data = Arc::make_mut(arc);
         let node = data.nodes.remove(&id)?;
 
@@ -1097,9 +1098,7 @@ impl OsmLayer {
     /// `None` if the way isn't found.
     fn delete_way(&mut self, id: i64) -> Option<DeletedFeatureSnapshot> {
         let way_idx = *self.way_id_to_index.get(&id)?;
-        let Some(arc) = self.osm_data.as_mut() else {
-            return None;
-        };
+        let arc = self.osm_data.as_mut()?;
         let data = Arc::make_mut(arc);
         let way = data.ways.remove(&id)?;
 
@@ -1159,7 +1158,7 @@ impl OsmLayer {
                 if self
                     .osm_data
                     .as_ref()
-                    .map_or(false, |d| d.nodes.contains_key(&snapshot.id))
+                    .is_some_and(|d| d.nodes.contains_key(&snapshot.id))
                 {
                     return;
                 }
@@ -2756,7 +2755,7 @@ mod tests {
         assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
 
         let updated = layer.get_osm_data().unwrap();
-        assert!(updated.nodes.get(&1).is_none());
+        assert!(!updated.nodes.contains_key(&1));
     }
 
     #[test]
@@ -2776,8 +2775,8 @@ mod tests {
             .expect("standalone node should delete");
         assert!(layer.is_modified());
         assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
-        assert!(layer.get_osm_data().unwrap().nodes.get(&1).is_none());
-        assert!(layer.node_cache.index_by_id.get(&1).is_none());
+        assert!(!layer.get_osm_data().unwrap().nodes.contains_key(&1));
+        assert!(!layer.node_cache.index_by_id.contains_key(&1));
 
         let viewport = viewport_centered_on(40.0, -74.0);
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
@@ -2881,7 +2880,7 @@ mod tests {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let snapshot = layer.delete_feature(FeatureKind::Node, 1).unwrap();
-        assert!(layer.get_osm_data().unwrap().nodes.get(&1).is_none());
+        assert!(!layer.get_osm_data().unwrap().nodes.contains_key(&1));
 
         layer.restore_feature(snapshot);
         let restored = layer.get_osm_data().unwrap();

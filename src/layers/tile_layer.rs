@@ -108,7 +108,7 @@ fn compute_effective_tile_zoom(
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
 ) -> Option<u32> {
-    let rounded = viewport_z.round().max(0.0).min(18.0) as u32;
+    let rounded = viewport_z.round().clamp(0.0, 18.0) as u32;
     if let Some(min_z) = min_zoom {
         if rounded < min_z {
             return None;
