@@ -117,19 +117,32 @@ static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
 
 static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
-/// Published once per frame by `MapViewer::render` from
-/// `layer_manager.layers().any(|l| l.is_modified())`. Read by `menu::quit`
-/// (a free function with only `&mut App`, no access to the view's
-/// `layer_manager`) to decide whether Cmd+Q / File > Quit should quit
-/// immediately or show a confirmation dialog first.
-pub(crate) static HAS_UNSAVED_CHANGES: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// Weak handle to the live `MapViewer` view, set once when the main window is
+/// created. This exists purely so free functions/global handlers that only
+/// have `&mut App` (like `menu::quit`) or app-level window callbacks (like
+/// the `on_window_should_close` hook) can reach the *real* view and query its
+/// *live* `layer_manager` state at the moment a decision is needed —
+/// deliberately NOT a cached/aggregated boolean. Each check re-reads
+/// `layer.is_modified()` per layer, live, via `has_unsaved_changes` below.
+pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
 
 /// Queue of requests to show the "unsaved changes" quit-confirmation dialog,
 /// pushed by `menu::quit` and drained once per frame by
 /// `MapViewer::check_for_quit_confirm_dialog` — same shape as
 /// `OPEN_CUSTOM_IMAGERY_DIALOG`.
 pub(crate) static SHOW_QUIT_CONFIRM: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
+
+/// Ask the live `MapViewer` (via `MAP_VIEWER_HANDLE`) whether any layer
+/// currently has unsaved changes. This performs a fresh per-layer
+/// `is_modified()` query against the real view every time it's called — no
+/// value is cached or pre-aggregated across frames.
+pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
+    MAP_VIEWER_HANDLE
+        .get()
+        .and_then(|handle| handle.upgrade())
+        .map(|view| view.read(cx).layer_manager.layers().iter().any(|l| l.is_modified()))
+        .unwrap_or(false)
+}
 
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
@@ -1135,13 +1148,6 @@ impl Render for MapViewer {
         self.check_for_quit_confirm_dialog(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
-        // Publish current unsaved-changes state for `menu::quit` (a free
-        // function with only `&mut App`) to read.
-        HAS_UNSAVED_CHANGES.store(
-            self.layer_manager.layers().iter().any(|l| l.is_modified()),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
         if let Some(bus) = SCRIPT_BUS.get() {
@@ -1569,18 +1575,27 @@ fn main() {
                 ]);
                 let view = cx.new(|cx| MapViewer::new(window, cx));
 
+                // Publish a weak handle to the live view so `menu::quit` (a
+                // free function with only `&mut App`) and the
+                // `on_window_should_close` closure below (which only has
+                // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
+                // reach it and query its *live* `layer_manager` state at
+                // decision time, rather than a cached boolean.
+                let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
+
                 // Intercept the OS window-close button (traffic-light / titlebar
                 // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
                 // hook: unlike `on_window_closed` below (which only fires *after*
                 // the window is already gone and can't stop anything), this one
                 // can veto the close by returning `false`. If there are unsaved
-                // changes we cancel the close and enqueue a request for
+                // changes (checked live, per layer, via `has_unsaved_changes`)
+                // we cancel the close and enqueue a request for
                 // `MapViewer::check_for_quit_confirm_dialog` to show the same
                 // confirmation dialog as Cmd+Q; otherwise we let the close
                 // proceed, which triggers `on_window_closed` -> `cx.quit()` as
                 // before.
                 window.on_window_should_close(cx, |_window, cx| {
-                    if HAS_UNSAVED_CHANGES.load(std::sync::atomic::Ordering::Relaxed) {
+                    if has_unsaved_changes(cx) {
                         if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
                             if let Ok(mut g) = queue.lock() {
                                 g.push(());

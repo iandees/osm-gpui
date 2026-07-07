@@ -7,9 +7,9 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 
 use crate::{
-    AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto, AddSavedCustomImagery,
-    DownloadFromOsm, ImageryLoadState, LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo,
-    ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS, HAS_UNSAVED_CHANGES, IMAGERY_INDEX,
+    has_unsaved_changes, AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto,
+    AddSavedCustomImagery, DownloadFromOsm, ImageryLoadState, LayerRequest, OpenOsmFile,
+    OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS, IMAGERY_INDEX,
     LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA, SHOW_QUIT_CONFIRM,
     TOGGLE_DEBUG_OVERLAY,
 };
@@ -57,12 +57,15 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 }
 
 // Define the quit function that is registered with the App (Cmd+Q / File >
-// Quit). If any layer has unsaved changes, don't quit immediately — instead
+// Quit). This free function only has `&mut App` — no access to the view's
+// `layer_manager` — so it asks `has_unsaved_changes` to look up the live
+// `MapViewer` (via `MAP_VIEWER_HANDLE`) and query each layer's
+// `is_modified()` directly, right now, rather than trusting any cached
+// value. If nothing is unsaved, quit immediately as before; otherwise
 // enqueue a request for `MapViewer::check_for_quit_confirm_dialog` to show a
-// confirmation dialog (this free function only has `&mut App`, not the
-// view's `layer_manager`, so it can't build the dialog directly).
+// confirmation dialog (this free function can't build the dialog directly).
 pub(crate) fn quit(_: &Quit, cx: &mut App) {
-    if !HAS_UNSAVED_CHANGES.load(std::sync::atomic::Ordering::Relaxed) {
+    if !has_unsaved_changes(cx) {
         cx.quit();
         return;
     }
