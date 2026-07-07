@@ -75,6 +75,12 @@ pub struct OsmLayer {
     /// (`commit_node_moves`/`set_tag`/`remove_tag`), which only mutate
     /// `osm_data`.
     original_data: Option<Arc<OsmData>>,
+    /// OSM way id for each entry of `way_bboxes`/`way_vertices`/`way_styles`,
+    /// aligned by index. `osm_data.ways` is a `HashMap` keyed by id (not
+    /// positionally ordered), so this is what lets index-aligned code (e.g.
+    /// `commit_node_moves`) recover a way's id from a position in those
+    /// parallel arrays.
+    way_ids: Vec<i64>,
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
     way_bboxes: Vec<Option<WayBbox>>,
@@ -177,11 +183,12 @@ fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
     stylesheet: &Stylesheet,
-) -> (Vec<Option<WayBbox>>, Vec<Vec<(i64, f64, f64)>>, Vec<WayStyle>) {
+) -> (Vec<i64>, Vec<Option<WayBbox>>, Vec<Vec<(i64, f64, f64)>>, Vec<WayStyle>) {
+    let mut ids = Vec::with_capacity(data.ways.len());
     let mut bboxes = Vec::with_capacity(data.ways.len());
     let mut vertices = Vec::with_capacity(data.ways.len());
     let mut styles = Vec::with_capacity(data.ways.len());
-    for way in &data.ways {
+    for way in sorted_ways(data) {
         let mut min_x = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
         let mut min_y = f64::INFINITY;
@@ -202,17 +209,31 @@ fn compute_way_tables(
         } else {
             bboxes.push(Some(WayBbox { min_x, max_x, min_y, max_y }));
         }
+        ids.push(way.id);
         vertices.push(verts);
         styles.push(stylesheet.way_style(&way.tags));
     }
-    (bboxes, vertices, styles)
+    (ids, bboxes, vertices, styles)
+}
+
+/// Return every way in `data.ways` sorted by id. `OsmData.ways` is a
+/// `HashMap` (for O(1) lookup by id), whose iteration order is unspecified;
+/// every derived cache that must line up index-for-index with another
+/// derived cache (`way_bboxes`/`way_vertices`/`way_styles`/`way_id_to_index`/
+/// `node_to_ways`, and the `way_index` R-tree build) is built by walking this
+/// same sorted-by-id order, so rendering/iteration stays deterministic across
+/// runs and reloads of the same data.
+fn sorted_ways(data: &OsmData) -> Vec<&OsmWay> {
+    let mut ways: Vec<&OsmWay> = data.ways.values().collect();
+    ways.sort_unstable_by_key(|w| w.id);
+    ways
 }
 
 /// node id -> OSM way id, for every way that references it. Built once at
 /// data-load time so `commit_node_moves` can find exactly which ways need
 /// their cached vertex/bbox tables recomputed after a node move, instead of
 /// rescanning every way.
-fn build_node_to_ways(ways: &[OsmWay]) -> HashMap<i64, Vec<usize>> {
+fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, Vec<usize>> {
     let mut map: HashMap<i64, Vec<usize>> = HashMap::new();
     for (idx, way) in ways.iter().enumerate() {
         for nid in &way.nodes {
@@ -225,7 +246,7 @@ fn build_node_to_ways(ways: &[OsmWay]) -> HashMap<i64, Vec<usize>> {
 /// OSM way id -> index into `way_vertices`/`way_bboxes`/`way_styles`. Lets
 /// hot paths (indexed hit-testing, incremental move updates) go straight to
 /// the cached arrays instead of a linear `Vec::iter().find()` scan.
-fn build_way_id_index(ways: &[OsmWay]) -> HashMap<i64, usize> {
+fn build_way_id_index(ways: &[&OsmWay]) -> HashMap<i64, usize> {
     ways.iter().enumerate().map(|(idx, w)| (w.id, idx)).collect()
 }
 
@@ -332,7 +353,7 @@ fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>
 
 /// Bulk-build a bounding-box index over every way's mercator bbox. Ways with
 /// no valid bbox (no resolvable nodes) are skipped.
-fn build_way_index(way_bboxes: &[Option<WayBbox>], ways: &[OsmWay]) -> RTree<GeomWithData<Rectangle<[f64; 2]>, i64>> {
+fn build_way_index(way_bboxes: &[Option<WayBbox>], ways: &[&OsmWay]) -> RTree<GeomWithData<Rectangle<[f64; 2]>, i64>> {
     let items: Vec<_> = way_bboxes
         .iter()
         .zip(ways.iter())
@@ -354,6 +375,7 @@ impl OsmLayer {
             visible: true,
             osm_data: None,
             original_data: None,
+            way_ids: Vec::new(),
             way_bboxes: Vec::new(),
             way_vertices: Vec::new(),
             way_styles: Vec::new(),
@@ -374,18 +396,20 @@ impl OsmLayer {
     pub fn new_with_data<N: Into<String>>(name: N, osm_data: Arc<OsmData>) -> Self {
         let stylesheet = Arc::new(Stylesheet::load_default());
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
-        let (way_bboxes, way_vertices, way_styles) = compute_way_tables(&osm_data, &node_cache, &stylesheet);
+        let (way_ids, way_bboxes, way_vertices, way_styles) = compute_way_tables(&osm_data, &node_cache, &stylesheet);
         let layer_bbox = compute_layer_bbox(&node_cache);
         let node_index = build_node_index(&node_cache);
-        let way_index = build_way_index(&way_bboxes, &osm_data.ways);
-        let way_id_to_index = build_way_id_index(&osm_data.ways);
-        let node_to_ways = build_node_to_ways(&osm_data.ways);
+        let ways_sorted = sorted_ways(&osm_data);
+        let way_index = build_way_index(&way_bboxes, &ways_sorted);
+        let way_id_to_index = build_way_id_index(&ways_sorted);
+        let node_to_ways = build_node_to_ways(&ways_sorted);
         let next_new_id = compute_next_new_id(&osm_data);
         Self {
             name: name.into(),
             visible: true,
             osm_data: Some(osm_data.clone()),
             original_data: Some(osm_data),
+            way_ids,
             way_bboxes,
             way_vertices,
             way_styles,
@@ -415,15 +439,17 @@ impl OsmLayer {
     /// or via `apply_upload_result` reconciling a successful upload.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
         self.node_cache = compute_node_cache(&osm_data, &self.stylesheet);
-        let (bboxes, verts, styles) = compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
+        let (ids, bboxes, verts, styles) = compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
+        self.way_ids = ids;
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
         self.way_styles = styles;
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
         self.node_index = build_node_index(&self.node_cache);
-        self.way_index = build_way_index(&self.way_bboxes, &osm_data.ways);
-        self.way_id_to_index = build_way_id_index(&osm_data.ways);
-        self.node_to_ways = build_node_to_ways(&osm_data.ways);
+        let ways_sorted = sorted_ways(&osm_data);
+        self.way_index = build_way_index(&self.way_bboxes, &ways_sorted);
+        self.way_id_to_index = build_way_id_index(&ways_sorted);
+        self.node_to_ways = build_node_to_ways(&ways_sorted);
         self.next_new_id = compute_next_new_id(&osm_data);
         self.osm_data = Some(osm_data.clone());
         self.original_data = Some(osm_data);
@@ -443,7 +469,7 @@ impl OsmLayer {
             None => {
                 let empty = OsmData {
                     nodes: HashMap::new(),
-                    ways: Vec::new(),
+                    ways: HashMap::new(),
                     relations: Vec::new(),
                     bounds: None,
                 };
@@ -489,7 +515,7 @@ impl OsmLayer {
             }
         }
         if !node_id_map.is_empty() {
-            for way in &mut data.ways {
+            for way in data.ways.values_mut() {
                 for nid in &mut way.nodes {
                     if let Some(&new_id) = node_id_map.get(nid) {
                         *nid = new_id;
@@ -498,11 +524,26 @@ impl OsmLayer {
             }
         }
 
-        // Remap way ids/versions (same create-vs-modify unification as nodes).
-        for way in &mut data.ways {
-            if let Some(&(new_id, new_version)) = result.way_id_remap.get(&way.id) {
+        // Remap way ids/versions (same create-vs-modify unification as
+        // nodes). Since a way's id is also its `data.ways` key, this must
+        // remove-then-reinsert under the new id rather than mutating
+        // `way.id` in place through `values_mut()`, which would leave the
+        // entry keyed under the stale id.
+        let way_updates: Vec<(i64, i64, i32)> = data
+            .ways
+            .keys()
+            .filter_map(|&old_id| {
+                result
+                    .way_id_remap
+                    .get(&old_id)
+                    .map(|&(new_id, new_version)| (old_id, new_id, new_version))
+            })
+            .collect();
+        for (old_id, new_id, new_version) in way_updates {
+            if let Some(mut way) = data.ways.remove(&old_id) {
                 way.id = new_id;
                 way.version = new_version;
+                data.ways.insert(new_id, way);
             }
         }
 
@@ -622,7 +663,8 @@ impl OsmLayer {
         // -- Patch way_vertices/way_bboxes/way_styles + way_index for the
         // touched ways only. --
         for &way_idx in &touched_ways {
-            let way = &data.ways[way_idx];
+            let way_id = self.way_ids[way_idx];
+            let Some(way) = data.ways.get(&way_id) else { continue; };
 
             // Remove the way's stale R-tree entry (old bbox), if any.
             if let Some(old_bbox) = self.way_bboxes[way_idx] {
@@ -682,7 +724,7 @@ impl OsmLayer {
         let mut data = (*current).clone();
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
-            FeatureKind::Way => data.ways.iter_mut().find(|w| w.id == id).map(|w| &mut w.tags),
+            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
         };
         let Some(tags) = tags else { return; };
         tags.insert(key.to_string(), value.to_string());
@@ -700,7 +742,7 @@ impl OsmLayer {
         let mut data = (*current).clone();
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
-            FeatureKind::Way => data.ways.iter_mut().find(|w| w.id == id).map(|w| &mut w.tags),
+            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
         };
         let Some(tags) = tags else { return; };
         tags.remove(key);
@@ -720,7 +762,7 @@ impl OsmLayer {
                 }
             }
             FeatureKind::Way => {
-                let Some(way) = data.ways.iter().find(|w| w.id == id) else { return; };
+                let Some(way) = data.ways.get(&id) else { return; };
                 if let Some(&idx) = self.way_id_to_index.get(&id) {
                     self.way_styles[idx] = self.stylesheet.way_style(&way.tags);
                 }
@@ -858,13 +900,15 @@ impl OsmLayer {
     /// `way_vertices`/`way_bboxes`/`way_styles`/`way_index`/`way_id_to_index`
     /// and drops this way's index from every node's `node_to_ways` entry
     /// (shifting every index greater than the removed way's, since removing
-    /// from the middle of `data.ways` shifts everything after it). Marks the
-    /// layer modified. `None` if the way isn't found.
+    /// from the middle of the index-aligned `way_ids`/`way_vertices`/
+    /// `way_bboxes`/`way_styles` arrays shifts everything after it; `data.ways`
+    /// itself is a `HashMap` and needs no shifting). Marks the layer modified.
+    /// `None` if the way isn't found.
     fn delete_way(&mut self, id: i64) -> Option<DeletedFeatureSnapshot> {
         let Some(current) = self.osm_data.clone() else { return None; };
         let mut data = (*current).clone();
         let way_idx = *self.way_id_to_index.get(&id)?;
-        let way = data.ways.remove(way_idx);
+        let way = data.ways.remove(&id)?;
 
         if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
             self.way_index.remove(&GeomWithData::new(
@@ -872,6 +916,7 @@ impl OsmLayer {
                 id,
             ));
         }
+        self.way_ids.remove(way_idx);
         self.way_vertices.remove(way_idx);
         self.way_bboxes.remove(way_idx);
         self.way_styles.remove(way_idx);
@@ -968,15 +1013,16 @@ impl OsmLayer {
             }
         }
 
-        let way_idx = data.ways.len();
+        let way_idx = self.way_vertices.len();
         self.way_id_to_index.insert(way.id, way_idx);
         for nid in &way.nodes {
             self.node_to_ways.entry(*nid).or_default().push(way_idx);
         }
+        self.way_ids.push(way.id);
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
         self.way_styles.push(self.stylesheet.way_style(&way.tags));
-        data.ways.push(way);
+        data.ways.insert(way.id, way);
         self.modified = true;
         self.osm_data = Some(Arc::new(data));
     }
@@ -990,6 +1036,7 @@ impl OsmLayer {
     pub fn clear_osm_data(&mut self) {
         self.osm_data = None;
         self.original_data = None;
+        self.way_ids.clear();
         self.way_bboxes.clear();
         self.way_vertices.clear();
         self.way_styles.clear();
@@ -1019,13 +1066,14 @@ impl OsmLayer {
         self.stylesheet = stylesheet;
         if let Some(data) = self.osm_data.clone() {
             self.node_cache = compute_node_cache(&data, &self.stylesheet);
-            let (bboxes, verts, styles) = compute_way_tables(&data, &self.node_cache, &self.stylesheet);
+            let (ids, bboxes, verts, styles) = compute_way_tables(&data, &self.node_cache, &self.stylesheet);
+            self.way_ids = ids;
             self.way_bboxes = bboxes;
             self.way_vertices = verts;
             self.way_styles = styles;
             self.layer_bbox = compute_layer_bbox(&self.node_cache);
             self.node_index = build_node_index(&self.node_cache);
-            self.way_index = build_way_index(&self.way_bboxes, &data.ways);
+            self.way_index = build_way_index(&self.way_bboxes, &sorted_ways(&data));
         }
     }
 }
@@ -1065,7 +1113,7 @@ impl MapLayer for OsmLayer {
 
     fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>> {
         let data = self.osm_data.as_ref()?;
-        let way = data.ways.iter().find(|w| w.id == way_id)?;
+        let way = data.ways.get(&way_id)?;
         Some(way.nodes.clone())
     }
 
@@ -1409,7 +1457,7 @@ impl MapLayer for OsmLayer {
                 n.tags.clone()
             }
             FeatureKind::Way => {
-                let w = data.ways.iter().find(|w| w.id == feature.id)?;
+                let w = data.ways.get(&feature.id)?;
                 w.tags.clone()
             }
         };
@@ -1456,7 +1504,7 @@ impl MapLayer for OsmLayer {
                 ));
             }
             FeatureKind::Way => {
-                let Some(way) = osm_data.ways.iter().find(|w| w.id == feature.id) else { return; };
+                let Some(way) = osm_data.ways.get(&feature.id) else { return; };
                 if way.nodes.len() < 2 { return; }
 
                 let origin_x = bounds.origin.x;
@@ -1520,9 +1568,13 @@ mod tests {
         for n in nodes {
             map.insert(n.id, n);
         }
+        let mut way_map = HashMap::new();
+        for w in ways {
+            way_map.insert(w.id, w);
+        }
         Arc::new(OsmData {
             nodes: map,
-            ways,
+            ways: way_map,
             relations: Vec::new(),
             bounds: None,
         })
@@ -1711,7 +1763,7 @@ mod tests {
         assert!(layer.is_modified());
         let updated = layer.get_osm_data().unwrap();
         assert_eq!(
-            updated.ways[0].tags.get("surface"),
+            updated.ways[&10].tags.get("surface"),
             Some(&"paved".to_string())
         );
     }
@@ -2085,8 +2137,8 @@ mod tests {
         assert_eq!(snapshot.tags, vec![("highway".to_string(), "residential".to_string())]);
 
         let updated = layer.get_osm_data().unwrap();
-        assert!(updated.ways.iter().all(|w| w.id != 10), "way 10 must be gone");
-        assert!(updated.ways.iter().any(|w| w.id == 20), "way 20 must remain");
+        assert!(!updated.ways.contains_key(&10), "way 10 must be gone");
+        assert!(updated.ways.contains_key(&20), "way 20 must remain");
         // Member nodes of the deleted way are left in place.
         assert!(updated.nodes.contains_key(&1));
         assert!(updated.nodes.contains_key(&2));
@@ -2146,7 +2198,7 @@ mod tests {
         layer.restore_feature(snapshot);
         assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
         let restored = layer.get_osm_data().unwrap();
-        let way = restored.ways.iter().find(|w| w.id == 10).unwrap();
+        let way = restored.ways.get(&10).unwrap();
         assert_eq!(way.tags.get("highway"), Some(&"residential".to_string()));
 
         // node_to_ways was patched so the restored way is picked up by a
@@ -2231,7 +2283,9 @@ mod tests {
         let current = layer.get_osm_data().unwrap();
         let mut new_data = (*current).clone();
         new_data.nodes.insert(-1, OsmNode { id: -1, lat: 40.001, lon: -74.001, version: 0, tags: empty_tags() });
-        new_data.ways.push(OsmWay { id: -2, nodes: vec![1, -1], version: 0, tags: empty_tags() });
+        new_data
+            .ways
+            .insert(-2, OsmWay { id: -2, nodes: vec![1, -1], version: 0, tags: empty_tags() });
         layer.set_osm_data_for_test(Arc::new(new_data));
 
         let diff = layer.diff_for_upload();
@@ -2246,7 +2300,7 @@ mod tests {
         let updated = layer.get_osm_data().unwrap();
         assert!(updated.nodes.contains_key(&999), "new node id should be present");
         assert!(!updated.nodes.contains_key(&-1), "old local id should be gone");
-        let way = updated.ways.iter().find(|w| w.id == 888).expect("way should have its new id");
+        let way = updated.ways.get(&888).expect("way should have its new id");
         assert_eq!(way.nodes, vec![1, 999], "way must reference the node's NEW id, not the stale local one");
         assert!(!layer.is_modified());
         assert!(layer.diff_for_upload().is_empty());

@@ -404,7 +404,7 @@ mod tests {
         let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
-        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let data = Arc::new(OsmData { nodes, ways: HashMap::new(), relations: Vec::new(), bounds: None });
         let layer = OsmLayer::new_with_data("L", data);
 
         let mut manager = LayerManager::new();
@@ -433,7 +433,7 @@ mod tests {
         let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, version: 1, tags: HashMap::new() };
         let mut nodes = HashMap::new();
         nodes.insert(1, node);
-        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let data = Arc::new(OsmData { nodes, ways: HashMap::new(), relations: Vec::new(), bounds: None });
         let layer = OsmLayer::new_with_data("L", data);
 
         let mut manager = LayerManager::new();

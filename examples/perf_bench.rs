@@ -42,7 +42,7 @@ fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc<OsmData> {
     let mut rng = Lcg(42);
     let mut nodes = HashMap::new();
-    let mut ways = Vec::with_capacity(n_ways);
+    let mut ways = HashMap::with_capacity(n_ways);
     let mut next_id: i64 = 0;
     // ~0.0001 deg is roughly 10m — a typical way-vertex spacing.
     const STEP: f64 = 0.0001;
@@ -65,7 +65,7 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             8 => tags(&[("waterway", "stream")]),
             _ => HashMap::new(),
         };
-        ways.push(OsmWay { id: wid, nodes: node_ids, tags: t, version: 1 });
+        ways.insert(wid, OsmWay { id: wid, nodes: node_ids, tags: t, version: 1 });
     }
     for _ in 0..n_poi_nodes {
         let id = next_id;
@@ -104,7 +104,7 @@ fn bench<F: FnMut() -> u64>(name: &str, iters: usize, mut f: F) {
 /// Replica of render_canvas's way loop: cull, resolve style, project, build
 /// quads grouped by style. Everything except the final window.paint_path.
 fn render_ways_cpu(
-    layer_data: &OsmData,
+    ways_sorted: &[&OsmWay],
     way_vertices: &[Vec<(i64, f64, f64)>],
     way_bboxes: &[Option<(f64, f64, f64, f64)>],
     viewport: &Viewport,
@@ -132,7 +132,7 @@ fn render_ways_cpu(
         let (color, width) = match cached_styles {
             Some(cs) => cs[i],
             None => {
-                let s = stylesheet.way_style(&layer_data.ways[i].tags);
+                let s = stylesheet.way_style(&ways_sorted[i].tags);
                 (s.color, s.width)
             }
         };
@@ -256,9 +256,12 @@ fn main() {
         merc.insert(n.id, (mx, my));
         flat.push((n.id, mx, my));
     }
+    // Iterate ways sorted by id, matching OsmLayer's deterministic table order.
+    let mut ways_sorted: Vec<&OsmWay> = data.ways.values().collect();
+    ways_sorted.sort_by_key(|w| w.id);
     let mut way_vertices: Vec<Vec<(i64, f64, f64)>> = Vec::with_capacity(data.ways.len());
     let mut way_bboxes: Vec<Option<(f64, f64, f64, f64)>> = Vec::with_capacity(data.ways.len());
-    for w in &data.ways {
+    for w in &ways_sorted {
         let mut vs = Vec::with_capacity(w.nodes.len());
         let (mut min_x, mut max_x, mut min_y, mut max_y) =
             (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
@@ -274,8 +277,7 @@ fn main() {
         way_bboxes.push(if vs.is_empty() { None } else { Some((min_x, max_x, min_y, max_y)) });
         way_vertices.push(vs);
     }
-    let cached_way_styles: Vec<(u32, f32)> = data
-        .ways
+    let cached_way_styles: Vec<(u32, f32)> = ways_sorted
         .iter()
         .map(|w| {
             let s = stylesheet.way_style(&w.tags);
@@ -285,16 +287,16 @@ fn main() {
 
     println!("\n-- per-frame render CPU (everything except GPU submit) --");
     bench("ways z14 all visible: current", 30, || {
-        render_ways_cpu(&data, &way_vertices, &way_bboxes, &viewport, &stylesheet, None, 0.0)
+        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, None, 0.0)
     });
     bench("ways z14: precomputed styles (proposed)", 30, || {
-        render_ways_cpu(&data, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 0.0)
+        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 0.0)
     });
     bench("ways z14: cached styles + 1px decimation (proposed)", 30, || {
-        render_ways_cpu(&data, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 1.0)
+        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport, &stylesheet, Some(&cached_way_styles), 1.0)
     });
     bench("ways z17 (culling active): current", 30, || {
-        render_ways_cpu(&data, &way_vertices, &way_bboxes, &viewport_z17, &stylesheet, None, 0.0)
+        render_ways_cpu(&ways_sorted, &way_vertices, &way_bboxes, &viewport_z17, &stylesheet, None, 0.0)
     });
     bench("nodes: cull+hashmap+style (current)", 30, || {
         render_nodes_cpu(&data, &flat, &viewport, &stylesheet, false)

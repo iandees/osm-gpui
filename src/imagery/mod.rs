@@ -6,7 +6,6 @@
 //! supported — WMS, Bing, and other types are filtered out.
 
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -138,48 +137,20 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// Max number of attempts for the ELI download, including the first try.
-const MAX_ATTEMPTS: u32 = 3;
-/// Delay before each retry, indexed by (attempt number - 1).
-const RETRY_DELAYS: [Duration; MAX_ATTEMPTS as usize - 1] = [
-    Duration::from_millis(200),
-    Duration::from_millis(500),
-];
-
 /// `GET` the ELI GeoJSON with a small bounded retry on transport errors and
 /// retryable HTTP status codes (see `crate::is_retryable_status`). Other 4xx
 /// responses are returned immediately since retrying won't help.
 fn download() -> anyhow::Result<String> {
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
+    download_with(&crate::http::UreqClient::new())
+}
 
-        let result = ureq::get(ELI_URL)
-            .set("User-Agent", crate::USER_AGENT)
-            .timeout(Duration::from_secs(30))
-            .call();
-
-        let should_retry = match &result {
-            Ok(_) => false,
-            Err(ureq::Error::Status(status, _)) => crate::is_retryable_status(*status),
-            Err(ureq::Error::Transport(_)) => true,
-        };
-
-        match result {
-            Ok(response) => {
-                let mut body = String::new();
-                response.into_reader().read_to_string(&mut body)?;
-                return Ok(body);
-            }
-            Err(e) => {
-                if should_retry && attempt < MAX_ATTEMPTS {
-                    std::thread::sleep(RETRY_DELAYS[(attempt - 1) as usize]);
-                } else {
-                    return Err(e.into());
-                }
-            }
-        }
-    }
+/// Same as `download`, but against an injected `HttpClient` so it's testable
+/// without a real network.
+fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
+    let req = crate::http::HttpRequest::get(ELI_URL);
+    let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    resp.into_string().map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 /// Parse the ELI GeoJSON body into a list of `tms`-type imagery entries.
@@ -425,6 +396,24 @@ pub fn entries_for_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_with_retries_then_succeeds() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(503, "busy"), ok(200, "geojson body")]);
+        let body = download_with(&client).unwrap();
+        assert_eq!(body, "geojson body");
+        assert_eq!(client.request_count(), 2);
+    }
+
+    #[test]
+    fn download_with_does_not_retry_non_retryable_status() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(400, "bad request")]);
+        let err = download_with(&client);
+        assert!(err.is_err());
+        assert_eq!(client.request_count(), 1);
+    }
 
     #[test]
     fn write_cache_atomic_writes_full_content_and_no_tmp_left_behind() {

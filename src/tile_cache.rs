@@ -5,7 +5,6 @@ use std::fmt;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
@@ -395,47 +394,52 @@ fn tile_download_semaphore() -> &'static Semaphore {
     TILE_DOWNLOAD_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_TILE_DOWNLOADS))
 }
 
+/// Up to this many bytes of an error response body are kept (as a sanitized snippet)
+/// for display inside a tile.
+const ERROR_SNIPPET_BYTES: usize = 120;
+
 fn download_file_sync(url: &str) -> Result<Vec<u8>, TileFetchError> {
+    download_file_sync_with(&crate::http::UreqClient::new(), url)
+}
+
+/// Same as `download_file_sync`, but against an injected `HttpClient` so it's
+/// testable without a real network. Kept `pub(crate)` since tests are the only
+/// other caller.
+pub(crate) fn download_file_sync_with(
+    client: &dyn crate::http::HttpClient,
+    url: &str,
+) -> Result<Vec<u8>, TileFetchError> {
     // Cap concurrent in-flight tile downloads (see MAX_CONCURRENT_TILE_DOWNLOADS).
-    // Held for the duration of the request below.
+    // Held for the duration of the request (including retries) below.
     let _permit = tile_download_semaphore().acquire();
 
-    // Use ureq for synchronous HTTP requests that don't require Tokio
-    let result = ureq::get(url)
-        .set("User-Agent", crate::USER_AGENT)
-        .set("Referer", "https://github.com/iandees/osm-gpui")
-        .timeout(std::time::Duration::from_secs(30))
-        .call();
+    let req = crate::http::HttpRequest::get(url)
+        .header("Referer", "https://github.com/iandees/osm-gpui");
 
-    let response = match result {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(status, resp)) => {
-            // Read up to ~120 bytes of the body for a snippet, sanitize whitespace.
-            let mut buf = Vec::new();
-            let _ = resp.into_reader().take(120).read_to_end(&mut buf);
-            let snippet = if buf.is_empty() {
-                None
-            } else {
-                let raw = String::from_utf8_lossy(&buf);
-                let cleaned: String = raw
-                    .chars()
-                    .map(|c| if c.is_control() { ' ' } else { c })
-                    .collect();
-                let trimmed = cleaned.trim().to_string();
-                if trimmed.is_empty() { None } else { Some(trimmed) }
-            };
-            return Err(TileFetchError::Http { status, body_snippet: snippet });
+    match crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard()) {
+        Ok(resp) => Ok(resp.body),
+        Err(crate::http::HttpError::Status { status, body }) => {
+            let snippet = sanitize_snippet(&body);
+            Err(TileFetchError::Http { status, body_snippet: snippet })
         }
-        Err(ureq::Error::Transport(t)) => {
-            return Err(TileFetchError::Transport(format!("{:?}", t.kind())));
-        }
-    };
-
-    let mut bytes = Vec::new();
-    if let Err(e) = response.into_reader().read_to_end(&mut bytes) {
-        return Err(TileFetchError::Io(format!("read: {}", e)));
+        Err(crate::http::HttpError::Transport(msg)) => Err(TileFetchError::Transport(msg)),
     }
-    Ok(bytes)
+}
+
+/// Sanitize up to `ERROR_SNIPPET_BYTES` bytes of an error body into a short,
+/// control-character-free snippet suitable for display inside a tile.
+fn sanitize_snippet(body: &[u8]) -> Option<String> {
+    let truncated = &body[..body.len().min(ERROR_SNIPPET_BYTES)];
+    if truncated.is_empty() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(truncated);
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
 fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, String> {
@@ -583,6 +587,37 @@ mod tests {
         assert_eq!(TileFetchError::EmptyBody.to_string(), "Empty body");
         assert_eq!(TileFetchError::NotImage.to_string(), "Not an image");
         assert_eq!(TileFetchError::Io("write: nope".into()).to_string(), "Disk: write: nope");
+    }
+
+    #[test]
+    fn download_file_sync_with_retries_then_succeeds() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(503, "busy"), ok(200, vec![1u8, 2, 3])]);
+        let bytes = download_file_sync_with(&client, "https://tile.example.test/1/2/3.png").unwrap();
+        assert_eq!(bytes, vec![1u8, 2, 3]);
+        assert_eq!(client.request_count(), 2);
+    }
+
+    #[test]
+    fn download_file_sync_with_maps_http_error_to_snippet() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(404, "not found here")]);
+        let err = download_file_sync_with(&client, "https://tile.example.test/1/2/3.png").unwrap_err();
+        match err {
+            TileFetchError::Http { status, body_snippet } => {
+                assert_eq!(status, 404);
+                assert_eq!(body_snippet.as_deref(), Some("not found here"));
+            }
+            other => panic!("expected Http error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn download_file_sync_with_maps_transport_error() {
+        use crate::http::fake::{transport_err, FakeClient};
+        let client = FakeClient::new(vec![transport_err("dns"), transport_err("dns"), transport_err("dns")]);
+        let err = download_file_sync_with(&client, "https://tile.example.test/1/2/3.png").unwrap_err();
+        assert!(matches!(err, TileFetchError::Transport(_)));
     }
 
     #[test]

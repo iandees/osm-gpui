@@ -1449,13 +1449,20 @@ impl MapViewer {
         );
 
         let base_url = settings_store::api_base_url();
-        let token = auth::current_token(&auth::oauth_base_for(&base_url))
-            .map(|t| t.access_token);
 
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { osm_api::fetch_bbox(bounds, &base_url, token.as_deref()) })
+                .spawn(async move {
+                    // ensure_fresh_token does a network refresh if the stored token is
+                    // expired, so run it here on the background thread rather than the
+                    // UI thread. Any error (not logged in, refresh failed) falls back
+                    // to an anonymous request, same as when there's no stored login.
+                    let token = auth::ensure_fresh_token(&auth::oauth_base_for(&base_url))
+                        .ok()
+                        .map(|t| t.access_token);
+                    osm_api::fetch_bbox(bounds, &base_url, token.as_deref())
+                })
                 .await;
 
             let _ = this.update(cx, |this, cx| {

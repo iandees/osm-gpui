@@ -13,10 +13,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::http::{HttpClient, HttpError, HttpRequest, HttpResponse, RetryPolicy, UreqClient};
 use crate::settings_store::PRIMARY_API_URL;
 
 /// Client ID used when no per-server override is configured in settings (see
@@ -261,18 +261,17 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     }
     let code = code.ok_or(AuthError::NoRedirect)?;
 
-    let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base))
-        .set("User-Agent", crate::USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .send_form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", &client_id),
-            ("code", &code),
-            ("redirect_uri", &redirect_uri),
-            ("code_verifier", &code_verifier),
-        ]);
-
-    let (access_token, refresh_token, expires_at) = parse_token_response(token_response)?;
+    let (access_token, refresh_token, expires_at) = token_request_with(
+        &UreqClient::new(),
+        &oauth_base,
+        vec![
+            ("grant_type".to_string(), "authorization_code".to_string()),
+            ("client_id".to_string(), client_id.clone()),
+            ("code".to_string(), code),
+            ("redirect_uri".to_string(), redirect_uri),
+            ("code_verifier".to_string(), code_verifier),
+        ],
+    )?;
 
     let (display_name, user_id) = fetch_user_details(api_base_url, &access_token)?;
 
@@ -295,20 +294,25 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
 /// keeping the previously-known display name/user id (the token endpoint doesn't return
 /// those). Returns the new stored token and persists it.
 pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
+    refresh_with(&UreqClient::new(), oauth_base_url)
+}
+
+/// Same as `refresh`, but against an injected `HttpClient` so it's testable without a
+/// real network. Kept `pub(crate)` since tests are the only other caller.
+pub(crate) fn refresh_with(client: &dyn HttpClient, oauth_base_url: &str) -> Result<StoredToken, AuthError> {
     let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
     let refresh_token_value = existing.refresh_token.clone().ok_or(AuthError::NoRefreshToken)?;
     let client_id = client_id_for(oauth_base_url);
 
-    let token_response = ureq::post(&format!("{}/oauth2/token", oauth_base_url))
-        .set("User-Agent", crate::USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .send_form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", &client_id),
-            ("refresh_token", &refresh_token_value),
-        ]);
-
-    let (access_token, refresh_token, expires_at) = parse_token_response(token_response)?;
+    let (access_token, refresh_token, expires_at) = token_request_with(
+        client,
+        oauth_base_url,
+        vec![
+            ("grant_type".to_string(), "refresh_token".to_string()),
+            ("client_id".to_string(), client_id),
+            ("refresh_token".to_string(), refresh_token_value),
+        ],
+    )?;
 
     let token = StoredToken {
         access_token,
@@ -325,21 +329,45 @@ pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
 
 /// Return the current token for `oauth_base_url`, transparently refreshing it first if
 /// it's expired and a refresh token is available. Callers that need a valid bearer token
-/// (e.g. osm_api.rs call sites, once wired up) should use this instead of
-/// `current_token` directly.
+/// (e.g. the OSM API download path in main.rs) should use this instead of
+/// `current_token` directly, which never refreshes.
 pub fn ensure_fresh_token(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
+    ensure_fresh_token_with(&UreqClient::new(), oauth_base_url)
+}
+
+/// Same as `ensure_fresh_token`, but against an injected `HttpClient` so it's testable
+/// without a real network. Kept `pub(crate)` since tests are the only other caller.
+pub(crate) fn ensure_fresh_token_with(
+    client: &dyn HttpClient,
+    oauth_base_url: &str,
+) -> Result<StoredToken, AuthError> {
     let token = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
     if !token.is_expired() {
         return Ok(token);
     }
-    refresh(oauth_base_url)
+    refresh_with(client, oauth_base_url)
+}
+
+/// POST a token-endpoint request (authorization_code or refresh_token grant) and parse
+/// the access/refresh/expiry triple out of the response, handling OSM's JSON body
+/// shape. No retries: token requests aren't idempotent-safe to blindly retry (a
+/// authorization `code` is single-use, and retrying a timed-out request risks the
+/// server having already consumed it).
+fn token_request_with(
+    client: &dyn HttpClient,
+    oauth_base: &str,
+    form: Vec<(String, String)>,
+) -> Result<(String, Option<String>, Option<i64>), AuthError> {
+    let req = HttpRequest::post_form(format!("{}/oauth2/token", oauth_base), form);
+    let response = crate::http::fetch_with_retries(client, &req, &RetryPolicy::none());
+    parse_token_response(response)
 }
 
 /// Parse an access/refresh/expiry triple out of a token-endpoint response, handling the
-/// ureq result and OSM's JSON body shape. Shared by the initial code exchange and the
+/// HTTP result and OSM's JSON body shape. Shared by the initial code exchange and the
 /// refresh-token grant.
 fn parse_token_response(
-    token_response: Result<ureq::Response, ureq::Error>,
+    token_response: Result<HttpResponse, HttpError>,
 ) -> Result<(String, Option<String>, Option<i64>), AuthError> {
     match token_response {
         Ok(resp) => {
@@ -363,33 +391,35 @@ fn parse_token_response(
                 .map(|secs| now_unix() + secs);
             Ok((access_token, refresh_token, expires_at))
         }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            Err(AuthError::Http { status, body })
+        Err(HttpError::Status { status, body }) => {
+            Err(AuthError::Http { status, body: String::from_utf8_lossy(&body).into_owned() })
         }
-        Err(e) => Err(AuthError::Network(e.to_string())),
+        Err(HttpError::Transport(msg)) => Err(AuthError::Network(msg)),
     }
 }
 
 /// `GET /api/0.6/user/details.json` with the given bearer token. Returns (display_name, id).
 fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String, u64), AuthError> {
+    fetch_user_details_with(&UreqClient::new(), api_base_url, access_token)
+}
+
+/// Same as `fetch_user_details`, but against an injected `HttpClient` so it's testable
+/// without a real network.
+fn fetch_user_details_with(
+    client: &dyn HttpClient,
+    api_base_url: &str,
+    access_token: &str,
+) -> Result<(String, u64), AuthError> {
     let url = format!("{}/api/0.6/user/details.json", api_base_url.trim_end_matches('/'));
-    let response = ureq::get(&url)
-        .set("User-Agent", crate::USER_AGENT)
-        .set("Authorization", &format!("Bearer {}", access_token))
-        .timeout(Duration::from_secs(30))
-        .call();
+    let req = HttpRequest::get(url).bearer(access_token);
+    let response = crate::http::fetch_with_retries(client, &req, &RetryPolicy::none());
 
     let body = match response {
-        Ok(resp) => resp
-            .into_string()
-            .map_err(|e| AuthError::Network(e.to_string()))?,
-        Err(ureq::Error::Status(status, resp)) => {
-            let mut buf = String::new();
-            let _ = resp.into_reader().take(4096).read_to_string(&mut buf);
-            return Err(AuthError::Http { status, body: buf });
+        Ok(resp) => resp.into_string().map_err(|e| AuthError::Network(e.to_string()))?,
+        Err(HttpError::Status { status, body }) => {
+            return Err(AuthError::Http { status, body: String::from_utf8_lossy(&body).into_owned() });
         }
-        Err(e) => return Err(AuthError::Network(e.to_string())),
+        Err(HttpError::Transport(msg)) => return Err(AuthError::Network(msg)),
     };
 
     let json: serde_json::Value =
@@ -733,6 +763,69 @@ mod tests {
         save_to(&path, &store).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn ensure_fresh_token_with_returns_unexpired_token_without_network() {
+        init_store(TokenStore::default());
+        let oauth_base = "https://auth-test-valid.example";
+        set_token(oauth_base, StoredToken {
+            access_token: "valid-token".into(),
+            display_name: "alice".into(),
+            user_id: 1,
+            refresh_token: Some("refresh-tok".into()),
+            expires_at: Some(now_unix() + 3600),
+        });
+        let client = crate::http::fake::FakeClient::new(vec![]);
+        let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
+        assert_eq!(token.access_token, "valid-token");
+        assert_eq!(client.request_count(), 0);
+    }
+
+    #[test]
+    fn ensure_fresh_token_with_refreshes_expired_token() {
+        init_store(TokenStore::default());
+        let oauth_base = "https://auth-test-expired-ok.example";
+        set_token(oauth_base, StoredToken {
+            access_token: "old-token".into(),
+            display_name: "alice".into(),
+            user_id: 1,
+            refresh_token: Some("refresh-tok".into()),
+            expires_at: Some(now_unix() - 10),
+        });
+        let body = r#"{"access_token":"new-token","expires_in":3600}"#;
+        let client = crate::http::fake::FakeClient::new(vec![crate::http::fake::ok(200, body)]);
+        let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
+        assert_eq!(token.access_token, "new-token");
+        assert_eq!(token.display_name, "alice");
+        // Response omitted a new refresh_token, so the old one is kept.
+        assert_eq!(token.refresh_token.as_deref(), Some("refresh-tok"));
+        assert!(!token.is_expired());
+    }
+
+    #[test]
+    fn ensure_fresh_token_with_propagates_refresh_failure() {
+        init_store(TokenStore::default());
+        let oauth_base = "https://auth-test-expired-fail.example";
+        set_token(oauth_base, StoredToken {
+            access_token: "old-token".into(),
+            display_name: "alice".into(),
+            user_id: 1,
+            refresh_token: Some("refresh-tok".into()),
+            expires_at: Some(now_unix() - 10),
+        });
+        let client =
+            crate::http::fake::FakeClient::new(vec![crate::http::fake::status_err(400, "invalid_grant")]);
+        let err = ensure_fresh_token_with(&client, oauth_base).unwrap_err();
+        assert!(matches!(err, AuthError::Http { status: 400, .. }));
+    }
+
+    #[test]
+    fn ensure_fresh_token_with_not_logged_in_is_an_error() {
+        init_store(TokenStore::default());
+        let client = crate::http::fake::FakeClient::new(vec![]);
+        let err = ensure_fresh_token_with(&client, "https://auth-test-nologin.example").unwrap_err();
+        assert!(matches!(err, AuthError::NotLoggedIn));
     }
 
     #[test]

@@ -73,13 +73,8 @@ pub fn diff_osm_data(original: &OsmData, current: &OsmData) -> LayerDiff {
         }
     }
 
-    let original_ways_by_id: std::collections::HashMap<i64, &OsmWay> =
-        original.ways.iter().map(|w| (w.id, w)).collect();
-    let current_way_ids: std::collections::HashSet<i64> =
-        current.ways.iter().map(|w| w.id).collect();
-
-    for way in &current.ways {
-        match original_ways_by_id.get(&way.id) {
+    for way in current.ways.values() {
+        match original.ways.get(&way.id) {
             None => diff.created_ways.push(way.clone()),
             Some(orig) => {
                 if orig.nodes != way.nodes || orig.tags != way.tags {
@@ -88,8 +83,8 @@ pub fn diff_osm_data(original: &OsmData, current: &OsmData) -> LayerDiff {
             }
         }
     }
-    for orig in &original.ways {
-        if !current_way_ids.contains(&orig.id) {
+    for orig in original.ways.values() {
+        if !current.ways.contains_key(&orig.id) {
             diff.deleted_way_ids.push((orig.id, orig.version));
         }
     }
@@ -111,7 +106,11 @@ mod tests {
         for n in nodes {
             map.insert(n.id, n);
         }
-        OsmData { nodes: map, ways, relations: Vec::new(), bounds: None }
+        let mut way_map = HashMap::new();
+        for w in ways {
+            way_map.insert(w.id, w);
+        }
+        OsmData { nodes: map, ways: way_map, relations: Vec::new(), bounds: None }
     }
 
     fn node(id: i64, lat: f64, lon: f64, version: i32) -> OsmNode {
@@ -134,7 +133,7 @@ mod tests {
         let original = data(vec![node(1, 1.0, 1.0, 1)], vec![]);
         let mut current = original.clone();
         current.nodes.insert(2, node(2, 2.0, 2.0, 1));
-        current.ways.push(way(10, vec![1, 2], 1));
+        current.ways.insert(10, way(10, vec![1, 2], 1));
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.created_nodes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![2]);
@@ -188,7 +187,7 @@ mod tests {
     fn detects_modified_way_nodes_and_tags() {
         let original = data(vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)], vec![way(10, vec![1, 2], 1)]);
         let mut current = original.clone();
-        current.ways[0].nodes.push(1); // append a node ref -> geometry changed
+        current.ways.get_mut(&10).unwrap().nodes.push(1); // append a node ref -> geometry changed
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_ways.len(), 1);
