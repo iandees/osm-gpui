@@ -4,6 +4,7 @@
 //! malformed files fall back to defaults (logged to stderr).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -21,6 +22,12 @@ pub enum ApiServerChoice {
 pub struct AppSettings {
     pub api_server: ApiServerChoice,
     pub custom_api_url: String,
+    /// OAuth client IDs, keyed by OAuth base URL (see `auth::oauth_base_for`). OSM's
+    /// primary and dev instances have entirely separate app registrations, so a
+    /// client_id registered on one is unknown to the other; this lets each server use
+    /// its own registered app instead of sharing a single hardcoded client_id.
+    #[serde(default)]
+    pub client_ids: HashMap<String, String>,
 }
 
 impl Default for AppSettings {
@@ -28,6 +35,7 @@ impl Default for AppSettings {
         Self {
             api_server: ApiServerChoice::Primary,
             custom_api_url: String::new(),
+            client_ids: HashMap::new(),
         }
     }
 }
@@ -149,6 +157,7 @@ mod tests {
         let settings = AppSettings {
             api_server: ApiServerChoice::Custom,
             custom_api_url: "https://example.com".into(),
+            client_ids: HashMap::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -175,19 +184,28 @@ mod tests {
     #[test]
     fn base_url_matches_choice() {
         assert_eq!(
-            AppSettings { api_server: ApiServerChoice::Primary, custom_api_url: String::new() }
-                .api_base_url(),
+            AppSettings {
+                api_server: ApiServerChoice::Primary,
+                custom_api_url: String::new(),
+                client_ids: HashMap::new(),
+            }
+            .api_base_url(),
             PRIMARY_API_URL
         );
         assert_eq!(
-            AppSettings { api_server: ApiServerChoice::Dev, custom_api_url: String::new() }
-                .api_base_url(),
+            AppSettings {
+                api_server: ApiServerChoice::Dev,
+                custom_api_url: String::new(),
+                client_ids: HashMap::new(),
+            }
+            .api_base_url(),
             DEV_API_URL
         );
         assert_eq!(
             AppSettings {
                 api_server: ApiServerChoice::Custom,
-                custom_api_url: "https://custom.example.com/".into()
+                custom_api_url: "https://custom.example.com/".into(),
+                client_ids: HashMap::new(),
             }
             .api_base_url(),
             "https://custom.example.com"
