@@ -2235,7 +2235,7 @@ mod tests {
     fn diff_for_upload_no_changes_is_empty() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let layer = OsmLayer::new_with_data("L", data);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         assert!(layer.diff_for_upload().is_empty());
     }
@@ -2244,7 +2244,7 @@ mod tests {
     fn diff_for_upload_detects_tag_edit_as_modified() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
         let diff = layer.diff_for_upload();
@@ -2258,7 +2258,7 @@ mod tests {
     fn diff_for_upload_detects_move_as_modified() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.commit_node_moves(&[(1, 41.0, -75.0)]);
         let diff = layer.diff_for_upload();
@@ -2270,7 +2270,7 @@ mod tests {
     fn apply_upload_result_updates_version_for_modified_node() {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         layer.commit_node_moves(&[(1, 41.0, -75.0)]);
         assert!(layer.is_modified());
@@ -2293,7 +2293,7 @@ mod tests {
         // would silently corrupt from then on.
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         // Simulate a locally-created node (-1) and a way referencing both
         // the pre-existing node 1 and the new node -1, by mutating the
@@ -2329,7 +2329,7 @@ mod tests {
         let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
         let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, version: 1, tags: empty_tags() };
         let data = data_with(vec![n1, n2], vec![]);
-        let mut layer = OsmLayer::new_with_data("L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         // Simulate a delete by directly removing node 2 from osm_data (the
         // real delete_feature API doesn't exist yet).

@@ -51,6 +51,8 @@ const CALLBACK_PATH: &str = "/callback";
 
 /// Service name under which all osm-gpui tokens are stored in the platform keyring.
 /// Accounts within that service are keyed by OAuth base URL (see module docs).
+/// Only referenced from the `#[cfg(not(test))]` half of `keyring_entry`.
+#[cfg_attr(test, allow(dead_code))]
 const KEYRING_SERVICE: &str = "osm-gpui";
 
 #[derive(Debug)]
@@ -457,6 +459,17 @@ struct TokenSecret {
 }
 
 fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
+    // Never touch the real platform keyring from unit tests: on macOS,
+    // accessing it from a freshly-built (unsigned) test binary can trigger a
+    // Keychain access prompt that blocks forever in a non-interactive test
+    // run. Tests exercise the fallback-file path instead, which is what they
+    // actually mean to cover.
+    #[cfg(test)]
+    {
+        let _ = oauth_base_url;
+        return None;
+    }
+    #[cfg(not(test))]
     match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {
         Ok(entry) => Some(entry),
         Err(e) => {

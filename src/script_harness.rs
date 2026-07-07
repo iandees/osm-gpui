@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::layers::tile_layer::TileLayer;
-use osm_gpui::osm::OsmParser;
+use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::script::{self, runner::AppHandle};
 
-use crate::{MapViewer, SHARED_OSM_DATA};
+use crate::MapViewer;
 
 // Set to true while a script runner thread is active
 pub(crate) static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
@@ -45,6 +45,9 @@ pub(crate) enum ScriptCommand {
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
     /// Render the current frame in-process and save it as a PNG at `path`
     Capture { path: std::path::PathBuf },
+    /// Add a parsed OSM dataset as a new layer (parsing itself happens on
+    /// the runner thread, before this is submitted — see `load_osm` below).
+    LoadOsm { name: String, data: OsmData },
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -223,6 +226,9 @@ impl MapViewer {
                     })();
                     bus.set_capture_result(result);
                 }
+                ScriptCommand::LoadOsm { name, data } => {
+                    self.add_osm_dataset(name, data, cx);
+                }
             }
         }
 
@@ -307,18 +313,10 @@ impl AppHandle for LiveApp {
         let path_str = path.to_string_lossy().to_string();
         let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
-        if let Some(q) = SHARED_OSM_DATA.get() {
-            if let Ok(mut guard) = q.lock() {
-                guard.push((stem, data));
-            } else {
-                return Err("SHARED_OSM_DATA mutex poisoned".into());
-            }
-        } else {
-            return Err("SHARED_OSM_DATA not initialized".into());
-        }
-        // Thanks to the reorder in render(), the next frame drains the queue
-        // before signalling — so after wait_frame the layer exists.
-        self.bus.wait_frame();
+        // `submit` blocks until the main thread has processed the command
+        // (i.e. `MapViewer::add_osm_dataset` has run), so the layer exists
+        // as soon as this returns — no separate `wait_frame` needed.
+        self.bus.submit(ScriptCommand::LoadOsm { name: stem, data });
         Ok(())
     }
 

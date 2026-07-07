@@ -7,11 +7,10 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 
 use crate::{
-    has_unsaved_changes, AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto,
-    AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm, ImageryLoadState, LayerRequest,
-    OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, UploadToOsm,
-    DOWNLOAD_REQUESTS, IMAGERY_INDEX, LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG,
-    SHARED_OSM_DATA, SHOW_QUIT_CONFIRM, SHOW_UPLOAD_DIALOG, TOGGLE_DEBUG_OVERLAY,
+    has_unsaved_changes, with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery,
+    AddImageryLayer, AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm,
+    ImageryLoadState, LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay,
+    Undo, UploadToOsm, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -22,38 +21,47 @@ pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
     custom_imagery_store::snapshot()
 }
 
-// Handle the File > Open OSM File menu action
+// Handle the File > Open OSM File menu action. Picks a file (async, on the
+// foreground executor so it can await the OS file-picker dialog), parses it
+// on the background executor, then applies the result directly to the live
+// `MapViewer` via `MAP_VIEWER_HANDLE` — mirrors the download flow in
+// `MapViewer::request_download`.
 pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
-    let executor = cx.background_executor().clone();
-    let shared_queue = SHARED_OSM_DATA.get().unwrap().clone();
+    cx.spawn(async move |cx| {
+        let Some(file_path) = rfd::AsyncFileDialog::new()
+            .add_filter("OSM files", &["osm", "xml"])
+            .add_filter("All files", &["*"])
+            .set_title("Select OSM file to open")
+            .pick_file()
+            .await
+        else {
+            return;
+        };
 
-    // Spawn async file dialog
-    executor
-        .spawn(async move {
-            if let Some(file_path) = rfd::AsyncFileDialog::new()
-                .add_filter("OSM files", &["osm", "xml"])
-                .add_filter("All files", &["*"])
-                .set_title("Select OSM file to open")
-                .pick_file()
-                .await
-            {
-                let path = file_path.path().to_path_buf();
-                let path_str = path.to_string_lossy().to_string();
+        let path = file_path.path().to_path_buf();
+        let path_str = path.to_string_lossy().to_string();
 
-                // Parse OSM file in background
+        let result = cx
+            .background_executor()
+            .spawn(async move {
                 let parser = OsmParser::new();
-                match parser.parse_file(&path_str) {
-                    Ok(osm_data) => {
-                        if let Ok(mut q) = shared_queue.lock() {
-                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
-                            q.push((stem, osm_data));
-                        }
+                parser.parse_file(&path_str)
+            })
+            .await;
+
+        match result {
+            Ok(osm_data) => {
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("OSM").to_string();
+                let _ = cx.update(|cx| {
+                    if let Some(view) = crate::MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                        let _ = view.update(cx, |v, cx| v.add_osm_dataset(stem, osm_data, cx));
                     }
-                    Err(e) => eprintln!("Failed to parse OSM file: {}", e),
-                }
+                });
             }
-        })
-        .detach();
+            Err(e) => eprintln!("Failed to parse OSM file: {}", e),
+        }
+    })
+    .detach();
 }
 
 // Define the quit function that is registered with the App (Cmd+Q / File >
@@ -61,20 +69,14 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
 // `layer_manager` — so it asks `has_unsaved_changes` to look up the live
 // `MapViewer` (via `MAP_VIEWER_HANDLE`) and query each layer's
 // `is_modified()` directly, right now, rather than trusting any cached
-// value. If nothing is unsaved, quit immediately as before; otherwise
-// enqueue a request for `MapViewer::check_for_quit_confirm_dialog` to show a
-// confirmation dialog (this free function can't build the dialog directly).
+// value. If nothing is unsaved, quit immediately as before; otherwise ask
+// the live `MapViewer` to open the quit-confirmation dialog directly.
 pub(crate) fn quit(_: &Quit, cx: &mut App) {
     if !has_unsaved_changes(cx) {
         cx.quit();
         return;
     }
-    if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
-        if let Ok(mut q) = queue.lock() {
-            q.push(());
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer_in(cx, |v, window, cx| v.show_quit_confirm_dialog(window, cx));
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
@@ -115,44 +117,26 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
 
 // Handle the File > Download from OSM menu action
 pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
-    if let Some(requests) = DOWNLOAD_REQUESTS.get() {
-        if let Ok(mut q) = requests.lock() {
-            q.push(());
-        }
-    }
-    // Wake the render loop so MapViewer drains the queue on the next frame
-    // instead of waiting for an unrelated input event.
-    cx.refresh_windows();
+    with_map_viewer(cx, |v, cx| v.request_download(cx));
 }
 
-// Handle the File > Upload to OSM menu action. This free function only has
-// `&mut App` (no access to the view's layer_manager or `set_status`), so —
-// same pattern as `download_from_osm`/`open_custom_imagery_dialog` — it just
-// enqueues a request; `MapViewer::check_for_upload_dialog` (which has full
-// view access) decides whether there's anything to upload at all (setting a
-// "Nothing to upload" status if not) before actually opening the dialog.
+// Handle the File > Upload to OSM menu action. Same pattern as `quit`/
+// `open_custom_imagery_dialog`: applied directly to the live `MapViewer` via
+// `with_map_viewer_in`, which decides whether there's anything to upload at
+// all (setting a "Nothing to upload" status if not) before actually opening
+// the dialog.
 pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
-    if let Some(queue) = SHOW_UPLOAD_DIALOG.get() {
-        if let Ok(mut q) = queue.lock() {
-            q.push(());
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx));
 }
 
 // Handle the Imagery > OpenStreetMap Carto menu action
 pub(crate) fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
-    if let Some(requests) = LAYER_REQUESTS.get() {
-        if let Ok(mut queue) = requests.lock() {
-            queue.push(LayerRequest::OsmCarto);
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer(cx, |v, cx| v.apply_layer_request(LayerRequest::OsmCarto, cx));
 }
 
 // Handle an ELI imagery menu action. Looks up the entry in the loaded index
-// and enqueues a layer request.
-pub(crate) fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
+// and applies it as a layer request directly to the live `MapViewer`.
+pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
     let id = action.id.to_string();
     let Some(index) = IMAGERY_INDEX.get() else { return };
     let entry = {
@@ -163,37 +147,28 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, _cx: &mut App) {
         guard.iter().find(|e| e.id == id).cloned()
     };
     let Some(entry) = entry else { return };
-    if let Some(requests) = LAYER_REQUESTS.get() {
-        if let Ok(mut queue) = requests.lock() {
-            queue.push(LayerRequest::Imagery {
+    with_map_viewer(cx, |v, cx| {
+        v.apply_layer_request(
+            LayerRequest::Imagery {
                 name: entry.name,
                 url_template: entry.url_template,
                 min_zoom: entry.min_zoom,
                 max_zoom: entry.max_zoom,
                 attribution: entry.attribution,
-            });
-        }
-    }
+            },
+            cx,
+        );
+    });
 }
 
 // Handle the View > Toggle Debug Overlay menu action
 pub(crate) fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
-    if let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() {
-        if let Ok(mut queue) = requests.lock() {
-            queue.push(());
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer(cx, |v, cx| v.toggle_debug_overlay(cx));
 }
 
 // Handle the Imagery > Add Custom Imagery… menu action
 pub(crate) fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
-    if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
-        if let Ok(mut g) = queue.lock() {
-            g.push(());
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx));
 }
 
 // Handle the Imagery > Custom Imagery > <saved entry> menu action
@@ -203,28 +178,23 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
         eprintln!("add_saved_custom_imagery: stale index {}", action.index);
         return;
     };
-    if let Some(requests) = LAYER_REQUESTS.get() {
-        if let Ok(mut q) = requests.lock() {
-            q.push(LayerRequest::Imagery {
+    with_map_viewer(cx, |v, cx| {
+        v.apply_layer_request(
+            LayerRequest::Imagery {
                 name: entry.name,
                 url_template: entry.url_template,
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
                 attribution: None,
-            });
-        }
-    }
-    cx.refresh_windows();
+            },
+            cx,
+        );
+    });
 }
 
 // Handle the Imagery > Coordinate Grid menu action
 pub(crate) fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
-    if let Some(requests) = LAYER_REQUESTS.get() {
-        if let Ok(mut queue) = requests.lock() {
-            queue.push(LayerRequest::CoordinateGrid);
-        }
-    }
-    cx.refresh_windows();
+    with_map_viewer(cx, |v, cx| v.apply_layer_request(LayerRequest::CoordinateGrid, cx));
 }
 
 /// Build and install the menu bar, using the current viewport center to filter

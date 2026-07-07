@@ -71,7 +71,9 @@ struct DeleteLayer {
     index: usize,
 }
 
-/// Request to add a new layer from a menu action.
+/// Request to add a new layer, applied directly to the live `MapViewer` (via
+/// `MapViewer::apply_layer_request`) by menu handlers and the custom-imagery
+/// dialog's `Submitted` event.
 #[derive(Debug, Clone)]
 enum LayerRequest {
     OsmCarto,
@@ -83,8 +85,6 @@ enum LayerRequest {
         max_zoom: Option<u32>,
         attribution: Option<imagery::AttributionInfo>,
     },
-    /// Remove the layer at the given index in the `LayerManager`.
-    Delete { index: usize },
 }
 
 /// Stores the full ELI list once loaded (populated on the background executor).
@@ -101,41 +101,13 @@ enum ImageryLoadState {
     Failed,
 }
 
-// Replace single optional data store with a queue of datasets awaiting layer creation
-static SHARED_OSM_DATA: std::sync::OnceLock<Arc<Mutex<Vec<(String, OsmData)>>>> =
-    std::sync::OnceLock::new();
-
-// Queue for layer addition requests
-static LAYER_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<LayerRequest>>>> =
-    std::sync::OnceLock::new();
-
-static DOWNLOAD_REQUESTS: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
-    std::sync::OnceLock::new();
-
-static TOGGLE_DEBUG_OVERLAY: std::sync::OnceLock<Arc<Mutex<Vec<()>>>> =
-    std::sync::OnceLock::new();
-
-static OPEN_CUSTOM_IMAGERY_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
-
 /// Weak handle to the live `MapViewer` view, set once when the main window is
-/// created. This exists purely so free functions/global handlers that only
-/// have `&mut App` (like `menu::quit`) or app-level window callbacks (like
-/// the `on_window_should_close` hook) can reach the *real* view and query its
-/// *live* `layer_manager` state at the moment a decision is needed —
-/// deliberately NOT a cached/aggregated boolean. Each check re-reads
-/// `layer.is_modified()` per layer, live, via `has_unsaved_changes` below.
+/// created. This is the one bridge that lets free functions/global handlers
+/// which only have `&mut App` (menu action handlers like `menu::quit`, and
+/// app-level window callbacks like the `on_window_should_close` hook) reach
+/// the *real* view and either query its live state or call ordinary
+/// `MapViewer` methods on it directly — no polling queues involved.
 pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
-
-/// Queue of requests to show the "unsaved changes" quit-confirmation dialog,
-/// pushed by `menu::quit` and drained once per frame by
-/// `MapViewer::check_for_quit_confirm_dialog` — same shape as
-/// `OPEN_CUSTOM_IMAGERY_DIALOG`.
-pub(crate) static SHOW_QUIT_CONFIRM: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
-
-/// Queue of requests to show the upload-review dialog, pushed by
-/// `menu::upload_to_osm` and drained once per frame by
-/// `MapViewer::check_for_upload_dialog` — same shape as `SHOW_QUIT_CONFIRM`.
-pub(crate) static SHOW_UPLOAD_DIALOG: OnceLock<Arc<Mutex<Vec<()>>>> = OnceLock::new();
 
 /// Ask the live `MapViewer` (via `MAP_VIEWER_HANDLE`) whether any layer
 /// currently has unsaved changes. This performs a fresh per-layer
@@ -147,6 +119,32 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
         .and_then(|handle| handle.upgrade())
         .map(|view| view.read(cx).layer_manager.layers().iter().any(|l| l.is_modified()))
         .unwrap_or(false)
+}
+
+/// Run `f` against the live `MapViewer` (via `MAP_VIEWER_HANDLE`), if it
+/// still exists. This is the standard way for menu action handlers (which
+/// only have `&mut App`) to call an ordinary `MapViewer` method — replacing
+/// the old push-into-a-queue-and-wait-for-render-to-drain-it pattern.
+pub(crate) fn with_map_viewer(cx: &mut App, f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>)) {
+    if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+        let _ = view.update(cx, f);
+    }
+}
+
+/// Like `with_map_viewer`, but for callers that need `&mut Window` too (e.g.
+/// to construct a dialog entity), and which don't already have a `Window` in
+/// scope — it looks the window up via the entity's window id.
+pub(crate) fn with_map_viewer_in(
+    cx: &mut App,
+    f: impl FnOnce(&mut MapViewer, &mut Window, &mut Context<MapViewer>),
+) {
+    if let Some(handle) = MAP_VIEWER_HANDLE.get() {
+        // `WeakEntity::update_in` (unlike `Entity::update_in`) only needs
+        // `AppContext`, not `VisualContext` — it looks the window up by the
+        // entity's window id via `App::with_window`, which is exactly what's
+        // needed here since callers only have `&mut App`.
+        let _ = handle.update_in(cx, f);
+    }
 }
 
 // Global idle tracker shared with the script runner
@@ -414,13 +412,11 @@ impl MapViewer {
         }
     }
 
-    /// Handle the `DeleteLayer` context-menu action (routes through LAYER_REQUESTS).
+    /// Handle the `DeleteLayer` context-menu action. This handler already has
+    /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
+    /// than going through `LayerRequest`.
     fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(reqs) = LAYER_REQUESTS.get() {
-            if let Ok(mut guard) = reqs.lock() {
-                guard.push(LayerRequest::Delete { index: action.index });
-            }
-        }
+        let _ = self.layer_manager.remove_at(action.index);
         cx.notify();
     }
 
@@ -596,8 +592,11 @@ impl MapViewer {
     /// Step 6) — never call this, or construct `TagEditDialog` directly,
     /// from inside a click/action listener: `TagEditDialog`'s deferred
     /// select-all-on-open (Task 4) only lands correctly when the dialog is
-    /// built during the same draw pass that first paints it, exactly like
-    /// `check_for_dialog_queue` builds `CustomImageryDialog`.
+    /// built during the same draw pass that first paints it. This is the one
+    /// dialog with that constraint — `CustomImageryDialog` and
+    /// `QuitConfirmDialog` have no such requirement and are built directly
+    /// from `MapViewer::open_custom_imagery_dialog` /
+    /// `show_quit_confirm_dialog` outside of `render()`.
     fn check_for_pending_tag_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_tag_edit_open.take() else { return };
         if self.tag_edit_dialog.is_some() {
@@ -1037,69 +1036,60 @@ impl MapViewer {
         }
     }
 
-    fn check_for_new_osm_data(&mut self, cx: &mut Context<Self>) {
-        if let Some(queue) = SHARED_OSM_DATA.get() {
-            if let Ok(mut guard) = queue.try_lock() {
-                if guard.is_empty() { return; }
-                for (name, data) in guard.drain(..) {
-                    let file_name = if name.is_empty() { "OSM".to_string() } else { name };
-                    let candidate = self.layer_manager.unique_name(&file_name);
-                    let data_arc = Arc::new(data.clone());
-                    let layer_id = self.layer_manager.alloc_id();
-                    let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
-                    self.layer_manager.add_layer(Box::new(layer));
-                    if !self.first_dataset_fitted {
-                        self.fit_to_osm_data(&data);
-                        self.first_dataset_fitted = true;
-                    }
-                }
-                self.status_message = None;
-                cx.notify();
-            }
+    /// Add a newly-loaded OSM dataset as a new layer. Called directly by
+    /// `menu::open_osm_file` (once its background parse completes) and by
+    /// the script harness's `ScriptCommand::LoadOsm` — replaces the old
+    /// `SHARED_OSM_DATA` queue drained once per frame.
+    pub(crate) fn add_osm_dataset(&mut self, name: String, data: OsmData, cx: &mut Context<Self>) {
+        let file_name = if name.is_empty() { "OSM".to_string() } else { name };
+        let candidate = self.layer_manager.unique_name(&file_name);
+        let data_arc = Arc::new(data.clone());
+        let layer_id = self.layer_manager.alloc_id();
+        let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
+        self.layer_manager.add_layer(Box::new(layer));
+        if !self.first_dataset_fitted {
+            self.fit_to_osm_data(&data);
+            self.first_dataset_fitted = true;
         }
+        self.status_message = None;
+        cx.notify();
     }
 
-    fn check_for_layer_requests(&mut self, cx: &mut Context<Self>) {
-        if let Some(requests) = LAYER_REQUESTS.get() {
-            if let Ok(mut guard) = requests.try_lock() {
-                if guard.is_empty() { return; }
-                for req in guard.drain(..) {
-                    match req {
-                        LayerRequest::OsmCarto => {
-                            if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
-                                let layer_id = self.layer_manager.alloc_id();
-                                let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
-                                self.layer_manager.add_layer(Box::new(tile_layer));
-                            }
-                        }
-                        LayerRequest::Delete { index } => {
-                            let _ = self.layer_manager.remove_at(index);
-                        }
-                        LayerRequest::CoordinateGrid => {
-                            if self.layer_manager.layer_named("Coordinate Grid").is_none() {
-                                let layer_id = self.layer_manager.alloc_id();
-                                self.layer_manager.add_layer(Box::new(GridLayer::new(layer_id)));
-                            }
-                        }
-                        LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
-                            let candidate = self.layer_manager.unique_name(&name);
-                            let layer_id = self.layer_manager.alloc_id();
-                            let layer = TileLayer::new_with_template(
-                                layer_id,
-                                candidate,
-                                url_template,
-                                self.tile_cache.clone(),
-                            )
-                            .with_min_zoom(min_zoom)
-                            .with_max_zoom(max_zoom)
-                            .with_attribution(attribution);
-                            self.layer_manager.add_layer(Box::new(layer));
-                        }
-                    }
+    /// Apply a `LayerRequest`, adding the corresponding layer. Called
+    /// directly by menu handlers (via `with_map_viewer`) and by the custom
+    /// imagery dialog's `Submitted` event — replaces the old `LAYER_REQUESTS`
+    /// queue drained once per frame.
+    fn apply_layer_request(&mut self, req: LayerRequest, cx: &mut Context<Self>) {
+        match req {
+            LayerRequest::OsmCarto => {
+                if self.layer_manager.layer_named("OpenStreetMap Carto").is_none() {
+                    let layer_id = self.layer_manager.alloc_id();
+                    let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
+                    self.layer_manager.add_layer(Box::new(tile_layer));
                 }
-                cx.notify();
+            }
+            LayerRequest::CoordinateGrid => {
+                if self.layer_manager.layer_named("Coordinate Grid").is_none() {
+                    let layer_id = self.layer_manager.alloc_id();
+                    self.layer_manager.add_layer(Box::new(GridLayer::new(layer_id)));
+                }
+            }
+            LayerRequest::Imagery { name, url_template, min_zoom, max_zoom, attribution } => {
+                let candidate = self.layer_manager.unique_name(&name);
+                let layer_id = self.layer_manager.alloc_id();
+                let layer = TileLayer::new_with_template(
+                    layer_id,
+                    candidate,
+                    url_template,
+                    self.tile_cache.clone(),
+                )
+                .with_min_zoom(min_zoom)
+                .with_max_zoom(max_zoom)
+                .with_attribution(attribution);
+                self.layer_manager.add_layer(Box::new(layer));
             }
         }
+        cx.notify();
     }
 
     fn get_layer_stats(&self) -> (usize, usize, usize) {
@@ -1143,129 +1133,98 @@ impl MapViewer {
         }
     }
 
-    fn check_for_toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
-        let Some(requests) = TOGGLE_DEBUG_OVERLAY.get() else { return };
-        let pending = if let Ok(mut guard) = requests.try_lock() {
-            let n = guard.len();
-            guard.clear();
-            n
-        } else {
-            0
-        };
-        if pending > 0 {
-            // Parity of toggles: odd = flip, even = no-op
-            if pending % 2 == 1 {
-                self.show_debug_overlay = !self.show_debug_overlay;
-            }
-            cx.notify();
-        }
+    /// Flip the debug overlay. Called directly from the `View > Toggle Debug
+    /// Overlay` menu handler (via `with_map_viewer`) — replaces the old
+    /// `TOGGLE_DEBUG_OVERLAY` queue (which used push-count parity to emulate
+    /// a single flip per click; a direct call needs no such trick).
+    pub(crate) fn toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
+        self.show_debug_overlay = !self.show_debug_overlay;
+        cx.notify();
     }
 
-    fn check_for_dialog_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let should_open = if let Some(queue) = OPEN_CUSTOM_IMAGERY_DIALOG.get() {
-            if let Ok(mut g) = queue.try_lock() {
-                let had_requests = !g.is_empty();
-                g.clear();
-                had_requests && self.custom_imagery_dialog.is_none()
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if should_open {
-            let dialog = cx.new(|cx| {
-                osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new(window, cx)
-            });
-            cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
-                use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
-                match event {
-                    DialogEvent::Cancelled => {
-                        this.custom_imagery_dialog = None;
-                        cx.notify();
-                    }
-                    DialogEvent::Submitted(entry) => {
-                        append_custom_imagery(entry.clone());
-                        if let Some(requests) = LAYER_REQUESTS.get() {
-                            if let Ok(mut q) = requests.lock() {
-                                q.push(LayerRequest::Imagery {
-                                    name: entry.name.clone(),
-                                    url_template: entry.url_template.clone(),
-                                    min_zoom: Some(entry.min_zoom),
-                                    max_zoom: Some(entry.max_zoom),
-                                    attribution: None,
-                                });
-                            }
-                        }
-                        this.custom_imagery_dialog = None;
-                        this.last_menu_center = None;
-                        cx.notify();
-                    }
+    /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
+    /// Called directly from the menu handler (via `with_map_viewer_in`) —
+    /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike the
+    /// tag-edit dialog, this dialog has no post-paint focus requirement, so
+    /// it's safe to construct straight from the menu-triggered `update_in`
+    /// call rather than deferring to the next render pass.
+    pub(crate) fn open_custom_imagery_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.custom_imagery_dialog.is_some() {
+            return;
+        }
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog::new(window, cx)
+        });
+        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::custom_imagery_dialog::DialogEvent, cx| {
+            use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
+            match event {
+                DialogEvent::Cancelled => {
+                    this.custom_imagery_dialog = None;
+                    cx.notify();
                 }
-            })
-            .detach();
-            self.custom_imagery_dialog = Some(dialog);
-            cx.notify();
-        }
-    }
-
-    /// Drain `SHOW_QUIT_CONFIRM` (pushed by `menu::quit` when there are
-    /// unsaved changes) and open the confirmation dialog, mirroring
-    /// `check_for_dialog_queue`'s pattern for `CustomImageryDialog`.
-    fn check_for_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let should_open = if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
-            if let Ok(mut g) = queue.try_lock() {
-                let had_requests = !g.is_empty();
-                g.clear();
-                had_requests && self.quit_confirm_dialog.is_none()
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if should_open {
-            let dialog = cx.new(|cx| {
-                osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog::new(window, cx)
-            });
-            cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::quit_confirm_dialog::DialogEvent, cx| {
-                use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
-                match event {
-                    DialogEvent::Cancelled => {
-                        this.quit_confirm_dialog = None;
-                        cx.notify();
-                    }
-                    DialogEvent::ConfirmQuit => {
-                        this.quit_confirm_dialog = None;
-                        cx.quit();
-                    }
+                DialogEvent::Submitted(entry) => {
+                    append_custom_imagery(entry.clone());
+                    this.apply_layer_request(
+                        LayerRequest::Imagery {
+                            name: entry.name.clone(),
+                            url_template: entry.url_template.clone(),
+                            min_zoom: Some(entry.min_zoom),
+                            max_zoom: Some(entry.max_zoom),
+                            attribution: None,
+                        },
+                        cx,
+                    );
+                    this.custom_imagery_dialog = None;
+                    this.last_menu_center = None;
+                    cx.notify();
                 }
-            })
-            .detach();
-            self.quit_confirm_dialog = Some(dialog);
-            cx.notify();
-        }
+            }
+        })
+        .detach();
+        self.custom_imagery_dialog = Some(dialog);
+        cx.notify();
     }
 
-    /// Drain `SHOW_UPLOAD_DIALOG` (pushed by `menu::upload_to_osm`) and
-    /// either show the "nothing to upload" status or open the upload-review
-    /// dialog, mirroring `check_for_quit_confirm_dialog`'s pattern.
-    fn check_for_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let should_check = if let Some(queue) = SHOW_UPLOAD_DIALOG.get() {
-            if let Ok(mut g) = queue.try_lock() {
-                let had_requests = !g.is_empty();
-                g.clear();
-                had_requests
-            } else {
-                false
+    /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
+    /// already open. Called directly by `menu::quit` (via
+    /// `with_map_viewer_in`) and by the `on_window_should_close` hook
+    /// (which already has a `Window` in scope) — replaces the old
+    /// `SHOW_QUIT_CONFIRM` queue. Like `open_custom_imagery_dialog`, this
+    /// dialog has no post-paint focus requirement, so it's safe to construct
+    /// directly rather than deferring to the next render pass.
+    pub(crate) fn show_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_confirm_dialog.is_some() {
+            return;
+        }
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog::new(window, cx)
+        });
+        cx.subscribe(&dialog, |this, _entity, event: &osm_gpui::ui::quit_confirm_dialog::DialogEvent, cx| {
+            use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
+            match event {
+                DialogEvent::Cancelled => {
+                    this.quit_confirm_dialog = None;
+                    cx.notify();
+                }
+                DialogEvent::ConfirmQuit => {
+                    this.quit_confirm_dialog = None;
+                    cx.quit();
+                }
             }
-        } else {
-            false
-        };
+        })
+        .detach();
+        self.quit_confirm_dialog = Some(dialog);
+        cx.notify();
+    }
 
-        if !should_check || self.upload_dialog.is_some() {
+    /// Open the upload-review dialog, if one isn't already open — either
+    /// showing the "nothing to upload" status or the dialog itself,
+    /// depending on whether any layer has changes. Called directly by
+    /// `menu::upload_to_osm` (via `with_map_viewer_in`) — replaces the old
+    /// `SHOW_UPLOAD_DIALOG` queue, same as `show_quit_confirm_dialog`
+    /// replaced `SHOW_QUIT_CONFIRM`.
+    pub(crate) fn open_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.upload_dialog.is_some() {
             return;
         }
 
@@ -1314,8 +1273,8 @@ impl MapViewer {
 
     /// Run the full upload sequence (create changeset -> build+upload
     /// osmChange -> close changeset -> reconcile local layers) on the
-    /// background executor, mirroring `check_for_download_requests`'s
-    /// `cx.spawn`/`background_executor().spawn` structure.
+    /// background executor, mirroring `request_download`'s `cx.spawn`/
+    /// `background_executor().spawn` structure.
     ///
     /// Known v1 limitation: if the changeset is created but the upload
     /// itself fails, we do NOT attempt automatic rollback/retry — the
@@ -1323,16 +1282,20 @@ impl MapViewer {
     /// a period of inactivity, or the user can close it manually) and the
     /// status message includes its id so it isn't silently lost track of.
     fn start_upload(&mut self, comment: String, cx: &mut Context<Self>) {
-        let layer_names: Vec<String> = self
+        // Layers are looked up by `LayerId`, not name (names aren't unique
+        // identity — see `LayerId`'s doc comment), so both the id and the
+        // display name are captured up front: the id for `find_layer`/
+        // `find_layer_mut`, the name only for the outgoing changeset XML.
+        let modified: Vec<(LayerId, String)> = self
             .layer_manager
             .layers()
             .iter()
             .filter(|l| l.is_modified())
-            .map(|l| l.name().to_string())
+            .map(|l| (l.id(), l.name().to_string()))
             .collect();
-        let diffs: Vec<osm_gpui::layers::diff::LayerDiff> = layer_names
+        let diffs: Vec<osm_gpui::layers::diff::LayerDiff> = modified
             .iter()
-            .filter_map(|name| self.layer_manager.find_layer(name).map(|l| l.diff_for_upload()))
+            .filter_map(|(id, _)| self.layer_manager.find_layer(*id).map(|l| l.diff_for_upload()))
             .collect();
 
         if diffs.iter().all(|d| d.is_empty()) {
@@ -1346,7 +1309,8 @@ impl MapViewer {
 
         let base_url = settings_store::api_base_url();
         let oauth_base = auth::oauth_base_for(&base_url);
-        let names_for_bg = layer_names.clone();
+        let names_for_bg: Vec<String> = modified.iter().map(|(_, name)| name.clone()).collect();
+        let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
 
         cx.spawn(async move |this, cx| {
             let result: Result<(u64, osm_upload::UploadResult), String> = cx
@@ -1385,8 +1349,8 @@ impl MapViewer {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok((changeset_id, upload_result)) => {
-                        for name in &layer_names {
-                            if let Some(layer) = this.layer_manager.find_layer_mut(name) {
+                        for id in &layer_ids {
+                            if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
@@ -1402,17 +1366,13 @@ impl MapViewer {
         .detach();
     }
 
-    fn check_for_download_requests(&mut self, cx: &mut Context<Self>) {
-        let Some(requests) = DOWNLOAD_REQUESTS.get() else { return };
-        let pending = if let Ok(mut guard) = requests.try_lock() {
-            let n = guard.len();
-            guard.clear();
-            n
-        } else {
-            0
-        };
-        if pending == 0 { return }
-
+    /// Kick off a background fetch of the OSM data within the current
+    /// viewport bounds, applying the result to `self` on completion. Called
+    /// directly from the `File > Download from OSM` menu handler (via
+    /// `with_map_viewer`) — replaces the old `DOWNLOAD_REQUESTS` queue (the
+    /// queue only ever carried a trigger; the actual background-fetch and
+    /// apply-on-completion logic already used `cx.spawn` and is unchanged).
+    pub(crate) fn request_download(&mut self, cx: &mut Context<Self>) {
         let bounds = self.viewport.visible_bounds();
 
         if let Err(e) = osm_api::check_area(&bounds) {
@@ -1472,17 +1432,15 @@ impl Render for MapViewer {
         // Consume any pending script command first.
         self.process_script_command(window, cx);
 
-        // Drain cross-thread queues BEFORE signalling the script bus, so
-        // ops like `load_osm` (which push here and then call wait_frame)
-        // observe the resulting layer on the same frame.
-        self.check_for_new_osm_data(cx);
-        self.check_for_layer_requests(cx);
-        self.check_for_download_requests(cx);
-        self.check_for_toggle_debug_overlay(cx);
-        self.check_for_dialog_queue(window, cx);
+        // The tag-edit dialog is the one remaining case that must be opened
+        // from inside a render pass (its deferred select-all-on-open depends
+        // on being constructed after paint — see its doc comment). Every
+        // other former polling queue (new OSM data, layer requests, download
+        // requests, debug-overlay toggle, the two other dialogs) is now
+        // applied directly to `self` by menu handlers / background-task
+        // completions via `MAP_VIEWER_HANDLE`, so there's nothing left to
+        // drain here.
         self.check_for_pending_tag_edit_dialog(window, cx);
-        self.check_for_quit_confirm_dialog(window, cx);
-        self.check_for_upload_dialog(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -1754,14 +1712,6 @@ fn main() {
     SCRIPT_BUS.set(bus.clone()).ok();
     KEYSTROKE_QUEUE.set(Arc::new(Mutex::new(Vec::new()))).ok();
 
-    // Initialize shared OSM data
-    SHARED_OSM_DATA.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    LAYER_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    DOWNLOAD_REQUESTS.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    TOGGLE_DEBUG_OVERLAY.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    let _ = OPEN_CUSTOM_IMAGERY_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
-    let _ = SHOW_QUIT_CONFIRM.set(Arc::new(Mutex::new(Vec::new())));
-    let _ = SHOW_UPLOAD_DIALOG.set(Arc::new(Mutex::new(Vec::new())));
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
     IMAGERY_LOAD_STATE
         .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
@@ -1943,19 +1893,17 @@ fn main() {
                 // the window is already gone and can't stop anything), this one
                 // can veto the close by returning `false`. If there are unsaved
                 // changes (checked live, per layer, via `has_unsaved_changes`)
-                // we cancel the close and enqueue a request for
-                // `MapViewer::check_for_quit_confirm_dialog` to show the same
-                // confirmation dialog as Cmd+Q; otherwise we let the close
-                // proceed, which triggers `on_window_closed` -> `cx.quit()` as
-                // before.
-                window.on_window_should_close(cx, |_window, cx| {
+                // we cancel the close and ask the live `MapViewer` to show the
+                // same confirmation dialog as Cmd+Q, directly (this closure
+                // already has a `Window`, so no need to go through
+                // `with_map_viewer_in`'s window-lookup-by-entity-id path);
+                // otherwise we let the close proceed, which triggers
+                // `on_window_closed` -> `cx.quit()` as before.
+                window.on_window_should_close(cx, |window, cx| {
                     if has_unsaved_changes(cx) {
-                        if let Some(queue) = SHOW_QUIT_CONFIRM.get() {
-                            if let Ok(mut g) = queue.lock() {
-                                g.push(());
-                            }
+                        if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                            let _ = view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
                         }
-                        cx.refresh_windows();
                         false
                     } else {
                         true
