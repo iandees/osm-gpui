@@ -110,6 +110,36 @@ pub trait MapLayer: Send + Sync {
     /// Remove a single tag key from a feature this layer owns. Default: no-op.
     fn remove_tag(&mut self, _kind: crate::selection::FeatureKind, _id: i64, _key: &str) {}
 
+    /// Create a new, tag-less node at `(lat, lon)` and return its id.
+    /// `id`, when given, forces the new node to use exactly that id
+    /// (fails/returns `None` if a feature with that id already exists) —
+    /// used by redo, so a recreated node reuses its original id rather than
+    /// allocating a fresh one. When `id` is `None`, the layer allocates a
+    /// fresh negative (not-yet-uploaded) id. Default: no-op, returns `None`
+    /// (layers with no OSM data to add a node to, e.g. tile/grid layers,
+    /// never support this).
+    fn create_node(&mut self, _lat: f64, _lon: f64, _id: Option<i64>) -> Option<i64> {
+        None
+    }
+
+    /// Delete a node or way this layer owns, returning a snapshot with
+    /// enough information to restore it later (see
+    /// `crate::selection::DeletedFeatureSnapshot`). `None` if nothing was
+    /// deleted (feature not found, or — for a node — refused because it's
+    /// still referenced by a way; see `OsmLayer::delete_feature`'s doc
+    /// comment for that limitation). Default: no-op, returns `None`.
+    fn delete_feature(
+        &mut self,
+        _kind: crate::selection::FeatureKind,
+        _id: i64,
+    ) -> Option<crate::selection::DeletedFeatureSnapshot> {
+        None
+    }
+
+    /// Re-insert a feature previously removed by `delete_feature`, using
+    /// exactly the id/tags/geometry captured in `snapshot`. Default: no-op.
+    fn restore_feature(&mut self, _snapshot: crate::selection::DeletedFeatureSnapshot) {}
+
     /// Required source-credit (text and optional link) for this layer's
     /// content, if any (e.g. "© OpenStreetMap contributors"). Default:
     /// `None`. Layers that render tiles from a source requiring attribution
