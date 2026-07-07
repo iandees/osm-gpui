@@ -1428,12 +1428,12 @@ mod tests {
 
     #[test]
     fn commit_node_moves_updates_both_referencing_ways_and_indices() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
-        let n3 = OsmNode { id: 3, lat: 40.002, lon: -74.002, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
+        let n3 = OsmNode { id: 3, lat: 40.002, lon: -74.002, tags: empty_tags(), version: 1 };
         // Both ways reference node 1.
-        let way_a = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
-        let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags() };
+        let way_a = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
+        let way_b = OsmWay { id: 20, nodes: vec![1, 3], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1506,11 +1506,11 @@ mod tests {
 
     #[test]
     fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
         // n3 is a standalone POI node, not referenced by any way.
-        let n3 = OsmNode { id: 3, lat: 41.0, lon: -75.0, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n3 = OsmNode { id: 3, lat: 41.0, lon: -75.0, tags: empty_tags(), version: 1 };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2, n3], vec![way]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1536,9 +1536,9 @@ mod tests {
 
     #[test]
     fn set_tag_refreshes_cached_way_style() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags(), version: 1 };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1, n2], vec![way]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
@@ -1554,7 +1554,7 @@ mod tests {
 
     #[test]
     fn set_tag_refreshes_cached_node_style() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags(), version: 1 };
         let data = data_with(vec![n1], vec![]);
         let mut layer = OsmLayer::new_with_data("L", data);
 
