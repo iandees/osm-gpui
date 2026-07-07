@@ -9,9 +9,9 @@ use osm_gpui::osm::OsmParser;
 use crate::{
     has_unsaved_changes, AddCoordinateGrid, AddCustomImagery, AddImageryLayer, AddOsmCarto,
     AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm, ImageryLoadState, LayerRequest,
-    OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, DOWNLOAD_REQUESTS,
-    IMAGERY_INDEX, LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG, SHARED_OSM_DATA,
-    SHOW_QUIT_CONFIRM, TOGGLE_DEBUG_OVERLAY,
+    OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, UploadToOsm,
+    DOWNLOAD_REQUESTS, IMAGERY_INDEX, LAYER_REQUESTS, OPEN_CUSTOM_IMAGERY_DIALOG,
+    SHARED_OSM_DATA, SHOW_QUIT_CONFIRM, SHOW_UPLOAD_DIALOG, TOGGLE_DEBUG_OVERLAY,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -122,6 +122,21 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     }
     // Wake the render loop so MapViewer drains the queue on the next frame
     // instead of waiting for an unrelated input event.
+    cx.refresh_windows();
+}
+
+// Handle the File > Upload to OSM menu action. This free function only has
+// `&mut App` (no access to the view's layer_manager or `set_status`), so —
+// same pattern as `download_from_osm`/`open_custom_imagery_dialog` — it just
+// enqueues a request; `MapViewer::check_for_upload_dialog` (which has full
+// view access) decides whether there's anything to upload at all (setting a
+// "Nothing to upload" status if not) before actually opening the dialog.
+pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
+    if let Some(queue) = SHOW_UPLOAD_DIALOG.get() {
+        if let Ok(mut q) = queue.lock() {
+            q.push(());
+        }
+    }
     cx.refresh_windows();
 }
 
@@ -298,6 +313,8 @@ pub(crate) fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, stat
             items: vec![
                 MenuItem::action("Open…", OpenOsmFile),
                 MenuItem::action("Download from OSM", DownloadFromOsm),
+                MenuItem::separator(),
+                MenuItem::action("Upload to OSM…", UploadToOsm),
             ],
             disabled: false,
         },
