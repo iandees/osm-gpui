@@ -1,5 +1,5 @@
 use gpui::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::layers::MapLayer;
@@ -45,10 +45,12 @@ pub struct OsmLayer {
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
     way_bboxes: Vec<Option<WayBbox>>,
-    /// Pre-projected way vertex lists in Web Mercator meters, aligned with
-    /// `osm_data.ways` by index. Lets the render loop walk a contiguous
-    /// `&[(f64, f64)]` per way instead of doing a `HashMap::get` per node id.
-    way_vertices: Vec<Vec<(f64, f64)>>,
+    /// Pre-projected way vertex lists (node id + Web Mercator meters),
+    /// aligned with `osm_data.ways` by index. Lets the render loop walk a
+    /// contiguous slice per way instead of doing a `HashMap::get` per node
+    /// id. The node id is carried alongside the position so the render loop
+    /// can match vertices against an active `drag_preview` set.
+    way_vertices: Vec<Vec<(i64, f64, f64)>>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
@@ -67,6 +69,11 @@ pub struct OsmLayer {
     /// returns ways whose bbox is fully contained in the query rect, which is
     /// exactly the "fully enclosed" box-select rule for ways.
     way_index: RTree<GeomWithData<Rectangle<[f64; 2]>, i64>>,
+    /// Transient screen-space offset applied to the given node ids while
+    /// rendering, for live drag feedback. Never touches `osm_data`.
+    drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
+    /// Whether this layer has had a committed move since it was loaded.
+    modified: bool,
 }
 
 fn compute_node_cache(data: &OsmData) -> NodeCache {
@@ -106,7 +113,7 @@ fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
 fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
-) -> (Vec<Option<WayBbox>>, Vec<Vec<(f64, f64)>>) {
+) -> (Vec<Option<WayBbox>>, Vec<Vec<(i64, f64, f64)>>) {
     let mut bboxes = Vec::with_capacity(data.ways.len());
     let mut vertices = Vec::with_capacity(data.ways.len());
     for way in &data.ways {
@@ -121,7 +128,7 @@ fn compute_way_tables(
                 if mx > max_x { max_x = mx; }
                 if my < min_y { min_y = my; }
                 if my > max_y { max_y = my; }
-                verts.push((mx, my));
+                verts.push((*nid, mx, my));
             }
         }
         if verts.is_empty() {
@@ -237,6 +244,8 @@ impl OsmLayer {
             highlight: Vec::new(),
             node_index: RTree::new(),
             way_index: RTree::new(),
+            drag_preview: None,
+            modified: false,
         }
     }
 
@@ -258,6 +267,8 @@ impl OsmLayer {
             highlight: Vec::new(),
             node_index,
             way_index,
+            drag_preview: None,
+            modified: false,
         }
     }
 
@@ -271,6 +282,26 @@ impl OsmLayer {
         self.node_index = build_node_index(&self.node_cache);
         self.way_index = build_way_index(&self.way_bboxes, &osm_data.ways);
         self.osm_data = Some(osm_data);
+    }
+
+    /// Commit a set of node moves: clones the current `OsmData`, applies the
+    /// given `(node_id, new_lat, new_lon)` updates, marks the layer modified,
+    /// and rebuilds every derived cache/index once via `set_osm_data`.
+    /// No-op if this layer has no data or `moves` is empty.
+    pub fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
+        if moves.is_empty() {
+            return;
+        }
+        let Some(current) = self.osm_data.clone() else { return; };
+        let mut data = (*current).clone();
+        for &(id, lat, lon) in moves {
+            if let Some(node) = data.nodes.get_mut(&id) {
+                node.lat = lat;
+                node.lon = lon;
+            }
+        }
+        self.modified = true;
+        self.set_osm_data(Arc::new(data));
     }
 
     /// Get the OSM data from this layer
@@ -288,6 +319,8 @@ impl OsmLayer {
         self.node_cache.flat.clear();
         self.node_index = RTree::new();
         self.way_index = RTree::new();
+        self.drag_preview = None;
+        self.modified = false;
     }
 
     /// Check if this layer has data
@@ -314,6 +347,34 @@ impl MapLayer for OsmLayer {
 
     fn set_highlight(&mut self, features: &[FeatureRef]) {
         self.highlight = features.to_vec();
+    }
+
+    fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
+        self.drag_preview = Some((node_ids.clone(), delta));
+    }
+
+    fn clear_drag_preview(&mut self) {
+        self.drag_preview = None;
+    }
+
+    fn is_modified(&self) -> bool {
+        self.modified
+    }
+
+    fn node_lat_lon(&self, node_id: i64) -> Option<(f64, f64)> {
+        let data = self.osm_data.as_ref()?;
+        let n = data.nodes.get(&node_id)?;
+        Some((n.lat, n.lon))
+    }
+
+    fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>> {
+        let data = self.osm_data.as_ref()?;
+        let way = data.ways.iter().find(|w| w.id == way_id)?;
+        Some(way.nodes.clone())
+    }
+
+    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
+        OsmLayer::commit_node_moves(self, moves);
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
@@ -398,9 +459,14 @@ impl MapLayer for OsmLayer {
             });
 
             let mut prev: Option<Point<Pixels>> = None;
-            for &(mx, my) in verts {
-                let sp = viewport.mercator_to_screen(mx, my);
+            for &(node_id, mx, my) in verts {
+                let mut sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) { continue; }
+                if let Some((ref ids, delta)) = self.drag_preview {
+                    if ids.contains(&node_id) {
+                        sp += delta;
+                    }
+                }
                 let p = point(sp.x + origin_x, sp.y + origin_y);
                 if let Some(p0) = prev {
                     push_segment_quad(&mut group.path, &mut group.bounds_min_max, p0, p, group.half_width);
@@ -432,8 +498,13 @@ impl MapLayer for OsmLayer {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
             }
-            let sp = viewport.mercator_to_screen(mx, my);
+            let mut sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) { continue; }
+            if let Some((ref ids, delta)) = self.drag_preview {
+                if ids.contains(&id) {
+                    sp += delta;
+                }
+            }
             let style = match osm_data.nodes.get(&id) {
                 Some(n) => self.stylesheet.node_style(&n.tags),
                 None => crate::style::NodeStyle::default(),
@@ -594,8 +665,13 @@ impl MapLayer for OsmLayer {
             FeatureKind::Node => {
                 let Some(n) = osm_data.nodes.get(&feature.id) else { return; };
                 let Some((lat, lon)) = validate_coords(n.lat, n.lon) else { return; };
-                let sp = viewport.geo_to_screen(lat, lon);
+                let mut sp = viewport.geo_to_screen(lat, lon);
                 if !is_point_valid(sp) { return; }
+                if let Some((ref ids, delta)) = self.drag_preview {
+                    if ids.contains(&feature.id) {
+                        sp += delta;
+                    }
+                }
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let ring_size = node_style.size * 2.0;
                 let half = px(ring_size / 2.0);
@@ -623,8 +699,13 @@ impl MapLayer for OsmLayer {
                 for node_id in &way.nodes {
                     if let Some(n) = osm_data.nodes.get(node_id) {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
-                            let sp = viewport.geo_to_screen(lat, lon);
+                            let mut sp = viewport.geo_to_screen(lat, lon);
                             if is_point_valid(sp) {
+                                if let Some((ref ids, delta)) = self.drag_preview {
+                                    if ids.contains(node_id) {
+                                        sp += delta;
+                                    }
+                                }
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
                             }
                         }
@@ -778,5 +859,73 @@ mod tests {
             size: size(px(800.0), px(600.0)),
         };
         assert!(layer.hit_test_rect(&viewport, rect).is_empty());
+    }
+
+    #[test]
+    fn way_node_ids_returns_members_in_order() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.001, tags: empty_tags() };
+        let way = OsmWay { id: 10, nodes: vec![1, 2], tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let layer = OsmLayer::new_with_data("L", data);
+
+        assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
+        assert_eq!(layer.way_node_ids(999), None);
+    }
+
+    #[test]
+    fn node_lat_lon_reflects_current_data() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let layer = OsmLayer::new_with_data("L", data);
+
+        assert_eq!(layer.node_lat_lon(1), Some((40.0, -74.0)));
+        assert_eq!(layer.node_lat_lon(999), None);
+    }
+
+    #[test]
+    fn commit_node_moves_updates_data_and_marks_modified() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 41.0, lon: -75.0, tags: empty_tags() };
+        let data = data_with(vec![n1, n2], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        assert!(!layer.is_modified());
+        layer.commit_node_moves(&[(1, 40.5, -74.5)]);
+
+        assert!(layer.is_modified());
+        let updated = layer.get_osm_data().unwrap();
+        assert_eq!(updated.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.5, -74.5)));
+        // Untouched node is unaffected.
+        assert_eq!(updated.nodes.get(&2).map(|n| (n.lat, n.lon)), Some((41.0, -75.0)));
+    }
+
+    #[test]
+    fn commit_node_moves_empty_is_noop() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        layer.commit_node_moves(&[]);
+        assert!(!layer.is_modified());
+    }
+
+    #[test]
+    fn drag_preview_does_not_mutate_data() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let mut layer = OsmLayer::new_with_data("L", data);
+
+        let mut ids = std::collections::HashSet::new();
+        ids.insert(1);
+        layer.set_drag_preview(&ids, point(px(50.0), px(0.0)));
+
+        assert!(!layer.is_modified());
+        let unchanged = layer.get_osm_data().unwrap();
+        assert_eq!(unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
+
+        layer.clear_drag_preview();
+        let still_unchanged = layer.get_osm_data().unwrap();
+        assert_eq!(still_unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)), Some((40.0, -74.0)));
     }
 }

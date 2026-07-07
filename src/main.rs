@@ -27,7 +27,7 @@ use gpui_component::{
     menu::ContextMenuExt,
 };
 
-actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings]);
+actions!(osm_gpui, [OpenOsmFile, Quit, AddOsmCarto, AddCoordinateGrid, DownloadFromOsm, ToggleDebugOverlay, AddCustomImagery, OpenSettings, Undo, Redo]);
 
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -254,6 +254,9 @@ struct MapViewer {
     /// Screen-space (start, current) points of an in-progress left-drag box
     /// select, or `None` when not dragging a box.
     box_select: Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)>,
+    /// In-progress move-drag of the current selection, or `None` when not
+    /// dragging a move.
+    move_drag: Option<MoveDrag>,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
@@ -265,6 +268,156 @@ struct MapViewer {
     custom_imagery_dialog: Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Indices of the currently-open accordion sections in the side panel.
     side_panel_open: Vec<usize>,
+    /// Focus handle for the map area, so it can receive key events (e.g.
+    /// Escape to cancel an in-progress move-drag).
+    focus_handle: gpui::FocusHandle,
+    /// Global undo/redo history of committed data mutations.
+    undo_stack: UndoStack,
+}
+
+/// Per-layer node ids being moved, each with its pre-drag `(lat, lon)`.
+type NodeMoveTargets = Vec<(String, Vec<(i64, f64, f64)>)>;
+
+/// Per layer: node id -> (before (lat, lon), after (lat, lon)).
+type NodeMoveUndoEntries = Vec<(String, Vec<(i64, (f64, f64), (f64, f64))>)>;
+
+/// A single reversible data mutation, recorded on the global undo stack.
+/// Only one kind exists today (produced by committing a drag-to-move), but
+/// the enum leaves room for future mutation kinds (tag edits, deletes, ...)
+/// without restructuring the stack.
+#[derive(Clone)]
+enum UndoableAction {
+    MoveNodes { per_layer: NodeMoveUndoEntries },
+}
+
+impl UndoableAction {
+    /// Human-readable label for the history list, e.g. "Moved 3 nodes".
+    fn description(&self) -> String {
+        match self {
+            UndoableAction::MoveNodes { per_layer } => {
+                let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
+                if count == 1 {
+                    "Moved 1 node".to_string()
+                } else {
+                    format!("Moved {} nodes", count)
+                }
+            }
+        }
+    }
+}
+
+/// A global undo/redo stack of committed data mutations, shared across all
+/// layers in the order actions happened.
+#[derive(Default)]
+struct UndoStack {
+    actions: Vec<UndoableAction>,
+    /// Index of the next action that would be redone. Equals
+    /// `actions.len()` when at the tip (nothing to redo).
+    cursor: usize,
+}
+
+impl UndoStack {
+    fn push(&mut self, action: UndoableAction) {
+        self.actions.truncate(self.cursor);
+        self.actions.push(action);
+        self.cursor = self.actions.len();
+    }
+
+    /// Returns the action to invert, and moves the cursor back. `None` if
+    /// there's nothing to undo.
+    fn undo(&mut self) -> Option<UndoableAction> {
+        if self.cursor == 0 {
+            return None;
+        }
+        self.cursor -= 1;
+        Some(self.actions[self.cursor].clone())
+    }
+
+    /// Returns the action to reapply, and moves the cursor forward. `None`
+    /// if there's nothing to redo.
+    fn redo(&mut self) -> Option<UndoableAction> {
+        if self.cursor == self.actions.len() {
+            return None;
+        }
+        let action = self.actions[self.cursor].clone();
+        self.cursor += 1;
+        Some(action)
+    }
+}
+
+#[cfg(test)]
+mod undo_stack_tests {
+    use super::{UndoStack, UndoableAction};
+
+    fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
+        UndoableAction::MoveNodes {
+            per_layer: vec![("L".to_string(), vec![(id, before, after)])],
+        }
+    }
+
+    #[test]
+    fn description_singular_and_plural() {
+        let one = move_one(1, (0.0, 0.0), (1.0, 1.0));
+        assert_eq!(one.description(), "Moved 1 node");
+
+        let two = UndoableAction::MoveNodes {
+            per_layer: vec![(
+                "L".to_string(),
+                vec![
+                    (1, (0.0, 0.0), (1.0, 1.0)),
+                    (2, (0.0, 0.0), (1.0, 1.0)),
+                ],
+            )],
+        };
+        assert_eq!(two.description(), "Moved 2 nodes");
+    }
+
+    #[test]
+    fn undo_redo_at_empty_stack_is_none() {
+        let mut stack = UndoStack::default();
+        assert!(stack.undo().is_none());
+        assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn push_then_undo_then_redo_round_trips() {
+        let mut stack = UndoStack::default();
+        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+
+        assert!(stack.redo().is_none(), "nothing to redo right after a push");
+
+        let undone = stack.undo().expect("should have one action to undo");
+        assert_eq!(undone.description(), "Moved 1 node");
+        assert!(stack.undo().is_none(), "only one action was pushed");
+
+        let redone = stack.redo().expect("should be able to redo after undo");
+        assert_eq!(redone.description(), "Moved 1 node");
+        assert!(stack.redo().is_none(), "back at the tip, nothing left to redo");
+    }
+
+    #[test]
+    fn push_after_undo_discards_redo_branch() {
+        let mut stack = UndoStack::default();
+        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(2, (0.0, 0.0), (2.0, 2.0)));
+
+        stack.undo(); // cursor now points at action 2 as redo-able
+        stack.push(move_one(3, (0.0, 0.0), (3.0, 3.0))); // discards action 2
+
+        // Only actions 1 and 3 remain; redo should have nothing left.
+        assert!(stack.redo().is_none());
+        let undone_3 = stack.undo().unwrap();
+        assert_eq!(undone_3.description(), "Moved 1 node");
+        let undone_1 = stack.undo().unwrap();
+        assert_eq!(undone_1.description(), "Moved 1 node");
+        assert!(stack.undo().is_none());
+    }
+}
+
+/// Snapshot of the nodes being moved by an in-progress drag: which layer
+/// they belong to, and each affected node's id and pre-drag (lat, lon).
+struct MoveDrag {
+    per_layer: NodeMoveTargets,
 }
 
 /// Normalize two arbitrary screen points into a `Bounds` with a top-left
@@ -303,12 +456,15 @@ impl MapViewer {
             selected: Vec::new(),
             mouse_down_pos: None,
             box_select: None,
+            move_drag: None,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
             last_imagery_load_state: None,
             show_debug_overlay: false,
             custom_imagery_dialog: None,
             side_panel_open: vec![0, 1, 2],
+            focus_handle: cx.focus_handle(),
+            undo_stack: UndoStack::default(),
         }
     }
 
@@ -461,8 +617,143 @@ impl MapViewer {
         self.mouse_down_pos = Some(adjusted_position);
     }
 
+    /// Left-button mouse-down: if the point hits a currently-selected
+    /// feature, start a move-drag instead of the usual box-select/click
+    /// tracking. Always records `mouse_down_pos` either way, since both
+    /// paths need it to distinguish a click from a drag on release.
+    fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
+        self.mouse_down_pos = Some(position);
+        if self.selected.is_empty() {
+            return;
+        }
+        if self
+            .layer_manager
+            .hit_test_selection(&self.viewport, position, &self.selected)
+            .is_none()
+        {
+            return;
+        }
+        let per_layer = self.resolve_move_targets();
+        if !per_layer.is_empty() {
+            self.move_drag = Some(MoveDrag { per_layer });
+        }
+    }
+
+    /// Resolve the current selection into, per owning layer, the set of node
+    /// ids to translate: a selected node contributes its own id; a selected
+    /// way contributes every one of its member node ids. Each id's current
+    /// (lat, lon) is snapshotted for use as the drag's translation anchor.
+    fn resolve_move_targets(&self) -> NodeMoveTargets {
+        use osm_gpui::selection::FeatureKind;
+        use std::collections::{HashMap, HashSet};
+
+        let mut ids_by_layer: HashMap<String, HashSet<i64>> = HashMap::new();
+        for feat in &self.selected {
+            let Some(layer) = self.layer_manager.find_layer(&feat.layer_name) else { continue; };
+            let entry = ids_by_layer.entry(feat.layer_name.clone()).or_default();
+            match feat.kind {
+                FeatureKind::Node => {
+                    entry.insert(feat.id);
+                }
+                FeatureKind::Way => {
+                    if let Some(node_ids) = layer.way_node_ids(feat.id) {
+                        entry.extend(node_ids);
+                    }
+                }
+            }
+        }
+
+        ids_by_layer
+            .into_iter()
+            .filter_map(|(layer_name, ids)| {
+                let layer = self.layer_manager.find_layer(&layer_name)?;
+                let originals: Vec<(i64, f64, f64)> = ids
+                    .into_iter()
+                    .filter_map(|id| layer.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
+                    .collect();
+                if originals.is_empty() {
+                    None
+                } else {
+                    Some((layer_name, originals))
+                }
+            })
+            .collect()
+    }
+
+    /// Cancel an in-progress move-drag: clears the preview on every affected
+    /// layer without mutating any data.
+    fn cancel_move_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(drag) = self.move_drag.take() {
+            for (layer_name, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.clear_drag_preview();
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    /// Apply an undo/redo step: `forward = true` reapplies the action's
+    /// "after" state (redo), `forward = false` reverts to its "before"
+    /// state (undo). Both directions reuse the same commit path as a live
+    /// drag, so caches rebuild exactly once per affected layer.
+    fn apply_undo_action(&mut self, action: &UndoableAction, forward: bool) {
+        match action {
+            UndoableAction::MoveNodes { per_layer } => {
+                for (layer_name, entries) in per_layer {
+                    let moves: Vec<(i64, f64, f64)> = entries
+                        .iter()
+                        .map(|&(id, before, after)| {
+                            let (lat, lon) = if forward { after } else { before };
+                            (id, lat, lon)
+                        })
+                        .collect();
+                    if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                        layer.commit_node_moves(&moves);
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(action) = self.undo_stack.undo() {
+            self.apply_undo_action(&action, false);
+            cx.notify();
+        }
+    }
+
+    fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(action) = self.undo_stack.redo() {
+            self.apply_undo_action(&action, true);
+            cx.notify();
+        }
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = event.position;
+
+        if self.move_drag.is_some() {
+            if event.pressed_button == Some(gpui::MouseButton::Left) {
+                if let Some(start) = self.mouse_down_pos {
+                    let delta = adjusted_position - start;
+                    let per_layer = self
+                        .move_drag
+                        .as_ref()
+                        .map(|d| d.per_layer.clone())
+                        .unwrap_or_default();
+                    for (layer_name, originals) in &per_layer {
+                        if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                            let ids: std::collections::HashSet<i64> =
+                                originals.iter().map(|&(id, _, _)| id).collect();
+                            layer.set_drag_preview(&ids, delta);
+                        }
+                    }
+                    cx.notify();
+                }
+            }
+            return;
+        }
 
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
@@ -483,6 +774,50 @@ impl MapViewer {
         let up_pos = event.position;
         let down_pos = self.mouse_down_pos.take();
         self.viewport.handle_mouse_up();
+
+        if let Some(drag) = self.move_drag.take() {
+            let moved = match down_pos {
+                Some(down) => (up_pos - down).magnitude() >= 4.0,
+                None => false,
+            };
+            let delta = down_pos.map(|down| up_pos - down).unwrap_or_default();
+
+            for (layer_name, _) in &drag.per_layer {
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.clear_drag_preview();
+                }
+            }
+
+            if !moved {
+                // Not actually a drag: treat as a plain click on the map.
+                let before = self.selected.clone();
+                self.handle_map_click(up_pos);
+                if before != self.selected {
+                    cx.notify();
+                }
+                return;
+            }
+
+            let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
+            for (layer_name, originals) in &drag.per_layer {
+                let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
+                let mut undo_entries: Vec<(i64, (f64, f64), (f64, f64))> = Vec::with_capacity(originals.len());
+                for &(id, lat, lon) in originals {
+                    let anchor = self.viewport.geo_to_screen(lat, lon);
+                    let new_screen = anchor + delta;
+                    let (new_lat, new_lon) = self.viewport.screen_to_geo(new_screen);
+                    moves.push((id, new_lat, new_lon));
+                    undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
+                }
+                if let Some(layer) = self.layer_manager.find_layer_mut(layer_name) {
+                    layer.commit_node_moves(&moves);
+                }
+                undo_per_layer.push((layer_name.clone(), undo_entries));
+            }
+            self.undo_stack.push(UndoableAction::MoveNodes { per_layer: undo_per_layer });
+            cx.notify();
+            return;
+        }
 
         if let Some((start, _)) = self.box_select.take() {
             let rect = normalize_rect(start, up_pos);
@@ -894,20 +1229,22 @@ impl MapViewer {
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
     fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let layer_info: Vec<(String, bool)> = self
+        let layer_info: Vec<(String, bool, bool)> = self
             .layer_manager
             .layers()
             .iter()
-            .map(|layer| (layer.name().to_string(), layer.is_visible()))
+            .map(|layer| (layer.name().to_string(), layer.is_visible(), layer.is_modified()))
             .collect();
 
         let layers_section = self.render_layers_section(&layer_info, cx);
         let selection_section = self.render_selection_section(cx);
         let tags_section = self.render_tags_section(cx);
+        let history_section = self.render_history_section(cx);
 
         let open_layers = self.side_panel_open.contains(&0);
         let open_selection = self.side_panel_open.contains(&1);
         let open_tags = self.side_panel_open.contains(&2);
+        let open_history = self.side_panel_open.contains(&3);
 
         let selection_title = match self.selected.len() {
             0 => "Selection".to_string(),
@@ -939,8 +1276,43 @@ impl MapViewer {
                         selection_section,
                         cx,
                     ))
-                    .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx)),
+                    .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx))
+                    .child(self.collapsible_section("History", 3, open_history, history_section, cx)),
             )
+    }
+
+    /// The History accordion section: a passive list of every undoable
+    /// action in order. The most recently applied action (the stack's
+    /// current position) is highlighted; anything after it is available to
+    /// redo but not currently applied, and renders dimmed.
+    fn render_history_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.undo_stack.actions.is_empty() {
+            return Label::new("No actions yet.")
+                .text_color(cx.theme().muted_foreground)
+                .text_sm()
+                .into_any_element();
+        }
+
+        let cursor = self.undo_stack.cursor;
+        div()
+            .flex()
+            .flex_col()
+            .children(self.undo_stack.actions.iter().enumerate().map(|(i, action)| {
+                let is_current = i + 1 == cursor;
+                let is_future = i >= cursor;
+                let mut row = div()
+                    .px_1()
+                    .py_0p5()
+                    .text_sm()
+                    .child(action.description());
+                if is_current {
+                    row = row.bg(cx.theme().accent);
+                } else if is_future {
+                    row = row.text_color(cx.theme().muted_foreground).italic();
+                }
+                row
+            }))
+            .into_any_element()
     }
 
     /// A single collapsible section: a clickable header (chevron + title) that
@@ -1051,7 +1423,7 @@ impl MapViewer {
     /// context menu offering Move up / Move down / Delete.
     fn render_layers_section(
         &self,
-        layer_info: &[(String, bool)],
+        layer_info: &[(String, bool, bool)],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -1067,11 +1439,16 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (name, is_visible))| {
+                    .map(|(index, (name, is_visible, is_modified))| {
                         let layer_name = name.clone();
+                        let label = if *is_modified {
+                            format!("{} \u{2022}", name)
+                        } else {
+                            name.clone()
+                        };
                         Checkbox::new(("layer", index))
                             .checked(*is_visible)
-                            .label(name.clone())
+                            .label(label)
                             .on_click(cx.listener(move |this, _checked: &bool, _, cx| {
                                 this.toggle_layer_visibility(&layer_name);
                                 cx.notify();
@@ -1189,6 +1566,7 @@ impl Render for MapViewer {
                 div()
                     .flex_1()
                     .relative()
+                            .track_focus(&self.focus_handle)
                             // Right button drives panning.
                             .on_mouse_down(
                                 gpui::MouseButton::Right,
@@ -1210,13 +1588,20 @@ impl Render for MapViewer {
                                     cx.notify();
                                 }),
                             )
-                            // Left button is selection only: record the press position, decide on release.
+                            // Left button: selection, box-select, or move-drag if the
+                            // press lands on an already-selected feature.
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                                    this.mouse_down_pos = Some(ev.position);
+                                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                                    window.focus(&this.focus_handle, cx);
+                                    this.handle_map_mouse_down(ev.position);
                                 }),
                             )
+                            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    this.cancel_move_drag(cx);
+                                }
+                            }))
                             .on_mouse_up(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, ev: &MouseUpEvent, _, cx| {
@@ -1326,6 +1711,8 @@ impl Render for MapViewer {
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
+            .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
             .children(self.custom_imagery_dialog.clone())
     }
 }
@@ -1580,6 +1967,8 @@ fn main() {
                     KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
                     KeyBinding::new("cmd-q", Quit, None),
                     KeyBinding::new("cmd-,", OpenSettings, None),
+                    KeyBinding::new("cmd-z", Undo, None),
+                    KeyBinding::new("cmd-shift-z", Redo, None),
                 ]);
                 let view = cx.new(|cx| MapViewer::new(window, cx));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
@@ -1863,6 +2252,14 @@ fn rebuild_menus(cx: &mut App, center_lat: f64, center_lon: f64, state: ImageryL
             items: vec![
                 MenuItem::action("Open…", OpenOsmFile),
                 MenuItem::action("Download from OSM", DownloadFromOsm),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::action("Undo", Undo),
+                MenuItem::action("Redo", Redo),
             ],
             disabled: false,
         },

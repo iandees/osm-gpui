@@ -74,6 +74,34 @@ pub trait MapLayer: Send + Sync {
         _window: &mut Window,
         _feature: &crate::selection::FeatureRef,
     ) {}
+
+    /// Set a transient screen-space offset to apply when rendering the given
+    /// node ids, for live drag feedback. Does not touch the underlying data.
+    /// Default: no-op.
+    fn set_drag_preview(&mut self, _node_ids: &std::collections::HashSet<i64>, _delta: Point<Pixels>) {}
+
+    /// Clear any transient drag preview. Default: no-op.
+    fn clear_drag_preview(&mut self) {}
+
+    /// Whether this layer has uncommitted-to-disk edits (e.g. moved nodes).
+    /// Default: `false`.
+    fn is_modified(&self) -> bool {
+        false
+    }
+
+    /// Current (lat, lon) of a node this layer owns, if any. Default: `None`.
+    fn node_lat_lon(&self, _node_id: i64) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// The member node ids of a way this layer owns, if any. Default: `None`.
+    fn way_node_ids(&self, _way_id: i64) -> Option<Vec<i64>> {
+        None
+    }
+
+    /// Commit a set of `(node_id, new_lat, new_lon)` moves into this layer's
+    /// data, rebuilding derived caches once. Default: no-op.
+    fn commit_node_moves(&mut self, _moves: &[(i64, f64, f64)]) {}
 }
 
 /// Manager for all map layers
@@ -196,6 +224,32 @@ impl LayerManager {
             .collect()
     }
 
+    /// Hit-test only against the given selection: for each layer, run its
+    /// normal `hit_test`, keep only candidates already present in
+    /// `selected`, and resolve the nearest across layers. Used to detect
+    /// whether a mouse-down landed on a currently-selected feature (to start
+    /// a move-drag) as opposed to empty space (box-select).
+    pub fn hit_test_selection(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        selected: &[crate::selection::FeatureRef],
+    ) -> Option<crate::selection::FeatureRef> {
+        let per_layer: Vec<Vec<crate::selection::HitCandidate>> = self
+            .layers
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .map(|layer| {
+                layer
+                    .hit_test(viewport, screen_pt)
+                    .into_iter()
+                    .filter(|c| selected.contains(&c.feature))
+                    .collect()
+            })
+            .collect();
+        crate::selection::resolve_hits(per_layer)
+    }
+
     /// Render `feature`'s highlight by asking the owning layer (matched by name).
     /// No-op if no layer with that name exists.
     pub fn render_highlight(
@@ -273,5 +327,64 @@ mod tests {
         apply_move(&mut v, 0, 99);
         apply_move(&mut v, 99, 0);
         assert_eq!(v, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn hit_test_selection_finds_selected_node_at_click_point() {
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::LayerManager;
+        use crate::osm::{OsmData, OsmNode};
+        use crate::selection::{FeatureKind, FeatureRef};
+        use crate::viewport::Viewport;
+        use gpui::{point, px, size};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let mut nodes = HashMap::new();
+        nodes.insert(1, node);
+        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let layer = OsmLayer::new_with_data("L", data);
+
+        let mut manager = LayerManager::new();
+        manager.add_layer(Box::new(layer));
+
+        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        let selected = vec![FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 1 }];
+
+        let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
+        assert_eq!(hit, Some(selected[0].clone()));
+    }
+
+    #[test]
+    fn hit_test_selection_ignores_unselected_features() {
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::LayerManager;
+        use crate::osm::{OsmData, OsmNode};
+        use crate::selection::{FeatureKind, FeatureRef};
+        use crate::viewport::Viewport;
+        use gpui::{point, px, size};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let node = OsmNode { id: 1, lat: center_lat, lon: center_lon, tags: HashMap::new() };
+        let mut nodes = HashMap::new();
+        nodes.insert(1, node);
+        let data = Arc::new(OsmData { nodes, ways: Vec::new(), relations: Vec::new(), bounds: None });
+        let layer = OsmLayer::new_with_data("L", data);
+
+        let mut manager = LayerManager::new();
+        manager.add_layer(Box::new(layer));
+
+        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        // Selection references a *different* node id than the one under the cursor.
+        let selected = vec![FeatureRef { layer_name: "L".to_string(), kind: FeatureKind::Node, id: 999 }];
+
+        let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
+        assert_eq!(hit, None);
     }
 }
