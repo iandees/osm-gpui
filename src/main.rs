@@ -573,8 +573,23 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Convert a raw window-space mouse position (as delivered by every
+    /// gpui mouse event) into map-area-local coordinates, i.e. relative to
+    /// the map div's own top-left corner. Needed because the map area is no
+    /// longer flush against the window's left edge — the mode-selector
+    /// toolbar (`render_mode_panel`) sits before it in the flex row,
+    /// offsetting the map's actual on-screen origin by
+    /// `Self::MODE_PANEL_WIDTH`. `Viewport`'s hit-testing/projection math
+    /// assumes (0,0) is the map area's own top-left, matching how rendering
+    /// already adds back `bounds.origin` (the map div's real window
+    /// position) when painting — this is the input-side counterpart of
+    /// that.
+    fn window_to_map(&self, position: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+        gpui::point(position.x - px(Self::MODE_PANEL_WIDTH), position.y)
+    }
+
     fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
-        let adjusted_position = event.position;
+        let adjusted_position = self.window_to_map(event.position);
 
         self.viewport.handle_mouse_down(adjusted_position);
         self.interaction =
@@ -585,6 +600,9 @@ impl MapViewer {
     /// feature, start a move-drag instead of the usual box-select/click
     /// tracking. Always records the mouse-down position either way, since
     /// both paths need it to distinguish a click from a drag on release.
+    /// `position` must already be in map-local coordinates (see
+    /// `window_to_map`) — callers pass the raw event position through
+    /// `window_to_map` first.
     fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
         if self.mode == EditMode::Extrude {
             if let Some(layer_id) = self.active_layer {
@@ -1140,7 +1158,7 @@ impl MapViewer {
     }
 
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let adjusted_position = event.position;
+        let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
         if self.building_progress.is_some() || self.extrude_drag.is_some() {
@@ -1181,7 +1199,7 @@ impl MapViewer {
     }
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
-        let up_pos = event.position;
+        let up_pos = self.window_to_map(event.position);
         self.viewport.handle_mouse_up();
 
         if let Some(drag) = self.extrude_drag.take() {
@@ -1520,7 +1538,7 @@ impl MapViewer {
             },
         };
 
-        let adjusted_position = event.position;
+        let adjusted_position = self.window_to_map(event.position);
 
         if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
             cx.notify();
@@ -2033,7 +2051,8 @@ impl Render for MapViewer {
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             window.focus(&this.focus_handle, cx);
-                            this.handle_map_mouse_down(ev.position);
+                            let position = this.window_to_map(ev.position);
+                            this.handle_map_mouse_down(position);
                         }),
                     )
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
