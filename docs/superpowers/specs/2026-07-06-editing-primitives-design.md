@@ -6,7 +6,7 @@ The only edit operation today is "drag a node to move it" (with undo/redo). A re
 
 ## Depends on
 
-`EditState` and `next_new_id` from the OSM XML Export plan — every op here either sets a dirty/deleted flag or allocates a new negative id through that struct, so Export should land first.
+The per-element dirty-tracking fields (`modified_node_ids`, `deleted_node_ids`, `new_node_ids`, `next_new_id`, and their `_way_ids` counterparts) added to `OsmLayer` by the OSM XML Export plan — every op here either sets one of those flags or allocates a new negative id via `next_new_id`, so Export should land first.
 
 ## Design
 
@@ -15,45 +15,48 @@ The only edit operation today is "drag a node to move it" (with undo/redo). A re
 Extend `UndoableAction` (in `main.rs`) with one variant per op below. Each variant stores enough before/after state to reverse itself, following the existing `MoveNodes` pattern (store old and new full node/way records, not deltas). Each op:
 
 1. Mutates the layer's `OsmData` in place.
-2. Updates `EditState` (marks modified/deleted, or registers a new id).
+2. Updates `OsmLayer`'s dirty-tracking fields (marks modified/deleted, or registers a new id via `next_new_id`).
 3. Pushes an `UndoableAction` onto the existing `UndoStack`.
 4. Triggers the same re-render/cache-rebuild path node-move already uses (`OsmLayer` cache invalidation).
 
 No new undo infrastructure — this plan is additive variants on what #45 already built.
 
+### Triggers are menu/keyboard-driven, not right-click context menus
+
+Right-drag currently pans unconditionally (`#41`), and the map area is a raw `canvas` with manual mouse handlers rather than per-feature widgets — there's no existing precedent in this codebase for a position-anchored right-click context menu on the canvas, and bolting one on is a real GPUI-API risk this design doesn't need to take. Every op below is triggered via the existing **Edit menu** (next to Undo/Redo) plus a dedicated key for the two ops JOSM users expect a key for (Delete, Square). This is a deliberate scope reduction from the original brainstorm (which sketched right-click menus) made during planning; functionally equivalent, lower implementation risk, fully keyboard/menu accessible.
+
 ### Ops
 
 **1. Delete node / delete way**
-- Trigger: `Delete`/`Backspace` key with a selection.
+- Trigger: `Delete`/`Backspace` key with a selection (also **Edit > Delete**).
 - Node: if referenced by any way, refuse with a status-line message ("node is part of N ways — remove from way first") rather than silently detaching it. Unreferenced node: mark deleted, remove from `OsmData.nodes`.
 - Way: mark deleted, remove from `OsmData.ways`; member nodes are left alone (JOSM behavior — deleting a way never deletes its nodes).
 - Multi-select (from #43's box select) deletes every selected node/way in one undo step.
 
 **2. Insert node into way**
-- Trigger: right-click on a way segment (between two existing vertices) → context menu "Insert node here".
-- Hit-test: reuse `point_to_segment_distance` from `selection.rs` (already used for way picking) to find the nearest segment and the fractional position along it.
-- Creates a new node at the clicked point (registered via `EditState::next_new_id`), inserts its id into the way's node list at the correct index.
+- Trigger: **Edit > Insert Node Mode** menu action toggles a mode (mirrors Draw Way below). While active, the next left-click resolves the nearest way segment under the cursor (reusing `point_to_segment_distance` from `selection.rs`, already used for way picking) and inserts a new node there, then automatically exits the mode. Esc exits the mode without inserting.
+- Creates a new node at the clicked point (registered via `next_new_id`), inserts its id into the way's node list at the correct index.
 
 **3. Remove node from way**
-- Trigger: right-click on a way-vertex node → context menu "Remove from way".
-- Removes the node's id from the way's node list. If the node is now unreferenced by any way, it is *not* auto-deleted (JOSM leaves orphaned nodes for the user to explicitly delete) — just marks the way modified.
+- Trigger: select a node that is a member of exactly one way → **Edit > Remove From Way**.
+- Removes the node's id from that way's node list. If the node is now unreferenced by any way, it is *not* auto-deleted (JOSM leaves orphaned nodes for the user to explicitly delete) — just marks the way modified.
 
 **4. Draw new way**
-- Trigger: menu action "Draw Way" (no default keybinding yet — add one under a `Draw` submenu next to `Undo`/`Redo`).
+- Trigger: **Edit > Draw Way** menu action.
 - Enters a modal draw state on `MapViewer` (`drawing: Option<Vec<(f64,f64)>>` of geo points placed so far). Each click appends a point (snaps to an existing node within a small pixel radius, reusing existing hit-test, otherwise creates a new node). `Enter`/double-click finalizes: creates a new way from the accumulated node ids. `Esc` cancels and discards all points placed so far (no partial commit, no undo entry for a cancelled draw).
 - Rendered live as an in-progress polyline overlay (separate from `OsmLayer`'s canvas — a `MapViewer`-level overlay, since it isn't committed data yet).
 
 **5. Split way**
-- Trigger: select a node that is an interior vertex (not an endpoint) of exactly one selected way → context menu "Split way here".
-- Splits the way's node list at that index into two ways: original way keeps nodes `[0..=idx]` (retains original id, tags), new way gets nodes `[idx..]` (new id via `EditState`, tags copied from the original — JOSM duplicates tags onto both halves).
+- Trigger: select a node that is an interior vertex (not an endpoint) of exactly one way containing it → **Edit > Split Way**.
+- Splits the way's node list at that index into two ways: original way keeps nodes `[0..=idx]` (retains original id, tags), new way gets nodes `[idx..]` (new id via `next_new_id`, tags copied from the original — JOSM duplicates tags onto both halves).
 
 **6. Join ways**
-- Trigger: select exactly two ways sharing an endpoint node → context menu "Join ways" (available from either way's context menu when the other is also selected).
+- Trigger: select exactly two ways (via box-select) sharing an endpoint node → **Edit > Join Ways**.
 - Requires matching tags or user confirmation if tags differ — **for this plan, refuse the join with a status-line message if tag sets differ** (no merge-conflict UI; that's out of scope). If tags match (or one/both have no tags), concatenate node lists (reversing one side if needed so the shared node is adjacent), keep the id of whichever way was selected first, mark the other deleted.
 
 **7. Square corners**
-- Trigger: select a closed way (first node id == last node id) → `Q` key (JOSM convention).
-- For each vertex, compute the angle formed by its two neighbors; any vertex within a threshold (JOSM uses ~15°) of 90° or 180° gets adjusted so the polygon's corners become exact right angles, using JOSM's iterative least-squares orthogonalization approach (or a simpler single-pass projection if the geometry is simple rectangles — implementer's call on algorithm complexity, but must handle the common "almost-rectangular building" case correctly, verified with a unit test using a slightly-skewed rectangle fixture).
+- Trigger: select a closed way (first node id == last node id) → `Q` key (JOSM convention) or **Edit > Square**.
+- For each vertex, compute the angle formed by its two neighbors; any vertex within a threshold (JOSM uses ~15°) of 90° or 180° gets adjusted so the polygon's corners become exact right angles, using a single-pass least-squares orthogonalization: project the shape onto the dominant axis pair (average of near-0°/90°/180°/270° edge bearings) and snap each corner to the nearest right angle along those two axes. Must handle the common "almost-rectangular building" case correctly, verified with a unit test using a slightly-skewed rectangle fixture.
 - Single undo entry covering all moved nodes in the way.
 
 ### Testing

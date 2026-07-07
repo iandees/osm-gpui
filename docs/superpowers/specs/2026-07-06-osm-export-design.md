@@ -18,34 +18,43 @@ Export a JOSM-compatible `.osm` file: the full dataset (not just a diff), with `
 
 ### Edit-state tracking
 
-Today `OsmLayer` has no notion of "this node was touched." Introduce an `EditState` (new, in `src/osm_layer_edit.rs` or inline in `layers/osm_layer.rs` — implementer's call, keep it a small standalone struct so the editing-primitives work can extend it):
+`OsmLayer` (`src/layers/osm_layer.rs`) already has a coarse `modified: bool` flag, set by `commit_node_moves`. That's not fine-grained enough to know *which* elements to mark `action="modify"` vs. leave untouched on export, and there's no tracking at all for deletes or new elements (needed by the editing-primitives plan, not this one, but the fields should exist now so that plan only adds behavior, not schema).
+
+Add fields directly to `OsmLayer` (alongside the existing `modified: bool`, which stays as-is — it's still the cheap "is there anything to save" check used elsewhere):
 
 ```rust
-#[derive(Default)]
-struct EditState {
-    modified_nodes: HashSet<i64>,
-    modified_ways: HashSet<i64>,
-    deleted_nodes: HashSet<i64>,
-    deleted_ways: HashSet<i64>,
-    new_nodes: HashSet<i64>,   // negative synthetic ids
-    new_ways: HashSet<i64>,
-    next_new_id: i64,          // starts at -1, decrements
-}
+modified_node_ids: HashSet<i64>,
+modified_way_ids: HashSet<i64>,
+deleted_node_ids: HashSet<i64>,
+deleted_way_ids: HashSet<i64>,
+new_node_ids: HashSet<i64>,    // negative synthetic ids
+new_way_ids: HashSet<i64>,
+next_new_id: i64,              // starts at -1, decrements on each allocation
 ```
 
-One `EditState` per `OsmLayer` (matches undo already being per-layer via `NodeMoveUndoEntries`'s `(layer_name, ...)` pairing). `next_new_id` is only consumed by the editing-primitives plan (add/draw ops); this plan just needs the struct to exist and be threaded through so future ops have somewhere to record state.
+Initialized empty / `-1` in both `OsmLayer::new()` and `OsmLayer::new_with_data()`. `deleted_*`, `new_*`, and `next_new_id` are only consumed by the editing-primitives plan; this plan only populates and reads `modified_node_ids`/`modified_way_ids`.
 
-The existing node-move commit path (`apply_undo_action` / wherever the live drag commits, in `main.rs`) gets one line added: mark the moved node's id in `modified_nodes` for its layer. This is the only behavioral hook this plan adds to existing editing.
+`commit_node_moves` gets one line added: insert each moved node's id into `modified_node_ids` (in addition to setting `self.modified = true`, which it already does).
 
 ### Serialization
 
-New module `src/osm_export.rs`:
+New module `src/osm_export.rs`, with a plain data-only struct describing which ids are dirty (keeps the function testable without depending on `OsmLayer`/gpui):
 
 ```rust
-pub fn to_osm_xml(data: &OsmData, edit_state: &EditState) -> String
+#[derive(Default)]
+pub struct EditMarks<'a> {
+    pub modified_nodes: &'a HashSet<i64>,
+    pub modified_ways: &'a HashSet<i64>,
+    pub deleted_nodes: &'a HashSet<i64>,
+    pub deleted_ways: &'a HashSet<i64>,
+    pub new_nodes: &'a HashSet<i64>,
+    pub new_ways: &'a HashSet<i64>,
+}
+
+pub fn to_osm_xml(data: &OsmData, marks: &EditMarks) -> String
 ```
 
-Iterates `data.nodes` and `data.ways` (and passes `data.relations` through untouched), writing standard OSM XML via `quick-xml`'s `Writer` (mirrors the reader in `osm.rs`):
+Callers in `main.rs` construct `EditMarks` from the exporting `OsmLayer`'s fields. Iterates `data.nodes` and `data.ways` (and passes `data.relations` through untouched), writing standard OSM XML via `quick-xml`'s `Writer` (mirrors the reader in `osm.rs`):
 
 - Untouched element: written as-is (all existing tags/attrs preserved).
 - In `modified_nodes`/`modified_ways`: same, plus `action="modify"`.
@@ -57,9 +66,9 @@ Root element: `<osm version="0.6" generator="osm-gpui">`.
 ### Wiring
 
 - New `actions!` entry `ExportOsmFile`, bound to ⌘E (mirrors `OpenOsmFile` / ⌘O).
-- Menu item **File > Export...**.
-- Handler: `rfd` save dialog (worker thread, same pattern as Open) defaulting to `.osm` extension, then `to_osm_xml(&layer.data, &layer.edit_state)` written to the chosen path.
-- If there are multiple `OsmLayer`s, export the one currently selected in the layer panel (fall back to the first `OsmLayer` if none selected — there's no existing "active layer" concept beyond the panel selection, so this plan introduces the minimal notion needed: whichever layer's tags most recently populated the side panel).
+- Menu item **File > Export...** in the existing `Menu { name: "File", ... }` block.
+- `MapLayer` trait (`src/layers/mod.rs`) gains a default no-op method `fn export_xml(&self) -> Option<String> { None }`, matching the existing `commit_node_moves` default-no-op pattern (dyn-dispatch instead of downcasting). `OsmLayer` overrides it: builds an `EditMarks` from its own id sets and calls `osm_export::to_osm_xml`.
+- Handler finds the first layer in `layer_manager.layers()` whose `export_xml()` returns `Some(..)` (i.e. the first `OsmLayer` with data) and writes that string to the chosen path via an `rfd` save dialog (worker thread, same pattern as Open), defaulting to a `.osm` extension. Multi-`OsmLayer` export (picking a specific one) is out of scope for this plan — there's no existing "active layer" concept to hang it off of.
 
 ### Testing
 
