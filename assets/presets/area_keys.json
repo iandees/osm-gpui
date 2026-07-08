@@ -1,0 +1,79 @@
+{
+  "addr:*": {},
+  "advertising": {},
+  "aerialway": {},
+  "aeroway": {
+    "jet_bridge": true
+  },
+  "allotments": {},
+  "amenity": {},
+  "animal": {},
+  "area": {},
+  "area:highway": {},
+  "attraction": {},
+  "boundary": {},
+  "bridge:support": {},
+  "building": {},
+  "building:part": {},
+  "cemetery": {},
+  "ceremonial_gate": {
+    "paifang": true,
+    "torii": true
+  },
+  "club": {},
+  "community_centre": {},
+  "craft": {},
+  "demolished:building": {},
+  "disused:aeroway": {},
+  "disused:amenity": {},
+  "disused:railway": {},
+  "disused:shop": {},
+  "education": {},
+  "emergency": {},
+  "golf": {
+    "cartpath": true,
+    "path": true
+  },
+  "healthcare": {},
+  "historic": {},
+  "indoor": {
+    "yes": true
+  },
+  "industrial": {},
+  "internet_access": {},
+  "landuse": {},
+  "leisure": {
+    "slipway": true
+  },
+  "man_made": {
+    "ceremonial_gate": true,
+    "pipeline": true
+  },
+  "military": {},
+  "natural": {},
+  "office": {},
+  "pipeline": {},
+  "piste:type": {},
+  "place": {},
+  "playground": {},
+  "police": {},
+  "polling_station": {},
+  "power": {
+    "cable": true
+  },
+  "public_transport": {
+    "platform": true
+  },
+  "residential": {},
+  "roller_coaster": {},
+  "seamark:harbour:category": {},
+  "seamark:type": {
+    "gate": true
+  },
+  "shop": {},
+  "telecom": {},
+  "tourism": {},
+  "waterway": {
+    "lock_gate": true
+  }
+}
