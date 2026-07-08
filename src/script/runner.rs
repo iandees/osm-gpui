@@ -23,6 +23,9 @@ pub trait AppHandle {
     fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Render the current frame in-process and save it as a PNG.
     fn capture(&mut self, path: &std::path::Path) -> Result<(), String>;
+    /// Compare the app's current `EditMode` against `want`; `Err` with a
+    /// descriptive message if it doesn't match.
+    fn assert_mode(&mut self, want: crate::script::EditMode) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -104,8 +107,11 @@ impl Runner {
                 })?;
                 Ok(())
             }
-            Op::AssertMode { .. } => {
-                // TODO: wire through AppHandle in Task 2
+            Op::AssertMode { mode } => {
+                app.assert_mode(*mode).map_err(|e| RunError {
+                    line_no: step.line_no,
+                    message: format!("assert_mode: {}", e),
+                })?;
                 Ok(())
             }
         }
@@ -176,6 +182,7 @@ mod tests {
         pub frames_waited: u32,
         pub idle_after_frame: u32,
         pub idle: Arc<IdleTracker>,
+        pub mode: crate::script::EditMode,
     }
 
     impl AppHandle for Fake {
@@ -200,6 +207,13 @@ mod tests {
         fn capture(&mut self, _p: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
+        fn assert_mode(&mut self, want: crate::script::EditMode) -> Result<(), String> {
+            if self.mode == want {
+                Ok(())
+            } else {
+                Err(format!("expected mode {:?}, got {:?}", want, self.mode))
+            }
+        }
     }
 
     #[test]
@@ -209,6 +223,7 @@ mod tests {
             frames_waited: 0,
             idle_after_frame: 3,
             idle: idle.clone(),
+            mode: crate::script::EditMode::Select,
         };
         let runner = Runner { idle };
         runner
@@ -228,6 +243,7 @@ mod tests {
             frames_waited: 0,
             idle_after_frame: u32::MAX,
             idle: idle.clone(),
+            mode: crate::script::EditMode::Select,
         };
         let runner = Runner { idle };
         let e = runner
@@ -235,5 +251,45 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.line_no, 7);
         assert!(e.message.contains("timed out"));
+    }
+
+    #[test]
+    fn assert_mode_passes_when_matching() {
+        let idle = IdleTracker::new();
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: u32::MAX,
+            idle: idle.clone(),
+            mode: crate::script::EditMode::Add,
+        };
+        let runner = Runner { idle };
+        let steps = vec![Step {
+            line_no: 1,
+            op: Op::AssertMode {
+                mode: crate::script::EditMode::Add,
+            },
+        }];
+        runner.run(&mut fake, &steps).unwrap();
+    }
+
+    #[test]
+    fn assert_mode_fails_with_message_when_not_matching() {
+        let idle = IdleTracker::new();
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: u32::MAX,
+            idle: idle.clone(),
+            mode: crate::script::EditMode::Select,
+        };
+        let runner = Runner { idle };
+        let steps = vec![Step {
+            line_no: 4,
+            op: Op::AssertMode {
+                mode: crate::script::EditMode::Building,
+            },
+        }];
+        let e = runner.run(&mut fake, &steps).unwrap_err();
+        assert_eq!(e.line_no, 4);
+        assert!(e.message.contains("assert_mode"));
     }
 }
