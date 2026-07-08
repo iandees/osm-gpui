@@ -10,6 +10,7 @@ pub mod http;
 pub mod idle_tracker;
 pub mod imagery;
 pub mod interaction;
+pub mod keybindings;
 pub mod layers;
 pub mod nsi;
 pub mod osm;
