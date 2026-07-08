@@ -2589,8 +2589,9 @@ impl Render for MapViewer {
                                                 .geo_to_screen(progress.corner_a.0, progress.corner_a.1);
                                             match progress.corner_b {
                                                 None => {
-                                                    // Only corner A placed: draw a small marker at
-                                                    // the fixed corner (no edge yet to offset from).
+                                                    // Only corner A placed: draw a marker at the
+                                                    // fixed corner plus a rubber-band line to the
+                                                    // cursor (no edge yet to offset a rectangle from).
                                                     let half = px(4.0);
                                                     let quad_bounds = Bounds {
                                                         origin: point(
@@ -2600,6 +2601,23 @@ impl Render for MapViewer {
                                                         size: size(px(8.0), px(8.0)),
                                                     };
                                                     window.paint_quad(fill(quad_bounds, rgb(0x3b82f6)));
+
+                                                    if let Some(mouse_pos) = this.last_mouse_pos {
+                                                        let p0 = point(
+                                                            a_screen.x + origin_x,
+                                                            a_screen.y + origin_y,
+                                                        );
+                                                        let p1 = point(
+                                                            mouse_pos.x + origin_x,
+                                                            mouse_pos.y + origin_y,
+                                                        );
+                                                        let mut builder = PathBuilder::stroke(px(2.0));
+                                                        builder.move_to(p0);
+                                                        builder.line_to(p1);
+                                                        if let Ok(path) = builder.build() {
+                                                            window.paint_path(path, rgb(0x3b82f6));
+                                                        }
+                                                    }
                                                 }
                                                 Some(corner_b) => {
                                                     let cursor_geo = this
