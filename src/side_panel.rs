@@ -401,16 +401,8 @@ impl MapViewer {
 
                 let key_for_delete = k.clone();
 
-                div()
-                    .id(SharedString::from(format!("tag-row-{k}")))
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                panel_row(SharedString::from(format!("tag-row-{k}")))
                     .gap_2()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         div()
                             .flex_1()
@@ -458,18 +450,13 @@ impl MapViewer {
                             ),
                     )
                     .child(
-                        div()
-                            .id(SharedString::from(format!("tag-delete-{k}")))
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|this| this.text_color(cx.theme().danger))
-                            .child("x")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
-                                    this.delete_tag(&key_for_delete, cx);
-                                }),
-                            ),
+                        Button::new(SharedString::from(format!("tag-delete-{k}")))
+                            .icon(IconName::Close)
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                this.delete_tag(&key_for_delete, cx);
+                            })),
                     )
                     .into_any_element()
             }));
@@ -479,7 +466,9 @@ impl MapViewer {
         list.child(
             Button::new("add-tag")
                 .label("Add tag")
+                .icon(IconName::Plus)
                 .primary()
+                .small()
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.pending_tag_edit_open = Some(PendingTagEditOpen {
                         features: add_selection.clone(),
