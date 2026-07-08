@@ -48,6 +48,7 @@ pub(crate) enum ScriptCommand {
         y: f32,
         right: bool,
         count: u8,
+        ctrl: bool,
     },
     /// Synthesize a scroll event
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
@@ -224,13 +225,23 @@ impl MapViewer {
                     self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
-                ScriptCommand::Click { x, y, right, count } => {
+                ScriptCommand::Click {
+                    x,
+                    y,
+                    right,
+                    count,
+                    ctrl,
+                } => {
                     let btn = if right {
                         gpui::MouseButton::Right
                     } else {
                         gpui::MouseButton::Left
                     };
                     let click_count = count as usize;
+                    let modifiers = gpui::Modifiers {
+                        control: ctrl,
+                        ..gpui::Modifiers::none()
+                    };
                     // Dispatching synchronously here would double-lease `self`:
                     // we're already inside `MapViewer::render`'s entity update,
                     // and any `.on_mouse_down`/`.on_click` listener belonging to
@@ -243,7 +254,7 @@ impl MapViewer {
                         let down = MouseDownEvent {
                             button: btn,
                             position: point(px(x), px(y)),
-                            modifiers: gpui::Modifiers::none(),
+                            modifiers,
                             click_count,
                             first_mouse: false,
                         };
@@ -251,7 +262,7 @@ impl MapViewer {
                         let up = MouseUpEvent {
                             button: btn,
                             position: point(px(x), px(y)),
-                            modifiers: gpui::Modifiers::none(),
+                            modifiers,
                             click_count,
                         };
                         window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
@@ -373,13 +384,20 @@ impl AppHandle for LiveApp {
         self.bus.submit(ScriptCommand::Drag { from, to });
     }
 
-    fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton, count: u8) {
+    fn dispatch_click(
+        &mut self,
+        at: (f32, f32),
+        button: script::MouseButton,
+        count: u8,
+        ctrl: bool,
+    ) {
         let right = matches!(button, script::MouseButton::Right);
         self.bus.submit(ScriptCommand::Click {
             x: at.0,
             y: at.1,
             right,
             count,
+            ctrl,
         });
     }
 

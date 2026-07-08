@@ -175,12 +175,13 @@ fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.is_empty() {
         return Err(err(
             line_no,
-            "click: want X,Y [button=left|right] [count=N]",
+            "click: want X,Y [button=left|right] [count=N] [ctrl=true]",
         ));
     }
     let at = parse_point(line_no, rest[0])?;
     let mut button = MouseButton::Left;
     let mut count: u8 = 1;
+    let mut ctrl = false;
     for kv in &rest[1..] {
         let (k, v) = kv
             .split_once('=')
@@ -193,10 +194,17 @@ fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
                     .parse::<u8>()
                     .map_err(|e| err(line_no, format!("click: bad count '{}': {}", n, e)))?;
             }
+            ("ctrl", "true") => ctrl = true,
+            ("ctrl", "false") => ctrl = false,
             _ => return Err(err(line_no, format!("click: unknown {}={}", k, v))),
         }
     }
-    Ok(Op::Click { at, button, count })
+    Ok(Op::Click {
+        at,
+        button,
+        count,
+        ctrl,
+    })
 }
 
 fn parse_scroll(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
@@ -422,6 +430,7 @@ mod tests {
                 at: Point2 { x: 5.0, y: 6.0 },
                 button: MouseButton::Left,
                 count: 1,
+                ctrl: false,
             }
         );
     }
@@ -435,6 +444,7 @@ mod tests {
                 at: Point2 { x: 5.0, y: 6.0 },
                 button: MouseButton::Right,
                 count: 1,
+                ctrl: false,
             }
         );
     }
@@ -448,8 +458,31 @@ mod tests {
                 at: Point2 { x: 5.0, y: 6.0 },
                 button: MouseButton::Left,
                 count: 2,
+                ctrl: false,
             }
         );
+    }
+
+    #[test]
+    fn click_parses_ctrl_modifier() {
+        let steps = parse("click 10,20 ctrl=true\n").unwrap();
+        assert_eq!(steps.len(), 1);
+        match &steps[0].op {
+            Op::Click { at, ctrl, .. } => {
+                assert_eq!(*at, Point2 { x: 10.0, y: 20.0 });
+                assert!(*ctrl);
+            }
+            other => panic!("expected Op::Click, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn click_defaults_ctrl_to_false() {
+        let steps = parse("click 10,20\n").unwrap();
+        match &steps[0].op {
+            Op::Click { ctrl, .. } => assert!(!*ctrl),
+            other => panic!("expected Op::Click, got {:?}", other),
+        }
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub enum Op {
         /// `MouseUpEvent::click_count`, which `handle_select_click` reads to
         /// decide whether to fall back to interior hit-testing.
         count: u8,
+        ctrl: bool,
     },
     Scroll {
         at: Point2,

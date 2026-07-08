@@ -86,6 +86,23 @@ pub(crate) enum UndoableAction {
         index: usize,
         node_id: i64,
     },
+    /// Add mode's 2nd+ click when it snaps onto an existing way: a node
+    /// spliced into `snap_way_id` at `snap_index` (like `InsertNodeIntoWay`),
+    /// then that same node folded into the way being drawn — `way_id`,
+    /// created fresh if `way_created`, otherwise extended (like `ExtendWay`
+    /// with `node_created: true`). Undo reverses both, in the order that
+    /// matches how they were applied: detach from the drawn way first
+    /// (deleting it if `way_created`, without deleting the node — it is
+    /// still referenced by `snap_way_id`), then remove the node from
+    /// `snap_way_id` and delete it.
+    SnapExtendWay {
+        layer: LayerId,
+        way_id: i64,
+        way_created: bool,
+        snap_way_id: i64,
+        snap_index: usize,
+        node_id: i64,
+    },
 }
 
 impl UndoableAction {
@@ -116,6 +133,7 @@ impl UndoableAction {
             UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
             UndoableAction::ExtrudeWay { .. } => "Extruded a building".to_string(),
             UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
+            UndoableAction::SnapExtendWay { .. } => "Snapped a node onto a way".to_string(),
         }
     }
 }
