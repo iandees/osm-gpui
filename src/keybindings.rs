@@ -161,7 +161,6 @@ pub fn conflict(settings: &AppSettings, id: &str, spec: &str) -> Option<&'static
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn settings_with(overrides: &[(&str, &str)]) -> AppSettings {
         let mut s = AppSettings::default();
@@ -236,5 +235,25 @@ mod tests {
     fn conflict_none_when_spec_unused() {
         let s = AppSettings::default();
         assert_eq!(conflict(&s, "undo", "cmd-alt-shift-z"), None);
+    }
+
+    /// Mirrors `settings_window::reset_shortcut`'s pre-removal guard: resetting
+    /// `mode_add` back to its default ("a") must be flagged as a conflict once
+    /// `mode_building` has been rebound onto "a", even though `mode_building`'s
+    /// rebind was legal at the time it was made (mode_add had already vacated
+    /// "a" by moving to "c").
+    #[test]
+    fn reset_would_collide_with_another_shortcuts_current_binding() {
+        let s = settings_with(&[("mode_add", "c"), ("mode_building", "a")]);
+
+        // What reset_shortcut would compute as the post-removal candidate spec.
+        let candidate = def("mode_add").default_spec;
+        assert_eq!(candidate, "a");
+
+        // The guard must detect that "a" is already mode_building's spec.
+        assert_eq!(
+            conflict(&s, "mode_add", candidate),
+            Some("Switch to Building mode")
+        );
     }
 }

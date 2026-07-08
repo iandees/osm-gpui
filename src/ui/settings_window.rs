@@ -226,6 +226,12 @@ impl SettingsWindow {
     /// Remove `id`'s override, falling back to its default, and propagate
     /// the change to the live keymap and native menu.
     fn reset_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let candidate = keybindings::def(id).default_spec;
+        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, candidate) {
+            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            cx.notify();
+            return;
+        }
         self.app_settings.keybindings.remove(id);
         settings_store::update_store(self.app_settings.clone());
         cx.emit(SettingsEvent::KeybindingsChanged);
