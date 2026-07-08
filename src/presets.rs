@@ -5,6 +5,8 @@
 //! `docs/superpowers/specs/2026-07-07-id-preset-labels-design.md`.
 
 use std::collections::HashMap;
+use crate::osm::OsmData;
+use crate::selection::FeatureKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -96,9 +98,59 @@ impl AreaKeys {
     }
 }
 
+/// Classify a feature's geometry for preset matching: a node not referenced
+/// by any way is a `Point`; a node referenced by at least one way is a
+/// `Vertex`; a way is a `Line` unless it's closed (first node id == last
+/// node id) and its tags qualify as an area per `area_keys`, in which case
+/// it's an `Area`. Returns `None` if the feature id isn't present in `data`.
+pub fn classify_geometry(
+    data: &OsmData,
+    kind: FeatureKind,
+    id: i64,
+    area_keys: &AreaKeys,
+) -> Option<Geometry> {
+    match kind {
+        FeatureKind::Node => {
+            data.nodes.get(&id)?;
+            let referenced = data.ways.values().any(|way| way.nodes.contains(&id));
+            Some(if referenced { Geometry::Vertex } else { Geometry::Point })
+        }
+        FeatureKind::Way => {
+            let way = data.ways.get(&id)?;
+            let closed = way.nodes.len() >= 2 && way.nodes.first() == way.nodes.last();
+            if closed && area_keys.closed_way_is_area(&way.tags) {
+                Some(Geometry::Area)
+            } else {
+                Some(Geometry::Line)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::osm::{OsmNode, OsmWay};
+
+    fn node(id: i64, tags: HashMap<String, String>) -> OsmNode {
+        OsmNode { id, lat: 0.0, lon: 0.0, version: 1, tags }
+    }
+
+    fn way(id: i64, nodes: Vec<i64>, tags: HashMap<String, String>) -> OsmWay {
+        OsmWay { id, nodes, version: 1, tags }
+    }
+
+    fn data_with(nodes: Vec<OsmNode>, ways: Vec<OsmWay>) -> OsmData {
+        let mut node_map = HashMap::new();
+        for n in nodes {
+            node_map.insert(n.id, n);
+        }
+        let mut way_map = HashMap::new();
+        for w in ways {
+            way_map.insert(w.id, w);
+        }
+        OsmData { nodes: node_map, ways: way_map, relations: Vec::new(), bounds: None }
+    }
 
     const FIXTURE: &str = r#"
     [
@@ -170,5 +222,77 @@ mod tests {
         let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
         let tags = HashMap::from([("natural".to_string(), "water".to_string())]);
         assert!(!area_keys.closed_way_is_area(&tags));
+    }
+
+    #[test]
+    fn unreferenced_node_is_point() {
+        let data = data_with(vec![node(1, HashMap::new())], vec![]);
+        let area_keys = AreaKeys::from_json("{}").unwrap();
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Node, 1, &area_keys),
+            Some(Geometry::Point)
+        );
+    }
+
+    #[test]
+    fn referenced_node_is_vertex() {
+        let data = data_with(
+            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![way(10, vec![1, 2], HashMap::new())],
+        );
+        let area_keys = AreaKeys::from_json("{}").unwrap();
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Node, 1, &area_keys),
+            Some(Geometry::Vertex)
+        );
+    }
+
+    #[test]
+    fn open_way_is_line() {
+        let data = data_with(
+            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![way(10, vec![1, 2], HashMap::new())],
+        );
+        let area_keys = AreaKeys::from_json("{}").unwrap();
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Way, 10, &area_keys),
+            Some(Geometry::Line)
+        );
+    }
+
+    #[test]
+    fn closed_way_with_area_key_is_area() {
+        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        let data = data_with(
+            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![way(10, vec![1, 2, 1], tags)],
+        );
+        let area_keys = AreaKeys::from_json(r#"{"building": {}}"#).unwrap();
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Way, 10, &area_keys),
+            Some(Geometry::Area)
+        );
+    }
+
+    #[test]
+    fn closed_way_without_area_key_is_line() {
+        let tags = HashMap::from([("highway".to_string(), "residential".to_string())]);
+        let data = data_with(
+            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![way(10, vec![1, 2, 1], tags)],
+        );
+        let area_keys = AreaKeys::from_json(r#"{"highway": {"residential": true}}"#).unwrap();
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Way, 10, &area_keys),
+            Some(Geometry::Line)
+        );
+    }
+
+    #[test]
+    fn missing_feature_id_returns_none() {
+        let data = data_with(vec![], vec![]);
+        let area_keys = AreaKeys::from_json("{}").unwrap();
+        assert_eq!(classify_geometry(&data, FeatureKind::Node, 999, &area_keys), None);
+        assert_eq!(classify_geometry(&data, FeatureKind::Way, 999, &area_keys), None);
     }
 }
