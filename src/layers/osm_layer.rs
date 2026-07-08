@@ -8,7 +8,8 @@ use crate::layers::{EditableLayer, LayerId, MapLayer};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
-    point_to_segment_distance, DeletedFeatureSnapshot, FeatureKind, FeatureRef, HitCandidate,
+    nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot, FeatureKind,
+    FeatureRef, HitCandidate,
 };
 use crate::style::{NodeStyle, Stylesheet, WayStyle};
 use crate::viewport::Viewport;
@@ -1740,6 +1741,51 @@ impl OsmLayer {
         }
         best.map(|(_, way_id, a, b, idx)| (way_id, a, b, idx))
     }
+
+    /// Like `hit_test_segment`, but also returns the nearest point on the
+    /// winning segment as `(lat, lon)` — the coordinates a snapped node
+    /// should adopt. Shares the same rtree query and per-segment loop; see
+    /// `hit_test_segment`'s doc comment for the shared parameters.
+    pub fn snap_to_way(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+    ) -> Option<(i64, i64, i64, usize, f64, f64)> {
+        self.osm_data.as_ref()?;
+        let pad = px(tol_px * 4.0);
+        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let envelope =
+            AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
+
+        let mut best: Option<(f32, i64, i64, i64, usize, Point<Pixels>)> = None;
+        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+            let way_id = item.data;
+            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+                continue;
+            };
+            let verts = &self.way_vertices[way_idx];
+            for i in 0..verts.len().saturating_sub(1) {
+                let (id_a, ax, ay) = verts[i];
+                let (id_b, bx, by) = verts[i + 1];
+                let sp_a = viewport.mercator_to_screen(ax, ay);
+                let sp_b = viewport.mercator_to_screen(bx, by);
+                if !is_point_valid(sp_a) || !is_point_valid(sp_b) {
+                    continue;
+                }
+                let d = point_to_segment_distance(screen_pt, sp_a, sp_b);
+                if d <= tol_px && best.as_ref().is_none_or(|&(bd, ..)| d < bd) {
+                    let nearest = nearest_point_on_segment(screen_pt, sp_a, sp_b);
+                    best = Some((d, way_id, id_a, id_b, i, nearest));
+                }
+            }
+        }
+        best.map(|(_, way_id, a, b, idx, nearest)| {
+            let (lat, lon) = viewport.screen_to_geo(nearest);
+            (way_id, a, b, idx, lat, lon)
+        })
+    }
 }
 
 impl MapLayer for OsmLayer {
@@ -2725,6 +2771,116 @@ mod tests {
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         let hit = layer.hit_test_segment(&viewport, point(px(0.0), px(0.0)), 6.0);
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn snap_to_way_on_line_returns_exact_click_point() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon - 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat,
+            lon: center_lon + 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let (way_id, a, b, idx, lat, lon) = layer
+            .snap_to_way(&viewport, point(px(400.0), px(300.0)), 6.0)
+            .expect("expected a snap hit");
+        assert_eq!((way_id, a, b, idx), (10, 1, 2, 0));
+        assert!((lat - center_lat).abs() < 1e-6, "got lat {}", lat);
+        assert!((lon - center_lon).abs() < 1e-6, "got lon {}", lon);
+    }
+
+    #[test]
+    fn snap_to_way_off_line_projects_onto_segment() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon - 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat,
+            lon: center_lon + 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        // 3px above the (horizontal) line, within the 6px tolerance.
+        let (way_id, a, b, idx, lat, lon) = layer
+            .snap_to_way(&viewport, point(px(403.0), px(297.0)), 6.0)
+            .expect("expected a snap hit");
+        assert_eq!((way_id, a, b, idx), (10, 1, 2, 0));
+        // The line is flat (both endpoints share center_lat), so the
+        // projected point's lat matches the line exactly regardless of the
+        // click's vertical offset.
+        assert!((lat - center_lat).abs() < 1e-6, "got lat {}", lat);
+        assert!(
+            lon > center_lon - 0.001 && lon < center_lon + 0.001,
+            "got lon {}",
+            lon
+        );
+    }
+
+    #[test]
+    fn snap_to_way_none_when_out_of_tolerance() {
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let viewport = viewport_centered_on(40.0, -74.0);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let hit = layer.snap_to_way(&viewport, point(px(0.0), px(0.0)), 6.0);
         assert!(hit.is_none());
     }
 
