@@ -29,6 +29,15 @@ pub struct OsmWay {
     pub tags: HashMap<String, String>,
 }
 
+impl OsmWay {
+    /// A way is closed (an area candidate) iff it has at least 4 node refs
+    /// and the first and last refs are the same node — the minimal closed
+    /// ring is a triangle `[a, b, c, a]`. OSM convention.
+    pub fn is_closed(&self) -> bool {
+        self.nodes.len() >= 4 && self.nodes.first() == self.nodes.last()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsmRelation {
     pub id: i64,
@@ -517,6 +526,33 @@ impl std::error::Error for OsmParseError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn way(nodes: Vec<i64>) -> OsmWay {
+        OsmWay {
+            id: 1,
+            nodes,
+            version: 1,
+            tags: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn is_closed_triangle_ring() {
+        assert!(way(vec![1, 2, 3, 1]).is_closed());
+    }
+
+    #[test]
+    fn is_closed_open_way() {
+        assert!(!way(vec![1, 2, 3]).is_closed());
+    }
+
+    #[test]
+    fn is_closed_two_node_loop_is_not_closed() {
+        // 3 refs (first == last) is a degenerate 2-point "ring": not an area.
+        assert!(!way(vec![1, 2, 1]).is_closed());
+        assert!(!way(vec![1, 1]).is_closed());
+        assert!(!way(vec![]).is_closed());
+    }
 
     #[test]
     fn parse_str_includes_self_closing_nodes() {
