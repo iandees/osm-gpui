@@ -60,8 +60,6 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         way_id: i64,
         node_id: i64,
-        lat: f64,
-        lon: f64,
         way_created: bool,
         node_created: bool,
     },
@@ -87,8 +85,6 @@ pub(crate) enum UndoableAction {
         way_id: i64,
         index: usize,
         node_id: i64,
-        lat: f64,
-        lon: f64,
     },
 }
 
@@ -385,8 +381,6 @@ mod undo_stack_tests {
             layer: LayerId(1),
             way_id,
             node_id,
-            lat: 40.0,
-            lon: -74.0,
             way_created,
             node_created,
         }

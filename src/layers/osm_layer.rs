@@ -1696,9 +1696,7 @@ impl OsmLayer {
         screen_pt: Point<Pixels>,
         tol_px: f32,
     ) -> Option<(i64, i64, i64, usize)> {
-        if self.osm_data.is_none() {
-            return None;
-        }
+        self.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
         let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
@@ -1721,7 +1719,7 @@ impl OsmLayer {
                     continue;
                 }
                 let d = point_to_segment_distance(screen_pt, sp_a, sp_b);
-                if d <= tol_px && best.as_ref().map_or(true, |&(bd, ..)| d < bd) {
+                if d <= tol_px && best.as_ref().is_none_or(|&(bd, ..)| d < bd) {
                     best = Some((d, way_id, id_a, id_b, i));
                 }
             }

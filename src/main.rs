@@ -785,8 +785,6 @@ impl MapViewer {
                 layer,
                 way_id,
                 node_id,
-                lat: _,
-                lon: _,
                 way_created,
                 node_created,
             } => {
@@ -1492,8 +1490,6 @@ impl MapViewer {
             way_id: drag.way_id,
             index: insert_index,
             node_id: new_id,
-            lat,
-            lon,
         });
     }
 
@@ -1522,8 +1518,7 @@ impl MapViewer {
             if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
                 if hit.layer_id == layer_id {
                     if let osm_gpui::selection::FeatureKind::Node = hit.kind {
-                        let way_id =
-                            self.add_extend_or_start_way(layer_id, hit.id, lat, lon, false);
+                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, false);
                         self.add_progress = None;
                         self.selected = vec![osm_gpui::selection::FeatureRef {
                             layer_id,
@@ -1585,7 +1580,7 @@ impl MapViewer {
                 };
                 let new_id = editable.add_node(lat, lon);
                 self.add_progress = Some(progress);
-                let way_id = self.add_extend_or_start_way(layer_id, new_id, lat, lon, true);
+                let way_id = self.add_extend_or_start_way(layer_id, new_id, true);
                 self.add_progress = Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
@@ -1610,8 +1605,6 @@ impl MapViewer {
         &mut self,
         layer_id: LayerId,
         node_id: i64,
-        lat: f64,
-        lon: f64,
         node_created: bool,
     ) -> i64 {
         let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
@@ -1634,8 +1627,6 @@ impl MapViewer {
                     layer: layer_id,
                     way_id,
                     node_id,
-                    lat,
-                    lon,
                     way_created: false,
                     node_created,
                 });
@@ -1647,8 +1638,6 @@ impl MapViewer {
                     layer: layer_id,
                     way_id,
                     node_id,
-                    lat,
-                    lon,
                     way_created: true,
                     node_created,
                 });
