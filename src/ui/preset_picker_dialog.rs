@@ -4,7 +4,7 @@
 //! `PresetIndex::match_feature` auto-matched.
 
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
     KeyDownEvent, Window,
 };
 use gpui_component::{
@@ -192,7 +192,7 @@ impl Render for PresetPickerDialog {
             // behind the modal — the map area's own mouse-down handler then
             // steals window focus back from the dialog on every click.
             .occlude()
-            .bg(rgba(0x00000099))
+            .bg(crate::ui::style::scrim_color())
             .flex()
             .justify_center()
             .items_center()

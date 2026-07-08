@@ -4,7 +4,7 @@
 //! `gpui_component::input::{Input, InputState}` for the comment field.
 
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
     KeyDownEvent, Window,
 };
 use gpui_component::{
@@ -185,7 +185,7 @@ impl Render for UploadDialog {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(rgba(0x00000099))
+            .bg(crate::ui::style::scrim_color())
             .flex()
             .justify_center()
             .items_center()
