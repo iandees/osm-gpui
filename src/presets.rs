@@ -129,6 +129,25 @@ impl PresetIndex {
             })
             .map(|(_, p)| p)
     }
+
+    /// Look up a preset by its exact `id` (e.g. `"amenity/cafe"`).
+    pub fn get(&self, id: &str) -> Option<&Preset> {
+        self.presets.iter().find(|p| p.id == id)
+    }
+
+    /// Search presets by name (case-insensitive substring, same normalize
+    /// approach as brand search elsewhere in this codebase), filtered to
+    /// only presets whose `geometry` includes `geometry`. Capped at
+    /// `limit` results, unordered beyond "substring matches first".
+    pub fn search(&self, query: &str, geometry: Geometry, limit: usize) -> Vec<&Preset> {
+        let q = query.to_lowercase();
+        self.presets
+            .iter()
+            .filter(|p| p.geometry.contains(&geometry))
+            .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q))
+            .take(limit)
+            .collect()
+    }
 }
 
 /// Look up a friendly `(name, icon)` pair for a feature. Always returns a
@@ -550,5 +569,22 @@ mod tests {
             .unwrap();
         assert!(point.fields.is_empty());
         assert!(point.more_fields.is_empty());
+    }
+
+    #[test]
+    fn search_filters_by_geometry_and_name_substring() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let results = index.search("cafe", Geometry::Point, 10);
+        assert!(results.iter().any(|p| p.id == "amenity/cafe"));
+        let area_only_results = index.search("cafe", Geometry::Line, 10);
+        assert!(!area_only_results.iter().any(|p| p.id == "amenity/cafe"));
+    }
+
+    #[test]
+    fn get_finds_preset_by_exact_id() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let preset = index.get("amenity/cafe").unwrap();
+        assert_eq!(preset.name, "Cafe");
+        assert!(index.get("does/not/exist").is_none());
     }
 }
