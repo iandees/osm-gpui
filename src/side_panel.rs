@@ -171,6 +171,28 @@ impl MapViewer {
         })
     }
 
+    /// Resolve the friendly `(name, icon_svg_path)` for a selected feature,
+    /// or `None` if the feature's layer/tags/geometry can't be found (e.g.
+    /// it was deleted since selection). `icon_svg_path` is `None` when the
+    /// matched preset has no icon or the icon file isn't vendored.
+    fn describe_selected_feature(
+        &self,
+        feat: &osm_gpui::selection::FeatureRef,
+    ) -> Option<(String, Option<std::path::PathBuf>)> {
+        let layer = self.layer_manager.find_layer(feat.layer_id)?;
+        let editable = layer.as_editable()?;
+        let tags: std::collections::HashMap<String, String> =
+            editable.feature_tags(feat)?.into_iter().collect();
+        let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
+        let (name, icon_name) = osm_gpui::presets::describe_feature(
+            osm_gpui::presets::preset_index(),
+            &tags,
+            geometry,
+        );
+        let icon_path = icon_name.and_then(|n| osm_gpui::presets::icon_path(&n));
+        Some((name, icon_path))
+    }
+
     /// The Selection accordion section: a scrollable list of the selected
     /// features (max ~10 rows visible, then scrolls). Clicking a row narrows
     /// the selection to just that feature.
@@ -199,25 +221,42 @@ impl MapViewer {
                     FeatureKind::Way => "Way",
                 };
                 let row_feat = *feat;
-                div()
+                let described = self.describe_selected_feature(feat);
+                let row_text = match &described {
+                    Some((name, _)) => format!("{} · {} {}", name, kind_label, feat.id),
+                    None => format!("{} {}", kind_label, feat.id),
+                };
+                let icon_path = described.and_then(|(_, path)| path);
+
+                let mut row = div()
                     .id(("selection-row", i))
                     .flex_shrink_0()
                     .h(px(Self::SELECTION_ROW_HEIGHT))
                     .px_1()
                     .flex()
                     .items_center()
+                    .gap_1()
                     .cursor_pointer()
                     .text_sm()
                     .text_color(cx.theme().foreground)
-                    .hover(|this| this.bg(cx.theme().accent))
-                    .child(format!("{} {}", kind_label, feat.id))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                            this.selected = vec![row_feat];
-                            cx.notify();
-                        }),
-                    )
+                    .hover(|this| this.bg(cx.theme().accent));
+
+                if let Some(path) = icon_path {
+                    row = row.child(
+                        gpui::svg()
+                            .external_path(path.to_string_lossy().to_string())
+                            .size(px(14.0))
+                            .text_color(cx.theme().foreground),
+                    );
+                }
+
+                row.child(row_text).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                        this.selected = vec![row_feat];
+                        cx.notify();
+                    }),
+                )
             }))
             .into_any_element()
     }
@@ -463,5 +502,51 @@ impl MapViewer {
                 })),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod preset_label_tests {
+    use osm_gpui::layers::LayerManager;
+    use osm_gpui::layers::osm_layer::OsmLayer;
+    use osm_gpui::osm::{OsmData, OsmNode};
+    use osm_gpui::selection::{FeatureKind, FeatureRef};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn manager_with_cafe_node() -> (LayerManager, FeatureRef) {
+        let mut manager = LayerManager::new();
+        let layer_id = manager.alloc_id();
+        let mut tags = HashMap::new();
+        tags.insert("amenity".to_string(), "cafe".to_string());
+        let node = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags };
+        let data = Arc::new(OsmData {
+            nodes: HashMap::from([(1, node)]),
+            ways: HashMap::new(),
+            relations: Vec::new(),
+            bounds: None,
+        });
+        let layer = OsmLayer::new_with_data(layer_id, "L", data);
+        manager.add_layer(Box::new(layer));
+        let feature = FeatureRef { layer_id, kind: FeatureKind::Node, id: 1 };
+        (manager, feature)
+    }
+
+    // MapViewer::describe_selected_feature needs a full `MapViewer` (a GPUI
+    // `Context`-bound struct), which isn't practical to construct outside a
+    // running app. Test the same lookup path directly instead, exercising
+    // exactly what describe_selected_feature does internally.
+    #[test]
+    fn cafe_node_resolves_to_cafe_label() {
+        let (manager, feature) = manager_with_cafe_node();
+        let layer = manager.find_layer(feature.layer_id).unwrap();
+        let editable = layer.as_editable().unwrap();
+        let tags: HashMap<String, String> = editable.feature_tags(&feature).unwrap().into_iter().collect();
+        let geometry = editable
+            .feature_geometry(&feature, osm_gpui::presets::area_keys())
+            .unwrap();
+        let (name, _icon) =
+            osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
+        assert_eq!(name, "Cafe");
     }
 }
