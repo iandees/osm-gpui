@@ -54,7 +54,7 @@ Convention (documented in a module doc comment): every clickable action is a gpu
 Following the repo's pure-logic convention (CONTRIBUTING.md):
 
 - Extract pure helpers where they don't already exist and unit-test them: mode → (icon, label) mapping in `mode_panel.rs`; any row-state/color-selection logic in `style.rs` that is expressible as a pure function (e.g. selected/hover token choice).
-- Commit a screenshot session script `docs/screenshots/ui-consistency.osmscript` that loads the existing fixture, clicks a feature to populate the right pane, and captures the full window — a repeatable manual-regression artifact for future UI work (checked-in PNGs updated in this PR).
+- Commit a screenshot session script `docs/screenshots/ui-consistency.osmscript` that loads the existing fixture, clicks a feature to populate the right pane, and captures the full window — a repeatable manual-regression artifact for future UI work (captured PNGs are gitignored per `docs/screenshots/.gitignore`; only the script is committed).
 - Golden-image diffing in CI is explicitly out of scope (flaky across machines); the script is for human/agent inspection.
 
 ### 6. Verification

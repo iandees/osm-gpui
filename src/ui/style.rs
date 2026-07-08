@@ -5,11 +5,15 @@
 //!   height, padding, rounding, and hover/selected states match across
 //!   sections.
 //! - Row hover uses `theme().list_hover`; a persistently selected/active row
-//!   uses `theme().list_active`. `accent` is not used for row backgrounds.
-//! - Every clickable action is a `gpui_component::button::Button`
-//!   (`.primary()` for a section's main action, `.ghost().xsmall()` for
-//!   inline/per-row actions) — never a bare `div`/`Label` with
-//!   `on_mouse_down`.
+//!   uses `theme().list_active`. `accent` is not used for these side-panel
+//!   list-row backgrounds.
+//! - In the side panel's list rows and action buttons, every clickable
+//!   action is a `gpui_component::button::Button` (`.primary()` for a
+//!   section's main action, `.ghost().xsmall()` for inline/per-row actions)
+//!   — never a bare `div`/`Label` with `on_mouse_down`. Known debt: the
+//!   Fields section's combo/multicombo widgets (`src/fields_section.rs`)
+//!   predate this convention and still use `theme().accent` hover fills and
+//!   `on_mouse_down` divs; they have not yet been converted.
 
 use gpui::{div, prelude::*, px, App, Div, ElementId, Rgba, Stateful};
 use gpui_component::ActiveTheme as _;

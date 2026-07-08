@@ -97,15 +97,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_mode_has_distinct_icon() {
+    fn mode_icon_maps_correctly() {
         let icons = [
             mode_icon(EditMode::Select),
             mode_icon(EditMode::Add),
             mode_icon(EditMode::Building),
             mode_icon(EditMode::Extrude),
         ];
-        // Verify that the function is being called and returns IconName values
-        // (the enum variants ensure they're distinct at compile time)
+        // Assert the exact mode -> icon mapping so a change to any one
+        // mode's icon is caught here.
         assert!(matches!(icons[0], IconName::Frame));
         assert!(matches!(icons[1], IconName::Plus));
         assert!(matches!(icons[2], IconName::Building2));

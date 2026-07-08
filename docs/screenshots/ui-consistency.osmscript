@@ -1,7 +1,5 @@
 # UI consistency regression captures: both panes, then a populated right pane.
 #
-# Coordinate model (see select.osmscript for the derivation): raw window
-# coords; MapViewer::window_to_map subtracts the 56px mode panel from x.
 # Coordinate model: the script harness feeds `click X Y` straight into
 # MapViewer::handle_mouse_down, and window_to_map subtracts only the 56px
 # mode panel from x (no y adjustment). So hit-testing happens in

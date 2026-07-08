@@ -450,6 +450,22 @@ impl MapViewer {
                             ),
                     )
                     .child(
+                        // Spec deviation: the design spec calls for a danger
+                        // hover treatment on this delete icon, but
+                        // gpui-component's Button doesn't support it cleanly
+                        // in combination with `.ghost()`. `ButtonVariant::Custom`
+                        // (via `ButtonCustomVariant`) fixes the foreground color
+                        // across all states rather than only on hover, and its
+                        // `.hover()` background color is actually unused by
+                        // `ButtonVariant::hovered()` for the non-outline case
+                        // (it re-derives the hover background from `color`
+                        // instead). Layering a second `.hover(...)` directly on
+                        // the `Button` via `Styled`/`InteractiveElement` would
+                        // also conflict with the `.hover()` call `Button::render`
+                        // already makes internally on the same `Interactivity`,
+                        // which panics in debug builds (`hover style already
+                        // set`). Keeping `.ghost()` until upstream exposes a
+                        // composable per-state foreground/hover API.
                         Button::new(SharedString::from(format!("tag-delete-{k}")))
                             .icon(IconName::Close)
                             .ghost()

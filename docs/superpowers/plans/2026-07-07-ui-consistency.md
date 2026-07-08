@@ -685,6 +685,8 @@ Checklist: mode panel shows 4 icon-above-label buttons; active mode highlighted;
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/screenshots/ui-consistency.osmscript docs/screenshots/ui-consistency-01-panes.png docs/screenshots/ui-consistency-02-selection.png
-git commit -m "Add UI consistency screenshot session and captures"
+git add docs/screenshots/ui-consistency.osmscript
+git commit -m "Add UI consistency screenshot session"
 ```
+
+(The captured PNGs are gitignored by `docs/screenshots/.gitignore` — only the script is committed; captures stay local.)
