@@ -13,6 +13,7 @@ use gpui_component::{
 };
 
 use crate::MapViewer;
+use osm_gpui::ui::style::muted_text_size;
 
 impl MapViewer {
     /// Get or create the `InputState` entity for a text field, seeded from
@@ -94,7 +95,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(Label::new(field.label.clone()))
                     .child(Input::new(&input))
                     .into_any_element()
             }
@@ -150,7 +151,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(Label::new(field.label.clone()))
                     .child(group)
                     .into_any_element()
             }
@@ -171,7 +172,7 @@ impl MapViewer {
                     .items_center()
                     .justify_between()
                     .cursor_pointer()
-                    .child(Label::new(current_label).text_sm())
+                    .child(Label::new(current_label))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _ev, _window, cx| {
@@ -190,7 +191,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(Label::new(field.label.clone()))
                     .child(header);
 
                 if is_open {
@@ -213,7 +214,7 @@ impl MapViewer {
                                     .py_1()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(cx.theme().accent))
-                                    .child(Label::new(opt.label.clone()).text_sm())
+                                    .child(Label::new(opt.label.clone()))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _ev, _window, cx| {
@@ -251,7 +252,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()).text_sm());
+                    .child(Label::new(field.label.clone()));
 
                 // Chips for already-selected values, each removable.
                 let chips = gpui::div().flex().flex_row().flex_wrap().gap_1().children(
@@ -276,7 +277,7 @@ impl MapViewer {
                             .rounded_md()
                             .bg(cx.theme().accent)
                             .cursor_pointer()
-                            .child(Label::new(format!("{} ×", label)).text_xs())
+                            .child(Label::new(format!("{} ×", label)).text_size(muted_text_size()))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _ev, _window, cx| {
@@ -301,7 +302,7 @@ impl MapViewer {
                         .cursor_pointer()
                         .child(
                             Label::new("+ Add")
-                                .text_xs()
+                                .text_size(muted_text_size())
                                 .text_color(cx.theme().muted_foreground),
                         )
                         .on_mouse_down(
@@ -347,7 +348,7 @@ impl MapViewer {
                                             .py_1()
                                             .cursor_pointer()
                                             .hover(|el| el.bg(cx.theme().accent))
-                                            .child(Label::new(opt.label.clone()).text_sm())
+                                            .child(Label::new(opt.label.clone()))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener(move |this, _ev, _window, cx| {
@@ -388,7 +389,6 @@ impl MapViewer {
             };
             return Label::new(message)
                 .text_color(cx.theme().muted_foreground)
-                .text_sm()
                 .into_any_element();
         }
 
@@ -406,11 +406,7 @@ impl MapViewer {
         // with a geometry-based fallback like "Point"/"Line"/"Area").
         let name_header = self
             .describe_selected_feature(&feature)
-            .map(|(name, _icon_path)| {
-                Label::new(name)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-            });
+            .map(|(name, _icon_path)| Label::new(name).font_weight(gpui::FontWeight::SEMIBOLD));
 
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
             let mut column = gpui::div().flex().flex_col().gap_2();
@@ -419,11 +415,7 @@ impl MapViewer {
             }
             return column
                 .child(change_type_button)
-                .child(
-                    Label::new("No matched preset.")
-                        .text_color(cx.theme().muted_foreground)
-                        .text_sm(),
-                )
+                .child(Label::new("No matched preset.").text_color(cx.theme().muted_foreground))
                 .into_any_element();
         };
 
@@ -436,8 +428,7 @@ impl MapViewer {
                 .child(change_type_button)
                 .child(
                     Label::new("This feature type has no editable fields.")
-                        .text_color(cx.theme().muted_foreground)
-                        .text_sm(),
+                        .text_color(cx.theme().muted_foreground),
                 )
                 .into_any_element();
         }

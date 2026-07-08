@@ -14,6 +14,8 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _,
 };
 
+use crate::ui::style::muted_text_size;
+
 /// One row of the pending-changes summary: a layer name plus its
 /// created/modified/deleted counts (nodes + ways combined).
 #[derive(Debug, Clone)]
@@ -104,18 +106,11 @@ impl Render for UploadDialog {
 
         let mut summary_list = v_flex().gap_1();
         if self.summaries.is_empty() {
-            summary_list = summary_list.child(
-                Label::new("No pending changes.")
-                    .text_sm()
-                    .text_color(muted),
-            );
+            summary_list = summary_list.child(Label::new("No pending changes.").text_color(muted));
         } else {
             for s in &self.summaries {
-                summary_list = summary_list.child(
-                    Label::new(s.describe())
-                        .text_sm()
-                        .text_color(cx.theme().foreground),
-                );
+                summary_list =
+                    summary_list.child(Label::new(s.describe()).text_color(cx.theme().foreground));
             }
         }
 
@@ -124,13 +119,21 @@ impl Render for UploadDialog {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Label::new("Pending changes").text_xs().text_color(muted))
+                    .child(
+                        Label::new("Pending changes")
+                            .text_size(muted_text_size())
+                            .text_color(muted),
+                    )
                     .child(summary_list),
             )
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Label::new("Changeset comment").text_xs().text_color(muted))
+                    .child(
+                        Label::new("Changeset comment")
+                            .text_size(muted_text_size())
+                            .text_color(muted),
+                    )
                     .child(Input::new(&self.comment)),
             );
 

@@ -106,7 +106,6 @@ impl MapViewer {
         if self.undo_stack.actions.is_empty() {
             return Label::new("No actions yet.")
                 .text_color(cx.theme().muted_foreground)
-                .text_sm()
                 .into_any_element();
         }
 
@@ -166,11 +165,7 @@ impl MapViewer {
                 .xsmall()
                 .text_color(cx.theme().muted_foreground),
             )
-            .child(
-                Label::new(title)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
-            )
+            .child(Label::new(title).font_weight(gpui::FontWeight::SEMIBOLD))
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
@@ -209,7 +204,6 @@ impl MapViewer {
         if self.selected.is_empty() {
             return Label::new("Click or drag to select.")
                 .text_color(cx.theme().muted_foreground)
-                .text_sm()
                 .into_any_element();
         }
 
@@ -285,7 +279,6 @@ impl MapViewer {
         if total == 0 {
             return Label::new("No layers yet")
                 .text_color(cx.theme().muted_foreground)
-                .text_sm()
                 .into_any_element();
         }
 
@@ -370,7 +363,6 @@ impl MapViewer {
         if self.selected.is_empty() {
             return Label::new("No selection.")
                 .text_color(cx.theme().muted_foreground)
-                .text_sm()
                 .into_any_element();
         }
 
@@ -395,7 +387,6 @@ impl MapViewer {
                 div()
                     .px_2()
                     .py_1()
-                    .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child("(no tags)"),
             );
@@ -421,7 +412,6 @@ impl MapViewer {
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
                             .text_color(cx.theme().foreground)
                             .cursor_pointer()
                             .child(k.clone())
@@ -444,7 +434,6 @@ impl MapViewer {
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
                             .text_color(cx.theme().foreground)
                             .cursor_pointer()
                             .child(value_text.clone())

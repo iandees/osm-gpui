@@ -14,6 +14,8 @@ use gpui_component::{
     v_flex, ActiveTheme as _,
 };
 
+use crate::ui::style::muted_text_size;
+
 /// Wrap `content` (typically a [`dialog_frame`]) in the shared modal scrim: a
 /// full-window, click-occluding, semi-transparent backdrop that centers its
 /// child and dispatches key-down events (Escape/Enter) via `on_key_down`.
@@ -115,7 +117,11 @@ pub fn field_row(
 ) -> impl IntoElement {
     v_flex()
         .gap_1()
-        .child(Label::new(label).text_xs().text_color(muted))
+        .child(
+            Label::new(label)
+                .text_size(muted_text_size())
+                .text_color(muted),
+        )
         .child(Input::new(input))
 }
 
