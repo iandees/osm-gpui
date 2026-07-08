@@ -320,11 +320,6 @@ impl MapLayer for TileLayer {
     }
 
     fn render_canvas(&self, viewport: &Viewport, _bounds: Bounds<Pixels>, window: &mut Window) {
-        if !self.show_boundaries {
-            return;
-        }
-
-        // Render tile boundaries for debugging
         let zoom_level = viewport.zoom_level();
         let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
             return;
@@ -338,26 +333,48 @@ impl MapLayer for TileLayer {
         );
         let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
 
-        let tile_color = rgb(0x4a5568);
+        let debug_boundary_color = rgb(0x4a5568);
+        let status_outline_color = rgb(0x4a5568);
+
+        use crate::coordinates::is_point_valid;
+
         for tile_coord in &visible_tiles {
             // Use the same positioning as render_elements for consistency
             let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(viewport, tile_coord);
             let screen_top_left = point(tile_x, tile_y);
             let screen_bottom_right = point(tile_x + tile_width, tile_y + tile_height);
 
-            // Validate coordinates before using in Lyon path
-            use crate::coordinates::is_point_valid;
-            if is_point_valid(screen_top_left) && is_point_valid(screen_bottom_right) {
-                // Draw tile boundary rectangle
+            if !is_point_valid(screen_top_left) || !is_point_valid(screen_bottom_right) {
+                continue;
+            }
+
+            // Always-on: outline tiles that haven't finished loading yet, in
+            // a muted color, so the user can see the grid populating instead
+            // of a blank/dark area.
+            let tile_url = url_from_template(&self.url_template, tile_coord);
+            if !crate::tile_cache::is_loaded(&tile_url) {
                 let mut builder = PathBuilder::stroke(px(1.0));
                 builder.move_to(point(screen_top_left.x, screen_top_left.y));
                 builder.line_to(point(screen_bottom_right.x, screen_top_left.y));
                 builder.line_to(point(screen_bottom_right.x, screen_bottom_right.y));
                 builder.line_to(point(screen_top_left.x, screen_bottom_right.y));
                 builder.close();
-
                 if let Ok(path) = builder.build() {
-                    window.paint_path(path, tile_color);
+                    window.paint_path(path, status_outline_color);
+                }
+            }
+
+            // Debug-only: outline every tile regardless of load status, when
+            // the "show tile boundaries" toggle is on.
+            if self.show_boundaries {
+                let mut builder = PathBuilder::stroke(px(1.0));
+                builder.move_to(point(screen_top_left.x, screen_top_left.y));
+                builder.line_to(point(screen_bottom_right.x, screen_top_left.y));
+                builder.line_to(point(screen_bottom_right.x, screen_bottom_right.y));
+                builder.line_to(point(screen_top_left.x, screen_bottom_right.y));
+                builder.close();
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, debug_boundary_color);
                 }
             }
         }
