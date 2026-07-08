@@ -403,11 +403,33 @@ impl MapViewer {
                 window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
             }));
 
+        // Describe the selected feature using the same robust path as side_panel.rs:
+        // resolve layer/tags/geometry and look up the preset name, falling back to
+        // a geometry-based name like "Point"/"Line"/"Area" when no preset matches.
+        let name_header = (|| {
+            let layer = self.layer_manager.find_layer(feature.layer_id)?;
+            let editable = layer.as_editable()?;
+            let tags: std::collections::HashMap<String, String> =
+                editable.feature_tags(&feature)?.into_iter().collect();
+            let geometry = editable.feature_geometry(&feature, osm_gpui::presets::area_keys())?;
+            let (name, _icon_name) =
+                osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
+            Some(name)
+        })().map(|name| {
+            Label::new(name)
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        });
+
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
-            return gpui::div()
+            let mut column = gpui::div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_2();
+            if let Some(header) = name_header {
+                column = column.child(header);
+            }
+            return column
                 .child(change_type_button)
                 .child(
                     Label::new("No matched preset.")
@@ -418,10 +440,14 @@ impl MapViewer {
         };
 
         if preset.fields.is_empty() {
-            return gpui::div()
+            let mut column = gpui::div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_2();
+            if let Some(header) = name_header {
+                column = column.child(header);
+            }
+            return column
                 .child(change_type_button)
                 .child(
                     Label::new("This feature type has no editable fields.")
@@ -453,7 +479,11 @@ impl MapViewer {
         let mut column = gpui::div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_2();
+        if let Some(header) = name_header {
+            column = column.child(header);
+        }
+        column = column
             .child(change_type_button)
             .children(field_elements);
 
