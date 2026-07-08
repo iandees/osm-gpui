@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7100" minlon="-74.0070" maxlat="40.7160" maxlon="-74.0010"/>
+
+  <!-- A closed way (building outline) centered on (40.7130, -74.0040). -->
+  <node id="1" lat="40.7127" lon="-74.0043"/>
+  <node id="2" lat="40.7127" lon="-74.0037"/>
+  <node id="3" lat="40.7133" lon="-74.0037"/>
+  <node id="4" lat="40.7133" lon="-74.0043"/>
+
+  <way id="10">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <nd ref="1"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>

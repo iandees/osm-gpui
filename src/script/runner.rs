@@ -14,7 +14,7 @@ pub trait AppHandle {
     fn set_window_size(&mut self, w: u32, h: u32);
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32);
     fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), duration: Duration);
-    fn dispatch_click(&mut self, at: (f32, f32), button: crate::script::MouseButton);
+    fn dispatch_click(&mut self, at: (f32, f32), button: crate::script::MouseButton, count: u8);
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32);
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
     /// Yield until the next frame has been rendered.
@@ -26,6 +26,14 @@ pub trait AppHandle {
     /// Compare the app's current `EditMode` against `want`; `Err` with a
     /// descriptive message if it doesn't match.
     fn assert_mode(&mut self, want: crate::script::EditMode) -> Result<(), String>;
+    /// Compare the app's current selection against `want`: `Some((kind,
+    /// id))` requires exactly that single feature selected, `None` requires
+    /// an empty selection. `Err` with a descriptive message if it doesn't
+    /// match.
+    fn assert_selected(
+        &mut self,
+        want: Option<(crate::script::FeatureKind, i64)>,
+    ) -> Result<(), String>;
 }
 
 #[derive(Debug)]
@@ -74,8 +82,8 @@ impl Runner {
                 app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration);
                 Ok(())
             }
-            Op::Click { at, button } => {
-                app.dispatch_click((at.x, at.y), *button);
+            Op::Click { at, button, count } => {
+                app.dispatch_click((at.x, at.y), *button, *count);
                 Ok(())
             }
             Op::Scroll { at, dx, dy } => {
@@ -111,6 +119,13 @@ impl Runner {
                 app.assert_mode(*mode).map_err(|e| RunError {
                     line_no: step.line_no,
                     message: format!("assert_mode: {}", e),
+                })?;
+                Ok(())
+            }
+            Op::AssertSelected { feature } => {
+                app.assert_selected(*feature).map_err(|e| RunError {
+                    line_no: step.line_no,
+                    message: format!("assert_selected: {}", e),
                 })?;
                 Ok(())
             }
@@ -163,13 +178,14 @@ fn describe(op: &Op) -> String {
         Op::WaitIdle { timeout } => format!("wait_idle {:?}", timeout),
         Op::Wait { duration } => format!("wait {:?}", duration),
         Op::Drag { from, to, duration } => format!("drag {:?} -> {:?} ({:?})", from, to, duration),
-        Op::Click { at, button } => format!("click {:?} {:?}", at, button),
+        Op::Click { at, button, count } => format!("click {:?} {:?} count={}", at, button, count),
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
         Op::LoadOsm { path } => format!("load_osm {}", path),
         Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
+        Op::AssertSelected { feature } => format!("assert_selected {:?}", feature),
     }
 }
 
@@ -183,13 +199,14 @@ mod tests {
         pub idle_after_frame: u32,
         pub idle: Arc<IdleTracker>,
         pub mode: crate::script::EditMode,
+        pub selected: Option<(crate::script::FeatureKind, i64)>,
     }
 
     impl AppHandle for Fake {
         fn set_window_size(&mut self, _w: u32, _h: u32) {}
         fn set_viewport(&mut self, _lat: f64, _lon: f64, _zoom: f32) {}
         fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration) {}
-        fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton) {}
+        fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8) {}
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
         fn dispatch_key(&mut self, _: &Chord) {}
         fn wait_frame(&mut self) {
@@ -214,6 +231,19 @@ mod tests {
                 Err(format!("expected mode {:?}, got {:?}", want, self.mode))
             }
         }
+        fn assert_selected(
+            &mut self,
+            want: Option<(crate::script::FeatureKind, i64)>,
+        ) -> Result<(), String> {
+            if self.selected == want {
+                Ok(())
+            } else {
+                Err(format!(
+                    "expected selected {:?}, got {:?}",
+                    want, self.selected
+                ))
+            }
+        }
     }
 
     #[test]
@@ -224,6 +254,7 @@ mod tests {
             idle_after_frame: 3,
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
+            selected: None,
         };
         let runner = Runner { idle };
         runner
@@ -244,6 +275,7 @@ mod tests {
             idle_after_frame: u32::MAX,
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
+            selected: None,
         };
         let runner = Runner { idle };
         let e = runner
@@ -261,6 +293,7 @@ mod tests {
             idle_after_frame: u32::MAX,
             idle: idle.clone(),
             mode: crate::script::EditMode::Add,
+            selected: None,
         };
         let runner = Runner { idle };
         let steps = vec![Step {
@@ -280,6 +313,7 @@ mod tests {
             idle_after_frame: u32::MAX,
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
+            selected: None,
         };
         let runner = Runner { idle };
         let steps = vec![Step {
@@ -291,5 +325,47 @@ mod tests {
         let e = runner.run(&mut fake, &steps).unwrap_err();
         assert_eq!(e.line_no, 4);
         assert!(e.message.contains("assert_mode"));
+    }
+
+    #[test]
+    fn assert_selected_passes_when_matching() {
+        let idle = IdleTracker::new();
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: u32::MAX,
+            idle: idle.clone(),
+            mode: crate::script::EditMode::Select,
+            selected: Some((crate::script::FeatureKind::Way, 10)),
+        };
+        let runner = Runner { idle };
+        let steps = vec![Step {
+            line_no: 1,
+            op: Op::AssertSelected {
+                feature: Some((crate::script::FeatureKind::Way, 10)),
+            },
+        }];
+        runner.run(&mut fake, &steps).unwrap();
+    }
+
+    #[test]
+    fn assert_selected_fails_with_message_when_not_matching() {
+        let idle = IdleTracker::new();
+        let mut fake = Fake {
+            frames_waited: 0,
+            idle_after_frame: u32::MAX,
+            idle: idle.clone(),
+            mode: crate::script::EditMode::Select,
+            selected: None,
+        };
+        let runner = Runner { idle };
+        let steps = vec![Step {
+            line_no: 9,
+            op: Op::AssertSelected {
+                feature: Some((crate::script::FeatureKind::Way, 10)),
+            },
+        }];
+        let e = runner.run(&mut fake, &steps).unwrap_err();
+        assert_eq!(e.line_no, 9);
+        assert!(e.message.contains("assert_selected"));
     }
 }

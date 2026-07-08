@@ -66,6 +66,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         }),
         "load_osm" => parse_load_osm(line_no, &rest),
         "assert_mode" => parse_assert_mode(line_no, &rest),
+        "assert_selected" => parse_assert_selected(line_no, &rest),
         other => Err(err(line_no, format!("unknown op '{}'", other))),
     }
 }
@@ -172,10 +173,14 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
 
 fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.is_empty() {
-        return Err(err(line_no, "click: want X,Y [button=left|right]"));
+        return Err(err(
+            line_no,
+            "click: want X,Y [button=left|right] [count=N]",
+        ));
     }
     let at = parse_point(line_no, rest[0])?;
     let mut button = MouseButton::Left;
+    let mut count: u8 = 1;
     for kv in &rest[1..] {
         let (k, v) = kv
             .split_once('=')
@@ -183,10 +188,15 @@ fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         match (k, v) {
             ("button", "left") => button = MouseButton::Left,
             ("button", "right") => button = MouseButton::Right,
+            ("count", n) => {
+                count = n
+                    .parse::<u8>()
+                    .map_err(|e| err(line_no, format!("click: bad count '{}': {}", n, e)))?;
+            }
             _ => return Err(err(line_no, format!("click: unknown {}={}", k, v))),
         }
     }
-    Ok(Op::Click { at, button })
+    Ok(Op::Click { at, button, count })
 }
 
 fn parse_scroll(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
@@ -274,6 +284,37 @@ fn parse_assert_mode(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         }
     };
     Ok(Op::AssertMode { mode })
+}
+
+fn parse_assert_selected(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    if rest.len() == 1 && rest[0] == "none" {
+        return Ok(Op::AssertSelected { feature: None });
+    }
+    if rest.len() == 2 {
+        let kind = match rest[0] {
+            "node" => FeatureKind::Node,
+            "way" => FeatureKind::Way,
+            other => {
+                return Err(err(
+                    line_no,
+                    format!("assert_selected: unknown kind '{}'", other),
+                ))
+            }
+        };
+        let id = rest[1].parse::<i64>().map_err(|e| {
+            err(
+                line_no,
+                format!("assert_selected: bad id '{}': {}", rest[1], e),
+            )
+        })?;
+        return Ok(Op::AssertSelected {
+            feature: Some((kind, id)),
+        });
+    }
+    Err(err(
+        line_no,
+        "assert_selected: want 'none' or 'node|way ID'",
+    ))
 }
 
 #[cfg(test)]
@@ -379,7 +420,8 @@ mod tests {
             s[0].op,
             Op::Click {
                 at: Point2 { x: 5.0, y: 6.0 },
-                button: MouseButton::Left
+                button: MouseButton::Left,
+                count: 1,
             }
         );
     }
@@ -391,9 +433,56 @@ mod tests {
             s[0].op,
             Op::Click {
                 at: Point2 { x: 5.0, y: 6.0 },
-                button: MouseButton::Right
+                button: MouseButton::Right,
+                count: 1,
             }
         );
+    }
+
+    #[test]
+    fn click_count_parses() {
+        let s = parse("click 5,6 count=2").unwrap();
+        assert_eq!(
+            s[0].op,
+            Op::Click {
+                at: Point2 { x: 5.0, y: 6.0 },
+                button: MouseButton::Left,
+                count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn assert_selected_none_parses() {
+        assert_eq!(
+            parse("assert_selected none").unwrap()[0].op,
+            Op::AssertSelected { feature: None }
+        );
+    }
+
+    #[test]
+    fn assert_selected_way_parses() {
+        assert_eq!(
+            parse("assert_selected way 10").unwrap()[0].op,
+            Op::AssertSelected {
+                feature: Some((FeatureKind::Way, 10))
+            }
+        );
+    }
+
+    #[test]
+    fn assert_selected_node_parses() {
+        assert_eq!(
+            parse("assert_selected node 7").unwrap()[0].op,
+            Op::AssertSelected {
+                feature: Some((FeatureKind::Node, 7))
+            }
+        );
+    }
+
+    #[test]
+    fn assert_selected_bad_kind_errors() {
+        assert!(parse("assert_selected building 1").is_err());
     }
 
     #[test]
