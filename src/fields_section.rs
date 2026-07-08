@@ -57,6 +57,314 @@ impl MapViewer {
         entity
     }
 
+    /// Render a single `Field` with the widget matching its `FieldType`.
+    /// Shared by both the preset's default `fields` and any promoted
+    /// `more_fields`, so there is exactly one per-type dispatch in this
+    /// module.
+    fn render_one_field(
+        &mut self,
+        field: &osm_gpui::fields::Field,
+        tags: &std::collections::HashMap<String, String>,
+        feature: osm_gpui::selection::FeatureRef,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        match field.field_type {
+            osm_gpui::fields::FieldType::Text => {
+                let current = tags.get(&field.key).cloned().unwrap_or_default();
+                let input = self.text_field_input(
+                    &field.id,
+                    &current,
+                    field.placeholder.as_deref(),
+                    feature,
+                    field.key.clone(),
+                    window,
+                    cx,
+                );
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(Input::new(&input))
+                    .into_any_element()
+            }
+            osm_gpui::fields::FieldType::Check => {
+                let current = tags.get(&field.key).map(String::as_str) == Some("yes");
+                let field_key = field.key.clone();
+                let element_id: gpui::ElementId =
+                    gpui::SharedString::from(format!("field-check-{}", field.id)).into();
+                gpui_component::checkbox::Checkbox::new(element_id)
+                    .checked(current)
+                    .label(field.label.clone())
+                    .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
+                        let value = if *checked { "yes" } else { "no" };
+                        this.apply_nsi_preset(
+                            &feature,
+                            std::collections::HashMap::from([(
+                                field_key.clone(),
+                                value.to_string(),
+                            )]),
+                        );
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            }
+            osm_gpui::fields::FieldType::Radio => {
+                let current_value = tags.get(&field.key).cloned();
+                let field_key = field.key.clone();
+                let options = field.options.clone();
+                let selected_index = options
+                    .iter()
+                    .position(|opt| Some(&opt.value) == current_value.as_ref());
+                let group_id: gpui::ElementId =
+                    gpui::SharedString::from(format!("field-radio-{}", field.id)).into();
+
+                let group = gpui_component::radio::RadioGroup::horizontal(group_id)
+                    .children(options.iter().map(|opt| opt.label.clone()))
+                    .selected_index(selected_index)
+                    .on_click(cx.listener(move |this, index: &usize, _window, cx| {
+                        let Some(opt) = options.get(*index) else {
+                            return;
+                        };
+                        this.apply_nsi_preset(
+                            &feature,
+                            std::collections::HashMap::from([(
+                                field_key.clone(),
+                                opt.value.clone(),
+                            )]),
+                        );
+                        cx.notify();
+                    }));
+
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(group)
+                    .into_any_element()
+            }
+            osm_gpui::fields::FieldType::Combo => {
+                let current_value = tags.get(&field.key).cloned();
+                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                let current_label = current_value
+                    .as_ref()
+                    .and_then(|v| field.options.iter().find(|o| &o.value == v))
+                    .map(|o| o.label.clone())
+                    .unwrap_or_else(|| "(none)".to_string());
+
+                let field_id_for_toggle = field.id.clone();
+                let header = gpui::div()
+                    .id(format!("field-combo-header-{}", field.id))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .cursor_pointer()
+                    .child(Label::new(current_label).text_sm())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _ev, _window, cx| {
+                            this.fields_open_combo = if this.fields_open_combo.as_deref()
+                                == Some(field_id_for_toggle.as_str())
+                            {
+                                None
+                            } else {
+                                Some(field_id_for_toggle.clone())
+                            };
+                            cx.notify();
+                        }),
+                    );
+
+                let mut column = gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Label::new(field.label.clone()).text_sm())
+                    .child(header);
+
+                if is_open {
+                    let field_key = field.key.clone();
+                    column = column.child(
+                        gpui::div()
+                            .id(format!("field-combo-options-{}", field.id))
+                            .flex()
+                            .flex_col()
+                            .max_h(gpui::px(160.0))
+                            .overflow_y_scroll()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .children(field.options.iter().enumerate().map(|(i, opt)| {
+                                let value = opt.value.clone();
+                                let field_key = field_key.clone();
+                                gpui::div()
+                                    .id(("field-combo-option", i))
+                                    .px_2()
+                                    .py_1()
+                                    .cursor_pointer()
+                                    .hover(|el| el.bg(cx.theme().accent))
+                                    .child(Label::new(opt.label.clone()).text_sm())
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _ev, _window, cx| {
+                                            this.apply_nsi_preset(
+                                                &feature,
+                                                std::collections::HashMap::from([(
+                                                    field_key.clone(),
+                                                    value.clone(),
+                                                )]),
+                                            );
+                                            this.fields_open_combo = None;
+                                            cx.notify();
+                                        }),
+                                    )
+                            })),
+                    );
+                }
+
+                column.into_any_element()
+            }
+            osm_gpui::fields::FieldType::MultiCombo => {
+                let current_values: Vec<String> = tags
+                    .get(&field.key)
+                    .map(|v| {
+                        v.split(';')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+
+                let mut column = gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Label::new(field.label.clone()).text_sm());
+
+                // Chips for already-selected values, each removable.
+                let chips = gpui::div().flex().flex_row().flex_wrap().gap_1().children(
+                    current_values.iter().map(|value| {
+                        let field_key = field.key.clone();
+                        let value_to_remove = value.clone();
+                        let remaining: Vec<String> = current_values
+                            .iter()
+                            .filter(|v| *v != &value_to_remove)
+                            .cloned()
+                            .collect();
+                        let label = field
+                            .options
+                            .iter()
+                            .find(|o| &o.value == value)
+                            .map(|o| o.label.clone())
+                            .unwrap_or_else(|| value.clone());
+                        gpui::div()
+                            .id(format!("field-multicombo-chip-{}", value))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
+                            .bg(cx.theme().accent)
+                            .cursor_pointer()
+                            .child(Label::new(format!("{} ×", label)).text_xs())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev, _window, cx| {
+                                    this.apply_nsi_preset(
+                                        &feature,
+                                        std::collections::HashMap::from([(
+                                            field_key.clone(),
+                                            remaining.join(";"),
+                                        )]),
+                                    );
+                                    cx.notify();
+                                }),
+                            )
+                    }),
+                );
+                column = column.child(chips);
+
+                let field_id_for_toggle = field.id.clone();
+                column = column.child(
+                    gpui::div()
+                        .id(format!("field-multicombo-add-{}", field.id))
+                        .cursor_pointer()
+                        .child(
+                            Label::new("+ Add")
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.fields_open_combo = if this.fields_open_combo.as_deref()
+                                    == Some(field_id_for_toggle.as_str())
+                                {
+                                    None
+                                } else {
+                                    Some(field_id_for_toggle.clone())
+                                };
+                                cx.notify();
+                            }),
+                        ),
+                );
+
+                if is_open {
+                    let field_key = field.key.clone();
+                    let current_values_for_options = current_values.clone();
+                    column = column.child(
+                        gpui::div()
+                            .id(format!("field-multicombo-options-{}", field.id))
+                            .flex()
+                            .flex_col()
+                            .max_h(gpui::px(160.0))
+                            .overflow_y_scroll()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .children(
+                                field
+                                    .options
+                                    .iter()
+                                    .filter(|opt| !current_values_for_options.contains(&opt.value))
+                                    .enumerate()
+                                    .map(|(i, opt)| {
+                                        let value = opt.value.clone();
+                                        let field_key = field_key.clone();
+                                        let base_values = current_values_for_options.clone();
+                                        gpui::div()
+                                            .id(("field-multicombo-option", i))
+                                            .px_2()
+                                            .py_1()
+                                            .cursor_pointer()
+                                            .hover(|el| el.bg(cx.theme().accent))
+                                            .child(Label::new(opt.label.clone()).text_sm())
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(move |this, _ev, _window, cx| {
+                                                    let mut updated = base_values.clone();
+                                                    updated.push(value.clone());
+                                                    this.apply_nsi_preset(
+                                                        &feature,
+                                                        std::collections::HashMap::from([(
+                                                            field_key.clone(),
+                                                            updated.join(";"),
+                                                        )]),
+                                                    );
+                                                    this.fields_open_combo = None;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                    }),
+                            ),
+                    );
+                }
+
+                column.into_any_element()
+            }
+        }
+    }
+
     /// The Fields accordion section body.
     pub(crate) fn render_fields_section(
         &mut self,
@@ -90,99 +398,65 @@ impl MapViewer {
                 .into_any_element();
         }
 
-        // Text fields get a real `InputState`-backed widget; other field
-        // types (Check/Radio/Combo/MultiCombo) stay as plain-text labels
-        // until later tasks add their widgets.
-        let fields =
-            osm_gpui::fields::resolve_fields(osm_gpui::fields::field_index(), &preset.fields);
-        let field_elements: Vec<gpui::AnyElement> = fields
+        let field_index = osm_gpui::fields::field_index();
+        let fields = osm_gpui::fields::resolve_fields(field_index, &preset.fields);
+        let mut field_elements: Vec<gpui::AnyElement> = fields
             .into_iter()
-            .map(|field| match field.field_type {
-                osm_gpui::fields::FieldType::Text => {
-                    let current = tags.get(&field.key).cloned().unwrap_or_default();
-                    let input = self.text_field_input(
-                        &field.id,
-                        &current,
-                        field.placeholder.as_deref(),
-                        feature,
-                        field.key.clone(),
-                        window,
-                        cx,
-                    );
-                    gpui::div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(Label::new(field.label.clone()).text_sm())
-                        .child(Input::new(&input))
-                        .into_any_element()
-                }
-                osm_gpui::fields::FieldType::Check => {
-                    let current = tags.get(&field.key).map(String::as_str) == Some("yes");
-                    let field_key = field.key.clone();
-                    let element_id: gpui::ElementId =
-                        gpui::SharedString::from(format!("field-check-{}", field.id)).into();
-                    gpui_component::checkbox::Checkbox::new(element_id)
-                        .checked(current)
-                        .label(field.label.clone())
-                        .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
-                            let value = if *checked { "yes" } else { "no" };
-                            this.apply_nsi_preset(
-                                &feature,
-                                std::collections::HashMap::from([(
-                                    field_key.clone(),
-                                    value.to_string(),
-                                )]),
-                            );
-                            cx.notify();
-                        }))
-                        .into_any_element()
-                }
-                osm_gpui::fields::FieldType::Radio => {
-                    let current_value = tags.get(&field.key).cloned();
-                    let field_key = field.key.clone();
-                    let options = field.options.clone();
-                    let selected_index = options
-                        .iter()
-                        .position(|opt| Some(&opt.value) == current_value.as_ref());
-                    let group_id: gpui::ElementId =
-                        gpui::SharedString::from(format!("field-radio-{}", field.id)).into();
-
-                    let group = gpui_component::radio::RadioGroup::horizontal(group_id)
-                        .children(options.iter().map(|opt| opt.label.clone()))
-                        .selected_index(selected_index)
-                        .on_click(cx.listener(move |this, index: &usize, _window, cx| {
-                            let Some(opt) = options.get(*index) else {
-                                return;
-                            };
-                            this.apply_nsi_preset(
-                                &feature,
-                                std::collections::HashMap::from([(
-                                    field_key.clone(),
-                                    opt.value.clone(),
-                                )]),
-                            );
-                            cx.notify();
-                        }));
-
-                    gpui::div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(Label::new(field.label.clone()).text_sm())
-                        .child(group)
-                        .into_any_element()
-                }
-                _ => Label::new(field.label.clone()).text_sm().into_any_element(),
+            .map(|field| {
+                let field = field.clone();
+                self.render_one_field(&field, &tags, feature, window, cx)
             })
             .collect();
 
-        gpui::div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(field_elements)
-            .into_any_element()
+        // Promoted `more_fields` render through the exact same per-type
+        // dispatch as default fields.
+        let promoted_ids: Vec<String> = self.fields_promoted_more_fields.iter().cloned().collect();
+        let promoted_fields = osm_gpui::fields::resolve_fields(field_index, &promoted_ids);
+        for field in promoted_fields {
+            let field = field.clone();
+            field_elements.push(self.render_one_field(&field, &tags, feature, window, cx));
+        }
+
+        let mut column = gpui::div().flex().flex_col().gap_2().children(field_elements);
+
+        // "Add field" control: list `preset.more_fields` not already shown
+        // (default fields or already-promoted more_fields).
+        let already_shown: Vec<String> = preset
+            .fields
+            .iter()
+            .cloned()
+            .chain(self.fields_promoted_more_fields.iter().cloned())
+            .collect();
+        let addable = osm_gpui::fields::resolve_more_fields(
+            field_index,
+            &preset.more_fields,
+            &already_shown,
+        );
+
+        if !addable.is_empty() {
+            column = column.child(
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(addable.into_iter().map(|f| {
+                        let field_id = f.id.clone();
+                        gpui::div()
+                            .id(format!("field-add-more-{}", field_id))
+                            .cursor_pointer()
+                            .child(Label::new(format!("+ {}", f.label)).text_xs())
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev, _window, cx| {
+                                    this.fields_promoted_more_fields.insert(field_id.clone());
+                                    cx.notify();
+                                }),
+                            )
+                    })),
+            );
+        }
+
+        column.into_any_element()
     }
 
     /// Resolve the matched `Preset` and current tags for the single

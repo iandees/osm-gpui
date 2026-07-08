@@ -263,6 +263,8 @@ impl MapViewer {
                         this.selected = vec![row_feat];
                         this.fields_text_inputs.clear();
                         this.fields_text_subscribed.clear();
+                        this.fields_open_combo = None;
+                        this.fields_promoted_more_fields.clear();
                         cx.notify();
                     }),
                 )
