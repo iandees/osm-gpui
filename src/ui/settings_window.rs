@@ -10,9 +10,9 @@ use gpui_component::{
     h_flex,
     input::InputState,
     label::Label,
-    radio::RadioGroup,
+    radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
-    v_flex, ActiveTheme as _, Icon, IconName,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 
 use crate::auth::{self, StoredToken};
@@ -505,9 +505,9 @@ fn render_server_picker(
             };
             view.update(cx, |this, cx| this.set_api_server(choice, window, cx));
         })
-        .child("Primary (api.openstreetmap.org)")
-        .child("Dev / testing (master.apis.dev.openstreetmap.org)")
-        .child("Custom")
+        .child(Radio::from("Primary (api.openstreetmap.org)").small())
+        .child(Radio::from("Dev / testing (master.apis.dev.openstreetmap.org)").small())
+        .child(Radio::from("Custom").small())
 }
 
 fn render_custom_api_url(
