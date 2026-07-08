@@ -6,6 +6,8 @@
 
 **Architecture:** Extend the existing three-layer script system (`src/script/op.rs` parses ops → `src/script/runner.rs` dispatches ops through the `AppHandle` trait → `src/script_harness.rs`'s `LiveApp`/`ScriptBus` bridge to the gpui main thread) with one new op, `assert_mode`, that reads `MapViewer.mode` on the main thread and reports a pass/fail `Result` back across the thread boundary — following the exact pattern the existing `capture` op already uses for returning a main-thread-computed result. Two new `.osmscript` test files drive real toolbar clicks and keystrokes and assert on the resulting mode instead of capturing screenshots. A new `tests/ui_scripts.rs` integration test (marked `#[ignore]`, run manually) spawns the real binary against each script and checks its exit code.
 
+**Amendment (discovered during Task 4/original numbering, now Task 5, execution):** the `click` op's `ScriptCommand::Click` handler in `src/script_harness.rs` called `MapViewer::handle_mouse_down`/`handle_mouse_up` directly instead of going through gpui's real event dispatch — so it could never hit-test and trigger a widget's `.on_click` listener (e.g. the mode-panel `Button`s), only the map's own hand-wired interaction handlers. Task 4 below fixes this by routing `click` through `Window::dispatch_event` (gpui's real dispatch, the same mechanism `key` already uses via `dispatch_keystroke`), scoped narrowly to `Click` only — `Drag`/`Scroll` are intentionally left untouched to avoid risking regressions in existing `docs/screenshots/*.osmscript` files that don't need this fix.
+
 **Tech Stack:** Rust, gpui, existing osmscript DSL (no new dependencies).
 
 ## Global Constraints
@@ -388,7 +390,80 @@ git commit -m "Bridge assert_mode to the live gpui app via ScriptBus"
 
 ---
 
-### Task 4: Mode-switching test scripts and integration test runner
+### Task 4: Route `ScriptCommand::Click` through gpui's real event dispatch
+
+**Files:**
+- Modify: `src/script_harness.rs`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks (independent of the `assert_mode` DSL work in Tasks 1-3).
+- Produces: `click` op now capable of triggering any gpui widget's `.on_click`/mouse listener in the render tree (not just the map's own hand-wired handlers). Task 5's `mode_switching.osmscript` depends on this to make toolbar-button clicks work.
+
+There is no gpui-free unit test for this file — correctness is verified by re-running an existing, already-manually-verified `.osmscript` script to confirm no regression, plus Task 5's own verification. Focus this task on a precise, minimal edit.
+
+- [ ] **Step 1: Replace the `ScriptCommand::Click` arm's direct method calls with real gpui dispatch**
+
+In `src/script_harness.rs`, inside `process_script_command`'s `match cmd` block, replace the `ScriptCommand::Click { x, y, right } => { ... }` arm (currently at approximately line 216-238) with:
+
+```rust
+                ScriptCommand::Click { x, y, right } => {
+                    let btn = if right {
+                        gpui::MouseButton::Right
+                    } else {
+                        gpui::MouseButton::Left
+                    };
+                    let down = MouseDownEvent {
+                        button: btn,
+                        position: point(px(x), px(y)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
+                    let up = MouseUpEvent {
+                        button: btn,
+                        position: point(px(x), px(y)),
+                        modifiers: gpui::Modifiers::none(),
+                        click_count: 1,
+                    };
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                }
+```
+
+This removes the direct `self.handle_mouse_down(&ev)` / `self.handle_mouse_up(&ev, cx)` calls and the manual `cx.notify()` — real dispatch invokes gpui's own registered listeners (`.on_mouse_down`/`.on_mouse_up` on the map div, `.on_click` on toolbar buttons), and those listeners already call `cx.notify()` themselves where needed (see the existing `.on_mouse_up(Right, ...)` closure a few lines above, which calls `cx.notify()` internally). `Window::dispatch_event` takes `(PlatformInput, &mut App)`; passing `cx: &mut Context<Self>` here works via deref coercion — this file already does exactly this for `window.dispatch_keystroke(ks, cx)` a few lines below (see the `KEYSTROKE_QUEUE` draining block), which has the same `&mut App` requirement.
+
+Leave `ScriptCommand::Drag` and `ScriptCommand::Scroll` completely unchanged — they keep calling `self.handle_mouse_down`/`handle_mouse_move`/`handle_mouse_up`/`handle_scroll` directly, exactly as today.
+
+- [ ] **Step 2: Build**
+
+Run: `cargo build`
+Expected: builds cleanly. If `gpui::PlatformInput` isn't in scope, add it to the `use gpui::{...}` list at the top of the file (currently `point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, Window`) — add `PlatformInput` to that list, or reference it fully-qualified as `gpui::PlatformInput` (already used that way in the code above, so no import change should be strictly necessary, but if `cargo build` reports it's ambiguous or unresolved, add it to the `use` list).
+
+- [ ] **Step 3: Run `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`**
+
+Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings`
+Expected: both clean. Fix any formatting/lint issues (`cargo fmt` to auto-fix).
+
+- [ ] **Step 4: Regression-check against an existing, already-verified script**
+
+Run: `cargo run -- --script docs/screenshots/select.osmscript`
+Expected: exits 0, no `script error` line. This script exercises left-`click`-based node/way/empty-space selection end to end — the exact code path this task changes. It writes PNGs to `docs/screenshots/out/select-node.png`, `select-empty.png`, `select-way.png`. Use the Read tool to view each of the three PNGs and visually confirm they still show the expected state per the script's own header comment (POI node selected/highlighted in the first, nothing selected in the second, the way selected/highlighted in the third). This is a human-in-the-loop launch — the app binary touches the macOS Keychain at startup and may prompt; a human is available to click through it (same as the rest of this session's launches).
+
+- [ ] **Step 5: Run the full non-ignored test suite once more**
+
+Run: `cargo test`
+Expected: PASS (this task doesn't add or change any `#[test]`, just confirms nothing else broke).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/script_harness.rs
+git commit -m "Route script click op through gpui's real event dispatch"
+```
+
+---
+
+### Task 5: Mode-switching test scripts and integration test runner
 
 **Files:**
 - Create: `tests/ui/mode_switching.osmscript`
@@ -396,7 +471,7 @@ git commit -m "Bridge assert_mode to the live gpui app via ScriptBus"
 - Create: `tests/ui_scripts.rs`
 
 **Interfaces:**
-- Consumes: `--script` CLI flag and `assert_mode` op (Tasks 1-3), existing fixture `docs/screenshots/fixtures/select.osm`.
+- Consumes: `--script` CLI flag and `assert_mode` op (Tasks 1-3), the real-dispatch `click` fix (Task 4), existing fixture `docs/screenshots/fixtures/select.osm`.
 - Produces: nothing consumed by later tasks — this is the final deliverable.
 
 Button coordinates used below: the mode-panel toolbar (`src/mode_panel.rs`) is `MODE_PANEL_WIDTH = 56px` wide, a `v_flex` with `items_center()` (centers each 46×46 button horizontally: center x = 28), `gap_1` (4px, gpui's spacing scale: `"1"` = `0.25rem` = 4px at the default 16px rem size) between buttons, and `py_2` (8px top/bottom padding, `"2"` = `0.5rem` = 8px). Button `i`'s center y = `8 + i*(46+4) + 23 = 31 + i*50`: Select=(28,31), Add=(28,81), Building=(28,131), Extrude=(28,181). These are computed, not yet empirically confirmed — Step 1 below has you verify them for real and adjust if `assert_mode` reports a mismatch (a wrong coordinate will fail loudly with `expected mode X, got Y`, which is the fast feedback loop for calibrating them — much better than eyeballing a screenshot).
@@ -571,7 +646,8 @@ git commit -m "Add osmscript-based mode-switching UI test suite"
 
 ## Self-Review Notes
 
-- **Spec coverage:** `assert_mode` op (Tasks 1-3) ✓, mode-switching + disabled-without-layer scripts (Task 4 Steps 1-2) ✓, `tests/ui/` directory separate from `docs/screenshots/` ✓, ignored integration runner not wired into CI (Task 4 Step 4 doc comment + Global Constraints) ✓.
+- **Spec coverage:** `assert_mode` op (Tasks 1-3) ✓, real-dispatch `click` fix so toolbar buttons are reachable (Task 4) ✓, mode-switching + disabled-without-layer scripts (Task 5 Steps 1-2) ✓, `tests/ui/` directory separate from `docs/screenshots/` ✓, ignored integration runner not wired into CI (Task 5 Step 4 doc comment + Global Constraints) ✓.
 - **Placeholder scan:** none — every step has literal code/commands.
 - **Type consistency:** `EditMode` (script-DSL, `script::EditMode`) flows Task 1 → Task 2 (`AppHandle::assert_mode(want: crate::script::EditMode)`) → Task 3 (`LiveApp::assert_mode` converts to bin-crate `crate::EditMode` before building `ScriptCommand::AssertMode`). Checked the enum names and match arms are identical at each boundary.
 - **Crate boundary:** `EditMode` in `src/main.rs` is bin-crate; `script::EditMode` in `src/script/op.rs` is lib-crate (`osm_gpui`). They're distinct types by design (mirrors the existing `EditModeAction`/`EditMode` split used for the same reason) — `script_harness.rs` is compiled as part of the bin crate (it's a `mod` of `main.rs`) so it can reference both `crate::EditMode` and `osm_gpui::script::EditMode` and convert between them, which is exactly what Task 3 Step 4 does.
+- **Task 4 addendum (post Tasks 1-3 discovery):** the original plan assumed `click` already reached arbitrary widgets via real gpui dispatch; Task 4's implementer found this false (`click` called `MapViewer::handle_mouse_down`/`handle_mouse_up` directly, bypassing gpui's hit-testing entirely) and was correctly BLOCKED rather than guessing a fix outside its scope. Task 4 (this amendment) fixes it narrowly — `Click` only, `Drag`/`Scroll` untouched — confirmed via research into gpui's `Window::dispatch_event`/`dispatch_mouse_event` (same mechanism `dispatch_keystroke` already uses) that this requires no additional paint-ordering ceremony and is safe to call from the existing call site.
