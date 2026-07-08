@@ -1,6 +1,6 @@
 use gpui::{Asset, BackgroundExecutor, ImageCacheError, RenderImage};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -181,6 +181,37 @@ pub fn last_error(url: &str) -> Option<String> {
     tile_errors().lock().ok().and_then(|m| m.get(url).cloned())
 }
 
+/// Set of tile URLs that have completed a successful decode at least once
+/// (most recently — a subsequent failure removes the URL again). Read by
+/// `TileLayer::render_canvas` to decide whether to draw a "still loading"
+/// status outline over a tile; populated by `TileAsset::load`.
+static TILE_LOADED_URLS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn loaded_urls() -> &'static Mutex<HashSet<String>> {
+    TILE_LOADED_URLS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn mark_loaded(url: &str) {
+    if let Ok(mut set) = loaded_urls().lock() {
+        set.insert(url.to_string());
+    }
+}
+
+fn unmark_loaded(url: &str) {
+    if let Ok(mut set) = loaded_urls().lock() {
+        set.remove(url);
+    }
+}
+
+/// Whether `url` has completed a successful tile decode. Used to decide
+/// whether to draw a "still loading" status outline over the tile.
+pub fn is_loaded(url: &str) -> bool {
+    loaded_urls()
+        .lock()
+        .map(|set| set.contains(url))
+        .unwrap_or(false)
+}
+
 /// Truncate `s` to at most `max` characters, replacing the middle with "..."
 /// when the string is over budget. Operates on chars, not bytes, so it is
 /// safe for non-ASCII inputs.
@@ -273,6 +304,7 @@ impl Asset for TileAsset {
                         match load_image_from_file(&file_path) {
                             Ok(image) => {
                                 clear_error(&url);
+                                mark_loaded(&url);
                                 return Ok(Arc::new(image));
                             }
                             Err(_) => {
@@ -286,6 +318,7 @@ impl Asset for TileAsset {
                     if let Err(e) = fs::create_dir_all(&cache_dir) {
                         let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
                         record_error(&url, reason.clone());
+                        unmark_loaded(&url);
                         return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
                     }
 
@@ -296,6 +329,7 @@ impl Asset for TileAsset {
                             if bytes.is_empty() {
                                 let reason = TileFetchError::EmptyBody.to_string();
                                 record_error(&url, reason.clone());
+                                unmark_loaded(&url);
                                 return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
                                     reason
                                 ))));
@@ -311,6 +345,7 @@ impl Asset for TileAsset {
                             if !is_png && !is_jpeg {
                                 let reason = TileFetchError::NotImage.to_string();
                                 record_error(&url, reason.clone());
+                                unmark_loaded(&url);
                                 return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
                                     reason
                                 ))));
@@ -323,6 +358,7 @@ impl Asset for TileAsset {
                                 let reason =
                                     TileFetchError::Io(format!("write: {}", e)).to_string();
                                 record_error(&url, reason.clone());
+                                unmark_loaded(&url);
                                 return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
                                     reason
                                 ))));
@@ -333,11 +369,13 @@ impl Asset for TileAsset {
                             match load_image_from_file(&file_path) {
                                 Ok(image) => {
                                     clear_error(&url);
+                                    mark_loaded(&url);
                                     Ok(Arc::new(image))
                                 }
                                 Err(e) => {
                                     let reason = format!("Decode: {}", e);
                                     record_error(&url, reason.clone());
+                                    unmark_loaded(&url);
                                     Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))))
                                 }
                             }
@@ -345,6 +383,7 @@ impl Asset for TileAsset {
                         Err(e) => {
                             let reason = e.to_string();
                             record_error(&url, reason.clone());
+                            unmark_loaded(&url);
                             Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))))
                         }
                     }
@@ -840,5 +879,25 @@ mod tests {
         let (last, count) = guard.unwrap();
         assert!(last.elapsed() < STATS_TTL);
         assert_eq!(count, 42);
+    }
+
+    #[test]
+    fn is_loaded_false_for_unknown_url() {
+        assert!(!is_loaded("https://example.test/never-fetched.png"));
+    }
+
+    #[test]
+    fn is_loaded_true_after_mark_loaded() {
+        let url = "https://example.test/mark-loaded-test.png";
+        mark_loaded(url);
+        assert!(is_loaded(url));
+    }
+
+    #[test]
+    fn is_loaded_false_after_unmark_loaded() {
+        let url = "https://example.test/unmark-loaded-test.png";
+        mark_loaded(url);
+        unmark_loaded(url);
+        assert!(!is_loaded(url));
     }
 }
