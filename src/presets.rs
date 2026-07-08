@@ -5,8 +5,29 @@
 //! `docs/superpowers/specs/2026-07-07-id-preset-labels-design.md`.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use crate::osm::OsmData;
 use crate::selection::FeatureKind;
+
+const PRESETS_JSON: &str = include_str!("../assets/presets/presets.json");
+const AREA_KEYS_JSON: &str = include_str!("../assets/presets/area_keys.json");
+
+static PRESET_INDEX: OnceLock<PresetIndex> = OnceLock::new();
+static AREA_KEYS: OnceLock<AreaKeys> = OnceLock::new();
+
+/// The vendored preset index, parsed once on first access.
+pub fn preset_index() -> &'static PresetIndex {
+    PRESET_INDEX.get_or_init(|| {
+        PresetIndex::from_json(PRESETS_JSON).expect("vendored assets/presets/presets.json must parse")
+    })
+}
+
+/// The vendored area-key table, parsed once on first access.
+pub fn area_keys() -> &'static AreaKeys {
+    AREA_KEYS.get_or_init(|| {
+        AreaKeys::from_json(AREA_KEYS_JSON).expect("vendored assets/presets/area_keys.json must parse")
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -449,5 +470,23 @@ mod tests {
         let (name, icon) = describe_feature(&index, &tags, Geometry::Vertex);
         assert_eq!(name, "Vertex");
         assert_eq!(icon, None);
+    }
+
+    #[test]
+    fn vendored_preset_index_loads_and_contains_cafe() {
+        let index = preset_index();
+        assert!(index.len() > 100, "expected hundreds of vendored presets, got {}", index.len());
+        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let preset = index
+            .match_feature(&tags, Geometry::Point)
+            .expect("amenity=cafe should match a vendored preset");
+        assert_eq!(preset.name, "Cafe");
+    }
+
+    #[test]
+    fn vendored_area_keys_loads_and_treats_building_as_area() {
+        let area_keys = area_keys();
+        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        assert!(area_keys.closed_way_is_area(&tags));
     }
 }
