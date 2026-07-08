@@ -14,7 +14,13 @@ pub trait AppHandle {
     fn set_window_size(&mut self, w: u32, h: u32);
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32);
     fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), duration: Duration);
-    fn dispatch_click(&mut self, at: (f32, f32), button: crate::script::MouseButton, count: u8);
+    fn dispatch_click(
+        &mut self,
+        at: (f32, f32),
+        button: crate::script::MouseButton,
+        count: u8,
+        ctrl: bool,
+    );
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32);
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
     /// Yield until the next frame has been rendered.
@@ -82,8 +88,13 @@ impl Runner {
                 app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration);
                 Ok(())
             }
-            Op::Click { at, button, count } => {
-                app.dispatch_click((at.x, at.y), *button, *count);
+            Op::Click {
+                at,
+                button,
+                count,
+                ctrl,
+            } => {
+                app.dispatch_click((at.x, at.y), *button, *count, *ctrl);
                 Ok(())
             }
             Op::Scroll { at, dx, dy } => {
@@ -178,7 +189,15 @@ fn describe(op: &Op) -> String {
         Op::WaitIdle { timeout } => format!("wait_idle {:?}", timeout),
         Op::Wait { duration } => format!("wait {:?}", duration),
         Op::Drag { from, to, duration } => format!("drag {:?} -> {:?} ({:?})", from, to, duration),
-        Op::Click { at, button, count } => format!("click {:?} {:?} count={}", at, button, count),
+        Op::Click {
+            at,
+            button,
+            count,
+            ctrl,
+        } => format!(
+            "click {:?} {:?} count={} ctrl={}",
+            at, button, count, ctrl
+        ),
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),
@@ -206,7 +225,7 @@ mod tests {
         fn set_window_size(&mut self, _w: u32, _h: u32) {}
         fn set_viewport(&mut self, _lat: f64, _lon: f64, _zoom: f32) {}
         fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration) {}
-        fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8) {}
+        fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8, _: bool) {}
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
         fn dispatch_key(&mut self, _: &Chord) {}
         fn wait_frame(&mut self) {
