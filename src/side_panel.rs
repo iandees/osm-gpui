@@ -12,7 +12,10 @@ use gpui_component::{
 use osm_gpui::layers::LayerId;
 use osm_gpui::ui::style::{interactive_row, panel_row, PANEL_ROW_HEIGHT, SIDE_PANEL_WIDTH};
 
-use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer};
+use crate::{
+    DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
+    ToggleLayerVisibilityAction,
+};
 
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
@@ -299,6 +302,7 @@ impl MapViewer {
                             let layer_id = *layer_id;
                             let is_osm = *is_osm;
                             let is_active = self.active_layer == Some(layer_id);
+                            let is_visible = *is_visible;
                             let label = if *is_modified {
                                 format!("{} \u{2022}", name)
                             } else {
@@ -307,7 +311,7 @@ impl MapViewer {
                             interactive_row(("layer-row", index), is_active, cx)
                                 .child(
                                     Checkbox::new(("layer", index))
-                                        .checked(*is_visible)
+                                        .checked(is_visible)
                                         .label(label),
                                 )
                                 .on_mouse_down(
@@ -338,6 +342,11 @@ impl MapViewer {
                                         );
                                     }
                                     menu.separator()
+                                        .menu(
+                                            if is_visible { "Hide" } else { "Show" },
+                                            Box::new(ToggleLayerVisibilityAction { index }),
+                                        )
+                                        .separator()
                                         .menu("Delete", Box::new(DeleteLayer { index }))
                                 })
                                 .into_any_element()
