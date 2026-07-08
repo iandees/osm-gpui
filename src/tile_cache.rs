@@ -608,6 +608,148 @@ impl TileCache {
     }
 }
 
+/// Per-source-key aggregate cache usage, as reported by `cache_summary`.
+pub struct CacheSourceUsage {
+    pub key: String,
+    pub bytes: u64,
+    pub file_count: usize,
+}
+
+/// Aggregate tile cache usage across every source, plus a per-source
+/// breakdown. Computed via a fresh, on-demand directory scan — safe to call
+/// only occasionally (e.g. when a settings panel is open), not on a hot
+/// per-frame path (see `cached_file_count` for that).
+pub struct CacheSummary {
+    pub total_bytes: u64,
+    pub total_files: usize,
+    /// Sorted by `bytes`, descending.
+    pub sources: Vec<CacheSourceUsage>,
+}
+
+/// Bucket for cache files that aren't inside any source-key subdirectory —
+/// e.g. leftovers from before per-source directories existed.
+const UNCATEGORIZED_KEY: &str = "(uncategorized)";
+
+pub fn cache_summary() -> CacheSummary {
+    cache_summary_at(&cache_dir())
+}
+
+fn cache_summary_at(dir: &Path) -> CacheSummary {
+    let mut per_source: HashMap<String, (u64, usize)> = HashMap::new();
+    let mut total_bytes = 0u64;
+    let mut total_files = 0usize;
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => {
+            return CacheSummary {
+                total_bytes: 0,
+                total_files: 0,
+                sources: Vec::new(),
+            };
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            let key = entry.file_name().to_string_lossy().to_string();
+            let mut files = Vec::new();
+            let mut bytes = 0u64;
+            collect_cache_files(&path, &mut files, &mut bytes);
+            total_bytes += bytes;
+            total_files += files.len();
+            per_source.insert(key, (bytes, files.len()));
+        } else if meta.is_file() {
+            let size = meta.len();
+            total_bytes += size;
+            total_files += 1;
+            let bucket = per_source
+                .entry(UNCATEGORIZED_KEY.to_string())
+                .or_insert((0, 0));
+            bucket.0 += size;
+            bucket.1 += 1;
+        }
+    }
+
+    let mut sources: Vec<CacheSourceUsage> = per_source
+        .into_iter()
+        .map(|(key, (bytes, file_count))| CacheSourceUsage {
+            key,
+            bytes,
+            file_count,
+        })
+        .collect();
+    sources.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+
+    CacheSummary {
+        total_bytes,
+        total_files,
+        sources,
+    }
+}
+
+/// Remove all cached tiles for one source (or the `"(uncategorized)"`
+/// bucket of loose top-level files). A missing directory is not an error.
+pub fn clear_source(key: &str) -> std::io::Result<()> {
+    clear_source_at(&cache_dir(), key)
+}
+
+fn clear_source_at(dir: &Path, key: &str) -> std::io::Result<()> {
+    if key == UNCATEGORIZED_KEY {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                fs::remove_file(&path)?;
+            }
+        }
+        return Ok(());
+    }
+
+    let source_dir = dir.join(key);
+    if source_dir.exists() {
+        fs::remove_dir_all(&source_dir)?;
+    }
+    Ok(())
+}
+
+/// Remove the entire tile cache. Recreated lazily on the next tile write.
+pub fn clear_all_cache() -> std::io::Result<()> {
+    clear_all_cache_at(&cache_dir())
+}
+
+fn clear_all_cache_at(dir: &Path) -> std::io::Result<()> {
+    if dir.exists() {
+        fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+/// Format a byte count as a short, human-readable string (e.g. "342 MB",
+/// "1.2 GB"), for display in the cache settings panel.
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1052,5 +1194,145 @@ mod tests {
         assert_eq!(remaining, vec!["newest.png".to_string()]);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_groups_by_source_and_buckets_loose_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a1.png"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("source-a").join("a2.png"), vec![0u8; 50]).unwrap();
+        fs::write(dir.join("source-b").join("b1.png"), vec![0u8; 20]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 5]).unwrap();
+
+        let summary = cache_summary_at(&dir);
+
+        assert_eq!(summary.total_bytes, 175);
+        assert_eq!(summary.total_files, 4);
+        assert_eq!(summary.sources.len(), 3);
+
+        let source_a = summary
+            .sources
+            .iter()
+            .find(|s| s.key == "source-a")
+            .unwrap();
+        assert_eq!(source_a.bytes, 150);
+        assert_eq!(source_a.file_count, 2);
+
+        let uncategorized = summary
+            .sources
+            .iter()
+            .find(|s| s.key == UNCATEGORIZED_KEY)
+            .unwrap();
+        assert_eq!(uncategorized.bytes, 5);
+        assert_eq!(uncategorized.file_count, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_sorts_sources_by_size_descending() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-sort-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("small")).unwrap();
+        fs::create_dir_all(dir.join("big")).unwrap();
+        fs::write(dir.join("small").join("f.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("big").join("f.png"), vec![0u8; 1000]).unwrap();
+
+        let summary = cache_summary_at(&dir);
+        assert_eq!(summary.sources[0].key, "big");
+        assert_eq!(summary.sources[1].key, "small");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-missing-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let summary = cache_summary_at(&dir);
+        assert_eq!(summary.total_bytes, 0);
+        assert_eq!(summary.total_files, 0);
+        assert!(summary.sources.is_empty());
+    }
+
+    #[test]
+    fn clear_source_removes_only_targeted_subdirectory() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-source-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("source-b").join("b.png"), vec![0u8; 10]).unwrap();
+
+        clear_source_at(&dir, "source-a").unwrap();
+
+        assert!(!dir.join("source-a").exists());
+        assert!(dir.join("source-b").join("b.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_uncategorized_removes_only_loose_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-uncategorized-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        clear_source_at(&dir, UNCATEGORIZED_KEY).unwrap();
+
+        assert!(!dir.join("stray.png").exists());
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_all_cache_removes_everything() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-all-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        clear_all_cache_at(&dir).unwrap();
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn format_bytes_picks_appropriate_unit() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 }
