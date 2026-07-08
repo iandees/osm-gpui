@@ -1462,7 +1462,12 @@ impl MapViewer {
                         }
                     }
                 }
-                self.handle_map_click(from_pt(at), event.modifiers.shift, event.click_count);
+                self.handle_map_click(
+                    from_pt(at),
+                    event.modifiers.shift,
+                    event.click_count,
+                    event.modifiers.control,
+                );
                 // Always notify, regardless of whether the selection changed:
                 // `self.interaction` just transitioned back to `Idle` and the
                 // drag-preview clear above needs a repaint to actually reach
@@ -1486,7 +1491,12 @@ impl MapViewer {
             }
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
-                self.handle_map_click(from_pt(at), event.modifiers.shift, event.click_count);
+                self.handle_map_click(
+                    from_pt(at),
+                    event.modifiers.shift,
+                    event.click_count,
+                    event.modifiers.control,
+                );
                 // Add mode re-selects the same way on every extend click (the
                 // way id doesn't change), so the before/after diff alone
                 // misses that the way's geometry grew a node — always
@@ -1505,10 +1515,11 @@ impl MapViewer {
         screen_pt: gpui::Point<gpui::Pixels>,
         shift_held: bool,
         click_count: usize,
+        ctrl_held: bool,
     ) {
         match self.mode {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
-            EditMode::Add => self.handle_add_click(screen_pt),
+            EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
@@ -1703,21 +1714,25 @@ impl MapViewer {
     }
 
     /// Add mode: place a node, or extend/connect the in-progress way. See
-    /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode".
-    fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+    /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode"
+    /// and docs/superpowers/specs/2026-07-08-add-mode-snap-to-way-design.md
+    /// for the snap-to-way behavior. `ctrl_held` bypasses both snapping onto
+    /// a nearby existing node and snapping onto a nearby way's line
+    /// geometry, always producing a fully independent node.
+    fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, ctrl_held: bool) {
         let Some(layer_id) = self.active_layer else {
             return;
         };
         let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Clicking an existing node/way finishes the in-progress way by
-        // connecting to it.
-        if self.add_progress.is_some() {
+        // connecting to it. Skipped entirely when Ctrl is held.
+        if !ctrl_held && self.add_progress.is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
                 if hit.layer_id == layer_id {
                     if let osm_gpui::selection::FeatureKind::Node = hit.kind {
-                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, false);
+                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, false, None);
                         self.add_progress = None;
                         self.selected = vec![osm_gpui::selection::FeatureRef {
                             layer_id,
@@ -1734,6 +1749,19 @@ impl MapViewer {
             }
         }
 
+        // Try to snap onto a nearby way's line geometry, unless Ctrl is
+        // held. `snap` carries the snapped-onto way's id and splice index,
+        // if any, threaded through to `add_extend_or_start_way` for the
+        // 2nd+ click case.
+        let snap_hit = if ctrl_held {
+            None
+        } else {
+            self.layer_manager
+                .find_layer(layer_id)
+                .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
+                .and_then(|osm_layer| osm_layer.snap_to_way(&self.viewport, screen_pt, 6.0))
+        };
+
         // Note: `find_layer_mut` is re-called in each arm below (rather than
         // binding `layer` once above the match) so its mutable borrow ends
         // before the arm needs `&mut self` again for `self.add_progress`/
@@ -1742,24 +1770,44 @@ impl MapViewer {
         // and fail to compile.
         match self.add_progress.take() {
             None => {
-                // First click of a fresh continuation: a lone node, no way
-                // yet. Reuses the pre-existing `CreateNode` undo action
-                // (same one the retired Cmd+Click gesture used to push) —
-                // this is the same underlying mutation, just triggered by
-                // Add mode instead.
+                // First click of a fresh continuation: a lone node (or, if
+                // snapped, a node spliced into the snapped-onto way), no way
+                // of its own yet — the next click always starts a *new* way
+                // from this node, whether or not this one landed on top of
+                // an existing way.
                 let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
                     return;
                 };
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                let new_id = editable.add_node(lat, lon);
-                self.undo_stack.push(UndoableAction::CreateNode {
-                    layer: layer_id,
-                    id: new_id,
-                    lat,
-                    lon,
-                });
+                let new_id = match snap_hit {
+                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
+                        let new_id =
+                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon);
+                        self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
+                            layer: layer_id,
+                            way_id,
+                            index: idx + 1,
+                            node_id: new_id,
+                        });
+                        new_id
+                    }
+                    None => {
+                        // Reuses the pre-existing `CreateNode` undo action
+                        // (same one the retired Cmd+Click gesture used to
+                        // use) — this is the same underlying mutation, just
+                        // triggered by Add mode instead.
+                        let new_id = editable.add_node(lat, lon);
+                        self.undo_stack.push(UndoableAction::CreateNode {
+                            layer: layer_id,
+                            id: new_id,
+                            lat,
+                            lon,
+                        });
+                        new_id
+                    }
+                };
                 self.add_progress = Some(AddProgress {
                     way_id: None,
                     last_node_id: new_id,
@@ -1771,19 +1819,26 @@ impl MapViewer {
                 }];
             }
             Some(progress) => {
-                // 2nd+ click: create the node and fold it into the way in
-                // one step — `add_extend_or_start_way` pushes the single
-                // `ExtendWay` undo entry that covers both the node creation
-                // and the way mutation (one click = one undo step).
+                // 2nd+ click: create the node (or snap it onto a way) and
+                // fold it into the way being drawn in one step.
+                // `add_extend_or_start_way` pushes the matching undo entry
+                // that covers both the node creation and the way
+                // mutation(s) (one click = one undo step).
                 let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
                     return;
                 };
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                let new_id = editable.add_node(lat, lon);
+                let (new_id, snap) = match snap_hit {
+                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => (
+                        editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon),
+                        Some((way_id, idx + 1)),
+                    ),
+                    None => (editable.add_node(lat, lon), None),
+                };
                 self.add_progress = Some(progress);
-                let way_id = self.add_extend_or_start_way(layer_id, new_id, true);
+                let way_id = self.add_extend_or_start_way(layer_id, new_id, true, snap);
                 self.add_progress = Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
@@ -1803,16 +1858,21 @@ impl MapViewer {
 
     /// Shared by the "continue clicking" and "connect to existing feature"
     /// paths: start a new 2-node way if none exists yet, or extend the
-    /// existing one, pushing the matching `ExtendWay` undo entry. Returns
-    /// the way id (new or existing). `node_created` must reflect whether
-    /// `node_id` was just created by this click (vs. an existing node the
-    /// user clicked to connect) — it's recorded on the undo entry so undo
-    /// never deletes a node it didn't create.
+    /// existing one, pushing the matching undo entry. Returns the way id
+    /// (new or existing). `node_created` must reflect whether `node_id` was
+    /// just created by this click (vs. an existing node the user clicked to
+    /// connect) — it's recorded on the undo entry so undo never deletes a
+    /// node it didn't create. `snap`, when `Some((snap_way_id,
+    /// snap_index))`, means `node_id` was just spliced into `snap_way_id` at
+    /// `snap_index` by the caller (via `snap_to_way`/`insert_node_into_way`)
+    /// — this click is a compound mutation, so it pushes `SnapExtendWay`
+    /// instead of `ExtendWay` to undo both steps together.
     fn add_extend_or_start_way(
         &mut self,
         layer_id: LayerId,
         node_id: i64,
         node_created: bool,
+        snap: Option<(i64, usize)>,
     ) -> i64 {
         let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
         let last_node_id = self
@@ -1827,30 +1887,39 @@ impl MapViewer {
             return progress_way_id.unwrap_or(0);
         };
 
-        match progress_way_id {
+        let (way_id, way_created) = match progress_way_id {
             Some(way_id) => {
                 editable.extend_way(way_id, node_id);
-                self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id,
-                    way_id,
-                    node_id,
-                    way_created: false,
-                    node_created,
-                });
-                way_id
+                (way_id, false)
             }
             None => {
                 let way_id = editable.add_way(vec![last_node_id, node_id], Vec::new());
+                (way_id, true)
+            }
+        };
+
+        match snap {
+            Some((snap_way_id, snap_index)) => {
+                self.undo_stack.push(UndoableAction::SnapExtendWay {
+                    layer: layer_id,
+                    way_id,
+                    way_created,
+                    snap_way_id,
+                    snap_index,
+                    node_id,
+                });
+            }
+            None => {
                 self.undo_stack.push(UndoableAction::ExtendWay {
                     layer: layer_id,
                     way_id,
                     node_id,
-                    way_created: true,
+                    way_created,
                     node_created,
                 });
-                way_id
             }
         }
+        way_id
     }
 
     fn sync_selection_to_layers(&mut self) {
