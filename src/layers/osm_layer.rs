@@ -1806,7 +1806,12 @@ impl MapLayer for OsmLayer {
             /// (min_x, max_x, min_y, max_y), accumulated by `push_triangle`.
             bounds_min_max: (f32, f32, f32, f32),
         }
-        let mut fill_groups: HashMap<u32, FillGroup> = HashMap::new();
+        // Insertion-ordered (first-encounter order) instead of a HashMap so
+        // flush order is deterministic across frames — HashMap iteration
+        // order is randomized per-process, which caused visible z-order
+        // flicker between overlapping fills of different colors.
+        let mut fill_group_index: HashMap<u32, usize> = HashMap::new();
+        let mut fill_groups: Vec<FillGroup> = Vec::new();
         let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
 
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
@@ -1845,16 +1850,20 @@ impl MapLayer for OsmLayer {
 
             let alpha = (fill.opacity * 255.0).round() as u32;
             let rgba_key = (fill.color << 8) | alpha;
-            let group = fill_groups.entry(rgba_key).or_insert_with(|| FillGroup {
-                rgba: rgba_key,
-                path: None,
-                bounds_min_max: (
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                ),
+            let group_idx = *fill_group_index.entry(rgba_key).or_insert_with(|| {
+                fill_groups.push(FillGroup {
+                    rgba: rgba_key,
+                    path: None,
+                    bounds_min_max: (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    ),
+                });
+                fill_groups.len() - 1
             });
+            let group = &mut fill_groups[group_idx];
             for t in tris.chunks_exact(3) {
                 push_triangle(
                     &mut group.path,
@@ -1866,7 +1875,7 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        for (_, g) in fill_groups {
+        for g in fill_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
                 path.bounds = Bounds {
@@ -1902,7 +1911,11 @@ impl MapLayer for OsmLayer {
             /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad`.
             bounds_min_max: (f32, f32, f32, f32),
         }
-        let mut way_groups: HashMap<(u32, u32), WayGroup> = HashMap::new();
+        // Same insertion-ordered fix as `fill_groups` above, for the same
+        // reason: deterministic first-encounter flush order instead of
+        // HashMap's randomized iteration order.
+        let mut way_group_index: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut way_groups: Vec<WayGroup> = Vec::new();
 
         // Reused scratch buffer for each way's projected screen points, so
         // decimation (below) can look ahead/behind without per-way
@@ -1932,17 +1945,21 @@ impl MapLayer for OsmLayer {
             // per-frame loop.
             let style = self.way_styles[i];
             let key = (style.color, style.width.to_bits());
-            let group = way_groups.entry(key).or_insert_with(|| WayGroup {
-                color: style.color,
-                half_width: style.width / 2.0,
-                path: None,
-                bounds_min_max: (
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                ),
+            let group_idx = *way_group_index.entry(key).or_insert_with(|| {
+                way_groups.push(WayGroup {
+                    color: style.color,
+                    half_width: style.width / 2.0,
+                    path: None,
+                    bounds_min_max: (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    ),
+                });
+                way_groups.len() - 1
             });
+            let group = &mut way_groups[group_idx];
 
             scratch_pts.clear();
             for &(node_id, mx, my) in verts {
@@ -1974,7 +1991,7 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        for (_, g) in way_groups {
+        for g in way_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
                 path.bounds = Bounds {
