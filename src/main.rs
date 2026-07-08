@@ -1428,7 +1428,7 @@ impl MapViewer {
                         }
                     }
                 }
-                self.handle_map_click(from_pt(at), event.modifiers.shift);
+                self.handle_map_click(from_pt(at), event.modifiers.shift, event.click_count);
                 // Always notify, regardless of whether the selection changed:
                 // `self.interaction` just transitioned back to `Idle` and the
                 // drag-preview clear above needs a repaint to actually reach
@@ -1452,7 +1452,7 @@ impl MapViewer {
             }
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
-                self.handle_map_click(from_pt(at), event.modifiers.shift);
+                self.handle_map_click(from_pt(at), event.modifiers.shift, event.click_count);
                 // Add mode re-selects the same way on every extend click (the
                 // way id doesn't change), so the before/after diff alone
                 // misses that the way's geometry grew a node — always
@@ -1466,9 +1466,14 @@ impl MapViewer {
     }
 
     /// Dispatch a plain map click by the current `EditMode`.
-    fn handle_map_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
+    fn handle_map_click(
+        &mut self,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        shift_held: bool,
+        click_count: usize,
+    ) {
         match self.mode {
-            EditMode::Select => self.handle_select_click(screen_pt, shift_held),
+            EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt),
             EditMode::Building => self.handle_building_click(screen_pt),
             EditMode::Extrude => {
@@ -1640,9 +1645,22 @@ impl MapViewer {
     /// the hit feature in/out of the existing selection (add if absent,
     /// remove if already selected) instead of replacing it; a shift-click
     /// that hits nothing is a no-op, leaving the existing selection intact.
-    fn handle_select_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, shift_held: bool) {
+    fn handle_select_click(
+        &mut self,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        shift_held: bool,
+        click_count: usize,
+    ) {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-        let hit = osm_gpui::selection::resolve_hits(per_layer);
+        let mut hit = osm_gpui::selection::resolve_hits(per_layer);
+        // Double-click inside a closed way's interior (away from its
+        // outline, which a plain click already selects) selects the way.
+        if hit.is_none() && click_count == 2 {
+            let interior = self
+                .layer_manager
+                .hit_test_interior_all(&self.viewport, screen_pt);
+            hit = osm_gpui::selection::resolve_hits(interior);
+        }
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();

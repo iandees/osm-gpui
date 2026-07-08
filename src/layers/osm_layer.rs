@@ -2234,6 +2234,52 @@ impl EditableLayer for OsmLayer {
         way_hits
     }
 
+    fn hit_test_interior(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+    ) -> Vec<HitCandidate> {
+        if self.osm_data.is_none() {
+            return Vec::new();
+        }
+
+        let (mx, my) = viewport.screen_to_mercator(screen_pt);
+        let envelope = AABB::from_corners([mx, my], [mx, my]);
+
+        let mut hits: Vec<HitCandidate> = Vec::new();
+        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+            let way_id = item.data;
+            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+                continue;
+            };
+            let verts = &self.way_vertices[way_idx];
+            // Closed-ring convention: first and last node ref are the same
+            // (mirrors `OsmWay::is_closed`).
+            if verts.len() < 4 || verts.first().map(|v| v.0) != verts.last().map(|v| v.0) {
+                continue;
+            }
+            let screen_verts: Vec<Point<Pixels>> = verts
+                .iter()
+                .map(|&(_, vx, vy)| viewport.mercator_to_screen(vx, vy))
+                .collect();
+            if !screen_verts.iter().all(|p| is_point_valid(*p)) {
+                continue;
+            }
+            if crate::selection::point_in_polygon(screen_pt, &screen_verts) {
+                hits.push(HitCandidate {
+                    feature: FeatureRef {
+                        layer_id: self.id,
+                        kind: FeatureKind::Way,
+                        id: way_id,
+                    },
+                    kind: FeatureKind::Way,
+                    dist_px: 0.0,
+                });
+            }
+        }
+        hits
+    }
+
     fn hit_test_rect(&self, viewport: &Viewport, rect: Bounds<Pixels>) -> Vec<FeatureRef> {
         let (x1, y1) = viewport.screen_to_mercator(rect.origin);
         let (x2, y2) = viewport.screen_to_mercator(point(
@@ -2498,6 +2544,109 @@ mod tests {
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
         assert!(hits.iter().all(|h| h.kind == FeatureKind::Way));
         assert!(hits.iter().any(|h| h.feature.id == 10));
+    }
+
+    #[test]
+    fn hit_test_interior_hits_closed_way_center_but_plain_hit_test_misses() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let d = 0.01;
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat - d,
+            lon: center_lon - d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat - d,
+            lon: center_lon + d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n3 = OsmNode {
+            id: 3,
+            lat: center_lat + d,
+            lon: center_lon + d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n4 = OsmNode {
+            id: 4,
+            lat: center_lat + d,
+            lon: center_lon - d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 4, 1],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(vec![n1, n2, n3, n4], vec![way]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let center = point(px(400.0), px(300.0));
+
+        // The center of the square is far from every edge — a plain
+        // hit_test (edge/outline distance only) should not select it.
+        assert!(layer.hit_test(&viewport, center).is_empty());
+
+        // Interior hit-testing should find it.
+        let hits = layer.hit_test_interior(&viewport, center);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, FeatureKind::Way);
+        assert_eq!(hits[0].feature.id, 10);
+    }
+
+    #[test]
+    fn hit_test_interior_ignores_open_way() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+        let d = 0.01;
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat - d,
+            lon: center_lon - d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat - d,
+            lon: center_lon + d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n3 = OsmNode {
+            id: 3,
+            lat: center_lat + d,
+            lon: center_lon + d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n4 = OsmNode {
+            id: 4,
+            lat: center_lat + d,
+            lon: center_lon - d,
+            version: 1,
+            tags: empty_tags(),
+        };
+        // Not closed: first node ref (1) != last (4).
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 4],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(vec![n1, n2, n3, n4], vec![way]);
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let center = point(px(400.0), px(300.0));
+
+        assert!(layer.hit_test_interior(&viewport, center).is_empty());
     }
 
     #[test]
