@@ -143,29 +143,39 @@ fn maybe_evict(dir: &Path) {
     }
 }
 
+/// Recursively collect every cache file under `dir` — one level of
+/// source-key subdirectories, plus any loose top-level files left over
+/// from before per-source directories existed — appending
+/// `(path, size, mtime)` tuples and accumulating `total`.
+fn collect_cache_files(dir: &Path, files: &mut Vec<(PathBuf, u64, SystemTime)>, total: &mut u64) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            collect_cache_files(&path, files, total);
+        } else if meta.is_file() {
+            let size = meta.len();
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            *total += size;
+            files.push((path, size, mtime));
+        }
+    }
+}
+
 /// Scan `dir` and, if its total size exceeds `max_bytes`, delete
 /// oldest-by-mtime files until it's back under budget. Entries whose
 /// metadata/mtime can't be read are treated as newest (kept) rather than
 /// causing a hard failure, since a partial cleanup is preferable to none.
 fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
     let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
     let mut total: u64 = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                let size = meta.len();
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                total += size;
-                files.push((path, size, mtime));
-            }
-        }
-    }
+    collect_cache_files(dir, &mut files, &mut total);
 
     if total <= max_bytes {
         return;
@@ -203,9 +213,10 @@ fn cached_file_count() -> usize {
 
     let dir = cache_dir();
     let count = if dir.exists() {
-        fs::read_dir(&dir)
-            .map(|entries| entries.count())
-            .unwrap_or(0)
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+        files.len()
     } else {
         0
     };
@@ -976,5 +987,70 @@ mod tests {
             tile_file_path(base, "source-a", url),
             tile_file_path(base, "source-a", url)
         );
+    }
+
+    #[test]
+    fn collect_cache_files_sums_nested_directories() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-collect-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("source-b").join("b.png"), vec![0u8; 50]).unwrap();
+        fs::write(dir.join("loose.png"), vec![0u8; 10]).unwrap();
+
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+
+        assert_eq!(total, 160);
+        assert_eq!(files.len(), 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn evict_if_over_budget_scans_nested_source_directories() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-evict-nested-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let source_a = dir.join("source-a");
+        let source_b = dir.join("source-b");
+        fs::create_dir_all(&source_a).unwrap();
+        fs::create_dir_all(&source_b).unwrap();
+
+        let now = SystemTime::now();
+        let write = |path: &Path, age_secs: u64| {
+            fs::write(path, vec![0u8; 100]).unwrap();
+            let file = fs::File::open(path).unwrap();
+            file.set_modified(now - std::time::Duration::from_secs(age_secs))
+                .unwrap();
+        };
+        write(&source_a.join("oldest.png"), 180);
+        write(&source_b.join("middle.png"), 120);
+        write(&source_a.join("newest.png"), 60);
+
+        // Budget allows only ~1 file; the two oldest (across both source
+        // directories) should be evicted, leaving "newest.png" behind.
+        evict_if_over_budget(&dir, 150);
+
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+        let mut remaining: Vec<String> = files
+            .into_iter()
+            .map(|(path, _, _)| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        remaining.sort();
+        assert_eq!(remaining, vec!["newest.png".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
