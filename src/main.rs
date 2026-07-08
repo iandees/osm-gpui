@@ -514,6 +514,20 @@ impl MapViewer {
         }
     }
 
+    /// The `(center_lat, center_lon, ImageryLoadState)` triple `rebuild_menus`
+    /// needs, as currently known to this viewer. Exposed so callers outside
+    /// the per-frame `maybe_rebuild_imagery_menu` loop (e.g. the Settings
+    /// window's keybindings-changed handler in `menu.rs`) can trigger an
+    /// immediate menu rebuild without duplicating this lookup.
+    pub(crate) fn imagery_menu_context(&self) -> (f64, f64, ImageryLoadState) {
+        let (lat, lon) = self.viewport.center();
+        let state = IMAGERY_LOAD_STATE
+            .get()
+            .and_then(|s| s.lock().ok().map(|g| *g))
+            .unwrap_or(ImageryLoadState::Loading);
+        (lat, lon, state)
+    }
+
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
         let (lat, lon) = self.viewport.center();
