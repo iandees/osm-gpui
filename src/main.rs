@@ -468,7 +468,7 @@ impl MapViewer {
             pending_tag_edit_open: None,
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true, true, true, true, false],
+            side_panel_open: [true, true, true, true, true],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
