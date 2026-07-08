@@ -17,6 +17,7 @@ use gpui_component::{
 
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
+use crate::keybindings::{self, ShortcutCategory, SHORTCUTS};
 use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset};
 use crate::ui::modal::field_row;
 
@@ -27,6 +28,15 @@ enum LoginState {
     LoggingIn,
     LoggedIn(StoredToken),
     Error(SharedString),
+}
+
+/// Emitted by `SettingsWindow` when a change needs to propagate outside
+/// this window — e.g. rebinding the live `gpui` keymap and refreshing the
+/// native menu's shortcut labels, both of which require the concrete
+/// `Action` types that only the binary crate (`src/main.rs`/`src/menu.rs`)
+/// has access to.
+pub enum SettingsEvent {
+    KeybindingsChanged,
 }
 
 pub struct SettingsWindow {
@@ -207,6 +217,27 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Remove `id`'s override, falling back to its default, and propagate
+    /// the change to the live keymap and native menu.
+    fn reset_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        self.app_settings.keybindings.remove(id);
+        settings_store::update_store(self.app_settings.clone());
+        cx.emit(SettingsEvent::KeybindingsChanged);
+        cx.notify();
+    }
+
+    /// Clear every shortcut override, restoring all ten defaults.
+    fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.app_settings.keybindings.clear();
+        settings_store::update_store(self.app_settings.clone());
+        cx.emit(SettingsEvent::KeybindingsChanged);
+        cx.notify();
+    }
+
+    fn start_recording(&mut self, _id: &'static str, _cx: &mut Context<Self>) {
+        // Filled in by the shortcut-recording task.
+    }
+
     fn start_login(&mut self, cx: &mut Context<Self>) {
         self.login_state = LoginState::LoggingIn;
         cx.notify();
@@ -366,7 +397,8 @@ impl SettingsWindow {
         vec![
             self.account_page(view.clone()),
             self.appearance_page(view.clone()),
-            self.imagery_page(view),
+            self.imagery_page(view.clone()),
+            self.shortcuts_page(view),
         ]
     }
 
@@ -655,6 +687,69 @@ impl SettingsWindow {
 
         SettingGroup::new().title("Tile Cache").items(items)
     }
+
+    fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {
+        let category_title = |c: ShortcutCategory| match c {
+            ShortcutCategory::General => "General",
+            ShortcutCategory::File => "File",
+            ShortcutCategory::Edit => "Edit",
+            ShortcutCategory::Modes => "Modes",
+        };
+
+        let mut groups = Vec::new();
+        for category in [
+            ShortcutCategory::General,
+            ShortcutCategory::File,
+            ShortcutCategory::Edit,
+            ShortcutCategory::Modes,
+        ] {
+            let items: Vec<SettingItem> = SHORTCUTS
+                .iter()
+                .filter(|d| d.category == category)
+                .map(|d| {
+                    let id = d.id;
+                    let label = d.label;
+                    let has_override = self.app_settings.keybindings.contains_key(id);
+                    let spec = keybindings::effective_spec(&self.app_settings, id);
+                    let row_view = view.clone();
+                    SettingItem::new(
+                        label,
+                        SettingField::render(move |_options, _window, cx| {
+                            render_shortcut_row(
+                                row_view.clone(),
+                                id,
+                                spec.clone(),
+                                has_override,
+                                cx,
+                            )
+                        }),
+                    )
+                })
+                .collect();
+            groups.push(
+                SettingGroup::new()
+                    .title(category_title(category))
+                    .items(items),
+            );
+        }
+
+        let reset_all_view = view;
+        groups.push(SettingGroup::new().item(SettingItem::render(
+            move |_options, _window, _cx| {
+                Button::new("reset-all-shortcuts")
+                    .label("Reset All to Defaults")
+                    .ghost()
+                    .on_click({
+                        let reset_all_view = reset_all_view.clone();
+                        move |_ev, _window, cx| {
+                            reset_all_view.update(cx, |this, cx| this.reset_all_shortcuts(cx));
+                        }
+                    })
+            },
+        )));
+
+        SettingPage::new("Keyboard Shortcuts").groups(groups)
+    }
 }
 
 impl Focusable for SettingsWindow {
@@ -662,6 +757,8 @@ impl Focusable for SettingsWindow {
         self.focus_handle.clone()
     }
 }
+
+impl EventEmitter<SettingsEvent> for SettingsWindow {}
 
 fn render_server_picker(
     api_choice: ApiServerChoice,
@@ -913,6 +1010,51 @@ fn render_entry_row(
             )
             .into_any_element()
     }
+}
+
+fn render_shortcut_row(
+    view: Entity<SettingsWindow>,
+    id: &'static str,
+    spec: String,
+    has_override: bool,
+    cx: &mut App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+
+    let mut row = h_flex().gap_2().items_center();
+
+    if let Ok(stroke) = gpui::Keystroke::parse(&spec) {
+        row = row.child(gpui_component::kbd::Kbd::new(stroke));
+    } else {
+        row = row.child(Label::new(spec).text_sm().text_color(muted));
+    }
+
+    row = row.child(
+        Button::new(SharedString::from(format!("record-shortcut-{id}")))
+            .label("Record")
+            .ghost()
+            .compact()
+            .on_click({
+                let view = view.clone();
+                move |_ev, _window, cx| {
+                    view.update(cx, |this, cx| this.start_recording(id, cx));
+                }
+            }),
+    );
+
+    if has_override {
+        row = row.child(
+            Button::new(SharedString::from(format!("reset-shortcut-{id}")))
+                .label("Reset")
+                .ghost()
+                .compact()
+                .on_click(move |_ev, _window, cx| {
+                    view.update(cx, |this, cx| this.reset_shortcut(id, cx));
+                }),
+        );
+    }
+
+    row.into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
