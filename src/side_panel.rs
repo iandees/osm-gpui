@@ -280,7 +280,10 @@ impl MapViewer {
     ) -> gpui::AnyElement {
         let total = layer_info.len();
         if total == 0 {
-            return Label::new("No layers yet. Add one from the menu.").into_any_element();
+            return Label::new("No layers yet")
+                .text_color(cx.theme().muted_foreground)
+                .text_sm()
+                .into_any_element();
         }
 
         div()
