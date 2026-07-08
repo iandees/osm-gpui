@@ -108,6 +108,11 @@ pub struct OsmLayer {
     /// index. Resolved once (here) instead of every frame in the render
     /// loop.
     way_styles: Vec<WayStyle>,
+    /// Cached earcut triangle indices per way (into `way_vertices[i]` minus
+    /// the closing duplicate), `Some` only for closed ways whose resolved
+    /// style has a fill. Aligned with `way_vertices`/`way_styles` by index.
+    /// See `compute_fill_tris`.
+    way_fill_tris: Vec<Option<Vec<u32>>>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
@@ -261,17 +266,45 @@ fn project_way_vertices(
 
 /// Per-way tables produced by [`compute_way_tables`]: parallel vectors of
 /// way ids, bounding boxes, pre-projected `(node_id, x, y)` vertex lists,
-/// and resolved styles, all indexed identically.
+/// resolved styles, and fill triangulations, all indexed identically.
 type WayTables = (
     Vec<i64>,
     Vec<Option<WayBbox>>,
     Vec<Vec<(i64, f64, f64)>>,
     Vec<WayStyle>,
+    Vec<Option<Vec<u32>>>,
 );
 
-/// Build per-way bboxes, pre-projected vertex lists, and resolved styles in
-/// a single pass so neither the bbox pass nor the render path has to walk
-/// the node HashMap (or the stylesheet) per vertex/way.
+/// Earcut triangle indices for a closed, fill-styled way's projected ring,
+/// or `None` when the way shouldn't be filled (open ring, no fill style,
+/// degenerate geometry). Indices reference `verts[..verts.len()-1]` — the
+/// duplicated closing vertex is excluded. Never panics: earcut failure or
+/// an empty result just means no fill. The ring check runs on the
+/// *projected* vertex list, not the raw node refs — if a member node failed
+/// to resolve, `verts` may be shorter and no longer ring-shaped, and the
+/// node-id equality check catches that safely.
+fn compute_fill_tris(verts: &[(i64, f64, f64)], style: &WayStyle) -> Option<Vec<u32>> {
+    style.fill?;
+    if verts.len() < 4 || verts.first()?.0 != verts.last()?.0 {
+        return None;
+    }
+    let ring = &verts[..verts.len() - 1];
+    let mut flat = Vec::with_capacity(ring.len() * 2);
+    for &(_, x, y) in ring {
+        flat.push(x);
+        flat.push(y);
+    }
+    let tris = earcutr::earcut(&flat, &[], 2).ok()?;
+    if tris.is_empty() {
+        return None;
+    }
+    Some(tris.into_iter().map(|i| i as u32).collect())
+}
+
+/// Build per-way bboxes, pre-projected vertex lists, resolved styles, and
+/// fill triangulations in a single pass so neither the bbox pass nor the
+/// render path has to walk the node HashMap (or the stylesheet, or the
+/// tessellator) per vertex/way.
 fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
@@ -281,14 +314,17 @@ fn compute_way_tables(
     let mut bboxes = Vec::with_capacity(data.ways.len());
     let mut vertices = Vec::with_capacity(data.ways.len());
     let mut styles = Vec::with_capacity(data.ways.len());
+    let mut fill_tris = Vec::with_capacity(data.ways.len());
     for way in sorted_ways(data) {
         let (verts, bbox) = project_way_vertices(way, node_cache);
+        let style = stylesheet.way_style(&way.tags, way.is_closed());
+        fill_tris.push(compute_fill_tris(&verts, &style));
         ids.push(way.id);
         bboxes.push(bbox);
         vertices.push(verts);
-        styles.push(stylesheet.way_style(&way.tags, way.is_closed()));
+        styles.push(style);
     }
-    (ids, bboxes, vertices, styles)
+    (ids, bboxes, vertices, styles, fill_tris)
 }
 
 /// Recompute and return the resolved style for a single already-mutated
@@ -298,13 +334,18 @@ fn compute_way_tables(
 /// Free function (not a method) so it can be called while the caller still
 /// holds a live `&mut OsmData` borrowed out of `self.osm_data` via
 /// `Arc::make_mut` — a `&mut self` method call wouldn't type-check there.
+/// That split-borrow role is also why it takes each cache slice as its own
+/// parameter rather than a struct.
+#[allow(clippy::too_many_arguments)]
 fn apply_style_refresh(
     kind: FeatureKind,
     id: i64,
     data: &OsmData,
     node_cache: &mut NodeCache,
     way_id_to_index: &HashMap<i64, usize>,
+    way_vertices: &[Vec<(i64, f64, f64)>],
     way_styles: &mut [WayStyle],
+    way_fill_tris: &mut [Option<Vec<u32>>],
     stylesheet: &Stylesheet,
 ) {
     match kind {
@@ -321,7 +362,9 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = way_id_to_index.get(&id) {
-                way_styles[idx] = stylesheet.way_style(&way.tags, way.is_closed());
+                let style = stylesheet.way_style(&way.tags, way.is_closed());
+                way_fill_tris[idx] = compute_fill_tris(&way_vertices[idx], &style);
+                way_styles[idx] = style;
             }
         }
     }
@@ -529,6 +572,7 @@ impl OsmLayer {
             way_bboxes: Vec::new(),
             way_vertices: Vec::new(),
             way_styles: Vec::new(),
+            way_fill_tris: Vec::new(),
             layer_bbox: None,
             node_cache: NodeCache {
                 index_by_id: HashMap::new(),
@@ -550,7 +594,7 @@ impl OsmLayer {
     pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
         let stylesheet = Arc::new(Stylesheet::load_default());
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
-        let (way_ids, way_bboxes, way_vertices, way_styles) =
+        let (way_ids, way_bboxes, way_vertices, way_styles, way_fill_tris) =
             compute_way_tables(&osm_data, &node_cache, &stylesheet);
         let layer_bbox = compute_layer_bbox(&node_cache);
         let node_index = build_node_index(&node_cache);
@@ -569,6 +613,7 @@ impl OsmLayer {
             way_bboxes,
             way_vertices,
             way_styles,
+            way_fill_tris,
             layer_bbox,
             node_cache,
             stylesheet,
@@ -595,12 +640,13 @@ impl OsmLayer {
     /// or via `apply_upload_result` reconciling a successful upload.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
         self.node_cache = compute_node_cache(&osm_data, &self.stylesheet);
-        let (ids, bboxes, verts, styles) =
+        let (ids, bboxes, verts, styles, fill_tris) =
             compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
         self.way_ids = ids;
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
         self.way_styles = styles;
+        self.way_fill_tris = fill_tris;
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
         self.node_index = build_node_index(&self.node_cache);
         let ways_sorted = sorted_ways(&osm_data);
@@ -880,7 +926,9 @@ impl OsmLayer {
             }
             self.way_vertices[way_idx] = verts;
             self.way_bboxes[way_idx] = new_bbox;
-            self.way_styles[way_idx] = self.stylesheet.way_style(&way.tags, way.is_closed());
+            let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+            self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
+            self.way_styles[way_idx] = style;
         }
     }
 
@@ -911,7 +959,9 @@ impl OsmLayer {
             data,
             &mut self.node_cache,
             &self.way_id_to_index,
+            &self.way_vertices,
             &mut self.way_styles,
+            &mut self.way_fill_tris,
             &self.stylesheet,
         );
     }
@@ -940,7 +990,9 @@ impl OsmLayer {
             data,
             &mut self.node_cache,
             &self.way_id_to_index,
+            &self.way_vertices,
             &mut self.way_styles,
+            &mut self.way_fill_tris,
             &self.stylesheet,
         );
     }
@@ -1119,6 +1171,7 @@ impl OsmLayer {
         self.way_vertices.remove(way_idx);
         self.way_bboxes.remove(way_idx);
         self.way_styles.remove(way_idx);
+        self.way_fill_tris.remove(way_idx);
         self.way_id_to_index.remove(&id);
         for v in self.way_id_to_index.values_mut() {
             if *v > way_idx {
@@ -1213,10 +1266,11 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().push(way_idx);
         }
         self.way_ids.push(way.id);
+        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
-        self.way_styles
-            .push(self.stylesheet.way_style(&way.tags, way.is_closed()));
+        self.way_styles.push(style);
         data.ways.insert(way.id, way);
         self.modified = true;
     }
@@ -1244,6 +1298,7 @@ impl OsmLayer {
         self.way_bboxes.clear();
         self.way_vertices.clear();
         self.way_styles.clear();
+        self.way_fill_tris.clear();
         self.layer_bbox = None;
         self.node_cache.index_by_id.clear();
         self.node_cache.flat.clear();
@@ -1270,12 +1325,13 @@ impl OsmLayer {
         self.stylesheet = stylesheet;
         if let Some(data) = self.osm_data.clone() {
             self.node_cache = compute_node_cache(&data, &self.stylesheet);
-            let (ids, bboxes, verts, styles) =
+            let (ids, bboxes, verts, styles, fill_tris) =
                 compute_way_tables(&data, &self.node_cache, &self.stylesheet);
             self.way_ids = ids;
             self.way_bboxes = bboxes;
             self.way_vertices = verts;
             self.way_styles = styles;
+            self.way_fill_tris = fill_tris;
             self.layer_bbox = compute_layer_bbox(&self.node_cache);
             self.node_index = build_node_index(&self.node_cache);
             self.way_index = build_way_index(&self.way_bboxes, &sorted_ways(&data));
@@ -1802,6 +1858,7 @@ mod tests {
     use crate::layers::{EditableLayer, LayerId, MapLayer};
     use crate::osm::{OsmData, OsmNode, OsmWay};
     use crate::selection::FeatureKind;
+    use crate::style::Stylesheet;
     use crate::viewport::Viewport;
     use gpui::{point, px, size, Bounds};
     use std::collections::HashMap;
@@ -2634,6 +2691,151 @@ mod tests {
         assert_ne!(
             default_style, updated_style,
             "cached node style must be re-resolved after a tag edit, not left stale"
+        );
+    }
+
+    // -- Fill triangulation cache --
+
+    fn square_ring_data() -> Arc<OsmData> {
+        // A small square around (40, -74): nodes 1-4, way 10 closed via ref 1.
+        let mk = |id, dlat: f64, dlon: f64| OsmNode {
+            id,
+            lat: 40.0 + dlat,
+            lon: -74.0 + dlon,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let mut way_tags = HashMap::new();
+        way_tags.insert("building".to_string(), "yes".to_string());
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 4, 1],
+            version: 1,
+            tags: way_tags,
+        };
+        data_with(
+            vec![
+                mk(1, 0.0, 0.0),
+                mk(2, 0.0, 0.001),
+                mk(3, 0.001, 0.001),
+                mk(4, 0.001, 0.0),
+            ],
+            vec![way],
+        )
+    }
+
+    fn fill_stylesheet() -> Arc<Stylesheet> {
+        Arc::new(
+            Stylesheet::parse("area[building] { fill-color: #808080; fill-opacity: 0.4; }")
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn closed_way_with_fill_style_gets_triangulated() {
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", square_ring_data());
+        layer.set_stylesheet(fill_stylesheet());
+        let tris = layer.way_fill_tris[0]
+            .as_ref()
+            .expect("closed building way must have fill triangles");
+        // A quad triangulates into 2 triangles = 6 indices, all within the
+        // 4-vertex deduped ring.
+        assert_eq!(tris.len(), 6);
+        assert!(tris.iter().all(|&i| i < 4));
+    }
+
+    #[test]
+    fn open_way_gets_no_fill_triangles() {
+        let mut data = square_ring_data();
+        Arc::make_mut(&mut data).ways.get_mut(&10).unwrap().nodes = vec![1, 2, 3, 4];
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        layer.set_stylesheet(fill_stylesheet());
+        assert_eq!(layer.way_fill_tris[0], None);
+    }
+
+    #[test]
+    fn closed_way_without_fill_style_gets_no_triangles() {
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", square_ring_data());
+        layer.set_stylesheet(Arc::new(
+            Stylesheet::parse("way[building] { color: #808080; }").unwrap(),
+        ));
+        assert_eq!(layer.way_fill_tris[0], None);
+    }
+
+    #[test]
+    fn set_tag_refreshes_fill_triangles() {
+        let mut data = square_ring_data();
+        Arc::make_mut(&mut data)
+            .ways
+            .get_mut(&10)
+            .unwrap()
+            .tags
+            .clear();
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        layer.set_stylesheet(fill_stylesheet());
+        assert_eq!(layer.way_fill_tris[0], None, "no building tag yet");
+        layer.set_tag(FeatureKind::Way, 10, "building", "yes");
+        assert!(
+            layer.way_fill_tris[0].is_some(),
+            "tag edit must recompute fill"
+        );
+        layer.remove_tag(FeatureKind::Way, 10, "building");
+        assert_eq!(layer.way_fill_tris[0], None, "tag removal must clear fill");
+    }
+
+    #[test]
+    fn degenerate_ring_yields_no_fill_without_panic() {
+        // All four ring nodes collinear.
+        let mk = |id, dlon: f64| OsmNode {
+            id,
+            lat: 40.0,
+            lon: -74.0 + dlon,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let mut way_tags = HashMap::new();
+        way_tags.insert("building".to_string(), "yes".to_string());
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 4, 1],
+            version: 1,
+            tags: way_tags,
+        };
+        let data = data_with(
+            vec![mk(1, 0.0), mk(2, 0.001), mk(3, 0.002), mk(4, 0.003)],
+            vec![way],
+        );
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        layer.set_stylesheet(fill_stylesheet());
+        assert_eq!(layer.way_fill_tris[0], None);
+    }
+
+    #[test]
+    fn delete_way_shifts_fill_cache() {
+        // Two ways; deleting the first must shift the second's fill entry down.
+        let mut data = square_ring_data();
+        {
+            let d = Arc::make_mut(&mut data);
+            let mut tags = HashMap::new();
+            tags.insert("building".to_string(), "yes".to_string());
+            d.ways.insert(
+                20,
+                OsmWay {
+                    id: 20,
+                    nodes: vec![1, 2, 3, 1],
+                    version: 1,
+                    tags,
+                },
+            );
+        }
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        layer.set_stylesheet(fill_stylesheet());
+        assert_eq!(layer.way_fill_tris.len(), 2);
+        layer.delete_feature(FeatureKind::Way, 10);
+        assert_eq!(layer.way_fill_tris.len(), 1);
+        assert!(
+            layer.way_fill_tris[0].is_some(),
+            "surviving way 20 (a closed triangle) keeps its fill entry"
         );
     }
 

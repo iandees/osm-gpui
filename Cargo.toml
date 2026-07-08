@@ -37,6 +37,7 @@ smallvec = "1.0"
 tiny_http = "0.12"
 ureq = { version = "2.12", features = ["json"] }
 urlencoding = "2"
+earcutr = "0.4"
 
 [dev-dependencies]
 
