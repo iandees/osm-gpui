@@ -10,11 +10,11 @@ use gpui_component::{
 };
 
 use osm_gpui::layers::LayerId;
+use osm_gpui::ui::style::{interactive_row, panel_row, PANEL_ROW_HEIGHT, SIDE_PANEL_WIDTH};
 
-use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
+use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer};
 
 impl MapViewer {
-    const SELECTION_ROW_HEIGHT: f32 = 22.0;
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
 
     /// The right pane: Layers, Selection, and Tags sections stacked
@@ -60,7 +60,7 @@ impl MapViewer {
         };
 
         div()
-            .w(px(280.0))
+            .w(px(SIDE_PANEL_WIDTH))
             .h_full()
             .bg(cx.theme().sidebar)
             .border_l_1()
@@ -119,9 +119,9 @@ impl MapViewer {
                     .map(|(i, action)| {
                         let is_current = i + 1 == cursor;
                         let is_future = i >= cursor;
-                        let mut row = div().px_1().py_0p5().text_sm().child(action.description());
+                        let mut row = panel_row(("history-row", i)).child(action.description());
                         if is_current {
-                            row = row.bg(cx.theme().accent);
+                            row = row.bg(cx.theme().list_active);
                         } else if is_future {
                             row = row.text_color(cx.theme().muted_foreground).italic();
                         }
@@ -182,7 +182,7 @@ impl MapViewer {
     /// or `None` if the feature's layer/tags/geometry can't be found (e.g.
     /// it was deleted since selection). `icon_svg_path` is `None` when the
     /// matched preset has no icon or the icon file isn't vendored.
-    fn describe_selected_feature(
+    pub(crate) fn describe_selected_feature(
         &self,
         feat: &osm_gpui::selection::FeatureRef,
     ) -> Option<(String, Option<std::path::PathBuf>)> {
@@ -211,7 +211,7 @@ impl MapViewer {
         }
 
         let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
-        let list_height = px(visible_rows as f32 * Self::SELECTION_ROW_HEIGHT);
+        let list_height = px(visible_rows as f32 * PANEL_ROW_HEIGHT);
 
         div()
             .id("selection-list")
@@ -232,18 +232,8 @@ impl MapViewer {
                 };
                 let icon_path = described.and_then(|(_, path)| path);
 
-                let mut row = div()
-                    .id(("selection-row", i))
-                    .flex_shrink_0()
-                    .h(px(Self::SELECTION_ROW_HEIGHT))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|this| this.bg(cx.theme().accent));
+                let mut row = interactive_row(("selection-row", i), false, cx)
+                    .text_color(cx.theme().foreground);
 
                 if let Some(path) = icon_path {
                     row = row.child(
@@ -311,15 +301,7 @@ impl MapViewer {
                             } else {
                                 name.clone()
                             };
-                            div()
-                                .id(("layer-row", index))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .px_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .when(is_active, |this| this.bg(cx.theme().accent))
+                            interactive_row(("layer-row", index), is_active, cx)
                                 .child(
                                     Checkbox::new(("layer", index))
                                         .checked(*is_visible)
@@ -329,14 +311,17 @@ impl MapViewer {
                                     gpui::MouseButton::Left,
                                     cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                         this.toggle_layer_visibility(layer_id);
-                                        if is_osm {
-                                            this.active_layer = Some(layer_id);
-                                        }
                                         cx.notify();
                                     }),
                                 )
                                 .context_menu(move |menu, _window, _cx| {
                                     let mut menu = menu;
+                                    if is_osm && !is_active {
+                                        menu = menu.menu(
+                                            "Set as active layer",
+                                            Box::new(SetActiveLayer { index }),
+                                        );
+                                    }
                                     if index > 0 {
                                         menu = menu.menu(
                                             "Move up",
@@ -419,16 +404,8 @@ impl MapViewer {
 
                 let key_for_delete = k.clone();
 
-                div()
-                    .id(SharedString::from(format!("tag-row-{k}")))
-                    .flex()
-                    .flex_row()
-                    .items_center()
+                panel_row(SharedString::from(format!("tag-row-{k}")))
                     .gap_2()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(
                         div()
                             .flex_1()
@@ -476,18 +453,29 @@ impl MapViewer {
                             ),
                     )
                     .child(
-                        div()
-                            .id(SharedString::from(format!("tag-delete-{k}")))
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|this| this.text_color(cx.theme().danger))
-                            .child("x")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _ev: &MouseDownEvent, _window, cx| {
-                                    this.delete_tag(&key_for_delete, cx);
-                                }),
-                            ),
+                        // Spec deviation: the design spec calls for a danger
+                        // hover treatment on this delete icon, but
+                        // gpui-component's Button doesn't support it cleanly
+                        // in combination with `.ghost()`. `ButtonVariant::Custom`
+                        // (via `ButtonCustomVariant`) fixes the foreground color
+                        // across all states rather than only on hover, and its
+                        // `.hover()` background color is actually unused by
+                        // `ButtonVariant::hovered()` for the non-outline case
+                        // (it re-derives the hover background from `color`
+                        // instead). Layering a second `.hover(...)` directly on
+                        // the `Button` via `Styled`/`InteractiveElement` would
+                        // also conflict with the `.hover()` call `Button::render`
+                        // already makes internally on the same `Interactivity`,
+                        // which panics in debug builds (`hover style already
+                        // set`). Keeping `.ghost()` until upstream exposes a
+                        // composable per-state foreground/hover API.
+                        Button::new(SharedString::from(format!("tag-delete-{k}")))
+                            .icon(IconName::Close)
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                this.delete_tag(&key_for_delete, cx);
+                            })),
                     )
                     .into_any_element()
             }));
@@ -497,7 +485,9 @@ impl MapViewer {
         list.child(
             Button::new("add-tag")
                 .label("Add tag")
+                .icon(IconName::Plus)
                 .primary()
+                .small()
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     this.pending_tag_edit_open = Some(PendingTagEditOpen {
                         features: add_selection.clone(),

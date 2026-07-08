@@ -4,8 +4,8 @@
 //! the standard Cancel + primary-confirm footer button row.
 
 use gpui::{
-    div, prelude::*, rgba, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent,
-    Pixels, SharedString, Window,
+    div, prelude::*, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent, Pixels,
+    SharedString, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -19,7 +19,7 @@ use gpui_component::{
 /// child and dispatches key-down events (Escape/Enter) via `on_key_down`.
 ///
 /// This is the `div().track_focus(...).on_key_down(...).absolute().inset_0()
-/// .occlude().bg(rgba(0x00000099)).flex().justify_center().items_center()`
+/// .occlude().bg(scrim_color()).flex().justify_center().items_center()`
 /// pattern previously duplicated in every dialog's `render`.
 pub fn scrim(
     focus_handle: &FocusHandle,
@@ -32,7 +32,7 @@ pub fn scrim(
         .absolute()
         .inset_0()
         .occlude()
-        .bg(rgba(0x00000099))
+        .bg(crate::ui::style::scrim_color())
         .flex()
         .justify_center()
         .items_center()
@@ -63,7 +63,7 @@ pub fn dialog_frame(
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .text_color(cx.theme().foreground)
-                .font_weight(gpui::FontWeight::BOLD)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(title.into()),
         )
         .child(div().p_4().child(body))

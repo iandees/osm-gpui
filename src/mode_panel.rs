@@ -3,7 +3,7 @@
 use gpui::{div, prelude::*, px, Context};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    ActiveTheme, Disableable, Sizable,
+    v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable,
 };
 
 use crate::{EditMode, EditModeAction, MapViewer, SetMode};
@@ -11,16 +11,14 @@ use crate::{EditMode, EditModeAction, MapViewer, SetMode};
 impl MapViewer {
     pub(crate) const MODE_PANEL_WIDTH: f32 = 56.0;
 
-    /// The left toolbar: one text-labeled button per `EditMode`, highlighting
-    /// the active one. Add/Building/Extrude are disabled (dimmed, no
-    /// `on_click`) when `active_layer` is `None` — there's nowhere to write
-    /// new geometry.
+    /// The left toolbar: one button per `EditMode` showing an icon above a
+    /// short text label, highlighting the active one. Add/Building/Extrude are
+    /// disabled (dimmed, no `on_click`) when `active_layer` is `None` — there's
+    /// nowhere to write new geometry.
     ///
-    /// Uses text labels rather than icons: this project's `IconName` set
-    /// (see `gpui-component-assets`) doesn't have a coherent four-icon set
-    /// covering Select/Add/Building/Extrude (e.g. no cursor/pointer or
-    /// extrude/3D icon), so per the plan's documented fallback we keep
-    /// text-only buttons here instead of guessing at a mismatched icon.
+    /// Each button shows an icon above a short text label; the label
+    /// disambiguates the nearest-fit icons (the icon set has no exact
+    /// cursor/extrude glyphs).
     pub(crate) fn render_mode_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_active_layer = self.active_layer.is_some();
 
@@ -55,7 +53,13 @@ impl MapViewer {
             EditMode::Building => EditModeAction::Building,
             EditMode::Extrude => EditModeAction::Extrude,
         };
-        let mut button = Button::new(id).label(mode_label(mode)).small();
+        let mut button = Button::new(id).w(px(46.0)).h(px(46.0)).child(
+            v_flex()
+                .items_center()
+                .gap_0p5()
+                .child(Icon::new(mode_icon(mode)).small())
+                .child(div().text_xs().child(mode_label(mode))),
+        );
         if is_active {
             button = button.primary();
         }
@@ -76,5 +80,43 @@ fn mode_label(mode: EditMode) -> &'static str {
         EditMode::Add => "Add",
         EditMode::Building => "Bldg",
         EditMode::Extrude => "Extr",
+    }
+}
+
+fn mode_icon(mode: EditMode) -> IconName {
+    match mode {
+        EditMode::Select => IconName::Frame,
+        EditMode::Add => IconName::Plus,
+        EditMode::Building => IconName::Building2,
+        EditMode::Extrude => IconName::LayoutDashboard,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_icon_maps_correctly() {
+        let icons = [
+            mode_icon(EditMode::Select),
+            mode_icon(EditMode::Add),
+            mode_icon(EditMode::Building),
+            mode_icon(EditMode::Extrude),
+        ];
+        // Assert the exact mode -> icon mapping so a change to any one
+        // mode's icon is caught here.
+        assert!(matches!(icons[0], IconName::Frame));
+        assert!(matches!(icons[1], IconName::Plus));
+        assert!(matches!(icons[2], IconName::Building2));
+        assert!(matches!(icons[3], IconName::LayoutDashboard));
+    }
+
+    #[test]
+    fn mode_labels_are_stable() {
+        assert_eq!(mode_label(EditMode::Select), "Select");
+        assert_eq!(mode_label(EditMode::Add), "Add");
+        assert_eq!(mode_label(EditMode::Building), "Bldg");
+        assert_eq!(mode_label(EditMode::Extrude), "Extr");
     }
 }

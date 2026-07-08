@@ -2,8 +2,8 @@
 //! the single currently-selected feature.
 
 use gpui::{
-    div, prelude::*, rgba, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    Window,
 };
 use gpui_component::{
     input::{Input, InputState},
@@ -194,7 +194,7 @@ impl Render for NsiPresetDialog {
             // behind the modal — the map area's own mouse-down handler then
             // steals window focus back from the dialog on every click.
             .occlude()
-            .bg(rgba(0x00000099))
+            .bg(crate::ui::style::scrim_color())
             .flex()
             .justify_center()
             .items_center()

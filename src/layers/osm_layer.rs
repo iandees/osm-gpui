@@ -573,6 +573,20 @@ fn push_triangle(
     }
 }
 
+/// Paint a single node marker quad at `screen_point` (already including the
+/// canvas origin offset) using `style`. Shared by the per-frame node-marker
+/// pass in `render_canvas` and by `render_highlight`'s `FeatureKind::Way` arm,
+/// which repaints a selected way's vertex markers on top of the highlight
+/// stroke so they aren't hidden underneath it.
+fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: NodeStyle) {
+    let half = px(style.size / 2.0);
+    let quad_bounds = Bounds {
+        origin: point(screen_point.x - half, screen_point.y - half),
+        size: size(px(style.size), px(style.size)),
+    };
+    window.paint_quad(fill(quad_bounds, rgb(style.color)));
+}
+
 /// Bulk-build a point index over every node's mercator position.
 fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
     let items: Vec<_> = node_cache
@@ -1806,7 +1820,12 @@ impl MapLayer for OsmLayer {
             /// (min_x, max_x, min_y, max_y), accumulated by `push_triangle`.
             bounds_min_max: (f32, f32, f32, f32),
         }
-        let mut fill_groups: HashMap<u32, FillGroup> = HashMap::new();
+        // Insertion-ordered (first-encounter order) instead of a HashMap so
+        // flush order is deterministic across frames — HashMap iteration
+        // order is randomized per-process, which caused visible z-order
+        // flicker between overlapping fills of different colors.
+        let mut fill_group_index: HashMap<u32, usize> = HashMap::new();
+        let mut fill_groups: Vec<FillGroup> = Vec::new();
         let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
 
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
@@ -1845,16 +1864,20 @@ impl MapLayer for OsmLayer {
 
             let alpha = (fill.opacity * 255.0).round() as u32;
             let rgba_key = (fill.color << 8) | alpha;
-            let group = fill_groups.entry(rgba_key).or_insert_with(|| FillGroup {
-                rgba: rgba_key,
-                path: None,
-                bounds_min_max: (
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                ),
+            let group_idx = *fill_group_index.entry(rgba_key).or_insert_with(|| {
+                fill_groups.push(FillGroup {
+                    rgba: rgba_key,
+                    path: None,
+                    bounds_min_max: (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    ),
+                });
+                fill_groups.len() - 1
             });
+            let group = &mut fill_groups[group_idx];
             for t in tris.chunks_exact(3) {
                 push_triangle(
                     &mut group.path,
@@ -1866,7 +1889,7 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        for (_, g) in fill_groups {
+        for g in fill_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
                 path.bounds = Bounds {
@@ -1902,7 +1925,11 @@ impl MapLayer for OsmLayer {
             /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad`.
             bounds_min_max: (f32, f32, f32, f32),
         }
-        let mut way_groups: HashMap<(u32, u32), WayGroup> = HashMap::new();
+        // Same insertion-ordered fix as `fill_groups` above, for the same
+        // reason: deterministic first-encounter flush order instead of
+        // HashMap's randomized iteration order.
+        let mut way_group_index: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut way_groups: Vec<WayGroup> = Vec::new();
 
         // Reused scratch buffer for each way's projected screen points, so
         // decimation (below) can look ahead/behind without per-way
@@ -1932,17 +1959,21 @@ impl MapLayer for OsmLayer {
             // per-frame loop.
             let style = self.way_styles[i];
             let key = (style.color, style.width.to_bits());
-            let group = way_groups.entry(key).or_insert_with(|| WayGroup {
-                color: style.color,
-                half_width: style.width / 2.0,
-                path: None,
-                bounds_min_max: (
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                    f32::INFINITY,
-                    f32::NEG_INFINITY,
-                ),
+            let group_idx = *way_group_index.entry(key).or_insert_with(|| {
+                way_groups.push(WayGroup {
+                    color: style.color,
+                    half_width: style.width / 2.0,
+                    path: None,
+                    bounds_min_max: (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    ),
+                });
+                way_groups.len() - 1
             });
+            let group = &mut way_groups[group_idx];
 
             scratch_pts.clear();
             for &(node_id, mx, my) in verts {
@@ -1974,7 +2005,7 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        for (_, g) in way_groups {
+        for g in way_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
                 path.bounds = Bounds {
@@ -2006,12 +2037,7 @@ impl MapLayer for OsmLayer {
             }
             sp += self.drag_preview_offset(id);
             let style = self.node_cache.styles[idx];
-            let half = px(style.size / 2.0);
-            let quad_bounds = Bounds {
-                origin: point(sp.x + origin_x - half, sp.y + origin_y - half),
-                size: size(px(style.size), px(style.size)),
-            };
-            window.paint_quad(fill(quad_bounds, rgb(style.color)));
+            paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
         }
     }
 
@@ -2322,6 +2348,10 @@ impl EditableLayer for OsmLayer {
                 let origin_y = bounds.origin.y;
 
                 let mut pts: Vec<Point<Pixels>> = Vec::with_capacity(way.nodes.len());
+                // Parallel to `pts`: each node's marker style, so the
+                // vertex-marker repaint below can reuse the same projected
+                // screen point without redoing coordinate validation/lookup.
+                let mut node_styles: Vec<NodeStyle> = Vec::with_capacity(way.nodes.len());
                 for node_id in &way.nodes {
                     if let Some(n) = osm_data.nodes.get(node_id) {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
@@ -2329,6 +2359,7 @@ impl EditableLayer for OsmLayer {
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
+                                node_styles.push(self.stylesheet.node_style(&n.tags));
                             }
                         }
                     }
@@ -2348,6 +2379,14 @@ impl EditableLayer for OsmLayer {
                 }
                 if let Ok(path) = builder.build() {
                     window.paint_path(path, rgb(SELECTION_ACCENT));
+                }
+
+                // Re-paint the way's vertex markers on top of the highlight
+                // stroke above — otherwise the (width + 4.0) highlight stroke
+                // fully covers the node-marker quads painted earlier in
+                // `render_canvas`, hiding the selected way's vertices.
+                for (p, style) in pts.iter().zip(node_styles.iter()) {
+                    paint_node_marker(window, *p, *style);
                 }
             }
         }
