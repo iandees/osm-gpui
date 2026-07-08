@@ -2245,7 +2245,7 @@ impl Render for MapViewer {
 
         // Update viewport size to actual window dimensions minus the right panel
         let window_size = window.bounds().size;
-        let panel_width = px(280.0);
+        let panel_width = px(osm_gpui::ui::style::SIDE_PANEL_WIDTH);
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
@@ -2266,7 +2266,7 @@ impl Render for MapViewer {
 
         div()
             .size_full()
-            .bg(rgb(0x1a202c))
+            .bg(cx.theme().background)
             .flex()
             .flex_row()
             .child(self.render_mode_panel(cx))
@@ -2481,9 +2481,11 @@ impl Render for MapViewer {
                                 .top_4()
                                 .left_4()
                                 .p_3()
-                                .bg(gpui::black())
+                                .bg(cx.theme().popover)
+                                .border_1()
+                                .border_color(cx.theme().border)
                                 .rounded_lg()
-                                .text_color(rgb(0xffffff))
+                                .text_color(cx.theme().popover_foreground)
                                 .text_sm()
                                 .opacity(0.9)
                                 .min_w_64()
@@ -2510,9 +2512,11 @@ impl Render for MapViewer {
                                 .top_4()
                                 .right_4()
                                 .p_3()
-                                .bg(gpui::black())
+                                .bg(cx.theme().popover)
+                                .border_1()
+                                .border_color(cx.theme().border)
                                 .rounded_lg()
-                                .text_color(rgb(0xffffff))
+                                .text_color(cx.theme().popover_foreground)
                                 .text_sm()
                                 .opacity(0.9)
                                 .child(msg)
@@ -2556,15 +2560,16 @@ impl Render for MapViewer {
                             div().into_any_element()
                         } else {
                             let n = credits.len();
+                            let link_hover = cx.theme().link_hover;
                             div()
                                 .absolute()
                                 .bottom_4()
                                 .right_4()
                                 .px_2()
                                 .py_1()
-                                .bg(gpui::black())
+                                .bg(cx.theme().popover)
                                 .rounded_lg()
-                                .text_color(rgb(0xffffff))
+                                .text_color(cx.theme().popover_foreground)
                                 .text_xs()
                                 .opacity(0.75)
                                 .flex()
@@ -2577,7 +2582,7 @@ impl Render for MapViewer {
                                             div()
                                                 .id(("attribution-link", i))
                                                 .cursor_pointer()
-                                                .hover(|this| this.text_color(rgb(0xaad4ff)))
+                                                .hover(move |this| this.text_color(link_hover))
                                                 .on_mouse_down(
                                                     gpui::MouseButton::Left,
                                                     move |_ev: &MouseDownEvent, _, _| {
