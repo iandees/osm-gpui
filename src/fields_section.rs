@@ -117,6 +117,62 @@ impl MapViewer {
                         .child(Input::new(&input))
                         .into_any_element()
                 }
+                osm_gpui::fields::FieldType::Check => {
+                    let current = tags.get(&field.key).map(String::as_str) == Some("yes");
+                    let field_key = field.key.clone();
+                    let element_id: gpui::ElementId =
+                        gpui::SharedString::from(format!("field-check-{}", field.id)).into();
+                    gpui_component::checkbox::Checkbox::new(element_id)
+                        .checked(current)
+                        .label(field.label.clone())
+                        .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
+                            let value = if *checked { "yes" } else { "no" };
+                            this.apply_nsi_preset(
+                                &feature,
+                                std::collections::HashMap::from([(
+                                    field_key.clone(),
+                                    value.to_string(),
+                                )]),
+                            );
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                }
+                osm_gpui::fields::FieldType::Radio => {
+                    let current_value = tags.get(&field.key).cloned();
+                    let field_key = field.key.clone();
+                    let options = field.options.clone();
+                    let selected_index = options
+                        .iter()
+                        .position(|opt| Some(&opt.value) == current_value.as_ref());
+                    let group_id: gpui::ElementId =
+                        gpui::SharedString::from(format!("field-radio-{}", field.id)).into();
+
+                    let group = gpui_component::radio::RadioGroup::horizontal(group_id)
+                        .children(options.iter().map(|opt| opt.label.clone()))
+                        .selected_index(selected_index)
+                        .on_click(cx.listener(move |this, index: &usize, _window, cx| {
+                            let Some(opt) = options.get(*index) else {
+                                return;
+                            };
+                            this.apply_nsi_preset(
+                                &feature,
+                                std::collections::HashMap::from([(
+                                    field_key.clone(),
+                                    opt.value.clone(),
+                                )]),
+                            );
+                            cx.notify();
+                        }));
+
+                    gpui::div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(Label::new(field.label.clone()).text_sm())
+                        .child(group)
+                        .into_any_element()
+                }
                 _ => Label::new(field.label.clone()).text_sm().into_any_element(),
             })
             .collect();
