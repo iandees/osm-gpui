@@ -1,0 +1,38 @@
+# Select mode: double-clicking inside a closed way's interior selects the
+# way, while a plain click on the same interior point (away from the
+# outline) selects nothing.
+#
+# Coordinate model: `click X Y` uses raw window coords. MapViewer subtracts
+# 48px (header) from y before hit-testing. With window 1200x800 and the
+# 280px right panel, macOS renders the window slightly taller than requested
+# (actual content height ~828px), so the map area is 920x780 and the
+# viewport center projects to map-area (460, 390) = window (460, 438). See
+# docs/screenshots/select.osmscript for the same derivation.
+#
+# Fixture: tests/ui/fixtures/closed_way.osm has a single closed way (id 10,
+# building=yes) centered on (40.7130, -74.0040) — setting the viewport to
+# that exact center puts the polygon's interior at window (460, 438), well
+# clear of its outline (roughly ±60px at zoom 18).
+
+window 1200 800
+load_osm tests/ui/fixtures/closed_way.osm
+viewport 40.7130 -74.0040 18
+wait_idle 5s
+assert_mode select
+
+# A plain click in the interior, away from the outline, selects nothing.
+click 460,438
+wait_idle 2s
+assert_selected none
+
+# A double-click on the same point selects the way.
+click 460,438 count=2
+wait_idle 2s
+assert_selected way 10
+
+# Clicking empty space clears the selection again.
+click 100,700
+wait_idle 2s
+assert_selected none
+
+log select_area_double_click: interior double-click selects closed way

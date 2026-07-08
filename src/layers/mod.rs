@@ -132,6 +132,19 @@ pub trait EditableLayer {
         rect: Bounds<Pixels>,
     ) -> Vec<crate::selection::FeatureRef>;
 
+    /// Return closed-way ("area") candidates whose *interior* contains
+    /// `screen_pt`, ignoring outline distance. Separate from `hit_test`
+    /// (which only tests distance to a way's edges) so plain clicks keep
+    /// requiring the outline; callers opt into this for double-click.
+    /// Default: no interior hit-testing.
+    fn hit_test_interior(
+        &self,
+        _viewport: &Viewport,
+        _screen_pt: Point<Pixels>,
+    ) -> Vec<crate::selection::HitCandidate> {
+        Vec::new()
+    }
+
     /// Tell the layer which features are currently selected.
     fn set_highlight(&mut self, features: &[crate::selection::FeatureRef]);
 
@@ -395,6 +408,24 @@ impl LayerManager {
                 layer
                     .as_editable()
                     .map(|e| e.hit_test(viewport, screen_pt))
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// Run hit_test_interior against every visible layer, returning results in draw order.
+    pub fn hit_test_interior_all(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+    ) -> Vec<Vec<crate::selection::HitCandidate>> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .map(|layer| {
+                layer
+                    .as_editable()
+                    .map(|e| e.hit_test_interior(viewport, screen_pt))
                     .unwrap_or_default()
             })
             .collect()

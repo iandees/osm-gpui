@@ -31,6 +31,12 @@ pub enum EditMode {
     Extrude,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FeatureKind {
+    Node,
+    Way,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Window {
@@ -56,6 +62,10 @@ pub enum Op {
     Click {
         at: Point2,
         button: MouseButton,
+        /// Number of clicks in the sequence (2 = double-click). Mirrors
+        /// `MouseUpEvent::click_count`, which `handle_select_click` reads to
+        /// decide whether to fall back to interior hit-testing.
+        count: u8,
     },
     Scroll {
         at: Point2,
@@ -76,6 +86,11 @@ pub enum Op {
     },
     AssertMode {
         mode: EditMode,
+    },
+    /// Assert the current selection: `Some((kind, id))` for exactly that
+    /// single feature selected, `None` for an empty selection.
+    AssertSelected {
+        feature: Option<(FeatureKind, i64)>,
     },
 }
 

@@ -65,6 +65,35 @@ pub fn point_to_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pi
     (ex * ex + ey * ey).sqrt()
 }
 
+/// Ray-casting point-in-polygon test in screen space. `verts` is a closed
+/// ring (first and last vertex equal, per `OsmWay::is_closed`'s convention);
+/// the closing edge is included automatically even if the caller passes an
+/// open ring. Used to hit-test a double-click landing in a closed way's
+/// interior, away from its outline.
+pub fn point_in_polygon(p: Point<Pixels>, verts: &[Point<Pixels>]) -> bool {
+    if verts.len() < 3 {
+        return false;
+    }
+    let px = p.x.as_f32();
+    let py = p.y.as_f32();
+    let mut inside = false;
+    let mut j = verts.len() - 1;
+    for i in 0..verts.len() {
+        let xi = verts[i].x.as_f32();
+        let yi = verts[i].y.as_f32();
+        let xj = verts[j].x.as_f32();
+        let yj = verts[j].y.as_f32();
+        if (yi > py) != (yj > py) {
+            let x_intersect = xi + (py - yi) * (xj - xi) / (yj - yi);
+            if px < x_intersect {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Given one fixed rectangle edge `a`-`b` and a third point `offset_point`
 /// (typically the current cursor), compute the two far corners of the
 /// perpendicular rectangle: project `offset_point` onto the line
@@ -308,6 +337,38 @@ mod tests {
     fn zero_length_segment_returns_point_distance() {
         let d = point_to_segment_distance(pt(3.0, 4.0), pt(0.0, 0.0), pt(0.0, 0.0));
         assert!((d - 5.0).abs() < 1e-4, "got {}", d);
+    }
+
+    #[test]
+    fn point_in_polygon_interior_hits() {
+        let square = vec![
+            pt(0.0, 0.0),
+            pt(10.0, 0.0),
+            pt(10.0, 10.0),
+            pt(0.0, 10.0),
+            pt(0.0, 0.0),
+        ];
+        assert!(point_in_polygon(pt(5.0, 5.0), &square));
+    }
+
+    #[test]
+    fn point_in_polygon_exterior_misses() {
+        let square = vec![
+            pt(0.0, 0.0),
+            pt(10.0, 0.0),
+            pt(10.0, 10.0),
+            pt(0.0, 10.0),
+            pt(0.0, 0.0),
+        ];
+        assert!(!point_in_polygon(pt(15.0, 5.0), &square));
+    }
+
+    #[test]
+    fn point_in_polygon_degenerate_ring_returns_false() {
+        assert!(!point_in_polygon(
+            pt(1.0, 1.0),
+            &[pt(0.0, 0.0), pt(1.0, 1.0)]
+        ));
     }
 
     #[test]

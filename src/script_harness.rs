@@ -43,7 +43,12 @@ pub(crate) enum ScriptCommand {
     /// Synthesize a left-button drag (from → to with sleep between steps)
     Drag { from: (f32, f32), to: (f32, f32) },
     /// Synthesize a mouse click
-    Click { x: f32, y: f32, right: bool },
+    Click {
+        x: f32,
+        y: f32,
+        right: bool,
+        count: u8,
+    },
     /// Synthesize a scroll event
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
     /// Render the current frame in-process and save it as a PNG at `path`
@@ -53,6 +58,8 @@ pub(crate) enum ScriptCommand {
     LoadOsm { name: String, data: OsmData },
     /// Compare `MapViewer.mode` against `want`.
     AssertMode(crate::EditMode),
+    /// Compare `MapViewer.selected` against `want`.
+    AssertSelected(Option<(osm_gpui::script::FeatureKind, i64)>),
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -67,7 +74,9 @@ pub(crate) struct ScriptBus {
     frame_cv: Condvar,
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
-    /// Result of the most recently processed `AssertMode` command.
+    /// Result of the most recently processed `AssertMode`/`AssertSelected`
+    /// command. Safe to share a single slot: `submit` blocks until the
+    /// pending command is consumed, so only one assertion is ever in flight.
     assert_result: Mutex<Option<Result<(), String>>>,
 }
 
@@ -134,19 +143,21 @@ impl ScriptBus {
             .unwrap_or_else(|| Err("capture: no result recorded".to_string()))
     }
 
-    /// Called by MapViewer::render when handling an `AssertMode` command,
-    /// before `signal_done_and_frame` wakes the waiting runner thread.
+    /// Called by MapViewer::render when handling an `AssertMode`/
+    /// `AssertSelected` command, before `signal_done_and_frame` wakes the
+    /// waiting runner thread.
     fn set_assert_result(&self, result: Result<(), String>) {
         *self.assert_result.lock().unwrap() = Some(result);
     }
 
-    /// Called by the runner thread after `submit(AssertMode(..))` returns.
+    /// Called by the runner thread after `submit(AssertMode(..))` or
+    /// `submit(AssertSelected(..))` returns.
     fn take_assert_result(&self) -> Result<(), String> {
         self.assert_result
             .lock()
             .unwrap()
             .take()
-            .unwrap_or_else(|| Err("assert_mode: no result recorded".to_string()))
+            .unwrap_or_else(|| Err("assert: no result recorded".to_string()))
     }
 }
 
@@ -213,12 +224,13 @@ impl MapViewer {
                     self.handle_mouse_up(&ev, cx);
                     cx.notify();
                 }
-                ScriptCommand::Click { x, y, right } => {
+                ScriptCommand::Click { x, y, right, count } => {
                     let btn = if right {
                         gpui::MouseButton::Right
                     } else {
                         gpui::MouseButton::Left
                     };
+                    let click_count = count as usize;
                     // Dispatching synchronously here would double-lease `self`:
                     // we're already inside `MapViewer::render`'s entity update,
                     // and any `.on_mouse_down`/`.on_click` listener belonging to
@@ -232,7 +244,7 @@ impl MapViewer {
                             button: btn,
                             position: point(px(x), px(y)),
                             modifiers: gpui::Modifiers::none(),
-                            click_count: 1,
+                            click_count,
                             first_mouse: false,
                         };
                         window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
@@ -240,7 +252,7 @@ impl MapViewer {
                             button: btn,
                             position: point(px(x), px(y)),
                             modifiers: gpui::Modifiers::none(),
-                            click_count: 1,
+                            click_count,
                         };
                         window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
                     });
@@ -277,6 +289,29 @@ impl MapViewer {
                         Ok(())
                     } else {
                         Err(format!("expected mode {:?}, got {:?}", want, self.mode))
+                    };
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::AssertSelected(want) => {
+                    let got: Option<(osm_gpui::script::FeatureKind, i64)> =
+                        match self.selected.as_slice() {
+                            [only] => Some((
+                                match only.kind {
+                                    osm_gpui::selection::FeatureKind::Node => {
+                                        osm_gpui::script::FeatureKind::Node
+                                    }
+                                    osm_gpui::selection::FeatureKind::Way => {
+                                        osm_gpui::script::FeatureKind::Way
+                                    }
+                                },
+                                only.id,
+                            )),
+                            _ => None,
+                        };
+                    let result = if got == want {
+                        Ok(())
+                    } else {
+                        Err(format!("expected selected {:?}, got {:?}", want, got))
                     };
                     bus.set_assert_result(result);
                 }
@@ -338,12 +373,13 @@ impl AppHandle for LiveApp {
         self.bus.submit(ScriptCommand::Drag { from, to });
     }
 
-    fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton) {
+    fn dispatch_click(&mut self, at: (f32, f32), button: script::MouseButton, count: u8) {
         let right = matches!(button, script::MouseButton::Right);
         self.bus.submit(ScriptCommand::Click {
             x: at.0,
             y: at.1,
             right,
+            count,
         });
     }
 
@@ -413,6 +449,11 @@ impl AppHandle for LiveApp {
             script::EditMode::Extrude => crate::EditMode::Extrude,
         };
         self.bus.submit(ScriptCommand::AssertMode(want));
+        self.bus.take_assert_result()
+    }
+
+    fn assert_selected(&mut self, want: Option<(script::FeatureKind, i64)>) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::AssertSelected(want));
         self.bus.take_assert_result()
     }
 }

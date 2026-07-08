@@ -39,3 +39,9 @@ fn mode_switching() {
 fn mode_requires_layer() {
     run_script("mode_requires_layer.osmscript");
 }
+
+#[test]
+#[ignore]
+fn select_area_double_click() {
+    run_script("select_area_double_click.osmscript");
+}
