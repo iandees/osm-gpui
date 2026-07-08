@@ -412,25 +412,35 @@ In `src/script_harness.rs`, inside `process_script_command`'s `match cmd` block,
                     } else {
                         gpui::MouseButton::Left
                     };
-                    let down = MouseDownEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                        first_mouse: false,
-                    };
-                    window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
-                    let up = MouseUpEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                    };
-                    window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    // Dispatching synchronously here would double-lease `self`:
+                    // we're already inside `MapViewer::render`'s entity update,
+                    // and any `.on_mouse_down`/`.on_click` listener belonging to
+                    // this same view calls `weak_entity.update(cx, ...)`, which
+                    // panics ("cannot update ... while it is already being
+                    // updated"). `Window::defer` runs the closure at the end of
+                    // the current effect cycle, after this entity is returned to
+                    // the app, avoiding the re-entrant lease.
+                    window.defer(cx, move |window, cx| {
+                        let down = MouseDownEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                            first_mouse: false,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
+                        let up = MouseUpEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    });
                 }
 ```
 
-This removes the direct `self.handle_mouse_down(&ev)` / `self.handle_mouse_up(&ev, cx)` calls and the manual `cx.notify()` — real dispatch invokes gpui's own registered listeners (`.on_mouse_down`/`.on_mouse_up` on the map div, `.on_click` on toolbar buttons), and those listeners already call `cx.notify()` themselves where needed (see the existing `.on_mouse_up(Right, ...)` closure a few lines above, which calls `cx.notify()` internally). `Window::dispatch_event` takes `(PlatformInput, &mut App)`; passing `cx: &mut Context<Self>` here works via deref coercion — this file already does exactly this for `window.dispatch_keystroke(ks, cx)` a few lines below (see the `KEYSTROKE_QUEUE` draining block), which has the same `&mut App` requirement.
+**Note (added post-implementation — see Task 6 for how this was discovered):** the `window.defer(cx, move |window, cx| { ... })` wrapping shown above is required, not optional — an earlier version of this step called `window.dispatch_event` synchronously (unwrapped), which panics with "cannot update ... while it is already being updated" because `process_script_command` runs from inside `MapViewer::render`'s own entity update, and the map div's `.on_mouse_down`/toolbar buttons' `.on_click` listeners re-enter that same entity. `Window::defer` schedules the dispatch for after the current entity update completes, avoiding the re-entrant lease. This removes the direct `self.handle_mouse_down(&ev)` / `self.handle_mouse_up(&ev, cx)` calls and the manual `cx.notify()` — real dispatch invokes gpui's own registered listeners (`.on_mouse_down`/`.on_mouse_up` on the map div, `.on_click` on toolbar buttons), and those listeners already call `cx.notify()` themselves where needed (see the existing `.on_mouse_up(Right, ...)` closure a few lines above, which calls `cx.notify()` internally). `Window::dispatch_event` takes `(PlatformInput, &mut App)`; passing `cx: &mut Context<Self>` here works via deref coercion — this file already does exactly this for `window.dispatch_keystroke(ks, cx)` a few lines below (see the `KEYSTROKE_QUEUE` draining block), which has the same `&mut App` requirement.
 
 Leave `ScriptCommand::Drag` and `ScriptCommand::Scroll` completely unchanged — they keep calling `self.handle_mouse_down`/`handle_mouse_move`/`handle_mouse_up`/`handle_scroll` directly, exactly as today.
 
