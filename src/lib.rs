@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod coordinates;
 pub mod custom_imagery_store;
+pub mod fields;
 pub mod http;
 pub mod idle_tracker;
 pub mod imagery;
