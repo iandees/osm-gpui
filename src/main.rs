@@ -3108,3 +3108,225 @@ fn main() {
 fn append_custom_imagery(entry: CustomImageryEntry) {
     custom_imagery_store::append(entry);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, size, TestAppContext};
+    use osm_gpui::osm::{OsmNode, OsmWay};
+    use std::collections::HashMap;
+
+    fn empty_tags() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
+    /// A single 2-node way `10 = [1, 2]`, both nodes at `center_lat`, lon
+    /// `center_lon - 0.001` / `+ 0.001` — a flat horizontal line through the
+    /// viewport's center at zoom 18 (matches the convention used by
+    /// `OsmLayer`'s own tests in `src/layers/osm_layer.rs`).
+    fn way_fixture(center_lat: f64, center_lon: f64) -> OsmData {
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon - 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat,
+            lon: center_lon + 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
+        let mut nodes = HashMap::new();
+        nodes.insert(1, n1);
+        nodes.insert(2, n2);
+        let mut ways = HashMap::new();
+        ways.insert(10, way);
+        OsmData {
+            nodes,
+            ways,
+            relations: Vec::new(),
+            bounds: None,
+        }
+    }
+
+    const CENTER_LAT: f64 = 40.0;
+    const CENTER_LON: f64 = -74.0;
+
+    /// Builds a `MapViewer` in a headless test window, viewport centered on
+    /// `way_fixture`'s line (so screen `(400, 300)` lands exactly on it, per
+    /// the same convention as `OsmLayer`'s own tests), with one active OSM
+    /// layer containing that fixture, in Add mode.
+    fn setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        cx.update(|cx| gpui_component::init(cx));
+        let window = cx.add_window(|window, cx| MapViewer::new(window, cx));
+        window
+            .update(cx, |view, _window, _cx| {
+                view.viewport =
+                    Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+                let layer_id = view.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data(
+                    layer_id,
+                    "L".to_string(),
+                    Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+                );
+                view.layer_manager.add_layer(Box::new(layer));
+                view.active_layer = Some(layer_id);
+                view.mode = EditMode::Add;
+            })
+            .unwrap();
+        window
+    }
+
+    fn way_nodes(view: &MapViewer, layer_id: LayerId, way_id: i64) -> Vec<i64> {
+        view.layer_manager
+            .find_layer(layer_id)
+            .and_then(|l| l.as_editable())
+            .and_then(|e| e.way_node_ids(way_id))
+            .unwrap_or_default()
+    }
+
+    #[gpui::test]
+    fn first_click_in_add_mode_snaps_onto_existing_way(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+
+                // On the line, exactly at the viewport's projected center.
+                view.handle_add_click(point(px(400.0), px(300.0)), false);
+
+                let nodes = way_nodes(view, layer_id, 10);
+                assert_eq!(nodes.len(), 3, "expected a node spliced in: {:?}", nodes);
+                assert_eq!((nodes[0], nodes[2]), (1, 2));
+                let new_id = nodes[1];
+
+                // Add mode's own progress continues from the snapped node,
+                // not from an implicit continuation of way 10.
+                assert!(view.add_progress.is_some());
+                assert_eq!(view.add_progress.as_ref().unwrap().way_id, None);
+                assert_eq!(view.add_progress.as_ref().unwrap().last_node_id, new_id);
+
+                // Undo removes the splice and deletes the node.
+                let action = view.undo_stack.undo().expect("expected an undo entry");
+                view.apply_undo_action(&action, false);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+                let layer = view.layer_manager.find_layer(layer_id).unwrap();
+                assert_eq!(layer.as_editable().unwrap().node_lat_lon(new_id), None);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn second_click_snaps_and_folds_with_compound_undo(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+
+                // First click: a free node A, far from way 10.
+                view.handle_add_click(point(px(50.0), px(50.0)), false);
+                let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+
+                // Second click: on way 10's line — snaps a new node B into
+                // way 10, and folds B into a brand-new way (A -> B).
+                view.handle_add_click(point(px(400.0), px(300.0)), false);
+
+                let nodes10 = way_nodes(view, layer_id, 10);
+                assert_eq!(nodes10.len(), 3, "expected a node spliced in: {:?}", nodes10);
+                assert_eq!((nodes10[0], nodes10[2]), (1, 2));
+                let node_b = nodes10[1];
+
+                let drawn_way_id = view.add_progress.as_ref().unwrap().way_id.unwrap();
+                assert_eq!(
+                    way_nodes(view, layer_id, drawn_way_id),
+                    vec![node_a, node_b]
+                );
+
+                // Undo reverses both mutations from that single click: the
+                // drawn way goes away entirely (it was created by this
+                // click), way 10 reverts, and node B is deleted — but node A
+                // (created by the *first* click, a separate undo entry) is
+                // untouched.
+                let action = view.undo_stack.undo().expect("expected an undo entry");
+                view.apply_undo_action(&action, false);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+                let layer = view.layer_manager.find_layer(layer_id).unwrap();
+                let editable = layer.as_editable().unwrap();
+                assert_eq!(editable.node_lat_lon(node_b), None);
+                assert!(editable.node_lat_lon(node_a).is_some());
+                assert_eq!(editable.way_node_ids(drawn_way_id), None);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let n1_screen = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON - 0.001);
+
+                // First click: a free node A, far from way 10 (Ctrl
+                // irrelevant here — nothing nearby to snap to).
+                view.handle_add_click(point(px(50.0), px(50.0)), false);
+                let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+
+                // Second click, Ctrl held, exactly on top of existing node 1:
+                // without Ctrl this would connect to node 1 (see the "click
+                // hits an existing node" path); with Ctrl it must create a
+                // brand-new independent node instead.
+                view.handle_add_click(n1_screen, true);
+                let node_b = view.add_progress.as_ref().unwrap().last_node_id;
+                assert_ne!(node_b, 1, "Ctrl should not have connected to node 1");
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2], "way 10 untouched");
+
+                // Third click, Ctrl held, on way 10's line: without Ctrl this
+                // would snap into way 10 (as in the sibling tests above);
+                // with Ctrl it must stay a free node.
+                view.handle_add_click(point(px(400.0), px(300.0)), true);
+                let node_c = view.add_progress.as_ref().unwrap().last_node_id;
+                assert_eq!(
+                    way_nodes(view, layer_id, 10),
+                    vec![1, 2],
+                    "Ctrl should not have snapped onto way 10"
+                );
+
+                let drawn_way_id = view.add_progress.as_ref().unwrap().way_id.unwrap();
+                assert_eq!(
+                    way_nodes(view, layer_id, drawn_way_id),
+                    vec![node_a, node_b, node_c]
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn click_with_no_way_nearby_falls_back_to_free_node(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+
+                // Far from way 10's line — outside the 6px snap tolerance.
+                view.handle_add_click(point(px(50.0), px(50.0)), false);
+
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2], "way 10 untouched");
+                let new_id = view.add_progress.as_ref().unwrap().last_node_id;
+                let layer = view.layer_manager.find_layer(layer_id).unwrap();
+                assert!(layer.as_editable().unwrap().node_lat_lon(new_id).is_some());
+            })
+            .unwrap();
+    }
+}
