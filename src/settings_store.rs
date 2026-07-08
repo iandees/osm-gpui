@@ -68,6 +68,14 @@ pub struct AppSettings {
     /// `settings.json` files written before this field existed.
     #[serde(default = "default_cache_budget_mb")]
     pub cache_budget_mb: u64,
+    /// User overrides for customizable keyboard shortcuts, keyed by the
+    /// shortcut id (see `crate::keybindings::SHORTCUTS`), valued by a gpui
+    /// keystroke spec (e.g. `"cmd-o"`). Sparse: only overridden shortcuts
+    /// appear here — everything else uses its built-in default, so a future
+    /// default change isn't silently frozen for users who never touched
+    /// this setting.
+    #[serde(default)]
+    pub keybindings: HashMap<String, String>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -82,6 +90,7 @@ impl Default for AppSettings {
             client_ids: HashMap::new(),
             text_size_preset: TextSizePreset::default(),
             cache_budget_mb: default_cache_budget_mb(),
+            keybindings: HashMap::new(),
         }
     }
 }
@@ -177,6 +186,7 @@ mod tests {
             client_ids: HashMap::new(),
             text_size_preset: TextSizePreset::Large,
             cache_budget_mb: 500,
+            keybindings: HashMap::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -263,5 +273,24 @@ mod tests {
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.cache_budget_mb, 250);
+    }
+
+    #[test]
+    fn round_trip_with_keybindings() {
+        let dir = tmp_dir("round-trip-keybindings");
+        let path = dir.join("settings.json");
+        let mut keybindings = HashMap::new();
+        keybindings.insert("undo".to_string(), "cmd-alt-z".to_string());
+        let settings = AppSettings {
+            api_server: ApiServerChoice::Primary,
+            custom_api_url: String::new(),
+            client_ids: HashMap::new(),
+            text_size_preset: TextSizePreset::default(),
+            cache_budget_mb: default_cache_budget_mb(),
+            keybindings,
+        };
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded, settings);
     }
 }
