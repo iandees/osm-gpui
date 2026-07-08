@@ -21,7 +21,7 @@ mod undo;
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
+    open_settings, rebuild_menus, toggle_debug_overlay, upload_to_osm,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
@@ -207,16 +207,29 @@ enum ImageryLoadState {
 
 /// Weak handle to the live `MapViewer` view, set once when the main window is
 /// created. This is the one bridge that lets free functions/global handlers
-/// which only have `&mut App` (menu action handlers like `menu::quit`, and
-/// app-level window callbacks like the `on_window_should_close` hook) reach
-/// the *real* view and either query its live state or call ordinary
-/// `MapViewer` methods on it directly — no polling queues involved.
+/// which only have `&mut App` (menu action handlers, and app-level window
+/// callbacks like the `on_window_should_close` hook) reach the *real* view
+/// and either query its live state or call ordinary `MapViewer` methods on
+/// it directly — no polling queues involved.
+///
+/// Note: actions that fire via keybinding/menu while `MapViewer`'s own
+/// window is dispatching (e.g. `Quit`) should NOT be routed through this
+/// handle — the window is checked out of `App` for the duration of that
+/// dispatch, so `with_map_viewer`/`with_map_viewer_in` silently no-op (see
+/// `MapViewer::on_quit`). Prefer a window/entity-scoped `.on_action`
+/// listener (`cx.listener(Self::on_x)`) registered on the render tree for
+/// those; reserve this handle for callbacks that genuinely originate
+/// outside that window's own dispatch (background tasks, other windows).
 pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
 
 /// Ask the live `MapViewer` (via `MAP_VIEWER_HANDLE`) whether any layer
 /// currently has unsaved changes. This performs a fresh per-layer
 /// `is_modified()` query against the real view every time it's called — no
-/// value is cached or pre-aggregated across frames.
+/// value is cached or pre-aggregated across frames. Only safe to call from
+/// contexts where `MapViewer`'s window isn't already checked out for
+/// dispatch (e.g. the `on_window_should_close` hook, which is a separate
+/// top-level callback, not nested inside `MapViewer`'s own dispatch) — see
+/// the note on `MAP_VIEWER_HANDLE`.
 pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
     MAP_VIEWER_HANDLE
         .get()
@@ -2003,13 +2016,35 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Handle the `Quit` action (Cmd+Q / File > Quit menu item). Registered
+    /// as a window/entity-scoped `.on_action` listener (like `on_undo`,
+    /// `on_move_layer`, etc.) rather than dispatched through the old
+    /// `menu::quit` free function + `MAP_VIEWER_HANDLE` lookup: GPUI
+    /// dispatches actions to a window while that window is "checked out" of
+    /// `App` for the duration of the dispatch (it's how `Window::dispatch_*`
+    /// gets exclusive access), so any attempt to re-acquire it via
+    /// `with_map_viewer_in`'s `WeakEntity::update_in` (which looks the
+    /// window up again by id) silently fails and is swallowed — which is
+    /// exactly why Cmd+Q appeared to do nothing whenever there were unsaved
+    /// changes (the no-changes path took a window-free `cx.quit()` and
+    /// happened to work). A listener registered directly on the render tree
+    /// gets `&mut Window` handed to it by the in-progress dispatch, so no
+    /// re-acquisition is needed.
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layer_manager.layers().iter().any(|l| l.is_modified()) {
+            self.show_quit_confirm_dialog(window, cx);
+        } else {
+            cx.quit();
+        }
+    }
+
     /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
-    /// already open. Called directly by `menu::quit` (via
-    /// `with_map_viewer_in`) and by the `on_window_should_close` hook
-    /// (which already has a `Window` in scope) — replaces the old
-    /// `SHOW_QUIT_CONFIRM` queue. Like `open_custom_imagery_dialog`, this
-    /// dialog has no post-paint focus requirement, so it's safe to construct
-    /// directly rather than deferring to the next render pass.
+    /// already open. Called directly by `on_quit` and by the
+    /// `on_window_should_close` hook (which already has a `Window` in
+    /// scope) — replaces the old `SHOW_QUIT_CONFIRM` queue. Like
+    /// `open_custom_imagery_dialog`, this dialog has no post-paint focus
+    /// requirement, so it's safe to construct directly rather than
+    /// deferring to the next render pass.
     pub(crate) fn show_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.quit_confirm_dialog.is_some() {
             return;
@@ -2647,6 +2682,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
             .on_action(cx.listener(Self::on_change_feature_type))
+            .on_action(cx.listener(Self::on_quit))
             .children(self.custom_imagery_dialog.clone())
             .children(
                 self.tag_edit_dialog
@@ -2745,7 +2781,6 @@ fn main() {
 
             // Register the open file action
             cx.on_action(open_osm_file);
-            cx.on_action(quit);
             cx.on_action(add_osm_carto);
             cx.on_action(add_coordinate_grid);
             cx.on_action(download_from_osm);
@@ -2856,8 +2891,7 @@ fn main() {
                         ]);
                         let view = cx.new(|cx| MapViewer::new(window, cx));
 
-                        // Publish a weak handle to the live view so `menu::quit` (a
-                        // free function with only `&mut App`) and the
+                        // Publish a weak handle to the live view so the
                         // `on_window_should_close` closure below (which only has
                         // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
                         // reach it and query its *live* `layer_manager` state at
