@@ -563,6 +563,13 @@ struct PersistedStore {
 #[derive(Debug, Clone, Default)]
 pub struct TokenStore {
     tokens: HashMap<String, StoredToken>,
+    /// OAuth base URLs whose `access_token`/`refresh_token` in `tokens` are
+    /// placeholder-empty and still need a one-time platform-keyring read.
+    /// Populated by `load()` for entries with no on-disk fallback secret;
+    /// drained lazily by `current_token()` the first time each URL is
+    /// actually looked up, so a plain app launch that never needs auth
+    /// (e.g. just viewing tiles) never triggers a keychain prompt.
+    pending_keyring: std::collections::HashSet<String>,
 }
 
 static TOKEN_STORE: crate::persist::JsonStore<TokenStore> = crate::persist::JsonStore::new();
@@ -591,8 +598,36 @@ pub fn logout(oauth_base_url: &str) {
     save(&snapshot);
 }
 
-/// The stored token for the given OAuth base URL, if the user is logged in there.
+/// The stored token for the given OAuth base URL, if the user is logged in
+/// there. The first call for a URL whose secret lives only in the platform
+/// keyring (see `load()`) performs a one-time keyring read here, resolving
+/// and caching it in `TOKEN_STORE`; every later call (for that URL) is a
+/// plain in-memory lookup and never touches the keyring again this run.
 pub fn current_token(oauth_base_url: &str) -> Option<StoredToken> {
+    let needs_keyring = TOKEN_STORE
+        .read("auth", |g| g.pending_keyring.contains(oauth_base_url))
+        .unwrap_or(false);
+    if needs_keyring {
+        let secret = keyring_load_secret(oauth_base_url);
+        TOKEN_STORE.update("auth", |g| {
+            g.pending_keyring.remove(oauth_base_url);
+            match secret {
+                Some(secret) => {
+                    if let Some(entry) = g.tokens.get_mut(oauth_base_url) {
+                        entry.access_token = secret.access_token;
+                        entry.refresh_token = secret.refresh_token;
+                    }
+                }
+                // No secret available in the keyring after all; drop the stale
+                // metadata rather than surface a token-less "logged in" state
+                // (matches `load()`'s prior behavior for this case).
+                None => {
+                    g.tokens.remove(oauth_base_url);
+                }
+            }
+        });
+    }
+
     TOKEN_STORE
         .read("auth", |g| g.tokens.get(oauth_base_url).cloned())
         .flatten()
@@ -616,22 +651,38 @@ fn default_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("osm-gpui").join("oauth.json"))
 }
 
+/// Load persisted OAuth bookkeeping into an in-memory `TokenStore`, without
+/// touching the platform keyring. Entries whose secret lives only in the
+/// keyring (i.e. no on-disk fallback) are populated with an empty
+/// `access_token`/`refresh_token` and flagged in `pending_keyring`;
+/// `current_token()` resolves them from the keyring on first actual use.
+/// This keeps a plain app launch from prompting for the keychain password
+/// once per logged-in server before the user has done anything that needs
+/// auth.
 pub fn load() -> TokenStore {
     let persisted = match default_path() {
         Some(p) => load_from(&p),
         None => PersistedStore::default(),
     };
+    build_token_store(persisted)
+}
 
+/// Pure conversion from on-disk bookkeeping to an in-memory `TokenStore`,
+/// with no filesystem or keyring access — the actual "defer to keyring"
+/// decision `load()` documents, factored out so it's unit-testable without
+/// touching the platform keyring.
+fn build_token_store(persisted: PersistedStore) -> TokenStore {
     let mut tokens = HashMap::new();
+    let mut pending_keyring = std::collections::HashSet::new();
     for (oauth_base_url, meta) in persisted.tokens {
-        let (access_token, refresh_token) = match keyring_load_secret(&oauth_base_url) {
-            Some(secret) => (secret.access_token, secret.refresh_token),
-            None => match meta.access_token_fallback.clone() {
-                Some(access_token) => (access_token, meta.refresh_token_fallback.clone()),
-                // No secret available anywhere for this entry; drop the stale
-                // metadata rather than surface a token-less "logged in" state.
-                None => continue,
-            },
+        let (access_token, refresh_token) = match meta.access_token_fallback.clone() {
+            Some(access_token) => (access_token, meta.refresh_token_fallback.clone()),
+            // Secret lives in the keyring; defer the read until this URL's
+            // token is actually requested (see `current_token`).
+            None => {
+                pending_keyring.insert(oauth_base_url.clone());
+                (String::new(), None)
+            }
         };
         tokens.insert(
             oauth_base_url,
@@ -644,7 +695,10 @@ pub fn load() -> TokenStore {
             },
         );
     }
-    TokenStore { tokens }
+    TokenStore {
+        tokens,
+        pending_keyring,
+    }
 }
 
 fn save(store: &TokenStore) {
@@ -909,5 +963,108 @@ mod tests {
 
         token.expires_at = Some(now_unix() + 3600);
         assert!(!token.is_expired());
+    }
+
+    #[test]
+    fn build_token_store_uses_fallback_secret_without_marking_pending() {
+        let mut persisted = PersistedStore::default();
+        persisted.tokens.insert(
+            "https://www.openstreetmap.org".to_string(),
+            PersistedToken {
+                display_name: "alice".into(),
+                user_id: 42,
+                expires_at: None,
+                access_token_fallback: Some("fallback-access".into()),
+                refresh_token_fallback: Some("fallback-refresh".into()),
+            },
+        );
+
+        let store = build_token_store(persisted);
+
+        assert!(
+            !store
+                .pending_keyring
+                .contains("https://www.openstreetmap.org"),
+            "an entry with a fallback secret shouldn't need a keyring read"
+        );
+        let token = store.tokens.get("https://www.openstreetmap.org").unwrap();
+        assert_eq!(token.access_token, "fallback-access");
+        assert_eq!(token.refresh_token.as_deref(), Some("fallback-refresh"));
+    }
+
+    #[test]
+    fn build_token_store_defers_keyring_only_entries() {
+        let mut persisted = PersistedStore::default();
+        persisted.tokens.insert(
+            "https://api06.dev.openstreetmap.org".to_string(),
+            PersistedToken {
+                display_name: "bob".into(),
+                user_id: 7,
+                expires_at: None,
+                access_token_fallback: None,
+                refresh_token_fallback: None,
+            },
+        );
+
+        let store = build_token_store(persisted);
+
+        assert!(
+            store
+                .pending_keyring
+                .contains("https://api06.dev.openstreetmap.org"),
+            "an entry with no fallback secret must defer to the keyring, not read it here"
+        );
+        let token = store
+            .tokens
+            .get("https://api06.dev.openstreetmap.org")
+            .unwrap();
+        assert_eq!(
+            token.access_token, "",
+            "placeholder until current_token() resolves it"
+        );
+        assert_eq!(
+            token.display_name, "bob",
+            "non-secret metadata is available immediately"
+        );
+    }
+
+    #[test]
+    fn build_token_store_handles_mixed_fallback_and_pending_entries() {
+        let mut persisted = PersistedStore::default();
+        persisted.tokens.insert(
+            "https://www.openstreetmap.org".to_string(),
+            PersistedToken {
+                display_name: "alice".into(),
+                user_id: 42,
+                expires_at: None,
+                access_token_fallback: Some("fallback-access".into()),
+                refresh_token_fallback: None,
+            },
+        );
+        persisted.tokens.insert(
+            "https://api06.dev.openstreetmap.org".to_string(),
+            PersistedToken {
+                display_name: "bob".into(),
+                user_id: 7,
+                expires_at: None,
+                access_token_fallback: None,
+                refresh_token_fallback: None,
+            },
+        );
+
+        let store = build_token_store(persisted);
+
+        assert_eq!(store.tokens.len(), 2);
+        assert_eq!(
+            store.pending_keyring.len(),
+            1,
+            "only the keyring-only entry should be deferred"
+        );
+        assert!(store
+            .pending_keyring
+            .contains("https://api06.dev.openstreetmap.org"));
+        assert!(!store
+            .pending_keyring
+            .contains("https://www.openstreetmap.org"));
     }
 }

@@ -45,6 +45,47 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
     },
+    /// Add mode's 2nd+ click: a node (new or pre-existing) appended to a
+    /// way (creating the way first if `way_created`). The two booleans are
+    /// independent: `way_created` says whether this click created `way_id`
+    /// (vs. extending an already-existing way), and `node_created` says
+    /// whether this click created `node_id` (vs. connecting to a node the
+    /// user already had, via the "connect to existing node" gesture). Undo
+    /// always detaches `node_id` from the way — either by deleting the
+    /// whole way (if `way_created`) or by removing just that node from the
+    /// way's node list (if not) — and only deletes `node_id` itself when
+    /// `node_created` is true, since a pre-existing node may be shared with
+    /// other ways or carry its own tags.
+    ExtendWay {
+        layer: LayerId,
+        way_id: i64,
+        node_id: i64,
+        way_created: bool,
+        node_created: bool,
+    },
+    /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
+    /// way, committed atomically. Undo deletes the way then all 4 nodes.
+    CreateBuilding {
+        layer: LayerId,
+        way_id: i64,
+        node_ids: [i64; 4],
+    },
+    /// Extrude mode's drag commit: 2 new nodes + one closed `building=yes`
+    /// way off an existing segment. The segment's own 2 nodes are untouched.
+    /// Undo deletes the way then the 2 new nodes.
+    ExtrudeWay {
+        layer: LayerId,
+        way_id: i64,
+        new_node_ids: [i64; 2],
+    },
+    /// Extrude mode's double-click: one new node spliced into an existing
+    /// way at `index`. Undo removes it from the way, then deletes it.
+    InsertNodeIntoWay {
+        layer: LayerId,
+        way_id: i64,
+        index: usize,
+        node_id: i64,
+    },
 }
 
 impl UndoableAction {
@@ -71,6 +112,10 @@ impl UndoableAction {
                 osm_gpui::selection::FeatureKind::Node => "Deleted 1 node".to_string(),
                 osm_gpui::selection::FeatureKind::Way => "Deleted 1 way".to_string(),
             },
+            UndoableAction::ExtendWay { .. } => "Extended a way".to_string(),
+            UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
+            UndoableAction::ExtrudeWay { .. } => "Extruded a building".to_string(),
+            UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
         }
     }
 }
@@ -304,5 +349,124 @@ mod undo_stack_tests {
         let redone = stack.redo().expect("should be able to redo after undo");
         assert_eq!(redone.description(), "Deleted 1 way");
         assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn create_building_description() {
+        let action = UndoableAction::CreateBuilding {
+            layer: LayerId(1),
+            way_id: -1,
+            node_ids: [-1, -2, -3, -4],
+        };
+        assert_eq!(action.description(), "Created a building");
+    }
+
+    #[test]
+    fn extrude_way_description() {
+        let action = UndoableAction::ExtrudeWay {
+            layer: LayerId(1),
+            way_id: -1,
+            new_node_ids: [-1, -2],
+        };
+        assert_eq!(action.description(), "Extruded a building");
+    }
+
+    fn extend_way(
+        way_id: i64,
+        node_id: i64,
+        way_created: bool,
+        node_created: bool,
+    ) -> UndoableAction {
+        UndoableAction::ExtendWay {
+            layer: LayerId(1),
+            way_id,
+            node_id,
+            way_created,
+            node_created,
+        }
+    }
+
+    #[test]
+    fn extend_way_description() {
+        // `description()` doesn't distinguish the four (way_created,
+        // node_created) combinations — it's the same human-readable label
+        // regardless.
+        for way_created in [false, true] {
+            for node_created in [false, true] {
+                let action = extend_way(-1, -2, way_created, node_created);
+                assert_eq!(action.description(), "Extended a way");
+            }
+        }
+    }
+
+    #[test]
+    fn extend_way_undo_redo_round_trips_new_way_new_node() {
+        // The "continue clicking" path's first extension: a brand-new way
+        // and a brand-new node (way_created: true, node_created: true).
+        let mut stack = UndoStack::default();
+        stack.push(extend_way(-10, -11, true, true));
+
+        let undone = stack.undo().expect("should have one action to undo");
+        assert_eq!(undone.description(), "Extended a way");
+        assert!(stack.undo().is_none());
+
+        let redone = stack.redo().expect("should be able to redo after undo");
+        assert_eq!(redone.description(), "Extended a way");
+        assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn extend_way_undo_redo_round_trips_existing_way_existing_node() {
+        // Extending an already-existing way by connecting to a pre-existing
+        // node (way_created: false, node_created: false) — the case the
+        // data-integrity fix targets: undo must detach the node from the
+        // way but never delete it.
+        let mut stack = UndoStack::default();
+        stack.push(extend_way(10, 5, false, false));
+
+        let undone = stack.undo().expect("should have one action to undo");
+        assert_eq!(undone.description(), "Extended a way");
+        if let UndoableAction::ExtendWay {
+            way_created,
+            node_created,
+            ..
+        } = undone
+        {
+            assert!(!way_created);
+            assert!(!node_created);
+        } else {
+            panic!("expected ExtendWay");
+        }
+        assert!(stack.undo().is_none());
+
+        let redone = stack.redo().expect("should be able to redo after undo");
+        assert_eq!(redone.description(), "Extended a way");
+        assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn extend_way_undo_redo_round_trips_new_way_existing_node() {
+        // A brand-new 2-node way whose *second* node was an existing node
+        // the user clicked to connect (way_created: true, node_created:
+        // false) — undo must delete the new way but must not delete the
+        // pre-existing node.
+        let mut stack = UndoStack::default();
+        stack.push(extend_way(-20, 7, true, false));
+
+        let undone = stack.undo().expect("should have one action to undo");
+        if let UndoableAction::ExtendWay {
+            way_created,
+            node_created,
+            node_id,
+            ..
+        } = undone
+        {
+            assert!(way_created);
+            assert!(!node_created);
+            assert_eq!(node_id, 7);
+        } else {
+            panic!("expected ExtendWay");
+        }
+        assert!(stack.undo().is_none());
     }
 }

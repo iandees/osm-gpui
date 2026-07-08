@@ -200,6 +200,10 @@ impl MapLayer for TileLayer {
         self.id
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn is_visible(&self) -> bool {
         self.visible
     }
