@@ -23,6 +23,14 @@ pub struct Chord {
     pub key: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EditMode {
+    Select,
+    Add,
+    Building,
+    Extrude,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Window {
@@ -65,6 +73,9 @@ pub enum Op {
     },
     LoadOsm {
         path: String,
+    },
+    AssertMode {
+        mode: EditMode,
     },
 }
 

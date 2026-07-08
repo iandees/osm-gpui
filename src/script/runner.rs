@@ -104,6 +104,10 @@ impl Runner {
                 })?;
                 Ok(())
             }
+            Op::AssertMode { .. } => {
+                // TODO: wire through AppHandle in Task 2
+                Ok(())
+            }
         }
     }
 
@@ -159,6 +163,7 @@ fn describe(op: &Op) -> String {
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
         Op::LoadOsm { path } => format!("load_osm {}", path),
+        Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
     }
 }
 

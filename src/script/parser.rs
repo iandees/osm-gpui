@@ -65,6 +65,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             message: rest.join(" "),
         }),
         "load_osm" => parse_load_osm(line_no, &rest),
+        "assert_mode" => parse_assert_mode(line_no, &rest),
         other => Err(err(line_no, format!("unknown op '{}'", other))),
     }
 }
@@ -251,6 +252,28 @@ fn parse_load_osm(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     Ok(Op::LoadOsm {
         path: rest[0].to_string(),
     })
+}
+
+fn parse_assert_mode(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    if rest.len() != 1 {
+        return Err(err(
+            line_no,
+            "assert_mode: want select|add|building|extrude",
+        ));
+    }
+    let mode = match rest[0] {
+        "select" => EditMode::Select,
+        "add" => EditMode::Add,
+        "building" => EditMode::Building,
+        "extrude" => EditMode::Extrude,
+        other => {
+            return Err(err(
+                line_no,
+                format!("assert_mode: unknown mode '{}'", other),
+            ))
+        }
+    };
+    Ok(Op::AssertMode { mode })
 }
 
 #[cfg(test)]
@@ -441,6 +464,45 @@ mod tests {
     #[test]
     fn load_osm_requires_path() {
         assert!(parse("load_osm").is_err());
+    }
+
+    #[test]
+    fn assert_mode_parses_each_variant() {
+        assert_eq!(
+            parse("assert_mode select").unwrap()[0].op,
+            Op::AssertMode {
+                mode: EditMode::Select
+            }
+        );
+        assert_eq!(
+            parse("assert_mode add").unwrap()[0].op,
+            Op::AssertMode {
+                mode: EditMode::Add
+            }
+        );
+        assert_eq!(
+            parse("assert_mode building").unwrap()[0].op,
+            Op::AssertMode {
+                mode: EditMode::Building
+            }
+        );
+        assert_eq!(
+            parse("assert_mode extrude").unwrap()[0].op,
+            Op::AssertMode {
+                mode: EditMode::Extrude
+            }
+        );
+    }
+
+    #[test]
+    fn assert_mode_rejects_unknown_mode() {
+        let e = parse("assert_mode sideways").unwrap_err();
+        assert!(e.message.contains("unknown mode"));
+    }
+
+    #[test]
+    fn assert_mode_requires_arg() {
+        assert!(parse("assert_mode").is_err());
     }
 
     #[test]
