@@ -51,6 +51,8 @@ pub(crate) enum ScriptCommand {
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
     /// the runner thread, before this is submitted — see `load_osm` below).
     LoadOsm { name: String, data: OsmData },
+    /// Compare `MapViewer.mode` against `want`.
+    AssertMode(crate::EditMode),
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -65,6 +67,8 @@ pub(crate) struct ScriptBus {
     frame_cv: Condvar,
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
+    /// Result of the most recently processed `AssertMode` command.
+    assert_result: Mutex<Option<Result<(), String>>>,
 }
 
 impl ScriptBus {
@@ -75,6 +79,7 @@ impl ScriptBus {
             frame_count: Mutex::new(0),
             frame_cv: Condvar::new(),
             capture_result: Mutex::new(None),
+            assert_result: Mutex::new(None),
         })
     }
 
@@ -127,6 +132,21 @@ impl ScriptBus {
             .unwrap()
             .take()
             .unwrap_or_else(|| Err("capture: no result recorded".to_string()))
+    }
+
+    /// Called by MapViewer::render when handling an `AssertMode` command,
+    /// before `signal_done_and_frame` wakes the waiting runner thread.
+    fn set_assert_result(&self, result: Result<(), String>) {
+        *self.assert_result.lock().unwrap() = Some(result);
+    }
+
+    /// Called by the runner thread after `submit(AssertMode(..))` returns.
+    fn take_assert_result(&self) -> Result<(), String> {
+        self.assert_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Err("assert_mode: no result recorded".to_string()))
     }
 }
 
@@ -243,6 +263,14 @@ impl MapViewer {
                 ScriptCommand::LoadOsm { name, data } => {
                     self.add_osm_dataset(name, data, cx);
                 }
+                ScriptCommand::AssertMode(want) => {
+                    let result = if self.mode == want {
+                        Ok(())
+                    } else {
+                        Err(format!("expected mode {:?}, got {:?}", want, self.mode))
+                    };
+                    bus.set_assert_result(result);
+                }
             }
         }
 
@@ -356,5 +384,16 @@ impl AppHandle for LiveApp {
             path: path.to_path_buf(),
         });
         self.bus.take_capture_result()
+    }
+
+    fn assert_mode(&mut self, want: script::EditMode) -> Result<(), String> {
+        let want = match want {
+            script::EditMode::Select => crate::EditMode::Select,
+            script::EditMode::Add => crate::EditMode::Add,
+            script::EditMode::Building => crate::EditMode::Building,
+            script::EditMode::Extrude => crate::EditMode::Extrude,
+        };
+        self.bus.submit(ScriptCommand::AssertMode(want));
+        self.bus.take_assert_result()
     }
 }
