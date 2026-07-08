@@ -58,6 +58,13 @@ fn main() {
         if dest.exists() {
             continue;
         }
+
+        // Skip icons with no fetchable source (iD's own built-in names).
+        if !icon_name.starts_with("maki-") && !icon_name.starts_with("temaki-") {
+            eprintln!("WARNING: no vendor source for icon '{}' (not maki-/temaki-), skipping", icon_name);
+            continue;
+        }
+
         let url = icon_url(icon_name);
         match fetch_optional(&client, &url) {
             Some(body) => {
