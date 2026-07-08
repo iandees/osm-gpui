@@ -60,6 +60,29 @@ impl FieldIndex {
     }
 }
 
+/// Resolve a preset's default field-id list to `Field`s, in order, skipping
+/// any id not present in `index` (shouldn't happen given vendor-time
+/// filtering — see `examples/update_presets.rs` — but this stays
+/// defensive rather than panicking).
+pub fn resolve_fields<'a>(index: &'a FieldIndex, field_ids: &[String]) -> Vec<&'a Field> {
+    field_ids.iter().filter_map(|id| index.get(id)).collect()
+}
+
+/// Resolve a preset's `more_fields` list to `Field`s, excluding any id
+/// already present in `already_shown` (the preset's default `fields`,
+/// already-rendered), so "Add field" never offers a duplicate.
+pub fn resolve_more_fields<'a>(
+    index: &'a FieldIndex,
+    more_field_ids: &[String],
+    already_shown: &[String],
+) -> Vec<&'a Field> {
+    more_field_ids
+        .iter()
+        .filter(|id| !already_shown.contains(id))
+        .filter_map(|id| index.get(id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +143,34 @@ mod tests {
     #[test]
     fn from_json_rejects_malformed_body() {
         assert!(FieldIndex::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn resolve_fields_returns_in_order() {
+        let index = FieldIndex::from_json(FIXTURE).unwrap();
+        let ids = vec!["cuisine".to_string(), "name".to_string()];
+        let resolved = resolve_fields(&index, &ids);
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].id, "cuisine");
+        assert_eq!(resolved[1].id, "name");
+    }
+
+    #[test]
+    fn resolve_fields_skips_missing_ids() {
+        let index = FieldIndex::from_json(FIXTURE).unwrap();
+        let ids = vec!["name".to_string(), "not-a-real-field".to_string()];
+        let resolved = resolve_fields(&index, &ids);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].id, "name");
+    }
+
+    #[test]
+    fn resolve_more_fields_excludes_already_shown() {
+        let index = FieldIndex::from_json(FIXTURE).unwrap();
+        let more_ids = vec!["name".to_string(), "cuisine".to_string()];
+        let already_shown = vec!["name".to_string()];
+        let resolved = resolve_more_fields(&index, &more_ids, &already_shown);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].id, "cuisine");
     }
 }
