@@ -1,0 +1,23 @@
+# Add/Building/Extrude toolbar buttons are disabled without an active
+# layer (src/mode_panel.rs render_mode_panel, has_active_layer gate);
+# clicking them must leave the mode at Select.
+#
+# Same button coordinates as mode_switching.osmscript.
+
+window 1200 800
+wait_idle 5s
+assert_mode select
+
+click 28,81
+wait_idle 1s
+assert_mode select
+
+click 28,131
+wait_idle 1s
+assert_mode select
+
+click 28,181
+wait_idle 1s
+assert_mode select
+
+log mode_requires_layer: disabled buttons correctly inert
