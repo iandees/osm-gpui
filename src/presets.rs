@@ -70,6 +70,32 @@ impl PresetIndex {
     }
 }
 
+/// Vendored copy of iD's `areaKeys.json`: which tag keys imply an area for
+/// a *closed* way, and which specific values of those keys are excluded
+/// (i.e. still imply a line even when the way is closed). A key mapped to
+/// an empty inner map means every value of that key implies area.
+pub struct AreaKeys(HashMap<String, HashMap<String, bool>>);
+
+impl AreaKeys {
+    pub fn from_json(body: &str) -> Result<Self, serde_json::Error> {
+        let map: HashMap<String, HashMap<String, bool>> = serde_json::from_str(body)?;
+        Ok(Self(map))
+    }
+
+    /// Whether a closed way with these tags should be treated as an area
+    /// rather than a line.
+    pub fn closed_way_is_area(&self, tags: &HashMap<String, String>) -> bool {
+        for (key, value) in tags {
+            if let Some(excluded_values) = self.0.get(key) {
+                if !excluded_values.contains_key(value) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +135,40 @@ mod tests {
     #[test]
     fn from_json_rejects_malformed_body() {
         assert!(PresetIndex::from_json("not json").is_err());
+    }
+
+    const AREA_KEYS_FIXTURE: &str = r#"
+    {
+      "building": {},
+      "highway": {"residential": true, "footway": true}
+    }
+    "#;
+
+    #[test]
+    fn closed_way_is_area_true_when_key_has_no_exclusions() {
+        let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
+        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        assert!(area_keys.closed_way_is_area(&tags));
+    }
+
+    #[test]
+    fn closed_way_is_area_false_when_value_excluded() {
+        let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
+        let tags = HashMap::from([("highway".to_string(), "residential".to_string())]);
+        assert!(!area_keys.closed_way_is_area(&tags));
+    }
+
+    #[test]
+    fn closed_way_is_area_true_when_value_not_excluded() {
+        let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
+        let tags = HashMap::from([("highway".to_string(), "pedestrian".to_string())]);
+        assert!(area_keys.closed_way_is_area(&tags));
+    }
+
+    #[test]
+    fn closed_way_is_area_false_when_no_area_key_present() {
+        let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
+        let tags = HashMap::from([("natural".to_string(), "water".to_string())]);
+        assert!(!area_keys.closed_way_is_area(&tags));
     }
 }
