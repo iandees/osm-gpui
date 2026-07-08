@@ -10,10 +10,10 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 
 use crate::{
-    has_unsaved_changes, with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery,
-    AddImageryLayer, AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm,
-    ImageryLoadState, LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay,
-    Undo, UploadToOsm, IMAGERY_INDEX,
+    with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
+    AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm, ImageryLoadState,
+    LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, UploadToOsm,
+    IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -69,21 +69,6 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
         }
     })
     .detach();
-}
-
-// Define the quit function that is registered with the App (Cmd+Q / File >
-// Quit). This free function only has `&mut App` — no access to the view's
-// `layer_manager` — so it asks `has_unsaved_changes` to look up the live
-// `MapViewer` (via `MAP_VIEWER_HANDLE`) and query each layer's
-// `is_modified()` directly, right now, rather than trusting any cached
-// value. If nothing is unsaved, quit immediately as before; otherwise ask
-// the live `MapViewer` to open the quit-confirmation dialog directly.
-pub(crate) fn quit(_: &Quit, cx: &mut App) {
-    if !has_unsaved_changes(cx) {
-        cx.quit();
-        return;
-    }
-    with_map_viewer_in(cx, |v, window, cx| v.show_quit_confirm_dialog(window, cx));
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
