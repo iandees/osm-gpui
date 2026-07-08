@@ -183,7 +183,12 @@ fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, P
     let half_overlap = px(TILE_OVERLAP_PX / 2.0);
     let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
     let height = (bottom_right.y - top_left.y).abs() + px(TILE_OVERLAP_PX);
-    (top_left.x - half_overlap, top_left.y - half_overlap, width, height)
+    (
+        top_left.x - half_overlap,
+        top_left.y - half_overlap,
+        width,
+        height,
+    )
 }
 
 impl MapLayer for TileLayer {
@@ -385,7 +390,9 @@ impl MapLayer for TileLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect, TILE_OVERLAP_PX};
+    use super::{
+        compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect, TILE_OVERLAP_PX,
+    };
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
     use gpui::{px, size};
