@@ -4,8 +4,8 @@
 //! `gpui_component::input::{Input, InputState}` for the comment field.
 
 use gpui::{
-    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},

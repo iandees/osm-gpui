@@ -4,8 +4,8 @@
 //! `PresetIndex::match_feature` auto-matched.
 
 use gpui::{
-    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyDownEvent, Window,
+    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    Window,
 };
 use gpui_component::{
     input::{Input, InputState},

@@ -4,8 +4,8 @@
 //! the standard Cancel + primary-confirm footer button row.
 
 use gpui::{
-    div, prelude::*, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent,
-    Pixels, SharedString, Window,
+    div, prelude::*, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent, Pixels,
+    SharedString, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},

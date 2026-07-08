@@ -9,8 +9,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     label::Label,
-    IconName, Sizable,
-    ActiveTheme,
+    ActiveTheme, IconName, Sizable,
 };
 
 use crate::MapViewer;
@@ -414,10 +413,7 @@ impl MapViewer {
             });
 
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
-            let mut column = gpui::div()
-                .flex()
-                .flex_col()
-                .gap_2();
+            let mut column = gpui::div().flex().flex_col().gap_2();
             if let Some(header) = name_header {
                 column = column.child(header);
             }
@@ -432,10 +428,7 @@ impl MapViewer {
         };
 
         if preset.fields.is_empty() {
-            let mut column = gpui::div()
-                .flex()
-                .flex_col()
-                .gap_2();
+            let mut column = gpui::div().flex().flex_col().gap_2();
             if let Some(header) = name_header {
                 column = column.child(header);
             }
@@ -468,16 +461,11 @@ impl MapViewer {
             field_elements.push(self.render_one_field(&field, &tags, feature, window, cx));
         }
 
-        let mut column = gpui::div()
-            .flex()
-            .flex_col()
-            .gap_2();
+        let mut column = gpui::div().flex().flex_col().gap_2();
         if let Some(header) = name_header {
             column = column.child(header);
         }
-        column = column
-            .child(change_type_button)
-            .children(field_elements);
+        column = column.child(change_type_button).children(field_elements);
 
         // "Add field" control: list `preset.more_fields` not already shown
         // (default fields or already-promoted more_fields).
@@ -491,20 +479,30 @@ impl MapViewer {
             osm_gpui::fields::resolve_more_fields(field_index, &preset.more_fields, &already_shown);
 
         if !addable.is_empty() {
-            column = column.child(gpui::div().flex().flex_col().gap_1().items_start().children(
-                addable.into_iter().map(|f| {
-                    let field_id = f.id.clone();
-                    Button::new(gpui::SharedString::from(format!("field-add-more-{}", field_id)))
+            column = column.child(
+                gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .items_start()
+                    .children(addable.into_iter().map(|f| {
+                        let field_id = f.id.clone();
+                        Button::new(gpui::SharedString::from(format!(
+                            "field-add-more-{}",
+                            field_id
+                        )))
                         .label(f.label.clone())
                         .icon(IconName::Plus)
                         .ghost()
                         .xsmall()
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            this.fields_promoted_more_fields.insert(field_id.clone());
-                            cx.notify();
-                        }))
-                }),
-            ));
+                        .on_click(cx.listener(
+                            move |this, _ev, _window, cx| {
+                                this.fields_promoted_more_fields.insert(field_id.clone());
+                                cx.notify();
+                            },
+                        ))
+                    })),
+            );
         }
 
         column.into_any_element()
