@@ -384,17 +384,43 @@ impl MapViewer {
         }
 
         let feature = self.selected[0];
+
+        let change_type_button = gpui::div()
+            .id("change-feature-type")
+            .cursor_pointer()
+            .child(Label::new("Change feature type…").text_xs())
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |_this, _ev, window, cx| {
+                    window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
+                }),
+            );
+
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
-            return Label::new("No matched preset.")
-                .text_color(cx.theme().muted_foreground)
-                .text_sm()
+            return gpui::div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(change_type_button)
+                .child(
+                    Label::new("No matched preset.")
+                        .text_color(cx.theme().muted_foreground)
+                        .text_sm(),
+                )
                 .into_any_element();
         };
 
         if preset.fields.is_empty() {
-            return Label::new("This feature type has no editable fields.")
-                .text_color(cx.theme().muted_foreground)
-                .text_sm()
+            return gpui::div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(change_type_button)
+                .child(
+                    Label::new("This feature type has no editable fields.")
+                        .text_color(cx.theme().muted_foreground)
+                        .text_sm(),
+                )
                 .into_any_element();
         }
 
@@ -417,7 +443,12 @@ impl MapViewer {
             field_elements.push(self.render_one_field(&field, &tags, feature, window, cx));
         }
 
-        let mut column = gpui::div().flex().flex_col().gap_2().children(field_elements);
+        let mut column = gpui::div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(change_type_button)
+            .children(field_elements);
 
         // "Add field" control: list `preset.more_fields` not already shown
         // (default fields or already-promoted more_fields).

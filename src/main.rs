@@ -58,6 +58,7 @@ actions!(
         Undo,
         Redo,
         ApplyNsiPreset,
+        ChangeFeatureType,
         UploadToOsm
     ]
 );
@@ -318,6 +319,9 @@ struct MapViewer {
     pending_tag_edit_open: Option<PendingTagEditOpen>,
     /// Active NSI preset search dialog, if open.
     nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
+    /// Active "change feature type" preset picker dialog, if open.
+    preset_picker_dialog:
+        Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, in that order) is expanded.
     side_panel_open: [bool; 5],
@@ -441,6 +445,7 @@ impl MapViewer {
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
+            preset_picker_dialog: None,
             side_panel_open: [true, true, true, true, false],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
@@ -1164,6 +1169,62 @@ impl MapViewer {
         )
         .detach();
         self.nsi_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Handle the `ChangeFeatureType` action: opens the preset picker dialog
+    /// for the single selected feature, letting the user deliberately
+    /// override whatever `PresetIndex::match_feature` auto-matched. Mirrors
+    /// `on_apply_nsi_preset` exactly, but resolves the feature's `Geometry`
+    /// first (the picker filters results by it) and reuses the same
+    /// `apply_nsi_preset` tag-mutation function on submit.
+    fn on_change_feature_type(
+        &mut self,
+        _: &ChangeFeatureType,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected.len() != 1 || self.preset_picker_dialog.is_some() {
+            return;
+        }
+        let target = self.selected[0];
+
+        let Some(layer) = self.layer_manager.find_layer(target.layer_id) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable() else {
+            return;
+        };
+        let Some(geometry) = editable.feature_geometry(&target, osm_gpui::presets::area_keys())
+        else {
+            return;
+        };
+
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::preset_picker_dialog::PresetPickerDialog::new(geometry, window, cx)
+        });
+        cx.subscribe(
+            &dialog,
+            move |this: &mut Self,
+                  _entity,
+                  event: &osm_gpui::ui::preset_picker_dialog::DialogEvent,
+                  cx| {
+                use osm_gpui::ui::preset_picker_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.preset_picker_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(preset_tags) => {
+                        this.apply_nsi_preset(&target, preset_tags.clone());
+                        this.preset_picker_dialog = None;
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+        self.preset_picker_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -2543,6 +2604,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
+            .on_action(cx.listener(Self::on_change_feature_type))
             .children(self.custom_imagery_dialog.clone())
             .children(
                 self.tag_edit_dialog
@@ -2551,6 +2613,7 @@ impl Render for MapViewer {
             )
             .children(self.quit_confirm_dialog.clone())
             .children(self.nsi_dialog.clone())
+            .children(self.preset_picker_dialog.clone())
             .children(self.upload_dialog.clone())
     }
 }
