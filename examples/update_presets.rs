@@ -7,12 +7,14 @@
 
 use osm_gpui::http::{fetch_with_retries, HttpRequest, RetryPolicy, UreqClient};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 const PRESETS_URL: &str =
     "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/presets.json";
+const TRANSLATIONS_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/translations/en.json";
 const MAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@mapbox/maki/icons";
 const TEMAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@rapideditor/temaki/icons";
 
@@ -29,7 +31,10 @@ fn main() {
     let presets_body = fetch(&client, PRESETS_URL);
     let presets_root: Value = serde_json::from_str(&presets_body).expect("parse presets.json");
 
-    let (trimmed_presets, icon_names) = trim_presets(&presets_root);
+    let translations_body = fetch(&client, TRANSLATIONS_URL);
+    let names = preset_names(&translations_body);
+
+    let (trimmed_presets, icon_names) = trim_presets(&presets_root, &names);
     let area_keys = compute_area_keys(&presets_root);
 
     fs::create_dir_all(OUT_DIR).expect("create assets/presets");
@@ -65,6 +70,15 @@ fn main() {
         if dest.exists() {
             continue;
         }
+        if !icon_name.starts_with("maki-") && !icon_name.starts_with("temaki-") {
+            // iD's own built-in icon names aren't fetchable from Maki/Temaki;
+            // skip immediately rather than wasting retries on a bogus URL.
+            eprintln!(
+                "WARNING: no vendor source for icon '{}' (not maki-/temaki-), skipping",
+                icon_name
+            );
+            continue;
+        }
         let url = icon_url(icon_name);
         match fetch_optional(&client, &url) {
             Some(body) => {
@@ -98,23 +112,47 @@ fn fetch_optional(client: &UreqClient, url: &str) -> Option<String> {
 }
 
 /// Given the icon name from a preset (e.g. "maki-cafe" or "temaki-lock"),
-/// build the jsDelivr URL for its SVG source.
+/// build the jsDelivr URL for its SVG source. Only called for names already
+/// confirmed to start with "maki-" or "temaki-" (see the icon-fetch loop in
+/// `main`, which skips anything else before calling this).
 fn icon_url(icon_name: &str) -> String {
     if let Some(name) = icon_name.strip_prefix("maki-") {
         format!("{}/{}.svg", MAKI_BASE, name)
     } else if let Some(name) = icon_name.strip_prefix("temaki-") {
         format!("{}/icon-{}.svg", TEMAKI_BASE, name)
     } else {
-        // iD's own built-in icon names (used by some fallback/generic
-        // presets) aren't fetchable from Maki/Temaki; skip them.
-        format!("unsupported:{}", icon_name)
+        unreachable!("icon_url called with an unsupported icon name: {}", icon_name)
     }
+}
+
+/// Parse `dist/translations/en.json` into a flat `preset id -> display name`
+/// map. Upstream nests this at `en.presets.presets.<id>.name` — most presets
+/// carry their display name here rather than inline in `presets.json`.
+fn preset_names(body: &str) -> HashMap<String, String> {
+    let root: Value = serde_json::from_str(body).expect("parse translations/en.json");
+    let mut names = HashMap::new();
+    if let Some(presets) = root
+        .get("en")
+        .and_then(|v| v.get("presets"))
+        .and_then(|v| v.get("presets"))
+        .and_then(|v| v.as_object())
+    {
+        for (id, entry) in presets {
+            if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                names.insert(id.clone(), name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Extract only the fields our `Preset` type keeps, from upstream's full
 /// `presets.json` object-of-objects shape, and collect every referenced
-/// icon name along the way.
-fn trim_presets(root: &Value) -> (Vec<Value>, HashSet<String>) {
+/// icon name along the way. `names` is the translations lookup from
+/// `preset_names`, used when a preset has no inline `name` field (the
+/// common case — only a minority of upstream presets embed their name
+/// directly).
+fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, HashSet<String>) {
     let Some(obj) = root.as_object() else {
         panic!("presets.json root is not an object");
     };
@@ -123,7 +161,12 @@ fn trim_presets(root: &Value) -> (Vec<Value>, HashSet<String>) {
     let mut icon_names = HashSet::new();
 
     for (id, entry) in obj {
-        let Some(name) = entry.get("name").and_then(|v| v.as_str()) else {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| names.get(id).cloned());
+        let Some(name) = name else {
             continue;
         };
         let Some(geometry) = entry.get("geometry").and_then(|v| v.as_array()) else {
@@ -148,7 +191,7 @@ fn trim_presets(root: &Value) -> (Vec<Value>, HashSet<String>) {
 
         let mut trimmed = serde_json::Map::new();
         trimmed.insert("id".to_string(), Value::String(id.clone()));
-        trimmed.insert("name".to_string(), Value::String(name.to_string()));
+        trimmed.insert("name".to_string(), Value::String(name));
         if let Some(icon_name) = icon {
             trimmed.insert("icon".to_string(), Value::String(icon_name));
         }
