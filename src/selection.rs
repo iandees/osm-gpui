@@ -97,7 +97,11 @@ pub fn point_in_polygon(p: Point<Pixels>, verts: &[Point<Pixels>]) -> bool {
 /// The point on segment `a`-`b` nearest to `p`, using the same clamped
 /// projection as `point_to_segment_distance`. Handles zero-length segments
 /// by returning `a` itself.
-pub fn nearest_point_on_segment(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> Point<Pixels> {
+pub fn nearest_point_on_segment(
+    p: Point<Pixels>,
+    a: Point<Pixels>,
+    b: Point<Pixels>,
+) -> Point<Pixels> {
     let qx = p.x.as_f32();
     let qy = p.y.as_f32();
     let ax = a.x.as_f32();

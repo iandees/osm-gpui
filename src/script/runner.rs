@@ -194,10 +194,7 @@ fn describe(op: &Op) -> String {
             button,
             count,
             ctrl,
-        } => format!(
-            "click {:?} {:?} count={} ctrl={}",
-            at, button, count, ctrl
-        ),
+        } => format!("click {:?} {:?} count={} ctrl={}", at, button, count, ctrl),
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),

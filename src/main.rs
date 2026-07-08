@@ -3243,7 +3243,12 @@ mod tests {
                 view.handle_add_click(point(px(400.0), px(300.0)), false);
 
                 let nodes10 = way_nodes(view, layer_id, 10);
-                assert_eq!(nodes10.len(), 3, "expected a node spliced in: {:?}", nodes10);
+                assert_eq!(
+                    nodes10.len(),
+                    3,
+                    "expected a node spliced in: {:?}",
+                    nodes10
+                );
                 assert_eq!((nodes10[0], nodes10[2]), (1, 2));
                 let node_b = nodes10[1];
 
@@ -3290,7 +3295,11 @@ mod tests {
                 view.handle_add_click(n1_screen, true);
                 let node_b = view.add_progress.as_ref().unwrap().last_node_id;
                 assert_ne!(node_b, 1, "Ctrl should not have connected to node 1");
-                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2], "way 10 untouched");
+                assert_eq!(
+                    way_nodes(view, layer_id, 10),
+                    vec![1, 2],
+                    "way 10 untouched"
+                );
 
                 // Third click, Ctrl held, on way 10's line: without Ctrl this
                 // would snap into way 10 (as in the sibling tests above);
@@ -3322,7 +3331,11 @@ mod tests {
                 // Far from way 10's line — outside the 6px snap tolerance.
                 view.handle_add_click(point(px(50.0), px(50.0)), false);
 
-                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2], "way 10 untouched");
+                assert_eq!(
+                    way_nodes(view, layer_id, 10),
+                    vec![1, 2],
+                    "way 10 untouched"
+                );
                 let new_id = view.add_progress.as_ref().unwrap().last_node_id;
                 let layer = view.layer_manager.find_layer(layer_id).unwrap();
                 assert!(layer.as_editable().unwrap().node_lat_lon(new_id).is_some());
