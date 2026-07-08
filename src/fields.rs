@@ -4,6 +4,18 @@
 //! `docs/superpowers/specs/2026-07-07-preset-fields-editor-design.md`.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+const FIELDS_JSON: &str = include_str!("../assets/presets/fields.json");
+
+static FIELD_INDEX: OnceLock<FieldIndex> = OnceLock::new();
+
+/// The vendored field index, parsed once on first access.
+pub fn field_index() -> &'static FieldIndex {
+    FIELD_INDEX.get_or_init(|| {
+        FieldIndex::from_json(FIELDS_JSON).expect("vendored assets/presets/fields.json must parse")
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,5 +184,13 @@ mod tests {
         let resolved = resolve_more_fields(&index, &more_ids, &already_shown);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].id, "cuisine");
+    }
+
+    #[test]
+    fn vendored_field_index_loads_and_contains_website_field() {
+        let index = field_index();
+        assert!(index.len() > 5, "expected several vendored fields, got {}", index.len());
+        let website = index.get("website").expect("a 'website' field should be vendored");
+        assert_eq!(website.field_type, FieldType::Text);
     }
 }
