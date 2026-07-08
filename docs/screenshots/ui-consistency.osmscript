@@ -1,0 +1,30 @@
+# UI consistency regression captures: both panes, then a populated right pane.
+#
+# Coordinate model (see select.osmscript for the derivation): raw window
+# coords; MapViewer::window_to_map subtracts the 56px mode panel from x.
+# Coordinate model: the script harness feeds `click X Y` straight into
+# MapViewer::handle_mouse_down, and window_to_map subtracts only the 56px
+# mode panel from x (no y adjustment). So hit-testing happens in
+# map-local coordinates: the viewport center is at x = 56 + 864/2 = 488,
+# y = viewport_height/2 ≈ 407 (the *rendered* pixel sits ~30px lower —
+# the transparent-titlebar offset is added back at paint time only).
+#
+# Fixture layout at zoom 18, centered on (40.7120, -74.0060):
+#   node 2001 (40.7120, -74.0060) → click (488, 407)   # tagged POI (center)
+
+window 1200 800
+# Load BEFORE setting the viewport: the first loaded dataset triggers
+# fit_to_osm_data which would otherwise clobber an earlier `viewport` call.
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Both panes, no selection.
+capture docs/screenshots/ui-consistency-01-panes.png
+
+# Click the tagged POI node so Selection/Fields/Tags populate.
+click 488,407
+wait_idle 2s
+capture docs/screenshots/ui-consistency-02-selection.png
+
+log done
