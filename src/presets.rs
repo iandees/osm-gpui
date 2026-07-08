@@ -11,6 +11,7 @@ use crate::selection::FeatureKind;
 
 const PRESETS_JSON: &str = include_str!("../assets/presets/presets.json");
 const AREA_KEYS_JSON: &str = include_str!("../assets/presets/area_keys.json");
+const ICONS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets/icons");
 
 static PRESET_INDEX: OnceLock<PresetIndex> = OnceLock::new();
 static AREA_KEYS: OnceLock<AreaKeys> = OnceLock::new();
@@ -140,6 +141,16 @@ pub fn describe_feature(
         Some(preset) => (preset.name.clone(), preset.icon.clone()),
         None => (geometry.fallback_name().to_string(), None),
     }
+}
+
+/// Resolve a preset's `icon` field (e.g. `"maki-cafe"`) to an absolute
+/// filesystem path to its vendored SVG, if that file exists. Returns `None`
+/// for icons we didn't vendor (e.g. iD's own built-in icon names, which
+/// `examples/update_presets.rs` can't fetch from Maki/Temaki) so callers
+/// render no icon rather than pointing GPUI at a missing path.
+pub fn icon_path(icon_name: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(ICONS_DIR).join(format!("{}.svg", icon_name));
+    path.exists().then_some(path)
 }
 
 /// Vendored copy of iD's `areaKeys.json`: which tag keys imply an area for
@@ -488,5 +499,18 @@ mod tests {
         let area_keys = area_keys();
         let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
         assert!(area_keys.closed_way_is_area(&tags));
+    }
+
+    #[test]
+    fn icon_path_returns_some_for_vendored_icon() {
+        // "maki-cafe" is the icon used by the vendored "Cafe" preset
+        // (asserted to exist by vendored_preset_index_loads_and_contains_cafe
+        // in the loader tests); its SVG should exist on disk too.
+        assert!(icon_path("maki-cafe").is_some());
+    }
+
+    #[test]
+    fn icon_path_returns_none_for_unknown_icon() {
+        assert_eq!(icon_path("not-a-real-icon-xyz"), None);
     }
 }
