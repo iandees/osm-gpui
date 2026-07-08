@@ -57,6 +57,68 @@ fn cache_filename(url: &str) -> String {
     format!("tile_{:x}.png", digest)
 }
 
+/// Derive a stable, human-legible cache subdirectory name from an imagery
+/// source's URL *template* (e.g. `https://tile.openstreetmap.org/{z}/{x}/{y}.png`),
+/// not a resolved per-tile URL. Using the template means a `{switch:a,b,c}`
+/// rotating-subdomain source always maps to one stable key, regardless of
+/// which subdomain a given tile happens to resolve to.
+pub(crate) fn source_key_for_template(template: &str) -> String {
+    let mut normalized = template.to_string();
+
+    // Collapse a `{switch:a,b,c}` span to a single marker, mirroring the
+    // span-detection logic in `tiles::url_from_template` (anchored on the
+    // literal "{switch:" prefix, then the next '}').
+    if let Some(start) = normalized.find("{switch:") {
+        if let Some(rel_end) = normalized[start..].find('}') {
+            let end = start + rel_end;
+            normalized.replace_range(start..=end, "s");
+        }
+    }
+    normalized = normalized.replace("{s}", "s");
+
+    normalized = normalized.replace("{zoom}", "z");
+    normalized = normalized.replace("{z}", "z");
+    normalized = normalized.replace("{x}", "x");
+    normalized = normalized.replace("{-y}", "negy");
+    normalized = normalized.replace("{y}", "y");
+
+    let without_scheme = normalized
+        .strip_prefix("https://")
+        .or_else(|| normalized.strip_prefix("http://"))
+        .unwrap_or(&normalized);
+
+    // Sanitize into a filesystem-safe slug: keep alphanumerics, collapse
+    // every run of other characters (dots, slashes, query separators, …)
+    // into a single underscore.
+    let mut slug = String::with_capacity(without_scheme.len());
+    let mut last_was_sep = false;
+    for c in without_scheme.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+            last_was_sep = false;
+        } else if !last_was_sep {
+            slug.push('_');
+            last_was_sep = true;
+        }
+    }
+    let slug = slug.trim_matches('_');
+    let slug: String = slug.chars().take(60).collect();
+
+    // Short hash suffix of the *original* template guarantees uniqueness
+    // even if two different templates sanitize to the same slug, or the
+    // slug was truncated.
+    let mut hasher = Sha256::new();
+    hasher.update(template.as_bytes());
+    let digest = hasher.finalize();
+    let hash_suffix = format!("{:x}", digest)[..8].to_string();
+
+    if slug.is_empty() {
+        hash_suffix
+    } else {
+        format!("{}-{}", slug, hash_suffix)
+    }
+}
+
 /// Atomically write `bytes` to `file_path`: write to a unique sibling temp
 /// file first, then `rename` into place. `rename` is atomic on POSIX
 /// filesystems (macOS/Linux), so concurrent fetches for the same cache path
@@ -840,5 +902,44 @@ mod tests {
         let (last, count) = guard.unwrap();
         assert!(last.elapsed() < STATS_TTL);
         assert_eq!(count, 42);
+    }
+
+    #[test]
+    fn source_key_deterministic_for_same_template() {
+        let a = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        let b = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn source_key_differs_for_different_templates() {
+        let a = source_key_for_template("https://tile-a.example.test/{z}/{x}/{y}.png");
+        let b = source_key_for_template("https://tile-b.example.test/{z}/{x}/{y}.png");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn source_key_is_filesystem_safe() {
+        let key =
+            source_key_for_template("https://tile.example.test/a?b={z}/{x}/{y}.png&key=SECRET123");
+        assert!(key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+    }
+
+    #[test]
+    fn source_key_ignores_switch_subdomain_rotation() {
+        // A `{switch:a,b,c}` template must produce one stable key, since
+        // `url_from_template` picks a different literal subdomain per tile.
+        let template = "https://{switch:a,b,c}.tile.example.test/{z}/{x}/{y}.png";
+        let key1 = source_key_for_template(template);
+        let key2 = source_key_for_template(template);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn source_key_has_readable_prefix() {
+        let key = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        assert!(key.starts_with("tile_openstreetmap_org_z_x_y"));
     }
 }
