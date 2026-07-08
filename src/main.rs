@@ -3008,8 +3008,12 @@ fn main() {
             let loaded = custom_imagery_store::load();
             custom_imagery_store::init_store(loaded);
 
-            // Load persisted app settings (OSM API server choice) and OAuth login.
-            settings_store::init_store(settings_store::load());
+            // Load persisted app settings (OSM API server choice, cache budget) and
+            // OAuth login. Seed the tile cache's live budget from the persisted value
+            // before the cache does any work.
+            let app_settings = settings_store::load();
+            osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
+            settings_store::init_store(app_settings);
             auth::init_store(auth::load());
 
             // Initial menu (before ELI loads). MapViewer's render loop will call

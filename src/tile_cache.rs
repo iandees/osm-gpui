@@ -10,11 +10,26 @@ use std::time::{Instant, SystemTime};
 
 use crate::idle_tracker::IdleTracker;
 
-/// Maximum total size, in bytes, that the on-disk tile cache is allowed to
-/// grow to before oldest-by-mtime files are evicted. 500 MB is generous
-/// enough to cover a large viewport's worth of zoom levels without letting a
-/// long-running session accumulate unbounded disk usage.
-const MAX_CACHE_BYTES: u64 = 500 * 1024 * 1024;
+/// Default cache budget (500 MB), used until overridden by
+/// `set_budget_mb` (normally seeded from persisted `AppSettings.cache_budget_mb`
+/// at startup).
+const DEFAULT_CACHE_BUDGET_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Live, process-global cache size budget in bytes. Changing it via
+/// `set_budget_mb` never triggers an eviction sweep itself — it only
+/// changes what the *next* `maybe_evict`-triggered sweep evicts down to, so
+/// shrinking the budget doesn't cause an immediate mass deletion.
+static CACHE_BUDGET_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_CACHE_BUDGET_BYTES);
+
+/// Update the live cache budget. Does not evict anything itself — see
+/// `CACHE_BUDGET_BYTES`'s doc comment.
+pub fn set_budget_mb(mb: u64) {
+    CACHE_BUDGET_BYTES.store(mb.saturating_mul(1024 * 1024), Ordering::Relaxed);
+}
+
+fn current_budget_bytes() -> u64 {
+    CACHE_BUDGET_BYTES.load(Ordering::Relaxed)
+}
 
 /// After this many tile writes since the last eviction sweep, re-scan the
 /// cache directory to check whether it's over budget. Avoids doing a full
@@ -139,7 +154,7 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 fn maybe_evict(dir: &Path) {
     let count = WRITES_SINCE_EVICTION.fetch_add(1, Ordering::Relaxed) + 1;
     if count.is_multiple_of(WRITES_BETWEEN_EVICTION_CHECKS) {
-        evict_if_over_budget(dir, MAX_CACHE_BYTES);
+        evict_if_over_budget(dir, current_budget_bytes());
     }
 }
 
@@ -1334,5 +1349,15 @@ mod tests {
         assert_eq!(format_bytes(2048), "2.0 KB");
         assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    #[test]
+    fn set_budget_mb_updates_current_budget_without_touching_disk() {
+        set_budget_mb(10);
+        assert_eq!(current_budget_bytes(), 10 * 1024 * 1024);
+        // Restore the default so other tests in this process (CACHE_BUDGET_BYTES
+        // is a process-global static) aren't affected by this one.
+        set_budget_mb(500);
+        assert_eq!(current_budget_bytes(), DEFAULT_CACHE_BUDGET_BYTES);
     }
 }
