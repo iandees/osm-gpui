@@ -70,6 +70,10 @@ pub struct Preset {
     pub geometry: Vec<Geometry>,
     #[serde(default = "default_match_score")]
     pub match_score: f32,
+    #[serde(default)]
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub more_fields: Vec<String>,
 }
 
 /// A parsed, in-memory collection of vendored `Preset`s.
@@ -512,5 +516,39 @@ mod tests {
     #[test]
     fn icon_path_returns_none_for_unknown_icon() {
         assert_eq!(icon_path("not-a-real-icon-xyz"), None);
+    }
+
+    const FIELDS_FIXTURE: &str = r#"
+    [
+      {
+        "id": "amenity/cafe",
+        "name": "Cafe",
+        "tags": {"amenity": "cafe"},
+        "geometry": ["point"],
+        "fields": ["name", "cuisine"],
+        "more_fields": ["internet_access"]
+      }
+    ]
+    "#;
+
+    #[test]
+    fn preset_parses_fields_and_more_fields() {
+        let index = PresetIndex::from_json(FIELDS_FIXTURE).unwrap();
+        let cafe = index.match_feature(
+            &HashMap::from([("amenity".to_string(), "cafe".to_string())]),
+            Geometry::Point,
+        ).unwrap();
+        assert_eq!(cafe.fields, vec!["name".to_string(), "cuisine".to_string()]);
+        assert_eq!(cafe.more_fields, vec!["internet_access".to_string()]);
+    }
+
+    #[test]
+    fn preset_without_fields_defaults_to_empty() {
+        let index = PresetIndex::from_json(FIXTURE).unwrap();
+        let point = index
+            .match_feature(&HashMap::new(), Geometry::Point)
+            .unwrap();
+        assert!(point.fields.is_empty());
+        assert!(point.more_fields.is_empty());
     }
 }
