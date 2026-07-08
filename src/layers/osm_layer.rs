@@ -530,6 +530,43 @@ fn push_segment_quad(
     });
 }
 
+/// Push one solid triangle into `path`, creating the path on first use and
+/// widening `bounds_min_max`. Same raw-vertex batching approach as
+/// `push_segment_quad` — no Lyon tessellation.
+fn push_triangle(
+    path: &mut Option<Path<Pixels>>,
+    bounds_min_max: &mut (f32, f32, f32, f32),
+    a: Point<Pixels>,
+    b: Point<Pixels>,
+    c: Point<Pixels>,
+) {
+    let (min_x, max_x, min_y, max_y) = bounds_min_max;
+    for p in [a, b, c] {
+        let (x, y) = (f32::from(p.x), f32::from(p.y));
+        if x < *min_x {
+            *min_x = x;
+        }
+        if x > *max_x {
+            *max_x = x;
+        }
+        if y < *min_y {
+            *min_y = y;
+        }
+        if y > *max_y {
+            *max_y = y;
+        }
+    }
+    let st = point(0., 1.);
+    let p = path.get_or_insert_with(|| Path::new(a));
+    for xy in [a, b, c] {
+        p.vertices.push(PathVertex {
+            xy_position: xy,
+            st_position: st,
+            content_mask: Default::default(),
+        });
+    }
+}
+
 /// Bulk-build a point index over every node's mercator position.
 fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
     let items: Vec<_> = node_cache
@@ -1412,6 +1449,88 @@ impl MapLayer for OsmLayer {
         if let Some(lb) = &self.layer_bbox {
             if lb.max_x < vmin_x || lb.min_x > vmax_x || lb.max_y < vmin_y || lb.min_y > vmax_y {
                 return;
+            }
+        }
+
+        // Area fills: paint before strokes so outlines and nodes stay on
+        // top. Triangulation is cached (`way_fill_tris`, computed at
+        // load/edit time); per-frame work is projection + batched
+        // raw-triangle emission, grouped by RGBA color — mirroring the
+        // stroke batching below.
+        struct FillGroup {
+            rgba: u32,
+            path: Option<Path<Pixels>>,
+            /// (min_x, max_x, min_y, max_y), accumulated by `push_triangle`.
+            bounds_min_max: (f32, f32, f32, f32),
+        }
+        let mut fill_groups: HashMap<u32, FillGroup> = HashMap::new();
+        let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
+
+        for (i, tris) in self.way_fill_tris.iter().enumerate() {
+            let Some(tris) = tris else { continue };
+            let Some(fill) = self.way_styles[i].fill else {
+                continue;
+            };
+            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
+                Some(b) => b,
+                None => continue,
+            };
+            if bbox.max_x < vmin_x
+                || bbox.min_x > vmax_x
+                || bbox.max_y < vmin_y
+                || bbox.min_y > vmax_y
+            {
+                continue;
+            }
+
+            let verts = &self.way_vertices[i];
+            let ring_len = verts.len() - 1; // closing duplicate excluded
+            fill_pts.clear();
+            for &(node_id, mx, my) in &verts[..ring_len] {
+                let mut sp = viewport.mercator_to_screen(mx, my);
+                if !is_point_valid(sp) {
+                    break;
+                }
+                sp += self.drag_preview_offset(node_id);
+                fill_pts.push(point(sp.x + origin_x, sp.y + origin_y));
+            }
+            // Any invalid projection breaks index alignment with the cached
+            // triangle indices — skip the fill (the stroke still draws).
+            if fill_pts.len() != ring_len {
+                continue;
+            }
+
+            let alpha = (fill.opacity * 255.0).round() as u32;
+            let rgba_key = (fill.color << 8) | alpha;
+            let group = fill_groups.entry(rgba_key).or_insert_with(|| FillGroup {
+                rgba: rgba_key,
+                path: None,
+                bounds_min_max: (
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                ),
+            });
+            for t in tris.chunks_exact(3) {
+                push_triangle(
+                    &mut group.path,
+                    &mut group.bounds_min_max,
+                    fill_pts[t[0] as usize],
+                    fill_pts[t[1] as usize],
+                    fill_pts[t[2] as usize],
+                );
+            }
+        }
+
+        for (_, g) in fill_groups {
+            if let Some(mut path) = g.path {
+                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
+                path.bounds = Bounds {
+                    origin: point(px(min_x), px(min_y)),
+                    size: size(px(max_x - min_x), px(max_y - min_y)),
+                };
+                window.paint_path(path, rgba(g.rgba));
             }
         }
 
