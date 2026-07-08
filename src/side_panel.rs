@@ -39,13 +39,15 @@ impl MapViewer {
 
         let layers_section = self.render_layers_section(&layer_info, cx);
         let selection_section = self.render_selection_section(cx);
+        let fields_section = self.render_fields_section(cx);
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
 
         let open_layers = self.side_panel_open[0];
         let open_selection = self.side_panel_open[1];
-        let open_tags = self.side_panel_open[2];
-        let open_history = self.side_panel_open[3];
+        let open_fields = self.side_panel_open[2];
+        let open_tags = self.side_panel_open[3];
+        let open_history = self.side_panel_open[4];
 
         let selection_title = match self.selected.len() {
             0 => "Selection".to_string(),
@@ -77,10 +79,11 @@ impl MapViewer {
                         selection_section,
                         cx,
                     ))
-                    .child(self.collapsible_section("Tags", 2, open_tags, tags_section, cx))
+                    .child(self.collapsible_section("Fields", 2, open_fields, fields_section, cx))
+                    .child(self.collapsible_section("Tags", 3, open_tags, tags_section, cx))
                     .child(self.collapsible_section(
                         "History",
-                        3,
+                        4,
                         open_history,
                         history_section,
                         cx,

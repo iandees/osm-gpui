@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod fields_section;
 mod menu;
 mod mode_panel;
 mod script_harness;
@@ -317,9 +318,9 @@ struct MapViewer {
     pending_tag_edit_open: Option<PendingTagEditOpen>,
     /// Active NSI preset search dialog, if open.
     nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
-    /// Whether each side-panel accordion section (Layers, Selection, Tags,
-    /// History, in that order) is expanded.
-    side_panel_open: [bool; 4],
+    /// Whether each side-panel accordion section (Layers, Selection, Fields,
+    /// Tags, History, in that order) is expanded.
+    side_panel_open: [bool; 5],
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -425,7 +426,7 @@ impl MapViewer {
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
-            side_panel_open: [true, true, true, false],
+            side_panel_open: [true, true, true, true, false],
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
             mode: EditMode::Select,
