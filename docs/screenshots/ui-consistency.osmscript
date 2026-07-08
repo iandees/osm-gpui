@@ -9,6 +9,9 @@
 #
 # Fixture layout at zoom 18, centered on (40.7120, -74.0060):
 #   node 2001 (40.7120, -74.0060) → click (488, 407)   # tagged POI (center)
+#   way  3001 (1001 → 1002)       → click (675, 407)   # diagonal line,
+#                                   +187px right of center, same geo offset
+#                                   as select.osmscript's way click
 
 window 1200 800
 # Load BEFORE setting the viewport: the first loaded dataset triggers
@@ -24,5 +27,11 @@ capture docs/screenshots/ui-consistency-01-panes.png
 click 488,407
 wait_idle 2s
 capture docs/screenshots/ui-consistency-02-selection.png
+
+# Click the way mid-segment: its selection highlight must not hide the
+# vertex node markers.
+click 675,407
+wait_idle 2s
+capture docs/screenshots/ui-consistency-03-way-selection.png
 
 log done
