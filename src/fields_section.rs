@@ -21,6 +21,7 @@ impl MapViewer {
     /// Subscribes to `InputEvent` (committing on Blur/Enter) only the first
     /// time an entity is created for `field_id`, so re-renders never leak
     /// duplicate subscriptions.
+    #[allow(clippy::too_many_arguments)]
     fn text_field_input(
         &mut self,
         field_id: &str,

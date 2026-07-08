@@ -355,11 +355,7 @@ fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
         .map(|(k, v)| {
             (
                 k,
-                Value::Object(
-                    v.into_iter()
-                        .map(|(vk, _)| (vk, Value::Bool(true)))
-                        .collect(),
-                ),
+                Value::Object(v.into_keys().map(|vk| (vk, Value::Bool(true))).collect()),
             )
         })
         .collect()
