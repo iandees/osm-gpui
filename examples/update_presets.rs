@@ -60,10 +60,11 @@ fn main() {
                         })
                         .collect();
                     let out_key = if key == "moreFields" { "more_fields" } else { key };
-                    preset
-                        .as_object_mut()
-                        .unwrap()
-                        .insert(out_key.to_string(), Value::Array(filtered));
+                    let obj = preset.as_object_mut().unwrap();
+                    obj.insert(out_key.to_string(), Value::Array(filtered));
+                    if out_key != key {
+                        obj.remove(key);
+                    }
                 }
             }
             preset
