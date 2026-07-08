@@ -104,6 +104,14 @@ struct SetActiveLayer {
     index: usize,
 }
 
+/// Action to toggle the visibility of the layer at `index`.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = layers)]
+#[serde(deny_unknown_fields)]
+struct ToggleLayerVisibilityAction {
+    index: usize,
+}
+
 /// The current map-interaction mode. `Select` is today's existing click/
 /// drag/box-select behavior; the others place new geometry (see
 /// docs/superpowers/specs/2026-07-07-mode-selector-design.md).
@@ -629,6 +637,25 @@ impl MapViewer {
             .map(|l| l.id())
         {
             self.active_layer = Some(id);
+            cx.notify();
+        }
+    }
+
+    /// Handle the `ToggleLayerVisibilityAction` context-menu action: same
+    /// effect as clicking the layer row's checkbox.
+    fn on_toggle_layer_visibility(
+        &mut self,
+        action: &ToggleLayerVisibilityAction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self
+            .layer_manager
+            .layers()
+            .get(action.index)
+            .map(|l| l.id())
+        {
+            self.toggle_layer_visibility(id);
             cx.notify();
         }
     }
@@ -2862,6 +2889,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
+            .on_action(cx.listener(Self::on_toggle_layer_visibility))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
