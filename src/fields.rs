@@ -189,8 +189,14 @@ mod tests {
     #[test]
     fn vendored_field_index_loads_and_contains_website_field() {
         let index = field_index();
-        assert!(index.len() > 5, "expected several vendored fields, got {}", index.len());
-        let website = index.get("website").expect("a 'website' field should be vendored");
+        assert!(
+            index.len() > 5,
+            "expected several vendored fields, got {}",
+            index.len()
+        );
+        let website = index
+            .get("website")
+            .expect("a 'website' field should be vendored");
         assert_eq!(website.field_type, FieldType::Text);
     }
 }

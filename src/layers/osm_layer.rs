@@ -4041,7 +4041,13 @@ mod tests {
 
     #[test]
     fn feature_geometry_classifies_unreferenced_node_as_point() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
         let area_keys = crate::presets::AreaKeys::from_json("{}").unwrap();
@@ -4058,7 +4064,13 @@ mod tests {
 
     #[test]
     fn feature_geometry_returns_none_for_wrong_layer() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1], vec![]);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
         let area_keys = crate::presets::AreaKeys::from_json("{}").unwrap();
@@ -4072,11 +4084,28 @@ mod tests {
 
     #[test]
     fn feature_geometry_classifies_closed_area_way() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.0, version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: 40.001,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
         let mut tags = HashMap::new();
         tags.insert("building".to_string(), "yes".to_string());
-        let way = OsmWay { id: 10, nodes: vec![1, 2, 1], version: 1, tags };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 1],
+            version: 1,
+            tags,
+        };
         let data = data_with(vec![n1, n2], vec![way]);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
         let area_keys = crate::presets::AreaKeys::from_json(r#"{"building": {}}"#).unwrap();

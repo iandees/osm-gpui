@@ -328,7 +328,8 @@ struct MapViewer {
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
-    fields_text_inputs: std::collections::HashMap<String, gpui::Entity<gpui_component::input::InputState>>,
+    fields_text_inputs:
+        std::collections::HashMap<String, gpui::Entity<gpui_component::input::InputState>>,
     /// Field ids that already have a `cx.subscribe` registered on their
     /// `fields_text_inputs` entity, so `text_field_input` never subscribes
     /// twice for the same field across re-renders. Cleared alongside

@@ -23,7 +23,9 @@ const TEMAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@rapideditor/temaki/icon
 // Keys iD never treats as area-implying, regardless of what presets.json
 // says — mirrors iD's own `areaKeys()` ignore list in
 // modules/presets/index.js (these are "usually a line" keys).
-const AREA_IGNORE_KEYS: &[&str] = &["barrier", "highway", "footway", "railway", "junction", "type"];
+const AREA_IGNORE_KEYS: &[&str] = &[
+    "barrier", "highway", "footway", "railway", "junction", "type",
+];
 
 const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets");
 
@@ -59,7 +61,11 @@ fn main() {
                                 .unwrap_or(false)
                         })
                         .collect();
-                    let out_key = if key == "moreFields" { "more_fields" } else { key };
+                    let out_key = if key == "moreFields" {
+                        "more_fields"
+                    } else {
+                        key
+                    };
                     let obj = preset.as_object_mut().unwrap();
                     obj.insert(out_key.to_string(), Value::Array(filtered));
                     if out_key != key {
@@ -161,7 +167,10 @@ fn icon_url(icon_name: &str) -> String {
     } else if let Some(name) = icon_name.strip_prefix("temaki-") {
         format!("{}/icon-{}.svg", TEMAKI_BASE, name)
     } else {
-        unreachable!("icon_url called with an unsupported icon name: {}", icon_name)
+        unreachable!(
+            "icon_url called with an unsupported icon name: {}",
+            icon_name
+        )
     }
 }
 
@@ -221,7 +230,10 @@ fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, H
                     .collect()
             })
             .unwrap_or_default();
-        let icon = entry.get("icon").and_then(|v| v.as_str()).map(str::to_string);
+        let icon = entry
+            .get("icon")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         if let Some(icon_name) = &icon {
             if icon_name.starts_with("maki-") || icon_name.starts_with("temaki-") {
                 icon_names.insert(icon_name.clone());
@@ -237,7 +249,11 @@ fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, H
         }
         trimmed.insert(
             "tags".to_string(),
-            Value::Object(tags.into_iter().map(|(k, v)| (k, Value::String(v))).collect()),
+            Value::Object(
+                tags.into_iter()
+                    .map(|(k, v)| (k, Value::String(v)))
+                    .collect(),
+            ),
         );
         trimmed.insert("geometry".to_string(), Value::Array(geometry.clone()));
         if let Some(score) = match_score {
@@ -272,13 +288,19 @@ fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, H
 /// that exact key/value via `addTags`. Returns a JSON object shaped exactly
 /// like `AreaKeys::from_json` expects: key -> { excluded_value: true, ... }.
 fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
-    let obj = root.as_object().expect("presets.json root is not an object");
+    let obj = root
+        .as_object()
+        .expect("presets.json root is not an object");
 
     let mut area_keys: BTreeMap<String, BTreeMap<String, bool>> = BTreeMap::new();
 
     // Keeplist pass.
     for entry in obj.values() {
-        if entry.get("suggestion").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if entry
+            .get("suggestion")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
         if entry.get("replacement").is_some() {
@@ -333,7 +355,11 @@ fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
         .map(|(k, v)| {
             (
                 k,
-                Value::Object(v.into_iter().map(|(vk, _)| (vk, Value::Bool(true))).collect()),
+                Value::Object(
+                    v.into_iter()
+                        .map(|(vk, _)| (vk, Value::Bool(true)))
+                        .collect(),
+                ),
             )
         })
         .collect()
@@ -374,7 +400,10 @@ fn field_translations(body: &str) -> HashMap<String, FieldTranslation> {
         return out;
     };
     for (id, entry) in fields {
-        let label = entry.get("label").and_then(|v| v.as_str()).map(str::to_string);
+        let label = entry
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let placeholder = entry
             .get("placeholder")
             .and_then(|v| v.as_str())
@@ -388,7 +417,14 @@ fn field_translations(body: &str) -> HashMap<String, FieldTranslation> {
                     .collect()
             })
             .unwrap_or_default();
-        out.insert(id.clone(), FieldTranslation { label, placeholder, options });
+        out.insert(
+            id.clone(),
+            FieldTranslation {
+                label,
+                placeholder,
+                options,
+            },
+        );
     }
     out
 }
@@ -458,7 +494,10 @@ fn trim_fields(
         let mut trimmed = serde_json::Map::new();
         trimmed.insert("id".to_string(), Value::String(id.clone()));
         trimmed.insert("key".to_string(), Value::String(key.to_string()));
-        trimmed.insert("field_type".to_string(), Value::String(field_type.to_string()));
+        trimmed.insert(
+            "field_type".to_string(),
+            Value::String(field_type.to_string()),
+        );
         trimmed.insert("label".to_string(), Value::String(label));
         if let Some(p) = placeholder {
             trimmed.insert("placeholder".to_string(), Value::String(p));

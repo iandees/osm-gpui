@@ -4,10 +4,10 @@
 //! rather than runtime-fetched data. See
 //! `docs/superpowers/specs/2026-07-07-id-preset-labels-design.md`.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use crate::osm::OsmData;
 use crate::selection::FeatureKind;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 const PRESETS_JSON: &str = include_str!("../assets/presets/presets.json");
 const AREA_KEYS_JSON: &str = include_str!("../assets/presets/area_keys.json");
@@ -19,14 +19,16 @@ static AREA_KEYS: OnceLock<AreaKeys> = OnceLock::new();
 /// The vendored preset index, parsed once on first access.
 pub fn preset_index() -> &'static PresetIndex {
     PRESET_INDEX.get_or_init(|| {
-        PresetIndex::from_json(PRESETS_JSON).expect("vendored assets/presets/presets.json must parse")
+        PresetIndex::from_json(PRESETS_JSON)
+            .expect("vendored assets/presets/presets.json must parse")
     })
 }
 
 /// The vendored area-key table, parsed once on first access.
 pub fn area_keys() -> &'static AreaKeys {
     AREA_KEYS.get_or_init(|| {
-        AreaKeys::from_json(AREA_KEYS_JSON).expect("vendored assets/presets/area_keys.json must parse")
+        AreaKeys::from_json(AREA_KEYS_JSON)
+            .expect("vendored assets/presets/area_keys.json must parse")
     })
 }
 
@@ -103,7 +105,11 @@ impl PresetIndex {
     /// and its `geometry` list includes the feature's geometry. Among
     /// matches, the preset with the most matched tag pairs wins; ties are
     /// broken by `match_score` descending.
-    pub fn match_feature(&self, tags: &HashMap<String, String>, geometry: Geometry) -> Option<&Preset> {
+    pub fn match_feature(
+        &self,
+        tags: &HashMap<String, String>,
+        geometry: Geometry,
+    ) -> Option<&Preset> {
         self.presets
             .iter()
             .filter(|p| p.geometry.contains(&geometry))
@@ -118,14 +124,12 @@ impl PresetIndex {
                 Some((matched, p))
             })
             .max_by(|(matched_a, preset_a), (matched_b, preset_b)| {
-                matched_a
-                    .cmp(matched_b)
-                    .then(
-                        preset_a
-                            .match_score
-                            .partial_cmp(&preset_b.match_score)
-                            .unwrap_or(std::cmp::Ordering::Equal),
-                    )
+                matched_a.cmp(matched_b).then(
+                    preset_a
+                        .match_score
+                        .partial_cmp(&preset_b.match_score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
             })
             .map(|(_, p)| p)
     }
@@ -217,7 +221,11 @@ pub fn classify_geometry(
         FeatureKind::Node => {
             data.nodes.get(&id)?;
             let referenced = data.ways.values().any(|way| way.nodes.contains(&id));
-            Some(if referenced { Geometry::Vertex } else { Geometry::Point })
+            Some(if referenced {
+                Geometry::Vertex
+            } else {
+                Geometry::Point
+            })
         }
         FeatureKind::Way => {
             let way = data.ways.get(&id)?;
@@ -237,11 +245,22 @@ mod tests {
     use crate::osm::{OsmNode, OsmWay};
 
     fn node(id: i64, tags: HashMap<String, String>) -> OsmNode {
-        OsmNode { id, lat: 0.0, lon: 0.0, version: 1, tags }
+        OsmNode {
+            id,
+            lat: 0.0,
+            lon: 0.0,
+            version: 1,
+            tags,
+        }
     }
 
     fn way(id: i64, nodes: Vec<i64>, tags: HashMap<String, String>) -> OsmWay {
-        OsmWay { id, nodes, version: 1, tags }
+        OsmWay {
+            id,
+            nodes,
+            version: 1,
+            tags,
+        }
     }
 
     fn data_with(nodes: Vec<OsmNode>, ways: Vec<OsmWay>) -> OsmData {
@@ -253,7 +272,12 @@ mod tests {
         for w in ways {
             way_map.insert(w.id, w);
         }
-        OsmData { nodes: node_map, ways: way_map, relations: Vec::new(), bounds: None }
+        OsmData {
+            nodes: node_map,
+            ways: way_map,
+            relations: Vec::new(),
+            bounds: None,
+        }
     }
 
     const FIXTURE: &str = r#"
@@ -396,8 +420,14 @@ mod tests {
     fn missing_feature_id_returns_none() {
         let data = data_with(vec![], vec![]);
         let area_keys = AreaKeys::from_json("{}").unwrap();
-        assert_eq!(classify_geometry(&data, FeatureKind::Node, 999, &area_keys), None);
-        assert_eq!(classify_geometry(&data, FeatureKind::Way, 999, &area_keys), None);
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Node, 999, &area_keys),
+            None
+        );
+        assert_eq!(
+            classify_geometry(&data, FeatureKind::Way, 999, &area_keys),
+            None
+        );
     }
 
     const MATCH_FIXTURE: &str = r#"
@@ -509,7 +539,11 @@ mod tests {
     #[test]
     fn vendored_preset_index_loads_and_contains_cafe() {
         let index = preset_index();
-        assert!(index.len() > 100, "expected hundreds of vendored presets, got {}", index.len());
+        assert!(
+            index.len() > 100,
+            "expected hundreds of vendored presets, got {}",
+            index.len()
+        );
         let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
         let preset = index
             .match_feature(&tags, Geometry::Point)
@@ -553,10 +587,12 @@ mod tests {
     #[test]
     fn preset_parses_fields_and_more_fields() {
         let index = PresetIndex::from_json(FIELDS_FIXTURE).unwrap();
-        let cafe = index.match_feature(
-            &HashMap::from([("amenity".to_string(), "cafe".to_string())]),
-            Geometry::Point,
-        ).unwrap();
+        let cafe = index
+            .match_feature(
+                &HashMap::from([("amenity".to_string(), "cafe".to_string())]),
+                Geometry::Point,
+            )
+            .unwrap();
         assert_eq!(cafe.fields, vec!["name".to_string(), "cuisine".to_string()]);
         assert_eq!(cafe.more_fields, vec!["internet_access".to_string()]);
     }

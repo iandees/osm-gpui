@@ -41,18 +41,25 @@ impl MapViewer {
             state.set_value(current_value, window, cx);
             state
         });
-        self.fields_text_inputs.insert(field_id.to_string(), entity.clone());
+        self.fields_text_inputs
+            .insert(field_id.to_string(), entity.clone());
         self.fields_text_subscribed.insert(field_id.to_string());
-        cx.subscribe(&entity, move |this: &mut Self, entity, event: &InputEvent, cx| {
-            let should_commit =
-                matches!(event, InputEvent::Blur) || matches!(event, InputEvent::PressEnter { .. });
-            if !should_commit {
-                return;
-            }
-            let value = entity.read(cx).value().to_string();
-            this.apply_nsi_preset(&feature, std::collections::HashMap::from([(field_key.clone(), value)]));
-            cx.notify();
-        })
+        cx.subscribe(
+            &entity,
+            move |this: &mut Self, entity, event: &InputEvent, cx| {
+                let should_commit = matches!(event, InputEvent::Blur)
+                    || matches!(event, InputEvent::PressEnter { .. });
+                if !should_commit {
+                    return;
+                }
+                let value = entity.read(cx).value().to_string();
+                this.apply_nsi_preset(
+                    &feature,
+                    std::collections::HashMap::from([(field_key.clone(), value)]),
+                );
+                cx.notify();
+            },
+        )
         .detach();
         entity
     }
@@ -458,33 +465,26 @@ impl MapViewer {
             .cloned()
             .chain(self.fields_promoted_more_fields.iter().cloned())
             .collect();
-        let addable = osm_gpui::fields::resolve_more_fields(
-            field_index,
-            &preset.more_fields,
-            &already_shown,
-        );
+        let addable =
+            osm_gpui::fields::resolve_more_fields(field_index, &preset.more_fields, &already_shown);
 
         if !addable.is_empty() {
-            column = column.child(
-                gpui::div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .children(addable.into_iter().map(|f| {
-                        let field_id = f.id.clone();
-                        gpui::div()
-                            .id(format!("field-add-more-{}", field_id))
-                            .cursor_pointer()
-                            .child(Label::new(format!("+ {}", f.label)).text_xs())
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _ev, _window, cx| {
-                                    this.fields_promoted_more_fields.insert(field_id.clone());
-                                    cx.notify();
-                                }),
-                            )
-                    })),
-            );
+            column = column.child(gpui::div().flex().flex_col().gap_1().children(
+                addable.into_iter().map(|f| {
+                    let field_id = f.id.clone();
+                    gpui::div()
+                        .id(format!("field-add-more-{}", field_id))
+                        .cursor_pointer()
+                        .child(Label::new(format!("+ {}", f.label)).text_xs())
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.fields_promoted_more_fields.insert(field_id.clone());
+                                cx.notify();
+                            }),
+                        )
+                }),
+            ));
         }
 
         column.into_any_element()
@@ -497,7 +497,10 @@ impl MapViewer {
     fn matched_preset_for_field_editing(
         &self,
         feat: &osm_gpui::selection::FeatureRef,
-    ) -> Option<(&'static osm_gpui::presets::Preset, std::collections::HashMap<String, String>)> {
+    ) -> Option<(
+        &'static osm_gpui::presets::Preset,
+        std::collections::HashMap<String, String>,
+    )> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
         let tags: std::collections::HashMap<String, String> =
