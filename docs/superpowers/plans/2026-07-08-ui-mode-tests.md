@@ -644,6 +644,93 @@ git commit -m "Add osmscript-based mode-switching UI test suite"
 
 ---
 
+---
+
+### Task 6: Route the keystroke-queue drain through the same re-entrancy-safe dispatch as Click
+
+**Files:**
+- Modify: `src/script_harness.rs`
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: `key` op no longer panics when a keystroke's handler is itself a `cx.listener()` callback on `MapViewer` (e.g. the mode-switch shortcuts `a`/`b`/`x`/`escape` at `src/main.rs:2345-2373`). Task 5's `mode_switching.osmscript` depends on this for its keyboard-shortcut assertions to run at all.
+
+**Context:** Task 5's implementer found that `mode_switching.osmscript` panics at its first `key a` step with the identical panic Task 4 fixed for `Click` ("cannot update osm_gpui::MapViewer while it is already being updated") — same root cause, different call site: the keystroke-queue drain loop in `process_script_command` still calls `window.dispatch_keystroke(ks, cx)` synchronously, which re-enters `MapViewer`'s own entity lease via the map div's `.on_key_down(cx.listener(...))` handler, exactly as the old synchronous `Click` dispatch did. Apply the same `window.defer` fix Task 4 already established and had reviewed/approved.
+
+- [ ] **Step 1: Wrap the keystroke drain in `window.defer`**
+
+In `src/script_harness.rs`, replace the keystroke-queue-draining block in `process_script_command` (currently, after Task 4's changes, approximately):
+
+```rust
+        // Also drain keystroke queue (processed via Window so needs to be here)
+        if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
+            if let Ok(mut guard) = ks_queue.try_lock() {
+                for ks in guard.drain(..) {
+                    window.dispatch_keystroke(ks, cx);
+                }
+            }
+        }
+```
+
+with:
+
+```rust
+        // Also drain keystroke queue (processed via Window so needs to be here).
+        // Dispatched via `window.defer` for the same reason `Click` is (see
+        // above): `dispatch_keystroke` can invoke a `cx.listener()` callback
+        // on this same `MapViewer` entity (e.g. the mode-switch shortcuts),
+        // which would double-lease it if dispatched synchronously from
+        // inside `render`.
+        if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
+            if let Ok(mut guard) = ks_queue.try_lock() {
+                let pending: Vec<_> = guard.drain(..).collect();
+                if !pending.is_empty() {
+                    window.defer(cx, move |window, cx| {
+                        for ks in pending {
+                            window.dispatch_keystroke(ks, cx);
+                        }
+                    });
+                }
+            }
+        }
+```
+
+The lock guard is drained into a plain `Vec` and dropped (via the `if let` scope) before `window.defer`'s `'static` closure is constructed, so nothing tries to move a `MutexGuard` into it.
+
+- [ ] **Step 2: Build**
+
+Run: `cargo build`
+Expected: builds cleanly.
+
+- [ ] **Step 3: Run `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`**
+
+Run: `cargo fmt --check && cargo clippy --all-targets -- -D warnings`
+Expected: both clean.
+
+- [ ] **Step 4: Run `tests/ui/mode_switching.osmscript` to confirm the keyboard-shortcut section now passes**
+
+Run: `cargo run -- --script tests/ui/mode_switching.osmscript`
+Expected: exits 0, prints `mode_switching: all transitions verified`, no `script error` line, no panic.
+
+- [ ] **Step 5: Regression-check an existing script that uses `key`**
+
+Run: `cargo run -- --script docs/screenshots/smoke.osmscript`
+Expected: exits 0 (this script exercises `key cmd+0` among other ops — confirms the defer wrapping doesn't break simple keystroke dispatch outside the mode-switch-listener case).
+
+- [ ] **Step 6: Run the full non-ignored test suite**
+
+Run: `cargo test`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/script_harness.rs
+git commit -m "Route script keystroke dispatch through the same defer fix as click"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage:** `assert_mode` op (Tasks 1-3) ✓, real-dispatch `click` fix so toolbar buttons are reachable (Task 4) ✓, mode-switching + disabled-without-layer scripts (Task 5 Steps 1-2) ✓, `tests/ui/` directory separate from `docs/screenshots/` ✓, ignored integration runner not wired into CI (Task 5 Step 4 doc comment + Global Constraints) ✓.
@@ -651,3 +738,4 @@ git commit -m "Add osmscript-based mode-switching UI test suite"
 - **Type consistency:** `EditMode` (script-DSL, `script::EditMode`) flows Task 1 → Task 2 (`AppHandle::assert_mode(want: crate::script::EditMode)`) → Task 3 (`LiveApp::assert_mode` converts to bin-crate `crate::EditMode` before building `ScriptCommand::AssertMode`). Checked the enum names and match arms are identical at each boundary.
 - **Crate boundary:** `EditMode` in `src/main.rs` is bin-crate; `script::EditMode` in `src/script/op.rs` is lib-crate (`osm_gpui`). They're distinct types by design (mirrors the existing `EditModeAction`/`EditMode` split used for the same reason) — `script_harness.rs` is compiled as part of the bin crate (it's a `mod` of `main.rs`) so it can reference both `crate::EditMode` and `osm_gpui::script::EditMode` and convert between them, which is exactly what Task 3 Step 4 does.
 - **Task 4 addendum (post Tasks 1-3 discovery):** the original plan assumed `click` already reached arbitrary widgets via real gpui dispatch; Task 4's implementer found this false (`click` called `MapViewer::handle_mouse_down`/`handle_mouse_up` directly, bypassing gpui's hit-testing entirely) and was correctly BLOCKED rather than guessing a fix outside its scope. Task 4 (this amendment) fixes it narrowly — `Click` only, `Drag`/`Scroll` untouched — confirmed via research into gpui's `Window::dispatch_event`/`dispatch_mouse_event` (same mechanism `dispatch_keystroke` already uses) that this requires no additional paint-ordering ceremony and is safe to call from the existing call site.
+- **Task 6 addendum (post Task 5 discovery):** Task 4's own brief claimed dispatching real events synchronously from inside `render` was safe, but its implementer found it panics (re-entrant entity lease) and fixed it with `window.defer` for `Click`. Task 5's implementer then hit the identical panic for `key` — the keystroke-queue drain was never updated to match. Task 6 applies the same, already-reviewed `window.defer` pattern to the keystroke drain. Ordering/staleness safety argument is identical to Task 4's (verified there by the task reviewer): `ScriptBus` drains and signals completion for at most one script command per `render()` call, so any later script step can only be processed by a subsequent `render()` call, which cannot happen until the current frame's deferred effects (including the deferred keystroke dispatch) have flushed.
