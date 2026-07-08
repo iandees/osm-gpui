@@ -286,7 +286,7 @@ fn compute_way_tables(
         ids.push(way.id);
         bboxes.push(bbox);
         vertices.push(verts);
-        styles.push(stylesheet.way_style(&way.tags));
+        styles.push(stylesheet.way_style(&way.tags, way.is_closed()));
     }
     (ids, bboxes, vertices, styles)
 }
@@ -321,7 +321,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = way_id_to_index.get(&id) {
-                way_styles[idx] = stylesheet.way_style(&way.tags);
+                way_styles[idx] = stylesheet.way_style(&way.tags, way.is_closed());
             }
         }
     }
@@ -880,7 +880,7 @@ impl OsmLayer {
             }
             self.way_vertices[way_idx] = verts;
             self.way_bboxes[way_idx] = new_bbox;
-            self.way_styles[way_idx] = self.stylesheet.way_style(&way.tags);
+            self.way_styles[way_idx] = self.stylesheet.way_style(&way.tags, way.is_closed());
         }
     }
 
@@ -1215,7 +1215,8 @@ impl OsmLayer {
         self.way_ids.push(way.id);
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
-        self.way_styles.push(self.stylesheet.way_style(&way.tags));
+        self.way_styles
+            .push(self.stylesheet.way_style(&way.tags, way.is_closed()));
         data.ways.insert(way.id, way);
         self.modified = true;
     }
@@ -1778,7 +1779,7 @@ impl EditableLayer for OsmLayer {
                     return;
                 }
 
-                let way_style = self.stylesheet.way_style(&way.tags);
+                let way_style = self.stylesheet.way_style(&way.tags, way.is_closed());
                 let mut builder = PathBuilder::stroke(px(way_style.width + 4.0));
                 for (i, p) in pts.iter().enumerate() {
                     if i == 0 {

@@ -2,12 +2,14 @@
 //!
 //! Scope is intentionally small — see `docs/superpowers/plans/issue-18-mapcss.md`:
 //!
-//! - Selectors: `node` / `way`, each with zero or more tag tests
+//! - Selectors: `node` / `way` / `area` (closed ways only; `way:closed`
+//!   is an alias for `area`), each with zero or more tag tests
 //!   `[key]`, `[key=value]`, `[key!=value]`. Comma-separated lists of
 //!   selectors share a declaration block.
 //! - Declarations: `color`, `width`, `symbol-size` (plus `width` as an
-//!   alias for `symbol-size` on nodes). Other properties are ignored
-//!   with a single warning.
+//!   alias for `symbol-size` on nodes), and `fill-color`/`fill-opacity`
+//!   (closed ways only). Other properties are ignored with a single
+//!   warning.
 //! - Colors: `#rgb`, `#rrggbb`, or one of a small named set.
 //! - Comments: `/* ... */` (non-nesting).
 //!
@@ -24,6 +26,15 @@ pub const DEFAULT_NODE_COLOR: u32 = 0xFFD700;
 pub const DEFAULT_NODE_SIZE: f32 = 10.0;
 pub const DEFAULT_WAY_COLOR: u32 = 0x4169E1;
 pub const DEFAULT_WAY_WIDTH: f32 = 4.0;
+pub const DEFAULT_FILL_OPACITY: f32 = 0.4;
+
+/// Resolved area fill for a closed way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fill {
+    pub color: u32,
+    /// 0.0..=1.0
+    pub opacity: f32,
+}
 
 /// Resolved node style for a single feature.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,6 +57,8 @@ impl Default for NodeStyle {
 pub struct WayStyle {
     pub color: u32,
     pub width: f32,
+    /// `Some` only when the way is closed and a `fill-color` applied.
+    pub fill: Option<Fill>,
 }
 
 impl Default for WayStyle {
@@ -53,6 +66,7 @@ impl Default for WayStyle {
         Self {
             color: DEFAULT_WAY_COLOR,
             width: DEFAULT_WAY_WIDTH,
+            fill: None,
         }
     }
 }
@@ -61,6 +75,8 @@ impl Default for WayStyle {
 enum TargetKind {
     Node,
     Way,
+    /// `area` selector or `way:closed` — matches only closed ways.
+    Area,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,11 +106,12 @@ struct Selector {
 }
 
 impl Selector {
-    fn matches(&self, kind: TargetKind, tags: &HashMap<String, String>) -> bool {
-        if self.kind != kind {
-            return false;
-        }
-        self.tests.iter().all(|t| t.matches(tags))
+    fn matches(&self, kind: TargetKind, closed: bool, tags: &HashMap<String, String>) -> bool {
+        let kind_ok = match self.kind {
+            TargetKind::Area => kind == TargetKind::Way && closed,
+            k => k == kind,
+        };
+        kind_ok && self.tests.iter().all(|t| t.matches(tags))
     }
 }
 
@@ -110,6 +127,10 @@ enum Declaration {
     /// store it as `Width` and let the evaluator decide whether it
     /// applies to way width or node size.
     SymbolSize(f32),
+    /// Area fill color; only takes effect on closed ways.
+    FillColor(u32),
+    /// Area fill opacity, clamped to 0..=1 at parse time.
+    FillOpacity(f32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,7 +201,7 @@ impl Stylesheet {
             if !rule
                 .selectors
                 .iter()
-                .any(|sel| sel.matches(TargetKind::Node, tags))
+                .any(|sel| sel.matches(TargetKind::Node, false, tags))
             {
                 continue;
             }
@@ -188,6 +209,7 @@ impl Stylesheet {
                 match d {
                     Declaration::Color(c) => s.color = *c,
                     Declaration::SymbolSize(w) => s.size = *w,
+                    Declaration::FillColor(_) | Declaration::FillOpacity(_) => {}
                     // `width` on a pure-node rule aliases to symbol-size.
                     Declaration::Width(w) => {
                         if rule
@@ -204,14 +226,18 @@ impl Stylesheet {
         s
     }
 
-    /// Resolve a style for a way given its OSM tags.
-    pub fn way_style(&self, tags: &HashMap<String, String>) -> WayStyle {
+    /// Resolve a style for a way given its OSM tags and whether it forms a
+    /// closed ring. `area` and `way:closed` rules only match when `closed`;
+    /// fill declarations only take effect on closed ways (JOSM semantics).
+    pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool) -> WayStyle {
         let mut s = WayStyle::default();
+        let mut fill_color: Option<u32> = None;
+        let mut fill_opacity: Option<f32> = None;
         for rule in &self.rules {
             if !rule
                 .selectors
                 .iter()
-                .any(|sel| sel.matches(TargetKind::Way, tags))
+                .any(|sel| sel.matches(TargetKind::Way, closed, tags))
             {
                 continue;
             }
@@ -221,7 +247,17 @@ impl Stylesheet {
                     Declaration::Width(w) => s.width = *w,
                     // `symbol-size` on a way rule is meaningless — ignore.
                     Declaration::SymbolSize(_) => {}
+                    Declaration::FillColor(c) => fill_color = Some(*c),
+                    Declaration::FillOpacity(o) => fill_opacity = Some(*o),
                 }
+            }
+        }
+        if closed {
+            if let Some(color) = fill_color {
+                s.fill = Some(Fill {
+                    color,
+                    opacity: fill_opacity.unwrap_or(DEFAULT_FILL_OPACITY),
+                });
             }
         }
         s
@@ -344,9 +380,10 @@ impl<'a> Parser<'a> {
         if ident.is_empty() {
             return Err(self.err("expected selector name"));
         }
-        let kind = match ident.as_str() {
+        let mut kind = match ident.as_str() {
             "node" => TargetKind::Node,
             "way" => TargetKind::Way,
+            "area" => TargetKind::Area,
             _ => {
                 if !*warned {
                     eprintln!(
@@ -372,12 +409,26 @@ impl<'a> Parser<'a> {
                     let test = self.parse_tag_test()?;
                     tests.push(test);
                 }
-                Some('|') | Some(':') => {
-                    // Zoom selector or pseudo-class — not supported. Skip.
+                Some(':') => {
+                    // `way:closed` is area semantics; every other
+                    // pseudo-class is unsupported and skipped.
+                    self.bump();
+                    let pseudo = self.read_ident();
+                    if pseudo == "closed" && kind == TargetKind::Way {
+                        kind = TargetKind::Area;
+                    } else {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring unsupported pseudo-class ':{}'", pseudo);
+                            *warned = true;
+                        }
+                        self.skip_selector_tail();
+                        break;
+                    }
+                }
+                Some('|') => {
+                    // Zoom selector — not supported. Skip.
                     if !*warned {
-                        eprintln!(
-                            "mapcss: ignoring unsupported selector suffix (zoom or pseudo-class)"
-                        );
+                        eprintln!("mapcss: ignoring unsupported zoom selector suffix");
                         *warned = true;
                     }
                     self.skip_selector_tail();
@@ -480,6 +531,26 @@ impl<'a> Parser<'a> {
                     _ => {
                         if !*warned {
                             eprintln!("mapcss: ignoring invalid width '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
+                "fill-color" => match parse_color(&value) {
+                    Some(c) => decls.push(Declaration::FillColor(c)),
+                    None => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring unrecognized fill-color '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
+                "fill-opacity" => match value.trim().parse::<f32>() {
+                    Ok(o) if o.is_finite() => {
+                        decls.push(Declaration::FillOpacity(o.clamp(0.0, 1.0)))
+                    }
+                    _ => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring invalid fill-opacity '{}'", value);
                             *warned = true;
                         }
                     }
@@ -612,13 +683,13 @@ mod tests {
     fn empty_stylesheet_uses_defaults() {
         let s = Stylesheet::parse("").unwrap();
         assert_eq!(s.node_style(&tags(&[])), NodeStyle::default());
-        assert_eq!(s.way_style(&tags(&[])), WayStyle::default());
+        assert_eq!(s.way_style(&tags(&[]), false), WayStyle::default());
     }
 
     #[test]
     fn parse_minimal_way_rule() {
         let s = Stylesheet::parse("way { color: #ff0000; width: 2; }").unwrap();
-        let w = s.way_style(&tags(&[]));
+        let w = s.way_style(&tags(&[]), false);
         assert_eq!(w.color, 0xFF0000);
         assert_eq!(w.width, 2.0);
     }
@@ -634,40 +705,42 @@ mod tests {
     #[test]
     fn multi_selector_applies_to_both() {
         let s = Stylesheet::parse("way, node { color: red; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[])).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
         assert_eq!(s.node_style(&tags(&[])).color, 0xFF0000);
     }
 
     #[test]
     fn later_rule_overrides_earlier() {
         let s = Stylesheet::parse("way { color: red; } way { color: blue; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[])).color, 0x0000FF);
+        assert_eq!(s.way_style(&tags(&[]), false).color, 0x0000FF);
     }
 
     #[test]
     fn tag_present_matches_any_value() {
         let s = Stylesheet::parse("way[highway] { color: orange; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")])).color,
+            s.way_style(&tags(&[("highway", "residential")]), false)
+                .color,
             0xFFA500
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")])).color,
+            s.way_style(&tags(&[("highway", "footway")]), false).color,
             0xFFA500
         );
         // No tag => default way color.
-        assert_eq!(s.way_style(&tags(&[])).color, DEFAULT_WAY_COLOR);
+        assert_eq!(s.way_style(&tags(&[]), false).color, DEFAULT_WAY_COLOR);
     }
 
     #[test]
     fn tag_equals_matches_exact() {
         let s = Stylesheet::parse("way[highway=residential] { color: orange; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")])).color,
+            s.way_style(&tags(&[("highway", "residential")]), false)
+                .color,
             0xFFA500
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")])).color,
+            s.way_style(&tags(&[("highway", "footway")]), false).color,
             DEFAULT_WAY_COLOR
         );
     }
@@ -676,21 +749,22 @@ mod tests {
     fn tag_not_equals_matches_others() {
         let s = Stylesheet::parse("way[highway!=motorway] { color: green; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")])).color,
+            s.way_style(&tags(&[("highway", "residential")]), false)
+                .color,
             0x008000
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "motorway")])).color,
+            s.way_style(&tags(&[("highway", "motorway")]), false).color,
             DEFAULT_WAY_COLOR
         );
         // No highway tag at all -> not-equals is true by convention.
-        assert_eq!(s.way_style(&tags(&[])).color, 0x008000);
+        assert_eq!(s.way_style(&tags(&[]), false).color, 0x008000);
     }
 
     #[test]
     fn unknown_property_ignored() {
         let s = Stylesheet::parse("way { color: red; casing-width: 2; width: 3; }").unwrap();
-        let w = s.way_style(&tags(&[]));
+        let w = s.way_style(&tags(&[]), false);
         assert_eq!(w.color, 0xFF0000);
         assert_eq!(w.width, 3.0);
     }
@@ -698,13 +772,13 @@ mod tests {
     #[test]
     fn comments_are_stripped() {
         let s = Stylesheet::parse("/* hi */ way { /* c */ color: red; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[])).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
     }
 
     #[test]
     fn short_hex_color() {
         let s = Stylesheet::parse("way { color: #f00; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[])).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
     }
 
     #[test]
@@ -712,14 +786,83 @@ mod tests {
         let s = Stylesheet::load_default();
         // Spot-check a couple of rules from the embedded asset.
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")])).color,
+            s.way_style(&tags(&[("highway", "residential")]), false)
+                .color,
             0xff8c00
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")])).color,
+            s.way_style(&tags(&[("highway", "footway")]), false).color,
             0x8b4513
         );
         assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff1493);
+    }
+
+    #[test]
+    fn area_rule_fills_closed_ways_only() {
+        let s = Stylesheet::parse("area[building] { fill-color: #808080; fill-opacity: 0.4; }")
+            .unwrap();
+        let closed = s.way_style(&tags(&[("building", "yes")]), true);
+        let fill = closed.fill.expect("closed building way must have a fill");
+        assert_eq!(fill.color, 0x808080);
+        assert!((fill.opacity - 0.4).abs() < 1e-6);
+        // Same tags, open way: area rule must not match.
+        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
+    }
+
+    #[test]
+    fn way_closed_pseudo_class_is_area_equivalent() {
+        let s = Stylesheet::parse("way:closed[building] { fill-color: #112233; }").unwrap();
+        assert!(s
+            .way_style(&tags(&[("building", "yes")]), true)
+            .fill
+            .is_some());
+        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
+    }
+
+    #[test]
+    fn fill_color_without_opacity_defaults() {
+        let s = Stylesheet::parse("area { fill-color: red; }").unwrap();
+        let fill = s.way_style(&tags(&[]), true).fill.unwrap();
+        assert_eq!(fill.color, 0xFF0000);
+        assert!((fill.opacity - DEFAULT_FILL_OPACITY).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fill_opacity_without_color_is_no_fill() {
+        let s = Stylesheet::parse("area { fill-opacity: 0.9; }").unwrap();
+        assert_eq!(s.way_style(&tags(&[]), true).fill, None);
+    }
+
+    #[test]
+    fn fill_opacity_is_clamped() {
+        let s = Stylesheet::parse("area { fill-color: red; fill-opacity: 7; }").unwrap();
+        assert!((s.way_style(&tags(&[]), true).fill.unwrap().opacity - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fill_on_plain_way_rule_applies_only_when_closed() {
+        // JOSM semantics: `way { fill-color: … }` fills closed ways, is
+        // ignored on open ways.
+        let s = Stylesheet::parse("way { fill-color: blue; }").unwrap();
+        assert!(s.way_style(&tags(&[]), true).fill.is_some());
+        assert_eq!(s.way_style(&tags(&[]), false).fill, None);
+    }
+
+    #[test]
+    fn area_rule_stroke_props_apply_to_closed_way() {
+        let s = Stylesheet::parse("area[building] { color: #ff0000; width: 2; }").unwrap();
+        let st = s.way_style(&tags(&[("building", "yes")]), true);
+        assert_eq!(st.color, 0xFF0000);
+        assert_eq!(st.width, 2.0);
+        // Open way with same tags keeps defaults.
+        let st = s.way_style(&tags(&[("building", "yes")]), false);
+        assert_eq!(st.color, DEFAULT_WAY_COLOR);
+    }
+
+    #[test]
+    fn area_selector_never_matches_nodes() {
+        let s = Stylesheet::parse("area { color: red; }").unwrap();
+        assert_eq!(s.node_style(&tags(&[])).color, DEFAULT_NODE_COLOR);
     }
 
     #[test]
