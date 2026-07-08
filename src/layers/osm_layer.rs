@@ -141,7 +141,7 @@ pub struct OsmLayer {
     /// node id -> indices of ways (into `way_vertices`/`way_bboxes`) that
     /// reference it. Built once at load time; lets `commit_node_moves`
     /// recompute only the affected ways' caches instead of every way.
-    node_to_ways: HashMap<i64, Vec<usize>>,
+    node_to_ways: HashMap<i64, HashSet<usize>>,
     /// Transient screen-space offset applied to the given node ids while
     /// rendering, for live drag feedback. Never touches `osm_data`.
     drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
@@ -394,11 +394,11 @@ fn sorted_ways(data: &OsmData) -> Vec<&OsmWay> {
 /// data-load time so `commit_node_moves` can find exactly which ways need
 /// their cached vertex/bbox tables recomputed after a node move, instead of
 /// rescanning every way.
-fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, Vec<usize>> {
-    let mut map: HashMap<i64, Vec<usize>> = HashMap::new();
+fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, HashSet<usize>> {
+    let mut map: HashMap<i64, HashSet<usize>> = HashMap::new();
     for (idx, way) in ways.iter().enumerate() {
         for nid in &way.nodes {
-            map.entry(*nid).or_default().push(idx);
+            map.entry(*nid).or_default().insert(idx);
         }
     }
     map
@@ -1156,7 +1156,7 @@ impl OsmLayer {
         let way_idx = self.way_vertices.len();
         self.way_id_to_index.insert(way.id, way_idx);
         for nid in &way.nodes {
-            self.node_to_ways.entry(*nid).or_default().push(way_idx);
+            self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
         let style = self.stylesheet.way_style(&way.tags, way.is_closed());
@@ -1208,12 +1208,11 @@ impl OsmLayer {
             }
         }
         for ways in self.node_to_ways.values_mut() {
-            ways.retain(|&w| w != way_idx);
-            for w in ways.iter_mut() {
-                if *w > way_idx {
-                    *w -= 1;
-                }
-            }
+            *ways = ways
+                .iter()
+                .filter(|&&w| w != way_idx)
+                .map(|&w| if w > way_idx { w - 1 } else { w })
+                .collect();
         }
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
 
@@ -1276,7 +1275,10 @@ impl OsmLayer {
         way.nodes.push(node_id);
         let way_snapshot = way.clone();
 
-        self.node_to_ways.entry(node_id).or_default().push(way_idx);
+        self.node_to_ways
+            .entry(node_id)
+            .or_default()
+            .insert(way_idx);
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
         self.modified = true;
@@ -1308,7 +1310,7 @@ impl OsmLayer {
         way.nodes.insert(index, new_id);
         let way_snapshot = way.clone();
 
-        self.node_to_ways.entry(new_id).or_default().push(way_idx);
+        self.node_to_ways.entry(new_id).or_default().insert(way_idx);
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
         self.modified = true;
@@ -1337,8 +1339,14 @@ impl OsmLayer {
         let removed_node_id = way.nodes.remove(index);
         let way_snapshot = way.clone();
 
-        if let Some(way_idxs) = self.node_to_ways.get_mut(&removed_node_id) {
-            way_idxs.retain(|&i| i != way_idx);
+        // Only drop this way's `node_to_ways` entry for `removed_node_id` if
+        // the way no longer references that node at all — a closed way can
+        // reference the same node twice (ring closure), so removing one
+        // occurrence must not erase the way's remaining reference.
+        if !way_snapshot.nodes.contains(&removed_node_id) {
+            if let Some(way_idxs) = self.node_to_ways.get_mut(&removed_node_id) {
+                way_idxs.remove(&way_idx);
+            }
         }
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
@@ -1527,12 +1535,11 @@ impl OsmLayer {
             }
         }
         for ways in self.node_to_ways.values_mut() {
-            ways.retain(|&w| w != way_idx);
-            for w in ways.iter_mut() {
-                if *w > way_idx {
-                    *w -= 1;
-                }
-            }
+            *ways = ways
+                .iter()
+                .filter(|&&w| w != way_idx)
+                .map(|&w| if w > way_idx { w - 1 } else { w })
+                .collect();
         }
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
         self.modified = true;
@@ -1611,7 +1618,7 @@ impl OsmLayer {
         let way_idx = self.way_vertices.len();
         self.way_id_to_index.insert(way.id, way_idx);
         for nid in &way.nodes {
-            self.node_to_ways.entry(*nid).or_default().push(way_idx);
+            self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
         let style = self.stylesheet.way_style(&way.tags, way.is_closed());
@@ -3443,6 +3450,97 @@ mod tests {
             !hits_old.iter().any(|h| h.feature.id == 1),
             "node 1 should no longer be hit-testable at its old location: {:?}",
             hits_old
+        );
+    }
+
+    #[test]
+    fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
+        // Two closed ways (rings) sharing an edge (nodes 1 and 2), mimicking
+        // two adjacent building/parcel polygons. Each way's node list closes
+        // the ring by repeating its first node id as its last id, so node 1
+        // appears twice in way_a's own node list and node 2 appears twice in
+        // way_b's — this is exactly the shape that exposed a duplicate/
+        // dropped `node_to_ways` entry bug when one of the two ways is
+        // dragged and the move is committed.
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            tags: empty_tags(),
+            version: 1,
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: 40.001,
+            lon: -74.001,
+            tags: empty_tags(),
+            version: 1,
+        };
+        let n3 = OsmNode {
+            id: 3,
+            lat: 40.002,
+            lon: -74.0,
+            tags: empty_tags(),
+            version: 1,
+        };
+        let n4 = OsmNode {
+            id: 4,
+            lat: 40.001,
+            lon: -73.999,
+            tags: empty_tags(),
+            version: 1,
+        };
+        // way_a: ring 1 -> 2 -> 3 -> 1 (closed).
+        let way_a = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 1],
+            tags: empty_tags(),
+            version: 1,
+        };
+        // way_b: ring 1 -> 4 -> 2 -> 1 (closed), sharing the 1-2 edge with way_a.
+        let way_b = OsmWay {
+            id: 20,
+            nodes: vec![1, 4, 2, 1],
+            tags: empty_tags(),
+            version: 1,
+        };
+        let data = data_with(vec![n1, n2, n3, n4], vec![way_a, way_b]);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let old_bbox_a = layer.way_bboxes[0];
+        let old_bbox_b = layer.way_bboxes[1];
+
+        // Drag+commit both shared nodes (1 and 2), as a whole-way move would.
+        layer.commit_node_moves(&[(1, 41.0, -75.0), (2, 41.001, -75.001)]);
+
+        assert!(layer.is_modified());
+        assert_ne!(
+            layer.way_bboxes[0], old_bbox_a,
+            "way A's bbox should update"
+        );
+        assert_ne!(
+            layer.way_bboxes[1], old_bbox_b,
+            "way B's bbox should update"
+        );
+
+        // Every node id must map to exactly the way indices that actually
+        // reference it, with no duplicates and none dropped, despite each
+        // way listing its ring-closing node twice.
+        assert_eq!(
+            layer.node_to_ways.get(&1).cloned(),
+            Some([0usize, 1usize].into_iter().collect())
+        );
+        assert_eq!(
+            layer.node_to_ways.get(&2).cloned(),
+            Some([0usize, 1usize].into_iter().collect())
+        );
+        assert_eq!(
+            layer.node_to_ways.get(&3).cloned(),
+            Some([0usize].into_iter().collect())
+        );
+        assert_eq!(
+            layer.node_to_ways.get(&4).cloned(),
+            Some([1usize].into_iter().collect())
         );
     }
 
