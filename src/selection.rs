@@ -1,6 +1,6 @@
 //! Selection types and pure hit-testing math.
 
-use gpui::{Pixels, Point};
+use gpui::{point, px, Pixels, Point};
 
 use crate::layers::LayerId;
 
@@ -92,6 +92,27 @@ pub fn point_in_polygon(p: Point<Pixels>, verts: &[Point<Pixels>]) -> bool {
         j = i;
     }
     inside
+}
+
+/// The point on segment `a`-`b` nearest to `p`, using the same clamped
+/// projection as `point_to_segment_distance`. Handles zero-length segments
+/// by returning `a` itself.
+pub fn nearest_point_on_segment(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> Point<Pixels> {
+    let qx = p.x.as_f32();
+    let qy = p.y.as_f32();
+    let ax = a.x.as_f32();
+    let ay = a.y.as_f32();
+    let bx = b.x.as_f32();
+    let by = b.y.as_f32();
+
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= f32::EPSILON {
+        return a;
+    }
+    let t = (((qx - ax) * dx + (qy - ay) * dy) / len_sq).clamp(0.0, 1.0);
+    point(px(ax + t * dx), px(ay + t * dy))
 }
 
 /// Given one fixed rectangle edge `a`-`b` and a third point `offset_point`
@@ -369,6 +390,27 @@ mod tests {
             pt(1.0, 1.0),
             &[pt(0.0, 0.0), pt(1.0, 1.0)]
         ));
+    }
+
+    #[test]
+    fn nearest_point_on_segment_orthogonal_projection() {
+        let q = nearest_point_on_segment(pt(5.0, 3.0), pt(0.0, 0.0), pt(10.0, 0.0));
+        assert!((q.x.as_f32() - 5.0).abs() < 1e-4, "got {:?}", q);
+        assert!((q.y.as_f32() - 0.0).abs() < 1e-4, "got {:?}", q);
+    }
+
+    #[test]
+    fn nearest_point_on_segment_past_endpoint_clamps() {
+        let q = nearest_point_on_segment(pt(13.0, 4.0), pt(0.0, 0.0), pt(10.0, 0.0));
+        assert!((q.x.as_f32() - 10.0).abs() < 1e-4, "got {:?}", q);
+        assert!((q.y.as_f32() - 0.0).abs() < 1e-4, "got {:?}", q);
+    }
+
+    #[test]
+    fn nearest_point_on_segment_zero_length_returns_endpoint() {
+        let q = nearest_point_on_segment(pt(3.0, 4.0), pt(1.0, 1.0), pt(1.0, 1.0));
+        assert!((q.x.as_f32() - 1.0).abs() < 1e-4, "got {:?}", q);
+        assert!((q.y.as_f32() - 1.0).abs() < 1e-4, "got {:?}", q);
     }
 
     #[test]
