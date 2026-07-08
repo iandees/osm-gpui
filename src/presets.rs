@@ -70,6 +70,55 @@ impl PresetIndex {
     pub fn is_empty(&self) -> bool {
         self.presets.is_empty()
     }
+
+    /// Find the best-matching preset for a feature's tags and geometry.
+    /// A preset matches only if every one of its required `tags` entries
+    /// is present on the feature (`"*"` means "key present, any value")
+    /// and its `geometry` list includes the feature's geometry. Among
+    /// matches, the preset with the most matched tag pairs wins; ties are
+    /// broken by `match_score` descending.
+    pub fn match_feature(&self, tags: &HashMap<String, String>, geometry: Geometry) -> Option<&Preset> {
+        self.presets
+            .iter()
+            .filter(|p| p.geometry.contains(&geometry))
+            .filter_map(|p| {
+                let mut matched = 0usize;
+                for (key, value) in &p.tags {
+                    match tags.get(key) {
+                        Some(actual) if value == "*" || actual == value => matched += 1,
+                        _ => return None,
+                    }
+                }
+                Some((matched, p))
+            })
+            .max_by(|(matched_a, preset_a), (matched_b, preset_b)| {
+                matched_a
+                    .cmp(matched_b)
+                    .then(
+                        preset_a
+                            .match_score
+                            .partial_cmp(&preset_b.match_score)
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    )
+            })
+            .map(|(_, p)| p)
+    }
+}
+
+/// Look up a friendly `(name, icon)` pair for a feature. Always returns a
+/// name: falls back to the geometry's generic name (e.g. "Point") if
+/// nothing in `index` matches at all, which should only happen if `index`
+/// is missing the vendored schema's own geometry-only fallback presets
+/// (e.g. in a minimal test fixture).
+pub fn describe_feature(
+    index: &PresetIndex,
+    tags: &HashMap<String, String>,
+    geometry: Geometry,
+) -> (String, Option<String>) {
+    match index.match_feature(tags, geometry) {
+        Some(preset) => (preset.name.clone(), preset.icon.clone()),
+        None => (geometry.fallback_name().to_string(), None),
+    }
 }
 
 /// Vendored copy of iD's `areaKeys.json`: which tag keys imply an area for
@@ -294,5 +343,111 @@ mod tests {
         let area_keys = AreaKeys::from_json("{}").unwrap();
         assert_eq!(classify_geometry(&data, FeatureKind::Node, 999, &area_keys), None);
         assert_eq!(classify_geometry(&data, FeatureKind::Way, 999, &area_keys), None);
+    }
+
+    const MATCH_FIXTURE: &str = r#"
+    [
+      {
+        "id": "amenity/cafe",
+        "name": "Cafe",
+        "icon": "maki-cafe",
+        "tags": {"amenity": "cafe"},
+        "geometry": ["point", "vertex", "area"],
+        "match_score": 1.0
+      },
+      {
+        "id": "amenity/cafe/organic",
+        "name": "Organic Cafe",
+        "icon": "maki-cafe",
+        "tags": {"amenity": "cafe", "organic": "only"},
+        "geometry": ["point", "vertex", "area"],
+        "match_score": 1.0
+      },
+      {
+        "id": "building",
+        "name": "Building",
+        "icon": "maki-building",
+        "tags": {"building": "*"},
+        "geometry": ["area"],
+        "match_score": 1.0
+      },
+      {
+        "id": "point",
+        "name": "Point",
+        "tags": {},
+        "geometry": ["point"],
+        "match_score": 0.1
+      },
+      {
+        "id": "area",
+        "name": "Area",
+        "tags": {},
+        "geometry": ["area"],
+        "match_score": 0.1
+      }
+    ]
+    "#;
+
+    #[test]
+    fn match_feature_finds_exact_tag_match() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let preset = index.match_feature(&tags, Geometry::Point).unwrap();
+        assert_eq!(preset.id, "amenity/cafe");
+    }
+
+    #[test]
+    fn match_feature_prefers_more_specific_match() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let tags = HashMap::from([
+            ("amenity".to_string(), "cafe".to_string()),
+            ("organic".to_string(), "only".to_string()),
+        ]);
+        let preset = index.match_feature(&tags, Geometry::Point).unwrap();
+        assert_eq!(preset.id, "amenity/cafe/organic");
+    }
+
+    #[test]
+    fn match_feature_matches_wildcard_value() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let tags = HashMap::from([("building".to_string(), "house".to_string())]);
+        let preset = index.match_feature(&tags, Geometry::Area).unwrap();
+        assert_eq!(preset.id, "building");
+    }
+
+    #[test]
+    fn match_feature_respects_geometry_filter() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        // "amenity/cafe" doesn't list "line" in its geometry, so a line
+        // with the same tags should fall through to no match at all
+        // (there's no generic "line" fallback in this fixture).
+        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        assert!(index.match_feature(&tags, Geometry::Line).is_none());
+    }
+
+    #[test]
+    fn match_feature_falls_back_to_generic_geometry_preset() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let tags = HashMap::from([("shop".to_string(), "bakery".to_string())]);
+        let preset = index.match_feature(&tags, Geometry::Point).unwrap();
+        assert_eq!(preset.id, "point");
+    }
+
+    #[test]
+    fn describe_feature_returns_name_and_icon_on_match() {
+        let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
+        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let (name, icon) = describe_feature(&index, &tags, Geometry::Point);
+        assert_eq!(name, "Cafe");
+        assert_eq!(icon, Some("maki-cafe".to_string()));
+    }
+
+    #[test]
+    fn describe_feature_falls_back_to_geometry_name_when_index_has_no_match() {
+        let index = PresetIndex::from_json("[]").unwrap();
+        let tags = HashMap::from([("shop".to_string(), "bakery".to_string())]);
+        let (name, icon) = describe_feature(&index, &tags, Geometry::Vertex);
+        assert_eq!(name, "Vertex");
+        assert_eq!(icon, None);
     }
 }
