@@ -182,7 +182,7 @@ impl MapViewer {
     /// or `None` if the feature's layer/tags/geometry can't be found (e.g.
     /// it was deleted since selection). `icon_svg_path` is `None` when the
     /// matched preset has no icon or the icon file isn't vendored.
-    fn describe_selected_feature(
+    pub(crate) fn describe_selected_feature(
         &self,
         feat: &osm_gpui::selection::FeatureRef,
     ) -> Option<(String, Option<std::path::PathBuf>)> {

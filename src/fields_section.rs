@@ -403,23 +403,15 @@ impl MapViewer {
                 window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
             }));
 
-        // Describe the selected feature using the same robust path as side_panel.rs:
-        // resolve layer/tags/geometry and look up the preset name, falling back to
-        // a geometry-based name like "Point"/"Line"/"Area" when no preset matches.
-        let name_header = (|| {
-            let layer = self.layer_manager.find_layer(feature.layer_id)?;
-            let editable = layer.as_editable()?;
-            let tags: std::collections::HashMap<String, String> =
-                editable.feature_tags(&feature)?.into_iter().collect();
-            let geometry = editable.feature_geometry(&feature, osm_gpui::presets::area_keys())?;
-            let (name, _icon_name) =
-                osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
-            Some(name)
-        })().map(|name| {
-            Label::new(name)
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-        });
+        // The same friendly name shown in the Selection section (preset name,
+        // with a geometry-based fallback like "Point"/"Line"/"Area").
+        let name_header = self
+            .describe_selected_feature(&feature)
+            .map(|(name, _icon_path)| {
+                Label::new(name)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+            });
 
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
             let mut column = gpui::div()
