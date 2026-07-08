@@ -967,6 +967,40 @@ impl MapViewer {
                 // original `node_id`, breaking any later undo entry that
                 // still references it. Out of scope for this plan.
             }
+            UndoableAction::SnapExtendWay {
+                layer,
+                way_id,
+                way_created,
+                snap_way_id,
+                snap_index,
+                node_id,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if !forward {
+                    // Detach from the drawn way first (deleting it if this
+                    // click created it), without deleting the node — it's
+                    // still referenced by `snap_way_id` until the next step.
+                    if *way_created {
+                        editable.remove_way(*way_id);
+                    } else {
+                        let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
+                        if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
+                            editable.remove_node_from_way(*way_id, idx);
+                        }
+                    }
+                    // Then remove it from the way it was snapped onto, and
+                    // delete the node itself.
+                    editable.remove_node_from_way(*snap_way_id, *snap_index);
+                    editable.remove_node(*node_id);
+                }
+                // Redo (forward) is intentionally a no-op, same reasoning as
+                // `ExtendWay`/`InsertNodeIntoWay` above.
+            }
         }
     }
 
