@@ -15,6 +15,7 @@ use gpui_component::{
 use std::collections::HashMap;
 
 use crate::presets::Geometry;
+use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
 const PREVIEW_TAG_COUNT: usize = 3;
@@ -122,7 +123,6 @@ impl Render for PresetPickerDialog {
 
         let list: gpui::AnyElement = if results.is_empty() {
             Label::new("No matches.")
-                .text_sm()
                 .text_color(muted)
                 .into_any_element()
         } else {
@@ -145,10 +145,10 @@ impl Render for PresetPickerDialog {
                         .cursor_pointer()
                         .when(is_selected, |el| el.bg(cx.theme().accent))
                         .hover(|el| el.bg(cx.theme().accent))
-                        .child(Label::new(name.clone()).text_sm())
+                        .child(Label::new(name.clone()))
                         .child(
                             Label::new(format_tag_preview(&tags))
-                                .text_xs()
+                                .text_size(muted_text_size())
                                 .text_color(muted),
                         )
                         .on_mouse_down(

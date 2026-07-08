@@ -17,7 +17,7 @@ use gpui_component::{
 
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
-use crate::settings_store::{self, ApiServerChoice, AppSettings};
+use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset};
 use crate::ui::modal::field_row;
 
 /// Login UI state for the currently-selected API server.
@@ -138,6 +138,12 @@ impl SettingsWindow {
         settings_store::update_store(self.app_settings.clone());
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
+        cx.notify();
+    }
+
+    fn set_text_size_preset(&mut self, preset: TextSizePreset, cx: &mut Context<Self>) {
+        self.app_settings.text_size_preset = preset;
+        settings_store::update_store(self.app_settings.clone());
         cx.notify();
     }
 
@@ -309,7 +315,39 @@ impl SettingsWindow {
 
     fn setting_pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
         let view = cx.entity();
-        vec![self.account_page(view.clone()), self.imagery_page(view)]
+        vec![
+            self.account_page(view.clone()),
+            self.appearance_page(view.clone()),
+            self.imagery_page(view),
+        ]
+    }
+
+    fn appearance_page(&self, view: Entity<Self>) -> SettingPage {
+        let value_view = view.clone();
+        let set_value_view = view;
+        let item = SettingItem::new(
+            "Text Size",
+            SettingField::dropdown(
+                TextSizePreset::ALL
+                    .into_iter()
+                    .map(|p| (p.as_key().into(), p.label().into()))
+                    .collect(),
+                move |cx: &App| {
+                    SharedString::from(value_view.read(cx).app_settings.text_size_preset.as_key())
+                },
+                move |val: SharedString, cx: &mut App| {
+                    let Some(preset) = TextSizePreset::from_key(&val) else {
+                        return;
+                    };
+                    set_value_view.update(cx, |this, cx| this.set_text_size_preset(preset, cx));
+                },
+            ),
+        )
+        .description("Size of text throughout the app.");
+
+        SettingPage::new("Appearance")
+            .icon(Icon::new(IconName::Palette))
+            .groups(vec![SettingGroup::new().title("Text").item(item)])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {
@@ -522,7 +560,7 @@ fn render_custom_api_url(
 
     let mut row = v_flex().gap_2().child(field_row("URL", &input, muted));
     if let Some(err) = error {
-        row = row.child(Label::new(err).text_sm().text_color(danger));
+        row = row.child(Label::new(err).text_color(danger));
     }
     row.child(
         Button::new("save-custom-api-url")
@@ -578,18 +616,13 @@ fn render_login_state(
         LoginState::LoggingIn => h_flex()
             .gap_2()
             .items_center()
-            .child(
-                Label::new("Signing in… complete login in your browser.")
-                    .text_sm()
-                    .text_color(muted),
-            )
+            .child(Label::new("Signing in… complete login in your browser.").text_color(muted))
             .into_any_element(),
         LoginState::LoggedIn(token) => h_flex()
             .gap_2()
             .items_center()
             .child(
                 Label::new(format!("✅ Logged in as {}", token.display_name))
-                    .text_sm()
                     .text_color(foreground),
             )
             .child(
@@ -604,7 +637,7 @@ fn render_login_state(
             .into_any_element(),
         LoginState::Error(msg) => v_flex()
             .gap_2()
-            .child(Label::new(msg).text_sm().text_color(danger))
+            .child(Label::new(msg).text_color(danger))
             .child(
                 Button::new("login-retry")
                     .label("Try again")
@@ -632,11 +665,7 @@ fn render_entry_row(
         h_flex()
             .gap_2()
             .items_center()
-            .child(
-                Label::new(format!("Delete {}?", entry_name))
-                    .text_sm()
-                    .text_color(danger),
-            )
+            .child(Label::new(format!("Delete {}?", entry_name)).text_color(danger))
             .child({
                 let view = view.clone();
                 Button::new(("confirm-delete", idx))
@@ -730,7 +759,7 @@ fn render_entry_edit_form(
         );
 
     if let Some(err) = edit_error {
-        content = content.child(Label::new(err).text_sm().text_color(danger));
+        content = content.child(Label::new(err).text_color(danger));
     }
 
     let save_view = view.clone();
@@ -762,6 +791,7 @@ impl Render for SettingsWindow {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
+            .text_size(crate::ui::style::current_text_scale().body)
             .child(Settings::new("app-settings").pages(self.setting_pages(cx)))
     }
 }

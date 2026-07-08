@@ -13,6 +13,7 @@ use gpui_component::{
 use std::collections::HashMap;
 
 use crate::nsi::NsiEntry;
+use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
 const PREVIEW_TAG_COUNT: usize = 3;
@@ -119,12 +120,10 @@ impl Render for NsiPresetDialog {
 
         let list: gpui::AnyElement = if crate::nsi::current().is_none() {
             Label::new("Downloading NSI data…")
-                .text_sm()
                 .text_color(muted)
                 .into_any_element()
         } else if results.is_empty() {
             Label::new("No matches.")
-                .text_sm()
                 .text_color(muted)
                 .into_any_element()
         } else {
@@ -147,10 +146,10 @@ impl Render for NsiPresetDialog {
                         .cursor_pointer()
                         .when(is_selected, |el| el.bg(cx.theme().accent))
                         .hover(|el| el.bg(cx.theme().accent))
-                        .child(Label::new(entry.display_name.clone()).text_sm())
+                        .child(Label::new(entry.display_name.clone()))
                         .child(
                             Label::new(format_tag_preview(entry))
-                                .text_xs()
+                                .text_size(muted_text_size())
                                 .text_color(muted),
                         )
                         .on_mouse_down(

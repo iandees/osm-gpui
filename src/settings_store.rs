@@ -18,6 +18,40 @@ pub enum ApiServerChoice {
     Custom,
 }
 
+/// App-wide text size preference. See `TextScale` in `ui/style.rs` for the
+/// pixel values each preset maps to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextSizePreset {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl TextSizePreset {
+    pub const ALL: [TextSizePreset; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Medium => "Medium",
+            Self::Large => "Large",
+        }
+    }
+
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_key() == key)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub api_server: ApiServerChoice,
@@ -28,6 +62,8 @@ pub struct AppSettings {
     /// its own registered app instead of sharing a single hardcoded client_id.
     #[serde(default)]
     pub client_ids: HashMap<String, String>,
+    #[serde(default)]
+    pub text_size_preset: TextSizePreset,
 }
 
 impl Default for AppSettings {
@@ -36,6 +72,7 @@ impl Default for AppSettings {
             api_server: ApiServerChoice::Primary,
             custom_api_url: String::new(),
             client_ids: HashMap::new(),
+            text_size_preset: TextSizePreset::default(),
         }
     }
 }
@@ -129,6 +166,7 @@ mod tests {
             api_server: ApiServerChoice::Custom,
             custom_api_url: "https://example.com".into(),
             client_ids: HashMap::new(),
+            text_size_preset: TextSizePreset::Large,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -141,6 +179,15 @@ mod tests {
         let path = dir.join("settings.json");
         let loaded = load_from(&path);
         assert_eq!(loaded, AppSettings::default());
+    }
+
+    #[test]
+    fn missing_text_size_preset_defaults_to_medium() {
+        let dir = tmp_dir("legacy-no-text-size");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.text_size_preset, TextSizePreset::Medium);
     }
 
     #[test]
@@ -159,6 +206,7 @@ mod tests {
                 api_server: ApiServerChoice::Primary,
                 custom_api_url: String::new(),
                 client_ids: HashMap::new(),
+                text_size_preset: TextSizePreset::default(),
             }
             .api_base_url(),
             PRIMARY_API_URL
@@ -168,6 +216,7 @@ mod tests {
                 api_server: ApiServerChoice::Dev,
                 custom_api_url: String::new(),
                 client_ids: HashMap::new(),
+                text_size_preset: TextSizePreset::default(),
             }
             .api_base_url(),
             DEV_API_URL
@@ -177,6 +226,7 @@ mod tests {
                 api_server: ApiServerChoice::Custom,
                 custom_api_url: "https://custom.example.com/".into(),
                 client_ids: HashMap::new(),
+                text_size_preset: TextSizePreset::default(),
             }
             .api_base_url(),
             "https://custom.example.com"

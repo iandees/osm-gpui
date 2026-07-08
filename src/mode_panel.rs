@@ -5,6 +5,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable,
 };
+use osm_gpui::ui::style::muted_text_size;
 
 use crate::{EditMode, EditModeAction, MapViewer, SetMode};
 
@@ -58,7 +59,7 @@ impl MapViewer {
                 .items_center()
                 .gap_0p5()
                 .child(Icon::new(mode_icon(mode)).small())
-                .child(div().text_xs().child(mode_label(mode))),
+                .child(div().text_size(muted_text_size()).child(mode_label(mode))),
         );
         if is_active {
             button = button.primary();

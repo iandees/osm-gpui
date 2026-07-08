@@ -186,7 +186,7 @@ impl Render for CustomImageryDialog {
             );
 
         if let Some(msg) = self.error.clone() {
-            body = body.child(Label::new(msg).text_sm().text_color(cx.theme().danger));
+            body = body.child(Label::new(msg).text_color(cx.theme().danger));
         }
 
         let footer = modal::footer_row(
