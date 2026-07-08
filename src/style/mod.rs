@@ -6,4 +6,4 @@
 
 pub mod mapcss;
 
-pub use mapcss::{NodeStyle, ParseError, Stylesheet, WayStyle};
+pub use mapcss::{Fill, NodeStyle, ParseError, Stylesheet, WayStyle};

@@ -171,7 +171,7 @@ fn render_ways_cpu(
         let (color, width) = match cached_styles {
             Some(cs) => cs[i],
             None => {
-                let s = stylesheet.way_style(&ways_sorted[i].tags);
+                let s = stylesheet.way_style(&ways_sorted[i].tags, ways_sorted[i].is_closed());
                 (s.color, s.width)
             }
         };
@@ -340,7 +340,7 @@ fn main() {
     let cached_way_styles: Vec<(u32, f32)> = ways_sorted
         .iter()
         .map(|w| {
-            let s = stylesheet.way_style(&w.tags);
+            let s = stylesheet.way_style(&w.tags, w.is_closed());
             (s.color, s.width)
         })
         .collect();
@@ -412,7 +412,7 @@ fn main() {
     bench("way_style x 8k calls", 30, || {
         let mut acc = 0u64;
         for _ in 0..8_000 {
-            acc = acc.wrapping_add(stylesheet.way_style(&hw_tags).color as u64);
+            acc = acc.wrapping_add(stylesheet.way_style(&hw_tags, false).color as u64);
         }
         acc
     });

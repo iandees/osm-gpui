@@ -6,6 +6,13 @@ way[highway=footway] { color: #8b4513; width: 2; }
 way[waterway]        { color: #1e90ff; width: 3; }
 way[building]        { color: #808080; width: 1; }
 
+/* Area fills — closed ways only. The generic landuse rule comes before the
+   more specific grass/forest/park rules so the specific ones win. */
+area[building]  { fill-color: #808080; fill-opacity: 0.4; }
+area[natural=water], area[waterway=riverbank] { fill-color: #1e90ff; fill-opacity: 0.4; }
+area[landuse]   { fill-color: #9acd32; fill-opacity: 0.25; }
+area[leisure=park], area[landuse=grass], area[landuse=forest] { fill-color: #228b22; fill-opacity: 0.35; }
+
 node           { color: #FFD700; symbol-size: 5; }
 node[amenity]  { color: #ff1493; symbol-size: 7; }
 node[shop]     { color: #32cd32; symbol-size: 7; }
