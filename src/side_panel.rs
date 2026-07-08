@@ -20,7 +20,11 @@ impl MapViewer {
     /// The right pane: Layers, Selection, and Tags sections stacked
     /// top-to-bottom, each collapsible and sized to its content (the whole
     /// pane scrolls).
-    pub(crate) fn render_side_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_side_panel(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let layer_info: Vec<(LayerId, String, bool, bool, bool)> = self
             .layer_manager
             .layers()
@@ -39,7 +43,7 @@ impl MapViewer {
 
         let layers_section = self.render_layers_section(&layer_info, cx);
         let selection_section = self.render_selection_section(cx);
-        let fields_section = self.render_fields_section(cx);
+        let fields_section = self.render_fields_section(window, cx);
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
 
@@ -257,6 +261,8 @@ impl MapViewer {
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                         this.selected = vec![row_feat];
+                        this.fields_text_inputs.clear();
+                        this.fields_text_subscribed.clear();
                         cx.notify();
                     }),
                 )

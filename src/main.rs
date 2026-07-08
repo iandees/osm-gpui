@@ -321,6 +321,15 @@ struct MapViewer {
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, in that order) is expanded.
     side_panel_open: [bool; 5],
+    /// Live `InputState` entities for the Fields section's text widgets,
+    /// keyed by field id. Rebuilt whenever the selected feature changes so
+    /// stale entities from a previous feature never leak into a new one.
+    fields_text_inputs: std::collections::HashMap<String, gpui::Entity<gpui_component::input::InputState>>,
+    /// Field ids that already have a `cx.subscribe` registered on their
+    /// `fields_text_inputs` entity, so `text_field_input` never subscribes
+    /// twice for the same field across re-renders. Cleared alongside
+    /// `fields_text_inputs`.
+    fields_text_subscribed: std::collections::HashSet<String>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -427,6 +436,8 @@ impl MapViewer {
             pending_tag_edit_open: None,
             nsi_dialog: None,
             side_panel_open: [true, true, true, true, false],
+            fields_text_inputs: std::collections::HashMap::new(),
+            fields_text_subscribed: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
             mode: EditMode::Select,
@@ -1313,6 +1324,8 @@ impl MapViewer {
             interaction::Gesture::BoxSelected { rect } => {
                 let rect = normalize_rect(from_pt(rect.0), from_pt(rect.1));
                 self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
+                self.fields_text_inputs.clear();
+                self.fields_text_subscribed.clear();
                 // Always notify: the box-select overlay is driven off
                 // `self.interaction`, which just transitioned back to `Idle`.
                 // If the box hit nothing, `self.selected` wouldn't otherwise
@@ -1418,6 +1431,8 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
         }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
     }
 
     /// Commit an Extrude drag: compute the far 2 corners via
@@ -1463,6 +1478,8 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
         }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
     }
 
     /// Double-click on a segment (no drag): insert a new node at the
@@ -1502,6 +1519,8 @@ impl MapViewer {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
         let hit = osm_gpui::selection::resolve_hits(per_layer);
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
     }
 
     /// Add mode: place a node, or extend/connect the in-progress way. See
@@ -1526,6 +1545,8 @@ impl MapViewer {
                             kind: osm_gpui::selection::FeatureKind::Way,
                             id: way_id,
                         }];
+                        self.fields_text_inputs.clear();
+                        self.fields_text_subscribed.clear();
                         return;
                     }
                 }
@@ -1593,6 +1614,8 @@ impl MapViewer {
                 }];
             }
         }
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
     }
 
     /// Shared by the "continue clicking" and "connect to existing feature"
@@ -2492,7 +2515,7 @@ impl Render for MapViewer {
             )
             .child(
                 // Right panel with layer controls
-                self.render_side_panel(cx),
+                self.render_side_panel(window, cx),
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
