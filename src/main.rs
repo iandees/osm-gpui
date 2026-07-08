@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod fields_section;
 mod menu;
 mod mode_panel;
 mod script_harness;
@@ -57,6 +58,7 @@ actions!(
         Undo,
         Redo,
         ApplyNsiPreset,
+        ChangeFeatureType,
         UploadToOsm
     ]
 );
@@ -317,9 +319,28 @@ struct MapViewer {
     pending_tag_edit_open: Option<PendingTagEditOpen>,
     /// Active NSI preset search dialog, if open.
     nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
-    /// Whether each side-panel accordion section (Layers, Selection, Tags,
-    /// History, in that order) is expanded.
-    side_panel_open: [bool; 4],
+    /// Active "change feature type" preset picker dialog, if open.
+    preset_picker_dialog:
+        Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
+    /// Whether each side-panel accordion section (Layers, Selection, Fields,
+    /// Tags, History, in that order) is expanded.
+    side_panel_open: [bool; 5],
+    /// Live `InputState` entities for the Fields section's text widgets,
+    /// keyed by field id. Rebuilt whenever the selected feature changes so
+    /// stale entities from a previous feature never leak into a new one.
+    fields_text_inputs:
+        std::collections::HashMap<String, gpui::Entity<gpui_component::input::InputState>>,
+    /// Field ids that already have a `cx.subscribe` registered on their
+    /// `fields_text_inputs` entity, so `text_field_input` never subscribes
+    /// twice for the same field across re-renders. Cleared alongside
+    /// `fields_text_inputs`.
+    fields_text_subscribed: std::collections::HashSet<String>,
+    /// Which field's combo/multiCombo option list is currently expanded,
+    /// if any (`None` = all collapsed). Only one at a time.
+    fields_open_combo: Option<String>,
+    /// Field ids promoted from a preset's `more_fields` into the visible
+    /// list for the current editing session. Cleared on selection change.
+    fields_promoted_more_fields: std::collections::HashSet<String>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -425,7 +446,12 @@ impl MapViewer {
             tag_edit_dialog: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
-            side_panel_open: [true, true, true, false],
+            preset_picker_dialog: None,
+            side_panel_open: [true, true, true, true, false],
+            fields_text_inputs: std::collections::HashMap::new(),
+            fields_text_subscribed: std::collections::HashSet::new(),
+            fields_open_combo: None,
+            fields_promoted_more_fields: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
             undo_stack: UndoStack::default(),
             mode: EditMode::Select,
@@ -1147,6 +1173,62 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Handle the `ChangeFeatureType` action: opens the preset picker dialog
+    /// for the single selected feature, letting the user deliberately
+    /// override whatever `PresetIndex::match_feature` auto-matched. Mirrors
+    /// `on_apply_nsi_preset` exactly, but resolves the feature's `Geometry`
+    /// first (the picker filters results by it) and reuses the same
+    /// `apply_nsi_preset` tag-mutation function on submit.
+    fn on_change_feature_type(
+        &mut self,
+        _: &ChangeFeatureType,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected.len() != 1 || self.preset_picker_dialog.is_some() {
+            return;
+        }
+        let target = self.selected[0];
+
+        let Some(layer) = self.layer_manager.find_layer(target.layer_id) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable() else {
+            return;
+        };
+        let Some(geometry) = editable.feature_geometry(&target, osm_gpui::presets::area_keys())
+        else {
+            return;
+        };
+
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::preset_picker_dialog::PresetPickerDialog::new(geometry, window, cx)
+        });
+        cx.subscribe(
+            &dialog,
+            move |this: &mut Self,
+                  _entity,
+                  event: &osm_gpui::ui::preset_picker_dialog::DialogEvent,
+                  cx| {
+                use osm_gpui::ui::preset_picker_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.preset_picker_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Submitted(preset_tags) => {
+                        this.apply_nsi_preset(&target, preset_tags.clone());
+                        this.preset_picker_dialog = None;
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+        self.preset_picker_dialog = Some(dialog);
+        cx.notify();
+    }
+
     /// Apply `preset_tags` to `target`: for each preset key whose value
     /// differs from what the feature already has, set it via `set_tag` and
     /// record a `(feature, key, before, after)` entry; push one
@@ -1312,6 +1394,10 @@ impl MapViewer {
             interaction::Gesture::BoxSelected { rect } => {
                 let rect = normalize_rect(from_pt(rect.0), from_pt(rect.1));
                 self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
+                self.fields_text_inputs.clear();
+                self.fields_text_subscribed.clear();
+                self.fields_open_combo = None;
+                self.fields_promoted_more_fields.clear();
                 // Always notify: the box-select overlay is driven off
                 // `self.interaction`, which just transitioned back to `Idle`.
                 // If the box hit nothing, `self.selected` wouldn't otherwise
@@ -1417,6 +1503,10 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
         }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
     }
 
     /// Commit an Extrude drag: compute the far 2 corners via
@@ -1462,6 +1552,10 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
         }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
     }
 
     /// Double-click on a segment (no drag): insert a new node at the
@@ -1501,6 +1595,10 @@ impl MapViewer {
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
         let hit = osm_gpui::selection::resolve_hits(per_layer);
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
     }
 
     /// Add mode: place a node, or extend/connect the in-progress way. See
@@ -1525,6 +1623,10 @@ impl MapViewer {
                             kind: osm_gpui::selection::FeatureKind::Way,
                             id: way_id,
                         }];
+                        self.fields_text_inputs.clear();
+                        self.fields_text_subscribed.clear();
+                        self.fields_open_combo = None;
+                        self.fields_promoted_more_fields.clear();
                         return;
                     }
                 }
@@ -1592,6 +1694,10 @@ impl MapViewer {
                 }];
             }
         }
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
     }
 
     /// Shared by the "continue clicking" and "connect to existing feature"
@@ -2491,7 +2597,7 @@ impl Render for MapViewer {
             )
             .child(
                 // Right panel with layer controls
-                self.render_side_panel(cx),
+                self.render_side_panel(window, cx),
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
@@ -2499,6 +2605,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
+            .on_action(cx.listener(Self::on_change_feature_type))
             .children(self.custom_imagery_dialog.clone())
             .children(
                 self.tag_edit_dialog
@@ -2507,6 +2614,7 @@ impl Render for MapViewer {
             )
             .children(self.quit_confirm_dialog.clone())
             .children(self.nsi_dialog.clone())
+            .children(self.preset_picker_dialog.clone())
             .children(self.upload_dialog.clone())
     }
 }
