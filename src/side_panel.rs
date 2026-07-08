@@ -10,11 +10,11 @@ use gpui_component::{
 };
 
 use osm_gpui::layers::LayerId;
+use osm_gpui::ui::style::{interactive_row, panel_row, PANEL_ROW_HEIGHT, SIDE_PANEL_WIDTH};
 
 use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
 
 impl MapViewer {
-    const SELECTION_ROW_HEIGHT: f32 = 22.0;
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
 
     /// The right pane: Layers, Selection, and Tags sections stacked
@@ -60,7 +60,7 @@ impl MapViewer {
         };
 
         div()
-            .w(px(280.0))
+            .w(px(SIDE_PANEL_WIDTH))
             .h_full()
             .bg(cx.theme().sidebar)
             .border_l_1()
@@ -119,9 +119,9 @@ impl MapViewer {
                     .map(|(i, action)| {
                         let is_current = i + 1 == cursor;
                         let is_future = i >= cursor;
-                        let mut row = div().px_1().py_0p5().text_sm().child(action.description());
+                        let mut row = panel_row(("history-row", i)).child(action.description());
                         if is_current {
-                            row = row.bg(cx.theme().accent);
+                            row = row.bg(cx.theme().list_active);
                         } else if is_future {
                             row = row.text_color(cx.theme().muted_foreground).italic();
                         }
@@ -211,7 +211,7 @@ impl MapViewer {
         }
 
         let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
-        let list_height = px(visible_rows as f32 * Self::SELECTION_ROW_HEIGHT);
+        let list_height = px(visible_rows as f32 * PANEL_ROW_HEIGHT);
 
         div()
             .id("selection-list")
@@ -232,18 +232,8 @@ impl MapViewer {
                 };
                 let icon_path = described.and_then(|(_, path)| path);
 
-                let mut row = div()
-                    .id(("selection-row", i))
-                    .flex_shrink_0()
-                    .h(px(Self::SELECTION_ROW_HEIGHT))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|this| this.bg(cx.theme().accent));
+                let mut row = interactive_row(("selection-row", i), false, cx)
+                    .text_color(cx.theme().foreground);
 
                 if let Some(path) = icon_path {
                     row = row.child(
@@ -311,15 +301,7 @@ impl MapViewer {
                             } else {
                                 name.clone()
                             };
-                            div()
-                                .id(("layer-row", index))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .px_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .when(is_active, |this| this.bg(cx.theme().accent))
+                            interactive_row(("layer-row", index), is_active, cx)
                                 .child(
                                     Checkbox::new(("layer", index))
                                         .checked(*is_visible)
