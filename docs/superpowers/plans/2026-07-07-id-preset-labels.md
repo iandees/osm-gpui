@@ -13,7 +13,7 @@
 - Vendored data lives under `assets/presets/` (JSON + `icons/*.svg`), checked into git — no runtime network fetch for presets/icons (unlike `nsi.rs`).
 - v1 has **no** locationSet filtering, **no** preset search dialog, **no** NSI-dialog unification, **no** use of preset `terms`/`fields`/`addTags`/`removeTags`, **no** Tags-section display, **no** map-canvas POI icon rendering. Selection-row rows in the side panel only.
 - The preset JSON schema kept is exactly: `id`, `name`, `icon` (optional), `tags` (map, `"*"` = key-present wildcard), `geometry` (list of `point`/`vertex`/`line`/`area`/`relation`), `match_score` (float, default `1.0`).
-- `area_keys.json` schema: map of tag key → map of excluded values (value `true`); an empty inner map means every value of that key implies area on a closed way.
+- `area_keys.json` schema: map of tag key → map of excluded values (value `true`); an empty inner map means every value of that key implies area on a closed way. Derived by the vendor-update tool directly from `presets.json` (mirroring iD's own runtime `areaKeys()` computation) — there is no separate upstream `areaKeys.json` file to fetch.
 - The vendor-update tool (`examples/update_presets.rs`) is a manual dev tool, not part of CI or app runtime, and is not unit tested — its correctness is verified by running it and reviewing the resulting diff.
 - Icon SVGs are resolved at runtime via `concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets/icons/")` + icon name + `.svg` (same simplification level as the project's current dev-only distribution model — no packaging story yet).
 
@@ -747,6 +747,8 @@ git commit -m "Add feature_geometry to EditableLayer/OsmLayer"
 
 This is a manual dev tool (see Global Constraints) — not unit tested. Its steps are "write it, run it, inspect the output" rather than TDD.
 
+> **Amendment (discovered while running Task 7):** `id-tagging-schema`'s npm package does **not** publish a standalone `dist/areaKeys.json` — that file doesn't exist at any version. The iD editor itself has no such static file either; it computes area keys *at runtime* from `presets.json` via `modules/presets/index.js`'s `areaKeys()` function: a keeplist/discardlist built from each non-suggestion/non-replacement preset's first tag key, whether that preset's `geometry` includes `"area"`, and — for excluding specific values — whether a preset also supporting `"line"` geometry sets that key via `addTags` (with a small fixed ignore-list of keys — `barrier`, `highway`, `footway`, `railway`, `junction`, `type` — that never count as area keys). The tool below replicates that derivation directly from the same `presets.json` body it already fetches, instead of fetching a second URL. This intentionally does **not** replicate iD's separate, hardcoded `osmAreaKeysExceptions` table (e.g. `highway=rest_area` counting as an area) — that table lives in iD's TypeScript source, not in the tagging-schema data package, and replicating it is out of scope for v1 (an accepted simplification alongside the plan's other stated non-goals).
+
 - [ ] **Step 1: Write the tool**
 
 ```rust
@@ -765,10 +767,13 @@ use std::path::Path;
 
 const PRESETS_URL: &str =
     "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/presets.json";
-const AREA_KEYS_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/areaKeys.json";
 const MAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@mapbox/maki/icons";
 const TEMAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@rapideditor/temaki/icons";
+
+// Keys iD never treats as area-implying, regardless of what presets.json
+// says — mirrors iD's own `areaKeys()` ignore list in
+// modules/presets/index.js (these are "usually a line" keys).
+const AREA_IGNORE_KEYS: &[&str] = &["barrier", "highway", "footway", "railway", "junction", "type"];
 
 const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets");
 
@@ -776,9 +781,10 @@ fn main() {
     let client = UreqClient::new();
 
     let presets_body = fetch(&client, PRESETS_URL);
-    let area_keys_body = fetch(&client, AREA_KEYS_URL);
+    let presets_root: Value = serde_json::from_str(&presets_body).expect("parse presets.json");
 
-    let (trimmed_presets, icon_names) = trim_presets(&presets_body);
+    let (trimmed_presets, icon_names) = trim_presets(&presets_root);
+    let area_keys = compute_area_keys(&presets_root);
 
     fs::create_dir_all(OUT_DIR).expect("create assets/presets");
     fs::write(
@@ -786,8 +792,11 @@ fn main() {
         serde_json::to_string_pretty(&trimmed_presets).unwrap(),
     )
     .expect("write presets.json");
-    fs::write(Path::new(OUT_DIR).join("area_keys.json"), &area_keys_body)
-        .expect("write area_keys.json");
+    fs::write(
+        Path::new(OUT_DIR).join("area_keys.json"),
+        serde_json::to_string_pretty(&area_keys).unwrap(),
+    )
+    .expect("write area_keys.json");
 
     let icons_dir = Path::new(OUT_DIR).join("icons");
     fs::create_dir_all(&icons_dir).expect("create icons dir");
@@ -859,8 +868,7 @@ fn icon_url(icon_name: &str) -> String {
 /// Extract only the fields our `Preset` type keeps, from upstream's full
 /// `presets.json` object-of-objects shape, and collect every referenced
 /// icon name along the way.
-fn trim_presets(body: &str) -> (Vec<Value>, HashSet<String>) {
-    let root: Value = serde_json::from_str(body).expect("parse presets.json");
+fn trim_presets(root: &Value) -> (Vec<Value>, HashSet<String>) {
     let Some(obj) = root.as_object() else {
         panic!("presets.json root is not an object");
     };
@@ -913,6 +921,83 @@ fn trim_presets(body: &str) -> (Vec<Value>, HashSet<String>) {
     }
 
     (out, icon_names)
+}
+
+/// Derive `area_keys.json`'s content directly from the full upstream
+/// `presets.json`, replicating iD's own `areaKeys()` function
+/// (`modules/presets/index.js`): a key becomes an area key if some
+/// non-suggestion, non-replacement preset's *first* tag key is that key and
+/// that preset's `geometry` includes `"area"` (and the key isn't in
+/// `AREA_IGNORE_KEYS`). A specific value is then excluded from that key's
+/// area-implying set if some preset also supporting `"line"` geometry sets
+/// that exact key/value via `addTags`. Returns a JSON object shaped exactly
+/// like `AreaKeys::from_json` expects: key -> { excluded_value: true, ... }.
+fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
+    let obj = root.as_object().expect("presets.json root is not an object");
+
+    let mut area_keys: BTreeMap<String, BTreeMap<String, bool>> = BTreeMap::new();
+
+    // Keeplist pass.
+    for entry in obj.values() {
+        if entry.get("suggestion").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        if entry.get("replacement").is_some() {
+            continue;
+        }
+        let Some(tags) = entry.get("tags").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let Some(first_key) = tags.keys().next() else {
+            continue;
+        };
+        if AREA_IGNORE_KEYS.contains(&first_key.as_str()) {
+            continue;
+        }
+        let Some(geometry) = entry.get("geometry").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let supports_area = geometry.iter().any(|g| g.as_str() == Some("area"));
+        if supports_area {
+            area_keys.entry(first_key.clone()).or_default();
+        }
+    }
+
+    // Discardlist pass: exclude specific values that a line-capable preset
+    // also tags via addTags for an already-known area key.
+    for entry in obj.values() {
+        let Some(add_tags) = entry.get("addTags").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let Some(geometry) = entry.get("geometry").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let supports_line = geometry.iter().any(|g| g.as_str() == Some("line"));
+        if !supports_line {
+            continue;
+        }
+        for (key, value) in add_tags {
+            let Some(value_str) = value.as_str() else {
+                continue;
+            };
+            if value_str == "*" {
+                continue;
+            }
+            if let Some(excluded) = area_keys.get_mut(key) {
+                excluded.insert(value_str.to_string(), true);
+            }
+        }
+    }
+
+    area_keys
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                Value::Object(v.into_iter().map(|(vk, _)| (vk, Value::Bool(true))).collect()),
+            )
+        })
+        .collect()
 }
 ```
 
