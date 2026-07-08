@@ -795,6 +795,15 @@ mod tests {
             0x8b4513
         );
         assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff1493);
+        let building = s.way_style(&tags(&[("building", "yes")]), true);
+        let fill = building
+            .fill
+            .expect("default stylesheet must fill closed buildings");
+        assert_eq!(fill.color, 0x808080);
+        // Open way with the same tag gets no fill.
+        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
+        let water = s.way_style(&tags(&[("natural", "water")]), true);
+        assert_eq!(water.fill.expect("water fill").color, 0x1e90ff);
     }
 
     #[test]
