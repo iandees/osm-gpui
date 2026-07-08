@@ -59,6 +59,9 @@ pub struct SettingsWindow {
     cache_clear_error: Option<SharedString>,
 
     login_state: LoginState,
+
+    recording: Option<&'static str>,
+    shortcut_error: Option<(&'static str, SharedString)>,
 }
 
 impl SettingsWindow {
@@ -108,6 +111,9 @@ impl SettingsWindow {
             cache_clear_error: None,
 
             login_state,
+
+            recording: None,
+            shortcut_error: None,
         }
     }
 
@@ -234,8 +240,47 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn start_recording(&mut self, _id: &'static str, _cx: &mut Context<Self>) {
-        // Filled in by the shortcut-recording task.
+    fn start_recording(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording = Some(id);
+        self.shortcut_error = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn cancel_recording(&mut self, cx: &mut Context<Self>) {
+        self.recording = None;
+        self.shortcut_error = None;
+        cx.notify();
+    }
+
+    /// Validate and, if valid, save `spec` as `id`'s override. On failure,
+    /// sets `shortcut_error` and leaves `recording` active so the user can
+    /// try another combo.
+    fn apply_shortcut(&mut self, id: &'static str, spec: String, cx: &mut Context<Self>) {
+        if keybindings::is_reserved(&spec) {
+            self.shortcut_error = Some((id, "That key is reserved.".into()));
+            cx.notify();
+            return;
+        }
+        if keybindings::def(id).category == keybindings::ShortcutCategory::Modes
+            && !keybindings::is_bare_key(&spec)
+        {
+            self.shortcut_error = Some((id, "Mode shortcuts can't use modifier keys.".into()));
+            cx.notify();
+            return;
+        }
+        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, &spec) {
+            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            cx.notify();
+            return;
+        }
+
+        self.app_settings.keybindings.insert(id.to_string(), spec);
+        settings_store::update_store(self.app_settings.clone());
+        self.recording = None;
+        self.shortcut_error = None;
+        cx.emit(SettingsEvent::KeybindingsChanged);
+        cx.notify();
     }
 
     fn start_login(&mut self, cx: &mut Context<Self>) {
@@ -712,6 +757,13 @@ impl SettingsWindow {
                     let has_override = self.app_settings.keybindings.contains_key(id);
                     let spec = keybindings::effective_spec(&self.app_settings, id);
                     let row_view = view.clone();
+                    let recording = self.recording == Some(id);
+                    let error = self
+                        .shortcut_error
+                        .as_ref()
+                        .filter(|(err_id, _)| *err_id == id)
+                        .map(|(_, msg)| msg.clone());
+                    let focus_handle = self.focus_handle.clone();
                     SettingItem::new(
                         label,
                         SettingField::render(move |_options, _window, cx| {
@@ -720,6 +772,9 @@ impl SettingsWindow {
                                 id,
                                 spec.clone(),
                                 has_override,
+                                recording,
+                                error.clone(),
+                                focus_handle.clone(),
                                 cx,
                             )
                         }),
@@ -1012,49 +1067,88 @@ fn render_entry_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_shortcut_row(
     view: Entity<SettingsWindow>,
     id: &'static str,
     spec: String,
     has_override: bool,
+    recording: bool,
+    error: Option<SharedString>,
+    focus_handle: FocusHandle,
     cx: &mut App,
 ) -> AnyElement {
     let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
 
-    let mut row = h_flex().gap_2().items_center();
+    if recording {
+        let capture_view = view.clone();
 
-    if let Ok(stroke) = gpui::Keystroke::parse(&spec) {
-        row = row.child(gpui_component::kbd::Kbd::new(stroke));
+        let mut row = v_flex().gap_1().child(
+            div()
+                .track_focus(&focus_handle)
+                .on_key_down({
+                    let capture_view = capture_view.clone();
+                    move |ev: &gpui::KeyDownEvent, _window, cx| {
+                        if ev.keystroke.key.is_empty() {
+                            // Modifier-only keydown (e.g. bare Cmd) — keep
+                            // waiting for a real key.
+                            return;
+                        }
+                        if ev.keystroke.key == "escape" {
+                            capture_view.update(cx, |this, cx| this.cancel_recording(cx));
+                            return;
+                        }
+                        let spec = ev.keystroke.unparse();
+                        capture_view.update(cx, |this, cx| this.apply_shortcut(id, spec, cx));
+                    }
+                })
+                .child(
+                    Label::new("Press keys… (Esc to cancel)")
+                        .text_sm()
+                        .text_color(muted),
+                ),
+        );
+        if let Some(msg) = error {
+            row = row.child(Label::new(msg).text_xs().text_color(danger));
+        }
+        row.into_any_element()
     } else {
-        row = row.child(Label::new(spec).text_sm().text_color(muted));
-    }
+        let mut row = h_flex().gap_2().items_center();
 
-    row = row.child(
-        Button::new(SharedString::from(format!("record-shortcut-{id}")))
-            .label("Record")
-            .ghost()
-            .compact()
-            .on_click({
-                let view = view.clone();
-                move |_ev, _window, cx| {
-                    view.update(cx, |this, cx| this.start_recording(id, cx));
-                }
-            }),
-    );
+        if let Ok(stroke) = gpui::Keystroke::parse(&spec) {
+            row = row.child(gpui_component::kbd::Kbd::new(stroke));
+        } else {
+            row = row.child(Label::new(spec).text_sm().text_color(muted));
+        }
 
-    if has_override {
         row = row.child(
-            Button::new(SharedString::from(format!("reset-shortcut-{id}")))
-                .label("Reset")
+            Button::new(SharedString::from(format!("record-shortcut-{id}")))
+                .label("Record")
                 .ghost()
                 .compact()
-                .on_click(move |_ev, _window, cx| {
-                    view.update(cx, |this, cx| this.reset_shortcut(id, cx));
+                .on_click({
+                    let view = view.clone();
+                    move |_ev, window, cx| {
+                        view.update(cx, |this, cx| this.start_recording(id, window, cx));
+                    }
                 }),
         );
-    }
 
-    row.into_any_element()
+        if has_override {
+            row = row.child(
+                Button::new(SharedString::from(format!("reset-shortcut-{id}")))
+                    .label("Reset")
+                    .ghost()
+                    .compact()
+                    .on_click(move |_ev, _window, cx| {
+                        view.update(cx, |this, cx| this.reset_shortcut(id, cx));
+                    }),
+            );
+        }
+
+        row.into_any_element()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
