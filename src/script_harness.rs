@@ -283,11 +283,21 @@ impl MapViewer {
             }
         }
 
-        // Also drain keystroke queue (processed via Window so needs to be here)
+        // Also drain keystroke queue (processed via Window so needs to be here).
+        // Dispatched via `window.defer` for the same reason `Click` is (see
+        // above): `dispatch_keystroke` can invoke a `cx.listener()` callback
+        // on this same `MapViewer` entity (e.g. the mode-switch shortcuts),
+        // which would double-lease it if dispatched synchronously from
+        // inside `render`.
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
             if let Ok(mut guard) = ks_queue.try_lock() {
-                for ks in guard.drain(..) {
-                    window.dispatch_keystroke(ks, cx);
+                let pending: Vec<_> = guard.drain(..).collect();
+                if !pending.is_empty() {
+                    window.defer(cx, move |window, cx| {
+                        for ks in pending {
+                            window.dispatch_keystroke(ks, cx);
+                        }
+                    });
                 }
             }
         }
