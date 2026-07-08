@@ -2326,7 +2326,7 @@ impl EditableLayer for OsmLayer {
                         id: way_id,
                     },
                     kind: FeatureKind::Way,
-                    dist_px: 0.0,
+                    dist_px: crate::selection::polygon_area(&screen_verts),
                 });
             }
         }
@@ -2652,6 +2652,102 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].kind, FeatureKind::Way);
         assert_eq!(hits[0].feature.id, 10);
+    }
+
+    #[test]
+    fn resolve_hits_picks_smallest_of_nested_closed_ways() {
+        let center_lat = 40.0;
+        let center_lon = -74.0;
+
+        // Outer, large square.
+        let d_outer = 0.01;
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat - d_outer,
+            lon: center_lon - d_outer,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat - d_outer,
+            lon: center_lon + d_outer,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n3 = OsmNode {
+            id: 3,
+            lat: center_lat + d_outer,
+            lon: center_lon + d_outer,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n4 = OsmNode {
+            id: 4,
+            lat: center_lat + d_outer,
+            lon: center_lon - d_outer,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let outer_way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2, 3, 4, 1],
+            version: 1,
+            tags: empty_tags(),
+        };
+
+        // Inner, small square nested entirely inside the outer one, drawn
+        // first so a plain "last one wins" tie-break would pick the outer
+        // way instead.
+        let d_inner = 0.001;
+        let n5 = OsmNode {
+            id: 5,
+            lat: center_lat - d_inner,
+            lon: center_lon - d_inner,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n6 = OsmNode {
+            id: 6,
+            lat: center_lat - d_inner,
+            lon: center_lon + d_inner,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n7 = OsmNode {
+            id: 7,
+            lat: center_lat + d_inner,
+            lon: center_lon + d_inner,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n8 = OsmNode {
+            id: 8,
+            lat: center_lat + d_inner,
+            lon: center_lon - d_inner,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let inner_way = OsmWay {
+            id: 20,
+            nodes: vec![5, 6, 7, 8, 5],
+            version: 1,
+            tags: empty_tags(),
+        };
+
+        let data = data_with(
+            vec![n1, n2, n3, n4, n5, n6, n7, n8],
+            vec![inner_way, outer_way],
+        );
+        let viewport = viewport_centered_on(center_lat, center_lon);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let center = point(px(400.0), px(300.0));
+
+        let hits = layer.hit_test_interior(&viewport, center);
+        assert_eq!(hits.len(), 2);
+
+        let winner = crate::selection::resolve_hits(vec![hits]).unwrap();
+        assert_eq!(winner.id, 20, "smallest enclosing way should win");
     }
 
     #[test]

@@ -94,6 +94,23 @@ pub fn point_in_polygon(p: Point<Pixels>, verts: &[Point<Pixels>]) -> bool {
     inside
 }
 
+/// Shoelace-formula area of a closed ring in screen space (px^2), used to
+/// rank overlapping closed ways for interior double-click hit-testing:
+/// smaller area is treated as "closer" so `resolve_hits` picks the
+/// innermost/smallest way when several enclose the same point.
+pub fn polygon_area(verts: &[Point<Pixels>]) -> f32 {
+    if verts.len() < 3 {
+        return 0.0;
+    }
+    let mut sum = 0.0f32;
+    for i in 0..verts.len() - 1 {
+        let (xi, yi) = (verts[i].x.as_f32(), verts[i].y.as_f32());
+        let (xj, yj) = (verts[i + 1].x.as_f32(), verts[i + 1].y.as_f32());
+        sum += xi * yj - xj * yi;
+    }
+    (sum / 2.0).abs()
+}
+
 /// The point on segment `a`-`b` nearest to `p`, using the same clamped
 /// projection as `point_to_segment_distance`. Handles zero-length segments
 /// by returning `a` itself.

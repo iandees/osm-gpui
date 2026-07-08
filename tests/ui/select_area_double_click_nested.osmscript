@@ -1,0 +1,21 @@
+# Select mode: double-clicking inside overlapping closed ways selects the
+# smallest one, not the largest.
+#
+# Fixture: tests/ui/fixtures/nested_closed_ways.osm has a small building
+# (way 20) nested entirely inside a large landuse polygon (way 10), both
+# centered on (40.7130, -74.0040). See select_area_double_click.osmscript
+# for the window/viewport coordinate derivation.
+
+window 1200 800
+load_osm tests/ui/fixtures/nested_closed_ways.osm
+viewport 40.7130 -74.0040 18
+wait_idle 5s
+assert_mode select
+
+# A double-click on the shared center selects the smaller, inner way, not
+# the larger outer one.
+click 460,438 count=2
+wait_idle 2s
+assert_selected way 20
+
+log select_area_double_click_nested: interior double-click picks smallest overlapping way

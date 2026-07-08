@@ -45,3 +45,9 @@ fn mode_requires_layer() {
 fn select_area_double_click() {
     run_script("select_area_double_click.osmscript");
 }
+
+#[test]
+#[ignore]
+fn select_area_double_click_nested() {
+    run_script("select_area_double_click_nested.osmscript");
+}
