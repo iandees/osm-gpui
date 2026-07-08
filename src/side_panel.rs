@@ -12,7 +12,7 @@ use gpui_component::{
 use osm_gpui::layers::LayerId;
 use osm_gpui::ui::style::{interactive_row, panel_row, PANEL_ROW_HEIGHT, SIDE_PANEL_WIDTH};
 
-use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen};
+use crate::{DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer};
 
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
@@ -311,14 +311,17 @@ impl MapViewer {
                                     gpui::MouseButton::Left,
                                     cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                         this.toggle_layer_visibility(layer_id);
-                                        if is_osm {
-                                            this.active_layer = Some(layer_id);
-                                        }
                                         cx.notify();
                                     }),
                                 )
                                 .context_menu(move |menu, _window, _cx| {
                                     let mut menu = menu;
+                                    if is_osm && !is_active {
+                                        menu = menu.menu(
+                                            "Set as active layer",
+                                            Box::new(SetActiveLayer { index }),
+                                        );
+                                    }
                                     if index > 0 {
                                         menu = menu.menu(
                                             "Move up",

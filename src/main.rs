@@ -96,6 +96,14 @@ struct DeleteLayer {
     index: usize,
 }
 
+/// Action to set the layer at `index` as the active (editable) layer.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = layers)]
+#[serde(deny_unknown_fields)]
+struct SetActiveLayer {
+    index: usize,
+}
+
 /// The current map-interaction mode. `Select` is today's existing click/
 /// drag/box-select behavior; the others place new geometry (see
 /// docs/superpowers/specs/2026-07-07-mode-selector-design.md).
@@ -589,6 +597,27 @@ impl MapViewer {
         }
         let _ = self.layer_manager.remove_at(action.index);
         cx.notify();
+    }
+
+    /// Handle the `SetActiveLayer` context-menu action: makes the OSM layer
+    /// at `index` the active (editable) layer, gating the Add/Building/
+    /// Extrude mode buttons on it.
+    fn on_set_active_layer(
+        &mut self,
+        action: &SetActiveLayer,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self
+            .layer_manager
+            .layers()
+            .get(action.index)
+            .filter(|l| l.as_editable().is_some())
+            .map(|l| l.id())
+        {
+            self.active_layer = Some(id);
+            cx.notify();
+        }
     }
 
     /// Handle the `SetMode` action: switch modes, discarding any
@@ -1812,6 +1841,9 @@ impl MapViewer {
         let layer_id = self.layer_manager.alloc_id();
         let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
         self.layer_manager.add_layer(Box::new(layer));
+        if self.active_layer.is_none() {
+            self.active_layer = Some(layer_id);
+        }
         if !self.first_dataset_fitted {
             self.fit_to_osm_data(&data);
             self.first_dataset_fitted = true;
@@ -2208,6 +2240,9 @@ impl MapViewer {
                         let layer_id = this.layer_manager.alloc_id();
                         let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
                         this.layer_manager.add_layer(Box::new(layer));
+                        if this.active_layer.is_none() {
+                            this.active_layer = Some(layer_id);
+                        }
                         this.status_message = None;
                     }
                     Err(e) => {
@@ -2606,6 +2641,7 @@ impl Render for MapViewer {
             )
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
+            .on_action(cx.listener(Self::on_set_active_layer))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
