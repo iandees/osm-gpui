@@ -3166,8 +3166,8 @@ mod tests {
     /// the same convention as `OsmLayer`'s own tests), with one active OSM
     /// layer containing that fixture, in Add mode.
     fn setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
-        cx.update(|cx| gpui_component::init(cx));
-        let window = cx.add_window(|window, cx| MapViewer::new(window, cx));
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
         window
             .update(cx, |view, _window, _cx| {
                 view.viewport =
