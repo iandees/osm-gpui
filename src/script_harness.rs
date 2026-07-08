@@ -51,6 +51,8 @@ pub(crate) enum ScriptCommand {
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
     /// the runner thread, before this is submitted — see `load_osm` below).
     LoadOsm { name: String, data: OsmData },
+    /// Compare `MapViewer.mode` against `want`.
+    AssertMode(crate::EditMode),
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -65,6 +67,8 @@ pub(crate) struct ScriptBus {
     frame_cv: Condvar,
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
+    /// Result of the most recently processed `AssertMode` command.
+    assert_result: Mutex<Option<Result<(), String>>>,
 }
 
 impl ScriptBus {
@@ -75,6 +79,7 @@ impl ScriptBus {
             frame_count: Mutex::new(0),
             frame_cv: Condvar::new(),
             capture_result: Mutex::new(None),
+            assert_result: Mutex::new(None),
         })
     }
 
@@ -127,6 +132,21 @@ impl ScriptBus {
             .unwrap()
             .take()
             .unwrap_or_else(|| Err("capture: no result recorded".to_string()))
+    }
+
+    /// Called by MapViewer::render when handling an `AssertMode` command,
+    /// before `signal_done_and_frame` wakes the waiting runner thread.
+    fn set_assert_result(&self, result: Result<(), String>) {
+        *self.assert_result.lock().unwrap() = Some(result);
+    }
+
+    /// Called by the runner thread after `submit(AssertMode(..))` returns.
+    fn take_assert_result(&self) -> Result<(), String> {
+        self.assert_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Err("assert_mode: no result recorded".to_string()))
     }
 }
 
@@ -199,22 +219,31 @@ impl MapViewer {
                     } else {
                         gpui::MouseButton::Left
                     };
-                    let ev = MouseDownEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                        first_mouse: false,
-                    };
-                    self.handle_mouse_down(&ev);
-                    let ev = MouseUpEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                    };
-                    self.handle_mouse_up(&ev, cx);
-                    cx.notify();
+                    // Dispatching synchronously here would double-lease `self`:
+                    // we're already inside `MapViewer::render`'s entity update,
+                    // and any `.on_mouse_down`/`.on_click` listener belonging to
+                    // this same view calls `weak_entity.update(cx, ...)`, which
+                    // panics ("cannot update ... while it is already being
+                    // updated"). `Window::defer` runs the closure at the end of
+                    // the current effect cycle, after this entity is returned to
+                    // the app, avoiding the re-entrant lease.
+                    window.defer(cx, move |window, cx| {
+                        let down = MouseDownEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                            first_mouse: false,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
+                        let up = MouseUpEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    });
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
                     let ev = ScrollWheelEvent {
@@ -243,14 +272,32 @@ impl MapViewer {
                 ScriptCommand::LoadOsm { name, data } => {
                     self.add_osm_dataset(name, data, cx);
                 }
+                ScriptCommand::AssertMode(want) => {
+                    let result = if self.mode == want {
+                        Ok(())
+                    } else {
+                        Err(format!("expected mode {:?}, got {:?}", want, self.mode))
+                    };
+                    bus.set_assert_result(result);
+                }
             }
         }
 
-        // Also drain keystroke queue (processed via Window so needs to be here)
+        // Also drain keystroke queue (processed via Window so needs to be here).
+        // Dispatched via `window.defer` for the same reason `Click` is (see
+        // above): `dispatch_keystroke` can invoke a `cx.listener()` callback
+        // on this same `MapViewer` entity (e.g. the mode-switch shortcuts),
+        // which would double-lease it if dispatched synchronously from
+        // inside `render`.
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
             if let Ok(mut guard) = ks_queue.try_lock() {
-                for ks in guard.drain(..) {
-                    window.dispatch_keystroke(ks, cx);
+                let pending: Vec<_> = guard.drain(..).collect();
+                if !pending.is_empty() {
+                    window.defer(cx, move |window, cx| {
+                        for ks in pending {
+                            window.dispatch_keystroke(ks, cx);
+                        }
+                    });
                 }
             }
         }
@@ -356,5 +403,16 @@ impl AppHandle for LiveApp {
             path: path.to_path_buf(),
         });
         self.bus.take_capture_result()
+    }
+
+    fn assert_mode(&mut self, want: script::EditMode) -> Result<(), String> {
+        let want = match want {
+            script::EditMode::Select => crate::EditMode::Select,
+            script::EditMode::Add => crate::EditMode::Add,
+            script::EditMode::Building => crate::EditMode::Building,
+            script::EditMode::Extrude => crate::EditMode::Extrude,
+        };
+        self.bus.submit(ScriptCommand::AssertMode(want));
+        self.bus.take_assert_result()
     }
 }

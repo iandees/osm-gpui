@@ -1,0 +1,60 @@
+# Exercise all EditMode transitions via toolbar clicks and keyboard
+# shortcuts, asserting the resulting mode via `assert_mode` (no screenshots).
+#
+# Mode-panel button coordinates: MODE_PANEL_WIDTH=56px, buttons 46x46 in a
+# v_flex with items_center/gap_1(4px)/py_2(8px), stacked Select/Add/
+# Building/Extrude. Button i center = (28, 31 + i*50).
+#   mode-select:   28,31
+#   mode-add:      28,81
+#   mode-building: 28,131
+#   mode-extrude:  28,181
+
+window 1200 800
+load_osm docs/screenshots/fixtures/select.osm
+wait_idle 5s
+assert_mode select
+
+# Toolbar: Select -> Add -> Building -> Extrude -> back to Select.
+click 28,81
+wait_idle 2s
+assert_mode add
+
+click 28,131
+wait_idle 2s
+assert_mode building
+
+click 28,181
+wait_idle 2s
+assert_mode extrude
+
+click 28,31
+wait_idle 2s
+assert_mode select
+
+# Keyboard shortcuts (map area must have focus first, gained by clicking
+# into it away from any fixture feature).
+click 900,600
+wait_idle 2s
+assert_mode select
+
+key a
+wait_idle 2s
+assert_mode add
+
+key b
+wait_idle 2s
+assert_mode building
+
+key x
+wait_idle 2s
+assert_mode extrude
+
+# escape from Add mode with no in-progress way falls back to Select.
+key a
+wait_idle 2s
+assert_mode add
+key escape
+wait_idle 2s
+assert_mode select
+
+log mode_switching: all transitions verified
