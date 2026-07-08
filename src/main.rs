@@ -1317,8 +1317,11 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
-        if self.building_progress.is_some() || self.extrude_drag.is_some() {
-            cx.notify(); // repaint the live preview every move while building/extruding
+        if self.building_progress.is_some()
+            || self.extrude_drag.is_some()
+            || self.add_progress.is_some()
+        {
+            cx.notify(); // repaint the live preview every move while building/extruding/adding
         }
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
@@ -1437,7 +1440,11 @@ impl MapViewer {
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
                 self.handle_map_click(from_pt(at), event.modifiers.shift);
-                if before != self.selected {
+                // Add mode re-selects the same way on every extend click (the
+                // way id doesn't change), so the before/after diff alone
+                // misses that the way's geometry grew a node — always
+                // notify for Add mode regardless of the selection diff.
+                if before != self.selected || self.mode == EditMode::Add {
                     cx.notify();
                 }
             }
@@ -2496,6 +2503,45 @@ impl Render for MapViewer {
                                                             }
                                                             if let Ok(path) = builder.build() {
                                                                 window.paint_path(path, rgb(0x3b82f6));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(progress) = &this.add_progress {
+                                            if let Some(mouse_pos) = this.last_mouse_pos {
+                                                if let Some(layer_id) = this.active_layer {
+                                                    if let Some(layer) =
+                                                        this.layer_manager.find_layer(layer_id)
+                                                    {
+                                                        if let Some(editable) = layer.as_editable() {
+                                                            if let Some(last_geo) = editable
+                                                                .node_lat_lon(progress.last_node_id)
+                                                            {
+                                                                let origin_x = bounds.origin.x;
+                                                                let origin_y = bounds.origin.y;
+                                                                let last_screen = viewport_clone
+                                                                    .geo_to_screen(last_geo.0, last_geo.1);
+                                                                let p0 = point(
+                                                                    last_screen.x + origin_x,
+                                                                    last_screen.y + origin_y,
+                                                                );
+                                                                let p1 = point(
+                                                                    mouse_pos.x + origin_x,
+                                                                    mouse_pos.y + origin_y,
+                                                                );
+                                                                let mut builder =
+                                                                    PathBuilder::stroke(px(2.0));
+                                                                builder.move_to(p0);
+                                                                builder.line_to(p1);
+                                                                if let Ok(path) = builder.build() {
+                                                                    window.paint_path(
+                                                                        path,
+                                                                        rgb(0x3b82f6),
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }
