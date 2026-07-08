@@ -39,7 +39,8 @@ const WRITES_BETWEEN_EVICTION_CHECKS: u64 = 25;
 
 /// Counts tile writes since the last eviction sweep. When it crosses
 /// `WRITES_BETWEEN_EVICTION_CHECKS`, `maybe_evict` performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over `MAX_CACHE_BYTES`.
+/// and evicts oldest-by-mtime files if the cache is over its configured
+/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
 static WRITES_SINCE_EVICTION: AtomicU64 = AtomicU64::new(0);
 
 /// Cached result of the last "how many files are in the cache" scan, plus
@@ -145,7 +146,8 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Called after every tile write. Bumps the running write counter and, once
 /// every `WRITES_BETWEEN_EVICTION_CHECKS` writes, performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over `MAX_CACHE_BYTES`.
+/// and evicts oldest-by-mtime files if the cache is over its configured
+/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
 ///
 /// We deliberately scan on a write-count cadence rather than tracking a
 /// live running-size total: a live total would need to be correct across
@@ -624,6 +626,7 @@ impl TileCache {
 }
 
 /// Per-source-key aggregate cache usage, as reported by `cache_summary`.
+#[derive(Clone)]
 pub struct CacheSourceUsage {
     pub key: String,
     pub bytes: u64,
@@ -634,6 +637,7 @@ pub struct CacheSourceUsage {
 /// breakdown. Computed via a fresh, on-demand directory scan — safe to call
 /// only occasionally (e.g. when a settings panel is open), not on a hot
 /// per-frame path (see `cached_file_count` for that).
+#[derive(Clone)]
 pub struct CacheSummary {
     pub total_bytes: u64,
     pub total_files: usize,
@@ -645,8 +649,38 @@ pub struct CacheSummary {
 /// e.g. leftovers from before per-source directories existed.
 const UNCATEGORIZED_KEY: &str = "(uncategorized)";
 
+/// `pub(crate)` accessor so callers outside this module (e.g. the settings
+/// UI) can compare against the uncategorized bucket key without duplicating
+/// the literal string.
+pub(crate) fn uncategorized_key() -> &'static str {
+    UNCATEGORIZED_KEY
+}
+
+/// Cached result of the last `cache_summary_at` scan, plus the `Instant` it
+/// was computed at. `cache_summary` recomputes at most once per
+/// `CACHE_SUMMARY_TTL` to avoid a full recursive directory scan on every
+/// call — the settings UI calls this on every repaint of the Tile Cache
+/// panel, which happens roughly twice a second while an input field there
+/// is focused (caret-blink-driven `cx.notify()`).
+static CACHE_SUMMARY_CACHE: OnceLock<Mutex<Option<(Instant, CacheSummary)>>> = OnceLock::new();
+const CACHE_SUMMARY_TTL: std::time::Duration = STATS_TTL;
+
 pub fn cache_summary() -> CacheSummary {
-    cache_summary_at(&cache_dir())
+    let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = match cell.lock() {
+        Ok(g) => g,
+        Err(_) => return cache_summary_at(&cache_dir()),
+    };
+
+    if let Some((last, summary)) = guard.as_ref() {
+        if last.elapsed() < CACHE_SUMMARY_TTL {
+            return summary.clone();
+        }
+    }
+
+    let summary = cache_summary_at(&cache_dir());
+    *guard = Some((Instant::now(), summary.clone()));
+    summary
 }
 
 fn cache_summary_at(dir: &Path) -> CacheSummary {
@@ -726,6 +760,18 @@ fn clear_source_at(dir: &Path, key: &str) -> std::io::Result<()> {
             }
         }
         return Ok(());
+    }
+
+    // Defense-in-depth: every real caller passes a key harvested from
+    // `cache_summary()`'s output, itself derived from sanitized on-disk
+    // directory names (see `source_key_for_template`), so this isn't
+    // exploitable today. Still, refuse to join a path-separator or
+    // traversal sequence onto the cache directory before `remove_dir_all`.
+    if key.contains('/') || key.contains('\\') || key.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to clear cache source with unsafe key: {key:?}"),
+        ));
     }
 
     let source_dir = dir.join(key);
@@ -1324,6 +1370,81 @@ mod tests {
         assert!(dir.join("source-a").join("a.png").exists());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_rejects_path_traversal_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-traversal-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+
+        let result = clear_source_at(&dir, "../source-a");
+        assert!(result.is_err());
+        // Sibling directory must be untouched since the call was rejected
+        // before ever reaching `remove_dir_all`.
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let result = clear_source_at(&dir, "source-a/../source-a");
+        assert!(result.is_err());
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let result = clear_source_at(&dir, "nested/traversal");
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_still_accepts_uncategorized_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-uncategorized-safe-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        assert!(clear_source_at(&dir, UNCATEGORIZED_KEY).is_ok());
+        assert!(!dir.join("stray.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_ttl_respects_recent_timestamp() {
+        // Mirrors `stats_cache_ttl_respects_recent_timestamp`: verify the TTL
+        // mechanics directly against the same static used by `cache_summary`,
+        // without any real sleeping. Manipulate the cache cell to simulate a
+        // fresh cached value, then confirm a subsequent `cache_summary()`
+        // call returns that cached data unchanged even though the
+        // underlying directory (which we never even create) would otherwise
+        // yield an empty summary.
+        let cached = CacheSummary {
+            total_bytes: 12345,
+            total_files: 7,
+            sources: vec![CacheSourceUsage {
+                key: "fake-source".to_string(),
+                bytes: 12345,
+                file_count: 7,
+            }],
+        };
+        let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let mut guard = cell.lock().unwrap();
+            *guard = Some((Instant::now(), cached.clone()));
+        }
+
+        let result = cache_summary();
+        assert_eq!(result.total_bytes, 12345);
+        assert_eq!(result.total_files, 7);
+        assert_eq!(result.sources.len(), 1);
+        assert_eq!(result.sources[0].key, "fake-source");
     }
 
     #[test]

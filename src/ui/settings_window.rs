@@ -564,13 +564,24 @@ impl SettingsWindow {
     fn cache_group(&self, view: Entity<Self>) -> SettingGroup {
         let summary = crate::tile_cache::cache_summary();
 
+        // Exclude the synthetic "(uncategorized)" bucket from the reported
+        // source count: it's leftover loose files from before per-source
+        // directories existed, not a real configured imagery source, so
+        // including it would inflate the count a user sees relative to how
+        // many layers they actually configured.
+        let real_source_count = summary
+            .sources
+            .iter()
+            .filter(|s| s.key != crate::tile_cache::uncategorized_key())
+            .count();
+
         let summary_text: SharedString = format!(
             "{} across {} tile{} in {} source{}",
             crate::tile_cache::format_bytes(summary.total_bytes),
             summary.total_files,
             if summary.total_files == 1 { "" } else { "s" },
-            summary.sources.len(),
-            if summary.sources.len() == 1 { "" } else { "s" },
+            real_source_count,
+            if real_source_count == 1 { "" } else { "s" },
         )
         .into();
 
