@@ -695,7 +695,10 @@ fn build_token_store(persisted: PersistedStore) -> TokenStore {
             },
         );
     }
-    TokenStore { tokens, pending_keyring }
+    TokenStore {
+        tokens,
+        pending_keyring,
+    }
 }
 
 fn save(store: &TokenStore) {
@@ -979,7 +982,9 @@ mod tests {
         let store = build_token_store(persisted);
 
         assert!(
-            !store.pending_keyring.contains("https://www.openstreetmap.org"),
+            !store
+                .pending_keyring
+                .contains("https://www.openstreetmap.org"),
             "an entry with a fallback secret shouldn't need a keyring read"
         );
         let token = store.tokens.get("https://www.openstreetmap.org").unwrap();
@@ -1004,12 +1009,23 @@ mod tests {
         let store = build_token_store(persisted);
 
         assert!(
-            store.pending_keyring.contains("https://api06.dev.openstreetmap.org"),
+            store
+                .pending_keyring
+                .contains("https://api06.dev.openstreetmap.org"),
             "an entry with no fallback secret must defer to the keyring, not read it here"
         );
-        let token = store.tokens.get("https://api06.dev.openstreetmap.org").unwrap();
-        assert_eq!(token.access_token, "", "placeholder until current_token() resolves it");
-        assert_eq!(token.display_name, "bob", "non-secret metadata is available immediately");
+        let token = store
+            .tokens
+            .get("https://api06.dev.openstreetmap.org")
+            .unwrap();
+        assert_eq!(
+            token.access_token, "",
+            "placeholder until current_token() resolves it"
+        );
+        assert_eq!(
+            token.display_name, "bob",
+            "non-secret metadata is available immediately"
+        );
     }
 
     #[test]
@@ -1039,8 +1055,16 @@ mod tests {
         let store = build_token_store(persisted);
 
         assert_eq!(store.tokens.len(), 2);
-        assert_eq!(store.pending_keyring.len(), 1, "only the keyring-only entry should be deferred");
-        assert!(store.pending_keyring.contains("https://api06.dev.openstreetmap.org"));
-        assert!(!store.pending_keyring.contains("https://www.openstreetmap.org"));
+        assert_eq!(
+            store.pending_keyring.len(),
+            1,
+            "only the keyring-only entry should be deferred"
+        );
+        assert!(store
+            .pending_keyring
+            .contains("https://api06.dev.openstreetmap.org"));
+        assert!(!store
+            .pending_keyring
+            .contains("https://www.openstreetmap.org"));
     }
 }

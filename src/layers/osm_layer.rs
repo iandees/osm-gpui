@@ -1070,18 +1070,23 @@ impl OsmLayer {
     /// undo of `insert_node_into_way`) that already know what they're doing.
     /// No-op if the node isn't present.
     pub fn remove_node(&mut self, node_id: i64) {
-        let Some(current) = self.osm_data.clone() else { return };
+        let Some(current) = self.osm_data.clone() else {
+            return;
+        };
         let mut data = (*current).clone();
         if data.nodes.remove(&node_id).is_none() {
             return;
         }
         if let Some(idx) = self.node_cache.index_by_id.remove(&node_id) {
             let (_, mx, my) = self.node_cache.flat[idx];
-            self.node_index.remove(&GeomWithData::new([mx, my], node_id));
+            self.node_index
+                .remove(&GeomWithData::new([mx, my], node_id));
             self.node_cache.flat.remove(idx);
             self.node_cache.styles.remove(idx);
             for v in self.node_cache.index_by_id.values_mut() {
-                if *v > idx { *v -= 1; }
+                if *v > idx {
+                    *v -= 1;
+                }
             }
         }
         self.node_to_ways.remove(&node_id);
@@ -1106,7 +1111,10 @@ impl OsmLayer {
                 bounds: None,
             }));
         }
-        let arc = self.osm_data.as_mut().expect("osm_data was just ensured to be Some");
+        let arc = self
+            .osm_data
+            .as_mut()
+            .expect("osm_data was just ensured to be Some");
         let data = Arc::make_mut(arc);
         let way = OsmWay {
             id,
@@ -1153,8 +1161,12 @@ impl OsmLayer {
     /// (`data.ways` is a `HashMap` and needs no shifting; the index-aligned
     /// caches do).
     pub fn remove_way(&mut self, way_id: i64) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { return };
-        let Some(arc) = self.osm_data.as_mut() else { return };
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
         let data = Arc::make_mut(arc);
         if data.ways.remove(&way_id).is_none() {
             return;
@@ -1162,7 +1174,10 @@ impl OsmLayer {
 
         if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
             self.way_index.remove(&GeomWithData::new(
-                Rectangle::from_corners([old_bbox.min_x, old_bbox.min_y], [old_bbox.max_x, old_bbox.max_y]),
+                Rectangle::from_corners(
+                    [old_bbox.min_x, old_bbox.min_y],
+                    [old_bbox.max_x, old_bbox.max_y],
+                ),
                 way_id,
             ));
         }
@@ -1201,7 +1216,10 @@ impl OsmLayer {
     fn refresh_way_geometry_cache(&mut self, way_idx: usize, way_id: i64, way: &OsmWay) {
         if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
             self.way_index.remove(&GeomWithData::new(
-                Rectangle::from_corners([old_bbox.min_x, old_bbox.min_y], [old_bbox.max_x, old_bbox.max_y]),
+                Rectangle::from_corners(
+                    [old_bbox.min_x, old_bbox.min_y],
+                    [old_bbox.max_x, old_bbox.max_y],
+                ),
                 way_id,
             ));
         }
@@ -1230,10 +1248,16 @@ impl OsmLayer {
     /// way's node list, and refresh that one way's derived caches. No-op if
     /// the way isn't found.
     pub fn extend_way(&mut self, way_id: i64, node_id: i64) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { return };
-        let Some(arc) = self.osm_data.as_mut() else { return };
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
         let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else { return };
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return;
+        };
         way.nodes.push(node_id);
         let way_snapshot = way.clone();
 
@@ -1253,10 +1277,16 @@ impl OsmLayer {
     pub fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64 {
         let new_id = self.add_node(lat, lon);
 
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { return new_id };
-        let Some(arc) = self.osm_data.as_mut() else { return new_id };
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return new_id;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return new_id;
+        };
         let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else { return new_id };
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return new_id;
+        };
         if index > way.nodes.len() {
             return new_id;
         }
@@ -1276,10 +1306,16 @@ impl OsmLayer {
     /// when fully undoing an insert. No-op if the way isn't found or
     /// `index` is out of bounds.
     pub fn remove_node_from_way(&mut self, way_id: i64, index: usize) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { return };
-        let Some(arc) = self.osm_data.as_mut() else { return };
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
         let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else { return };
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return;
+        };
         if index >= way.nodes.len() {
             return;
         }
@@ -1654,24 +1690,36 @@ impl OsmLayer {
     /// (in the way's node-list order) if within tolerance. Used by Extrude
     /// mode, which needs the segment's endpoints rather than just a
     /// `FeatureRef` to the whole way (unlike `hit_test`).
-    pub fn hit_test_segment(&self, viewport: &Viewport, screen_pt: Point<Pixels>, tol_px: f32) -> Option<(i64, i64, i64, usize)> {
-        if self.osm_data.is_none() { return None; }
+    pub fn hit_test_segment(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+    ) -> Option<(i64, i64, i64, usize)> {
+        if self.osm_data.is_none() {
+            return None;
+        }
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
         let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
-        let envelope = AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
+        let envelope =
+            AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
         let mut best: Option<(f32, i64, i64, i64, usize)> = None;
         for item in self.way_index.locate_in_envelope_intersecting(envelope) {
             let way_id = item.data;
-            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else { continue };
+            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+                continue;
+            };
             let verts = &self.way_vertices[way_idx];
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
                 let (id_b, bx, by) = verts[i + 1];
                 let sp_a = viewport.mercator_to_screen(ax, ay);
                 let sp_b = viewport.mercator_to_screen(bx, by);
-                if !is_point_valid(sp_a) || !is_point_valid(sp_b) { continue; }
+                if !is_point_valid(sp_a) || !is_point_valid(sp_b) {
+                    continue;
+                }
                 let d = point_to_segment_distance(screen_pt, sp_a, sp_b);
                 if d <= tol_px && best.as_ref().map_or(true, |&(bd, ..)| d < bd) {
                     best = Some((d, way_id, id_a, id_b, i));
@@ -2424,9 +2472,26 @@ mod tests {
     fn hit_test_segment_finds_nearest_segment_and_endpoint_indices() {
         let center_lat = 40.0;
         let center_lon = -74.0;
-        let n1 = OsmNode { id: 1, lat: center_lat, lon: center_lon - 0.001, version: 1, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: center_lat, lon: center_lon + 0.001, version: 1, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: center_lat,
+            lon: center_lon - 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: center_lat,
+            lon: center_lon + 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
@@ -2437,9 +2502,26 @@ mod tests {
 
     #[test]
     fn hit_test_segment_none_when_out_of_tolerance() {
-        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.001, version: 1, tags: empty_tags() };
-        let n2 = OsmNode { id: 2, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
-        let way = OsmWay { id: 10, nodes: vec![1, 2], version: 1, tags: empty_tags() };
+        let n1 = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let n2 = OsmNode {
+            id: 2,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            version: 1,
+            tags: empty_tags(),
+        };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(40.0, -74.0);
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
@@ -3829,7 +3911,9 @@ mod tests {
         assert!(layer.is_modified());
 
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
-        assert!(hits.iter().any(|h| h.feature.id == id1 && h.kind == FeatureKind::Node));
+        assert!(hits
+            .iter()
+            .any(|h| h.feature.id == id1 && h.kind == FeatureKind::Node));
     }
 
     #[test]
@@ -3843,7 +3927,11 @@ mod tests {
         let data = layer.get_osm_data().expect("data should still exist");
         assert!(!data.nodes.contains_key(&id));
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
-        assert!(hits.is_empty(), "removed node should not be hit-testable: {:?}", hits);
+        assert!(
+            hits.is_empty(),
+            "removed node should not be hit-testable: {:?}",
+            hits
+        );
     }
 
     // -- `add_way` / `remove_way` --
@@ -3858,16 +3946,23 @@ mod tests {
         // exactly at the click point would shadow the way we're testing.
         let n1 = layer.add_node(40.0, -74.001);
         let n2 = layer.add_node(40.0, -73.999);
-        let way_id = layer.add_way(vec![n1, n2, n1], vec![("building".to_string(), "yes".to_string())]);
+        let way_id = layer.add_way(
+            vec![n1, n2, n1],
+            vec![("building".to_string(), "yes".to_string())],
+        );
         assert_eq!(way_id, -1, "first placeholder way id should be -1");
 
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
-        assert!(hits.iter().any(|h| h.feature.id == way_id && h.kind == FeatureKind::Way));
-        let tags = layer.feature_tags(&crate::selection::FeatureRef {
-            layer_id: layer.id(),
-            kind: FeatureKind::Way,
-            id: way_id,
-        }).expect("way should have tags");
+        assert!(hits
+            .iter()
+            .any(|h| h.feature.id == way_id && h.kind == FeatureKind::Way));
+        let tags = layer
+            .feature_tags(&crate::selection::FeatureRef {
+                layer_id: layer.id(),
+                kind: FeatureKind::Way,
+                id: way_id,
+            })
+            .expect("way should have tags");
         assert!(tags.contains(&("building".to_string(), "yes".to_string())));
     }
 
@@ -3883,9 +3978,16 @@ mod tests {
 
         let data = layer.get_osm_data().unwrap();
         assert!(!data.ways.contains_key(&way_id));
-        assert!(data.nodes.contains_key(&n1), "removing the way must not remove its nodes");
+        assert!(
+            data.nodes.contains_key(&n1),
+            "removing the way must not remove its nodes"
+        );
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
-        assert!(!hits.iter().any(|h| h.kind == FeatureKind::Way), "way should no longer hit-test: {:?}", hits);
+        assert!(
+            !hits.iter().any(|h| h.kind == FeatureKind::Way),
+            "way should no longer hit-test: {:?}",
+            hits
+        );
     }
 
     // -- `extend_way` / `insert_node_into_way` / `remove_node_from_way` --
@@ -3921,6 +4023,9 @@ mod tests {
         let data = layer.get_osm_data().unwrap();
         let way = data.ways.get(&way_id).unwrap();
         assert_eq!(way.nodes, vec![n1, n2]);
-        assert!(data.nodes.contains_key(&mid), "remove_node_from_way must not delete the node itself");
+        assert!(
+            data.nodes.contains_key(&mid),
+            "remove_node_from_way must not delete the node itself"
+        );
     }
 }

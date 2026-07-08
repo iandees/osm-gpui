@@ -254,54 +254,60 @@ impl MapViewer {
                 layer_info
                     .iter()
                     .enumerate()
-                    .map(|(index, (layer_id, name, is_visible, is_modified, is_osm))| {
-                        let layer_id = *layer_id;
-                        let is_osm = *is_osm;
-                        let is_active = self.active_layer == Some(layer_id);
-                        let label = if *is_modified {
-                            format!("{} \u{2022}", name)
-                        } else {
-                            name.clone()
-                        };
-                        div()
-                            .id(("layer-row", index))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .px_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .when(is_active, |this| this.bg(cx.theme().accent))
-                            .child(
-                                Checkbox::new(("layer", index))
-                                    .checked(*is_visible)
-                                    .label(label),
-                            )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                                    this.toggle_layer_visibility(layer_id);
-                                    if is_osm {
-                                        this.active_layer = Some(layer_id);
+                    .map(
+                        |(index, (layer_id, name, is_visible, is_modified, is_osm))| {
+                            let layer_id = *layer_id;
+                            let is_osm = *is_osm;
+                            let is_active = self.active_layer == Some(layer_id);
+                            let label = if *is_modified {
+                                format!("{} \u{2022}", name)
+                            } else {
+                                name.clone()
+                            };
+                            div()
+                                .id(("layer-row", index))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .px_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .when(is_active, |this| this.bg(cx.theme().accent))
+                                .child(
+                                    Checkbox::new(("layer", index))
+                                        .checked(*is_visible)
+                                        .label(label),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                        this.toggle_layer_visibility(layer_id);
+                                        if is_osm {
+                                            this.active_layer = Some(layer_id);
+                                        }
+                                        cx.notify();
+                                    }),
+                                )
+                                .context_menu(move |menu, _window, _cx| {
+                                    let mut menu = menu;
+                                    if index > 0 {
+                                        menu = menu.menu(
+                                            "Move up",
+                                            Box::new(MoveLayer { index, delta: -1 }),
+                                        );
                                     }
-                                    cx.notify();
-                                }),
-                            )
-                            .context_menu(move |menu, _window, _cx| {
-                                let mut menu = menu;
-                                if index > 0 {
-                                    menu = menu
-                                        .menu("Move up", Box::new(MoveLayer { index, delta: -1 }));
-                                }
-                                if index + 1 < total {
-                                    menu = menu
-                                        .menu("Move down", Box::new(MoveLayer { index, delta: 1 }));
-                                }
-                                menu.separator()
-                                    .menu("Delete", Box::new(DeleteLayer { index }))
-                            })
-                            .into_any_element()
-                    })
+                                    if index + 1 < total {
+                                        menu = menu.menu(
+                                            "Move down",
+                                            Box::new(MoveLayer { index, delta: 1 }),
+                                        );
+                                    }
+                                    menu.separator()
+                                        .menu("Delete", Box::new(DeleteLayer { index }))
+                                })
+                                .into_any_element()
+                        },
+                    )
                     .collect::<Vec<_>>(),
             )
             .into_any_element()

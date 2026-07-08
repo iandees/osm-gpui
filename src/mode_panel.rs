@@ -2,8 +2,8 @@
 
 use gpui::{div, prelude::*, px, Context};
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable, Sizable,
 };
 
 use crate::{EditMode, EditModeAction, MapViewer, SetMode};

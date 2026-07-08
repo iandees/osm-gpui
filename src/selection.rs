@@ -657,8 +657,16 @@ mod tests {
         // (5, 4) is 4 units above the line -> far corners 4 units above
         // each original corner.
         let (far_a, far_b) = rectangle_from_edge((0.0, 0.0), (10.0, 0.0), (5.0, 4.0));
-        assert!((far_a.0 - 0.0).abs() < 1e-9 && (far_a.1 - 4.0).abs() < 1e-9, "got {:?}", far_a);
-        assert!((far_b.0 - 10.0).abs() < 1e-9 && (far_b.1 - 4.0).abs() < 1e-9, "got {:?}", far_b);
+        assert!(
+            (far_a.0 - 0.0).abs() < 1e-9 && (far_a.1 - 4.0).abs() < 1e-9,
+            "got {:?}",
+            far_a
+        );
+        assert!(
+            (far_b.0 - 10.0).abs() < 1e-9 && (far_b.1 - 4.0).abs() < 1e-9,
+            "got {:?}",
+            far_b
+        );
     }
 
     #[test]
@@ -673,7 +681,15 @@ mod tests {
         // Edge from (0,0) to (0,10) (vertical); offset point at (3, 5) is 3
         // units to the right of the line -> far corners shift +3 in x.
         let (far_a, far_b) = rectangle_from_edge((0.0, 0.0), (0.0, 10.0), (3.0, 5.0));
-        assert!((far_a.0 - 3.0).abs() < 1e-9 && (far_a.1 - 0.0).abs() < 1e-9, "got {:?}", far_a);
-        assert!((far_b.0 - 3.0).abs() < 1e-9 && (far_b.1 - 10.0).abs() < 1e-9, "got {:?}", far_b);
+        assert!(
+            (far_a.0 - 3.0).abs() < 1e-9 && (far_a.1 - 0.0).abs() < 1e-9,
+            "got {:?}",
+            far_a
+        );
+        assert!(
+            (far_b.0 - 3.0).abs() < 1e-9 && (far_b.1 - 10.0).abs() < 1e-9,
+            "got {:?}",
+            far_b
+        );
     }
 }

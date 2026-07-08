@@ -56,17 +56,40 @@ pub(crate) enum UndoableAction {
     /// way's node list (if not) — and only deletes `node_id` itself when
     /// `node_created` is true, since a pre-existing node may be shared with
     /// other ways or carry its own tags.
-    ExtendWay { layer: LayerId, way_id: i64, node_id: i64, lat: f64, lon: f64, way_created: bool, node_created: bool },
+    ExtendWay {
+        layer: LayerId,
+        way_id: i64,
+        node_id: i64,
+        lat: f64,
+        lon: f64,
+        way_created: bool,
+        node_created: bool,
+    },
     /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
     /// way, committed atomically. Undo deletes the way then all 4 nodes.
-    CreateBuilding { layer: LayerId, way_id: i64, node_ids: [i64; 4] },
+    CreateBuilding {
+        layer: LayerId,
+        way_id: i64,
+        node_ids: [i64; 4],
+    },
     /// Extrude mode's drag commit: 2 new nodes + one closed `building=yes`
     /// way off an existing segment. The segment's own 2 nodes are untouched.
     /// Undo deletes the way then the 2 new nodes.
-    ExtrudeWay { layer: LayerId, way_id: i64, new_node_ids: [i64; 2] },
+    ExtrudeWay {
+        layer: LayerId,
+        way_id: i64,
+        new_node_ids: [i64; 2],
+    },
     /// Extrude mode's double-click: one new node spliced into an existing
     /// way at `index`. Undo removes it from the way, then deletes it.
-    InsertNodeIntoWay { layer: LayerId, way_id: i64, index: usize, node_id: i64, lat: f64, lon: f64 },
+    InsertNodeIntoWay {
+        layer: LayerId,
+        way_id: i64,
+        index: usize,
+        node_id: i64,
+        lat: f64,
+        lon: f64,
+    },
 }
 
 impl UndoableAction {
@@ -335,7 +358,9 @@ mod undo_stack_tests {
     #[test]
     fn create_building_description() {
         let action = UndoableAction::CreateBuilding {
-            layer: LayerId(1), way_id: -1, node_ids: [-1, -2, -3, -4],
+            layer: LayerId(1),
+            way_id: -1,
+            node_ids: [-1, -2, -3, -4],
         };
         assert_eq!(action.description(), "Created a building");
     }
@@ -343,14 +368,27 @@ mod undo_stack_tests {
     #[test]
     fn extrude_way_description() {
         let action = UndoableAction::ExtrudeWay {
-            layer: LayerId(1), way_id: -1, new_node_ids: [-1, -2],
+            layer: LayerId(1),
+            way_id: -1,
+            new_node_ids: [-1, -2],
         };
         assert_eq!(action.description(), "Extruded a building");
     }
 
-    fn extend_way(way_id: i64, node_id: i64, way_created: bool, node_created: bool) -> UndoableAction {
+    fn extend_way(
+        way_id: i64,
+        node_id: i64,
+        way_created: bool,
+        node_created: bool,
+    ) -> UndoableAction {
         UndoableAction::ExtendWay {
-            layer: LayerId(1), way_id, node_id, lat: 40.0, lon: -74.0, way_created, node_created,
+            layer: LayerId(1),
+            way_id,
+            node_id,
+            lat: 40.0,
+            lon: -74.0,
+            way_created,
+            node_created,
         }
     }
 
@@ -394,7 +432,12 @@ mod undo_stack_tests {
 
         let undone = stack.undo().expect("should have one action to undo");
         assert_eq!(undone.description(), "Extended a way");
-        if let UndoableAction::ExtendWay { way_created, node_created, .. } = undone {
+        if let UndoableAction::ExtendWay {
+            way_created,
+            node_created,
+            ..
+        } = undone
+        {
             assert!(!way_created);
             assert!(!node_created);
         } else {
@@ -417,7 +460,13 @@ mod undo_stack_tests {
         stack.push(extend_way(-20, 7, true, false));
 
         let undone = stack.undo().expect("should have one action to undo");
-        if let UndoableAction::ExtendWay { way_created, node_created, node_id, .. } = undone {
+        if let UndoableAction::ExtendWay {
+            way_created,
+            node_created,
+            node_id,
+            ..
+        } = undone
+        {
             assert!(way_created);
             assert!(!node_created);
             assert_eq!(node_id, 7);

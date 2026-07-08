@@ -551,7 +551,12 @@ impl MapViewer {
     /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
     /// than going through `LayerRequest`.
     fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.layer_manager.layers().get(action.index).map(|l| l.id()) {
+        if let Some(id) = self
+            .layer_manager
+            .layers()
+            .get(action.index)
+            .map(|l| l.id())
+        {
             if self.active_layer == Some(id) {
                 self.active_layer = None;
             }
@@ -612,7 +617,11 @@ impl MapViewer {
                             osm_layer.hit_test_segment(&self.viewport, position, 6.0)
                         {
                             self.extrude_drag = Some(ExtrudeDrag {
-                                layer: layer_id, way_id, node_a, node_b, down: position,
+                                layer: layer_id,
+                                way_id,
+                                node_a,
+                                node_b,
+                                down: position,
                             });
                         }
                     }
@@ -772,9 +781,21 @@ impl MapViewer {
                     editable.restore_feature(snapshot.clone());
                 }
             }
-            UndoableAction::ExtendWay { layer, way_id, node_id, lat: _, lon: _, way_created, node_created } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+            UndoableAction::ExtendWay {
+                layer,
+                way_id,
+                node_id,
+                lat: _,
+                lon: _,
+                way_created,
+                node_created,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if !forward {
                     // Detach `node_id` from the way: if this click created
                     // the way, the whole way goes away (no need to also
@@ -809,9 +830,17 @@ impl MapViewer {
                 // immediate action is out of scope for this plan (see the
                 // spec's "Out of scope" section).
             }
-            UndoableAction::CreateBuilding { layer, way_id, node_ids } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+            UndoableAction::CreateBuilding {
+                layer,
+                way_id,
+                node_ids,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if !forward {
                     editable.remove_way(*way_id);
                     for id in node_ids {
@@ -825,9 +854,17 @@ impl MapViewer {
                 // other edits. Matches this plan's scope (see spec's "Out
                 // of scope": undo/redo depth beyond the immediate action).
             }
-            UndoableAction::ExtrudeWay { layer, way_id, new_node_ids } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+            UndoableAction::ExtrudeWay {
+                layer,
+                way_id,
+                new_node_ids,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if !forward {
                     editable.remove_way(*way_id);
                     for id in new_node_ids {
@@ -841,9 +878,19 @@ impl MapViewer {
                 // `new_node_ids`, breaking any later undo entry that still
                 // references them. Out of scope for this plan.
             }
-            UndoableAction::InsertNodeIntoWay { layer, way_id, index, node_id, .. } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+            UndoableAction::InsertNodeIntoWay {
+                layer,
+                way_id,
+                index,
+                node_id,
+                ..
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 if !forward {
                     editable.remove_node_from_way(*way_id, *index);
                     editable.remove_node(*node_id);
@@ -1304,17 +1351,31 @@ impl MapViewer {
     /// the first edge), click 3 commits the rectangle. See
     /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Building mode".
     fn handle_building_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
-        let Some(layer_id) = self.active_layer else { return };
+        let Some(layer_id) = self.active_layer else {
+            return;
+        };
         let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
 
         match self.building_progress.take() {
             None => {
-                self.building_progress = Some(BuildingProgress { corner_a: (lat, lon), corner_b: None });
+                self.building_progress = Some(BuildingProgress {
+                    corner_a: (lat, lon),
+                    corner_b: None,
+                });
             }
-            Some(BuildingProgress { corner_a, corner_b: None }) => {
-                self.building_progress = Some(BuildingProgress { corner_a, corner_b: Some((lat, lon)) });
+            Some(BuildingProgress {
+                corner_a,
+                corner_b: None,
+            }) => {
+                self.building_progress = Some(BuildingProgress {
+                    corner_a,
+                    corner_b: Some((lat, lon)),
+                });
             }
-            Some(BuildingProgress { corner_a, corner_b: Some(corner_b) }) => {
+            Some(BuildingProgress {
+                corner_a,
+                corner_b: Some(corner_b),
+            }) => {
                 self.commit_building(layer_id, corner_a, corner_b, (lat, lon));
                 self.building_progress = None;
             }
@@ -1324,10 +1385,20 @@ impl MapViewer {
     /// Compute the final rectangle (corner_a, corner_b as one edge, offset
     /// by `cursor`'s perpendicular distance) and commit 4 new nodes + a
     /// closed `building=yes` way as one undo action.
-    fn commit_building(&mut self, layer_id: LayerId, corner_a: (f64, f64), corner_b: (f64, f64), cursor: (f64, f64)) {
+    fn commit_building(
+        &mut self,
+        layer_id: LayerId,
+        corner_a: (f64, f64),
+        corner_b: (f64, f64),
+        cursor: (f64, f64),
+    ) {
         let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(corner_a, corner_b, cursor);
-        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
-        let Some(editable) = layer.as_editable_mut() else { return };
+        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable_mut() else {
+            return;
+        };
 
         let n0 = editable.add_node(corner_a.0, corner_a.1);
         let n1 = editable.add_node(corner_b.0, corner_b.1);
@@ -1339,10 +1410,14 @@ impl MapViewer {
         );
 
         self.undo_stack.push(UndoableAction::CreateBuilding {
-            layer: layer_id, way_id, node_ids: [n0, n1, n2, n3],
+            layer: layer_id,
+            way_id,
+            node_ids: [n0, n1, n2, n3],
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
-            layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
         }];
     }
 
@@ -1351,15 +1426,27 @@ impl MapViewer {
     /// create 2 new nodes + a closed `building=yes` way, push one
     /// `ExtrudeWay` undo action.
     fn commit_extrude(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
-        let Some(layer) = self.layer_manager.find_layer(drag.layer) else { return };
-        let Some(editable) = layer.as_editable() else { return };
-        let Some(a_geo) = editable.node_lat_lon(drag.node_a) else { return };
-        let Some(b_geo) = editable.node_lat_lon(drag.node_b) else { return };
+        let Some(layer) = self.layer_manager.find_layer(drag.layer) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable() else {
+            return;
+        };
+        let Some(a_geo) = editable.node_lat_lon(drag.node_a) else {
+            return;
+        };
+        let Some(b_geo) = editable.node_lat_lon(drag.node_b) else {
+            return;
+        };
         let cursor_geo = self.viewport.screen_to_geo(up_pos);
 
         let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(a_geo, b_geo, cursor_geo);
-        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else { return };
-        let Some(editable) = layer.as_editable_mut() else { return };
+        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable_mut() else {
+            return;
+        };
         let new_a = editable.add_node(far_a.0, far_a.1);
         let new_b = editable.add_node(far_b.0, far_b.1);
         let way_id = editable.add_way(
@@ -1368,10 +1455,14 @@ impl MapViewer {
         );
 
         self.undo_stack.push(UndoableAction::ExtrudeWay {
-            layer: drag.layer, way_id, new_node_ids: [new_a, new_b],
+            layer: drag.layer,
+            way_id,
+            new_node_ids: [new_a, new_b],
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
-            layer_id: drag.layer, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+            layer_id: drag.layer,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
         }];
     }
 
@@ -1379,17 +1470,30 @@ impl MapViewer {
     /// double-click position, splitting that segment.
     fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
         let (lat, lon) = self.viewport.screen_to_geo(up_pos);
-        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else { return };
-        let Some(editable) = layer.as_editable_mut() else { return };
+        let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable_mut() else {
+            return;
+        };
         // The segment's start index within the way's node list: `node_a`'s
         // position (the segment is node_a -> node_b, consecutive).
-        let Some(node_ids) = editable.way_node_ids(drag.way_id) else { return };
-        let Some(idx_a) = node_ids.iter().position(|&id| id == drag.node_a) else { return };
+        let Some(node_ids) = editable.way_node_ids(drag.way_id) else {
+            return;
+        };
+        let Some(idx_a) = node_ids.iter().position(|&id| id == drag.node_a) else {
+            return;
+        };
         let insert_index = idx_a + 1;
 
         let new_id = editable.insert_node_into_way(drag.way_id, insert_index, lat, lon);
         self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
-            layer: drag.layer, way_id: drag.way_id, index: insert_index, node_id: new_id, lat, lon,
+            layer: drag.layer,
+            way_id: drag.way_id,
+            index: insert_index,
+            node_id: new_id,
+            lat,
+            lon,
         });
     }
 
@@ -1406,7 +1510,9 @@ impl MapViewer {
     /// Add mode: place a node, or extend/connect the in-progress way. See
     /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode".
     fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
-        let Some(layer_id) = self.active_layer else { return };
+        let Some(layer_id) = self.active_layer else {
+            return;
+        };
         let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Clicking an existing node/way finishes the in-progress way by
@@ -1416,10 +1522,13 @@ impl MapViewer {
             if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
                 if hit.layer_id == layer_id {
                     if let osm_gpui::selection::FeatureKind::Node = hit.kind {
-                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, lat, lon, false);
+                        let way_id =
+                            self.add_extend_or_start_way(layer_id, hit.id, lat, lon, false);
                         self.add_progress = None;
                         self.selected = vec![osm_gpui::selection::FeatureRef {
-                            layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+                            layer_id,
+                            kind: osm_gpui::selection::FeatureKind::Way,
+                            id: way_id,
                         }];
                         return;
                     }
@@ -1440,15 +1549,27 @@ impl MapViewer {
                 // (same one the retired Cmd+Click gesture used to push) —
                 // this is the same underlying mutation, just triggered by
                 // Add mode instead.
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 let new_id = editable.add_node(lat, lon);
                 self.undo_stack.push(UndoableAction::CreateNode {
-                    layer: layer_id, id: new_id, lat, lon,
+                    layer: layer_id,
+                    id: new_id,
+                    lat,
+                    lon,
                 });
-                self.add_progress = Some(AddProgress { way_id: None, last_node_id: new_id });
+                self.add_progress = Some(AddProgress {
+                    way_id: None,
+                    last_node_id: new_id,
+                });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
-                    layer_id, kind: osm_gpui::selection::FeatureKind::Node, id: new_id,
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Node,
+                    id: new_id,
                 }];
             }
             Some(progress) => {
@@ -1456,14 +1577,23 @@ impl MapViewer {
                 // one step — `add_extend_or_start_way` pushes the single
                 // `ExtendWay` undo entry that covers both the node creation
                 // and the way mutation (one click = one undo step).
-                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return };
-                let Some(editable) = layer.as_editable_mut() else { return };
+                let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
                 let new_id = editable.add_node(lat, lon);
                 self.add_progress = Some(progress);
                 let way_id = self.add_extend_or_start_way(layer_id, new_id, lat, lon, true);
-                self.add_progress = Some(AddProgress { way_id: Some(way_id), last_node_id: new_id });
+                self.add_progress = Some(AddProgress {
+                    way_id: Some(way_id),
+                    last_node_id: new_id,
+                });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
-                    layer_id, kind: osm_gpui::selection::FeatureKind::Way, id: way_id,
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: way_id,
                 }];
             }
         }
@@ -1476,24 +1606,51 @@ impl MapViewer {
     /// `node_id` was just created by this click (vs. an existing node the
     /// user clicked to connect) — it's recorded on the undo entry so undo
     /// never deletes a node it didn't create.
-    fn add_extend_or_start_way(&mut self, layer_id: LayerId, node_id: i64, lat: f64, lon: f64, node_created: bool) -> i64 {
+    fn add_extend_or_start_way(
+        &mut self,
+        layer_id: LayerId,
+        node_id: i64,
+        lat: f64,
+        lon: f64,
+        node_created: bool,
+    ) -> i64 {
         let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
-        let last_node_id = self.add_progress.as_ref().map(|p| p.last_node_id).unwrap_or(node_id);
-        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else { return progress_way_id.unwrap_or(0) };
-        let Some(editable) = layer.as_editable_mut() else { return progress_way_id.unwrap_or(0) };
+        let last_node_id = self
+            .add_progress
+            .as_ref()
+            .map(|p| p.last_node_id)
+            .unwrap_or(node_id);
+        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+            return progress_way_id.unwrap_or(0);
+        };
+        let Some(editable) = layer.as_editable_mut() else {
+            return progress_way_id.unwrap_or(0);
+        };
 
         match progress_way_id {
             Some(way_id) => {
                 editable.extend_way(way_id, node_id);
                 self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id, way_id, node_id, lat, lon, way_created: false, node_created,
+                    layer: layer_id,
+                    way_id,
+                    node_id,
+                    lat,
+                    lon,
+                    way_created: false,
+                    node_created,
                 });
                 way_id
             }
             None => {
                 let way_id = editable.add_way(vec![last_node_id, node_id], Vec::new());
                 self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id, way_id, node_id, lat, lon, way_created: true, node_created,
+                    layer: layer_id,
+                    way_id,
+                    node_id,
+                    lat,
+                    lon,
+                    way_created: true,
+                    node_created,
                 });
                 way_id
             }
