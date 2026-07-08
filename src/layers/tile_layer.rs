@@ -22,6 +22,7 @@ pub struct TileLayer {
     id: LayerId,
     name: String,
     url_template: String,
+    source_key: String,
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
     show_boundaries: bool,
@@ -54,10 +55,12 @@ impl TileLayer {
         url_template: String,
         tile_cache: Arc<Mutex<TileCache>>,
     ) -> Self {
+        let source_key = crate::tile_cache::source_key_for_template(&url_template);
         Self {
             id,
             name,
             url_template,
+            source_key,
             visible: true,
             tile_cache,
             show_boundaries: false,
@@ -244,6 +247,10 @@ impl MapLayer for TileLayer {
             let parent_fallback = tile_coord.parent().map(|parent_coord| {
                 let (qx, qy) = tile_coord.quadrant_in_parent();
                 let parent_url = url_from_template(&self.url_template, &parent_coord);
+                let parent_key = crate::tile_cache::TileAssetKey {
+                    url: parent_url,
+                    source_key: self.source_key.clone(),
+                };
                 div()
                     .absolute()
                     .left(-tile_width * qx as f32)
@@ -252,7 +259,7 @@ impl MapLayer for TileLayer {
                     .h(tile_height * 2.0)
                     .child(
                         img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                            window.use_asset::<crate::tile_cache::TileAsset>(&parent_url, cx)
+                            window.use_asset::<crate::tile_cache::TileAsset>(&parent_key, cx)
                         })
                         .size_full()
                         .object_fit(gpui::ObjectFit::Cover),
@@ -279,13 +286,16 @@ impl MapLayer for TileLayer {
             // to a sensible range so very small tiles still get something.
             let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
             let fallback_url = tile_url.clone();
-            let asset_url = tile_url;
+            let asset_key = crate::tile_cache::TileAssetKey {
+                url: tile_url,
+                source_key: self.source_key.clone(),
+            };
 
             let tile_element = tile_element
                 .child(
                     // Use GPUI's img with asset loading system
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                        window.use_asset::<crate::tile_cache::TileAsset>(&asset_url, cx)
+                        window.use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                     })
                     .size_full()
                     .object_fit(gpui::ObjectFit::Cover)
@@ -607,5 +617,27 @@ mod tests {
             Some(14)
         );
         assert_eq!(compute_effective_tile_zoom(16.0, Some(5), Some(14)), None);
+    }
+
+    /// Guards against `TileLayer`'s `source_key` field and
+    /// `source_key_for_template` silently desyncing under future refactors:
+    /// a layer built via `TileLayer::new` (the built-in OSM Carto layer)
+    /// must derive its `source_key` from the same template it uses to
+    /// resolve tile URLs.
+    #[gpui::test]
+    fn built_in_layer_source_key_matches_template_derivation(cx: &mut gpui::TestAppContext) {
+        use crate::idle_tracker::IdleTracker;
+        use crate::layers::LayerId;
+        use crate::tile_cache::{source_key_for_template, TileCache};
+        use std::sync::{Arc, Mutex};
+
+        let executor = cx.executor();
+        let idle = IdleTracker::new();
+        let cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
+        let layer = super::TileLayer::new(LayerId(1), cache);
+        assert_eq!(
+            layer.source_key,
+            source_key_for_template(super::OSM_CARTO_TEMPLATE)
+        );
     }
 }

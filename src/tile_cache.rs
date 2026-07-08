@@ -301,16 +301,31 @@ impl std::error::Error for TileFetchError {}
 
 pub struct TileAsset;
 
+/// Identifies both the concrete tile URL to fetch and the cache
+/// subdirectory (derived from the source's URL template via
+/// `source_key_for_template`) it belongs in.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct TileAssetKey {
+    pub url: String,
+    pub source_key: String,
+}
+
+/// Compose the on-disk path for one cached tile: `<base_dir>/<source_key>/tile_<hash>.png`.
+fn tile_file_path(base_dir: &Path, source_key: &str, url: &str) -> PathBuf {
+    base_dir.join(source_key).join(cache_filename(url))
+}
+
 impl Asset for TileAsset {
-    type Source = String; // The tile URL
+    type Source = TileAssetKey;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
 
     fn load(
-        url: Self::Source,
+        key: Self::Source,
         cx: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
         let idle = TILE_IDLE_TRACKER.get().cloned();
+        let TileAssetKey { url, source_key } = key;
 
         async move {
             // Signal that a tile fetch has started (if idle tracker is wired up).
@@ -322,13 +337,12 @@ impl Asset for TileAsset {
             // after it resolves, covering all success and error paths.
             let result = executor
                 .spawn(async move {
-                    let cache_dir = cache_dir();
-
-                    // Derive a collision-resistant filename from the full URL so
-                    // different tile servers/templates can never collide.
-                    let filename = cache_filename(&url);
-
-                    let file_path = cache_dir.join(&filename);
+                    let base_dir = cache_dir();
+                    let file_path = tile_file_path(&base_dir, &source_key, &url);
+                    let source_dir = file_path
+                        .parent()
+                        .expect("tile_file_path always has a parent")
+                        .to_path_buf();
 
                     // Check if file already exists, load it directly
                     if file_path.exists() {
@@ -345,7 +359,7 @@ impl Asset for TileAsset {
                     }
 
                     // Ensure cache directory exists
-                    if let Err(e) = fs::create_dir_all(&cache_dir) {
+                    if let Err(e) = fs::create_dir_all(&source_dir) {
                         let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
                         record_error(&url, reason.clone());
                         return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
@@ -389,7 +403,7 @@ impl Asset for TileAsset {
                                     reason
                                 ))));
                             }
-                            maybe_evict(&cache_dir);
+                            maybe_evict(&base_dir);
 
                             // Load the saved file as an image
                             match load_image_from_file(&file_path) {
@@ -941,5 +955,26 @@ mod tests {
     fn source_key_has_readable_prefix() {
         let key = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
         assert!(key.starts_with("tile_openstreetmap_org_z_x_y"));
+    }
+
+    #[test]
+    fn tile_file_path_differs_by_source_key() {
+        let base = Path::new("/cache/tiles");
+        let url = "https://tile.example.test/1/2/3.png";
+        let a = tile_file_path(base, "source-a", url);
+        let b = tile_file_path(base, "source-b", url);
+        assert_ne!(a, b);
+        assert!(a.starts_with(base.join("source-a")));
+        assert!(b.starts_with(base.join("source-b")));
+    }
+
+    #[test]
+    fn tile_file_path_deterministic() {
+        let base = Path::new("/cache/tiles");
+        let url = "https://tile.example.test/1/2/3.png";
+        assert_eq!(
+            tile_file_path(base, "source-a", url),
+            tile_file_path(base, "source-a", url)
+        );
     }
 }
