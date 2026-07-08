@@ -219,22 +219,31 @@ impl MapViewer {
                     } else {
                         gpui::MouseButton::Left
                     };
-                    let ev = MouseDownEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                        first_mouse: false,
-                    };
-                    self.handle_mouse_down(&ev);
-                    let ev = MouseUpEvent {
-                        button: btn,
-                        position: point(px(x), px(y)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                    };
-                    self.handle_mouse_up(&ev, cx);
-                    cx.notify();
+                    // Dispatching synchronously here would double-lease `self`:
+                    // we're already inside `MapViewer::render`'s entity update,
+                    // and any `.on_mouse_down`/`.on_click` listener belonging to
+                    // this same view calls `weak_entity.update(cx, ...)`, which
+                    // panics ("cannot update ... while it is already being
+                    // updated"). `Window::defer` runs the closure at the end of
+                    // the current effect cycle, after this entity is returned to
+                    // the app, avoiding the re-entrant lease.
+                    window.defer(cx, move |window, cx| {
+                        let down = MouseDownEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                            first_mouse: false,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
+                        let up = MouseUpEvent {
+                            button: btn,
+                            position: point(px(x), px(y)),
+                            modifiers: gpui::Modifiers::none(),
+                            click_count: 1,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    });
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
                     let ev = ScrollWheelEvent {
