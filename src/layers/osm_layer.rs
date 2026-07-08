@@ -573,6 +573,20 @@ fn push_triangle(
     }
 }
 
+/// Paint a single node marker quad at `screen_point` (already including the
+/// canvas origin offset) using `style`. Shared by the per-frame node-marker
+/// pass in `render_canvas` and by `render_highlight`'s `FeatureKind::Way` arm,
+/// which repaints a selected way's vertex markers on top of the highlight
+/// stroke so they aren't hidden underneath it.
+fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: NodeStyle) {
+    let half = px(style.size / 2.0);
+    let quad_bounds = Bounds {
+        origin: point(screen_point.x - half, screen_point.y - half),
+        size: size(px(style.size), px(style.size)),
+    };
+    window.paint_quad(fill(quad_bounds, rgb(style.color)));
+}
+
 /// Bulk-build a point index over every node's mercator position.
 fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
     let items: Vec<_> = node_cache
@@ -2023,12 +2037,7 @@ impl MapLayer for OsmLayer {
             }
             sp += self.drag_preview_offset(id);
             let style = self.node_cache.styles[idx];
-            let half = px(style.size / 2.0);
-            let quad_bounds = Bounds {
-                origin: point(sp.x + origin_x - half, sp.y + origin_y - half),
-                size: size(px(style.size), px(style.size)),
-            };
-            window.paint_quad(fill(quad_bounds, rgb(style.color)));
+            paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
         }
     }
 
@@ -2339,6 +2348,10 @@ impl EditableLayer for OsmLayer {
                 let origin_y = bounds.origin.y;
 
                 let mut pts: Vec<Point<Pixels>> = Vec::with_capacity(way.nodes.len());
+                // Parallel to `pts`: each node's marker style, so the
+                // vertex-marker repaint below can reuse the same projected
+                // screen point without redoing coordinate validation/lookup.
+                let mut node_styles: Vec<NodeStyle> = Vec::with_capacity(way.nodes.len());
                 for node_id in &way.nodes {
                     if let Some(n) = osm_data.nodes.get(node_id) {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
@@ -2346,6 +2359,7 @@ impl EditableLayer for OsmLayer {
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
+                                node_styles.push(self.stylesheet.node_style(&n.tags));
                             }
                         }
                     }
@@ -2365,6 +2379,14 @@ impl EditableLayer for OsmLayer {
                 }
                 if let Ok(path) = builder.build() {
                     window.paint_path(path, rgb(SELECTION_ACCENT));
+                }
+
+                // Re-paint the way's vertex markers on top of the highlight
+                // stroke above — otherwise the (width + 4.0) highlight stroke
+                // fully covers the node-marker quads painted earlier in
+                // `render_canvas`, hiding the selected way's vertices.
+                for (p, style) in pts.iter().zip(node_styles.iter()) {
+                    paint_node_marker(window, *p, *style);
                 }
             }
         }
