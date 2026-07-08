@@ -139,6 +139,15 @@ pub trait EditableLayer {
     fn feature_tags(&self, feature: &crate::selection::FeatureRef)
         -> Option<Vec<(String, String)>>;
 
+    /// Classify the geometry (point/vertex/line/area) of a feature this
+    /// layer owns, for preset matching. Returns `None` if the feature
+    /// doesn't belong to this layer or isn't found in its data.
+    fn feature_geometry(
+        &self,
+        feature: &crate::selection::FeatureRef,
+        area_keys: &crate::presets::AreaKeys,
+    ) -> Option<crate::presets::Geometry>;
+
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
     fn render_highlight(
         &self,

@@ -2258,6 +2258,18 @@ impl EditableLayer for OsmLayer {
         Some(kv)
     }
 
+    fn feature_geometry(
+        &self,
+        feature: &FeatureRef,
+        area_keys: &crate::presets::AreaKeys,
+    ) -> Option<crate::presets::Geometry> {
+        if feature.layer_id != self.id {
+            return None;
+        }
+        let data = self.osm_data.as_ref()?;
+        crate::presets::classify_geometry(data, feature.kind, feature.id, area_keys)
+    }
+
     fn render_highlight(
         &self,
         viewport: &Viewport,
@@ -4024,6 +4036,58 @@ mod tests {
         assert!(
             data.nodes.contains_key(&mid),
             "remove_node_from_way must not delete the node itself"
+        );
+    }
+
+    #[test]
+    fn feature_geometry_classifies_unreferenced_node_as_point() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let area_keys = crate::presets::AreaKeys::from_json("{}").unwrap();
+        let feature = crate::selection::FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Node,
+            id: 1,
+        };
+        assert_eq!(
+            layer.feature_geometry(&feature, &area_keys),
+            Some(crate::presets::Geometry::Point)
+        );
+    }
+
+    #[test]
+    fn feature_geometry_returns_none_for_wrong_layer() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let data = data_with(vec![n1], vec![]);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let area_keys = crate::presets::AreaKeys::from_json("{}").unwrap();
+        let feature = crate::selection::FeatureRef {
+            layer_id: LayerId(2),
+            kind: FeatureKind::Node,
+            id: 1,
+        };
+        assert_eq!(layer.feature_geometry(&feature, &area_keys), None);
+    }
+
+    #[test]
+    fn feature_geometry_classifies_closed_area_way() {
+        let n1 = OsmNode { id: 1, lat: 40.0, lon: -74.0, version: 1, tags: empty_tags() };
+        let n2 = OsmNode { id: 2, lat: 40.001, lon: -74.0, version: 1, tags: empty_tags() };
+        let mut tags = HashMap::new();
+        tags.insert("building".to_string(), "yes".to_string());
+        let way = OsmWay { id: 10, nodes: vec![1, 2, 1], version: 1, tags };
+        let data = data_with(vec![n1, n2], vec![way]);
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let area_keys = crate::presets::AreaKeys::from_json(r#"{"building": {}}"#).unwrap();
+        let feature = crate::selection::FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 10,
+        };
+        assert_eq!(
+            layer.feature_geometry(&feature, &area_keys),
+            Some(crate::presets::Geometry::Area)
         );
     }
 }
