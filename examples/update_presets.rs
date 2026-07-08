@@ -15,6 +15,8 @@ const PRESETS_URL: &str =
     "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/presets.json";
 const TRANSLATIONS_URL: &str =
     "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/translations/en.json";
+const FIELDS_URL: &str =
+    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/fields.json";
 const MAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@mapbox/maki/icons";
 const TEMAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@rapideditor/temaki/icons";
 
@@ -37,6 +39,37 @@ fn main() {
     let (trimmed_presets, icon_names) = trim_presets(&presets_root, &names);
     let area_keys = compute_area_keys(&presets_root);
 
+    let fields_body = fetch(&client, FIELDS_URL);
+    let fields_root: Value = serde_json::from_str(&fields_body).expect("parse fields.json");
+    let field_translations_map = field_translations(&translations_body);
+    let (trimmed_fields, kept_field_ids) = trim_fields(&fields_root, &field_translations_map);
+
+    // Filter each trimmed preset's fields/more_fields to only field ids that
+    // survived trimming, so the Rust side never sees a dangling reference.
+    let trimmed_presets: Vec<Value> = trimmed_presets
+        .into_iter()
+        .map(|mut preset| {
+            for key in ["fields", "moreFields"] {
+                if let Some(Value::Array(ids)) = preset.get(key).cloned() {
+                    let filtered: Vec<Value> = ids
+                        .into_iter()
+                        .filter(|id| {
+                            id.as_str()
+                                .map(|s| kept_field_ids.contains(s))
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    let out_key = if key == "moreFields" { "more_fields" } else { key };
+                    preset
+                        .as_object_mut()
+                        .unwrap()
+                        .insert(out_key.to_string(), Value::Array(filtered));
+                }
+            }
+            preset
+        })
+        .collect();
+
     fs::create_dir_all(OUT_DIR).expect("create assets/presets");
     fs::write(
         Path::new(OUT_DIR).join("presets.json"),
@@ -48,6 +81,11 @@ fn main() {
         serde_json::to_string_pretty(&area_keys).unwrap(),
     )
     .expect("write area_keys.json");
+    fs::write(
+        Path::new(OUT_DIR).join("fields.json"),
+        serde_json::to_string_pretty(&trimmed_fields).unwrap(),
+    )
+    .expect("write fields.json");
 
     let icons_dir = Path::new(OUT_DIR).join("icons");
     fs::create_dir_all(&icons_dir).expect("create icons dir");
@@ -94,8 +132,9 @@ fn main() {
     }
 
     println!(
-        "done: {} presets, {} icons in {}",
+        "done: {} presets, {} fields, {} icons in {}",
         trimmed_presets.len(),
+        trimmed_fields.len(),
         icon_names.len(),
         OUT_DIR
     );
@@ -206,6 +245,16 @@ fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, H
                 Value::Number(serde_json::Number::from_f64(score).unwrap()),
             );
         }
+        // Carry the raw (unfiltered) field-id lists through under their
+        // upstream key names; `main` filters them down to surviving field
+        // ids (via `trim_fields`) and renames `moreFields` to `more_fields`
+        // when it writes the final presets.json.
+        if let Some(f) = entry.get("fields") {
+            trimmed.insert("fields".to_string(), f.clone());
+        }
+        if let Some(f) = entry.get("moreFields") {
+            trimmed.insert("moreFields".to_string(), f.clone());
+        }
         out.push(Value::Object(trimmed));
     }
 
@@ -287,4 +336,138 @@ fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
             )
         })
         .collect()
+}
+
+/// Map upstream's field `type` string to our vendored `FieldType`, or
+/// `None` if it's not one of the types this tool vendors (see Global
+/// Constraints — no multi-key fields, no dynamic-suggestion types).
+fn map_field_type(upstream_type: &str) -> Option<&'static str> {
+    match upstream_type {
+        "text" | "number" | "url" | "tel" | "email" => Some("text"),
+        "combo" | "typeCombo" | "semiCombo" => Some("combo"),
+        "check" | "onewayCheck" | "defaultCheck" => Some("check"),
+        "radio" => Some("radio"),
+        "multiCombo" => Some("multiCombo"),
+        _ => None,
+    }
+}
+
+struct FieldTranslation {
+    label: Option<String>,
+    placeholder: Option<String>,
+    options: HashMap<String, String>, // option value -> translated label
+}
+
+/// Parse `dist/translations/en.json`'s field section into a flat
+/// `field id -> FieldTranslation` map. Upstream nests this at
+/// `en.presets.fields.<id>.{label,placeholder,options}`.
+fn field_translations(body: &str) -> HashMap<String, FieldTranslation> {
+    let root: Value = serde_json::from_str(body).expect("parse translations/en.json");
+    let mut out = HashMap::new();
+    let Some(fields) = root
+        .get("en")
+        .and_then(|v| v.get("presets"))
+        .and_then(|v| v.get("fields"))
+        .and_then(|v| v.as_object())
+    else {
+        return out;
+    };
+    for (id, entry) in fields {
+        let label = entry.get("label").and_then(|v| v.as_str()).map(str::to_string);
+        let placeholder = entry
+            .get("placeholder")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let options = entry
+            .get("options")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.insert(id.clone(), FieldTranslation { label, placeholder, options });
+    }
+    out
+}
+
+/// Extract only the fields our `Field` type keeps, from upstream's full
+/// `fields.json` object-of-objects shape, merging in translated
+/// label/placeholder/option-labels. Drops any field with an unsupported
+/// `type`, a multi-key (`keys` instead of `key`) definition, or — for
+/// combo/radio/multiCombo — no static `options` list.
+fn trim_fields(
+    root: &Value,
+    translations: &HashMap<String, FieldTranslation>,
+) -> (Vec<Value>, HashSet<String>) {
+    let obj = root.as_object().expect("fields.json root is not an object");
+    let mut out = Vec::new();
+    let mut kept_ids = HashSet::new();
+
+    for (id, entry) in obj {
+        let Some(key) = entry.get("key").and_then(|v| v.as_str()) else {
+            continue; // multi-key ("keys") or keyless field — not vendored
+        };
+        let Some(upstream_type) = entry.get("type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(field_type) = map_field_type(upstream_type) else {
+            continue;
+        };
+
+        let translation = translations.get(id);
+        let label = entry
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| translation.and_then(|t| t.label.clone()));
+        let Some(label) = label else {
+            continue;
+        };
+        let placeholder = entry
+            .get("placeholder")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| translation.and_then(|t| t.placeholder.clone()));
+
+        let needs_options = matches!(field_type, "combo" | "radio" | "multiCombo");
+        let options: Vec<Value> = entry
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|value| {
+                        let label = translation
+                            .and_then(|t| t.options.get(value).cloned())
+                            .unwrap_or_else(|| value.to_string());
+                        let mut opt = serde_json::Map::new();
+                        opt.insert("value".to_string(), Value::String(value.to_string()));
+                        opt.insert("label".to_string(), Value::String(label));
+                        Value::Object(opt)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if needs_options && options.is_empty() {
+            continue; // no static options to offer — not vendored
+        }
+
+        let mut trimmed = serde_json::Map::new();
+        trimmed.insert("id".to_string(), Value::String(id.clone()));
+        trimmed.insert("key".to_string(), Value::String(key.to_string()));
+        trimmed.insert("field_type".to_string(), Value::String(field_type.to_string()));
+        trimmed.insert("label".to_string(), Value::String(label));
+        if let Some(p) = placeholder {
+            trimmed.insert("placeholder".to_string(), Value::String(p));
+        }
+        if !options.is_empty() {
+            trimmed.insert("options".to_string(), Value::Array(options));
+        }
+        out.push(Value::Object(trimmed));
+        kept_ids.insert(id.clone());
+    }
+
+    (out, kept_ids)
 }
