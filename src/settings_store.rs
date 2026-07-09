@@ -64,6 +64,14 @@ pub struct AppSettings {
     pub client_ids: HashMap<String, String>,
     #[serde(default)]
     pub text_size_preset: TextSizePreset,
+    /// Tile cache size budget, in megabytes. Defaults to 500 for
+    /// `settings.json` files written before this field existed.
+    #[serde(default = "default_cache_budget_mb")]
+    pub cache_budget_mb: u64,
+}
+
+fn default_cache_budget_mb() -> u64 {
+    500
 }
 
 impl Default for AppSettings {
@@ -73,6 +81,7 @@ impl Default for AppSettings {
             custom_api_url: String::new(),
             client_ids: HashMap::new(),
             text_size_preset: TextSizePreset::default(),
+            cache_budget_mb: default_cache_budget_mb(),
         }
     }
 }
@@ -167,6 +176,7 @@ mod tests {
             custom_api_url: "https://example.com".into(),
             client_ids: HashMap::new(),
             text_size_preset: TextSizePreset::Large,
+            cache_budget_mb: 500,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -204,9 +214,7 @@ mod tests {
         assert_eq!(
             AppSettings {
                 api_server: ApiServerChoice::Primary,
-                custom_api_url: String::new(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
+                ..Default::default()
             }
             .api_base_url(),
             PRIMARY_API_URL
@@ -214,9 +222,7 @@ mod tests {
         assert_eq!(
             AppSettings {
                 api_server: ApiServerChoice::Dev,
-                custom_api_url: String::new(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
+                ..Default::default()
             }
             .api_base_url(),
             DEV_API_URL
@@ -225,11 +231,37 @@ mod tests {
             AppSettings {
                 api_server: ApiServerChoice::Custom,
                 custom_api_url: "https://custom.example.com/".into(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
+                ..Default::default()
             }
             .api_base_url(),
             "https://custom.example.com"
         );
+    }
+
+    #[test]
+    fn missing_cache_budget_field_defaults_to_500() {
+        let dir = tmp_dir("missing-budget");
+        let path = dir.join("settings.json");
+        // Simulate a settings.json written before cache_budget_mb existed.
+        fs::write(
+            &path,
+            br#"{"api_server":"Primary","custom_api_url":"","client_ids":{}}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.cache_budget_mb, 500);
+    }
+
+    #[test]
+    fn cache_budget_round_trips() {
+        let dir = tmp_dir("cache-budget-round-trip");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            cache_budget_mb: 250,
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.cache_budget_mb, 250);
     }
 }

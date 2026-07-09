@@ -10,11 +10,26 @@ use std::time::{Instant, SystemTime};
 
 use crate::idle_tracker::IdleTracker;
 
-/// Maximum total size, in bytes, that the on-disk tile cache is allowed to
-/// grow to before oldest-by-mtime files are evicted. 500 MB is generous
-/// enough to cover a large viewport's worth of zoom levels without letting a
-/// long-running session accumulate unbounded disk usage.
-const MAX_CACHE_BYTES: u64 = 500 * 1024 * 1024;
+/// Default cache budget (500 MB), used until overridden by
+/// `set_budget_mb` (normally seeded from persisted `AppSettings.cache_budget_mb`
+/// at startup).
+const DEFAULT_CACHE_BUDGET_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Live, process-global cache size budget in bytes. Changing it via
+/// `set_budget_mb` never triggers an eviction sweep itself — it only
+/// changes what the *next* `maybe_evict`-triggered sweep evicts down to, so
+/// shrinking the budget doesn't cause an immediate mass deletion.
+static CACHE_BUDGET_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_CACHE_BUDGET_BYTES);
+
+/// Update the live cache budget. Does not evict anything itself — see
+/// `CACHE_BUDGET_BYTES`'s doc comment.
+pub fn set_budget_mb(mb: u64) {
+    CACHE_BUDGET_BYTES.store(mb.saturating_mul(1024 * 1024), Ordering::Relaxed);
+}
+
+fn current_budget_bytes() -> u64 {
+    CACHE_BUDGET_BYTES.load(Ordering::Relaxed)
+}
 
 /// After this many tile writes since the last eviction sweep, re-scan the
 /// cache directory to check whether it's over budget. Avoids doing a full
@@ -24,7 +39,8 @@ const WRITES_BETWEEN_EVICTION_CHECKS: u64 = 25;
 
 /// Counts tile writes since the last eviction sweep. When it crosses
 /// `WRITES_BETWEEN_EVICTION_CHECKS`, `maybe_evict` performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over `MAX_CACHE_BYTES`.
+/// and evicts oldest-by-mtime files if the cache is over its configured
+/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
 static WRITES_SINCE_EVICTION: AtomicU64 = AtomicU64::new(0);
 
 /// Cached result of the last "how many files are in the cache" scan, plus
@@ -57,6 +73,68 @@ fn cache_filename(url: &str) -> String {
     format!("tile_{:x}.png", digest)
 }
 
+/// Derive a stable, human-legible cache subdirectory name from an imagery
+/// source's URL *template* (e.g. `https://tile.openstreetmap.org/{z}/{x}/{y}.png`),
+/// not a resolved per-tile URL. Using the template means a `{switch:a,b,c}`
+/// rotating-subdomain source always maps to one stable key, regardless of
+/// which subdomain a given tile happens to resolve to.
+pub(crate) fn source_key_for_template(template: &str) -> String {
+    let mut normalized = template.to_string();
+
+    // Collapse a `{switch:a,b,c}` span to a single marker, mirroring the
+    // span-detection logic in `tiles::url_from_template` (anchored on the
+    // literal "{switch:" prefix, then the next '}').
+    if let Some(start) = normalized.find("{switch:") {
+        if let Some(rel_end) = normalized[start..].find('}') {
+            let end = start + rel_end;
+            normalized.replace_range(start..=end, "s");
+        }
+    }
+    normalized = normalized.replace("{s}", "s");
+
+    normalized = normalized.replace("{zoom}", "z");
+    normalized = normalized.replace("{z}", "z");
+    normalized = normalized.replace("{x}", "x");
+    normalized = normalized.replace("{-y}", "negy");
+    normalized = normalized.replace("{y}", "y");
+
+    let without_scheme = normalized
+        .strip_prefix("https://")
+        .or_else(|| normalized.strip_prefix("http://"))
+        .unwrap_or(&normalized);
+
+    // Sanitize into a filesystem-safe slug: keep alphanumerics, collapse
+    // every run of other characters (dots, slashes, query separators, …)
+    // into a single underscore.
+    let mut slug = String::with_capacity(without_scheme.len());
+    let mut last_was_sep = false;
+    for c in without_scheme.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+            last_was_sep = false;
+        } else if !last_was_sep {
+            slug.push('_');
+            last_was_sep = true;
+        }
+    }
+    let slug = slug.trim_matches('_');
+    let slug: String = slug.chars().take(60).collect();
+
+    // Short hash suffix of the *original* template guarantees uniqueness
+    // even if two different templates sanitize to the same slug, or the
+    // slug was truncated.
+    let mut hasher = Sha256::new();
+    hasher.update(template.as_bytes());
+    let digest = hasher.finalize();
+    let hash_suffix = format!("{:x}", digest)[..8].to_string();
+
+    if slug.is_empty() {
+        hash_suffix
+    } else {
+        format!("{}-{}", slug, hash_suffix)
+    }
+}
+
 /// Atomically write `bytes` to `file_path`: write to a unique sibling temp
 /// file first, then `rename` into place. `rename` is atomic on POSIX
 /// filesystems (macOS/Linux), so concurrent fetches for the same cache path
@@ -68,7 +146,8 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Called after every tile write. Bumps the running write counter and, once
 /// every `WRITES_BETWEEN_EVICTION_CHECKS` writes, performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over `MAX_CACHE_BYTES`.
+/// and evicts oldest-by-mtime files if the cache is over its configured
+/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
 ///
 /// We deliberately scan on a write-count cadence rather than tracking a
 /// live running-size total: a live total would need to be correct across
@@ -77,7 +156,32 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 fn maybe_evict(dir: &Path) {
     let count = WRITES_SINCE_EVICTION.fetch_add(1, Ordering::Relaxed) + 1;
     if count.is_multiple_of(WRITES_BETWEEN_EVICTION_CHECKS) {
-        evict_if_over_budget(dir, MAX_CACHE_BYTES);
+        evict_if_over_budget(dir, current_budget_bytes());
+    }
+}
+
+/// Recursively collect every cache file under `dir` — one level of
+/// source-key subdirectories, plus any loose top-level files left over
+/// from before per-source directories existed — appending
+/// `(path, size, mtime)` tuples and accumulating `total`.
+fn collect_cache_files(dir: &Path, files: &mut Vec<(PathBuf, u64, SystemTime)>, total: &mut u64) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            collect_cache_files(&path, files, total);
+        } else if meta.is_file() {
+            let size = meta.len();
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            *total += size;
+            files.push((path, size, mtime));
+        }
     }
 }
 
@@ -86,24 +190,9 @@ fn maybe_evict(dir: &Path) {
 /// metadata/mtime can't be read are treated as newest (kept) rather than
 /// causing a hard failure, since a partial cleanup is preferable to none.
 fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
     let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
     let mut total: u64 = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                let size = meta.len();
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                total += size;
-                files.push((path, size, mtime));
-            }
-        }
-    }
+    collect_cache_files(dir, &mut files, &mut total);
 
     if total <= max_bytes {
         return;
@@ -141,9 +230,10 @@ fn cached_file_count() -> usize {
 
     let dir = cache_dir();
     let count = if dir.exists() {
-        fs::read_dir(&dir)
-            .map(|entries| entries.count())
-            .unwrap_or(0)
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+        files.len()
     } else {
         0
     };
@@ -239,16 +329,31 @@ impl std::error::Error for TileFetchError {}
 
 pub struct TileAsset;
 
+/// Identifies both the concrete tile URL to fetch and the cache
+/// subdirectory (derived from the source's URL template via
+/// `source_key_for_template`) it belongs in.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct TileAssetKey {
+    pub url: String,
+    pub source_key: String,
+}
+
+/// Compose the on-disk path for one cached tile: `<base_dir>/<source_key>/tile_<hash>.png`.
+fn tile_file_path(base_dir: &Path, source_key: &str, url: &str) -> PathBuf {
+    base_dir.join(source_key).join(cache_filename(url))
+}
+
 impl Asset for TileAsset {
-    type Source = String; // The tile URL
+    type Source = TileAssetKey;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
 
     fn load(
-        url: Self::Source,
+        key: Self::Source,
         cx: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
         let idle = TILE_IDLE_TRACKER.get().cloned();
+        let TileAssetKey { url, source_key } = key;
 
         async move {
             // Signal that a tile fetch has started (if idle tracker is wired up).
@@ -260,13 +365,12 @@ impl Asset for TileAsset {
             // after it resolves, covering all success and error paths.
             let result = executor
                 .spawn(async move {
-                    let cache_dir = cache_dir();
-
-                    // Derive a collision-resistant filename from the full URL so
-                    // different tile servers/templates can never collide.
-                    let filename = cache_filename(&url);
-
-                    let file_path = cache_dir.join(&filename);
+                    let base_dir = cache_dir();
+                    let file_path = tile_file_path(&base_dir, &source_key, &url);
+                    let source_dir = file_path
+                        .parent()
+                        .expect("tile_file_path always has a parent")
+                        .to_path_buf();
 
                     // Check if file already exists, load it directly
                     if file_path.exists() {
@@ -283,7 +387,7 @@ impl Asset for TileAsset {
                     }
 
                     // Ensure cache directory exists
-                    if let Err(e) = fs::create_dir_all(&cache_dir) {
+                    if let Err(e) = fs::create_dir_all(&source_dir) {
                         let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
                         record_error(&url, reason.clone());
                         return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
@@ -327,7 +431,7 @@ impl Asset for TileAsset {
                                     reason
                                 ))));
                             }
-                            maybe_evict(&cache_dir);
+                            maybe_evict(&base_dir);
 
                             // Load the saved file as an image
                             match load_image_from_file(&file_path) {
@@ -518,6 +622,192 @@ impl TileCache {
         // We can't easily track active downloads with the asset system
         // but GPUI handles this internally
         (cached_files, 0)
+    }
+}
+
+/// Per-source-key aggregate cache usage, as reported by `cache_summary`.
+#[derive(Clone)]
+pub struct CacheSourceUsage {
+    pub key: String,
+    pub bytes: u64,
+    pub file_count: usize,
+}
+
+/// Aggregate tile cache usage across every source, plus a per-source
+/// breakdown. Computed via a fresh, on-demand directory scan — safe to call
+/// only occasionally (e.g. when a settings panel is open), not on a hot
+/// per-frame path (see `cached_file_count` for that).
+#[derive(Clone)]
+pub struct CacheSummary {
+    pub total_bytes: u64,
+    pub total_files: usize,
+    /// Sorted by `bytes`, descending.
+    pub sources: Vec<CacheSourceUsage>,
+}
+
+/// Bucket for cache files that aren't inside any source-key subdirectory —
+/// e.g. leftovers from before per-source directories existed.
+const UNCATEGORIZED_KEY: &str = "(uncategorized)";
+
+/// `pub(crate)` accessor so callers outside this module (e.g. the settings
+/// UI) can compare against the uncategorized bucket key without duplicating
+/// the literal string.
+pub(crate) fn uncategorized_key() -> &'static str {
+    UNCATEGORIZED_KEY
+}
+
+/// Cached result of the last `cache_summary_at` scan, plus the `Instant` it
+/// was computed at. `cache_summary` recomputes at most once per
+/// `CACHE_SUMMARY_TTL` to avoid a full recursive directory scan on every
+/// call — the settings UI calls this on every repaint of the Tile Cache
+/// panel, which happens roughly twice a second while an input field there
+/// is focused (caret-blink-driven `cx.notify()`).
+static CACHE_SUMMARY_CACHE: OnceLock<Mutex<Option<(Instant, CacheSummary)>>> = OnceLock::new();
+const CACHE_SUMMARY_TTL: std::time::Duration = STATS_TTL;
+
+pub fn cache_summary() -> CacheSummary {
+    let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = match cell.lock() {
+        Ok(g) => g,
+        Err(_) => return cache_summary_at(&cache_dir()),
+    };
+
+    if let Some((last, summary)) = guard.as_ref() {
+        if last.elapsed() < CACHE_SUMMARY_TTL {
+            return summary.clone();
+        }
+    }
+
+    let summary = cache_summary_at(&cache_dir());
+    *guard = Some((Instant::now(), summary.clone()));
+    summary
+}
+
+fn cache_summary_at(dir: &Path) -> CacheSummary {
+    let mut per_source: HashMap<String, (u64, usize)> = HashMap::new();
+    let mut total_bytes = 0u64;
+    let mut total_files = 0usize;
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => {
+            return CacheSummary {
+                total_bytes: 0,
+                total_files: 0,
+                sources: Vec::new(),
+            };
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            let key = entry.file_name().to_string_lossy().to_string();
+            let mut files = Vec::new();
+            let mut bytes = 0u64;
+            collect_cache_files(&path, &mut files, &mut bytes);
+            total_bytes += bytes;
+            total_files += files.len();
+            per_source.insert(key, (bytes, files.len()));
+        } else if meta.is_file() {
+            let size = meta.len();
+            total_bytes += size;
+            total_files += 1;
+            let bucket = per_source
+                .entry(UNCATEGORIZED_KEY.to_string())
+                .or_insert((0, 0));
+            bucket.0 += size;
+            bucket.1 += 1;
+        }
+    }
+
+    let mut sources: Vec<CacheSourceUsage> = per_source
+        .into_iter()
+        .map(|(key, (bytes, file_count))| CacheSourceUsage {
+            key,
+            bytes,
+            file_count,
+        })
+        .collect();
+    sources.sort_by_key(|s| std::cmp::Reverse(s.bytes));
+
+    CacheSummary {
+        total_bytes,
+        total_files,
+        sources,
+    }
+}
+
+/// Remove all cached tiles for one source (or the `"(uncategorized)"`
+/// bucket of loose top-level files). A missing directory is not an error.
+pub fn clear_source(key: &str) -> std::io::Result<()> {
+    clear_source_at(&cache_dir(), key)
+}
+
+fn clear_source_at(dir: &Path, key: &str) -> std::io::Result<()> {
+    if key == UNCATEGORIZED_KEY {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                fs::remove_file(&path)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Defense-in-depth: every real caller passes a key harvested from
+    // `cache_summary()`'s output, itself derived from sanitized on-disk
+    // directory names (see `source_key_for_template`), so this isn't
+    // exploitable today. Still, refuse to join a path-separator or
+    // traversal sequence onto the cache directory before `remove_dir_all`.
+    if key.contains('/') || key.contains('\\') || key.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to clear cache source with unsafe key: {key:?}"),
+        ));
+    }
+
+    let source_dir = dir.join(key);
+    if source_dir.exists() {
+        fs::remove_dir_all(&source_dir)?;
+    }
+    Ok(())
+}
+
+/// Remove the entire tile cache. Recreated lazily on the next tile write.
+pub fn clear_all_cache() -> std::io::Result<()> {
+    clear_all_cache_at(&cache_dir())
+}
+
+fn clear_all_cache_at(dir: &Path) -> std::io::Result<()> {
+    if dir.exists() {
+        fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+/// Format a byte count as a short, human-readable string (e.g. "342 MB",
+/// "1.2 GB"), for display in the cache settings panel.
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
     }
 }
 
@@ -840,5 +1130,355 @@ mod tests {
         let (last, count) = guard.unwrap();
         assert!(last.elapsed() < STATS_TTL);
         assert_eq!(count, 42);
+    }
+
+    #[test]
+    fn source_key_deterministic_for_same_template() {
+        let a = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        let b = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn source_key_differs_for_different_templates() {
+        let a = source_key_for_template("https://tile-a.example.test/{z}/{x}/{y}.png");
+        let b = source_key_for_template("https://tile-b.example.test/{z}/{x}/{y}.png");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn source_key_is_filesystem_safe() {
+        let key =
+            source_key_for_template("https://tile.example.test/a?b={z}/{x}/{y}.png&key=SECRET123");
+        assert!(key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+    }
+
+    #[test]
+    fn source_key_ignores_switch_subdomain_rotation() {
+        // A `{switch:a,b,c}` template must produce one stable key, since
+        // `url_from_template` picks a different literal subdomain per tile.
+        let template = "https://{switch:a,b,c}.tile.example.test/{z}/{x}/{y}.png";
+        let key1 = source_key_for_template(template);
+        let key2 = source_key_for_template(template);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn source_key_has_readable_prefix() {
+        let key = source_key_for_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        assert!(key.starts_with("tile_openstreetmap_org_z_x_y"));
+    }
+
+    #[test]
+    fn tile_file_path_differs_by_source_key() {
+        let base = Path::new("/cache/tiles");
+        let url = "https://tile.example.test/1/2/3.png";
+        let a = tile_file_path(base, "source-a", url);
+        let b = tile_file_path(base, "source-b", url);
+        assert_ne!(a, b);
+        assert!(a.starts_with(base.join("source-a")));
+        assert!(b.starts_with(base.join("source-b")));
+    }
+
+    #[test]
+    fn tile_file_path_deterministic() {
+        let base = Path::new("/cache/tiles");
+        let url = "https://tile.example.test/1/2/3.png";
+        assert_eq!(
+            tile_file_path(base, "source-a", url),
+            tile_file_path(base, "source-a", url)
+        );
+    }
+
+    #[test]
+    fn collect_cache_files_sums_nested_directories() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-collect-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("source-b").join("b.png"), vec![0u8; 50]).unwrap();
+        fs::write(dir.join("loose.png"), vec![0u8; 10]).unwrap();
+
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+
+        assert_eq!(total, 160);
+        assert_eq!(files.len(), 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn evict_if_over_budget_scans_nested_source_directories() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-evict-nested-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let source_a = dir.join("source-a");
+        let source_b = dir.join("source-b");
+        fs::create_dir_all(&source_a).unwrap();
+        fs::create_dir_all(&source_b).unwrap();
+
+        let now = SystemTime::now();
+        let write = |path: &Path, age_secs: u64| {
+            fs::write(path, vec![0u8; 100]).unwrap();
+            let file = fs::File::open(path).unwrap();
+            file.set_modified(now - std::time::Duration::from_secs(age_secs))
+                .unwrap();
+        };
+        write(&source_a.join("oldest.png"), 180);
+        write(&source_b.join("middle.png"), 120);
+        write(&source_a.join("newest.png"), 60);
+
+        // Budget allows only ~1 file; the two oldest (across both source
+        // directories) should be evicted, leaving "newest.png" behind.
+        evict_if_over_budget(&dir, 150);
+
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(&dir, &mut files, &mut total);
+        let mut remaining: Vec<String> = files
+            .into_iter()
+            .map(|(path, _, _)| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        remaining.sort();
+        assert_eq!(remaining, vec!["newest.png".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_groups_by_source_and_buckets_loose_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a1.png"), vec![0u8; 100]).unwrap();
+        fs::write(dir.join("source-a").join("a2.png"), vec![0u8; 50]).unwrap();
+        fs::write(dir.join("source-b").join("b1.png"), vec![0u8; 20]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 5]).unwrap();
+
+        let summary = cache_summary_at(&dir);
+
+        assert_eq!(summary.total_bytes, 175);
+        assert_eq!(summary.total_files, 4);
+        assert_eq!(summary.sources.len(), 3);
+
+        let source_a = summary
+            .sources
+            .iter()
+            .find(|s| s.key == "source-a")
+            .unwrap();
+        assert_eq!(source_a.bytes, 150);
+        assert_eq!(source_a.file_count, 2);
+
+        let uncategorized = summary
+            .sources
+            .iter()
+            .find(|s| s.key == UNCATEGORIZED_KEY)
+            .unwrap();
+        assert_eq!(uncategorized.bytes, 5);
+        assert_eq!(uncategorized.file_count, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_sorts_sources_by_size_descending() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-sort-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("small")).unwrap();
+        fs::create_dir_all(dir.join("big")).unwrap();
+        fs::write(dir.join("small").join("f.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("big").join("f.png"), vec![0u8; 1000]).unwrap();
+
+        let summary = cache_summary_at(&dir);
+        assert_eq!(summary.sources[0].key, "big");
+        assert_eq!(summary.sources[1].key, "small");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-summary-missing-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let summary = cache_summary_at(&dir);
+        assert_eq!(summary.total_bytes, 0);
+        assert_eq!(summary.total_files, 0);
+        assert!(summary.sources.is_empty());
+    }
+
+    #[test]
+    fn clear_source_removes_only_targeted_subdirectory() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-source-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::create_dir_all(dir.join("source-b")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("source-b").join("b.png"), vec![0u8; 10]).unwrap();
+
+        clear_source_at(&dir, "source-a").unwrap();
+
+        assert!(!dir.join("source-a").exists());
+        assert!(dir.join("source-b").join("b.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_uncategorized_removes_only_loose_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-uncategorized-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        clear_source_at(&dir, UNCATEGORIZED_KEY).unwrap();
+
+        assert!(!dir.join("stray.png").exists());
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_rejects_path_traversal_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-traversal-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+
+        let result = clear_source_at(&dir, "../source-a");
+        assert!(result.is_err());
+        // Sibling directory must be untouched since the call was rejected
+        // before ever reaching `remove_dir_all`.
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let result = clear_source_at(&dir, "source-a/../source-a");
+        assert!(result.is_err());
+        assert!(dir.join("source-a").join("a.png").exists());
+
+        let result = clear_source_at(&dir, "nested/traversal");
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_source_still_accepts_uncategorized_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-uncategorized-safe-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        assert!(clear_source_at(&dir, UNCATEGORIZED_KEY).is_ok());
+        assert!(!dir.join("stray.png").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_summary_ttl_respects_recent_timestamp() {
+        // Mirrors `stats_cache_ttl_respects_recent_timestamp`: verify the TTL
+        // mechanics directly against the same static used by `cache_summary`,
+        // without any real sleeping. Manipulate the cache cell to simulate a
+        // fresh cached value, then confirm a subsequent `cache_summary()`
+        // call returns that cached data unchanged even though the
+        // underlying directory (which we never even create) would otherwise
+        // yield an empty summary.
+        let cached = CacheSummary {
+            total_bytes: 12345,
+            total_files: 7,
+            sources: vec![CacheSourceUsage {
+                key: "fake-source".to_string(),
+                bytes: 12345,
+                file_count: 7,
+            }],
+        };
+        let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let mut guard = cell.lock().unwrap();
+            *guard = Some((Instant::now(), cached.clone()));
+        }
+
+        let result = cache_summary();
+        assert_eq!(result.total_bytes, 12345);
+        assert_eq!(result.total_files, 7);
+        assert_eq!(result.sources.len(), 1);
+        assert_eq!(result.sources[0].key, "fake-source");
+    }
+
+    #[test]
+    fn clear_all_cache_removes_everything() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-clear-all-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("source-a")).unwrap();
+        fs::write(dir.join("source-a").join("a.png"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("stray.png"), vec![0u8; 10]).unwrap();
+
+        clear_all_cache_at(&dir).unwrap();
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn format_bytes_picks_appropriate_unit() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    #[test]
+    fn set_budget_mb_updates_current_budget_without_touching_disk() {
+        set_budget_mb(10);
+        assert_eq!(current_budget_bytes(), 10 * 1024 * 1024);
+        // Restore the default so other tests in this process (CACHE_BUDGET_BYTES
+        // is a process-global static) aren't affected by this one.
+        set_budget_mb(500);
+        assert_eq!(current_budget_bytes(), DEFAULT_CACHE_BUDGET_BYTES);
     }
 }

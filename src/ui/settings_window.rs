@@ -44,6 +44,9 @@ pub struct SettingsWindow {
     custom_api_url_input: Entity<InputState>,
     custom_url_error: Option<SharedString>,
     client_id_input: Entity<InputState>,
+    edit_cache_budget: Entity<InputState>,
+    cache_budget_error: Option<SharedString>,
+    cache_clear_error: Option<SharedString>,
 
     login_state: LoginState,
 }
@@ -68,6 +71,11 @@ impl SettingsWindow {
                         .unwrap_or_default(),
                 )
         });
+        let edit_cache_budget = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("500")
+                .default_value(app_settings.cache_budget_mb.to_string())
+        });
         let login_state = Self::current_login_state(&app_settings);
 
         Self {
@@ -85,6 +93,9 @@ impl SettingsWindow {
             custom_api_url_input,
             custom_url_error: None,
             client_id_input,
+            edit_cache_budget,
+            cache_budget_error: None,
+            cache_clear_error: None,
 
             login_state,
         }
@@ -156,6 +167,43 @@ impl SettingsWindow {
             self.app_settings.client_ids.insert(oauth_base, client_id);
         }
         settings_store::update_store(self.app_settings.clone());
+        cx.notify();
+    }
+
+    fn save_cache_budget(&mut self, cx: &mut Context<Self>) {
+        let raw = self.edit_cache_budget.read(cx).value().trim().to_string();
+        match raw.parse::<u64>() {
+            Ok(mb) if mb >= 10 => {
+                self.cache_budget_error = None;
+                self.app_settings.cache_budget_mb = mb;
+                settings_store::update_store(self.app_settings.clone());
+                crate::tile_cache::set_budget_mb(mb);
+            }
+            Ok(_) => {
+                self.cache_budget_error = Some("Budget must be at least 10 MB".into());
+            }
+            Err(_) => {
+                self.cache_budget_error = Some("Enter a whole number of megabytes".into());
+            }
+        }
+        cx.notify();
+    }
+
+    fn clear_cache_source(&mut self, key: String, cx: &mut Context<Self>) {
+        if let Err(e) = crate::tile_cache::clear_source(&key) {
+            self.cache_clear_error = Some(format!("Failed to clear {}: {}", key, e).into());
+        } else {
+            self.cache_clear_error = None;
+        }
+        cx.notify();
+    }
+
+    fn clear_all_tile_cache(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = crate::tile_cache::clear_all_cache() {
+            self.cache_clear_error = Some(format!("Failed to clear cache: {}", e).into());
+        } else {
+            self.cache_clear_error = None;
+        }
         cx.notify();
     }
 
@@ -492,7 +540,7 @@ impl SettingsWindow {
             items.push(item);
         }
 
-        let add_view = view;
+        let add_view = view.clone();
         items.push(SettingItem::render(move |_options, _window, _cx| {
             Button::new("add-source")
                 .label("Add Source")
@@ -505,13 +553,107 @@ impl SettingsWindow {
                 })
         }));
 
-        SettingPage::new("Imagery Sources")
+        SettingPage::new("Imagery")
             .icon(Icon::new(IconName::Map))
-            .group(
-                SettingGroup::new()
-                    .title("Custom Imagery Sources")
-                    .items(items),
+            .groups(vec![
+                SettingGroup::new().title("Custom Sources").items(items),
+                self.cache_group(view),
+            ])
+    }
+
+    fn cache_group(&self, view: Entity<Self>) -> SettingGroup {
+        let summary = crate::tile_cache::cache_summary();
+
+        // Exclude the synthetic "(uncategorized)" bucket from the reported
+        // source count: it's leftover loose files from before per-source
+        // directories existed, not a real configured imagery source, so
+        // including it would inflate the count a user sees relative to how
+        // many layers they actually configured.
+        let real_source_count = summary
+            .sources
+            .iter()
+            .filter(|s| s.key != crate::tile_cache::uncategorized_key())
+            .count();
+
+        let summary_text: SharedString = format!(
+            "{} across {} tile{} in {} source{}",
+            crate::tile_cache::format_bytes(summary.total_bytes),
+            summary.total_files,
+            if summary.total_files == 1 { "" } else { "s" },
+            real_source_count,
+            if real_source_count == 1 { "" } else { "s" },
+        )
+        .into();
+
+        let clear_error = self.cache_clear_error.clone();
+        let mut items = vec![SettingItem::render(move |_options, _window, cx| {
+            render_cache_usage_summary(summary_text.clone(), clear_error.clone(), cx)
+        })];
+
+        let budget_view = view.clone();
+        let budget_input = self.edit_cache_budget.clone();
+        let budget_error = self.cache_budget_error.clone();
+        items.push(
+            SettingItem::new(
+                "Cache budget (MB)",
+                SettingField::render(move |_options, window, cx| {
+                    render_cache_budget(
+                        budget_view.clone(),
+                        budget_input.clone(),
+                        budget_error.clone(),
+                        window,
+                        cx,
+                    )
+                }),
             )
+            .description(
+                "Maximum on-disk tile cache size. Lowering this doesn't delete anything \
+                 immediately — the cache shrinks to the new limit the next time it's \
+                 written to.",
+            )
+            .layout(Axis::Vertical),
+        );
+
+        if summary.sources.is_empty() {
+            items.push(SettingItem::render(|_options, _window, _cx| {
+                Label::new("No cached tiles yet.")
+            }));
+        }
+
+        for source in summary.sources {
+            let row_view = view.clone();
+            let key = source.key.clone();
+            let size_label: SharedString = format!(
+                "{} · {} tile{}",
+                crate::tile_cache::format_bytes(source.bytes),
+                source.file_count,
+                if source.file_count == 1 { "" } else { "s" },
+            )
+            .into();
+            items.push(
+                SettingItem::new(
+                    source.key.clone(),
+                    SettingField::render(move |_options, _window, _cx| {
+                        render_cache_source_row(row_view.clone(), key.clone())
+                    }),
+                )
+                .description(size_label),
+            );
+        }
+
+        let clear_all_view = view;
+        items.push(SettingItem::render(move |_options, _window, _cx| {
+            let clear_all_view = clear_all_view.clone();
+            Button::new("clear-all-cache")
+                .label("Clear All")
+                .ghost()
+                .compact()
+                .on_click(move |_ev, _window, cx| {
+                    clear_all_view.update(cx, |this, cx| this.clear_all_tile_cache(cx));
+                })
+        }));
+
+        SettingGroup::new().title("Tile Cache").items(items)
     }
 }
 
@@ -593,6 +735,61 @@ fn render_client_id(
                     view.update(cx, |this, cx| this.save_client_id(cx));
                 }),
         )
+}
+
+fn render_cache_usage_summary(
+    summary_text: SharedString,
+    clear_error: Option<SharedString>,
+    cx: &mut App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    let mut col = v_flex()
+        .gap_1()
+        .child(Label::new(summary_text).text_sm().text_color(muted));
+    if let Some(err) = clear_error {
+        col = col.child(Label::new(err).text_sm().text_color(danger));
+    }
+    col.into_any_element()
+}
+
+fn render_cache_budget(
+    view: Entity<SettingsWindow>,
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+
+    let mut row = v_flex()
+        .gap_2()
+        .child(field_row("Megabytes", &input, muted));
+    if let Some(err) = error {
+        row = row.child(Label::new(err).text_sm().text_color(danger));
+    }
+    row.child(
+        Button::new("save-cache-budget")
+            .label("Save")
+            .primary()
+            .compact()
+            .on_click(move |_ev, _window, cx| {
+                view.update(cx, |this, cx| this.save_cache_budget(cx));
+            }),
+    )
+}
+
+fn render_cache_source_row(view: Entity<SettingsWindow>, key: String) -> AnyElement {
+    let button_id = format!("clear-cache-source-{key}");
+    Button::new(button_id)
+        .label("Clear")
+        .ghost()
+        .compact()
+        .on_click(move |_ev, _window, cx| {
+            view.update(cx, |this, cx| this.clear_cache_source(key.clone(), cx));
+        })
+        .into_any_element()
 }
 
 fn render_login_state(
