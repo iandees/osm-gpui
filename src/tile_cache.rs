@@ -732,7 +732,7 @@ fn cache_summary_at(dir: &Path) -> CacheSummary {
             file_count,
         })
         .collect();
-    sources.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    sources.sort_by_key(|s| std::cmp::Reverse(s.bytes));
 
     CacheSummary {
         total_bytes,
