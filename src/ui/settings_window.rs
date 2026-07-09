@@ -17,6 +17,7 @@ use gpui_component::{
 
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
+use crate::keybindings::{self, ShortcutCategory, SHORTCUTS};
 use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset};
 use crate::ui::modal::field_row;
 
@@ -27,6 +28,15 @@ enum LoginState {
     LoggingIn,
     LoggedIn(StoredToken),
     Error(SharedString),
+}
+
+/// Emitted by `SettingsWindow` when a change needs to propagate outside
+/// this window — e.g. rebinding the live `gpui` keymap and refreshing the
+/// native menu's shortcut labels, both of which require the concrete
+/// `Action` types that only the binary crate (`src/main.rs`/`src/menu.rs`)
+/// has access to.
+pub enum SettingsEvent {
+    KeybindingsChanged,
 }
 
 pub struct SettingsWindow {
@@ -49,6 +59,9 @@ pub struct SettingsWindow {
     cache_clear_error: Option<SharedString>,
 
     login_state: LoginState,
+
+    recording: Option<&'static str>,
+    shortcut_error: Option<(&'static str, SharedString)>,
 }
 
 impl SettingsWindow {
@@ -98,6 +111,9 @@ impl SettingsWindow {
             cache_clear_error: None,
 
             login_state,
+
+            recording: None,
+            shortcut_error: None,
         }
     }
 
@@ -204,6 +220,72 @@ impl SettingsWindow {
         } else {
             self.cache_clear_error = None;
         }
+        cx.notify();
+    }
+
+    /// Remove `id`'s override, falling back to its default, and propagate
+    /// the change to the live keymap and native menu.
+    fn reset_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        let candidate = keybindings::def(id).default_spec;
+        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, candidate) {
+            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            cx.notify();
+            return;
+        }
+        self.app_settings.keybindings.remove(id);
+        settings_store::update_store(self.app_settings.clone());
+        cx.emit(SettingsEvent::KeybindingsChanged);
+        cx.notify();
+    }
+
+    /// Clear every shortcut override, restoring all ten defaults.
+    fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.app_settings.keybindings.clear();
+        settings_store::update_store(self.app_settings.clone());
+        cx.emit(SettingsEvent::KeybindingsChanged);
+        cx.notify();
+    }
+
+    fn start_recording(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording = Some(id);
+        self.shortcut_error = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    fn cancel_recording(&mut self, cx: &mut Context<Self>) {
+        self.recording = None;
+        self.shortcut_error = None;
+        cx.notify();
+    }
+
+    /// Validate and, if valid, save `spec` as `id`'s override. On failure,
+    /// sets `shortcut_error` and leaves `recording` active so the user can
+    /// try another combo.
+    fn apply_shortcut(&mut self, id: &'static str, spec: String, cx: &mut Context<Self>) {
+        if keybindings::is_reserved(&spec) {
+            self.shortcut_error = Some((id, "That key is reserved.".into()));
+            cx.notify();
+            return;
+        }
+        if keybindings::def(id).category == keybindings::ShortcutCategory::Modes
+            && !keybindings::is_bare_key(&spec)
+        {
+            self.shortcut_error = Some((id, "Mode shortcuts can't use modifier keys.".into()));
+            cx.notify();
+            return;
+        }
+        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, &spec) {
+            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            cx.notify();
+            return;
+        }
+
+        self.app_settings.keybindings.insert(id.to_string(), spec);
+        settings_store::update_store(self.app_settings.clone());
+        self.recording = None;
+        self.shortcut_error = None;
+        cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
 
@@ -366,7 +448,8 @@ impl SettingsWindow {
         vec![
             self.account_page(view.clone()),
             self.appearance_page(view.clone()),
-            self.imagery_page(view),
+            self.imagery_page(view.clone()),
+            self.shortcuts_page(view),
         ]
     }
 
@@ -655,6 +738,79 @@ impl SettingsWindow {
 
         SettingGroup::new().title("Tile Cache").items(items)
     }
+
+    fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {
+        let category_title = |c: ShortcutCategory| match c {
+            ShortcutCategory::General => "General",
+            ShortcutCategory::File => "File",
+            ShortcutCategory::Edit => "Edit",
+            ShortcutCategory::Modes => "Modes",
+        };
+
+        let mut groups = Vec::new();
+        for category in [
+            ShortcutCategory::General,
+            ShortcutCategory::File,
+            ShortcutCategory::Edit,
+            ShortcutCategory::Modes,
+        ] {
+            let items: Vec<SettingItem> = SHORTCUTS
+                .iter()
+                .filter(|d| d.category == category)
+                .map(|d| {
+                    let id = d.id;
+                    let label = d.label;
+                    let has_override = self.app_settings.keybindings.contains_key(id);
+                    let spec = keybindings::effective_spec(&self.app_settings, id);
+                    let row_view = view.clone();
+                    let recording = self.recording == Some(id);
+                    let error = self
+                        .shortcut_error
+                        .as_ref()
+                        .filter(|(err_id, _)| *err_id == id)
+                        .map(|(_, msg)| msg.clone());
+                    let focus_handle = self.focus_handle.clone();
+                    SettingItem::new(
+                        label,
+                        SettingField::render(move |_options, _window, cx| {
+                            render_shortcut_row(
+                                row_view.clone(),
+                                id,
+                                spec.clone(),
+                                has_override,
+                                recording,
+                                error.clone(),
+                                focus_handle.clone(),
+                                cx,
+                            )
+                        }),
+                    )
+                })
+                .collect();
+            groups.push(
+                SettingGroup::new()
+                    .title(category_title(category))
+                    .items(items),
+            );
+        }
+
+        let reset_all_view = view;
+        groups.push(SettingGroup::new().item(SettingItem::render(
+            move |_options, _window, _cx| {
+                Button::new("reset-all-shortcuts")
+                    .label("Reset All to Defaults")
+                    .ghost()
+                    .on_click({
+                        let reset_all_view = reset_all_view.clone();
+                        move |_ev, _window, cx| {
+                            reset_all_view.update(cx, |this, cx| this.reset_all_shortcuts(cx));
+                        }
+                    })
+            },
+        )));
+
+        SettingPage::new("Keyboard Shortcuts").groups(groups)
+    }
 }
 
 impl Focusable for SettingsWindow {
@@ -662,6 +818,8 @@ impl Focusable for SettingsWindow {
         self.focus_handle.clone()
     }
 }
+
+impl EventEmitter<SettingsEvent> for SettingsWindow {}
 
 fn render_server_picker(
     api_choice: ApiServerChoice,
@@ -912,6 +1070,90 @@ fn render_entry_row(
                     }),
             )
             .into_any_element()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_shortcut_row(
+    view: Entity<SettingsWindow>,
+    id: &'static str,
+    spec: String,
+    has_override: bool,
+    recording: bool,
+    error: Option<SharedString>,
+    focus_handle: FocusHandle,
+    cx: &mut App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+
+    if recording {
+        let capture_view = view.clone();
+
+        let mut row = v_flex().gap_1().child(
+            div()
+                .track_focus(&focus_handle)
+                .on_key_down({
+                    let capture_view = capture_view.clone();
+                    move |ev: &gpui::KeyDownEvent, _window, cx| {
+                        if ev.keystroke.key.is_empty() {
+                            // Modifier-only keydown (e.g. bare Cmd) — keep
+                            // waiting for a real key.
+                            return;
+                        }
+                        if ev.keystroke.key == "escape" {
+                            capture_view.update(cx, |this, cx| this.cancel_recording(cx));
+                            return;
+                        }
+                        let spec = ev.keystroke.unparse();
+                        capture_view.update(cx, |this, cx| this.apply_shortcut(id, spec, cx));
+                    }
+                })
+                .child(
+                    Label::new("Press keys… (Esc to cancel)")
+                        .text_sm()
+                        .text_color(muted),
+                ),
+        );
+        if let Some(msg) = error {
+            row = row.child(Label::new(msg).text_xs().text_color(danger));
+        }
+        row.into_any_element()
+    } else {
+        let mut row = h_flex().gap_2().items_center();
+
+        if let Ok(stroke) = gpui::Keystroke::parse(&spec) {
+            row = row.child(gpui_component::kbd::Kbd::new(stroke));
+        } else {
+            row = row.child(Label::new(spec).text_sm().text_color(muted));
+        }
+
+        row = row.child(
+            Button::new(SharedString::from(format!("record-shortcut-{id}")))
+                .label("Record")
+                .ghost()
+                .compact()
+                .on_click({
+                    let view = view.clone();
+                    move |_ev, window, cx| {
+                        view.update(cx, |this, cx| this.start_recording(id, window, cx));
+                    }
+                }),
+        );
+
+        if has_override {
+            row = row.child(
+                Button::new(SharedString::from(format!("reset-shortcut-{id}")))
+                    .label("Reset")
+                    .ghost()
+                    .compact()
+                    .on_click(move |_ev, _window, cx| {
+                        view.update(cx, |this, cx| this.reset_shortcut(id, cx));
+                    }),
+            );
+        }
+
+        row.into_any_element()
     }
 }
 

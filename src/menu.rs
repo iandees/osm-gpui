@@ -95,6 +95,16 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
             |window, cx| {
                 let view =
                     cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
+                cx.subscribe(
+                    &view,
+                    |_entity, event: &osm_gpui::ui::settings_window::SettingsEvent, cx| match event
+                    {
+                        osm_gpui::ui::settings_window::SettingsEvent::KeybindingsChanged => {
+                            apply_keybindings_change(cx);
+                        }
+                    },
+                )
+                .detach();
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             },
         )
@@ -222,6 +232,28 @@ pub(crate) fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     with_map_viewer(cx, |v, cx| {
         v.apply_layer_request(LayerRequest::CoordinateGrid, cx)
     });
+}
+
+/// Re-apply the live `gpui` keymap from current settings and refresh the
+/// native menu's shortcut labels, in response to a
+/// `SettingsEvent::KeybindingsChanged` from the Settings window. Menu
+/// shortcut labels are baked in at `cx.set_menus` time (they don't update
+/// on their own), so this always re-triggers a full `rebuild_menus` too.
+fn apply_keybindings_change(cx: &mut App) {
+    let settings = osm_gpui::settings_store::snapshot();
+    cx.clear_key_bindings();
+    cx.bind_keys(crate::key_bindings_from_settings(&settings));
+
+    // rebuild_menus needs a map center and imagery-load state; pull the
+    // live map viewer's if it exists yet, else fall back to the same
+    // placeholder used before the map viewer/imagery index are ready (see
+    // the startup call to `rebuild_menus` in `main.rs`).
+    let (lat, lon, state) = crate::MAP_VIEWER_HANDLE
+        .get()
+        .and_then(|h| h.upgrade())
+        .map(|view| view.read(cx).imagery_menu_context())
+        .unwrap_or((40.7128, -74.0060, crate::ImageryLoadState::Loading));
+    rebuild_menus(cx, lat, lon, state);
 }
 
 /// Build and install the menu bar, using the current viewport center to filter

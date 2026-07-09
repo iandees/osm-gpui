@@ -63,6 +63,28 @@ actions!(
     ]
 );
 
+/// Build the live `gpui::KeyBinding` list for the 7 cmd-modified actions
+/// from the current effective shortcut settings. The 3 mode-switch letters
+/// (`mode_add`/`mode_building`/`mode_extrude`) are deliberately excluded —
+/// see the comment where this is called.
+pub(crate) fn key_bindings_from_settings(
+    settings: &osm_gpui::settings_store::AppSettings,
+) -> Vec<KeyBinding> {
+    osm_gpui::keybindings::effective_bindings(settings)
+        .into_iter()
+        .filter_map(|(id, spec)| match id {
+            "open_settings" => Some(KeyBinding::new(&spec, OpenSettings, None)),
+            "quit" => Some(KeyBinding::new(&spec, Quit, None)),
+            "open_osm_file" => Some(KeyBinding::new(&spec, OpenOsmFile, None)),
+            "download_osm" => Some(KeyBinding::new(&spec, DownloadFromOsm, None)),
+            "upload_osm" => Some(KeyBinding::new(&spec, UploadToOsm, None)),
+            "undo" => Some(KeyBinding::new(&spec, Undo, None)),
+            "redo" => Some(KeyBinding::new(&spec, Redo, None)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = osm_gpui)]
@@ -490,6 +512,20 @@ impl MapViewer {
             last_mouse_pos: None,
             extrude_drag: None,
         }
+    }
+
+    /// The `(center_lat, center_lon, ImageryLoadState)` triple `rebuild_menus`
+    /// needs, as currently known to this viewer. Exposed so callers outside
+    /// the per-frame `maybe_rebuild_imagery_menu` loop (e.g. the Settings
+    /// window's keybindings-changed handler in `menu.rs`) can trigger an
+    /// immediate menu rebuild without duplicating this lookup.
+    pub(crate) fn imagery_menu_context(&self) -> (f64, f64, ImageryLoadState) {
+        let (lat, lon) = self.viewport.center();
+        let state = IMAGERY_LOAD_STATE
+            .get()
+            .and_then(|s| s.lock().ok().map(|g| *g))
+            .unwrap_or(ImageryLoadState::Loading);
+        (lat, lon, state)
     }
 
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
@@ -2550,16 +2586,36 @@ impl Render for MapViewer {
                             }
                         } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
                             this.delete_selected_features(cx);
-                        } else if ev.keystroke.key == "a" {
+                        } else {
+                            let settings = osm_gpui::settings_store::snapshot();
+                            let key = ev.keystroke.key.as_str();
                             // Mode-switch shortcuts are handled here rather
                             // than as global key bindings so they only fire
                             // while the map area has focus (see the comment
                             // by `cx.bind_keys` in `main()`).
-                            this.on_set_mode(&SetMode { mode: EditModeAction::Add }, window, cx);
-                        } else if ev.keystroke.key == "b" {
-                            this.on_set_mode(&SetMode { mode: EditModeAction::Building }, window, cx);
-                        } else if ev.keystroke.key == "x" {
-                            this.on_set_mode(&SetMode { mode: EditModeAction::Extrude }, window, cx);
+                            if key == osm_gpui::keybindings::effective_spec(&settings, "mode_add") {
+                                this.on_set_mode(
+                                    &SetMode { mode: EditModeAction::Add },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_building")
+                            {
+                                this.on_set_mode(
+                                    &SetMode { mode: EditModeAction::Building },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_extrude")
+                            {
+                                this.on_set_mode(
+                                    &SetMode { mode: EditModeAction::Extrude },
+                                    window,
+                                    cx,
+                                );
+                            }
                         }
                     }))
                     .on_mouse_up(
@@ -3086,26 +3142,24 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
-                        // Register keyboard bindings in the window context
-                        cx.bind_keys([
-                            KeyBinding::new("cmd-o", OpenOsmFile, None),
-                            KeyBinding::new("cmd-shift-d", DownloadFromOsm, None),
-                            KeyBinding::new("cmd-shift-u", UploadToOsm, None),
-                            KeyBinding::new("cmd-q", Quit, None),
-                            KeyBinding::new("cmd-,", OpenSettings, None),
-                            KeyBinding::new("cmd-z", Undo, None),
-                            KeyBinding::new("cmd-shift-z", Redo, None),
-                            // Note: the "a"/"b"/"x" mode-switch shortcuts are
-                            // deliberately NOT registered here as global key
-                            // bindings. Unlike the cmd-modified bindings above,
-                            // these are plain unmodified letter keys, which would
-                            // otherwise risk firing while the user is typing into a
-                            // text input elsewhere in the app (e.g. the tag-edit
-                            // dialog's key/value fields). Instead they're handled in
-                            // the map area's local `on_key_down` handler below,
-                            // which only fires when the map area itself has focus —
-                            // see the `on_key_down` closure in `render()`.
-                        ]);
+                        // Register keyboard bindings in the window context.
+                        // Built from the user's effective shortcut settings
+                        // (defaults, overridden by any customizations saved
+                        // in Settings > Keyboard Shortcuts).
+                        //
+                        // Note: the "a"/"b"/"x" mode-switch shortcuts are
+                        // deliberately NOT registered here as global key
+                        // bindings. Unlike the cmd-modified bindings above,
+                        // these are plain unmodified letter keys, which would
+                        // otherwise risk firing while the user is typing into a
+                        // text input elsewhere in the app (e.g. the tag-edit
+                        // dialog's key/value fields). Instead they're handled in
+                        // the map area's local `on_key_down` handler below,
+                        // which only fires when the map area itself has focus —
+                        // see the `on_key_down` closure in `render()`.
+                        cx.bind_keys(key_bindings_from_settings(
+                            &osm_gpui::settings_store::snapshot(),
+                        ));
                         let view = cx.new(|cx| MapViewer::new(window, cx));
 
                         // Publish a weak handle to the live view so the
