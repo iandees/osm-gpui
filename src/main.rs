@@ -1628,6 +1628,41 @@ impl MapViewer {
         }
     }
 
+    /// Compute the far 2 corners of a rectangle whose near edge is
+    /// `a`..`b` (geo coordinates), offset by `cursor`'s perpendicular
+    /// distance from that edge. The offset math is done in screen-pixel
+    /// space rather than raw lat/lon: longitude degrees are foreshortened
+    /// relative to latitude degrees (Web Mercator), so a "perpendicular"
+    /// vector computed from raw lat/lon deltas is only actually
+    /// perpendicular on screen for edges running exactly north-south or
+    /// east-west — for any other edge it renders as a trapezoid. Screen
+    /// pixels (and Mercator meters) are isotropic here, so doing the offset
+    /// there and converting back yields a true rectangle on screen.
+    fn rectangle_from_geo_edge(
+        &self,
+        a: (f64, f64),
+        b: (f64, f64),
+        cursor: (f64, f64),
+    ) -> ((f64, f64), (f64, f64)) {
+        let a_screen = self.viewport.geo_to_screen(a.0, a.1);
+        let b_screen = self.viewport.geo_to_screen(b.0, b.1);
+        let cursor_screen = self.viewport.geo_to_screen(cursor.0, cursor.1);
+        let (far_a_screen, far_b_screen) = osm_gpui::selection::rectangle_from_edge(
+            (a_screen.x.to_f64(), a_screen.y.to_f64()),
+            (b_screen.x.to_f64(), b_screen.y.to_f64()),
+            (cursor_screen.x.to_f64(), cursor_screen.y.to_f64()),
+        );
+        let far_a = self.viewport.screen_to_geo(gpui::point(
+            px(far_a_screen.0 as f32),
+            px(far_a_screen.1 as f32),
+        ));
+        let far_b = self.viewport.screen_to_geo(gpui::point(
+            px(far_b_screen.0 as f32),
+            px(far_b_screen.1 as f32),
+        ));
+        (far_a, far_b)
+    }
+
     /// Compute the final rectangle (corner_a, corner_b as one edge, offset
     /// by `cursor`'s perpendicular distance) and commit 4 new nodes + a
     /// closed `building=yes` way as one undo action.
@@ -1638,7 +1673,7 @@ impl MapViewer {
         corner_b: (f64, f64),
         cursor: (f64, f64),
     ) {
-        let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(corner_a, corner_b, cursor);
+        let (far_a, far_b) = self.rectangle_from_geo_edge(corner_a, corner_b, cursor);
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
             return;
         };
@@ -1672,9 +1707,10 @@ impl MapViewer {
     }
 
     /// Commit an Extrude drag: compute the far 2 corners via
-    /// `rectangle_from_edge` (using `up_pos` for the perpendicular offset),
-    /// create 2 new nodes + a closed `building=yes` way, push one
-    /// `ExtrudeWay` undo action.
+    /// `rectangle_from_geo_edge` (using `up_pos` for the perpendicular
+    /// offset), create 2 new nodes + a closed way with no tags (extrude
+    /// works on any way segment, not just buildings, so it must not assume
+    /// `building=yes`), push one `ExtrudeWay` undo action.
     fn commit_extrude(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
         let Some(layer) = self.layer_manager.find_layer(drag.layer) else {
             return;
@@ -1690,7 +1726,7 @@ impl MapViewer {
         };
         let cursor_geo = self.viewport.screen_to_geo(up_pos);
 
-        let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(a_geo, b_geo, cursor_geo);
+        let (far_a, far_b) = self.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
             return;
         };
@@ -1701,7 +1737,7 @@ impl MapViewer {
         let new_b = editable.add_node(far_b.0, far_b.1);
         let way_id = editable.add_way(
             vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a],
-            vec![("building".to_string(), "yes".to_string())],
+            Vec::new(),
         );
 
         self.undo_stack.push(UndoableAction::ExtrudeWay {
@@ -2595,7 +2631,9 @@ impl Render for MapViewer {
                             // by `cx.bind_keys` in `main()`).
                             if key == osm_gpui::keybindings::effective_spec(&settings, "mode_add") {
                                 this.on_set_mode(
-                                    &SetMode { mode: EditModeAction::Add },
+                                    &SetMode {
+                                        mode: EditModeAction::Add,
+                                    },
                                     window,
                                     cx,
                                 );
@@ -2603,7 +2641,9 @@ impl Render for MapViewer {
                                 == osm_gpui::keybindings::effective_spec(&settings, "mode_building")
                             {
                                 this.on_set_mode(
-                                    &SetMode { mode: EditModeAction::Building },
+                                    &SetMode {
+                                        mode: EditModeAction::Building,
+                                    },
                                     window,
                                     cx,
                                 );
@@ -2611,7 +2651,9 @@ impl Render for MapViewer {
                                 == osm_gpui::keybindings::effective_spec(&settings, "mode_extrude")
                             {
                                 this.on_set_mode(
-                                    &SetMode { mode: EditModeAction::Extrude },
+                                    &SetMode {
+                                        mode: EditModeAction::Extrude,
+                                    },
                                     window,
                                     cx,
                                 );
@@ -2669,8 +2711,10 @@ impl Render for MapViewer {
                                         if let Some(progress) = this.building_progress {
                                             let origin_x = bounds.origin.x;
                                             let origin_y = bounds.origin.y;
-                                            let a_screen = viewport_clone
-                                                .geo_to_screen(progress.corner_a.0, progress.corner_a.1);
+                                            let a_screen = viewport_clone.geo_to_screen(
+                                                progress.corner_a.0,
+                                                progress.corner_a.1,
+                                            );
                                             match progress.corner_b {
                                                 None => {
                                                     // Only corner A placed: draw a marker at the
@@ -2684,7 +2728,10 @@ impl Render for MapViewer {
                                                         ),
                                                         size: size(px(8.0), px(8.0)),
                                                     };
-                                                    window.paint_quad(fill(quad_bounds, rgb(0x3b82f6)));
+                                                    window.paint_quad(fill(
+                                                        quad_bounds,
+                                                        rgb(0x3b82f6),
+                                                    ));
 
                                                     if let Some(mouse_pos) = this.last_mouse_pos {
                                                         let p0 = point(
@@ -2695,7 +2742,8 @@ impl Render for MapViewer {
                                                             mouse_pos.x + origin_x,
                                                             mouse_pos.y + origin_y,
                                                         );
-                                                        let mut builder = PathBuilder::stroke(px(2.0));
+                                                        let mut builder =
+                                                            PathBuilder::stroke(px(2.0));
                                                         builder.move_to(p0);
                                                         builder.line_to(p1);
                                                         if let Ok(path) = builder.build() {
@@ -2708,16 +2756,29 @@ impl Render for MapViewer {
                                                         .last_mouse_pos
                                                         .map(|p| viewport_clone.screen_to_geo(p))
                                                         .unwrap_or(corner_b);
-                                                    let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(
-                                                        progress.corner_a, corner_b, cursor_geo,
-                                                    );
-                                                    let b_screen = viewport_clone.geo_to_screen(corner_b.0, corner_b.1);
-                                                    let far_a_screen = viewport_clone.geo_to_screen(far_a.0, far_a.1);
-                                                    let far_b_screen = viewport_clone.geo_to_screen(far_b.0, far_b.1);
-                                                    let pts = [a_screen, b_screen, far_b_screen, far_a_screen, a_screen];
+                                                    let (far_a, far_b) = this
+                                                        .rectangle_from_geo_edge(
+                                                            progress.corner_a,
+                                                            corner_b,
+                                                            cursor_geo,
+                                                        );
+                                                    let b_screen = viewport_clone
+                                                        .geo_to_screen(corner_b.0, corner_b.1);
+                                                    let far_a_screen = viewport_clone
+                                                        .geo_to_screen(far_a.0, far_a.1);
+                                                    let far_b_screen = viewport_clone
+                                                        .geo_to_screen(far_b.0, far_b.1);
+                                                    let pts = [
+                                                        a_screen,
+                                                        b_screen,
+                                                        far_b_screen,
+                                                        far_a_screen,
+                                                        a_screen,
+                                                    ];
                                                     let mut builder = PathBuilder::stroke(px(2.0));
                                                     for (i, p) in pts.iter().enumerate() {
-                                                        let p = point(p.x + origin_x, p.y + origin_y);
+                                                        let p =
+                                                            point(p.x + origin_x, p.y + origin_y);
                                                         if i == 0 {
                                                             builder.move_to(p);
                                                         } else {
@@ -2733,7 +2794,9 @@ impl Render for MapViewer {
 
                                         if let Some(drag) = &this.extrude_drag {
                                             if let Some(mouse_pos) = this.last_mouse_pos {
-                                                if let Some(layer) = this.layer_manager.find_layer(drag.layer) {
+                                                if let Some(layer) =
+                                                    this.layer_manager.find_layer(drag.layer)
+                                                {
                                                     if let Some(editable) = layer.as_editable() {
                                                         if let (Some(a_geo), Some(b_geo)) = (
                                                             editable.node_lat_lon(drag.node_a),
@@ -2741,18 +2804,34 @@ impl Render for MapViewer {
                                                         ) {
                                                             let origin_x = bounds.origin.x;
                                                             let origin_y = bounds.origin.y;
-                                                            let cursor_geo = viewport_clone.screen_to_geo(mouse_pos);
-                                                            let (far_a, far_b) = osm_gpui::selection::rectangle_from_edge(
-                                                                a_geo, b_geo, cursor_geo,
-                                                            );
-                                                            let a_screen = viewport_clone.geo_to_screen(a_geo.0, a_geo.1);
-                                                            let b_screen = viewport_clone.geo_to_screen(b_geo.0, b_geo.1);
-                                                            let far_a_screen = viewport_clone.geo_to_screen(far_a.0, far_a.1);
-                                                            let far_b_screen = viewport_clone.geo_to_screen(far_b.0, far_b.1);
-                                                            let pts = [a_screen, b_screen, far_b_screen, far_a_screen, a_screen];
-                                                            let mut builder = PathBuilder::stroke(px(2.0));
+                                                            let cursor_geo = viewport_clone
+                                                                .screen_to_geo(mouse_pos);
+                                                            let (far_a, far_b) = this
+                                                                .rectangle_from_geo_edge(
+                                                                    a_geo, b_geo, cursor_geo,
+                                                                );
+                                                            let a_screen = viewport_clone
+                                                                .geo_to_screen(a_geo.0, a_geo.1);
+                                                            let b_screen = viewport_clone
+                                                                .geo_to_screen(b_geo.0, b_geo.1);
+                                                            let far_a_screen = viewport_clone
+                                                                .geo_to_screen(far_a.0, far_a.1);
+                                                            let far_b_screen = viewport_clone
+                                                                .geo_to_screen(far_b.0, far_b.1);
+                                                            let pts = [
+                                                                a_screen,
+                                                                b_screen,
+                                                                far_b_screen,
+                                                                far_a_screen,
+                                                                a_screen,
+                                                            ];
+                                                            let mut builder =
+                                                                PathBuilder::stroke(px(2.0));
                                                             for (i, p) in pts.iter().enumerate() {
-                                                                let p = point(p.x + origin_x, p.y + origin_y);
+                                                                let p = point(
+                                                                    p.x + origin_x,
+                                                                    p.y + origin_y,
+                                                                );
                                                                 if i == 0 {
                                                                     builder.move_to(p);
                                                                 } else {
@@ -2760,7 +2839,10 @@ impl Render for MapViewer {
                                                                 }
                                                             }
                                                             if let Ok(path) = builder.build() {
-                                                                window.paint_path(path, rgb(0x3b82f6));
+                                                                window.paint_path(
+                                                                    path,
+                                                                    rgb(0x3b82f6),
+                                                                );
                                                             }
                                                         }
                                                     }
@@ -2774,14 +2856,17 @@ impl Render for MapViewer {
                                                     if let Some(layer) =
                                                         this.layer_manager.find_layer(layer_id)
                                                     {
-                                                        if let Some(editable) = layer.as_editable() {
+                                                        if let Some(editable) = layer.as_editable()
+                                                        {
                                                             if let Some(last_geo) = editable
                                                                 .node_lat_lon(progress.last_node_id)
                                                             {
                                                                 let origin_x = bounds.origin.x;
                                                                 let origin_y = bounds.origin.y;
                                                                 let last_screen = viewport_clone
-                                                                    .geo_to_screen(last_geo.0, last_geo.1);
+                                                                    .geo_to_screen(
+                                                                        last_geo.0, last_geo.1,
+                                                                    );
                                                                 let p0 = point(
                                                                     last_screen.x + origin_x,
                                                                     last_screen.y + origin_y,

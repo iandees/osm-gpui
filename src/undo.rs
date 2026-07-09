@@ -70,8 +70,8 @@ pub(crate) enum UndoableAction {
         way_id: i64,
         node_ids: [i64; 4],
     },
-    /// Extrude mode's drag commit: 2 new nodes + one closed `building=yes`
-    /// way off an existing segment. The segment's own 2 nodes are untouched.
+    /// Extrude mode's drag commit: 2 new nodes + one closed, untagged way
+    /// off an existing segment. The segment's own 2 nodes are untouched.
     /// Undo deletes the way then the 2 new nodes.
     ExtrudeWay {
         layer: LayerId,
@@ -131,7 +131,7 @@ impl UndoableAction {
             },
             UndoableAction::ExtendWay { .. } => "Extended a way".to_string(),
             UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
-            UndoableAction::ExtrudeWay { .. } => "Extruded a building".to_string(),
+            UndoableAction::ExtrudeWay { .. } => "Extruded a way".to_string(),
             UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
             UndoableAction::SnapExtendWay { .. } => "Snapped a node onto a way".to_string(),
         }
@@ -386,7 +386,7 @@ mod undo_stack_tests {
             way_id: -1,
             new_node_ids: [-1, -2],
         };
-        assert_eq!(action.description(), "Extruded a building");
+        assert_eq!(action.description(), "Extruded a way");
     }
 
     fn extend_way(
