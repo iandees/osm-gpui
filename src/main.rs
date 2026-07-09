@@ -21,7 +21,7 @@ mod undo;
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, rebuild_menus, toggle_debug_overlay, upload_to_osm,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
@@ -3003,6 +3003,7 @@ fn main() {
             cx.on_action(open_custom_imagery_dialog);
             cx.on_action(open_settings);
             cx.on_action(upload_to_osm);
+            cx.on_action(quit);
 
             // Load persisted custom imagery entries.
             let loaded = custom_imagery_store::load();

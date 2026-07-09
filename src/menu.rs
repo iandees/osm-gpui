@@ -123,6 +123,33 @@ pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
     with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx));
 }
 
+// Global fallback for the `Quit` action, registered once at app startup
+// alongside the other `cx.on_action` handlers above. `MapViewer::on_quit` is
+// only reachable via the window/entity-scoped `.on_action(cx.listener(...))`
+// listener installed during `MapViewer::render`, which doesn't exist until
+// the first render pass completes -- so at cold launch, before that first
+// paint, GPUI's `App::is_action_available` (which macOS's menu validation
+// queries directly) sees no listener at all for `Quit` and greys out the
+// menu item / disables Cmd+Q. Registering this global handler makes it
+// available immediately at startup, fixing that window.
+//
+// This only actually runs pre-first-render (afterwards, `on_quit`'s
+// window-scoped listener handles the dispatch first and stops propagation
+// before this Bubble-phase global listener is reached). Deferred because
+// global action listeners fire while `MapViewer`'s window is still checked
+// out for its own dispatch -- the same hazard `with_map_viewer_in` exists to
+// avoid (see its note above `on_quit`); `cx.defer` waits until the window is
+// checked back in before touching it.
+pub(crate) fn quit(_: &Quit, cx: &mut App) {
+    cx.defer(|cx| {
+        if crate::has_unsaved_changes(cx) {
+            with_map_viewer_in(cx, |v, window, cx| v.show_quit_confirm_dialog(window, cx));
+        } else {
+            cx.quit();
+        }
+    });
+}
+
 // Handle the Imagery > OpenStreetMap Carto menu action
 pub(crate) fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
     with_map_viewer(cx, |v, cx| {
