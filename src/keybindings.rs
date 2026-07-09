@@ -163,12 +163,13 @@ mod tests {
     use super::*;
 
     fn settings_with(overrides: &[(&str, &str)]) -> AppSettings {
-        let mut s = AppSettings::default();
-        s.keybindings = overrides
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        s
+        AppSettings {
+            keybindings: overrides
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
