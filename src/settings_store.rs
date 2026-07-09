@@ -214,10 +214,7 @@ mod tests {
         assert_eq!(
             AppSettings {
                 api_server: ApiServerChoice::Primary,
-                custom_api_url: String::new(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
-                cache_budget_mb: 500,
+                ..Default::default()
             }
             .api_base_url(),
             PRIMARY_API_URL
@@ -225,10 +222,7 @@ mod tests {
         assert_eq!(
             AppSettings {
                 api_server: ApiServerChoice::Dev,
-                custom_api_url: String::new(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
-                cache_budget_mb: 500,
+                ..Default::default()
             }
             .api_base_url(),
             DEV_API_URL
@@ -237,9 +231,7 @@ mod tests {
             AppSettings {
                 api_server: ApiServerChoice::Custom,
                 custom_api_url: "https://custom.example.com/".into(),
-                client_ids: HashMap::new(),
-                text_size_preset: TextSizePreset::default(),
-                cache_budget_mb: 500,
+                ..Default::default()
             }
             .api_base_url(),
             "https://custom.example.com"
@@ -265,11 +257,8 @@ mod tests {
         let dir = tmp_dir("cache-budget-round-trip");
         let path = dir.join("settings.json");
         let settings = AppSettings {
-            api_server: ApiServerChoice::Primary,
-            custom_api_url: String::new(),
-            client_ids: HashMap::new(),
-            text_size_preset: TextSizePreset::default(),
             cache_budget_mb: 250,
+            ..Default::default()
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
