@@ -268,6 +268,7 @@ mod tests {
             api_server: ApiServerChoice::Primary,
             custom_api_url: String::new(),
             client_ids: HashMap::new(),
+            text_size_preset: TextSizePreset::default(),
             cache_budget_mb: 250,
         };
         save_to(&path, &settings).unwrap();
