@@ -4,6 +4,7 @@ use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    description_list::{DescriptionItem, DescriptionList},
     label::Label,
     menu::ContextMenuExt,
     ActiveTheme, Icon, IconName, Sizable,
@@ -380,7 +381,9 @@ impl MapViewer {
         let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
         let selection = self.selected.clone();
 
-        let mut list = div().flex().flex_col();
+        use gpui_component::Size;
+
+        let mut list = div().flex().flex_col().gap_2();
 
         if aggregated.is_empty() {
             list = list.child(
@@ -391,7 +394,13 @@ impl MapViewer {
                     .child("(no tags)"),
             );
         } else {
-            list = list.children(aggregated.into_iter().map(|(k, v)| {
+            let mut description_list = DescriptionList::new()
+                .columns(1)
+                .label_width(px(90.0))
+                .bordered(true)
+                .with_size(Size::Small);
+
+            for (k, v) in aggregated.into_iter() {
                 let value_text = match v {
                     osm_gpui::selection::TagValue::Single(s) => s,
                     osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
@@ -407,34 +416,44 @@ impl MapViewer {
 
                 let key_for_delete = k.clone();
 
-                panel_row(SharedString::from(format!("tag-row-{k}")))
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(cx.theme().foreground)
-                            .cursor_pointer()
-                            .child(k.clone())
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                                    if ev.click_count == 2 {
-                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
-                                            features: selection_for_key_click.clone(),
-                                            original_key: key_for_key_click.clone(),
-                                            original_value: value_for_key_click.clone(),
-                                            select: TagEditField::Key,
-                                            is_add: false,
-                                        });
-                                        cx.notify();
-                                    }
-                                }),
-                            ),
+                let key_element = div()
+                    .id(SharedString::from(format!("tag-key-{k}")))
+                    .cursor_pointer()
+                    .child(k.clone())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                            if ev.click_count == 2 {
+                                this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                                    features: selection_for_key_click.clone(),
+                                    original_key: key_for_key_click.clone(),
+                                    original_value: value_for_key_click.clone(),
+                                    select: TagEditField::Key,
+                                    is_add: false,
+                                });
+                                cx.notify();
+                            }
+                        }),
                     )
+                    .into_any_element();
+
+                let value_element = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .w_full()
                     .child(
                         div()
+                            .id(SharedString::from(format!("tag-value-{k}")))
                             .flex_1()
-                            .text_color(cx.theme().foreground)
+                            // Flex items default to a min-width equal to
+                            // their content's natural width, which blocks
+                            // wrapping for long unbroken values (e.g. a
+                            // URL) and forces them to overflow instead.
+                            // Zero it out so long values wrap.
+                            .min_w(px(0.))
                             .cursor_pointer()
                             .child(value_text.clone())
                             .on_mouse_down(
@@ -478,8 +497,16 @@ impl MapViewer {
                                 this.delete_tag(&key_for_delete, cx);
                             })),
                     )
-                    .into_any_element()
-            }));
+                    .into_any_element();
+
+                description_list = description_list.child(
+                    DescriptionItem::new(key_element)
+                        .value(value_element)
+                        .span(1),
+                );
+            }
+
+            list = list.child(description_list);
         }
 
         let add_selection = selection.clone();
