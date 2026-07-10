@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-74.0000"/>
+
+  <!-- A tagged POI node with short, long, and very long key/value pairs,
+       to exercise the Tags panel's column alignment and text wrapping. -->
+  <node id="2001" lat="40.7120" lon="-74.0060">
+    <tag k="shop" v="bakery"/>
+    <tag k="name" v="Hot Hands Pie &amp; Biscuit"/>
+    <tag k="addr:housenumber" v="272"/>
+    <tag k="addr:street" v="Snelling Avenue South"/>
+    <tag k="addr:city" v="Saint Paul"/>
+    <tag k="addr:state" v="MN"/>
+    <tag k="addr:postcode" v="55105"/>
+    <tag k="check_date:opening_hours" v="2026-03-14"/>
+    <tag k="opening_hours" v="Tu-Sa 08:00-15:00; Su 08:00-13:00"/>
+    <tag k="phone" v="+1-651-300-1503"/>
+    <tag k="website" v="https://www.hothandspie.com"/>
+  </node>
+</osm>

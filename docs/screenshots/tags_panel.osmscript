@@ -1,0 +1,21 @@
+# Load a busy-tagged POI and screenshot the Tags panel to verify column
+# alignment: fixed-width key column, row dividers, wrapped long text.
+#
+# Coordinate model: `click X Y` uses raw window coords. MapViewer subtracts
+# 48px (header) from y before hit-testing. With window 1200x800 and the
+# 280px right panel, macOS renders the window slightly taller than requested
+# (actual content height ~828px), so the map area is 920x780 and the
+# viewport center projects to map-area (460, 390) = window (460, 438).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/tags_panel.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Click the tagged POI node to select it and populate the Tags panel.
+# (Determined empirically from a prior capture: the fixture node rendered
+# at screenshot pixel (~975, ~827) on a 2x-scaled 2400x1600 capture of the
+# 1200x800 window, i.e. logical window coords (~488, ~414).)
+click 488,414
+wait_idle 2s
+capture out/tags-panel.png
