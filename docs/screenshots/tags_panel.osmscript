@@ -2,10 +2,10 @@
 # alignment: fixed-width key column, row dividers, wrapped long text.
 #
 # Coordinate model: `click X Y` uses raw window coords. MapViewer subtracts
-# 48px (header) from y before hit-testing. With window 1200x800 and the
-# 280px right panel, macOS renders the window slightly taller than requested
-# (actual content height ~828px), so the map area is 920x780 and the
-# viewport center projects to map-area (460, 390) = window (460, 438).
+# 48px (header) from y before hit-testing. Reasoning about window geometry
+# alone puts the viewport center around window (460, 438), but the click
+# below uses the empirically-verified (488, 414) instead — see the comment
+# at the click command.
 
 window 1200 800
 load_osm docs/screenshots/fixtures/tags_panel.osm

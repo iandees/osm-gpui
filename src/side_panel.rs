@@ -448,6 +448,11 @@ impl MapViewer {
                         div()
                             .id(SharedString::from(format!("tag-value-{k}")))
                             .flex_1()
+                            // Flex items default to a min-width equal to
+                            // their content's natural width, which blocks
+                            // wrapping for long unbroken values (e.g. a
+                            // URL) and forces them to overflow instead.
+                            // Zero it out so long values wrap.
                             .min_w(px(0.))
                             .cursor_pointer()
                             .child(value_text.clone())
