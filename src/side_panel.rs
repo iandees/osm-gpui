@@ -448,6 +448,7 @@ impl MapViewer {
                         div()
                             .id(SharedString::from(format!("tag-value-{k}")))
                             .flex_1()
+                            .min_w(px(0.))
                             .cursor_pointer()
                             .child(value_text.clone())
                             .on_mouse_down(
