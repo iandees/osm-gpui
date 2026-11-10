@@ -205,7 +205,8 @@ panel:
     title_count:
       one: "Auswahl (%{count} Element)"
       other: "Auswahl (%{count} Elemente)"
-    empty: "Klicken oder ziehen zum Auswählen."
+    nothing: "Nichts ausgewählt"
+    nothing_hint: "Ein Objekt anklicken oder mit einem Rahmen mehrere auswählen."
     node: "Knoten"
     way: "Weg"
     relation: "Relation"
@@ -214,8 +215,6 @@ panel:
     row_named: "%{name} · %{kind} %{id}"
   fields:
     title: "Felder"
-    no_selection: "Keine Auswahl."
-    select_single: "Ein einzelnes Objekt wählen, um Felder zu bearbeiten."
     change_type: "Objekttyp ändern …"
     no_preset: "Keine passende Vorlage."
     no_fields: "Dieser Objekttyp hat keine bearbeitbaren Felder."
@@ -226,7 +225,6 @@ panel:
     none: "(keine)"
   tags:
     title: "Tags"
-    no_selection: "Keine Auswahl."
     add: "Tag hinzufügen"
     empty: "(keine Tags)"
     key_placeholder: "Schlüssel"

@@ -393,15 +393,10 @@ impl MapViewer {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        // The side panel only shows this section for a single selected
+        // feature; there is nothing to say otherwise.
         if self.selected.len() != 1 {
-            let message = if self.selected.is_empty() {
-                tr!("panel.fields.no_selection")
-            } else {
-                tr!("panel.fields.select_single")
-            };
-            return Label::new(message)
-                .text_color(cx.theme().muted_foreground)
-                .into_any_element();
+            return gpui::div().into_any_element();
         }
 
         let feature = self.selected[0];
@@ -413,18 +408,12 @@ impl MapViewer {
             .on_click(cx.listener(move |_this, _ev, window, cx| {
                 window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
             }));
+        // In its own row so it keeps its natural width, left-aligned.
+        let change_type_button = gpui::div().flex().flex_row().child(change_type_button);
 
-        // The same friendly name shown in the Selection section (preset name,
-        // with a geometry-based fallback like "Point"/"Line"/"Area").
-        let name_header = self
-            .describe_selected_feature(&feature)
-            .map(|(name, _icon_path)| Label::new(name).font_weight(gpui::FontWeight::SEMIBOLD));
-
+        // (The feature's name is the selection header above the sections.)
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
-            let mut column = gpui::div().flex().flex_col().gap_2();
-            if let Some(header) = name_header {
-                column = column.child(header);
-            }
+            let column = gpui::div().flex().flex_col().gap_2();
             return column
                 .child(change_type_button)
                 .child(
@@ -435,10 +424,7 @@ impl MapViewer {
         };
 
         if preset.fields.is_empty() {
-            let mut column = gpui::div().flex().flex_col().gap_2();
-            if let Some(header) = name_header {
-                column = column.child(header);
-            }
+            let column = gpui::div().flex().flex_col().gap_2();
             return column
                 .child(change_type_button)
                 .child(
@@ -469,9 +455,6 @@ impl MapViewer {
         }
 
         let mut column = gpui::div().flex().flex_col().gap_2();
-        if let Some(header) = name_header {
-            column = column.child(header);
-        }
         column = column.child(change_type_button).children(field_elements);
 
         // "Add field" control: list `preset.more_fields` not already shown

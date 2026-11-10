@@ -1,0 +1,64 @@
+# Side panel hierarchy: the panel with nothing selected, a tagged node, a way
+# with several tags, a box selection, a relation with its Members list, and
+# the History list after a few edits.
+#
+# Coordinates (window 1200x800, default 280px panel, viewport as in
+# relation-editor.osmscript; fixtures/side-panel-clarity.osm is laid out for
+# it): node 8104 (bus stop) at (560, 200), way 8202 at (520, 200), way 8301
+# (heavily tagged) at (340, 400), cafe node 8120 at (674, 683). The click on
+# the Relations row selects relation 9101; its y depends on the panel layout
+# (y=607 with the zone strips; 583 with only the grouped layout; the original
+# panel had it at y=595).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/side-panel-clarity.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/side-panel-clarity-01-nothing-selected.png
+
+click 674,683
+wait_idle 2s
+assert_selected node 8120
+capture out/side-panel-clarity-02-tagged-node.png
+
+click 340,400
+wait_idle 2s
+assert_selected way 8301
+capture out/side-panel-clarity-03-way-many-tags.png
+
+# Box-select the route: several features at once.
+drag 60,150 880,260 button=left
+wait_idle 2s
+capture out/side-panel-clarity-04-box-selection.png
+
+# A route member; its Relations row selects the relation.
+click 520,200
+wait_idle 2s
+assert_selected way 8202
+capture out/side-panel-clarity-05-member-way.png
+
+click 1000,607
+wait_idle 2s
+assert_selected relation 9101
+capture out/side-panel-clarity-06-relation-members.png
+
+# Hovering a member row (the "after" panel reveals its reorder/remove buttons).
+hover 1000,564
+wait_idle 1s
+capture out/side-panel-clarity-06b-member-hover.png
+
+# A few edits for the History list: reverse a way twice, then delete a route
+# member (which also removes it from the relation).
+click 340,400
+wait_idle 2s
+key r
+wait_idle 1s
+key r
+wait_idle 1s
+click 520,200
+wait_idle 2s
+key delete
+wait_idle 2s
+capture out/side-panel-clarity-07-history.png
+
+log done
