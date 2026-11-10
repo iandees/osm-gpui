@@ -1,0 +1,71 @@
+# Multipolygon relations: drawn with holes, selected by double-clicking inside
+# their fill, and kept correct when a member node moves.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/multipolygon.osm is laid out in
+# window coordinates at zoom 18, centered on (40.7120, -74.0060):
+#   A  Mirror Lake, relation 7001 (natural=water): outer way 6001 spanning
+#      x 90..430, y 80..340, and the island, way 6002, as its inner ring.
+#   B  Courtyard Hall, relation 7002 (building=yes): outer way 6003 at
+#      x 520..760, y 100..300, courtyard way 6004 at x 580..700, y 150..250.
+#   C  Two Halves Wood, relation 7003 (landuse=forest): one ring made of the
+#      open ways 6005 and 6006, x 90..430, y 450..700.
+#   D  Broken Wood, relation 7004: the ways 6007 + 6008 never close, so the
+#      relation is invalid and is not filled.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/multipolygon.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/multipolygon-01-drawn.png
+
+# Double-click in the water: the relation is selected (tinted, members in
+# purple), not the lake's outer way.
+click 170,250 count=2
+wait_idle 2s
+assert_selected relation 7001
+capture out/multipolygon-02-lake-selected.png
+
+# Double-click on the island: the island is a hole of the lake, so it is the
+# island's own way that is selected.
+click 260,215 count=2
+wait_idle 2s
+assert_selected way 6002
+capture out/multipolygon-03-island-selected.png
+
+# The building's walls, then its courtyard (a hole: the courtyard's own way).
+click 540,200 count=2
+wait_idle 2s
+assert_selected relation 7002
+capture out/multipolygon-04-building-selected.png
+click 640,200 count=2
+wait_idle 2s
+assert_selected way 6004
+capture out/multipolygon-05-courtyard-selected.png
+
+# A ring made of two ways is one area.
+click 260,575 count=2
+wait_idle 2s
+assert_selected relation 7003
+capture out/multipolygon-06-two-way-ring-selected.png
+
+# The broken relation has no fill to double-click.
+click 700,585 count=2
+wait_idle 2s
+assert_selected none
+capture out/multipolygon-07-broken-not-selectable.png
+
+# Move a lake corner node: the fill follows the drag and the commit.
+click 430,220
+wait_idle 2s
+assert_selected node 6104
+drag 430,220 480,180 button=left
+wait_idle 2s
+capture out/multipolygon-08-corner-dragged.png
+
+# One undo puts the corner back.
+key cmd+z
+wait_idle 2s
+capture out/multipolygon-09-drag-undone.png
+
+log done

@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="multipolygon fixture">
+  <!-- Laid out in window coordinates at zoom 18, centered on
+       (40.7120, -74.0060) in a 1200x800 window; see multipolygon.osmscript.
+
+       A: Mirror Lake, relation 7001 (natural=water). Outer way 6001, and an
+          island, way 6002, as the inner. The ways carry no tags of their own.
+       B: a building with a courtyard, relation 7002 (building=yes). Outer
+          way 6003, inner way 6004.
+       C: a forest, relation 7003 (landuse=forest) whose outer ring is two
+          open ways, 6005 (west half) and 6006 (east half), meeting at nodes
+          6141 and 6144.
+       D: a broken forest, relation 7004: the ring of ways 6007 + 6008 is open
+          on its west side, so the relation is invalid and gets no fill. -->
+
+  <!-- A: lake outline, clockwise from the north-west corner. -->
+  <node id="6101" version="1" lat="40.713171" lon="-74.008028"/>
+  <node id="6102" version="1" lat="40.713258" lon="-74.007277"/>
+  <node id="6103" version="1" lat="40.713130" lon="-74.006472"/>
+  <node id="6104" version="1" lat="40.712683" lon="-74.006311"/>
+  <node id="6105" version="1" lat="40.712277" lon="-74.006579"/>
+  <node id="6106" version="1" lat="40.712195" lon="-74.007330"/>
+  <node id="6107" version="1" lat="40.712358" lon="-74.007974"/>
+  <node id="6108" version="1" lat="40.712764" lon="-74.008135"/>
+  <!-- A: island. -->
+  <node id="6111" version="1" lat="40.712846" lon="-74.007438"/>
+  <node id="6112" version="1" lat="40.712886" lon="-74.007009"/>
+  <node id="6113" version="1" lat="40.712602" lon="-74.006901"/>
+  <node id="6114" version="1" lat="40.712480" lon="-74.007277"/>
+  <node id="6115" version="1" lat="40.712642" lon="-74.007491"/>
+  <!-- B: building and courtyard. -->
+  <node id="6121" version="1" lat="40.713171" lon="-74.005828"/>
+  <node id="6122" version="1" lat="40.713171" lon="-74.004541"/>
+  <node id="6123" version="1" lat="40.712358" lon="-74.004541"/>
+  <node id="6124" version="1" lat="40.712358" lon="-74.005828"/>
+  <node id="6131" version="1" lat="40.712968" lon="-74.005506"/>
+  <node id="6132" version="1" lat="40.712968" lon="-74.004863"/>
+  <node id="6133" version="1" lat="40.712561" lon="-74.004863"/>
+  <node id="6134" version="1" lat="40.712561" lon="-74.005506"/>
+  <!-- C: forest made of two ways; 6141 is the north end, 6144 the south end. -->
+  <node id="6141" version="1" lat="40.711748" lon="-74.007223"/>
+  <node id="6142" version="1" lat="40.711667" lon="-74.008081"/>
+  <node id="6143" version="1" lat="40.710772" lon="-74.008135"/>
+  <node id="6144" version="1" lat="40.710731" lon="-74.007223"/>
+  <node id="6145" version="1" lat="40.711667" lon="-74.006365"/>
+  <node id="6146" version="1" lat="40.710772" lon="-74.006311"/>
+  <!-- D: broken forest. -->
+  <node id="6151" version="1" lat="40.711667" lon="-74.005614"/>
+  <node id="6152" version="1" lat="40.711667" lon="-74.004112"/>
+  <node id="6153" version="1" lat="40.710731" lon="-74.004112"/>
+  <node id="6154" version="1" lat="40.710731" lon="-74.005614"/>
+
+  <way id="6001" version="1">
+    <nd ref="6101"/>
+    <nd ref="6102"/>
+    <nd ref="6103"/>
+    <nd ref="6104"/>
+    <nd ref="6105"/>
+    <nd ref="6106"/>
+    <nd ref="6107"/>
+    <nd ref="6108"/>
+    <nd ref="6101"/>
+  </way>
+  <way id="6002" version="1">
+    <nd ref="6111"/>
+    <nd ref="6112"/>
+    <nd ref="6113"/>
+    <nd ref="6114"/>
+    <nd ref="6115"/>
+    <nd ref="6111"/>
+  </way>
+  <way id="6003" version="1">
+    <nd ref="6121"/>
+    <nd ref="6122"/>
+    <nd ref="6123"/>
+    <nd ref="6124"/>
+    <nd ref="6121"/>
+  </way>
+  <way id="6004" version="1">
+    <nd ref="6131"/>
+    <nd ref="6132"/>
+    <nd ref="6133"/>
+    <nd ref="6134"/>
+    <nd ref="6131"/>
+  </way>
+  <way id="6005" version="1">
+    <nd ref="6141"/>
+    <nd ref="6142"/>
+    <nd ref="6143"/>
+    <nd ref="6144"/>
+  </way>
+  <way id="6006" version="1">
+    <nd ref="6141"/>
+    <nd ref="6145"/>
+    <nd ref="6146"/>
+    <nd ref="6144"/>
+  </way>
+  <way id="6007" version="1">
+    <nd ref="6151"/>
+    <nd ref="6152"/>
+    <nd ref="6153"/>
+  </way>
+  <way id="6008" version="1">
+    <nd ref="6153"/>
+    <nd ref="6154"/>
+  </way>
+
+  <relation id="7001" version="1">
+    <member type="way" ref="6001" role="outer"/>
+    <member type="way" ref="6002" role="inner"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="natural" v="water"/>
+    <tag k="name" v="Mirror Lake"/>
+  </relation>
+  <relation id="7002" version="1">
+    <member type="way" ref="6003" role="outer"/>
+    <member type="way" ref="6004" role="inner"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="building" v="yes"/>
+    <tag k="name" v="Courtyard Hall"/>
+  </relation>
+  <relation id="7003" version="1">
+    <member type="way" ref="6005" role="outer"/>
+    <member type="way" ref="6006" role="outer"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="landuse" v="forest"/>
+    <tag k="name" v="Two Halves Wood"/>
+  </relation>
+  <relation id="7004" version="1">
+    <member type="way" ref="6007" role="outer"/>
+    <member type="way" ref="6008" role="outer"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="landuse" v="forest"/>
+    <tag k="name" v="Broken Wood"/>
+  </relation>
+</osm>
