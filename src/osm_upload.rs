@@ -206,6 +206,16 @@ pub enum UploadError {
     Conflict(UploadConflict),
     /// The response body wasn't parseable XML/text in the shape we expected.
     Parse(String),
+    /// The diff upload got no usable answer (transport failure, 5xx, or an
+    /// unreadable success body), so the server may have applied it. Not
+    /// retried automatically; the user must check the changeset first.
+    OutcomeUnknown {
+        changeset_id: u64,
+        /// The changeset's page on the OSM website.
+        url: String,
+        /// What went wrong, as the underlying error reads.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for UploadError {
@@ -222,6 +232,11 @@ impl std::fmt::Display for UploadError {
             }
             UploadError::Conflict(conflict) => write!(f, "{}", conflict.describe()),
             UploadError::Parse(msg) => write!(f, "{}", tr!("error.api.parse", detail = msg)),
+            UploadError::OutcomeUnknown { url, detail, .. } => write!(
+                f,
+                "{}",
+                tr!("error.api.outcome_unknown", detail = detail, url = url)
+            ),
         }
     }
 }
@@ -252,24 +267,22 @@ pub struct UploadResult {
     pub relation_id_remap: HashMap<i64, (i64, i32)>,
 }
 
-/// Send a single changeset-lifecycle request with a small bounded retry
-/// (`RetryPolicy::standard`: 3 attempts, 200ms/500ms apart).
+/// Send a single changeset-lifecycle request under `policy`.
 ///
-/// Retry reasoning (applies uniformly to create/upload/close): we only ever
-/// retry a) a transport-level failure, where by construction no HTTP
-/// response was received at all, so the server either never saw the request
-/// or never finished handling it — retrying can at worst produce a harmless
-/// duplicate (an extra open changeset, a double-close no-op), never data
-/// corruption; and b) a retryable HTTP status (429/509/5xx via
-/// `crate::is_retryable_status`), which for `POST .../upload` specifically
-/// means the server itself reported failure (it did not claim success), so
-/// the edit was not applied. We deliberately do NOT retry 409/412 — those
-/// have a real, meaningful response indicating one or more elements in the
-/// changeset are already out of sync with the server; retrying the exact
-/// same payload would just fail again forever, and the right recovery is a
-/// manual re-download/reconcile, not an automatic retry.
+/// Only the idempotent close is retried (`RetryPolicy::standard`: 3
+/// attempts). A transport error or 5xx does not say whether the server acted
+/// on the request: it may have committed and then lost the response. For the
+/// diff upload a retry would then apply the same osmChange twice, creating
+/// every new node/way/relation again on OpenStreetMap (modifies and deletes
+/// would only fail on a version conflict). Creating a changeset is not
+/// idempotent either (a retry leaves an extra open changeset), and the HTTP
+/// layer cannot tell "request never sent" from "response lost", so create and
+/// upload are single attempts (`RetryPolicy::none`). Closing twice is
+/// harmless (409 "already closed"). 409/410/412 are never retried: the
+/// same payload would fail again.
 fn call_with_retries(
     client: &dyn HttpClient,
+    policy: &RetryPolicy,
     method: Method,
     url: &str,
     token: &str,
@@ -278,7 +291,7 @@ fn call_with_retries(
     let request = HttpRequest::with_text(method, url, body)
         .bearer(token)
         .header("Content-Type", "text/xml; charset=utf-8");
-    match fetch_with_retries(client, &request, &RetryPolicy::standard()) {
+    match fetch_with_retries(client, &request, policy) {
         Ok(resp) => resp
             .into_string()
             .map_err(|e| UploadError::Network(e.to_string())),
@@ -314,7 +327,14 @@ pub fn create_changeset_with(
         base_url.trim_end_matches('/')
     );
     let xml = build_changeset_create_xml(comment);
-    let body = call_with_retries(client, Method::Put, &url, token, Some(xml))?;
+    let body = call_with_retries(
+        client,
+        &RetryPolicy::none(),
+        Method::Put,
+        &url,
+        token,
+        Some(xml),
+    )?;
     body.trim()
         .parse::<u64>()
         .map_err(|_| UploadError::Parse(format!("invalid changeset id in response: {:?}", body)))
@@ -350,7 +370,14 @@ pub fn upload_changes_with(
         base_url.trim_end_matches('/'),
         changeset_id
     );
-    let body = call_with_retries(client, Method::Post, &url, token, Some(xml.to_string()))?;
+    let body = call_with_retries(
+        client,
+        &RetryPolicy::none(),
+        Method::Post,
+        &url,
+        token,
+        Some(xml.to_string()),
+    )?;
     parse_diff_result(&body)
 }
 
@@ -370,7 +397,14 @@ pub fn close_changeset_with(
         base_url.trim_end_matches('/'),
         changeset_id
     );
-    call_with_retries(client, Method::Put, &url, token, None)?;
+    call_with_retries(
+        client,
+        &RetryPolicy::standard(),
+        Method::Put,
+        &url,
+        token,
+        None,
+    )?;
     Ok(())
 }
 
@@ -417,9 +451,32 @@ pub fn run_upload(
     match uploaded {
         Ok(result) => Ok((changeset_id, result)),
         Err(error) => Err(UploadFailure {
-            error,
+            error: mark_outcome_unknown(error, base_url, changeset_id),
             changeset_id: Some(changeset_id),
         }),
+    }
+}
+
+/// Turn a diff-upload failure that leaves the server's state unknown into
+/// `OutcomeUnknown`: a transport error, a 5xx (other than 509, which is
+/// refused before any work), or a success body we could not read. Anything
+/// else (conflicts, 4xx) is a definite refusal and passes through.
+fn mark_outcome_unknown(error: UploadError, base_url: &str, changeset_id: u64) -> UploadError {
+    let detail = match &error {
+        UploadError::Network(_) | UploadError::Parse(_) => error.to_string(),
+        UploadError::Http { status, .. } if (500..600).contains(status) && *status != 509 => {
+            error.to_string()
+        }
+        _ => return error,
+    };
+    UploadError::OutcomeUnknown {
+        changeset_id,
+        url: format!(
+            "{}/changeset/{}",
+            crate::auth::oauth_base_for(base_url),
+            changeset_id
+        ),
+        detail,
     }
 }
 
@@ -1279,6 +1336,7 @@ mod tests {
     }
 
     use crate::http::fake::{ok, status_err, FakeClient};
+    use crate::http::{HttpError, HttpResponse};
 
     const BASE: &str = "https://osm.test";
 
@@ -1370,6 +1428,95 @@ mod tests {
         ));
         assert_eq!(client.request_count(), 3);
         assert!(request_lines(&client)[2].ends_with("/changeset/7/close"));
+    }
+
+    fn assert_outcome_unknown_single_upload(failing: Result<HttpResponse, HttpError>) {
+        let client = FakeClient::new(vec![ok(200, "42"), failing, ok(200, "")]);
+        let failure = run_upload(
+            &client,
+            "https://api.openstreetmap.org",
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(failure.changeset_id, Some(42));
+        match &failure.error {
+            UploadError::OutcomeUnknown {
+                changeset_id, url, ..
+            } => {
+                assert_eq!(*changeset_id, 42);
+                assert_eq!(url, "https://www.openstreetmap.org/changeset/42");
+            }
+            other => panic!("expected OutcomeUnknown, got {other:?}"),
+        }
+        assert!(failure
+            .error
+            .to_string()
+            .contains("https://www.openstreetmap.org/changeset/42"));
+        assert_eq!(
+            request_lines(&client),
+            vec![
+                "Put https://api.openstreetmap.org/api/0.6/changeset/create",
+                "Post https://api.openstreetmap.org/api/0.6/changeset/42/upload",
+                "Put https://api.openstreetmap.org/api/0.6/changeset/42/close",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_transport_error_on_the_diff_upload_is_sent_once_and_outcome_unknown() {
+        assert_outcome_unknown_single_upload(crate::http::fake::transport_err("connection reset"));
+    }
+
+    #[test]
+    fn a_503_on_the_diff_upload_is_sent_once_and_outcome_unknown() {
+        assert_outcome_unknown_single_upload(status_err(503, "unavailable"));
+    }
+
+    #[test]
+    fn a_transport_error_creating_the_changeset_is_not_retried() {
+        let client = FakeClient::new(vec![
+            crate::http::fake::transport_err("reset"),
+            ok(200, "42"),
+        ]);
+        let failure = run_upload(
+            &client,
+            BASE,
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(failure.error, UploadError::Network(_)));
+        assert_eq!(failure.changeset_id, None);
+        assert_eq!(client.request_count(), 1);
+    }
+
+    #[test]
+    fn close_is_still_retried_on_503() {
+        let client = FakeClient::new(vec![
+            ok(200, "42"),
+            ok(
+                200,
+                r#"<diffResult><node old_id="12345" new_id="12345" new_version="4"/></diffResult>"#,
+            ),
+            status_err(503, "busy"),
+            ok(200, ""),
+        ]);
+        run_upload(
+            &client,
+            BASE,
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(client.request_count(), 4);
+        assert!(request_lines(&client)[3].ends_with("/changeset/42/close"));
     }
 
     #[test]

@@ -640,6 +640,8 @@ error:
     rate_limited: "OSM-API begrenzt die Anfragen (509) — später erneut versuchen"
     http: "OSM-API-Fehler %{status}: %{detail}"
     parse: "OSM-Antwort konnte nicht gelesen werden: %{detail}"
+    # Der Diff-Upload hat keine brauchbare Antwort erhalten; der Server hat ihn eventuell angewendet.
+    outcome_unknown: "Der Upload ist möglicherweise durchgegangen, möglicherweise nicht (%{detail}). Prüfe vor einem erneuten Upload, ob deine Änderungen auf dem Server sind: %{url}. Ein erneuter Upload könnte neue Objekte ein zweites Mal anlegen."
   auth:
     http: "OSM-OAuth-Fehler %{status}: %{detail}"
     no_redirect: "Anmeldung abgelaufen: keine Weiterleitung vom Browser erhalten"
