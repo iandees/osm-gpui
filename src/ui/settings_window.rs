@@ -20,6 +20,7 @@ use crate::custom_imagery_store::{self, CustomImageryEntry};
 use crate::keybindings::{self, ShortcutCategory, SHORTCUTS};
 use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset};
 use crate::ui::modal::field_row;
+use crate::{tr, tr_count};
 
 /// Login UI state for the currently-selected API server.
 #[derive(Clone)]
@@ -75,7 +76,7 @@ impl SettingsWindow {
         let oauth_base = auth::oauth_base_for(&app_settings.api_base_url());
         let client_id_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Default")
+                .placeholder(tr!("settings.account.client_id_placeholder"))
                 .default_value(
                     app_settings
                         .client_ids
@@ -156,7 +157,7 @@ impl SettingsWindow {
         let url = self.custom_api_url_input.read(cx).value().to_string();
         let url = url.trim();
         if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
-            self.custom_url_error = Some("Enter a valid http(s) URL".into());
+            self.custom_url_error = Some(tr!("settings.account.error.invalid_url"));
             cx.notify();
             return;
         }
@@ -170,6 +171,12 @@ impl SettingsWindow {
 
     fn set_text_size_preset(&mut self, preset: TextSizePreset, cx: &mut Context<Self>) {
         self.app_settings.text_size_preset = preset;
+        settings_store::update_store(self.app_settings.clone());
+        cx.notify();
+    }
+
+    fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
+        self.app_settings.language = language;
         settings_store::update_store(self.app_settings.clone());
         cx.notify();
     }
@@ -196,10 +203,10 @@ impl SettingsWindow {
                 crate::tile_cache::set_budget_mb(mb);
             }
             Ok(_) => {
-                self.cache_budget_error = Some("Budget must be at least 10 MB".into());
+                self.cache_budget_error = Some(tr!("settings.cache.error.too_small"));
             }
             Err(_) => {
-                self.cache_budget_error = Some("Enter a whole number of megabytes".into());
+                self.cache_budget_error = Some(tr!("settings.cache.error.not_a_number"));
             }
         }
         cx.notify();
@@ -207,7 +214,11 @@ impl SettingsWindow {
 
     fn clear_cache_source(&mut self, key: String, cx: &mut Context<Self>) {
         if let Err(e) = crate::tile_cache::clear_source(&key) {
-            self.cache_clear_error = Some(format!("Failed to clear {}: {}", key, e).into());
+            self.cache_clear_error = Some(tr!(
+                "settings.cache.error.clear_source",
+                source = key,
+                error = e
+            ));
         } else {
             self.cache_clear_error = None;
         }
@@ -216,7 +227,7 @@ impl SettingsWindow {
 
     fn clear_all_tile_cache(&mut self, cx: &mut Context<Self>) {
         if let Err(e) = crate::tile_cache::clear_all_cache() {
-            self.cache_clear_error = Some(format!("Failed to clear cache: {}", e).into());
+            self.cache_clear_error = Some(tr!("settings.cache.error.clear_all", error = e));
         } else {
             self.cache_clear_error = None;
         }
@@ -228,7 +239,10 @@ impl SettingsWindow {
     fn reset_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
         let candidate = keybindings::def(id).default_spec;
         if let Some(other_label) = keybindings::conflict(&self.app_settings, id, candidate) {
-            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            self.shortcut_error = Some((
+                id,
+                tr!("settings.shortcuts.error.in_use", other = other_label),
+            ));
             cx.notify();
             return;
         }
@@ -264,18 +278,21 @@ impl SettingsWindow {
     /// try another combo.
     fn apply_shortcut(&mut self, id: &'static str, spec: String, cx: &mut Context<Self>) {
         if keybindings::is_reserved(&spec) {
-            self.shortcut_error = Some((id, "That key is reserved.".into()));
+            self.shortcut_error = Some((id, tr!("settings.shortcuts.error.reserved")));
             cx.notify();
             return;
         }
         if keybindings::def(id).category.is_bare_key_category() && !keybindings::is_bare_key(&spec)
         {
-            self.shortcut_error = Some((id, "This shortcut can't use modifier keys.".into()));
+            self.shortcut_error = Some((id, tr!("settings.shortcuts.error.mode_modifier")));
             cx.notify();
             return;
         }
         if let Some(other_label) = keybindings::conflict(&self.app_settings, id, &spec) {
-            self.shortcut_error = Some((id, format!("Already used by {other_label}.").into()));
+            self.shortcut_error = Some((
+                id,
+                tr!("settings.shortcuts.error.in_use", other = other_label),
+            ));
             cx.notify();
             return;
         }
@@ -329,7 +346,7 @@ impl SettingsWindow {
     ) {
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Name")
+                .placeholder(tr!("dialog.custom_imagery.name"))
                 .default_value(entry.name.clone())
         });
         let url = cx.new(|cx| {
@@ -452,15 +469,55 @@ impl SettingsWindow {
         ]
     }
 
+    /// The Language dropdown: "System default" plus every compiled-in
+    /// catalog, each named in its own language. Read once at startup, so the
+    /// description says a restart is needed.
+    fn language_group(&self, view: Entity<Self>) -> SettingGroup {
+        const SYSTEM: &str = "system";
+        let mut options: Vec<(SharedString, SharedString)> =
+            vec![(SYSTEM.into(), tr!("settings.language.system_default"))];
+        for locale in crate::i18n::available_locales() {
+            let name = crate::i18n::lookup_in(&locale, "meta.language_name")
+                .map(SharedString::from)
+                .unwrap_or_else(|| locale.clone().into());
+            options.push((locale.into(), name));
+        }
+        let value_view = view.clone();
+        let item = SettingItem::new(
+            tr!("settings.language.title"),
+            SettingField::dropdown(
+                options,
+                move |cx: &App| {
+                    value_view
+                        .read(cx)
+                        .app_settings
+                        .language
+                        .clone()
+                        .map(SharedString::from)
+                        .unwrap_or_else(|| SYSTEM.into())
+                },
+                move |val: SharedString, cx: &mut App| {
+                    let language = (val.as_ref() != SYSTEM).then(|| val.to_string());
+                    view.update(cx, |this, cx| this.set_language(language, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.language.description"));
+        SettingGroup::new()
+            .title(tr!("settings.language.group"))
+            .item(item)
+    }
+
     fn appearance_page(&self, view: Entity<Self>) -> SettingPage {
+        let language_view = view.clone();
         let value_view = view.clone();
         let set_value_view = view;
         let item = SettingItem::new(
-            "Text Size",
+            tr!("settings.appearance.text_size"),
             SettingField::dropdown(
                 TextSizePreset::ALL
                     .into_iter()
-                    .map(|p| (p.as_key().into(), p.label().into()))
+                    .map(|p| (p.as_key().into(), p.label()))
                     .collect(),
                 move |cx: &App| {
                     SharedString::from(value_view.read(cx).app_settings.text_size_preset.as_key())
@@ -473,11 +530,16 @@ impl SettingsWindow {
                 },
             ),
         )
-        .description("Size of text throughout the app.");
+        .description(tr!("settings.appearance.text_size_description"));
 
-        SettingPage::new("Appearance")
+        SettingPage::new(tr!("settings.appearance.title"))
             .icon(Icon::new(IconName::Palette))
-            .groups(vec![SettingGroup::new().title("Text").item(item)])
+            .groups(vec![
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.text_group"))
+                    .item(item),
+                self.language_group(language_view),
+            ])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {
@@ -485,12 +547,12 @@ impl SettingsWindow {
 
         let server_view = view.clone();
         let mut api_items = vec![SettingItem::new(
-            "Server",
+            tr!("settings.account.server"),
             SettingField::render(move |_options, window, cx| {
                 render_server_picker(api_choice, server_view.clone(), window, cx)
             }),
         )
-        .description("Choose which OpenStreetMap API server to use.")
+        .description(tr!("settings.account.server_description"))
         .layout(Axis::Vertical)];
 
         if matches!(api_choice, ApiServerChoice::Custom) {
@@ -499,7 +561,7 @@ impl SettingsWindow {
             let error = self.custom_url_error.clone();
             api_items.push(
                 SettingItem::new(
-                    "Custom API URL",
+                    tr!("settings.account.custom_url"),
                     SettingField::render(move |_options, window, cx| {
                         render_custom_api_url(
                             custom_view.clone(),
@@ -510,7 +572,7 @@ impl SettingsWindow {
                         )
                     }),
                 )
-                .description("The base URL of a self-hosted or alternate OSM API server.")
+                .description(tr!("settings.account.custom_url_description"))
                 .layout(Axis::Vertical),
             );
         }
@@ -519,35 +581,35 @@ impl SettingsWindow {
         let client_id_input = self.client_id_input.clone();
         api_items.push(
             SettingItem::new(
-                "OAuth Client ID",
+                tr!("settings.account.client_id"),
                 SettingField::render(move |_options, window, cx| {
                     render_client_id(client_id_view.clone(), client_id_input.clone(), window, cx)
                 }),
             )
-            .description(
-                "Override the OAuth client_id used for this server (leave blank for default).",
-            )
+            .description(tr!("settings.account.client_id_description"))
             .layout(Axis::Vertical),
         );
 
         let login_view = view;
         let login_state = self.login_state.clone();
         let login_item = SettingItem::new(
-            "Account",
+            tr!("settings.account.account"),
             SettingField::render(move |_options, window, cx| {
                 render_login_state(login_view.clone(), login_state.clone(), window, cx)
             }),
         )
-        .description("Sign in with your OpenStreetMap account to edit data.")
+        .description(tr!("settings.account.account_description"))
         .layout(Axis::Vertical);
 
-        SettingPage::new("Account")
+        SettingPage::new(tr!("settings.account.title"))
             .icon(Icon::new(IconName::User))
             .default_open(true)
             .groups(vec![
-                SettingGroup::new().title("API Server").items(api_items),
                 SettingGroup::new()
-                    .title("OpenStreetMap Account")
+                    .title(tr!("settings.account.api_server_group"))
+                    .items(api_items),
+                SettingGroup::new()
+                    .title(tr!("settings.account.osm_account_group"))
                     .item(login_item),
             ])
     }
@@ -557,15 +619,15 @@ impl SettingsWindow {
 
         if self.entries.is_empty() {
             items.push(SettingItem::render(|_options, _window, _cx| {
-                Label::new("No custom imagery sources configured.")
+                Label::new(tr!("settings.imagery.empty"))
             }));
         }
 
         for (idx, entry) in self.entries.iter().enumerate() {
             let title = if entry.name.is_empty() {
-                "New Source".to_string()
+                tr!("settings.imagery.new_source")
             } else {
-                entry.name.clone()
+                entry.name.clone().into()
             };
             let is_editing = self.editing_index == Some(idx);
             let is_confirming_delete = self.confirm_delete_index == Some(idx);
@@ -596,11 +658,12 @@ impl SettingsWindow {
                 .layout(Axis::Vertical)
             } else {
                 let entry_view = view.clone();
-                let entry_summary: SharedString = format!(
-                    "{} · zoom {}–{}",
-                    entry.url_template, entry.min_zoom, entry.max_zoom
-                )
-                .into();
+                let entry_summary = tr!(
+                    "settings.imagery.entry_summary",
+                    url = entry.url_template,
+                    min = entry.min_zoom,
+                    max = entry.max_zoom
+                );
                 let entry_name = entry.name.clone();
                 SettingItem::new(
                     title,
@@ -625,7 +688,7 @@ impl SettingsWindow {
         let add_view = view.clone();
         items.push(SettingItem::render(move |_options, _window, _cx| {
             Button::new("add-source")
-                .label("Add Source")
+                .label(tr!("settings.imagery.add_source"))
                 .ghost()
                 .on_click({
                     let add_view = add_view.clone();
@@ -635,10 +698,12 @@ impl SettingsWindow {
                 })
         }));
 
-        SettingPage::new("Imagery")
+        SettingPage::new(tr!("settings.imagery.title"))
             .icon(Icon::new(IconName::Map))
             .groups(vec![
-                SettingGroup::new().title("Custom Sources").items(items),
+                SettingGroup::new()
+                    .title(tr!("settings.imagery.custom_sources"))
+                    .items(items),
                 self.cache_group(view),
             ])
     }
@@ -657,15 +722,12 @@ impl SettingsWindow {
             .filter(|s| s.key != crate::tile_cache::uncategorized_key())
             .count();
 
-        let summary_text: SharedString = format!(
-            "{} across {} tile{} in {} source{}",
-            crate::tile_cache::format_bytes(summary.total_bytes),
-            summary.total_files,
-            if summary.total_files == 1 { "" } else { "s" },
-            real_source_count,
-            if real_source_count == 1 { "" } else { "s" },
-        )
-        .into();
+        let summary_text = tr!(
+            "settings.cache.summary",
+            size = crate::tile_cache::format_bytes(summary.total_bytes),
+            tiles = tr_count!("settings.cache.tiles", summary.total_files),
+            sources = tr_count!("settings.cache.sources", real_source_count)
+        );
 
         let clear_error = self.cache_clear_error.clone();
         let mut items = vec![SettingItem::render(move |_options, _window, cx| {
@@ -677,7 +739,7 @@ impl SettingsWindow {
         let budget_error = self.cache_budget_error.clone();
         items.push(
             SettingItem::new(
-                "Cache budget (MB)",
+                tr!("settings.cache.budget"),
                 SettingField::render(move |_options, window, cx| {
                     render_cache_budget(
                         budget_view.clone(),
@@ -688,30 +750,24 @@ impl SettingsWindow {
                     )
                 }),
             )
-            .description(
-                "Maximum on-disk tile cache size. Lowering this doesn't delete anything \
-                 immediately — the cache shrinks to the new limit the next time it's \
-                 written to.",
-            )
+            .description(tr!("settings.cache.budget_description"))
             .layout(Axis::Vertical),
         );
 
         if summary.sources.is_empty() {
             items.push(SettingItem::render(|_options, _window, _cx| {
-                Label::new("No cached tiles yet.")
+                Label::new(tr!("settings.cache.empty"))
             }));
         }
 
         for source in summary.sources {
             let row_view = view.clone();
             let key = source.key.clone();
-            let size_label: SharedString = format!(
-                "{} · {} tile{}",
-                crate::tile_cache::format_bytes(source.bytes),
-                source.file_count,
-                if source.file_count == 1 { "" } else { "s" },
-            )
-            .into();
+            let size_label = tr!(
+                "settings.cache.source_size",
+                size = crate::tile_cache::format_bytes(source.bytes),
+                tiles = tr_count!("settings.cache.tiles", source.file_count)
+            );
             items.push(
                 SettingItem::new(
                     source.key.clone(),
@@ -727,7 +783,7 @@ impl SettingsWindow {
         items.push(SettingItem::render(move |_options, _window, _cx| {
             let clear_all_view = clear_all_view.clone();
             Button::new("clear-all-cache")
-                .label("Clear All")
+                .label(tr!("settings.cache.clear_all"))
                 .ghost()
                 .compact()
                 .on_click(move |_ev, _window, cx| {
@@ -735,19 +791,12 @@ impl SettingsWindow {
                 })
         }));
 
-        SettingGroup::new().title("Tile Cache").items(items)
+        SettingGroup::new()
+            .title(tr!("settings.cache.group"))
+            .items(items)
     }
 
     fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {
-        let category_title = |c: ShortcutCategory| match c {
-            ShortcutCategory::General => "General",
-            ShortcutCategory::File => "File",
-            ShortcutCategory::Edit => "Edit",
-            ShortcutCategory::View => "View",
-            ShortcutCategory::Modes => "Modes",
-            ShortcutCategory::Actions => "Selection Actions",
-        };
-
         let mut groups = Vec::new();
         for category in [
             ShortcutCategory::General,
@@ -762,7 +811,7 @@ impl SettingsWindow {
                 .filter(|d| d.category == category)
                 .map(|d| {
                     let id = d.id;
-                    let label = d.label;
+                    let label = d.label();
                     let has_override = self.app_settings.keybindings.contains_key(id);
                     let spec = keybindings::effective_spec(&self.app_settings, id);
                     let row_view = view.clone();
@@ -790,18 +839,14 @@ impl SettingsWindow {
                     )
                 })
                 .collect();
-            groups.push(
-                SettingGroup::new()
-                    .title(category_title(category))
-                    .items(items),
-            );
+            groups.push(SettingGroup::new().title(category.title()).items(items));
         }
 
         let reset_all_view = view;
         groups.push(SettingGroup::new().item(SettingItem::render(
             move |_options, _window, _cx| {
                 Button::new("reset-all-shortcuts")
-                    .label("Reset All to Defaults")
+                    .label(tr!("settings.shortcuts.reset_all"))
                     .ghost()
                     .on_click({
                         let reset_all_view = reset_all_view.clone();
@@ -812,7 +857,7 @@ impl SettingsWindow {
             },
         )));
 
-        SettingPage::new("Keyboard Shortcuts").groups(groups)
+        SettingPage::new(tr!("settings.shortcuts.title")).groups(groups)
     }
 }
 
@@ -846,9 +891,9 @@ fn render_server_picker(
             };
             view.update(cx, |this, cx| this.set_api_server(choice, window, cx));
         })
-        .child(Radio::from("Primary (api.openstreetmap.org)").small())
-        .child(Radio::from("Dev / testing (master.apis.dev.openstreetmap.org)").small())
-        .child(Radio::from("Custom").small())
+        .child(Radio::from(tr!("settings.account.server_primary")).small())
+        .child(Radio::from(tr!("settings.account.server_dev")).small())
+        .child(Radio::from(tr!("settings.account.server_custom")).small())
 }
 
 fn render_custom_api_url(
@@ -861,13 +906,15 @@ fn render_custom_api_url(
     let muted = cx.theme().muted_foreground;
     let danger = cx.theme().danger;
 
-    let mut row = v_flex().gap_2().child(field_row("URL", &input, muted));
+    let mut row = v_flex()
+        .gap_2()
+        .child(field_row(tr!("settings.account.url"), &input, muted));
     if let Some(err) = error {
         row = row.child(Label::new(err).text_color(danger));
     }
     row.child(
         Button::new("save-custom-api-url")
-            .label("Save")
+            .label(tr!("settings.save"))
             .primary()
             .compact()
             .on_click(move |_ev, window, cx| {
@@ -886,10 +933,14 @@ fn render_client_id(
 
     v_flex()
         .gap_2()
-        .child(field_row("Client ID", &input, muted))
+        .child(field_row(
+            tr!("settings.account.client_id_field"),
+            &input,
+            muted,
+        ))
         .child(
             Button::new("save-client-id")
-                .label("Save")
+                .label(tr!("settings.save"))
                 .primary()
                 .compact()
                 .on_click(move |_ev, _window, cx| {
@@ -926,13 +977,13 @@ fn render_cache_budget(
 
     let mut row = v_flex()
         .gap_2()
-        .child(field_row("Megabytes", &input, muted));
+        .child(field_row(tr!("settings.cache.megabytes"), &input, muted));
     if let Some(err) = error {
         row = row.child(Label::new(err).text_sm().text_color(danger));
     }
     row.child(
         Button::new("save-cache-budget")
-            .label("Save")
+            .label(tr!("settings.save"))
             .primary()
             .compact()
             .on_click(move |_ev, _window, cx| {
@@ -944,7 +995,7 @@ fn render_cache_budget(
 fn render_cache_source_row(view: Entity<SettingsWindow>, key: String) -> AnyElement {
     let button_id = format!("clear-cache-source-{key}");
     Button::new(button_id)
-        .label("Clear")
+        .label(tr!("settings.cache.clear_source"))
         .ghost()
         .compact()
         .on_click(move |_ev, _window, cx| {
@@ -965,7 +1016,7 @@ fn render_login_state(
 
     match login_state {
         LoginState::LoggedOut => Button::new("login")
-            .label("Sign in with OpenStreetMap")
+            .label(tr!("settings.account.sign_in"))
             .primary()
             .on_click(move |_ev, _window, cx| {
                 view.update(cx, |this, cx| this.start_login(cx));
@@ -974,18 +1025,18 @@ fn render_login_state(
         LoginState::LoggingIn => h_flex()
             .gap_2()
             .items_center()
-            .child(Label::new("Signing in… complete login in your browser.").text_color(muted))
+            .child(Label::new(tr!("settings.account.signing_in")).text_color(muted))
             .into_any_element(),
         LoginState::LoggedIn(token) => h_flex()
             .gap_2()
             .items_center()
             .child(
-                Label::new(format!("✅ Logged in as {}", token.display_name))
+                Label::new(tr!("settings.account.logged_in", name = token.display_name))
                     .text_color(foreground),
             )
             .child(
                 Button::new("logout")
-                    .label("Sign out")
+                    .label(tr!("settings.account.sign_out"))
                     .ghost()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -998,7 +1049,7 @@ fn render_login_state(
             .child(Label::new(msg).text_color(danger))
             .child(
                 Button::new("login-retry")
-                    .label("Try again")
+                    .label(tr!("settings.account.try_again"))
                     .primary()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -1023,11 +1074,14 @@ fn render_entry_row(
         h_flex()
             .gap_2()
             .items_center()
-            .child(Label::new(format!("Delete {}?", entry_name)).text_color(danger))
+            .child(
+                Label::new(tr!("settings.imagery.confirm_delete", name = entry_name))
+                    .text_color(danger),
+            )
             .child({
                 let view = view.clone();
                 Button::new(("confirm-delete", idx))
-                    .label("Delete")
+                    .label(tr!("settings.imagery.delete"))
                     .danger()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -1036,7 +1090,7 @@ fn render_entry_row(
             })
             .child(
                 Button::new(("cancel-delete", idx))
-                    .label("Cancel")
+                    .label(tr!("dialog.cancel"))
                     .ghost()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -1053,7 +1107,7 @@ fn render_entry_row(
             .child({
                 let view = view.clone();
                 Button::new(("edit", idx))
-                    .label("Edit")
+                    .label(tr!("settings.imagery.edit"))
                     .ghost()
                     .compact()
                     .on_click(move |_ev, window, cx| {
@@ -1062,7 +1116,7 @@ fn render_entry_row(
             })
             .child(
                 Button::new(("trash", idx))
-                    .label("Delete")
+                    .label(tr!("settings.imagery.delete"))
                     .ghost()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -1113,7 +1167,7 @@ fn render_shortcut_row(
                     }
                 })
                 .child(
-                    Label::new("Press keys… (Esc to cancel)")
+                    Label::new(tr!("settings.shortcuts.recording"))
                         .text_sm()
                         .text_color(muted),
                 ),
@@ -1133,7 +1187,7 @@ fn render_shortcut_row(
 
         row = row.child(
             Button::new(SharedString::from(format!("record-shortcut-{id}")))
-                .label("Record")
+                .label(tr!("settings.shortcuts.record"))
                 .ghost()
                 .compact()
                 .on_click({
@@ -1147,7 +1201,7 @@ fn render_shortcut_row(
         if has_override {
             row = row.child(
                 Button::new(SharedString::from(format!("reset-shortcut-{id}")))
-                    .label("Reset")
+                    .label(tr!("settings.shortcuts.reset"))
                     .ghost()
                     .compact()
                     .on_click(move |_ev, _window, cx| {
@@ -1183,21 +1237,29 @@ fn render_entry_edit_form(
 
     let mut content = v_flex()
         .gap_2()
-        .child(field_row("Name", &edit_name, muted))
-        .child(field_row("URL template", &edit_url, muted))
+        .child(field_row(
+            tr!("dialog.custom_imagery.name"),
+            &edit_name,
+            muted,
+        ))
+        .child(field_row(
+            tr!("dialog.custom_imagery.url_template"),
+            &edit_url,
+            muted,
+        ))
         .child(
             h_flex()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .child(field_row("Min zoom", &edit_min_zoom, muted)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .child(field_row("Max zoom", &edit_max_zoom, muted)),
-                ),
+                .child(div().flex_1().child(field_row(
+                    tr!("dialog.custom_imagery.min_zoom"),
+                    &edit_min_zoom,
+                    muted,
+                )))
+                .child(div().flex_1().child(field_row(
+                    tr!("dialog.custom_imagery.max_zoom"),
+                    &edit_max_zoom,
+                    muted,
+                ))),
         );
 
     if let Some(err) = edit_error {
@@ -1210,14 +1272,17 @@ fn render_entry_edit_form(
         .child(
             h_flex()
                 .gap_2()
-                .child(Button::new(("save", idx)).label("Save").primary().on_click(
-                    move |_ev, _window, cx| {
-                        save_view.update(cx, |this, cx| this.save_entry(idx, cx));
-                    },
-                ))
+                .child(
+                    Button::new(("save", idx))
+                        .label(tr!("settings.save"))
+                        .primary()
+                        .on_click(move |_ev, _window, cx| {
+                            save_view.update(cx, |this, cx| this.save_entry(idx, cx));
+                        }),
+                )
                 .child(
                     Button::new(("cancel", idx))
-                        .label("Cancel")
+                        .label(tr!("dialog.cancel"))
                         .ghost()
                         .on_click(move |_ev, _window, cx| {
                             cancel_view.update(cx, |this, cx| this.cancel_edit(idx, cx));

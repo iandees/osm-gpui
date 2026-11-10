@@ -211,6 +211,120 @@ geometry:
 
 settings:
   window_title: "Settings"
+  save: "Save"
+  language:
+    group: "Language"
+    title: "Language"
+    system_default: "System default"
+    description: "Takes effect after restarting the app."
+  appearance:
+    title: "Appearance"
+    text_group: "Text"
+    text_size: "Text Size"
+    text_size_description: "Size of text throughout the app."
+    size_small: "Small"
+    size_medium: "Medium"
+    size_large: "Large"
+  account:
+    title: "Account"
+    api_server_group: "API Server"
+    osm_account_group: "OpenStreetMap Account"
+    server: "Server"
+    server_description: "Choose which OpenStreetMap API server to use."
+    server_primary: "Primary (api.openstreetmap.org)"
+    server_dev: "Dev / testing (master.apis.dev.openstreetmap.org)"
+    server_custom: "Custom"
+    custom_url: "Custom API URL"
+    custom_url_description: "The base URL of a self-hosted or alternate OSM API server."
+    url: "URL"
+    client_id: "OAuth Client ID"
+    client_id_description: "Override the OAuth client_id used for this server (leave blank for default)."
+    client_id_field: "Client ID"
+    client_id_placeholder: "Default"
+    account: "Account"
+    account_description: "Sign in with your OpenStreetMap account to edit data."
+    sign_in: "Sign in with OpenStreetMap"
+    signing_in: "Signing in… complete login in your browser."
+    logged_in: "✅ Logged in as %{name}"
+    sign_out: "Sign out"
+    try_again: "Try again"
+    error:
+      invalid_url: "Enter a valid http(s) URL"
+  imagery:
+    title: "Imagery"
+    custom_sources: "Custom Sources"
+    empty: "No custom imagery sources configured."
+    new_source: "New Source"
+    # `%{url}` is the tile URL template; zoom levels are numbers.
+    entry_summary: "%{url} · zoom %{min}–%{max}"
+    add_source: "Add Source"
+    edit: "Edit"
+    delete: "Delete"
+    confirm_delete: "Delete %{name}?"
+  cache:
+    group: "Tile Cache"
+    # `%{tiles}` and `%{sources}` are filled from the plural messages below.
+    summary: "%{size} across %{tiles} in %{sources}"
+    tiles:
+      one: "%{count} tile"
+      other: "%{count} tiles"
+    sources:
+      one: "%{count} source"
+      other: "%{count} sources"
+    source_size: "%{size} · %{tiles}"
+    budget: "Cache budget (MB)"
+    budget_description: "Maximum on-disk tile cache size. Lowering this doesn't delete anything immediately — the cache shrinks to the new limit the next time it's written to."
+    megabytes: "Megabytes"
+    empty: "No cached tiles yet."
+    clear_all: "Clear All"
+    clear_source: "Clear"
+    error:
+      too_small: "Budget must be at least 10 MB"
+      not_a_number: "Enter a whole number of megabytes"
+      clear_source: "Failed to clear %{source}: %{error}"
+      clear_all: "Failed to clear cache: %{error}"
+  shortcuts:
+    title: "Keyboard Shortcuts"
+    reset_all: "Reset All to Defaults"
+    recording: "Press keys… (Esc to cancel)"
+    record: "Record"
+    reset: "Reset"
+    error:
+      in_use: "Already used by %{other}."
+      reserved: "That key is reserved."
+      mode_modifier: "This shortcut can't use modifier keys."
+
+# Keyboard shortcut display names, one per shortcut id in
+# `keybindings::SHORTCUTS`. The ids themselves are stable and not translated.
+shortcut:
+  open_settings: "Settings…"
+  quit: "Quit"
+  open_osm_file: "Open…"
+  download_osm: "Download from OSM"
+  upload_osm: "Upload to OSM…"
+  export_osm_file: "Export…"
+  undo: "Undo"
+  redo: "Redo"
+  select_all: "Select All"
+  zoom_in: "Zoom In"
+  zoom_out: "Zoom Out"
+  zoom_to_data: "Zoom to Data"
+  zoom_to_selection: "Zoom to Selection"
+  mode_select: "Switch to Select mode"
+  mode_add: "Switch to Add mode"
+  mode_building: "Switch to Building mode"
+  mode_extrude: "Switch to Extrude mode"
+  action_square: "Square"
+  action_circularize: "Circularize"
+  action_reverse: "Reverse Way"
+
+shortcut_category:
+  general: "General"
+  file: "File"
+  edit: "Edit"
+  view: "View"
+  modes: "Modes"
+  actions: "Selection Actions"
 
 dialog:
   cancel: "Cancel"

@@ -130,6 +130,13 @@ pub fn lookup(key: &str) -> Cow<'static, str> {
     }
 }
 
+/// The message for a key built at run time (`format!("shortcut.{id}")`). Such
+/// keys can't be checked by the source scan in the tests, so callers add a
+/// test that walks every id they can produce.
+pub fn tr_dynamic(key: &str) -> SharedString {
+    substitute(lookup(key), &[])
+}
+
 /// Replace `%{name}` placeholders in `message` with the matching argument.
 pub fn substitute(message: Cow<'static, str>, args: &[(&str, &dyn Display)]) -> SharedString {
     if args.is_empty() || !message.contains("%{") {

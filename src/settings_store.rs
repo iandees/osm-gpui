@@ -31,11 +31,11 @@ pub enum TextSizePreset {
 impl TextSizePreset {
     pub const ALL: [TextSizePreset; 3] = [Self::Small, Self::Medium, Self::Large];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> gpui::SharedString {
         match self {
-            Self::Small => "Small",
-            Self::Medium => "Medium",
-            Self::Large => "Large",
+            Self::Small => crate::tr!("settings.appearance.size_small"),
+            Self::Medium => crate::tr!("settings.appearance.size_medium"),
+            Self::Large => crate::tr!("settings.appearance.size_large"),
         }
     }
 

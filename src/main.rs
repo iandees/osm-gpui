@@ -46,7 +46,7 @@ use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
 use osm_gpui::viewport::Viewport;
-use osm_gpui::{tr, tr_count};
+use osm_gpui::tr;
 
 actions!(
     osm_gpui,
