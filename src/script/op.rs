@@ -104,6 +104,11 @@ pub enum Op {
     Log {
         message: String,
     },
+    /// Print and clear the per-phase timing statistics collected since the
+    /// last report (only when `OSM_GPUI_FRAME_STATS=1`), tagged with `label`.
+    FrameStats {
+        label: String,
+    },
     LoadOsm {
         path: String,
     },

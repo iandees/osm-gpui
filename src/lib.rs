@@ -11,6 +11,7 @@ pub mod custom_imagery_store;
 pub mod download_bounds;
 pub mod extrude;
 pub mod fields;
+pub mod frame_stats;
 pub mod geometry;
 pub mod http;
 pub mod i18n;

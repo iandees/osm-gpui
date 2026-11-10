@@ -85,6 +85,9 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "log" => Ok(Op::Log {
             message: rest.join(" "),
         }),
+        "frame_stats" => Ok(Op::FrameStats {
+            label: rest.join("_"),
+        }),
         "load_osm" => parse_load_osm(line_no, &rest),
         "assert_mode" => parse_assert_mode(line_no, &rest),
         "assert_selected" => parse_assert_selected(line_no, &rest),
@@ -676,6 +679,16 @@ mod tests {
             parse("capture out.png").unwrap()[0].op,
             Op::Capture {
                 path: "out.png".into()
+            }
+        );
+    }
+
+    #[test]
+    fn frame_stats_takes_a_label() {
+        assert_eq!(
+            parse("frame_stats mid zoom").unwrap()[0].op,
+            Op::FrameStats {
+                label: "mid_zoom".into()
             }
         );
     }

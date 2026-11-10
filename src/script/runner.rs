@@ -147,6 +147,10 @@ impl Runner {
                 println!("{}", message);
                 Ok(())
             }
+            Op::FrameStats { label } => {
+                crate::frame_stats::report(label);
+                Ok(())
+            }
             Op::LoadOsm { path } => {
                 let pb = std::path::PathBuf::from(path);
                 app.load_osm(&pb).map_err(|e| RunError {
@@ -232,6 +236,7 @@ fn describe(op: &Op) -> String {
         Op::Action { name } => format!("action {}", name),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
+        Op::FrameStats { label } => format!("frame_stats {}", label),
         Op::LoadOsm { path } => format!("load_osm {}", path),
         Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
         Op::AssertSelected { feature } => format!("assert_selected {:?}", feature),

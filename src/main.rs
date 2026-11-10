@@ -5431,7 +5431,16 @@ impl Render for MapViewer {
                                     // selection highlight under the cursor.
                                     let hovered =
                                         self.hovered.filter(|h| !self.selected.contains(h));
+                                    let fs_frame = osm_gpui::frame_stats::start();
                                     move |bounds, _, window, cx| {
+                                        let fs_paint = osm_gpui::frame_stats::start();
+                                        let _paint_scope =
+                                            osm_gpui::frame_stats::Scoped::new("canvas.paint", fs_paint);
+                                        let _frame_scope = osm_gpui::frame_stats::Scoped::new(
+                                            "frame.render_start_to_canvas_end",
+                                            fs_frame,
+                                        );
+                                        osm_gpui::frame_stats::interval("frame.interval");
                                         let this = entity.read(cx);
                                         // Downloaded-area wash first: above imagery,
                                         // below every layer's features.
@@ -5442,11 +5451,13 @@ impl Render for MapViewer {
                                                 window,
                                             );
                                         }
+                                        let fs_layers = osm_gpui::frame_stats::start();
                                         this.layer_manager.render_all_canvas(
                                             &viewport_clone,
                                             bounds,
                                             window,
                                         );
+                                        osm_gpui::frame_stats::lap("layers.canvas", fs_layers);
                                         if let Some(hovered) = &hovered {
                                             this.layer_manager.render_highlight(
                                                 hovered,
