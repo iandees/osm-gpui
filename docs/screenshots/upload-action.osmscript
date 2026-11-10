@@ -1,0 +1,51 @@
+# File > Upload to OSM must always give visible feedback. The harness cannot
+# click the native menu bar, so `action UploadToOsm` dispatches the same
+# action a menu item does. Never confirm the upload dialog: this script only
+# checks that a dialog (sign-in prompt when signed out, changeset comment
+# dialog when signed in) or a status message appears.
+#
+# Coordinates as in relation-editor.osmscript (window 1200x800).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/relation-editor.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Make a pending change: select a way and delete it.
+click 520,200
+wait_idle 2s
+assert_selected way 8202
+action DeleteSelection
+wait_idle 2s
+capture out/upload-01-with-changes.png
+
+# Menu path, map focused.
+action UploadToOsm
+wait_idle 2s
+capture out/upload-02-menu-map-focused.png
+key escape
+wait_idle 1s
+
+# Menu path after clicking in the side panel.
+click 1000,700
+wait_idle 1s
+action UploadToOsm
+wait_idle 2s
+capture out/upload-03-menu-after-side-panel-click.png
+key escape
+wait_idle 1s
+
+# The shortcut.
+key cmd+shift+u
+wait_idle 2s
+capture out/upload-04-shortcut.png
+key escape
+wait_idle 1s
+
+# No changes any more: a status message (signed in) or the sign-in prompt.
+action Undo
+wait_idle 1s
+action UploadToOsm
+wait_idle 2s
+capture out/upload-05-no-changes.png
+log done
