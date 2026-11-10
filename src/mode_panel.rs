@@ -61,6 +61,11 @@ impl MapViewer {
                 .child(Icon::new(mode_icon(mode)).small())
                 .child(div().text_size(muted_text_size()).child(mode_label(mode))),
         );
+        let shortcut = osm_gpui::keybindings::effective_spec(
+            &osm_gpui::settings_store::snapshot(),
+            mode_shortcut_id(mode),
+        );
+        button = button.tooltip(mode_tooltip(mode, &shortcut, enabled));
         if is_active {
             button = button.primary();
         }
@@ -81,6 +86,33 @@ fn mode_label(mode: EditMode) -> &'static str {
         EditMode::Add => "Add",
         EditMode::Building => "Bldg",
         EditMode::Extrude => "Extr",
+    }
+}
+
+/// The `keybindings::SHORTCUTS` id of the shortcut that switches to `mode`.
+fn mode_shortcut_id(mode: EditMode) -> &'static str {
+    match mode {
+        EditMode::Select => "mode_select",
+        EditMode::Add => "mode_add",
+        EditMode::Building => "mode_building",
+        EditMode::Extrude => "mode_extrude",
+    }
+}
+
+/// Hover text for a mode button: the unabbreviated name, its shortcut key,
+/// and — for a disabled button — why it's disabled.
+fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> String {
+    let name = match mode {
+        EditMode::Select => "Select and move features",
+        EditMode::Add => "Add nodes and ways",
+        EditMode::Building => "Draw a rectangular building",
+        EditMode::Extrude => "Extrude a way segment",
+    };
+    let base = format!("{name} ({})", shortcut.to_uppercase());
+    if enabled {
+        base
+    } else {
+        format!("{base} — open or download OSM data first")
     }
 }
 
@@ -111,6 +143,28 @@ mod tests {
         assert!(matches!(icons[1], IconName::Plus));
         assert!(matches!(icons[2], IconName::Building2));
         assert!(matches!(icons[3], IconName::LayoutDashboard));
+    }
+
+    #[test]
+    fn mode_tooltip_shows_shortcut_and_disabled_reason() {
+        assert_eq!(
+            mode_tooltip(EditMode::Add, "a", true),
+            "Add nodes and ways (A)"
+        );
+        assert!(mode_tooltip(EditMode::Add, "a", false).ends_with("OSM data first"));
+    }
+
+    #[test]
+    fn every_mode_has_a_registered_shortcut() {
+        for mode in [
+            EditMode::Select,
+            EditMode::Add,
+            EditMode::Building,
+            EditMode::Extrude,
+        ] {
+            // `def` panics on an unknown id.
+            osm_gpui::keybindings::def(mode_shortcut_id(mode));
+        }
     }
 
     #[test]

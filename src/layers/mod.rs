@@ -132,6 +132,10 @@ pub trait EditableLayer {
         rect: Bounds<Pixels>,
     ) -> Vec<crate::selection::FeatureRef>;
 
+    /// Every node and way this layer owns, nodes first, each sorted by id.
+    /// Backs Edit > Select All and View > Zoom to Data.
+    fn all_features(&self) -> Vec<crate::selection::FeatureRef>;
+
     /// Return closed-way ("area") candidates whose *interior* contains
     /// `screen_pt`, ignoring outline distance. Separate from `hit_test`
     /// (which only tests distance to a way's edges) so plain clicks keep

@@ -84,10 +84,15 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 
 ### Key bindings
 
-- ⌘O — Open OSM file
-- ⌘Q — Quit
+Defaults; all but the fixed window/app ones can be changed in **Settings > Keyboard Shortcuts** (the table lives in `src/keybindings.rs`).
 
-No other bindings are wired. (The old `map.rs` had `T`/`L`/`G`/`D`/`F`/`R` toggles; they are not in the current app.)
+- ⌘O open · ⌘⇧D download · ⌘⇧U upload · ⌘, settings · ⌘Q quit
+- ⌘Z undo · ⌘⇧Z redo · ⌘A select all · Delete removes the selection · Esc cancels/deselects
+- ⌘= / ⌘- zoom in/out · ⌘0 zoom to data · ⌘J zoom to selection
+- `S` / `A` / `B` / `X` — Select / Add / Building / Extrude mode (map focused)
+- ⌘M minimize · ⌘H hide · ⌥⌘H hide others
+
+The status bar at the bottom of the window shows a hint for the current mode (or the latest status message / running operation), the unsaved-edit count, the signed-in account, the cursor's coordinates, and the zoom level.
 
 ## Scripted screenshots
 
