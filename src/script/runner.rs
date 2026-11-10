@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::idle_tracker::IdleTracker;
-use crate::script::{Op, Step};
+use crate::script::{Check, Op, Step};
 
 /// Interface to the live app. Implemented by a shim in main.rs that holds the
 /// gpui `WindowHandle` and the `MapViewer` entity. Keeps the runner testable
@@ -52,6 +52,58 @@ pub trait AppHandle {
         &mut self,
         want: Option<(crate::script::FeatureKind, i64)>,
     ) -> Result<(), String>;
+
+    /// The OSM API base URL in effect for this run (what an upload would go to).
+    fn api_server(&mut self) -> String;
+    /// Type `text` into the focused input, one character at a time.
+    fn type_text(&mut self, text: &str) -> Result<(), String>;
+    /// Set a tag on the selected feature(s), as the side panel's Add tag does.
+    fn set_tag(&mut self, key: &str, value: &str) -> Result<(), String>;
+    /// Remove a tag from the selected feature(s).
+    fn remove_tag(&mut self, key: &str) -> Result<(), String>;
+    /// Press the upload dialog's Upload / Try again button.
+    fn upload_confirm(&mut self) -> Result<(), String>;
+    /// Replace the upload dialog's changeset comment.
+    fn set_comment(&mut self, text: &str) -> Result<(), String>;
+    /// Press the upload dialog's Cancel button.
+    fn upload_cancel(&mut self) -> Result<(), String>;
+    /// Press one of the conflict dialog's buttons.
+    fn resolve_conflict(&mut self, choice: crate::script::ConflictChoice) -> Result<(), String>;
+    /// Write the active layer to a `.osm` file.
+    fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
+    /// Evaluate a read-only condition on the app; `Err` says what it found.
+    fn check(&mut self, check: &Check) -> Result<(), String>;
+    /// Show `message` in the status bar.
+    fn note(&mut self, message: &str);
+    /// Start the browser sign-in for the active API server.
+    fn sign_in(&mut self) -> Result<(), String>;
+    /// Whether an account is signed in for the active API server.
+    fn signed_in(&mut self) -> bool;
+    /// Why the sign-in started by `sign_in` failed, if it did.
+    fn sign_in_failure(&mut self) -> Option<String>;
+}
+
+/// Why `op` may not run against `server`, if it may not. An op that starts or
+/// confirms an upload, or signs in to upload, only runs against the OSM
+/// development server (exact host match), so a script can never write to the
+/// production server.
+pub fn upload_guard(op: &Op, server: &str) -> Result<(), String> {
+    let name = match op {
+        Op::UploadConfirm => "upload_confirm",
+        Op::ResolveConflict { .. } => "resolve_conflict",
+        Op::SignIn => "sign_in",
+        _ => return Ok(()),
+    };
+    if crate::settings_store::is_dev_server(server) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name}: refusing to run: the active API server is {server}, not the OSM development \
+             server ({}). Scripted uploads only run against the development server; \
+             start the app with --api-server dev",
+            crate::settings_store::DEV_API_URL
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -68,6 +120,8 @@ impl std::fmt::Display for RunError {
 
 pub struct Runner {
     pub idle: Arc<IdleTracker>,
+    /// Pause after every op (`--script-delay-ms`), so a person can follow.
+    pub step_delay: Duration,
 }
 
 impl Runner {
@@ -77,11 +131,26 @@ impl Runner {
             println!("step {}: {}", i + 1, describe(&step.op));
             self.run_step(app, step)?;
             println!("  ok ({}ms)", started.elapsed().as_millis());
+            if !self.step_delay.is_zero() {
+                std::thread::sleep(self.step_delay);
+            }
         }
         Ok(())
     }
 
     fn run_step<A: AppHandle>(&self, app: &mut A, step: &Step) -> Result<(), RunError> {
+        let fail = |message: String| RunError {
+            line_no: step.line_no,
+            message,
+        };
+        // Checked before anything else, whatever the op: see `upload_guard`.
+        if matches!(
+            step.op,
+            Op::UploadConfirm | Op::ResolveConflict { .. } | Op::SignIn
+        ) {
+            let server = app.api_server();
+            upload_guard(&step.op, &server).map_err(fail)?;
+        }
         match &step.op {
             Op::Window { w, h } => {
                 app.set_window_size(*w, *h);
@@ -169,7 +238,158 @@ impl Runner {
                 })?;
                 Ok(())
             }
+            Op::Type { text } => app.type_text(text).map_err(|e| fail(format!("type: {e}"))),
+            Op::SetTag { key, value } => app
+                .set_tag(key, value)
+                .map_err(|e| fail(format!("set_tag: {e}"))),
+            Op::RemoveTag { key } => app
+                .remove_tag(key)
+                .map_err(|e| fail(format!("remove_tag: {e}"))),
+            Op::UploadConfirm => app
+                .upload_confirm()
+                .map_err(|e| fail(format!("upload_confirm: {e}"))),
+            Op::SetComment { text } => app
+                .set_comment(text)
+                .map_err(|e| fail(format!("set_comment: {e}"))),
+            Op::UploadCancel => app
+                .upload_cancel()
+                .map_err(|e| fail(format!("upload_cancel: {e}"))),
+            Op::ResolveConflict { choice } => app
+                .resolve_conflict(*choice)
+                .map_err(|e| fail(format!("resolve_conflict: {e}"))),
+            Op::WaitTransfer { timeout } => self.wait_transfer(app, *timeout, step.line_no),
+            Op::CaptureWhileTransferring {
+                prefix,
+                every,
+                timeout,
+            } => self.capture_while_transferring(app, prefix, *every, *timeout, step.line_no),
+            Op::AssertPending { count } => app
+                .check(&Check::Pending(*count))
+                .map_err(|e| fail(format!("assert_pending: {e}"))),
+            Op::AssertStatusContains { text } => app
+                .check(&Check::StatusContains(text.clone()))
+                .map_err(|e| fail(format!("assert_status_contains: {e}"))),
+            Op::AssertDialog { expect } => app
+                .check(&Check::Dialog(*expect))
+                .map_err(|e| fail(format!("assert_dialog: {e}"))),
+            Op::AssertSelection { kind } => app
+                .check(&Check::Selection(*kind))
+                .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::ExportLayer { path } => {
+                app.export_layer(std::path::Path::new(path))
+                    .map_err(|e| fail(format!("export_layer: {e}")))?;
+                println!("  -> {}", path);
+                Ok(())
+            }
+            Op::SignIn => app.sign_in().map_err(|e| fail(format!("sign_in: {e}"))),
+            Op::WaitSignedIn { timeout } => {
+                let deadline = Instant::now() + *timeout;
+                while !app.signed_in() {
+                    if let Some(why) = app.sign_in_failure() {
+                        return Err(fail(format!("wait_signed_in: sign-in failed: {why}")));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(fail(format!(
+                            "wait_signed_in timed out after {:?}: nobody approved the sign-in in the browser",
+                            timeout
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Ok(())
+            }
+            Op::AssertSignedIn => {
+                if app.signed_in() {
+                    Ok(())
+                } else {
+                    Err(fail(format!(
+                        "assert_signed_in: not signed in to {}; run docs/live-test/00-sign-in.osmscript first",
+                        app.api_server()
+                    )))
+                }
+            }
+            Op::AssertServerDev => {
+                let server = app.api_server();
+                if crate::settings_store::is_dev_server(&server) {
+                    Ok(())
+                } else {
+                    Err(fail(format!(
+                        "assert_server: the active API server is {server}, not {}; start the app with --api-server dev",
+                        crate::settings_store::DEV_API_URL
+                    )))
+                }
+            }
+            Op::Pause { duration, message } => {
+                println!("{}", message);
+                app.note(message);
+                std::thread::sleep(*duration);
+                Ok(())
+            }
         }
+    }
+
+    /// Wait until no transfer is running (it finished, or failed).
+    fn wait_transfer<A: AppHandle>(
+        &self,
+        app: &mut A,
+        timeout: Duration,
+        line_no: usize,
+    ) -> Result<(), RunError> {
+        let deadline = Instant::now() + timeout;
+        // Give a just-started transfer a few frames to register as running.
+        for _ in 0..5 {
+            app.wait_frame();
+        }
+        loop {
+            if app.check(&Check::TransferIdle).is_ok() {
+                // One more frame so the result (status, dialog) is on screen.
+                app.wait_frame();
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(RunError {
+                    line_no,
+                    message: format!("wait_transfer timed out after {:?}", timeout),
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Capture `prefix-NN.png` every `every` for as long as a transfer runs,
+    /// so an upload's stages (including "Changeset 2 of 3") are on record.
+    fn capture_while_transferring<A: AppHandle>(
+        &self,
+        app: &mut A,
+        prefix: &str,
+        every: Duration,
+        timeout: Duration,
+        line_no: usize,
+    ) -> Result<(), RunError> {
+        let deadline = Instant::now() + timeout;
+        for _ in 0..5 {
+            app.wait_frame();
+        }
+        let mut n = 0;
+        while app.check(&Check::TransferIdle).is_err() {
+            n += 1;
+            let path = format!("{prefix}-{n:02}.png");
+            app.capture(std::path::Path::new(&path))
+                .map_err(|e| RunError {
+                    line_no,
+                    message: format!("capture_while_transferring: {e}"),
+                })?;
+            println!("  -> {}", path);
+            if Instant::now() >= deadline {
+                return Err(RunError {
+                    line_no,
+                    message: format!("capture_while_transferring timed out after {:?}", timeout),
+                });
+            }
+            std::thread::sleep(every);
+        }
+        app.wait_frame();
+        Ok(())
     }
 
     fn wait_idle<A: AppHandle>(
@@ -235,6 +455,27 @@ fn describe(op: &Op) -> String {
         Op::LoadOsm { path } => format!("load_osm {}", path),
         Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
         Op::AssertSelected { feature } => format!("assert_selected {:?}", feature),
+        Op::Type { text } => format!("type {}", text),
+        Op::SetTag { key, value } => format!("set_tag {}={}", key, value),
+        Op::RemoveTag { key } => format!("remove_tag {}", key),
+        Op::UploadConfirm => "upload_confirm".to_string(),
+        Op::UploadCancel => "upload_cancel".to_string(),
+        Op::SetComment { text } => format!("set_comment {}", text),
+        Op::ResolveConflict { choice } => format!("resolve_conflict {:?}", choice),
+        Op::WaitTransfer { timeout } => format!("wait_transfer {:?}", timeout),
+        Op::CaptureWhileTransferring { prefix, .. } => {
+            format!("capture_while_transferring {}", prefix)
+        }
+        Op::AssertPending { count } => format!("assert_pending {}", count),
+        Op::AssertStatusContains { text } => format!("assert_status_contains {}", text),
+        Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
+        Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::ExportLayer { path } => format!("export_layer {}", path),
+        Op::SignIn => "sign_in".to_string(),
+        Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),
+        Op::AssertSignedIn => "assert_signed_in".to_string(),
+        Op::AssertServerDev => "assert_server dev".to_string(),
+        Op::Pause { message, .. } => format!("pause {}", message),
     }
 }
 
@@ -249,6 +490,12 @@ mod tests {
         pub idle: Arc<IdleTracker>,
         pub mode: crate::script::EditMode,
         pub selected: Option<(crate::script::FeatureKind, i64)>,
+        pub server: String,
+        pub calls: Vec<String>,
+        pub busy_checks: u32,
+        pub check_result: Result<(), String>,
+        pub signed_in: bool,
+        pub sign_in_failure: Option<String>,
     }
 
     impl AppHandle for Fake {
@@ -305,6 +552,294 @@ mod tests {
                 ))
             }
         }
+        fn api_server(&mut self) -> String {
+            self.server.clone()
+        }
+        fn type_text(&mut self, text: &str) -> Result<(), String> {
+            self.calls.push(format!("type {text}"));
+            Ok(())
+        }
+        fn set_tag(&mut self, key: &str, value: &str) -> Result<(), String> {
+            self.calls.push(format!("set_tag {key}={value}"));
+            Ok(())
+        }
+        fn remove_tag(&mut self, key: &str) -> Result<(), String> {
+            self.calls.push(format!("remove_tag {key}"));
+            Ok(())
+        }
+        fn upload_confirm(&mut self) -> Result<(), String> {
+            self.calls.push("upload_confirm".into());
+            Ok(())
+        }
+        fn set_comment(&mut self, text: &str) -> Result<(), String> {
+            self.calls.push(format!("set_comment {text}"));
+            Ok(())
+        }
+        fn upload_cancel(&mut self) -> Result<(), String> {
+            self.calls.push("upload_cancel".into());
+            Ok(())
+        }
+        fn resolve_conflict(
+            &mut self,
+            choice: crate::script::ConflictChoice,
+        ) -> Result<(), String> {
+            self.calls.push(format!("resolve {choice:?}"));
+            Ok(())
+        }
+        fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String> {
+            self.calls.push(format!("export {}", path.display()));
+            Ok(())
+        }
+        fn check(&mut self, check: &Check) -> Result<(), String> {
+            self.calls.push(format!("check {check:?}"));
+            match check {
+                Check::TransferIdle => {
+                    if self.busy_checks > 0 {
+                        self.busy_checks -= 1;
+                        Err("busy".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => self.check_result.clone(),
+            }
+        }
+        fn note(&mut self, message: &str) {
+            self.calls.push(format!("note {message}"));
+        }
+        fn sign_in(&mut self) -> Result<(), String> {
+            self.calls.push("sign_in".into());
+            Ok(())
+        }
+        fn signed_in(&mut self) -> bool {
+            self.signed_in
+        }
+        fn sign_in_failure(&mut self) -> Option<String> {
+            self.sign_in_failure.clone()
+        }
+    }
+
+    const DEV: &str = "https://master.apis.dev.openstreetmap.org";
+
+    fn fake_on(server: &str) -> (Fake, Runner) {
+        let idle = IdleTracker::new();
+        (
+            Fake {
+                frames_waited: 0,
+                idle_after_frame: u32::MAX,
+                idle: idle.clone(),
+                mode: crate::script::EditMode::Select,
+                selected: None,
+                server: server.to_string(),
+                calls: Vec::new(),
+                busy_checks: 0,
+                check_result: Ok(()),
+                signed_in: true,
+                sign_in_failure: None,
+            },
+            Runner {
+                idle,
+                step_delay: Duration::ZERO,
+            },
+        )
+    }
+
+    fn steps(src: &str) -> Vec<Step> {
+        crate::script::parse(src).unwrap()
+    }
+
+    #[test]
+    fn upload_ops_refuse_to_run_unless_the_server_is_the_dev_server() {
+        for server in [
+            "https://api.openstreetmap.org",
+            "https://www.openstreetmap.org",
+            "http://127.0.0.1:9",
+            // Look-alikes of the dev host.
+            "https://master.apis.dev.openstreetmap.org.evil.example",
+            "https://evil.example/master.apis.dev.openstreetmap.org",
+            "https://master.apis.dev.openstreetmap.org@evil.example",
+            "https://xmaster.apis.dev.openstreetmap.org",
+        ] {
+            for line in [
+                "upload_confirm",
+                "resolve_conflict use_theirs",
+                "resolve_conflict keep_mine",
+                "sign_in",
+            ] {
+                let (mut fake, runner) = fake_on(server);
+                let e = runner.run(&mut fake, &steps(line)).unwrap_err();
+                assert!(
+                    e.message.contains("refusing to run"),
+                    "{line} on {server}: {}",
+                    e.message
+                );
+                assert!(e.message.contains(server), "{}", e.message);
+                // Nothing reached the app.
+                assert!(
+                    fake.calls.is_empty(),
+                    "{line} on {server} reached the app: {:?}",
+                    fake.calls
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn upload_ops_run_on_the_dev_server() {
+        for server in [DEV, "https://master.apis.dev.openstreetmap.org/"] {
+            let (mut fake, runner) = fake_on(server);
+            runner
+                .run(
+                    &mut fake,
+                    &steps("upload_confirm\nresolve_conflict use_theirs\nsign_in"),
+                )
+                .unwrap();
+            assert_eq!(
+                fake.calls,
+                vec!["upload_confirm", "resolve UseTheirs", "sign_in"]
+            );
+        }
+    }
+
+    #[test]
+    fn ops_that_do_not_upload_are_not_guarded() {
+        let (mut fake, runner) = fake_on("https://api.openstreetmap.org");
+        runner
+            .run(
+                &mut fake,
+                &steps("set_tag name x\nassert_pending 0\nassert_dialog none\naction UploadToOsm"),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_guard_is_a_plain_function_of_op_and_server() {
+        assert!(upload_guard(&Op::UploadConfirm, DEV).is_ok());
+        assert!(upload_guard(&Op::UploadConfirm, "https://api.openstreetmap.org").is_err());
+        assert!(upload_guard(&Op::AssertSignedIn, "https://api.openstreetmap.org").is_ok());
+    }
+
+    #[test]
+    fn text_ops_reach_the_app() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps(
+                    "type osm-gpui live test: x\nset_comment c d\nupload_cancel\nset_tag name A & B\nremove_tag name\nexport_layer out/a.osm\npause 1ms hello",
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            fake.calls,
+            vec![
+                "type osm-gpui live test: x",
+                "set_comment c d",
+                "upload_cancel",
+                "set_tag name=A & B",
+                "remove_tag name",
+                "export out/a.osm",
+                "note hello",
+            ]
+        );
+    }
+
+    #[test]
+    fn assertions_pass_their_checks_to_the_app_and_report_failures() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps("assert_pending 3\nassert_status_contains Uploaded\nassert_selection way\nassert_dialog conflict version_mismatch node"),
+            )
+            .unwrap();
+        assert_eq!(fake.calls.len(), 4);
+        assert!(fake.calls[0].contains("Pending(3)"));
+        assert!(fake.calls[3].contains("VersionMismatch"));
+
+        let (mut fake, runner) = fake_on(DEV);
+        fake.check_result = Err("found 2".into());
+        let e = runner
+            .run(&mut fake, &steps("\nassert_pending 0"))
+            .unwrap_err();
+        assert_eq!(e.line_no, 2);
+        assert!(e.message.contains("assert_pending"));
+        assert!(e.message.contains("found 2"));
+    }
+
+    #[test]
+    fn wait_transfer_waits_for_idle_and_times_out() {
+        let (mut fake, runner) = fake_on(DEV);
+        fake.busy_checks = 3;
+        runner.run(&mut fake, &steps("wait_transfer 5s")).unwrap();
+        assert_eq!(fake.busy_checks, 0);
+
+        let (mut fake, runner) = fake_on(DEV);
+        fake.busy_checks = u32::MAX;
+        let e = runner
+            .run(&mut fake, &steps("wait_transfer 150ms"))
+            .unwrap_err();
+        assert!(e.message.contains("wait_transfer timed out"));
+    }
+
+    #[test]
+    fn capture_while_transferring_numbers_its_files() {
+        let (mut fake, runner) = fake_on(DEV);
+        fake.busy_checks = 2;
+        runner
+            .run(
+                &mut fake,
+                &steps("capture_while_transferring out/p every=1ms timeout=5s"),
+            )
+            .unwrap();
+        // Two busy checks -> two captures (the Fake's capture is a no-op).
+        assert_eq!(fake.busy_checks, 0);
+    }
+
+    #[test]
+    fn assert_server_dev_checks_the_host_exactly() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner.run(&mut fake, &steps("assert_server dev")).unwrap();
+        for server in [
+            "https://api.openstreetmap.org",
+            "https://master.apis.dev.openstreetmap.org.evil.example",
+        ] {
+            let (mut fake, runner) = fake_on(server);
+            let e = runner
+                .run(&mut fake, &steps("assert_server dev"))
+                .unwrap_err();
+            assert!(e.message.contains("--api-server dev"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn assert_signed_in_and_wait_signed_in() {
+        let (mut fake, runner) = fake_on(DEV);
+        fake.signed_in = false;
+        let e = runner
+            .run(&mut fake, &steps("assert_signed_in"))
+            .unwrap_err();
+        assert!(e.message.contains("not signed in"));
+        assert!(e.message.contains("00-sign-in"));
+        let e = runner
+            .run(&mut fake, &steps("wait_signed_in 300ms"))
+            .unwrap_err();
+        assert!(e.message.contains("timed out"));
+        fake.signed_in = true;
+        runner
+            .run(&mut fake, &steps("assert_signed_in\nwait_signed_in 1s"))
+            .unwrap();
+    }
+
+    #[test]
+    fn the_step_delay_applies_after_every_op() {
+        let (mut fake, mut runner) = fake_on(DEV);
+        runner.step_delay = Duration::from_millis(40);
+        let started = Instant::now();
+        runner
+            .run(&mut fake, &steps("log a\nlog b\nlog c"))
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(120));
     }
 
     #[test]
@@ -316,8 +851,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
             selected: None,
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         runner
             .wait_idle(&mut fake, Duration::from_secs(5), 1)
             .unwrap();
@@ -337,8 +881,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
             selected: None,
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         let e = runner
             .wait_idle(&mut fake, Duration::from_millis(50), 7)
             .unwrap_err();
@@ -355,8 +908,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Add,
             selected: None,
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         let steps = vec![Step {
             line_no: 1,
             op: Op::AssertMode {
@@ -375,8 +937,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
             selected: None,
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         let steps = vec![Step {
             line_no: 4,
             op: Op::AssertMode {
@@ -397,8 +968,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
             selected: Some((crate::script::FeatureKind::Way, 10)),
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         let steps = vec![Step {
             line_no: 1,
             op: Op::AssertSelected {
@@ -417,8 +997,17 @@ mod tests {
             idle: idle.clone(),
             mode: crate::script::EditMode::Select,
             selected: None,
+            server: DEV.to_string(),
+            calls: Vec::new(),
+            busy_checks: 0,
+            check_result: Ok(()),
+            signed_in: true,
+            sign_in_failure: None,
         };
-        let runner = Runner { idle };
+        let runner = Runner {
+            idle,
+            step_delay: Duration::ZERO,
+        };
         let steps = vec![Step {
             line_no: 9,
             op: Op::AssertSelected {

@@ -4,5 +4,11 @@ pub mod op;
 pub mod parser;
 pub mod runner;
 
-pub use op::{Chord, DragMods, EditMode, FeatureKind, MouseButton, Op, Point2, Step};
+#[cfg(test)]
+mod upload_op_tests;
+
+pub use op::{
+    Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode, FeatureKind,
+    MouseButton, Op, Point2, SelectionKind, Step,
+};
 pub use parser::{parse, ParseError};

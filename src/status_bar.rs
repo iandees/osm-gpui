@@ -177,6 +177,7 @@ impl MapViewer {
         };
 
         let pending = pending_edits_label(self.pending_edit_count());
+        let server_host = settings_store::non_primary_host_label(&settings_store::api_base_url());
         let account =
             auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
         let cursor = self
@@ -216,6 +217,14 @@ impl MapViewer {
             .when(too_large_to_download, |bar| {
                 bar.child(segment().child(tr!("status.zoom_in_to_download")))
             })
+            // Uploads go to this server, so say so whenever it is not the
+            // production one (a saved choice or `--api-server`).
+            .children(server_host.map(|host| {
+                segment()
+                    .text_color(cx.theme().danger)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(host)
+            }))
             .children(pending.map(|label| segment().text_color(foreground).child(label)))
             .child(segment().child(match account {
                 Some(name) => name.into(),

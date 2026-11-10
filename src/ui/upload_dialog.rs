@@ -164,6 +164,18 @@ impl ConflictView {
     }
 }
 
+/// What the upload dialog is showing right now, for the script harness and
+/// tests.
+#[derive(Debug, Clone)]
+pub enum Phase {
+    /// Reviewing the changes, ready for a comment and the Upload button.
+    Editing,
+    /// An upload is running, or a conflict is being resolved.
+    Busy,
+    /// The upload stopped: with the server's refusal when it was one.
+    Failed(Option<ConflictView>),
+}
+
 /// An upload that stopped: the message, and for a refusal by the server the
 /// conflict with its actions.
 struct Failure {
@@ -330,6 +342,55 @@ impl UploadDialog {
     pub fn set_draft_comment(&self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.comment
             .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
+    /// What the dialog is showing (see `Phase`).
+    pub fn phase(&self) -> Phase {
+        match &self.state {
+            UploadState::Editing => Phase::Editing,
+            UploadState::InFlight(_) | UploadState::Resolving(_) => Phase::Busy,
+            UploadState::Failed(failure) => Phase::Failed(failure.conflict.clone()),
+        }
+    }
+
+    /// Why pressing the Upload / Try again button would do nothing right now,
+    /// or `None` when it would go ahead.
+    pub fn confirm_blocker(&self, cx: &App) -> Option<&'static str> {
+        let empty = self.comment.read(cx).value().trim().is_empty();
+        if self.state.is_busy() {
+            Some("an upload is already running")
+        } else if empty {
+            Some("the changeset comment is empty (type one first)")
+        } else {
+            None
+        }
+    }
+
+    /// Press the Upload / Try again button (what a click does; see
+    /// `confirm_blocker` for when that is a no-op).
+    pub fn press_confirm(&mut self, cx: &mut Context<Self>) {
+        self.upload(cx);
+    }
+
+    /// Press the Cancel button (what a click does; a no-op while busy).
+    pub fn press_cancel(&mut self, cx: &mut Context<Self>) {
+        self.cancel(cx);
+    }
+
+    /// Whether the conflict dialog currently offers `action` as a button.
+    pub fn offers(&self, action: ConflictAction) -> bool {
+        match &self.state {
+            UploadState::Failed(Failure {
+                conflict: Some(view),
+                ..
+            }) => view.actions().contains(&action),
+            _ => false,
+        }
+    }
+
+    /// Press one of the conflict buttons (what a click does; see `offers`).
+    pub fn press_conflict(&mut self, action: ConflictAction, cx: &mut Context<Self>) {
+        self.resolve(action, cx);
     }
 
     fn comment_text(&self, cx: &Context<Self>) -> String {
