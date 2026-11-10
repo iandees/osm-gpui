@@ -1404,6 +1404,23 @@ impl MapViewer {
                 let members = if forward { after } else { before };
                 editable.set_relation_members(*relation_id, members.clone());
             }
+            UndoableAction::CreateRelation { layer, snapshot }
+            | UndoableAction::DeleteRelation { layer, snapshot } => {
+                let created = matches!(action, UndoableAction::CreateRelation { .. });
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                // Redo of a create and undo of a delete put the relation
+                // back; the other two directions remove it.
+                if forward == created {
+                    editable.restore_relation(snapshot.clone());
+                } else {
+                    editable.delete_relation(snapshot.relation.id);
+                }
+            }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
@@ -6017,6 +6034,109 @@ mod tests {
                     Some(&(101, "outer".to_string()))
                 );
                 assert_eq!(pending(view), (0, 1, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
+        use osm_gpui::osm::{MemberType, OsmMember};
+        use osm_gpui::selection::DeletedRelationSnapshot;
+        fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
+            let layer_id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+        }
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let member = |member_type, reference| OsmMember {
+                    member_type,
+                    reference,
+                    role: "x".to_string(),
+                };
+
+                // Create a relation containing existing relation 900.
+                let new_id = editable(view)
+                    .create_relation(
+                        vec![("type".to_string(), "route".to_string())],
+                        vec![
+                            member(MemberType::Relation, 900),
+                            member(MemberType::Way, 101),
+                        ],
+                    )
+                    .unwrap();
+                assert!(new_id < 0);
+                let snapshot = DeletedRelationSnapshot {
+                    relation: editable(view).relation(new_id).unwrap(),
+                    index: editable(view).relations().len() - 1,
+                };
+                let create = UndoableAction::CreateRelation {
+                    layer: layer_id,
+                    snapshot,
+                };
+                assert_eq!(create.description(), "Created a relation");
+                view.undo_stack.push(create);
+                assert_eq!(pending(view), (1, 0, 0));
+                assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
+                // 900 is a member now, so it can't be deleted.
+                assert!(editable(view).delete_relation(900).is_none());
+
+                undo_step(view);
+                assert!(editable(view).relation(new_id).is_none());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(editable(view).relation(new_id).unwrap().members.len(), 2);
+                assert_eq!(pending(view), (1, 0, 0));
+                // A later allocation never reuses the id.
+                let other = editable(view).create_relation(vec![], vec![]).unwrap();
+                assert!(other < new_id);
+                editable(view).delete_relation(other).unwrap();
+
+                // Delete both; the created one has to go first.
+                let original_900 = editable(view).relation(900).unwrap();
+                let created = editable(view).delete_relation(new_id).unwrap();
+                let removed = editable(view).delete_relation(900).unwrap();
+                assert_eq!(removed.relation, original_900);
+                let delete = UndoableAction::Batch {
+                    label: "Deleted relations".to_string(),
+                    actions: vec![
+                        UndoableAction::DeleteRelation {
+                            layer: layer_id,
+                            snapshot: created,
+                        },
+                        UndoableAction::DeleteRelation {
+                            layer: layer_id,
+                            snapshot: removed,
+                        },
+                    ],
+                };
+                view.undo_stack.push(delete);
+                assert_eq!(pending(view), (0, 0, 1));
+                assert_eq!(
+                    UndoableAction::DeleteRelation {
+                        layer: layer_id,
+                        snapshot: DeletedRelationSnapshot {
+                            relation: original_900.clone(),
+                            index: 0
+                        }
+                    }
+                    .description(),
+                    "Deleted a relation"
+                );
+
+                undo_step(view);
+                assert_eq!(editable(view).relation(900).unwrap(), original_900);
+                assert_eq!(editable(view).relation(new_id).unwrap().members.len(), 2);
+                assert_eq!(pending(view), (1, 0, 0));
+                redo_step(view);
+                assert!(editable(view).relation(900).is_none());
+                assert!(editable(view).relation(new_id).is_none());
+                assert_eq!(pending(view), (0, 0, 1));
             })
             .unwrap();
     }

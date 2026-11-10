@@ -143,6 +143,24 @@ pub(crate) enum UndoableAction {
         before: Vec<osm_gpui::osm::OsmMember>,
         after: Vec<osm_gpui::osm::OsmMember>,
     },
+    /// A relation created with a known id. Undo deletes it (the layer
+    /// refuses while another relation still has it as a member, so callers
+    /// order the surrounding `Batch` entries accordingly); redo restores it
+    /// from the snapshot under the same id.
+    // Only tests construct these until the relation editor UI (a follow-up)
+    // records them.
+    #[allow(dead_code)]
+    CreateRelation {
+        layer: LayerId,
+        snapshot: osm_gpui::selection::DeletedRelationSnapshot,
+    },
+    /// A relation deleted from `layer`. Undo restores it (same id, version
+    /// and position); redo deletes it again.
+    #[allow(dead_code)]
+    DeleteRelation {
+        layer: LayerId,
+        snapshot: osm_gpui::selection::DeletedRelationSnapshot,
+    },
     /// Several actions recorded as one undo step (e.g. deleting a whole
     /// selection). Undo reverts them last-to-first; redo reapplies them in
     /// order. `label` is the history-list text.
@@ -192,6 +210,12 @@ impl UndoableAction {
             }
             UndoableAction::SetRelationMembers { .. } => {
                 osm_gpui::tr!("history.changed_relation_members").to_string()
+            }
+            UndoableAction::CreateRelation { .. } => {
+                osm_gpui::tr!("history.created_relation").to_string()
+            }
+            UndoableAction::DeleteRelation { .. } => {
+                osm_gpui::tr!("history.deleted_relation").to_string()
             }
             UndoableAction::Batch { label, .. } => label.clone(),
         }

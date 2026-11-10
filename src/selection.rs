@@ -43,6 +43,15 @@ pub struct DeletedFeatureSnapshot {
     pub version: i32,
 }
 
+/// A removed relation plus where it sat in the layer's relation list, so
+/// undo can put it back exactly (id, version, tags, members and position).
+/// Relations aren't a `FeatureKind`, so they get their own snapshot type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedRelationSnapshot {
+    pub relation: crate::osm::OsmRelation,
+    pub index: usize,
+}
+
 /// Shortest distance (in screen pixels) from point `p` to line segment `a`-`b`.
 /// Handles zero-length segments by returning the distance to the single point.
 pub fn point_to_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> f32 {

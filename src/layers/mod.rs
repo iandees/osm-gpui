@@ -296,6 +296,33 @@ pub trait EditableLayer {
         relation_id: i64,
         members: Vec<crate::osm::OsmMember>,
     ) -> Option<Vec<crate::osm::OsmMember>>;
+
+    /// Copies of every relation in the layer.
+    fn relations(&self) -> Vec<crate::osm::OsmRelation>;
+
+    /// The ids of the relations that have `relation_id` as a member.
+    fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64>;
+
+    /// Create a relation with a fresh negative id (from the same pool new
+    /// nodes and ways draw from) and return it; `None` if the layer has no
+    /// data.
+    fn create_relation(
+        &mut self,
+        tags: Vec<(String, String)>,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<i64>;
+
+    /// Delete a relation, returning a snapshot for `restore_relation`.
+    /// `None`, changing nothing, if there is no such relation or it is a
+    /// member of another relation (remove that membership first).
+    fn delete_relation(
+        &mut self,
+        relation_id: i64,
+    ) -> Option<crate::selection::DeletedRelationSnapshot>;
+
+    /// Put a deleted (or, for redo, created) relation back with its original
+    /// id, version, content and position. `false` if the id is taken.
+    fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool;
 }
 
 /// Manager for all map layers
