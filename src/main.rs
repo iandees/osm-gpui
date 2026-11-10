@@ -1,3 +1,10 @@
+// Release builds on Windows are GUI-subsystem executables so no console window
+// opens; as a result stdout/stderr (e.g. `--script` output) is not shown.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use gpui::Action;
 use gpui::{
     actions, canvas, div, fill, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
@@ -23,7 +30,7 @@ mod undo;
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
@@ -477,6 +484,7 @@ struct MapViewer {
         Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
+    about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
     sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
@@ -693,6 +701,7 @@ impl MapViewer {
             show_debug_overlay: false,
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
+            about_dialog: None,
             upload_dialog: None,
             sign_in_dialog: None,
             tag_inline_edit: None,
@@ -3269,6 +3278,25 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Handle the app menu's "About" item. Window-scoped (like `on_quit`)
+    /// so the dialog can be built with the `Window` handed to the dispatch.
+    fn on_show_about(&mut self, _: &ShowAbout, window: &mut Window, cx: &mut Context<Self>) {
+        if self.about_dialog.is_some() {
+            return;
+        }
+        let dialog = cx.new(|cx| osm_gpui::ui::about_dialog::AboutDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, _event: &osm_gpui::ui::about_dialog::DialogEvent, cx| {
+                this.about_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.about_dialog = Some(dialog);
+        cx.notify();
+    }
+
     /// Open the upload-review dialog, if one isn't already open — either
     /// showing the "nothing to upload" status or the dialog itself,
     /// depending on whether any layer has changes. Called directly by
@@ -4263,8 +4291,10 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_apply_nsi_preset))
             .on_action(cx.listener(Self::on_change_feature_type))
             .on_action(cx.listener(Self::on_quit))
+            .on_action(cx.listener(Self::on_show_about))
             .children(self.custom_imagery_dialog.clone())
             .children(self.quit_confirm_dialog.clone())
+            .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
             .children(self.upload_dialog.clone())

@@ -163,6 +163,7 @@ jobs:
           mkdir -p "stage/$name" out
           cp target/x86_64-unknown-linux-gnu/release/osm-gpui "stage/$name/"
           cp packaging/linux/osm-gpui.desktop README.md "stage/$name/"
+          cp assets/AppIcon.png "stage/$name/osm-gpui.png"
           tar -C stage -czf "out/$name.tar.gz" "$name"
 
       - uses: actions/upload-artifact@v4
@@ -177,6 +178,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: package-*
@@ -200,8 +203,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Use the matching "## X.Y.Z" section of CHANGELOG.md as the release
+          # body; fall back to GitHub's generated notes if there is none.
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v v="${TAG#v}" '
+            /^## / { if (found) exit; if ($2 == v) found = 1; next }
+            found
+          ' CHANGELOG.md > "$notes"
+          if grep -q '[^[:space:]]' "$notes"; then
+            notes_args=(--notes-file "$notes")
+          else
+            echo "No CHANGELOG.md section for ${TAG#v}; using generated notes"
+            notes_args=(--generate-notes)
+          fi
           gh release create "$TAG" packages/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
-            --generate-notes \
+            "${notes_args[@]}" \
             --verify-tag

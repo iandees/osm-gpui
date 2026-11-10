@@ -10,6 +10,7 @@ meta:
 
 menu:
   app:
+    about: "About %{app}"
     settings: "Settings…"
     services: "Services"
     hide: "Hide %{app}"
@@ -455,6 +456,11 @@ dialog:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
     open_settings: "Open Settings"
+  about:
+    title: "About %{app}"
+    version: "Version %{version}"
+    description: "An experimental OpenStreetMap editor."
+    close: "Close"
   quit:
     title: "Unsaved Changes"
     body: "You have unsaved changes. Quit anyway?"
