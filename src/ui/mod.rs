@@ -1,5 +1,6 @@
 //! UI components shared across the app: dialogs.
 
+pub mod about_dialog;
 pub mod custom_imagery_dialog;
 pub mod modal;
 pub mod nsi_dialog;

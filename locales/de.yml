@@ -10,6 +10,7 @@ meta:
 
 menu:
   app:
+    about: "Über %{app}"
     settings: "Einstellungen …"
     services: "Dienste"
     hide: "%{app} ausblenden"
@@ -455,6 +456,11 @@ dialog:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
     open_settings: "Einstellungen öffnen"
+  about:
+    title: "Über %{app}"
+    version: "Version %{version}"
+    description: "Ein experimenteller OpenStreetMap-Editor."
+    close: "Schließen"
   quit:
     title: "Ungesicherte Änderungen"
     body: "Es gibt ungesicherte Änderungen. Trotzdem beenden?"

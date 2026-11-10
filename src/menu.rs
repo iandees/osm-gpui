@@ -343,6 +343,8 @@ pub(crate) fn rebuild_menus(
         Menu {
             name: APP_NAME.into(),
             items: vec![
+                MenuItem::action(tr!("menu.app.about", app = APP_NAME), ShowAbout),
+                MenuItem::separator(),
                 MenuItem::action(tr!("menu.app.settings"), OpenSettings),
                 MenuItem::separator(),
                 MenuItem::os_submenu(tr!("menu.app.services"), SystemMenuType::Services),
@@ -460,7 +462,7 @@ pub(crate) fn rebuild_menus(
 /// and the main window's title.
 pub(crate) const APP_NAME: &str = "osm-gpui";
 
-actions!(osm_gpui, [OpenMapFeaturesWiki, OpenProjectPage]);
+actions!(osm_gpui, [OpenMapFeaturesWiki, OpenProjectPage, ShowAbout]);
 
 /// Register the app-level (window-independent) handlers for the standard
 /// macOS app-menu items and the Help menu links.
