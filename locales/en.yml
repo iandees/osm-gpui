@@ -195,6 +195,9 @@ panel:
     empty: "(no tags)"
     key_placeholder: "key"
     value_placeholder: "value"
+  relations:
+    title: "Relations"
+    no_role: "(no role)"
   history:
     title: "History"
     empty: "No actions yet."

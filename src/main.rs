@@ -502,7 +502,7 @@ struct MapViewer {
         Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, in that order) is expanded.
-    side_panel_open: [bool; 5],
+    side_panel_open: [bool; 6],
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
@@ -708,7 +708,7 @@ impl MapViewer {
             pending_tag_edit_open: None,
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true, true, true, true, true],
+            side_panel_open: [true, true, true, true, true, true],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -5410,6 +5410,38 @@ mod tests {
                 assert_eq!(pending(view), (0, 3, 1));
                 undo_step(view);
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network_with(cx, |data| {
+            data.relations[0].tags.insert("ref".into(), "7B".into());
+        });
+        window
+            .update(cx, |view, _window, _cx| {
+                // Way 102 and node 7 are in relation 900, which has no name,
+                // so its ref stands in.
+                select(view, Way, &[102]);
+                assert_eq!(
+                    view.selected_memberships(),
+                    vec![(900, "7B".to_string(), String::new())]
+                );
+                select(view, Node, &[7]);
+                assert_eq!(
+                    view.selected_memberships(),
+                    vec![(900, "7B".to_string(), "stop".to_string())]
+                );
+                // In no relation, several features, or nothing selected: no
+                // section.
+                select(view, Way, &[100]);
+                assert!(view.selected_memberships().is_empty());
+                select(view, Way, &[102, 100]);
+                assert!(view.selected_memberships().is_empty());
+                select(view, Way, &[]);
+                assert!(view.selected_memberships().is_empty());
             })
             .unwrap();
     }
