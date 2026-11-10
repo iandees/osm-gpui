@@ -27,6 +27,8 @@ menu:
     undo: "Widerrufen"
     redo: "Wiederholen"
     delete: "Löschen"
+    copy_tags: "Tags kopieren"
+    paste_tags: "Tags einsetzen"
     select_all: "Alles auswählen"
     deselect_all: "Auswahl aufheben"
     change_feature_type: "Objekttyp ändern …"
@@ -202,6 +204,7 @@ history:
   created_node: "1 Knoten erstellt"
   deleted_node: "1 Knoten gelöscht"
   deleted_way: "1 Weg gelöscht"
+  created_way: "1 Weg erstellt"
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
@@ -314,6 +317,8 @@ shortcut:
   undo: "Widerrufen"
   redo: "Wiederholen"
   select_all: "Alles auswählen"
+  copy_tags: "Tags kopieren"
+  paste_tags: "Tags einsetzen"
   zoom_in: "Vergrößern"
   zoom_out: "Verkleinern"
   zoom_to_data: "Auf Daten zoomen"
@@ -328,6 +333,9 @@ shortcut:
   action_join: "Wege verbinden"
   action_separate: "Knoten abtrennen"
   action_extend: "Weg verlängern"
+  action_split: "Weg teilen"
+  action_merge: "Knoten vereinigen"
+  action_straighten: "Weg begradigen"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
 # und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
@@ -376,6 +384,50 @@ action:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"
     started: "Klicken, um Knoten hinzuzufügen; Enter oder Esc zum Abschließen"
+  # Pluralbausteine der Statusmeldungen von „Tags kopieren/einsetzen“.
+  tag_count:
+    one: "%{count} Tag"
+    other: "%{count} Tags"
+  feature_count:
+    one: "%{count} Objekt"
+    other: "%{count} Objekte"
+  copy_tags:
+    label: "Tags kopieren"
+    hint: "Ein einzelnes Objekt mit Tags wählen, um sie zu kopieren"
+    done: "%{tags} kopiert"
+  paste_tags:
+    label: "Tags einsetzen"
+    hint: "Zuerst die Tags eines Objekts kopieren, dann die Zielobjekte wählen"
+    none: "Die gewählten Objekte haben die kopierten Tags bereits"
+    done: "%{tags} auf %{features} übertragen"
+  split:
+    label: "Weg teilen"
+    hint: "Einen Knoten innerhalb eines Wegs (oder zwei Knoten eines geschlossenen Wegs) zum Teilen wählen"
+    done:
+      one: "%{count} Weg geteilt"
+      other: "%{count} Wege geteilt"
+    error:
+      relation_member: "Teilen nicht möglich: Weg %{id} ist Mitglied einer Relation, und Relationen können noch nicht geändert werden"
+  merge:
+    label: "Knoten vereinigen"
+    hint: "Zwei oder mehr Knoten wählen, um sie zu einem zu vereinigen"
+    done:
+      one: "%{count} Knoten vereinigt"
+      other: "%{count} Knoten vereinigt"
+    error:
+      tag_conflict: "Vereinigen nicht möglich: Die Knoten haben verschiedene Werte für „%{key}“"
+      relation_member: "Vereinigen nicht möglich: Knoten %{id} ist Mitglied einer Relation und würde gelöscht"
+      degenerate_way: "Vereinigen nicht möglich: Weg %{id} hätte danach weniger als zwei verschiedene Knoten"
+  straighten:
+    label: "Weg begradigen"
+    hint: "Einen offenen Weg mit 3 oder mehr Knoten zum Begradigen wählen"
+    none: "Die gewählten Wege sind bereits gerade"
+    done:
+      one: "%{count} Weg begradigt"
+      other: "%{count} Wege begradigt"
+    error:
+      too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
+      no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"
