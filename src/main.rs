@@ -520,6 +520,9 @@ struct MapViewer {
     /// Whether the Members list shows every member of a long relation
     /// instead of the first few.
     members_show_all: bool,
+    /// One focus handle per Members row, grouping that row's buttons so the
+    /// row can tell whether focus is inside it (grown lazily while rendering).
+    member_controls_focus: std::cell::RefCell<Vec<gpui::FocusHandle>>,
     /// Set by "Add to Relation…"; `render` opens the picker (it needs the
     /// window) and clears it.
     pending_relation_picker: bool,
@@ -769,6 +772,7 @@ impl MapViewer {
             relation_picker_dialog: None,
             pending_role_edit_open: None,
             members_show_all: false,
+            member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
             side_panel_open: [true; 7],
@@ -7649,6 +7653,93 @@ mod tests {
                 assert!(selected_ids(view, Node).is_empty());
             })
             .unwrap();
+    }
+
+    /// Tab walks the enabled up/down/remove buttons of the Members rows in
+    /// row order, and a row counts as focused (so its buttons are shown)
+    /// whenever focus is on any of its buttons.
+    #[gpui::test]
+    fn tab_reaches_member_buttons_in_row_order_and_reveals_the_row(cx: &mut TestAppContext) {
+        let mut data = selection_actions::test_support::network_data();
+        route_over(&[(100, ""), (101, ""), (102, "")])(&mut data);
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update(vcx, |view, _| {
+            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+            view.mode = EditMode::Select;
+            view.set_selection(vec![osm_gpui::selection::FeatureRef {
+                layer_id,
+                kind: osm_gpui::selection::FeatureKind::Relation,
+                id: 900,
+            }]);
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            let root = root.clone();
+            vcx.draw(
+                point(px(0.0), px(0.0)),
+                size(
+                    gpui::AvailableSpace::Definite(px(1200.0)),
+                    gpui::AvailableSpace::Definite(px(800.0)),
+                ),
+                |_, _| gpui::AnyView::from(root),
+            );
+        };
+        draw(vcx);
+
+        // Which row (if any) holds focus now.
+        let focused_row = |vcx: &mut gpui::VisualTestContext| -> Option<usize> {
+            view.update_in(vcx, |view, window, cx| {
+                view.member_controls_focus
+                    .borrow()
+                    .iter()
+                    .position(|handle| handle.contains_focused(window, cx))
+            })
+        };
+        // Real key presses: the window's `Root` turns Tab into `focus_next`.
+        let tab = |vcx: &mut gpui::VisualTestContext, forward: bool| {
+            vcx.simulate_keystrokes(if forward { "tab" } else { "shift-tab" });
+            draw(vcx);
+        };
+
+        let mut stops: Vec<usize> = Vec::new();
+        for _ in 0..80 {
+            tab(vcx, true);
+            if let Some(row) = focused_row(vcx) {
+                stops.push(row);
+            }
+        }
+        // Row 0 has down+remove, row 1 up+down+remove, row 2 up+remove, and
+        // the cycle repeats once Tab wraps around.
+        let one_pass = [0, 0, 1, 1, 1, 2, 2];
+        assert!(
+            stops.starts_with(&one_pass),
+            "unexpected tab order {stops:?}"
+        );
+        assert!(stops.len() >= one_pass.len() * 2, "Tab never wrapped");
+
+        // Shift-Tab walks back the other way: from row 1's first button
+        // (reached by Tab until the row changes) it returns to row 0.
+        while focused_row(vcx) != Some(0) {
+            tab(vcx, true);
+        }
+        while focused_row(vcx) != Some(1) {
+            tab(vcx, true);
+        }
+        tab(vcx, false);
+        assert_eq!(focused_row(vcx), Some(0));
     }
 
     /// The id of the relation `new_relation` created (the only negative one).
