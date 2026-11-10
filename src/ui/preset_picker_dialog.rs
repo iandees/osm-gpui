@@ -14,7 +14,9 @@ use gpui_component::{
 };
 use std::collections::HashMap;
 
-use crate::presets::Geometry;
+use crate::preset_recents::{self, Section};
+use crate::preset_translations::PresetTranslations;
+use crate::presets::{Geometry, Preset};
 use crate::tr;
 use crate::ui::style::muted_text_size;
 
@@ -49,18 +51,48 @@ pub enum DialogEvent {
     Submitted {
         tags: HashMap<String, String>,
         geometry: Vec<Geometry>,
+        /// The chosen preset's schema id, remembered as a recent use.
+        preset_id: String,
     },
     Cancelled,
 }
 
-/// One row of the picker: display name, tags, and the preset's geometries.
-/// and the preset's icon name.
-type PickerRow = (
-    String,
-    HashMap<String, String>,
-    Vec<Geometry>,
-    Option<String>,
-);
+/// One row of the picker: the preset's id, display name, tags, geometries
+/// and icon name, plus the group heading it sits under (only in the default
+/// list shown before the user types a search).
+struct PickerRow {
+    id: String,
+    name: String,
+    tags: HashMap<String, String>,
+    geometry: Vec<Geometry>,
+    icon: Option<String>,
+    section: Option<Section>,
+}
+
+impl PickerRow {
+    fn from_preset(
+        p: &Preset,
+        translations: Option<&PresetTranslations>,
+        section: Option<Section>,
+    ) -> Self {
+        Self {
+            id: p.id.clone(),
+            name: p.display_name(translations).to_string(),
+            tags: p.tags.clone(),
+            geometry: p.geometry.clone(),
+            icon: p.icon.clone(),
+            section,
+        }
+    }
+
+    fn submitted(&self) -> DialogEvent {
+        DialogEvent::Submitted {
+            tags: self.tags.clone(),
+            geometry: self.geometry.clone(),
+            preset_id: self.id.clone(),
+        }
+    }
+}
 
 pub struct PresetPickerDialog {
     query: Entity<InputState>,
@@ -94,17 +126,20 @@ impl PresetPickerDialog {
     fn results(&self, cx: &Context<Self>) -> Vec<PickerRow> {
         let text = self.query.read(cx).value().to_string();
         let translations = crate::preset_translations::active();
-        crate::presets::preset_index()
+        let index = crate::presets::preset_index();
+        if text.trim().is_empty() {
+            // Before any search: recents, then common presets.
+            let recents = preset_recents::RecentsStore::load(&preset_recents::SettingsRecents);
+            return preset_recents::default_list(index, &recents, &self.geometries)
+                .into_iter()
+                .take(MAX_RESULTS)
+                .map(|(section, p)| PickerRow::from_preset(p, translations, Some(section)))
+                .collect();
+        }
+        index
             .search_geometries_in(translations, &text, &self.geometries, MAX_RESULTS)
             .into_iter()
-            .map(|p| {
-                (
-                    p.display_name(translations).to_string(),
-                    p.tags.clone(),
-                    p.geometry.clone(),
-                    p.icon.clone(),
-                )
-            })
+            .map(|p| PickerRow::from_preset(p, translations, None))
             .collect()
     }
 
@@ -114,11 +149,8 @@ impl PresetPickerDialog {
 
     fn submit_selected(&mut self, cx: &mut Context<Self>) {
         let results = self.results(cx);
-        if let Some((_, tags, geometry, _)) = results.get(self.selected_index) {
-            cx.emit(DialogEvent::Submitted {
-                tags: tags.clone(),
-                geometry: geometry.clone(),
-            });
+        if let Some(row) = results.get(self.selected_index) {
+            cx.emit(row.submitted());
         }
     }
 
@@ -173,12 +205,36 @@ impl Render for PresetPickerDialog {
                 .flex_col()
                 .h(gpui::px(240.0))
                 .overflow_y_scroll()
-                .children(results.iter().enumerate().map(
-                    |(i, (name, tags, geometry, icon_name))| {
-                        let tags = tags.clone();
-                        let geometry = geometry.clone();
+                .children(results.iter().enumerate().flat_map(|(i, row)| {
+                    let mut items: Vec<gpui::AnyElement> = Vec::new();
+                    // A heading (not selectable, not a row) starts each group.
+                    if row.section.is_some() && (i == 0 || results[i - 1].section != row.section) {
+                        let label = match row.section {
+                            Some(Section::Recent) => tr!("dialog.preset_picker.recent"),
+                            _ => tr!("dialog.preset_picker.common"),
+                        };
+                        items.push(
+                            div()
+                                .id(("preset-picker-heading", i))
+                                .px_2()
+                                .pt_2()
+                                .pb_1()
+                                .child(
+                                    Label::new(label)
+                                        .text_size(muted_text_size())
+                                        .text_color(muted)
+                                        .font_weight(gpui::FontWeight::BOLD),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                    items.push({
+                        let name = &row.name;
+                        let tags = &row.tags;
                         let is_selected = i == selected_index;
-                        let icon = icon_for_preset(icon_name.as_deref(), fallback_geometry);
+                        let icon = icon_for_preset(row.icon.as_deref(), fallback_geometry);
+                        let (click_tags, click_geometry, click_id) =
+                            (row.tags.clone(), row.geometry.clone(), row.id.clone());
                         div()
                             .id(("preset-picker-result", i))
                             .flex()
@@ -211,23 +267,25 @@ impl Render for PresetPickerDialog {
                                     .min_w(gpui::px(0.))
                                     .child(Label::new(name.clone()))
                                     .child(
-                                        Label::new(format_tag_preview(&tags))
+                                        Label::new(format_tag_preview(tags))
                                             .text_size(muted_text_size())
                                             .text_color(muted),
                                     ),
                             )
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
-                                cx.listener(move |this, _ev, _, cx| {
+                                cx.listener(move |_this, _ev, _, cx| {
                                     cx.emit(DialogEvent::Submitted {
-                                        tags: tags.clone(),
-                                        geometry: geometry.clone(),
+                                        tags: click_tags.clone(),
+                                        geometry: click_geometry.clone(),
+                                        preset_id: click_id.clone(),
                                     });
-                                    let _ = this;
                                 }),
                             )
-                    },
-                ))
+                            .into_any_element()
+                    });
+                    items
+                }))
                 .into_any_element()
         };
 

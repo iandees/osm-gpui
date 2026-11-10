@@ -2491,8 +2491,16 @@ impl MapViewer {
                         this.preset_picker_dialog = None;
                         cx.notify();
                     }
-                    DialogEvent::Submitted { tags, geometry } => {
+                    DialogEvent::Submitted {
+                        tags,
+                        geometry,
+                        preset_id,
+                    } => {
                         this.apply_preset(&target, tags, geometry);
+                        osm_gpui::preset_recents::record(
+                            &mut osm_gpui::preset_recents::SettingsRecents,
+                            preset_id,
+                        );
                         this.preset_picker_dialog = None;
                         cx.notify();
                     }

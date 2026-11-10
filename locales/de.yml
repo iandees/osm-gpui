@@ -609,6 +609,8 @@ dialog:
   preset_picker:
     title: "Objekttyp ändern"
     search_placeholder: "Objekttypen suchen …"
+    recent: "Zuletzt verwendet"
+    common: "Häufig"
   relation_picker:
     title: "Zu Relation hinzufügen"
     search_placeholder: "Relationen suchen …"
