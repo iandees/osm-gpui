@@ -45,8 +45,8 @@ use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
-use osm_gpui::viewport::Viewport;
 use osm_gpui::tr;
+use osm_gpui::viewport::Viewport;
 
 actions!(
     osm_gpui,
