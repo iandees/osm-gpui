@@ -163,6 +163,6 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
+Licensed under the [MIT license](LICENSE).
 
 The bundled iD tagging schema data under `assets/presets/` is ISC licensed (the icons there are CC0); see `assets/presets/LICENSE`.
