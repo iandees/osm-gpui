@@ -142,6 +142,7 @@ status:
     other: "%{count} unsaved edits"
   not_signed_in: "Not signed in"
   zoom_in_to_download: "Zoom in to download"
+  api_offline: "The OSM API reports it is offline; try again later"
   open_failed: "Could not open %{path}: %{error}"
   open_data_first: "Open or download OSM data before drawing"
   tag_needs_key: "A tag needs a key; the edit was discarded"

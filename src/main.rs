@@ -3985,7 +3985,18 @@ impl MapViewer {
     pub(crate) fn request_download(&mut self, cx: &mut Context<Self>) {
         let bounds = self.viewport.visible_bounds();
 
-        if let Err(e) = osm_api::check_area(&bounds) {
+        let base_url = settings_store::api_base_url();
+        // Lazily (re)fetch the server's capabilities if we have none or it
+        // last reported itself offline; never blocks.
+        osm_gpui::capabilities::ensure_fetched(&base_url);
+
+        if osm_gpui::capabilities::for_server(&base_url).is_offline() {
+            self.set_status(tr!("status.api_offline"));
+            cx.notify();
+            return;
+        }
+
+        if let Err(e) = osm_api::check_area(&bounds, &base_url) {
             self.set_status(e.to_string());
             cx.notify();
             return;
@@ -4002,8 +4013,6 @@ impl MapViewer {
         self.transfer = Some(progress.clone());
         self.poll_transfer(progress.clone(), cx);
         cx.notify();
-
-        let base_url = settings_store::api_base_url();
 
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -4914,6 +4923,9 @@ fn main() {
             osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
             settings_store::init_store(app_settings);
             auth::init_store(auth::load());
+            // Learn the server's limits (max download area etc.) in the
+            // background; defaults apply until it answers.
+            osm_gpui::capabilities::ensure_fetched(&settings_store::api_base_url());
 
             // Initial menu (before ELI loads). MapViewer's render loop will call
             // rebuild_menus again whenever the load state or viewport changes.

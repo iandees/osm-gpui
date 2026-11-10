@@ -161,8 +161,8 @@ impl MapViewer {
         let cursor = self
             .last_mouse_pos
             .map(|position| self.viewport.screen_to_geo(position));
-        // The OSM API refuses downloads above a maximum area; say so up
-        // front rather than only after a Download attempt fails.
+        // The OSM API refuses downloads above the server's maximum area; say
+        // so up front rather than only after a Download attempt fails.
         let too_large_to_download =
             crate::welcome::download_state(&self.viewport.visible_bounds(), false)
                 == crate::welcome::DownloadState::ZoomIn;
