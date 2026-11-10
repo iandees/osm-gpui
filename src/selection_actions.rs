@@ -291,6 +291,20 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_extend,
     },
     SelectionAction {
+        id: "split",
+        shortcut_id: Some("action_split"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !split_plans(editable, layer_id, env.selection).is_empty()
+        },
+        apply: apply_split,
+    },
+    SelectionAction {
         id: "merge",
         shortcut_id: Some("action_merge"),
         fixed_shortcut: None,
@@ -712,6 +726,107 @@ fn apply_separate(
     }
 
     let label = tr_count!("action.separate.done", created.len() + 1).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// What Split Way would do for the selection: one or two nodes of the active
+/// layer (two for a closed way), plus optionally one way to restrict it to.
+/// Empty unless the selection has that shape and something can be split.
+fn split_plans(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<topology::SplitPlan> {
+    let in_layer = |kind| {
+        let mut ids: Vec<i64> = Vec::new();
+        for f in selection
+            .iter()
+            .filter(|f| f.layer_id == layer_id && f.kind == kind)
+        {
+            if !ids.contains(&f.id) {
+                ids.push(f.id);
+            }
+        }
+        ids
+    };
+    let nodes = in_layer(FeatureKind::Node);
+    let selected_ways = in_layer(FeatureKind::Way);
+    if nodes.is_empty() || nodes.len() > 2 || selected_ways.len() > 1 {
+        return Vec::new();
+    }
+    let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
+    for &node in &nodes {
+        for way in ways_using(editable, node) {
+            if !ways.iter().any(|(id, _)| *id == way.0) {
+                ways.push(way);
+            }
+        }
+    }
+    topology::plan_split(&nodes, selected_ways.first().copied(), &ways)
+}
+
+/// Split the ways at the selected node(s) (JOSM "Split Way"): the original
+/// keeps its id and the longer part, a new way gets the rest with a copy of
+/// the tags, and both share the split node. Relation members aren't split,
+/// because relation edits can't be recorded, undone or uploaded. One undo
+/// step: per way, the new way's creation, then the original's new nodes.
+fn apply_split(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let plans = split_plans(editable, layer_id, selection);
+    if plans.is_empty() {
+        return Err(tr!("action.split.hint").to_string());
+    }
+    // Splitting must keep every relation that holds the way intact, which
+    // would mean adding the new half as a member; that edit isn't supported.
+    if let Some(plan) = plans
+        .iter()
+        .find(|p| !editable.relations_containing_way(p.way_id).is_empty())
+    {
+        return Err(tr!("action.split.error.relation_member", id = plan.way_id).to_string());
+    }
+
+    let mut actions = Vec::new();
+    for plan in plans.iter() {
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: plan.way_id,
+        };
+        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
+        let new_id = editable.add_way(plan.new.clone(), tags.clone());
+        actions.push(UndoableAction::CreateWay {
+            layer: layer_id,
+            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: FeatureKind::Way,
+                id: new_id,
+                tags,
+                way_nodes: plan.new.clone(),
+                node_lat_lon: None,
+            },
+        });
+        editable.set_way_nodes(plan.way_id, plan.keep.clone());
+        actions.push(UndoableAction::SetWayNodes {
+            layer: layer_id,
+            way_id: plan.way_id,
+            before: plan.before.clone(),
+            after: plan.keep.clone(),
+        });
+    }
+
+    let label = tr_count!("action.split.done", plans.len()).to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::Batch {
             label: label.clone(),
@@ -1506,11 +1621,170 @@ mod tests {
     }
 
     impl Net {
+        fn editable_mut(&mut self) -> &mut dyn EditableLayer {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+        }
         fn nodes(&self, ids: &[i64]) -> Vec<FeatureRef> {
             ids.iter()
                 .map(|&id| self.feature(FeatureKind::Node, id))
                 .collect()
         }
+    }
+
+    #[test]
+    fn split_is_offered_for_an_interior_node_or_two_ring_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.nodes(&[4])).contains(&"split"));
+        assert!(n.applicable(&n.nodes(&[2])).contains(&"split"));
+        // Node 4 with a way that uses it, or one that doesn't.
+        let with_way = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 103),
+        ];
+        assert!(n.applicable(&with_way).contains(&"split"));
+        let unrelated = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 100),
+        ];
+        assert!(!n.applicable(&unrelated).contains(&"split"));
+        // End nodes, a node on no way, nothing at all.
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"split"));
+        assert!(!n.applicable(&n.nodes(&[7])).contains(&"split"));
+        assert!(!n.applicable(&[]).contains(&"split"));
+        // Two nodes of an open way are ambiguous; of a ring they are fine,
+        // but one ring node alone is not.
+        assert!(!n.applicable(&n.nodes(&[2, 3])).contains(&"split"));
+        assert!(n.applicable(&n.nodes(&[14, 16])).contains(&"split"));
+        assert!(!n.applicable(&n.nodes(&[14])).contains(&"split"));
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"split"));
+    }
+
+    #[test]
+    fn split_at_a_shared_node_splits_every_way_and_copies_tags() {
+        let mut n = net();
+        let out = n.run("split", &n.nodes(&[4])).unwrap();
+        assert_eq!(out.status, "Split 2 ways");
+        assert!(out.select.is_none() && !out.clear_selection);
+        // Equal halves: the originals keep their first part.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        // The new ways (negative ids) take the rest, and everything still
+        // meets at node 4.
+        let users = n.editable().ways_using_node(4);
+        let new: Vec<i64> = users.iter().copied().filter(|&id| id < 0).collect();
+        assert_eq!(new.len(), 2);
+        assert_eq!(users.len(), 4);
+        let mut rests: Vec<Vec<i64>> = new
+            .iter()
+            .map(|&id| n.editable().way_node_ids(id).unwrap())
+            .collect();
+        rests.sort();
+        assert_eq!(rests, vec![vec![4, 5], vec![4, 9]]);
+        // Each new way carries a copy of its original's tags.
+        let tags_of_new: Vec<Vec<(String, String)>> = new
+            .iter()
+            .map(|&id| n.tags_of(FeatureKind::Way, id))
+            .collect();
+        assert!(tags_of_new.contains(&pairs(&[("highway", "residential"), ("name", "Main")])));
+        assert!(tags_of_new.contains(&pairs(&[("highway", "footway")])));
+        // The node itself is untouched.
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 4),
+            pairs(&[("highway", "crossing")])
+        );
+
+        // Two new ways, two modified ones.
+        assert_eq!(n.layer().diff_for_upload().counts(), (2, 2, 0));
+        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(label, "Split 2 ways");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn split_with_a_way_selected_splits_only_that_way() {
+        let mut n = net();
+        let sel = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 103),
+        ];
+        let out = n.run("split", &sel).unwrap();
+        assert_eq!(out.status, "Split 1 way");
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
+    }
+
+    #[test]
+    fn split_keeps_the_longer_part_in_the_original() {
+        let mut n = net();
+        // Make way 100 longer: [1,2,3,4,5]-ish by pointing it at more nodes.
+        n.editable_mut().set_way_nodes(100, vec![1, 2, 3, 9, 10]);
+        n.run("split", &n.nodes(&[2])).unwrap();
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![2, 3, 9, 10]));
+        let new = n.editable().ways_using_node(1)[0];
+        assert!(new < 0);
+        assert_eq!(n.editable().way_node_ids(new), Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn split_a_ring_at_two_nodes_makes_two_open_ways() {
+        let mut n = net();
+        let out = n.run("split", &n.nodes(&[16, 14])).unwrap();
+        assert_eq!(out.status, "Split 1 way");
+        // Ring [14,15,16,14]: arcs 14-15-16 (3 nodes) and 16-14 (2).
+        assert_eq!(n.editable().way_node_ids(108), Some(vec![14, 15, 16]));
+        let new = n.editable().ways_using_node(14);
+        assert_eq!(new.len(), 2);
+        assert_eq!(n.editable().way_node_ids(new[0]), Some(vec![16, 14]));
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, new[0]),
+            pairs(&[("building", "yes")])
+        );
+        assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
+    }
+
+    #[test]
+    fn split_refuses_a_relation_member_and_changes_nothing() {
+        let mut n = net();
+        // Way 102 is in relation 900; give it an interior node to split at.
+        n.editable_mut().set_way_nodes(102, vec![5, 6, 10]);
+        let before = n.layer().diff_for_upload().counts();
+        let Err(message) = n.run("split", &n.nodes(&[6])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't split: way 102 is a member of a relation, and relation changes aren't supported yet"
+        );
+        assert_eq!(n.layer().diff_for_upload().counts(), before);
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6, 10]));
+    }
+
+    #[test]
+    fn split_explains_when_inapplicable() {
+        let mut n = net();
+        let Err(message) = n.run("split", &n.nodes(&[1])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Select a node inside a way (or two nodes of a closed way) to split it"
+        );
+        assert!(!n.layer().is_modified());
     }
 
     #[test]

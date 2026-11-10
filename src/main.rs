@@ -1178,6 +1178,19 @@ impl MapViewer {
                     editable.restore_feature(snapshot.clone());
                 }
             }
+            UndoableAction::CreateWay { layer, snapshot } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    editable.restore_feature(snapshot.clone());
+                } else {
+                    editable.delete_feature(snapshot.kind, snapshot.id);
+                }
+            }
             UndoableAction::ExtendWay {
                 layer,
                 way_id,
@@ -5104,6 +5117,58 @@ mod tests {
             .unwrap()
             .node_lat_lon(id)
             .unwrap()
+    }
+
+    fn ways_at_node(view: &MapViewer, node: i64) -> Vec<i64> {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .ways_using_node(node)
+    }
+
+    #[gpui::test]
+    fn split_way_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Node, &[4]);
+                view.run_selection_action("split", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let split_users = ways_at_node(view, 4);
+                assert_eq!(split_users.len(), 4);
+                let new: Vec<i64> = split_users.iter().copied().filter(|&id| id < 0).collect();
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4]);
+                assert_eq!(pending(view), (2, 2, 0));
+                let new_tags: Vec<_> = new.iter().map(|&id| tags_of(view, Way, id)).collect();
+                // The node stays selected.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 4);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                assert_eq!(ways_at_node(view, 4), vec![101, 103]);
+                for &id in &new {
+                    assert!(way_nodes(view, layer_id, id).is_empty());
+                }
+                assert_eq!(pending(view), (0, 0, 0));
+
+                // Redo recreates the same ways under the same ids.
+                redo_step(view);
+                assert_eq!(ways_at_node(view, 4), split_users);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4]);
+                let redone_tags: Vec<_> = new.iter().map(|&id| tags_of(view, Way, id)).collect();
+                assert_eq!(redone_tags, new_tags);
+                assert_eq!(pending(view), (2, 2, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
     }
 
     #[gpui::test]

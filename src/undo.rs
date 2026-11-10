@@ -45,6 +45,13 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
     },
+    /// A way created with a known id (Split Way's new half). The mirror of
+    /// `DeleteFeature`: undo deletes it, redo restores it from the snapshot
+    /// under the same id, so later steps that refer to it stay valid.
+    CreateWay {
+        layer: LayerId,
+        snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
+    },
     /// Add mode's 2nd+ click: a node (new or pre-existing) appended to a
     /// way (creating the way first if `way_created`). The two booleans are
     /// independent: `way_created` says whether this click created `way_id`
@@ -154,6 +161,7 @@ impl UndoableAction {
                     osm_gpui::tr!("history.deleted_way").to_string()
                 }
             },
+            UndoableAction::CreateWay { .. } => osm_gpui::tr!("history.created_way").to_string(),
             UndoableAction::ExtendWay { .. } => osm_gpui::tr!("history.extended_way").to_string(),
             UndoableAction::CreateBuilding { .. } => {
                 osm_gpui::tr!("history.created_building").to_string()
@@ -395,6 +403,15 @@ mod undo_stack_tests {
             snapshot: way_snapshot(10),
         };
         assert_eq!(way_action.description(), "Deleted 1 way");
+    }
+
+    #[test]
+    fn create_way_description() {
+        let action = UndoableAction::CreateWay {
+            layer: LayerId(1),
+            snapshot: way_snapshot(-1),
+        };
+        assert_eq!(action.description(), "Created 1 way");
     }
 
     #[test]

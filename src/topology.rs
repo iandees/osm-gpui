@@ -531,6 +531,89 @@ pub fn plan_separate(
     Some(edits)
 }
 
+/// One way split in two: it keeps `keep` and `new` becomes a new way, both
+/// containing the split node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitPlan {
+    pub way_id: i64,
+    /// The way's node list before the split.
+    pub before: Vec<i64>,
+    /// The node list the original way keeps (the longer part; the first
+    /// when they tie).
+    pub keep: Vec<i64>,
+    /// The node list of the new way.
+    pub new: Vec<i64>,
+}
+
+/// Split one node list at the selected node(s), as `(kept part, new part)`.
+///
+/// - An open way is split at one selected node that occurs exactly once and
+///   isn't an end node, giving `[..=at]` and `[at..]`.
+/// - A closed way is split at two selected nodes that each occur in the ring
+///   once, giving the two arcs between them, each an open way.
+///
+/// Anything else (other counts, an end node, a node that isn't in the way, a
+/// node the way passes through twice) can't be split.
+fn split_parts(nodes: &[i64], selected: &[i64]) -> Option<(Vec<i64>, Vec<i64>)> {
+    let closed = nodes.len() >= 4 && nodes.first() == nodes.last();
+    let ring = if closed {
+        &nodes[..nodes.len() - 1]
+    } else {
+        nodes
+    };
+    let once = |node: i64| {
+        let mut at = (0..ring.len()).filter(|&p| ring[p] == node);
+        let first = at.next()?;
+        at.next().is_none().then_some(first)
+    };
+    let (first, second) = match (closed, selected) {
+        (false, &[node]) => {
+            let at = once(node)?;
+            // Not an end node.
+            if at == 0 || at + 1 == ring.len() {
+                return None;
+            }
+            (nodes[..=at].to_vec(), nodes[at..].to_vec())
+        }
+        (true, &[a, b]) if a != b => {
+            let (i, j) = (once(a)?, once(b)?);
+            let (i, j) = (i.min(j), i.max(j));
+            let mut around = ring[j..].to_vec();
+            around.extend_from_slice(&ring[..=i]);
+            (ring[i..=j].to_vec(), around)
+        }
+        _ => return None,
+    };
+    Some(if first.len() >= second.len() {
+        (first, second)
+    } else {
+        (second, first)
+    })
+}
+
+/// Plan splitting ways at the selected node(s) (JOSM "Split Way"). `ways`
+/// is every way that uses a selected node, as `(id, node list)`; with
+/// `only_way`, just that one is split, otherwise every one that can be. The
+/// result is in the order of `ways`; empty if nothing can be split.
+pub fn plan_split(
+    selected: &[i64],
+    only_way: Option<i64>,
+    ways: &[(i64, Vec<i64>)],
+) -> Vec<SplitPlan> {
+    ways.iter()
+        .filter(|(id, _)| only_way.is_none_or(|only| only == *id))
+        .filter_map(|(id, nodes)| {
+            let (keep, new) = split_parts(nodes, selected)?;
+            Some(SplitPlan {
+                way_id: *id,
+                before: nodes.clone(),
+                keep,
+                new,
+            })
+        })
+        .collect()
+}
+
 /// Where Add mode should pick a way back up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Continuation {
@@ -731,6 +814,79 @@ mod tests {
         assert!(is_direction_dependent(&t("incline", "up")));
         assert!(is_direction_dependent(&t("lanes:forward", "2")));
         assert!(!is_direction_dependent(&t("highway", "residential")));
+    }
+
+    #[test]
+    fn split_an_open_way_keeps_the_longer_part() {
+        let w = ways(&[(10, &[1, 2, 3, 4, 5])]);
+        let plans = plan_split(&[4], None, &w);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].way_id, 10);
+        assert_eq!(plans[0].before, vec![1, 2, 3, 4, 5]);
+        assert_eq!(plans[0].keep, vec![1, 2, 3, 4]);
+        assert_eq!(plans[0].new, vec![4, 5]);
+        // Splitting nearer the start: the original keeps the far part.
+        let plans = plan_split(&[2], None, &w);
+        assert_eq!(plans[0].keep, vec![2, 3, 4, 5]);
+        assert_eq!(plans[0].new, vec![1, 2]);
+        // Equal halves: the original keeps the first.
+        let plans = plan_split(&[3], None, &w);
+        assert_eq!(plans[0].keep, vec![1, 2, 3]);
+        assert_eq!(plans[0].new, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn split_needs_an_interior_node_that_occurs_once() {
+        let w = ways(&[(10, &[1, 2, 3])]);
+        // End nodes, strangers, and several nodes on an open way: no.
+        assert!(plan_split(&[1], None, &w).is_empty());
+        assert!(plan_split(&[3], None, &w).is_empty());
+        assert!(plan_split(&[9], None, &w).is_empty());
+        assert!(plan_split(&[], None, &w).is_empty());
+        assert!(plan_split(&[2, 3], None, &w).is_empty());
+        // A way that passes through the node twice is ambiguous.
+        assert!(plan_split(&[2], None, &ways(&[(10, &[1, 2, 3, 2, 4])])).is_empty());
+    }
+
+    #[test]
+    fn split_a_ring_at_two_nodes_makes_two_open_ways() {
+        let ring = ways(&[(10, &[1, 2, 3, 4, 5, 1])]);
+        let plans = plan_split(&[4, 2], None, &ring);
+        assert_eq!(plans.len(), 1);
+        // The arc 2-3-4 has 3 nodes, the other 4-5-1-2 has 4: that stays.
+        assert_eq!(plans[0].keep, vec![4, 5, 1, 2]);
+        assert_eq!(plans[0].new, vec![2, 3, 4]);
+        // A split through the ring's start/end node works too.
+        let plans = plan_split(&[1, 3], None, &ring);
+        assert_eq!(plans[0].keep, vec![3, 4, 5, 1]);
+        assert_eq!(plans[0].new, vec![1, 2, 3]);
+        // The order the nodes were selected in doesn't matter.
+        assert_eq!(plan_split(&[3, 1], None, &ring), plans);
+    }
+
+    #[test]
+    fn split_a_ring_needs_exactly_two_distinct_nodes() {
+        let ring = ways(&[(10, &[1, 2, 3, 4, 1])]);
+        assert!(plan_split(&[2], None, &ring).is_empty());
+        assert!(plan_split(&[2, 2], None, &ring).is_empty());
+        assert!(plan_split(&[1, 2, 3], None, &ring).is_empty());
+        assert!(plan_split(&[2, 9], None, &ring).is_empty());
+    }
+
+    #[test]
+    fn split_covers_every_way_at_the_node_or_just_the_chosen_one() {
+        let w = ways(&[(10, &[1, 2, 3]), (11, &[4, 2, 5, 6]), (12, &[2, 7])]);
+        let all = plan_split(&[2], None, &w);
+        // Way 12 ends at the node, so it isn't split.
+        assert_eq!(all.iter().map(|p| p.way_id).collect::<Vec<_>>(), [10, 11]);
+        let only = plan_split(&[2], Some(11), &w);
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].way_id, 11);
+        assert_eq!(only[0].keep, vec![2, 5, 6]);
+        assert_eq!(only[0].new, vec![4, 2]);
+        // Naming a way that can't be split at the node gives nothing.
+        assert!(plan_split(&[2], Some(12), &w).is_empty());
+        assert!(plan_split(&[2], Some(99), &w).is_empty());
     }
 
     fn node(id: i64, tags: &[(&str, &str)]) -> MergeNode {

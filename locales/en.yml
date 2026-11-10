@@ -200,6 +200,7 @@ history:
   created_node: "Created 1 node"
   deleted_node: "Deleted 1 node"
   deleted_way: "Deleted 1 way"
+  created_way: "Created 1 way"
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"
@@ -326,6 +327,7 @@ shortcut:
   action_join: "Join Ways"
   action_separate: "Separate Node"
   action_extend: "Extend Way"
+  action_split: "Split Way"
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
 
@@ -376,6 +378,14 @@ action:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
     started: "Click to add nodes to the way; Enter or Esc to finish"
+  split:
+    label: "Split Way"
+    hint: "Select a node inside a way (or two nodes of a closed way) to split it"
+    done:
+      one: "Split %{count} way"
+      other: "Split %{count} ways"
+    error:
+      relation_member: "Can't split: way %{id} is a member of a relation, and relation changes aren't supported yet"
   merge:
     label: "Merge Nodes"
     hint: "Select two or more nodes to merge them into one"
