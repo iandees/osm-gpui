@@ -17,5 +17,20 @@ This directory vendors data from two upstream projects:
 - assets/presets/icons/temaki-*.svg are from the Temaki icon set
   (https://github.com/rapideditor/temaki), released under CC0 1.0 Universal.
 
+- assets/presets/icons/iD-*.svg are iD's preset icons
+  (https://github.com/openstreetmap/iD), ISC licensed.
+
+- assets/presets/icons/roentgen-*.svg are Röntgen icons by Sergey Vartanov
+  (https://github.com/enzet/Roentgen), licensed under CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/). Attribution required.
+
+- assets/presets/icons/fas-*.svg and far-*.svg are Font Awesome Free icons
+  (https://github.com/FortAwesome/Font-Awesome), (c) Fonticons, Inc.,
+  licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+  Attribution required.
+
+Versions, sources and the full attribution text for every icon set are in
+assets/presets/icons/LICENSES.md.
+
 Regenerate this directory with `cargo run --example update_presets`, and the translations with
 `cargo run --example update_preset_translations -- <schema-version> <locale>...`.

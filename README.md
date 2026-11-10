@@ -147,7 +147,7 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 **Localization.** Interface text lives in `locales/<tag>.yml` (English is the source and fallback). To add a language, copy `locales/en.yml`, translate the values, and set `meta.language_name`. Preset translations are `assets/presets/translations/<locale>.json`; add one with `cargo run --example update_preset_translations -- <schema-version> <locale>`, using the version in `assets/presets/LICENSE`.
 
-**Presets.** The iD tagging schema data in `assets/presets/` is refreshed with `cargo run --example update_presets`. It is not part of CI; review the resulting diff by hand.
+**Presets.** The iD tagging schema data in `assets/presets/` is refreshed with `cargo run --example update_presets [-- <schema-version>]` (default: the version in `assets/presets/LICENSE`), which also fetches the referenced preset icons from the upstream releases pinned in the example. It is not part of CI; review the resulting diff by hand.
 
 **Releases.** The version is `version` in `Cargo.toml`; it is also used in the HTTP User-Agent and the changeset `created_by` tag. To release, bump it, write the `## X.Y.Z` section of `CHANGELOG.md` from the pull requests merged since the last tag (one line each, with a link; feature pull requests do not edit the changelog), merge to `main`, then push a matching tag (`git tag vX.Y.Z`, `git push origin vX.Y.Z`). `.github/workflows/release.yml` builds the macOS, Windows, and Linux packages and publishes a GitHub Release with checksums, using the changelog section as the release notes. To build the macOS app locally, run `cargo build --release` then `scripts/bundle-macos.sh`, which writes `dist/osm-gpui.app`.
 
@@ -165,4 +165,6 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 Licensed under the [MIT license](LICENSE).
 
-The bundled iD tagging schema data under `assets/presets/` is ISC licensed (the icons there are CC0); see `assets/presets/LICENSE`.
+The bundled iD tagging schema data under `assets/presets/` is ISC licensed; see `assets/presets/LICENSE`.
+
+The preset icons under `assets/presets/icons/` come from several sets with their own licences: Maki and Temaki (CC0), iD (ISC), and Röntgen by Sergey Vartanov and Font Awesome Free by Fonticons, Inc. (both CC BY 4.0, attribution required). Versions, sources and attribution are in `assets/presets/icons/LICENSES.md`.
