@@ -127,6 +127,7 @@ Flags:
 - `--script <path>` — run a `.osmscript` file. Without this flag, the app launches normally.
 - `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
 - `--keep-open` — don't exit after the last step, so you can poke at the final state.
+- `--language <tag>` — use this UI language for the run (for example `--language de`), overriding the saved setting without changing it.
 
 Script format is line-oriented with `#` comments:
 
