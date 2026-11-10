@@ -50,15 +50,17 @@ The version lives in one place: `version` in `Cargo.toml`. The app reads it with
 
 **Cutting a release**
 
-1. Bump `version` in `Cargo.toml` (and let `Cargo.lock` update), commit, and merge to `main`.
-2. Tag the commit and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
+1. Bump `version` in `Cargo.toml` (and let `Cargo.lock` update) and add a `## X.Y.Z` section to `CHANGELOG.md`. Commit and merge to `main`.
+2. Tag the merge commit and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
 
-`.github/workflows/release.yml` fails if the tag (without the `v`) differs from the `Cargo.toml` version. Otherwise it builds and attaches these files to a new GitHub Release with generated notes:
+`.github/workflows/release.yml` fails if the tag (without the `v`) differs from the `Cargo.toml` version. Otherwise it builds and attaches these files to a new GitHub Release. The release body is the matching `## X.Y.Z` section of `CHANGELOG.md`; if there is none, GitHub's generated notes are used instead.
 
 - `osm-gpui-X.Y.Z-macos-universal.zip` — `osm-gpui.app` (Apple Silicon + Intel)
 - `osm-gpui-X.Y.Z-windows-x86_64.zip` — `osm-gpui.exe`
-- `osm-gpui-X.Y.Z-linux-x86_64.tar.gz` — binary and a `.desktop` file
+- `osm-gpui-X.Y.Z-linux-x86_64.tar.gz` — binary, a `.desktop` file and the icon (`osm-gpui.png`; copy it into your icon theme, e.g. `~/.local/share/icons/hicolor/512x512/apps/`, for the `Icon=osm-gpui` entry to resolve)
 - `SHA256SUMS`
+
+Release builds on Windows use the GUI subsystem so no console window opens; as a side effect `--script` output on stdout does not show there. Run the harness from a debug build (`cargo run -- --script ...`) to see it.
 
 The same build jobs run (without publishing) on pull requests that touch the workflow, `scripts/`, `packaging/` or `Cargo.toml`, and on manual `workflow_dispatch` runs; the packages are uploaded as workflow artifacts.
 
@@ -71,7 +73,9 @@ cargo build --release
 scripts/bundle-macos.sh        # writes dist/osm-gpui.app
 ```
 
-Use `--binary PATH` to package a different executable (for example a `lipo`'d universal one) and `--out DIR` to change the output directory. If you use a custom target dir, set `CARGO_TARGET_DIR` so the script finds `release/osm-gpui`. There is no app icon in the repository yet, so the bundle has none.
+Use `--binary PATH` to package a different executable (for example a `lipo`'d universal one) and `--out DIR` to change the output directory. If you use a custom target dir, set `CARGO_TARGET_DIR` so the script finds `release/osm-gpui`.
+
+**App icon.** The icon is a placeholder. `scripts/make-icon.py` (Python with Pillow) draws it and writes `assets/AppIcon.png`, `assets/AppIcon.ico` and, on macOS, `assets/AppIcon.icns` (via `iconutil`); all three are checked in, so only run it after changing the artwork. `scripts/bundle-macos.sh` copies `AppIcon.icns` into the bundle and sets `CFBundleIconFile`; `build.rs` embeds `AppIcon.ico` in the Windows executable (via `winresource`); the Linux archive ships the PNG.
 
 ## Architecture map
 
@@ -104,6 +108,7 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 | `src/script/` | Line-DSL `.osmscript` parser and runner for scripted session capture. Ops: viewport, click, drag, key, load_osm, capture, wait_idle, etc. |
 | `src/script_harness.rs` | Runner bridge from `script/` to the live `App` via the `AppHandle` trait. |
 | `src/menu.rs` | Menu bar structure and action handlers (Open, Download, Settings, Help, About). |
+| `src/ui/about_dialog.rs` | In-window About modal (name, version, description, project link); opened by the app menu's About item. |
 | `src/ui/` | GPUI components for side panels (layers, tags, history), dialogs (tag-edit, quit-confirm, custom-imagery, settings), settings window. |
 | `src/i18n.rs`, `locales/` | Localization: the `tr!` / `tr_count!` macros, locale selection, and the message catalogs (see Localization below). |
 
@@ -163,6 +168,8 @@ Flags:
 - `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
 - `--keep-open` — don't exit after the last step, so you can poke at the final state.
 - `--language <tag>` — use this UI language for the run instead of the saved setting (see Localization).
+
+On Windows, release builds are GUI-subsystem executables, so the harness's stdout/stderr output is not shown (captures are still written). Use a debug build (`cargo run`) to see it.
 
 Script format is line-oriented with `#` comments:
 
