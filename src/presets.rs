@@ -169,17 +169,45 @@ impl PresetIndex {
         geometry: Geometry,
         limit: usize,
     ) -> Vec<&Preset> {
+        self.search_geometries_in(translations, query, &[geometry], limit)
+    }
+
+    /// [`Self::search_in`] across several geometries, best first: every
+    /// matching preset of `geometries[0]`, then those of `geometries[1]`
+    /// not already listed, and so on. This is how a closed way is offered
+    /// both area and line presets.
+    pub fn search_geometries_in(
+        &self,
+        translations: Option<&PresetTranslations>,
+        query: &str,
+        geometries: &[Geometry],
+        limit: usize,
+    ) -> Vec<&Preset> {
         let q = query.to_lowercase();
-        self.presets
-            .iter()
-            .filter(|p| p.geometry.contains(&geometry))
-            .filter(|p| {
-                q.is_empty()
-                    || p.name.to_lowercase().contains(&q)
-                    || translations.is_some_and(|t| t.preset_matches(&p.id, &q))
-            })
-            .take(limit)
-            .collect()
+        let mut out: Vec<&Preset> = Vec::new();
+        for geometry in geometries {
+            let mut found = self
+                .presets
+                .iter()
+                .filter(|p| p.geometry.contains(geometry))
+                .filter(|p| !out.iter().any(|seen| seen.id == p.id))
+                .filter(|p| {
+                    q.is_empty()
+                        || p.name.to_lowercase().contains(&q)
+                        || translations.is_some_and(|t| t.preset_matches(&p.id, &q))
+                })
+                .collect::<Vec<_>>();
+            // Within a geometry, an exact name match ("Building") ranks
+            // above longer names that merely contain the query (stable).
+            if !q.is_empty() {
+                found.sort_by_key(|p| {
+                    p.name.to_lowercase() != q && p.display_name(translations).to_lowercase() != q
+                });
+            }
+            out.extend(found);
+        }
+        out.truncate(limit);
+        out
     }
 }
 
@@ -236,8 +264,17 @@ impl AreaKeys {
     }
 
     /// Whether a closed way with these tags should be treated as an area
-    /// rather than a line.
+    /// rather than a line (iD's `isArea` for a closed way): `area=yes`
+    /// always makes it one, `area=no` never does, otherwise any tag whose
+    /// key is an area key and whose value isn't excluded does. Says nothing
+    /// about open ways, which are never areas. An untagged closed way is
+    /// *not* an area by tags alone; see [`way_geometry`].
     pub fn closed_way_is_area(&self, tags: &HashMap<String, String>) -> bool {
+        match tags.get("area").map(String::as_str) {
+            Some("yes") => return true,
+            Some("no") => return false,
+            _ => {}
+        }
         for (key, value) in tags {
             if let Some(excluded_values) = self.0.get(key) {
                 if !excluded_values.contains_key(value) {
@@ -249,11 +286,97 @@ impl AreaKeys {
     }
 }
 
+/// The geometry a way is treated as for preset matching. An open way is a
+/// `Line`. A closed way is an `Area` when its tags say so (see
+/// [`AreaKeys::closed_way_is_area`]), a `Line` when they say otherwise, and
+/// an `Area` when it has no tags at all: that is a freshly drawn closed
+/// shape, and the generic Area preset (with the area presets reachable from
+/// the picker) is the least surprising reading of it.
+pub fn way_geometry(
+    tags: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Geometry {
+    if !closed {
+        Geometry::Line
+    } else if tags.is_empty() || area_keys.closed_way_is_area(tags) {
+        Geometry::Area
+    } else {
+        Geometry::Line
+    }
+}
+
+/// Geometries whose presets the picker offers for a way, best first. An
+/// open way is only ever a line. A closed way can be either (a roundabout or
+/// a fence loop is a closed line), so both are offered, ordered by
+/// [`way_geometry`]: an area (or untagged) closed way lists area presets
+/// first, a line-tagged closed way lists line presets first.
+pub fn way_candidate_geometries(
+    tags: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Vec<Geometry> {
+    if !closed {
+        return vec![Geometry::Line];
+    }
+    match way_geometry(tags, closed, area_keys) {
+        Geometry::Area => vec![Geometry::Area, Geometry::Line],
+        _ => vec![Geometry::Line, Geometry::Area],
+    }
+}
+
+/// The tag edits that applying a preset makes to a feature, as
+/// `(key, new value or None to remove)` sorted by key, omitting no-ops.
+/// Preset tags overwrite; a `*` value (any value of that key) keeps the
+/// feature's existing value or else becomes `yes`, as in iD. Existing tags
+/// the preset doesn't mention stay. For a closed way (`closed`), an
+/// area-only preset whose tags wouldn't by themselves make it an area also
+/// sets `area=yes`, and a line-only preset removes an existing `area=yes`.
+pub fn preset_tag_changes(
+    preset_tags: &HashMap<String, String>,
+    preset_geometry: &[Geometry],
+    existing: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Vec<(String, Option<String>)> {
+    let mut merged = existing.clone();
+    for (key, value) in preset_tags {
+        if value == "*" {
+            merged.entry(key.clone()).or_insert_with(|| "yes".into());
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    if closed {
+        let area_only =
+            preset_geometry.contains(&Geometry::Area) && !preset_geometry.contains(&Geometry::Line);
+        let line_only =
+            preset_geometry.contains(&Geometry::Line) && !preset_geometry.contains(&Geometry::Area);
+        if area_only && !area_keys.closed_way_is_area(&merged) {
+            merged.insert("area".into(), "yes".into());
+        } else if line_only && merged.get("area").map(String::as_str) == Some("yes") {
+            merged.remove("area");
+        }
+    }
+    let mut changes: Vec<(String, Option<String>)> = Vec::new();
+    for (key, after) in &merged {
+        if existing.get(key) != Some(after) {
+            changes.push((key.clone(), Some(after.clone())));
+        }
+    }
+    for key in existing.keys() {
+        if !merged.contains_key(key) {
+            changes.push((key.clone(), None));
+        }
+    }
+    changes.sort();
+    changes
+}
+
 /// Classify a feature's geometry for preset matching: a node not referenced
 /// by any way is a `Point`; a node referenced by at least one way is a
-/// `Vertex`; a way is a `Line` unless it's closed (first node id == last
-/// node id) and its tags qualify as an area per `area_keys`, in which case
-/// it's an `Area`; a relation is always `Relation`. Returns `None` if the feature id isn't present in `data`.
+/// `Vertex`; a way is classified by [`way_geometry`]; a relation is always
+/// `Relation`. Returns `None` if the feature id isn't present in `data`.
 pub fn classify_geometry(
     data: &OsmData,
     kind: FeatureKind,
@@ -272,12 +395,7 @@ pub fn classify_geometry(
         }
         FeatureKind::Way => {
             let way = data.ways.get(&id)?;
-            let closed = way.nodes.len() >= 2 && way.nodes.first() == way.nodes.last();
-            if closed && area_keys.closed_way_is_area(&way.tags) {
-                Some(Geometry::Area)
-            } else {
-                Some(Geometry::Line)
-            }
+            Some(way_geometry(&way.tags, way.is_closed(), area_keys))
         }
         FeatureKind::Relation => data
             .relations
@@ -441,7 +559,7 @@ mod tests {
         let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
         let data = data_with(
             vec![node(1, HashMap::new()), node(2, HashMap::new())],
-            vec![way(10, vec![1, 2, 1], tags)],
+            vec![way(10, vec![1, 2, 2, 1], tags)],
         );
         let area_keys = AreaKeys::from_json(r#"{"building": {}}"#).unwrap();
         assert_eq!(
@@ -455,7 +573,7 @@ mod tests {
         let tags = HashMap::from([("highway".to_string(), "residential".to_string())]);
         let data = data_with(
             vec![node(1, HashMap::new()), node(2, HashMap::new())],
-            vec![way(10, vec![1, 2, 1], tags)],
+            vec![way(10, vec![1, 2, 2, 1], tags)],
         );
         let area_keys = AreaKeys::from_json(r#"{"highway": {"residential": true}}"#).unwrap();
         assert_eq!(
@@ -734,5 +852,183 @@ mod tests {
         let preset = index.get("amenity/cafe").unwrap();
         assert_eq!(preset.name, "Cafe");
         assert!(index.get("does/not/exist").is_none());
+    }
+
+    fn t(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn area_rule_area_yes_and_no_override_keys() {
+        let keys = AreaKeys::from_json(
+            r#"{"building": {}, "area": {}, "highway": {"residential": true}}"#,
+        )
+        .unwrap();
+        assert!(keys.closed_way_is_area(&t(&[("area", "yes")])));
+        assert!(keys.closed_way_is_area(&t(&[("highway", "residential"), ("area", "yes")])));
+        assert!(!keys.closed_way_is_area(&t(&[("building", "yes"), ("area", "no")])));
+        assert!(!keys.closed_way_is_area(&t(&[("area", "no")])));
+        // Exception value stays a line.
+        assert!(!keys.closed_way_is_area(&t(&[("highway", "residential")])));
+        assert!(keys.closed_way_is_area(&t(&[("building", "yes")])));
+    }
+
+    #[test]
+    fn way_geometry_rule() {
+        let keys =
+            AreaKeys::from_json(r#"{"building": {}, "highway": {"residential": true}}"#).unwrap();
+        // Open ways are always lines, whatever the tags.
+        assert_eq!(
+            way_geometry(&t(&[("building", "yes")]), false, &keys),
+            Geometry::Line
+        );
+        assert_eq!(way_geometry(&t(&[]), false, &keys), Geometry::Line);
+        // Closed: untagged and area-tagged are areas; line-tagged stay lines.
+        assert_eq!(way_geometry(&t(&[]), true, &keys), Geometry::Area);
+        assert_eq!(
+            way_geometry(&t(&[("building", "yes")]), true, &keys),
+            Geometry::Area
+        );
+        assert_eq!(
+            way_geometry(&t(&[("highway", "residential")]), true, &keys),
+            Geometry::Line
+        );
+        assert_eq!(
+            way_geometry(&t(&[("name", "x")]), true, &keys),
+            Geometry::Line
+        );
+    }
+
+    #[test]
+    fn candidates_for_ways() {
+        let keys = area_keys();
+        use Geometry::{Area, Line};
+        assert_eq!(
+            way_candidate_geometries(&t(&[]), true, keys),
+            vec![Area, Line]
+        );
+        assert_eq!(
+            way_candidate_geometries(&t(&[("building", "yes")]), true, keys),
+            vec![Area, Line]
+        );
+        assert_eq!(
+            way_candidate_geometries(&t(&[("highway", "residential")]), true, keys),
+            vec![Line, Area]
+        );
+        assert_eq!(way_candidate_geometries(&t(&[]), false, keys), vec![Line]);
+    }
+
+    #[test]
+    fn picker_lists_area_presets_first_for_untagged_closed_way() {
+        let index = preset_index();
+        let cands = way_candidate_geometries(&t(&[]), true, area_keys());
+        let all = index.search_geometries_in(None, "", &cands, 30);
+        assert!(all.first().unwrap().geometry.contains(&Geometry::Area));
+        let hits = index.search_geometries_in(None, "building", &cands, 30);
+        assert_eq!(hits.first().unwrap().id, "building");
+        // Line presets are still reachable.
+        let lines = index.search_geometries_in(None, "Foot Path", &cands, 30);
+        assert!(lines.iter().any(|p| p.id == "highway/footway"));
+        // Open way: no area presets.
+        let open = index.search_geometries_in(None, "building", &[Geometry::Line], 30);
+        assert!(!open.iter().any(|p| p.id == "building"));
+        // Line-tagged closed way ranks line presets first.
+        let line_first =
+            way_candidate_geometries(&t(&[("highway", "residential")]), true, area_keys());
+        let hits = index.search_geometries_in(None, "path", &line_first, 30);
+        assert!(hits.first().unwrap().geometry.contains(&Geometry::Line));
+    }
+
+    #[test]
+    fn preset_changes_add_area_yes_when_tags_do_not_imply_area() {
+        let keys = area_keys();
+        let pedestrian = t(&[("highway", "pedestrian")]);
+        let changes = preset_tag_changes(&pedestrian, &[Geometry::Area], &t(&[]), true, keys);
+        assert!(changes.contains(&("area".into(), Some("yes".into()))));
+        assert!(changes.contains(&("highway".into(), Some("pedestrian".into()))));
+        // Area-key tags already make it an area.
+        let park = t(&[("leisure", "park")]);
+        let changes = preset_tag_changes(&park, &[Geometry::Area], &t(&[]), true, keys);
+        assert_eq!(
+            changes,
+            vec![("leisure".to_string(), Some("park".to_string()))]
+        );
+        // Open ways never get area=yes.
+        let changes = preset_tag_changes(&pedestrian, &[Geometry::Area], &t(&[]), false, keys);
+        assert!(!changes.iter().any(|(k, _)| k == "area"));
+        // area=no is overwritten.
+        let changes =
+            preset_tag_changes(&park, &[Geometry::Area], &t(&[("area", "no")]), true, keys);
+        assert!(changes.contains(&("leisure".into(), Some("park".into()))));
+    }
+
+    #[test]
+    fn preset_changes_remove_area_yes_for_line_only_presets() {
+        let keys = area_keys();
+        let footway = t(&[("highway", "footway")]);
+        let existing = t(&[("highway", "pedestrian"), ("area", "yes")]);
+        let changes = preset_tag_changes(&footway, &[Geometry::Line], &existing, true, keys);
+        assert!(changes.contains(&("area".into(), None)));
+        assert!(changes.contains(&("highway".into(), Some("footway".into()))));
+        // Presets that are both line and area leave area=yes alone.
+        let both = preset_tag_changes(
+            &footway,
+            &[Geometry::Line, Geometry::Area],
+            &existing,
+            true,
+            keys,
+        );
+        assert!(!both.iter().any(|(k, _)| k == "area"));
+    }
+
+    #[test]
+    fn preset_changes_resolve_wildcard_values() {
+        let keys = area_keys();
+        let building = t(&[("building", "*")]);
+        let changes = preset_tag_changes(&building, &[Geometry::Area], &t(&[]), true, keys);
+        assert_eq!(
+            changes,
+            vec![("building".to_string(), Some("yes".to_string()))]
+        );
+        // An existing value is kept, so nothing changes.
+        let existing = t(&[("building", "house")]);
+        assert!(preset_tag_changes(&building, &[Geometry::Area], &existing, true, keys).is_empty());
+    }
+
+    #[test]
+    fn closed_way_matching_uses_the_shared_rule() {
+        let index = preset_index();
+        let keys = area_keys();
+        let building = t(&[("building", "yes")]);
+        let g = way_geometry(&building, true, keys);
+        assert_eq!(index.match_feature(&building, g).unwrap().id, "building");
+        let plaza = t(&[("highway", "pedestrian"), ("area", "yes")]);
+        let g = way_geometry(&plaza, true, keys);
+        assert_eq!(g, Geometry::Area);
+        assert_eq!(
+            index.match_feature(&plaza, g).unwrap().id,
+            "highway/pedestrian_area"
+        );
+        // Untagged closed way is an Area: no schema preset matches empty
+        // tags for it (the generic "area" preset needs area=yes), so it is
+        // described by the geometry name rather than as "Line". An open one
+        // is a Line.
+        let g = way_geometry(&t(&[]), true, keys);
+        assert_eq!(g, Geometry::Area);
+        assert!(index.match_feature(&t(&[]), g).is_none());
+        assert_eq!(
+            describe_feature(index, &t(&[]), g).0,
+            Geometry::Area.fallback_name()
+        );
+        let g = way_geometry(&t(&[("area", "yes")]), true, keys);
+        assert_eq!(
+            index.match_feature(&t(&[("area", "yes")]), g).unwrap().id,
+            "area"
+        );
+        let g = way_geometry(&t(&[]), false, keys);
+        assert_eq!(index.match_feature(&t(&[]), g).unwrap().id, "line");
     }
 }

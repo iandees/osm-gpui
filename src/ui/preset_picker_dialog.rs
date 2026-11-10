@@ -37,13 +37,23 @@ pub fn format_tag_preview(tags: &HashMap<String, String>) -> String {
 }
 
 pub enum DialogEvent {
-    Submitted(HashMap<String, String>),
+    /// The chosen preset's tags and the geometries it applies to (the
+    /// caller needs the latter to keep a closed way's `area=yes` right).
+    Submitted {
+        tags: HashMap<String, String>,
+        geometry: Vec<Geometry>,
+    },
     Cancelled,
 }
 
+/// One row of the picker: display name, tags, and the preset's geometries.
+type PickerRow = (String, HashMap<String, String>, Vec<Geometry>);
+
 pub struct PresetPickerDialog {
     query: Entity<InputState>,
-    geometry: Geometry,
+    /// Geometries to offer presets for, best first (a closed way gets both
+    /// area and line).
+    geometries: Vec<Geometry>,
     selected_index: usize,
     focus_handle: FocusHandle,
 }
@@ -51,7 +61,7 @@ pub struct PresetPickerDialog {
 impl EventEmitter<DialogEvent> for PresetPickerDialog {}
 
 impl PresetPickerDialog {
-    pub fn new(geometry: Geometry, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(geometries: Vec<Geometry>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("dialog.preset_picker.search_placeholder"))
         });
@@ -59,26 +69,26 @@ impl PresetPickerDialog {
         query.update(cx, |state, cx| state.focus(window, cx));
         Self {
             query,
-            geometry,
+            geometries,
             selected_index: 0,
             focus_handle,
         }
     }
 
-    /// Current search results for whatever's typed in the query box: (name,
-    /// id, tags) triples cloned out of the global index so the dialog
-    /// doesn't hold onto a `&'static Preset` borrow across renders.
-    fn results(&self, cx: &Context<Self>) -> Vec<(String, String, HashMap<String, String>)> {
+    /// Current search results for whatever's typed in the query box, cloned
+    /// out of the global index so the dialog doesn't hold onto a
+    /// `&'static Preset` borrow across renders.
+    fn results(&self, cx: &Context<Self>) -> Vec<PickerRow> {
         let text = self.query.read(cx).value().to_string();
         let translations = crate::preset_translations::active();
         crate::presets::preset_index()
-            .search_in(translations, &text, self.geometry, MAX_RESULTS)
+            .search_geometries_in(translations, &text, &self.geometries, MAX_RESULTS)
             .into_iter()
             .map(|p| {
                 (
                     p.display_name(translations).to_string(),
-                    p.id.clone(),
                     p.tags.clone(),
+                    p.geometry.clone(),
                 )
             })
             .collect()
@@ -90,8 +100,11 @@ impl PresetPickerDialog {
 
     fn submit_selected(&mut self, cx: &mut Context<Self>) {
         let results = self.results(cx);
-        if let Some((_, _, tags)) = results.get(self.selected_index) {
-            cx.emit(DialogEvent::Submitted(tags.clone()));
+        if let Some((_, tags, geometry)) = results.get(self.selected_index) {
+            cx.emit(DialogEvent::Submitted {
+                tags: tags.clone(),
+                geometry: geometry.clone(),
+            });
         }
     }
 
@@ -143,32 +156,41 @@ impl Render for PresetPickerDialog {
                 .flex_col()
                 .h(gpui::px(240.0))
                 .overflow_y_scroll()
-                .children(results.iter().enumerate().map(|(i, (name, _id, tags))| {
-                    let tags = tags.clone();
-                    let is_selected = i == selected_index;
-                    div()
-                        .id(("preset-picker-result", i))
-                        .flex()
-                        .flex_col()
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .when(is_selected, |el| el.bg(cx.theme().accent))
-                        .hover(|el| el.bg(cx.theme().accent))
-                        .child(Label::new(name.clone()))
-                        .child(
-                            Label::new(format_tag_preview(&tags))
-                                .text_size(muted_text_size())
-                                .text_color(muted),
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _ev, _, cx| {
-                                cx.emit(DialogEvent::Submitted(tags.clone()));
-                                let _ = this;
-                            }),
-                        )
-                }))
+                .children(
+                    results
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, tags, geometry))| {
+                            let tags = tags.clone();
+                            let geometry = geometry.clone();
+                            let is_selected = i == selected_index;
+                            div()
+                                .id(("preset-picker-result", i))
+                                .flex()
+                                .flex_col()
+                                .px_2()
+                                .py_1()
+                                .cursor_pointer()
+                                .when(is_selected, |el| el.bg(cx.theme().accent))
+                                .hover(|el| el.bg(cx.theme().accent))
+                                .child(Label::new(name.clone()))
+                                .child(
+                                    Label::new(format_tag_preview(&tags))
+                                        .text_size(muted_text_size())
+                                        .text_color(muted),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _ev, _, cx| {
+                                        cx.emit(DialogEvent::Submitted {
+                                            tags: tags.clone(),
+                                            geometry: geometry.clone(),
+                                        });
+                                        let _ = this;
+                                    }),
+                                )
+                        }),
+                )
                 .into_any_element()
         };
 

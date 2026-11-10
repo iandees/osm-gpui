@@ -16,7 +16,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Select: click, Shift-click, box-select, and double-click inside a closed way. Drag selected nodes to move them.
 - Add: draw nodes and ways, snapping new nodes onto existing ways.
 - Building: draw a rectangular building (three clicks), or align one to a selected squared way.
-- Extrude: pull a way segment outward.
+- Extrude: drag a way segment to reshape the way (pull out an L, push in a notch); Cmd/Ctrl-drag moves the segment, Alt-drag makes a new way.
 
 **Selection actions** (Tools menu, right-click context menu, and shortcuts)
 - Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete. Each is one undo step.

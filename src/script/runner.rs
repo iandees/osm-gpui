@@ -13,7 +13,14 @@ use crate::script::{Op, Step};
 pub trait AppHandle {
     fn set_window_size(&mut self, w: u32, h: u32);
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32);
-    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), duration: Duration, left: bool);
+    fn dispatch_drag(
+        &mut self,
+        from: (f32, f32),
+        to: (f32, f32),
+        duration: Duration,
+        left: bool,
+        mods: crate::script::DragMods,
+    );
     fn dispatch_click(
         &mut self,
         at: (f32, f32),
@@ -94,8 +101,9 @@ impl Runner {
                 to,
                 duration,
                 left,
+                mods,
             } => {
-                app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration, *left);
+                app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration, *left, *mods);
                 Ok(())
             }
             Op::Click {
@@ -246,7 +254,15 @@ mod tests {
     impl AppHandle for Fake {
         fn set_window_size(&mut self, _w: u32, _h: u32) {}
         fn set_viewport(&mut self, _lat: f64, _lon: f64, _zoom: f32) {}
-        fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration, _: bool) {}
+        fn dispatch_drag(
+            &mut self,
+            _: (f32, f32),
+            _: (f32, f32),
+            _: Duration,
+            _: bool,
+            _: crate::script::DragMods,
+        ) {
+        }
         fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8, _: bool) {}
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
         fn dispatch_hover(&mut self, _: (f32, f32)) {}

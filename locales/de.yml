@@ -142,7 +142,7 @@ status:
     building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
     building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc zum Beenden"
     building_oriented_started: "Klicken oder loslassen an der gegenüberliegenden Ecke zum Abschließen · Esc zum Abbrechen"
-    extrude: "Wegsegment ziehen zum Ausziehen · Doppelklick auf Segment fügt Knoten ein · Esc zum Beenden"
+    extrude: "Wegsegment ziehen, um es heraus- oder hineinzuschieben · Cmd/Strg-Ziehen verschiebt es · Alt-Ziehen erzeugt einen neuen Weg · Doppelklick fügt Knoten ein · Esc zum Beenden"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
@@ -287,6 +287,7 @@ history:
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
+  extruded_segment: "Segment ausgezogen"
   inserted_node: "Knoten in Weg eingefügt"
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"
@@ -654,6 +655,8 @@ error:
     rate_limited: "OSM-API begrenzt die Anfragen (509) — später erneut versuchen"
     http: "OSM-API-Fehler %{status}: %{detail}"
     parse: "OSM-Antwort konnte nicht gelesen werden: %{detail}"
+    # Der Diff-Upload hat keine brauchbare Antwort erhalten; der Server hat ihn eventuell angewendet.
+    outcome_unknown: "Der Upload ist möglicherweise durchgegangen, möglicherweise nicht (%{detail}). Prüfe vor einem erneuten Upload, ob deine Änderungen auf dem Server sind: %{url}. Ein erneuter Upload könnte neue Objekte ein zweites Mal anlegen."
   auth:
     http: "OSM-OAuth-Fehler %{status}: %{detail}"
     no_redirect: "Anmeldung abgelaufen: keine Weiterleitung vom Browser erhalten"

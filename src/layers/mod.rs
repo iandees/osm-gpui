@@ -252,6 +252,18 @@ pub trait EditableLayer {
         area_keys: &crate::presets::AreaKeys,
     ) -> Option<crate::presets::Geometry>;
 
+    /// Geometries whose presets may be offered for a feature, best first:
+    /// just its own geometry, except a closed way, which can be an area or a
+    /// line. Empty if the feature isn't found.
+    fn feature_geometry_candidates(
+        &self,
+        feature: &crate::selection::FeatureRef,
+        area_keys: &crate::presets::AreaKeys,
+    ) -> Vec<crate::presets::Geometry>;
+
+    /// Whether `feature` is a closed way owned by this layer.
+    fn feature_is_closed_way(&self, feature: &crate::selection::FeatureRef) -> bool;
+
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
     fn render_highlight(
         &self,
