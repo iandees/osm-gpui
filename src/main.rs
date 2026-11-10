@@ -66,6 +66,7 @@ actions!(
         AddCoordinateGrid,
         DownloadFromOsm,
         ToggleDebugOverlay,
+        ToggleDownloadedArea,
         AddCustomImagery,
         OpenSettings,
         Undo,
@@ -482,6 +483,10 @@ struct MapViewer {
     last_imagery_load_state: Option<ImageryLoadState>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
+    /// Whether the downloaded-area wash (everything outside the downloaded
+    /// bounds dimmed) is drawn. View > Show Downloaded Area; on by default and
+    /// not persisted (the settings store holds no other View preferences).
+    show_downloaded_area: bool,
     /// Active custom imagery dialog, if open.
     custom_imagery_dialog:
         Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
@@ -733,6 +738,7 @@ impl MapViewer {
             last_menu_center: None,
             last_imagery_load_state: None,
             show_debug_overlay: false,
+            show_downloaded_area: true,
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             about_dialog: None,
@@ -791,6 +797,11 @@ impl MapViewer {
         (lat, lon, state)
     }
 
+    /// Whether View > Show Downloaded Area is on (drives its menu checkmark).
+    pub(crate) fn shows_downloaded_area(&self) -> bool {
+        self.show_downloaded_area
+    }
+
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
         let (lat, lon) = self.viewport.center();
@@ -811,7 +822,7 @@ impl MapViewer {
         }
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
-        rebuild_menus(&mut *cx, lat, lon, current_state);
+        rebuild_menus(&mut *cx, lat, lon, current_state, self.show_downloaded_area);
         self.last_menu_center = Some((lat, lon));
         self.last_imagery_load_state = Some(current_state);
     }
@@ -3508,6 +3519,28 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Show or hide the downloaded-area wash and refresh the View menu so its
+    /// checkmark matches. Window-scoped (see `on_toggle_downloaded_area`).
+    pub(crate) fn set_show_downloaded_area(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.show_downloaded_area == show {
+            return;
+        }
+        self.show_downloaded_area = show;
+        let (lat, lon, state) = self.imagery_menu_context();
+        rebuild_menus(&mut *cx, lat, lon, state, show);
+        cx.notify();
+    }
+
+    /// View > Show Downloaded Area: flip the wash.
+    fn on_toggle_downloaded_area(
+        &mut self,
+        _: &ToggleDownloadedArea,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_show_downloaded_area(!self.show_downloaded_area, cx);
+    }
+
     /// Window-scoped handler for the `AddCustomImagery` action; see
     /// `on_upload_to_osm` for why the global handler alone is not enough.
     fn on_open_custom_imagery_dialog(
@@ -4373,11 +4406,13 @@ impl Render for MapViewer {
                                         let this = entity.read(cx);
                                         // Downloaded-area wash first: above imagery,
                                         // below every layer's features.
-                                        this.layer_manager.render_all_download_bounds(
-                                            &viewport_clone,
-                                            bounds,
-                                            window,
-                                        );
+                                        if this.show_downloaded_area {
+                                            this.layer_manager.render_all_download_bounds(
+                                                &viewport_clone,
+                                                bounds,
+                                                window,
+                                            );
+                                        }
                                         this.layer_manager.render_all_canvas(
                                             &viewport_clone,
                                             bounds,
@@ -4788,6 +4823,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_to_data))
             .on_action(cx.listener(Self::on_zoom_to_selection))
+            .on_action(cx.listener(Self::on_toggle_downloaded_area))
             .on_action(cx.listener(Self::on_minimize_window))
             .on_action(cx.listener(Self::on_zoom_window))
             .on_action(cx.listener(Self::on_move_layer))
@@ -4936,7 +4972,7 @@ fn main() {
 
             // Initial menu (before ELI loads). MapViewer's render loop will call
             // rebuild_menus again whenever the load state or viewport changes.
-            rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading);
+            rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading, true);
 
             // Kick off background download/parse of the Editor Layer Index.
             cx.background_executor()
@@ -7082,6 +7118,80 @@ mod tests {
                 redo_step(view);
                 assert!(editable(view).relation(900).is_none());
                 assert_eq!(pending(view), (0, 0, 1));
+            })
+            .unwrap();
+    }
+
+    /// Undo and redo never touch the selection, for any kind of feature:
+    /// undoing a delete does not re-select the restored node, way or relation,
+    /// and redoing a relation creation does not select the recreated relation
+    /// (the original action does, via `ActionOutcome::select`). Relations are
+    /// kept consistent with nodes and ways, so this pins all three.
+    #[gpui::test]
+    fn undo_and_redo_leave_the_selection_alone_for_every_feature_kind(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+
+                select(view, Way, &[102]);
+                view.delete_selected_features(cx);
+                assert!(view.selected.is_empty());
+                undo_step(view);
+                assert!(editable(view).way_node_ids(102).is_some());
+                assert!(view.selected.is_empty());
+
+                select(view, Node, &[7]);
+                view.delete_selected_features(cx);
+                assert!(view.selected.is_empty());
+                undo_step(view);
+                assert!(editable(view).node_lat_lon(7).is_some());
+                assert!(view.selected.is_empty());
+
+                view.select_relation(layer_id, 900);
+                view.delete_selected_features(cx);
+                undo_step(view);
+                assert!(editable(view).relation(900).is_some());
+                assert!(view.selected.is_empty());
+
+                // Creating a relation selects it; undo then redo does not.
+                select(view, Way, &[101]);
+                view.run_selection_action("new_relation", cx);
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].kind, Relation);
+                undo_step(view);
+                view.set_selection(Vec::new());
+                redo_step(view);
+                let created = view_relation_id(view);
+                assert!(editable(view).relation(created).is_some());
+                assert!(view.selected.is_empty());
+            })
+            .unwrap();
+    }
+
+    /// The id of the relation `new_relation` created (the only negative one).
+    fn view_relation_id(view: &mut MapViewer) -> i64 {
+        editable(view)
+            .relation_ids()
+            .into_iter()
+            .find(|id| *id < 0)
+            .expect("a created relation")
+    }
+
+    #[gpui::test]
+    fn show_downloaded_area_toggles_and_defaults_on(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                assert!(view.shows_downloaded_area());
+                view.set_show_downloaded_area(false, cx);
+                assert!(!view.shows_downloaded_area());
+                // Setting the current value again is a no-op.
+                view.set_show_downloaded_area(false, cx);
+                assert!(!view.shows_downloaded_area());
+                view.on_toggle_downloaded_area(&ToggleDownloadedArea, _window, cx);
+                assert!(view.shows_downloaded_area());
             })
             .unwrap();
     }

@@ -16,8 +16,8 @@ use crate::{
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
     DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm,
-    ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
+    Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -255,12 +255,16 @@ fn apply_keybindings_change(cx: &mut App) {
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
     // the startup call to `rebuild_menus` in `main.rs`).
-    let (lat, lon, state) = crate::MAP_VIEWER_HANDLE
+    let (lat, lon, state, show_downloaded_area) = crate::MAP_VIEWER_HANDLE
         .get()
         .and_then(|h| h.upgrade())
-        .map(|view| view.read(cx).imagery_menu_context())
-        .unwrap_or((40.7128, -74.0060, crate::ImageryLoadState::Loading));
-    rebuild_menus(cx, lat, lon, state);
+        .map(|view| {
+            let view = view.read(cx);
+            let (lat, lon, state) = view.imagery_menu_context();
+            (lat, lon, state, view.shows_downloaded_area())
+        })
+        .unwrap_or((40.7128, -74.0060, crate::ImageryLoadState::Loading, true));
+    rebuild_menus(cx, lat, lon, state, show_downloaded_area);
 }
 
 /// Build and install the menu bar, using the current viewport center to filter
@@ -270,6 +274,7 @@ pub(crate) fn rebuild_menus(
     center_lat: f64,
     center_lon: f64,
     state: ImageryLoadState,
+    show_downloaded_area: bool,
 ) {
     let custom = custom_imagery_snapshot();
     let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
@@ -434,6 +439,8 @@ pub(crate) fn rebuild_menus(
                 MenuItem::action(tr!("menu.view.zoom_to_data"), ZoomToData),
                 MenuItem::action(tr!("menu.view.zoom_to_selection"), ZoomToSelection),
                 MenuItem::separator(),
+                MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
+                    .checked(show_downloaded_area),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
             ],
             disabled: false,
