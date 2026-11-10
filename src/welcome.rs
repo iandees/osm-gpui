@@ -75,7 +75,7 @@ impl MapViewer {
         if !show_welcome(&self.layer_manager) {
             return None;
         }
-        let state = download_state(&self.viewport.visible_bounds(), self.activity.is_some());
+        let state = download_state(&self.viewport.visible_bounds(), self.transfer.is_some());
         let settings = osm_gpui::settings_store::snapshot();
         let shortcut = |id: &str| -> SharedString {
             crate::selection_actions::display_shortcut(&osm_gpui::keybindings::effective_spec(

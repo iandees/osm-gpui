@@ -414,6 +414,7 @@ fn parse_token_response(
             body: String::from_utf8_lossy(&body).into_owned(),
         }),
         Err(HttpError::Transport(msg)) => Err(AuthError::Network(msg)),
+        Err(e @ HttpError::Cancelled) => Err(AuthError::Network(e.to_string())),
     }
 }
 
@@ -447,6 +448,7 @@ fn fetch_user_details_with(
             });
         }
         Err(HttpError::Transport(msg)) => return Err(AuthError::Network(msg)),
+        Err(e @ HttpError::Cancelled) => return Err(AuthError::Network(e.to_string())),
     };
 
     let json: serde_json::Value =

@@ -82,12 +82,19 @@ impl HttpResponse {
 #[derive(Debug, Clone)]
 pub enum HttpError {
     Transport(String),
-    Status { status: u16, body: Vec<u8> },
+    Status {
+        status: u16,
+        body: Vec<u8>,
+    },
+    /// The caller's progress callback asked to stop while the body was being
+    /// read. Never retried.
+    Cancelled,
 }
 
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            HttpError::Cancelled => write!(f, "cancelled"),
             HttpError::Transport(msg) => write!(f, "transport error: {}", msg),
             HttpError::Status { status, .. } => write!(f, "HTTP {}", status),
         }
@@ -100,6 +107,25 @@ impl std::error::Error for HttpError {}
 /// tests use `fake::FakeClient` to script responses without touching the network.
 pub trait HttpClient: Send + Sync {
     fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError>;
+
+    /// Like `request`, but reports the response body's progress as it is
+    /// read: `on_progress(bytes_so_far, content_length)` where the length is
+    /// `None` when the server didn't send one. Returning `false` abandons the
+    /// transfer with `HttpError::Cancelled`. The default reads everything
+    /// first and reports once at the end.
+    fn request_with_progress(
+        &self,
+        req: HttpRequest,
+        on_progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+    ) -> Result<HttpResponse, HttpError> {
+        let resp = self.request(req)?;
+        let len = resp.body.len() as u64;
+        if on_progress(len, Some(len)) {
+            Ok(resp)
+        } else {
+            Err(HttpError::Cancelled)
+        }
+    }
 }
 
 /// Cap on how much of an *error* response body is read into memory: error pages are
@@ -121,6 +147,15 @@ impl UreqClient {
 
 impl HttpClient for UreqClient {
     fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
+        self.request_with_progress(req, &mut |_, _| true)
+    }
+
+    fn request_with_progress(
+        &self,
+        req: HttpRequest,
+        on_progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+    ) -> Result<HttpResponse, HttpError> {
+        use crate::transfer::{is_read_cancelled, CountingReader};
         use std::io::Read;
 
         let mut builder = match req.method {
@@ -147,10 +182,19 @@ impl HttpClient for UreqClient {
         match result {
             Ok(resp) => {
                 let status = resp.status();
+                let total = resp
+                    .header("Content-Length")
+                    .and_then(|v| v.trim().parse::<u64>().ok());
                 let mut body = Vec::new();
-                resp.into_reader()
+                CountingReader::new(resp.into_reader(), |n| on_progress(n, total))
                     .read_to_end(&mut body)
-                    .map_err(|e| HttpError::Transport(e.to_string()))?;
+                    .map_err(|e| {
+                        if is_read_cancelled(&e) {
+                            HttpError::Cancelled
+                        } else {
+                            HttpError::Transport(e.to_string())
+                        }
+                    })?;
                 Ok(HttpResponse { status, body })
             }
             Err(ureq::Error::Status(status, resp)) => {
@@ -202,11 +246,25 @@ pub fn fetch_with_retries(
     req: &HttpRequest,
     policy: &RetryPolicy,
 ) -> Result<HttpResponse, HttpError> {
+    fetch_with_retries_progress(client, req, policy, &mut |_, _| true)
+}
+
+/// `fetch_with_retries`, reporting body progress through
+/// `HttpClient::request_with_progress`. The byte count restarts from zero on
+/// each attempt. A `false` from `on_progress` ends the fetch with
+/// `HttpError::Cancelled` and is not retried.
+pub fn fetch_with_retries_progress(
+    client: &dyn HttpClient,
+    req: &HttpRequest,
+    policy: &RetryPolicy,
+    on_progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<HttpResponse, HttpError> {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        match client.request(req.clone()) {
+        match client.request_with_progress(req.clone(), &mut *on_progress) {
             Ok(resp) => return Ok(resp),
+            Err(HttpError::Cancelled) => return Err(HttpError::Cancelled),
             Err(HttpError::Status { status, body }) => {
                 if attempt < policy.max_attempts && crate::is_retryable_status(status) {
                     std::thread::sleep(policy.delays[(attempt - 1) as usize]);
@@ -326,6 +384,28 @@ mod tests {
         let resp = fetch_with_retries(&client, &req, &RetryPolicy::standard()).unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(client.request_count(), 2);
+    }
+
+    #[test]
+    fn progress_is_reported_and_cancel_is_not_retried() {
+        let client = FakeClient::new(vec![ok(200, "twelve bytes")]);
+        let req = HttpRequest::get("https://example.test/x");
+        let mut seen = Vec::new();
+        let resp =
+            fetch_with_retries_progress(&client, &req, &RetryPolicy::standard(), &mut |n, t| {
+                seen.push((n, t));
+                true
+            })
+            .unwrap();
+        assert_eq!(resp.body, b"twelve bytes");
+        assert_eq!(seen, vec![(12, Some(12))]);
+
+        let client = FakeClient::new(vec![ok(200, "x"), ok(200, "x")]);
+        let err =
+            fetch_with_retries_progress(&client, &req, &RetryPolicy::standard(), &mut |_, _| false)
+                .unwrap_err();
+        assert!(matches!(err, HttpError::Cancelled));
+        assert_eq!(client.request_count(), 1);
     }
 
     #[test]

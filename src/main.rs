@@ -54,6 +54,7 @@ use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
 use osm_gpui::tr;
+use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 use osm_gpui::viewport::Viewport;
 
 actions!(
@@ -454,10 +455,11 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(SharedString, Instant)>,
-    /// Description of a long-running background operation (download,
-    /// upload) shown with a spinner in the status bar until it completes.
-    /// Unlike `status_message` it never expires on its own.
-    activity: Option<SharedString>,
+    /// The running download or upload, shown with a spinner in the status
+    /// bar until it completes. The worker thread updates the shared state;
+    /// a poll task re-renders. Unlike `status_message` it never expires on
+    /// its own, and at most one transfer runs at a time.
+    transfer: Option<TransferHandle>,
     /// Whether Space is currently held with the map focused; a left-drag
     /// then pans instead of selecting.
     space_held: bool,
@@ -721,7 +723,7 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
-            activity: None,
+            transfer: None,
             space_held: false,
             data_generation: 0,
             pending_edits: None,
@@ -3720,7 +3722,8 @@ impl MapViewer {
                         cx.notify();
                     }
                     DialogEvent::Upload { comment } => {
-                        this.upload_dialog = None;
+                        // The dialog stays open to show the upload's stage;
+                        // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
                     }
                 }
@@ -3789,8 +3792,26 @@ impl MapViewer {
             return;
         }
 
+        if self.transfer.is_some() {
+            self.set_status(tr!("transfer.busy"));
+            cx.notify();
+            return;
+        }
+
+        let change_count: usize = diffs
+            .iter()
+            .map(|d| {
+                let (created, modified, deleted) = d.counts();
+                created + modified + deleted
+            })
+            .sum();
+        let progress = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
         self.status_message = None;
-        self.activity = Some(tr!("activity.uploading"));
+        self.transfer = Some(progress.clone());
+        if let Some(dialog) = &self.upload_dialog {
+            dialog.update(cx, |dialog, cx| dialog.begin_transfer(progress.clone(), cx));
+        }
+        self.poll_transfer(progress.clone(), cx);
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3811,6 +3832,9 @@ impl MapViewer {
                         names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
                     let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
 
+                    progress.set_phase(TransferPhase::UploadingChanges {
+                        count: change_count,
+                    });
                     match osm_upload::upload_changes(
                         &base_url,
                         &token.access_token,
@@ -3823,6 +3847,7 @@ impl MapViewer {
                             // isn't treated as a fatal error — the
                             // changeset just stays open, which OSM handles
                             // fine (manual or automatic close later).
+                            progress.set_phase(TransferPhase::ClosingChangeset);
                             let _ = osm_upload::close_changeset(
                                 &base_url,
                                 &token.access_token,
@@ -3841,7 +3866,7 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                this.activity = None;
+                this.transfer = None;
                 this.data_generation += 1;
                 match result {
                     Ok((changeset_id, upload_result)) => {
@@ -3850,9 +3875,16 @@ impl MapViewer {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
+                        this.upload_dialog = None;
                         this.set_status(tr!("status.uploaded", changeset = changeset_id));
                     }
                     Err(e) => {
+                        // Keep the dialog open on the error so it can be
+                        // read and the upload retried; the status bar gets
+                        // the message too.
+                        if let Some(dialog) = &this.upload_dialog {
+                            dialog.update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                        }
                         this.set_status(e);
                     }
                 }
@@ -3860,6 +3892,88 @@ impl MapViewer {
             });
         })
         .detach();
+    }
+
+    /// Debug builds only, and only when `OSM_GPUI_DEBUG_TRANSFER` is set:
+    /// freeze the UI in a transfer state so progress rendering can be
+    /// screenshotted without a network. `upload` opens the upload dialog
+    /// mid-upload; `download` / `download-total` show a running download
+    /// (without / with a known size). Nothing is ever sent: the handles
+    /// have no worker, and the dialog has no event subscription.
+    #[cfg(debug_assertions)]
+    fn debug_show_transfer_demo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(demo) = std::env::var("OSM_GPUI_DEBUG_TRANSFER") else {
+            return;
+        };
+        match demo.as_str() {
+            "upload" => {
+                let handle = TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::UploadingChanges { count: 12 },
+                );
+                let summaries = vec![osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: "OSM data".to_string(),
+                    created: 3,
+                    modified: 8,
+                    deleted: 1,
+                }];
+                let dialog = cx.new(|cx| {
+                    osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
+                });
+                dialog.update(cx, |dialog, cx| dialog.begin_transfer(handle.clone(), cx));
+                self.upload_dialog = Some(dialog);
+                self.transfer = Some(handle);
+            }
+            "download" | "download-total" => {
+                let handle =
+                    TransferHandle::new(TransferKind::Download, TransferPhase::Downloading);
+                let total = (demo == "download-total").then_some(2_800_000);
+                handle.set_bytes(1_400_000, total);
+                self.transfer = Some(handle);
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-render about every `POLL_INTERVAL` (the status bar and, for an
+    /// upload, its dialog) for as long as `progress` is the running
+    /// transfer. The worker writes into the shared handle; this is the only
+    /// thing that turns those writes into frames.
+    fn poll_transfer(&mut self, progress: TransferHandle, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(osm_gpui::transfer::POLL_INTERVAL)
+                .await;
+            let still_running = this.update(cx, |this, cx| {
+                let running = this
+                    .transfer
+                    .as_ref()
+                    .is_some_and(|current| current.is_same(&progress));
+                if running {
+                    if let Some(dialog) = &this.upload_dialog {
+                        dialog.update(cx, |_, cx| cx.notify());
+                    }
+                    cx.notify();
+                }
+                running
+            });
+            if !still_running.unwrap_or(false) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Abandon the running download (the status bar's Cancel button). The
+    /// worker notices between chunks and drops the connection. Uploads are
+    /// never cancellable (see `TransferProgress::is_cancellable`).
+    pub(crate) fn cancel_transfer(&mut self, cx: &mut Context<Self>) {
+        if let Some(transfer) = &self.transfer {
+            if transfer.snapshot().is_cancellable() {
+                transfer.cancel();
+                cx.notify();
+            }
+        }
     }
 
     /// Kick off a background fetch of the OSM data within the current
@@ -3877,8 +3991,16 @@ impl MapViewer {
             return;
         }
 
+        if self.transfer.is_some() {
+            self.set_status(tr!("transfer.busy"));
+            cx.notify();
+            return;
+        }
+
+        let progress = TransferHandle::new(TransferKind::Download, TransferPhase::Requesting);
         self.status_message = None;
-        self.activity = Some(tr!("activity.downloading"));
+        self.transfer = Some(progress.clone());
+        self.poll_transfer(progress.clone(), cx);
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3894,12 +4016,12 @@ impl MapViewer {
                     let token = auth::ensure_fresh_token(&auth::oauth_base_for(&base_url))
                         .ok()
                         .map(|t| t.access_token);
-                    osm_api::fetch_bbox(bounds, &base_url, token.as_deref())
+                    osm_api::fetch_bbox_tracked(bounds, &base_url, token.as_deref(), &progress)
                 })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                this.activity = None;
+                this.transfer = None;
                 this.data_generation += 1;
                 match result {
                     Ok(data) => this.apply_download(data),
@@ -4886,6 +5008,8 @@ fn main() {
                             viewer.add_default_layers();
                             viewer
                         });
+                        #[cfg(debug_assertions)]
+                        view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
 
                         // Publish a weak handle to the live view so the
                         // `on_window_should_close` closure below (which only has
