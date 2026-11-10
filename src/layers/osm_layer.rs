@@ -2249,6 +2249,19 @@ impl OsmLayer {
         screen_pt: Point<Pixels>,
         tol_px: f32,
     ) -> Option<(i64, i64, i64, usize)> {
+        self.hit_test_segment_preferring(viewport, screen_pt, tol_px, None)
+    }
+
+    /// Like `hit_test_segment`, but a segment of `prefer_way` within
+    /// tolerance wins over a nearer segment of any other way (so overlapping
+    /// ways resolve to the selected one).
+    pub fn hit_test_segment_preferring(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+        prefer_way: Option<i64>,
+    ) -> Option<(i64, i64, i64, usize)> {
         self.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
@@ -2256,12 +2269,14 @@ impl OsmLayer {
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
-        let mut best: Option<(f32, i64, i64, i64, usize)> = None;
+        // (preferred, distance, way, a, b, index): preferred ways sort first.
+        let mut best: Option<(bool, f32, i64, i64, i64, usize)> = None;
         for item in self.way_index.locate_in_envelope_intersecting(envelope) {
             let way_id = item.data;
             let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
                 continue;
             };
+            let preferred = prefer_way == Some(way_id);
             let verts = &self.way_vertices[way_idx];
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
@@ -2272,12 +2287,16 @@ impl OsmLayer {
                     continue;
                 }
                 let d = point_to_segment_distance(screen_pt, sp_a, sp_b);
-                if d <= tol_px && best.as_ref().is_none_or(|&(bd, ..)| d < bd) {
-                    best = Some((d, way_id, id_a, id_b, i));
+                if d <= tol_px
+                    && best.as_ref().is_none_or(|&(bp, bd, ..)| {
+                        (preferred && !bp) || (preferred == bp && d < bd)
+                    })
+                {
+                    best = Some((preferred, d, way_id, id_a, id_b, i));
                 }
             }
         }
-        best.map(|(_, way_id, a, b, idx)| (way_id, a, b, idx))
+        best.map(|(_, _, way_id, a, b, idx)| (way_id, a, b, idx))
     }
 
     /// Like `hit_test_segment`, but also returns the nearest point on the

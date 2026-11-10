@@ -137,7 +137,7 @@ status:
     building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
     building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
     building_oriented_started: "Click or release at the opposite corner to finish the building · Esc to cancel"
-    extrude: "Drag a way segment to extrude it · double-click a segment to add a node · Esc to exit"
+    extrude: "Drag a way segment to pull it out or push it in · Cmd/Ctrl-drag moves it · Alt-drag makes a new way · double-click adds a node · Esc to exit"
   pending_edits:
     one: "%{count} unsaved edit"
     other: "%{count} unsaved edits"
@@ -280,6 +280,7 @@ history:
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"
+  extruded_segment: "Extruded a segment"
   inserted_node: "Inserted a node into a way"
   snapped_node: "Snapped a node onto a way"
   changed_way_nodes: "Changed the nodes of a way"

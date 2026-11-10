@@ -137,7 +137,7 @@ status:
     building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
     building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc zum Beenden"
     building_oriented_started: "Klicken oder loslassen an der gegenüberliegenden Ecke zum Abschließen · Esc zum Abbrechen"
-    extrude: "Wegsegment ziehen zum Ausziehen · Doppelklick auf Segment fügt Knoten ein · Esc zum Beenden"
+    extrude: "Wegsegment ziehen, um es heraus- oder hineinzuschieben · Cmd/Strg-Ziehen verschiebt es · Alt-Ziehen erzeugt einen neuen Weg · Doppelklick fügt Knoten ein · Esc zum Beenden"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
@@ -280,6 +280,7 @@ history:
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
+  extruded_segment: "Segment ausgezogen"
   inserted_node: "Knoten in Weg eingefügt"
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"

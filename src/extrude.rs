@@ -87,7 +87,11 @@ pub fn plan_extrude(
     let closed = n >= 4 && way[0].id == way[n - 1].id;
     let m = if closed { n - 1 } else { n };
     let ia = segment;
-    let ib = if closed { (segment + 1) % m } else { segment + 1 };
+    let ib = if closed {
+        (segment + 1) % m
+    } else {
+        segment + 1
+    };
     let (a, b) = (way[ia], way[ib]);
     if a.id == b.id {
         return None;

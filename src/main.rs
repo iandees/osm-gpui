@@ -303,6 +303,48 @@ struct BuildingPress {
     placed_first_corner: bool,
 }
 
+/// What an Extrude-mode drag does, fixed by the modifier keys held at
+/// mouse-down.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExtrudeStyle {
+    /// Default: reshape the way, growing or notching it (JOSM's plain drag).
+    Reshape,
+    /// Cmd (Ctrl off macOS): translate the segment's endpoints, no new nodes.
+    Move,
+    /// Alt/Option: pull a new separate, untagged way out of the segment.
+    NewWay,
+}
+
+impl ExtrudeStyle {
+    fn from_modifiers(m: gpui::Modifiers) -> Self {
+        if m.alt {
+            ExtrudeStyle::NewWay
+        } else if m.secondary() {
+            ExtrudeStyle::Move
+        } else {
+            ExtrudeStyle::Reshape
+        }
+    }
+}
+
+/// The index `i` such that `node_ids[i] == a && node_ids[i + 1] == b`,
+/// preferring `hint` (the hit-test's index) when it is consistent.
+fn segment_index_in_way(node_ids: &[i64], hint: usize, a: i64, b: i64) -> Option<usize> {
+    let matches = |i: usize| node_ids.get(i) == Some(&a) && node_ids.get(i + 1) == Some(&b);
+    if matches(hint) {
+        return Some(hint);
+    }
+    (0..node_ids.len().saturating_sub(1)).find(|&i| matches(i))
+}
+
+/// An Extrude drag resolved against the current cursor: the plan to apply and
+/// the resulting outline in screen coordinates, for the live preview.
+struct ExtrudeResult {
+    plan: osm_gpui::extrude::ExtrudePlan,
+    /// The way's node list after the edit, as screen positions.
+    outline: Vec<(f64, f64)>,
+}
+
 /// Extrude mode's in-progress drag: the way segment being extruded from,
 /// and the two endpoint node ids used to build the preview/final rectangle.
 struct ExtrudeDrag {
@@ -310,6 +352,9 @@ struct ExtrudeDrag {
     way_id: i64,
     node_a: i64,
     node_b: i64,
+    /// Index of the segment (`node_a`) in the way's node list.
+    segment: usize,
+    style: ExtrudeStyle,
     /// Screen position of the mouse-down that started this drag — needed
     /// for the click/drag threshold check on release, since (unlike Select
     /// mode's move-drag) this doesn't go through the shared `Interaction`
@@ -1064,7 +1109,11 @@ impl MapViewer {
     /// `position` must already be in map-local coordinates (see
     /// `window_to_map`) — callers pass the raw event position through
     /// `window_to_map` first.
-    fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
+    fn handle_map_mouse_down(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+    ) {
         // Oriented Building mode owns the left button entirely (no
         // box-select, and no move-drag of the selected reference way): the
         // press places the first corner, the release decides click vs drag.
@@ -1088,16 +1137,39 @@ impl MapViewer {
             if let Some(layer_id) = self.active_layer {
                 if let Some(layer) = self.layer_manager.find_layer(layer_id) {
                     if let Some(osm_layer) = layer.as_any().downcast_ref::<OsmLayer>() {
-                        if let Some((way_id, node_a, node_b, _idx)) =
-                            osm_layer.hit_test_segment(&self.viewport, position, 6.0)
+                        // A segment of the selected way wins over a nearer
+                        // segment of an overlapping one.
+                        let selected_way = self
+                            .selected
+                            .iter()
+                            .find(|f| {
+                                f.layer_id == layer_id
+                                    && f.kind == osm_gpui::selection::FeatureKind::Way
+                            })
+                            .map(|f| f.id);
+                        if let Some((way_id, node_a, node_b, idx)) = osm_layer
+                            .hit_test_segment_preferring(
+                                &self.viewport,
+                                position,
+                                6.0,
+                                selected_way,
+                            )
                         {
-                            self.extrude_drag = Some(ExtrudeDrag {
-                                layer: layer_id,
-                                way_id,
-                                node_a,
-                                node_b,
-                                down: position,
-                            });
+                            let segment = layer
+                                .as_editable()
+                                .and_then(|e| e.way_node_ids(way_id))
+                                .and_then(|ids| segment_index_in_way(&ids, idx, node_a, node_b));
+                            if let Some(segment) = segment {
+                                self.extrude_drag = Some(ExtrudeDrag {
+                                    layer: layer_id,
+                                    way_id,
+                                    node_a,
+                                    node_b,
+                                    segment,
+                                    style: ExtrudeStyle::from_modifiers(modifiers),
+                                    down: position,
+                                });
+                            }
                         }
                     }
                 }
@@ -2460,7 +2532,12 @@ impl MapViewer {
         if let Some(drag) = self.extrude_drag.take() {
             let moved = (up_pos - drag.down).magnitude() >= 4.0;
             if moved {
-                self.commit_extrude(&drag, up_pos);
+                match drag.style {
+                    ExtrudeStyle::NewWay => self.commit_extrude(&drag, up_pos),
+                    ExtrudeStyle::Reshape | ExtrudeStyle::Move => {
+                        self.commit_extrude_reshape(&drag, up_pos)
+                    }
+                }
             } else if event.click_count == 2 {
                 self.insert_node_on_segment(&drag, up_pos);
             }
@@ -2769,6 +2846,173 @@ impl MapViewer {
             layer_id: drag.layer,
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
+        }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
+    }
+
+    /// Resolve a Reshape/Move extrude drag against the cursor at
+    /// `cursor_screen` (map-local pixels): the plan to apply plus the way's
+    /// resulting outline in screen pixels. Works in screen space, which is
+    /// isotropic, so "perpendicular" means perpendicular on screen. `None`
+    /// for anything that would not change the way.
+    fn compute_extrude(
+        &self,
+        drag: &ExtrudeDrag,
+        cursor_screen: gpui::Point<gpui::Pixels>,
+    ) -> Option<ExtrudeResult> {
+        use osm_gpui::extrude::{ExtrudeKind, PlanNode, SegmentNode};
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+
+        let editable = self.layer_manager.find_layer(drag.layer)?.as_editable()?;
+        let ids = editable.way_node_ids(drag.way_id)?;
+        let screen_of = |id: i64| -> Option<(f64, f64)> {
+            let (lat, lon) = editable.node_lat_lon(id)?;
+            let p = self.viewport.geo_to_screen(lat, lon);
+            Some((p.x.to_f64(), p.y.to_f64()))
+        };
+        let mut nodes = Vec::with_capacity(ids.len());
+        for &id in &ids {
+            // A node may be moved (rather than duplicated) only when nothing
+            // else depends on it: no other way, no relation, no tags.
+            let movable = editable
+                .ways_using_node(id)
+                .iter()
+                .all(|&w| w == drag.way_id)
+                && editable.relations_containing_node(id).is_empty()
+                && editable
+                    .feature_tags(&FeatureRef {
+                        layer_id: drag.layer,
+                        kind: FeatureKind::Node,
+                        id,
+                    })
+                    .is_none_or(|t| t.is_empty());
+            nodes.push(SegmentNode {
+                id,
+                pos: screen_of(id)?,
+                movable,
+            });
+        }
+        let down = (drag.down.x.to_f64(), drag.down.y.to_f64());
+        let cursor = (cursor_screen.x.to_f64(), cursor_screen.y.to_f64());
+        let kind = match drag.style {
+            ExtrudeStyle::Move => ExtrudeKind::Move,
+            _ => ExtrudeKind::Reshape,
+        };
+        let plan = osm_gpui::extrude::plan_extrude(
+            &nodes,
+            drag.segment,
+            (cursor.0 - down.0, cursor.1 - down.1),
+            kind,
+        )?;
+        let outline = plan
+            .nodes
+            .iter()
+            .map(|n| match *n {
+                PlanNode::New(i) => plan.new_nodes[i],
+                PlanNode::Existing(id) => plan
+                    .moved
+                    .iter()
+                    .find(|m| m.0 == id)
+                    .map(|m| m.1)
+                    .or_else(|| nodes.iter().find(|n| n.id == id).map(|n| n.pos))
+                    .unwrap_or_default(),
+            })
+            .collect();
+        Some(ExtrudeResult { plan, outline })
+    }
+
+    /// Commit a Reshape/Move extrude drag as one undo step: new nodes
+    /// (`CreateNode`), the way's rewritten node list (`SetWayNodes`) and the
+    /// moved nodes (`MoveNodes`), in that order so undo runs them backwards.
+    fn commit_extrude_reshape(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        use osm_gpui::extrude::PlanNode;
+
+        let Some(result) = self.compute_extrude(drag, up_pos) else {
+            return;
+        };
+        let plan = result.plan;
+        if !plan.new_nodes.is_empty()
+            && self.refuse_way_growth(drag.layer, drag.way_id, plan.new_nodes.len())
+        {
+            return;
+        }
+        let to_geo = |p: (f64, f64)| {
+            self.viewport
+                .screen_to_geo(gpui::point(px(p.0 as f32), px(p.1 as f32)))
+        };
+        let new_geo: Vec<(f64, f64)> = plan.new_nodes.iter().map(|&p| to_geo(p)).collect();
+        let moved_geo: Vec<(i64, (f64, f64))> =
+            plan.moved.iter().map(|&(id, p)| (id, to_geo(p))).collect();
+
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(drag.layer)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            return;
+        };
+        let Some(before) = editable.way_node_ids(drag.way_id) else {
+            return;
+        };
+        let mut actions = Vec::new();
+        let mut new_ids = Vec::with_capacity(new_geo.len());
+        for &(lat, lon) in &new_geo {
+            let Some(id) = editable.create_node(lat, lon, None) else {
+                return;
+            };
+            new_ids.push(id);
+            actions.push(UndoableAction::CreateNode {
+                layer: drag.layer,
+                id,
+                lat,
+                lon,
+            });
+        }
+        let after: Vec<i64> = plan
+            .nodes
+            .iter()
+            .map(|n| match *n {
+                PlanNode::Existing(id) => id,
+                PlanNode::New(i) => new_ids[i],
+            })
+            .collect();
+        if after != before {
+            editable.set_way_nodes(drag.way_id, after.clone());
+            actions.push(UndoableAction::SetWayNodes {
+                layer: drag.layer,
+                way_id: drag.way_id,
+                before,
+                after,
+            });
+        }
+        if !moved_geo.is_empty() {
+            let mut entries: Vec<NodeMoveUndoEntry> = Vec::new();
+            let mut moves = Vec::new();
+            for &(id, (lat, lon)) in &moved_geo {
+                if let Some(old) = editable.node_lat_lon(id) {
+                    entries.push((id, old, (lat, lon)));
+                    moves.push((id, lat, lon));
+                }
+            }
+            editable.commit_node_moves(&moves);
+            actions.push(UndoableAction::MoveNodes {
+                per_layer: vec![(drag.layer, entries)],
+            });
+        }
+        if actions.is_empty() {
+            return;
+        }
+        self.undo_stack.push(UndoableAction::Batch {
+            label: osm_gpui::tr!("history.extruded_segment").to_string(),
+            actions,
+        });
+        self.selected = vec![osm_gpui::selection::FeatureRef {
+            layer_id: drag.layer,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: drag.way_id,
         }];
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
@@ -4570,7 +4814,7 @@ impl Render for MapViewer {
                             if this.space_held {
                                 this.start_pan_drag(position, cx);
                             } else {
-                                this.handle_map_mouse_down(position);
+                                this.handle_map_mouse_down(position, ev.modifiers);
                             }
                         }),
                     )
@@ -4909,7 +5153,42 @@ impl Render for MapViewer {
                                             }
                                         }
 
-                                        if let Some(drag) = &this.extrude_drag {
+                                        // Reshape/Move preview: the way's whole
+                                        // outline as it would be after the drop.
+                                        if let Some(drag) = this
+                                            .extrude_drag
+                                            .as_ref()
+                                            .filter(|d| d.style != ExtrudeStyle::NewWay)
+                                        {
+                                            if let Some(mouse_pos) = this.last_mouse_pos {
+                                                if let Some(result) =
+                                                    this.compute_extrude(drag, mouse_pos)
+                                                {
+                                                    let mut builder = PathBuilder::stroke(px(2.0));
+                                                    for (i, p) in result.outline.iter().enumerate()
+                                                    {
+                                                        let p = point(
+                                                            px(p.0 as f32) + bounds.origin.x,
+                                                            px(p.1 as f32) + bounds.origin.y,
+                                                        );
+                                                        if i == 0 {
+                                                            builder.move_to(p);
+                                                        } else {
+                                                            builder.line_to(p);
+                                                        }
+                                                    }
+                                                    if let Ok(path) = builder.build() {
+                                                        window.paint_path(path, rgb(0x3b82f6));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(drag) = this
+                                            .extrude_drag
+                                            .as_ref()
+                                            .filter(|d| d.style == ExtrudeStyle::NewWay)
+                                        {
                                             if let Some(mouse_pos) = this.last_mouse_pos {
                                                 if let Some(layer) =
                                                     this.layer_manager.find_layer(drag.layer)
@@ -7102,6 +7381,117 @@ mod tests {
         view.apply_undo_action(&action, true);
     }
 
+    /// A drag of one segment of building 108 (a triangle 14-15-16) along
+    /// that segment's screen normal, `dist` pixels, plus the drag record.
+    fn extrude_triangle_drag(
+        view: &MapViewer,
+        layer_id: LayerId,
+        style: ExtrudeStyle,
+        dist: f32,
+    ) -> (ExtrudeDrag, gpui::Point<gpui::Pixels>) {
+        let screen = |id: i64| {
+            let (lat, lon) = view
+                .layer_manager
+                .find_layer(layer_id)
+                .and_then(|l| l.as_editable())
+                .and_then(|e| e.node_lat_lon(id))
+                .unwrap();
+            view.viewport.geo_to_screen(lat, lon)
+        };
+        let (a, b) = (screen(14), screen(15));
+        let mid = point((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+        let (dx, dy) = (f32::from(b.x - a.x), f32::from(b.y - a.y));
+        let len = dx.hypot(dy);
+        let up = point(mid.x + px(-dy / len * dist), mid.y + px(dx / len * dist));
+        let drag = ExtrudeDrag {
+            layer: layer_id,
+            way_id: 108,
+            node_a: 14,
+            node_b: 15,
+            segment: 0,
+            style,
+            down: mid,
+        };
+        (drag, up)
+    }
+
+    #[gpui::test]
+    fn extrude_reshapes_the_way_in_one_undoable_step(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let before_pending = pending(view);
+                let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Reshape, 60.0);
+                view.commit_extrude_reshape(&drag, up);
+                // A triangle's neighbours are not along the drag: 2 new nodes
+                // are spliced in between 14 and 15; the way keeps its id.
+                let after = way_nodes(view, layer_id, 108);
+                assert_eq!(after.len(), 6);
+                assert_eq!((after[0], after[3], after[4], after[5]), (14, 15, 16, 14));
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_ne!(pending(view), before_pending);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 108), vec![14, 15, 16, 14]);
+                assert_eq!(pending(view), before_pending);
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 108), after);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn extrude_move_translates_without_new_nodes_and_undoes(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let before_pending = pending(view);
+                let old = |view: &MapViewer, id| {
+                    view.layer_manager
+                        .find_layer(layer_id)
+                        .and_then(|l| l.as_editable())
+                        .and_then(|e| e.node_lat_lon(id))
+                        .unwrap()
+                };
+                let (a0, b0) = (old(view, 14), old(view, 15));
+                let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Move, 60.0);
+                view.commit_extrude_reshape(&drag, up);
+                assert_eq!(way_nodes(view, layer_id, 108), vec![14, 15, 16, 14]);
+                assert_ne!(old(view, 14), a0);
+                assert_ne!(old(view, 15), b0);
+                undo_step(view);
+                assert_eq!((old(view, 14), old(view, 15)), (a0, b0));
+                assert_eq!(pending(view), before_pending);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn extrude_refuses_to_grow_a_full_way(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let mut nodes = long_way_nodes(2000);
+                nodes[0] = 14;
+                nodes[1] = 15;
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .set_way_nodes(108, nodes);
+                let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Reshape, 60.0);
+                view.commit_extrude_reshape(&drag, up);
+                assert_eq!(way_nodes(view, layer_id, 108).len(), 2000);
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn join_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Way;
@@ -7769,6 +8159,8 @@ mod tests {
                     way_id: 100,
                     node_a: 1,
                     node_b: 2,
+                    segment: 0,
+                    style: ExtrudeStyle::Reshape,
                     down: point(px(0.0), px(0.0)),
                 };
                 view.insert_node_on_segment(&drag, point(px(400.0), px(300.0)));
