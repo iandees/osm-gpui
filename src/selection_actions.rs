@@ -480,20 +480,51 @@ fn apply_reverse(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = selected_ways_in(editable, layer_id, selection);
     let mut reversed = Vec::new();
+    let mut tag_entries = Vec::new();
     for way in ways.iter().filter(|w| w.node_ids.len() >= 2) {
-        if editable.reverse_way(way.way_id) {
-            reversed.push(way.way_id);
+        if !editable.reverse_way(way.way_id) {
+            continue;
+        }
+        reversed.push(way.way_id);
+        // Keep direction-dependent tags meaning the same thing.
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: way.way_id,
+        };
+        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
+        for (key, before, after) in topology::reversed_tag_changes(&tags) {
+            match &after {
+                Some(value) => editable.set_tag(FeatureKind::Way, way.way_id, &key, value),
+                None => editable.remove_tag(FeatureKind::Way, way.way_id, &key),
+            }
+            tag_entries.push((way_ref, key, before, after));
         }
     }
     if reversed.is_empty() {
         return Err(tr!("action.reverse.hint").to_string());
     }
     let status = tr_count!("action.reverse.done", reversed.len()).to_string();
+    let reverse = UndoableAction::ReverseWays {
+        layer: layer_id,
+        way_ids: reversed,
+    };
+    // The node order and the tag flips are one undo step.
+    let undo = if tag_entries.is_empty() {
+        reverse
+    } else {
+        UndoableAction::Batch {
+            label: status.clone(),
+            actions: vec![
+                reverse,
+                UndoableAction::SetTags {
+                    entries: tag_entries,
+                },
+            ],
+        }
+    };
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::ReverseWays {
-            layer: layer_id,
-            way_ids: reversed,
-        }),
+        undo: Some(undo),
         status,
         clear_selection: false,
         select: None,
@@ -944,6 +975,17 @@ mod tests {
     }
 
     #[test]
+    fn reverse_without_direction_tags_is_a_plain_reverse_step() {
+        let mut f = fixture();
+        let sel = [way_ref(&f, f.rect)];
+        let out = (find("reverse").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        assert!(matches!(
+            out.undo.as_ref().unwrap(),
+            UndoableAction::ReverseWays { .. }
+        ));
+    }
+
+    #[test]
     fn delete_is_one_undo_step_and_clears_the_selection() {
         let mut f = fixture();
         let sel = [way_ref(&f, f.rect), way_ref(&f, f.line)];
@@ -1220,6 +1262,61 @@ mod tests {
         assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
         let nodes = n.editable().way_node_ids(101).unwrap();
         assert!(nodes[1] < 0 && nodes[0] == 3 && nodes[2] == 5);
+    }
+
+    impl Net {
+        fn tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .set_tag(kind, id, key, value);
+        }
+        fn tags_of(&self, kind: FeatureKind, id: i64) -> Vec<(String, String)> {
+            let mut tags = self
+                .editable()
+                .feature_tags(&self.feature(kind, id))
+                .unwrap();
+            tags.sort();
+            tags
+        }
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn reverse_flips_direction_tags_in_the_same_undo_step() {
+        let mut n = net();
+        n.tag(FeatureKind::Way, 106, "lanes:forward", "2");
+        n.tag(FeatureKind::Way, 106, "incline", "8%");
+        let out = n.run("reverse", &n.ways(&[106])).unwrap();
+        assert_eq!(n.editable().way_node_ids(106), Some(vec![12, 11]));
+        // oneway=yes stays; the direction-relative tags flip.
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 106),
+            pairs(&[
+                ("highway", "residential"),
+                ("incline", "-8%"),
+                ("lanes:backward", "2"),
+                ("oneway", "yes"),
+            ])
+        );
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::ReverseWays { .. },
+                UndoableAction::SetTags { entries }
+            ] if entries.len() == 3
+        ));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 0));
     }
 
     #[test]

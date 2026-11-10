@@ -63,6 +63,100 @@ pub fn is_direction_dependent(tags: &[(String, String)]) -> bool {
     })
 }
 
+/// One tag of a feature changing: the key, its value before and its value
+/// after (`None` = absent).
+pub type TagChange = (String, Option<String>, Option<String>);
+
+/// Swap `forward`/`backward` and `left`/`right` in a key, but only when they
+/// are a `:`-separated part after the first (`lanes:forward`,
+/// `cycleway:left:width`), so a plain `left` or `forward` key is untouched.
+fn flip_key(key: &str) -> String {
+    key.split(':')
+        .enumerate()
+        .map(|(i, part)| match (i, part) {
+            (0, _) => part,
+            (_, "forward") => "backward",
+            (_, "backward") => "forward",
+            (_, "left") => "right",
+            (_, "right") => "left",
+            _ => part,
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Whether the value of `key` describes a direction relative to the way, i.e.
+/// some part of the key is `direction`, `incline` or `side`.
+fn has_directional_value(key: &str) -> bool {
+    key.split(':')
+        .any(|part| matches!(part, "direction" | "incline" | "side"))
+}
+
+/// Flip a direction-relative value: `forward`/`backward`, `left`/`right`,
+/// `up`/`down`, and the sign of a numeric incline (`10%`, `-4°`, `5`).
+fn flip_value(value: &str) -> String {
+    match value {
+        "forward" => "backward".to_string(),
+        "backward" => "forward".to_string(),
+        "left" => "right".to_string(),
+        "right" => "left".to_string(),
+        "up" => "down".to_string(),
+        "down" => "up".to_string(),
+        _ => {
+            let unsigned = value.strip_prefix(['-', '+']).unwrap_or(value);
+            let digits = unsigned.trim_end_matches(['%', '°']);
+            let numeric = !digits.is_empty()
+                && digits.parse::<f64>().is_ok()
+                && digits.chars().all(|c| c.is_ascii_digit() || c == '.');
+            if !numeric || digits.parse::<f64>() == Ok(0.0) {
+                value.to_string()
+            } else if value.starts_with('-') {
+                unsigned.to_string()
+            } else {
+                format!("-{unsigned}")
+            }
+        }
+    }
+}
+
+/// The tag changes that keep a way's meaning when its node order is reversed
+/// (what iD's and JOSM's Reverse do besides reordering the nodes):
+///
+/// - in keys, a `:forward` part becomes `:backward` and vice versa, and
+///   `:left` becomes `:right` and vice versa (`lanes:forward`,
+///   `cycleway:left`, `parking:lane:right:parallel`);
+/// - in the values of `direction`, `incline` and `side` keys (including
+///   prefixed ones like `traffic_signals:direction`), `forward`/`backward`,
+///   `left`/`right` and `up`/`down` swap, and a numeric incline changes sign
+///   (`10%` becomes `-10%`);
+/// - `oneway` is deliberately left alone: reversing a `oneway=yes` way is
+///   how the user turns the traffic around, so the tag keeps its meaning.
+///
+/// Returns only the keys that end up different, sorted by key.
+pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
+    let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut after: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in &before {
+        let value = if has_directional_value(key) {
+            flip_value(value)
+        } else {
+            value.to_string()
+        };
+        after.insert(flip_key(key), value);
+    }
+    let mut keys: Vec<&str> = before.keys().copied().collect();
+    keys.extend(after.keys().map(String::as_str));
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter()
+        .filter_map(|key| {
+            let old = before.get(key).map(|v| v.to_string());
+            let new = after.get(key).cloned();
+            (old != new).then(|| (key.to_string(), old, new))
+        })
+        .collect()
+}
+
 /// Order and orient `ways` into one chain: each entry is a way index and
 /// whether it is traversed against its own node order. `None` if the ways
 /// can't all be chained end to end.
@@ -503,6 +597,140 @@ mod tests {
         assert!(is_direction_dependent(&t("incline", "up")));
         assert!(is_direction_dependent(&t("lanes:forward", "2")));
         assert!(!is_direction_dependent(&t("highway", "residential")));
+    }
+
+    fn tags(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn change(key: &str, before: Option<&str>, after: Option<&str>) -> TagChange {
+        (
+            key.to_string(),
+            before.map(str::to_string),
+            after.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn reversing_swaps_forward_and_backward_keys() {
+        let changes = reversed_tag_changes(&tags(&[
+            ("lanes:forward", "2"),
+            ("lanes:backward", "1"),
+            ("maxspeed:forward", "50"),
+        ]));
+        assert_eq!(
+            changes,
+            vec![
+                change("lanes:backward", Some("1"), Some("2")),
+                change("lanes:forward", Some("2"), Some("1")),
+                // Only the forward value exists: it moves to the backward key.
+                change("maxspeed:backward", None, Some("50")),
+                change("maxspeed:forward", Some("50"), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn reversing_swaps_left_and_right_anywhere_after_the_first_part() {
+        let changes = reversed_tag_changes(&tags(&[
+            ("cycleway:left", "lane"),
+            ("sidewalk:right", "yes"),
+            ("parking:lane:left:parallel", "no_stopping"),
+        ]));
+        assert_eq!(
+            changes,
+            vec![
+                change("cycleway:left", Some("lane"), None),
+                change("cycleway:right", None, Some("lane")),
+                change("parking:lane:left:parallel", Some("no_stopping"), None),
+                change("parking:lane:right:parallel", None, Some("no_stopping")),
+                change("sidewalk:left", None, Some("yes")),
+                change("sidewalk:right", Some("yes"), None),
+            ]
+        );
+        // A bare `left` key has no `:` before it and stays put.
+        assert!(reversed_tag_changes(&tags(&[("left", "x")])).is_empty());
+    }
+
+    #[test]
+    fn reversing_flips_direction_incline_and_side_values() {
+        let changes = reversed_tag_changes(&tags(&[
+            ("direction", "forward"),
+            ("incline", "up"),
+            ("traffic_signals:direction", "backward"),
+            ("side", "left"),
+        ]));
+        assert_eq!(
+            changes,
+            vec![
+                change("direction", Some("forward"), Some("backward")),
+                change("incline", Some("up"), Some("down")),
+                change("side", Some("left"), Some("right")),
+                change(
+                    "traffic_signals:direction",
+                    Some("backward"),
+                    Some("forward")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn reversing_negates_numeric_inclines() {
+        let flipped = |v: &str| {
+            reversed_tag_changes(&tags(&[("incline", v)]))
+                .pop()
+                .and_then(|c| c.2)
+        };
+        assert_eq!(flipped("10%").as_deref(), Some("-10%"));
+        assert_eq!(flipped("-10%").as_deref(), Some("10%"));
+        assert_eq!(flipped("+4.5°").as_deref(), Some("-4.5°"));
+        assert_eq!(flipped("7").as_deref(), Some("-7"));
+        // Zero and non-numbers have nothing to flip.
+        assert_eq!(flipped("0%"), None);
+        assert_eq!(flipped("steep"), None);
+    }
+
+    #[test]
+    fn reversing_leaves_oneway_and_unrelated_tags_alone() {
+        assert!(reversed_tag_changes(&tags(&[
+            ("highway", "residential"),
+            ("oneway", "yes"),
+            ("name", "Left Street"),
+            ("lanes", "2"),
+        ]))
+        .is_empty());
+        // `oneway=-1` is not rewritten to `yes` either.
+        assert!(reversed_tag_changes(&tags(&[("oneway", "-1")])).is_empty());
+        // Non-directional keys keep their `forward`/`left` values.
+        assert!(reversed_tag_changes(&tags(&[("note", "left")])).is_empty());
+    }
+
+    #[test]
+    fn reversing_twice_gives_the_original_tags() {
+        let original = tags(&[
+            ("lanes:forward", "2"),
+            ("cycleway:left", "lane"),
+            ("incline", "12%"),
+            ("direction", "forward"),
+        ]);
+        let apply = |tags: &[(String, String)]| {
+            let mut map: BTreeMap<String, String> = tags.iter().cloned().collect();
+            for (key, _, after) in reversed_tag_changes(tags) {
+                match after {
+                    Some(v) => map.insert(key, v),
+                    None => map.remove(&key),
+                };
+            }
+            map.into_iter().collect::<Vec<_>>()
+        };
+        let once = apply(&original);
+        assert_ne!(once, original);
+        let mut sorted = original.clone();
+        sorted.sort();
+        assert_eq!(apply(&once), sorted);
     }
 
     fn ways(list: &[(i64, &[i64])]) -> Vec<(i64, Vec<i64>)> {

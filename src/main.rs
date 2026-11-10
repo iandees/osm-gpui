@@ -5034,6 +5034,67 @@ mod tests {
             .unwrap();
     }
 
+    /// The tags of way/node `id` in the view's active layer, sorted.
+    fn tags_of(
+        view: &MapViewer,
+        kind: osm_gpui::selection::FeatureKind,
+        id: i64,
+    ) -> Vec<(String, String)> {
+        let layer_id = view.active_layer.unwrap();
+        let mut tags = view
+            .layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&osm_gpui::selection::FeatureRef { layer_id, kind, id })
+            .unwrap();
+        tags.sort();
+        tags
+    }
+
+    fn tag_pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn reverse_flips_direction_tags_as_one_undoable_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = {
+                    let layer = view.layer_manager.find_layer_mut(layer_id).unwrap();
+                    let editable = layer.as_editable_mut().unwrap();
+                    editable.set_tag(Way, 100, "cycleway:left", "lane");
+                    editable.set_tag(Way, 100, "incline", "5%");
+                    tags_of(view, Way, 100)
+                };
+                select(view, Way, &[100]);
+                view.run_selection_action("reverse", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![3, 2, 1]);
+                let flipped = tag_pairs(&[
+                    ("cycleway:right", "lane"),
+                    ("highway", "residential"),
+                    ("incline", "-5%"),
+                ]);
+                assert_eq!(tags_of(view, Way, 100), flipped);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(tags_of(view, Way, 100), original);
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![3, 2, 1]);
+                assert_eq!(tags_of(view, Way, 100), flipped);
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn inapplicable_action_explains_itself_and_changes_nothing(cx: &mut TestAppContext) {
         let window = setup(cx);
