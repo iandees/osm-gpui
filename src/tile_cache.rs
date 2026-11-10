@@ -554,6 +554,7 @@ pub(crate) fn download_file_sync_with(
             })
         }
         Err(crate::http::HttpError::Transport(msg)) => Err(TileFetchError::Transport(msg)),
+        Err(e @ crate::http::HttpError::Cancelled) => Err(TileFetchError::Transport(e.to_string())),
     }
 }
 

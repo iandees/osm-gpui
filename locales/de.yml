@@ -93,10 +93,25 @@ mode:
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
 
-# Länger laufende Hintergrundvorgänge, in der Statusleiste mit Aktivitätsanzeige.
-activity:
-  uploading: "Änderungen werden hochgeladen …"
-  downloading: "OSM-Daten werden heruntergeladen …"
+# Länger laufende Netzwerkübertragungen, in der Statusleiste (und beim Hochladen
+# im Hochlade-Dialog) mit Aktivitätsanzeige.
+transfer:
+  # `%{size}` und `%{total}` sind Bytemengen wie „1.4 MB“.
+  download:
+    requesting: "OSM-Daten werden angefordert …"
+    downloading: "OSM-Daten werden heruntergeladen …"
+    downloading_bytes: "OSM-Daten werden heruntergeladen … %{size}"
+    downloading_total: "OSM-Daten werden heruntergeladen … %{size} von %{total}"
+    reading: "OSM-Daten werden eingelesen …"
+    cancel: "Abbrechen"
+    cancelled: "Herunterladen abgebrochen"
+  upload:
+    opening: "Änderungssatz wird geöffnet …"
+    uploading:
+      one: "%{count} Änderung wird hochgeladen …"
+      other: "%{count} Änderungen werden hochgeladen …"
+    closing: "Änderungssatz wird geschlossen …"
+  busy: "Es läuft bereits eine andere Übertragung"
 
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
@@ -502,6 +517,8 @@ dialog:
     layer_summary: "%{layer}: %{created} erstellt, %{modified} geändert, %{deleted} gelöscht"
     comment_label: "Kommentar zum Änderungssatz"
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
+    failed: "Hochladen fehlgeschlagen"
+    retry: "Erneut versuchen"
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."

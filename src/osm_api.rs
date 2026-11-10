@@ -1,23 +1,34 @@
 use crate::coordinates::GeoBounds;
+use std::time::Instant;
+
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries_progress, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
 };
 use crate::osm::{OsmData, OsmParseError, OsmParser};
 use crate::tr;
+use crate::transfer::{Throttle, TransferHandle, TransferPhase, REPORT_INTERVAL};
 
 const MAX_AREA_SQ_DEG: f64 = 0.25;
 
 #[derive(Debug)]
 pub enum OsmApiError {
-    AreaTooLarge { area_sq_deg: f64 },
-    Http { status: u16, body: String },
+    AreaTooLarge {
+        area_sq_deg: f64,
+    },
+    Http {
+        status: u16,
+        body: String,
+    },
     Network(String),
     Parse(OsmParseError),
+    /// The user cancelled the download.
+    Cancelled,
 }
 
 impl std::fmt::Display for OsmApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            OsmApiError::Cancelled => write!(f, "{}", tr!("transfer.download.cancelled")),
             OsmApiError::AreaTooLarge { .. } => write!(f, "{}", tr!("error.api.area_too_large")),
             OsmApiError::Http { status: 400, .. } => {
                 write!(f, "{}", tr!("error.api.rejected"))
@@ -81,8 +92,41 @@ pub(crate) fn fetch_bbox_with(
     check_area(&bounds)?;
 
     let url = build_url(base_url, &bounds);
-    let body = fetch_map_body(client, &url, token)?;
+    let body = fetch_map_body(client, &url, token, None)?;
 
+    OsmParser::new()
+        .parse_str(&body)
+        .map_err(OsmApiError::Parse)
+}
+
+/// `fetch_bbox` that reports its progress through `progress` (phase, bytes
+/// received, `Content-Length` when sent) and stops early, with
+/// `OsmApiError::Cancelled`, once `progress.is_cancelled()`.
+pub fn fetch_bbox_tracked(
+    bounds: GeoBounds,
+    base_url: &str,
+    token: Option<&str>,
+    progress: &TransferHandle,
+) -> Result<OsmData, OsmApiError> {
+    fetch_bbox_tracked_with(&UreqClient::new(), bounds, base_url, token, progress)
+}
+
+pub(crate) fn fetch_bbox_tracked_with(
+    client: &dyn HttpClient,
+    bounds: GeoBounds,
+    base_url: &str,
+    token: Option<&str>,
+    progress: &TransferHandle,
+) -> Result<OsmData, OsmApiError> {
+    check_area(&bounds)?;
+
+    let url = build_url(base_url, &bounds);
+    let body = fetch_map_body(client, &url, token, Some(progress))?;
+
+    if progress.is_cancelled() {
+        return Err(OsmApiError::Cancelled);
+    }
+    progress.set_phase(TransferPhase::Reading);
     OsmParser::new()
         .parse_str(&body)
         .map_err(OsmApiError::Parse)
@@ -90,24 +134,52 @@ pub(crate) fn fetch_bbox_with(
 
 /// `GET url` with a small bounded retry on transport errors and retryable HTTP
 /// status codes (see `crate::is_retryable_status`). Other 4xx responses are
-/// returned immediately since retrying won't help.
+/// returned immediately since retrying won't help. With `progress`, the body
+/// is read in chunks and counted as it arrives.
 fn fetch_map_body(
     client: &dyn HttpClient,
     url: &str,
     token: Option<&str>,
+    progress: Option<&TransferHandle>,
 ) -> Result<String, OsmApiError> {
     let mut req = HttpRequest::get(url);
     if let Some(token) = token {
         req = req.bearer(token);
     }
 
-    let resp = fetch_with_retries(client, &req, &RetryPolicy::standard()).map_err(|e| match e {
+    let mut throttle = Throttle::new(REPORT_INTERVAL);
+    let result = fetch_with_retries_progress(
+        client,
+        &req,
+        &RetryPolicy::standard(),
+        &mut |bytes, total| match progress {
+            None => true,
+            Some(p) => {
+                if p.is_cancelled() {
+                    return false;
+                }
+                if throttle.ready(Instant::now()) {
+                    p.set_phase(TransferPhase::Downloading);
+                    p.set_bytes(bytes, total);
+                }
+                true
+            }
+        },
+    );
+    let resp = result.map_err(|e| match e {
         HttpError::Status { status, body } => OsmApiError::Http {
             status,
             body: String::from_utf8_lossy(&body).into_owned(),
         },
         HttpError::Transport(msg) => OsmApiError::Network(msg),
+        HttpError::Cancelled => OsmApiError::Cancelled,
     })?;
+
+    if let Some(p) = progress {
+        // The throttle may have swallowed the last few reports.
+        p.set_phase(TransferPhase::Downloading);
+        p.set_bytes(resp.body.len() as u64, None);
+    }
 
     resp.into_string()
         .map_err(|e| OsmApiError::Network(e.to_string()))
@@ -212,6 +284,46 @@ mod tests {
         let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
         let data = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap();
         assert!(data.nodes.contains_key(&1));
+    }
+
+    #[test]
+    fn tracked_fetch_reports_bytes_then_reading() {
+        use crate::transfer::{TransferKind, TransferPhase};
+        let client = FakeClient::new(vec![ok(200, MINIMAL_OSM_XML)]);
+        let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
+        let handle = TransferHandle::new(TransferKind::Download, TransferPhase::Requesting);
+        let data = fetch_bbox_tracked_with(
+            &client,
+            bounds,
+            "https://api.openstreetmap.org",
+            None,
+            &handle,
+        )
+        .unwrap();
+        assert!(data.nodes.contains_key(&1));
+        let snap = handle.snapshot();
+        assert_eq!(snap.phase, TransferPhase::Reading);
+        assert_eq!(snap.bytes, MINIMAL_OSM_XML.len() as u64);
+    }
+
+    #[test]
+    fn cancelled_tracked_fetch_stops_without_retrying() {
+        use crate::transfer::{TransferKind, TransferPhase};
+        let client = FakeClient::new(vec![ok(200, MINIMAL_OSM_XML), ok(200, MINIMAL_OSM_XML)]);
+        let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
+        let handle = TransferHandle::new(TransferKind::Download, TransferPhase::Requesting);
+        handle.cancel();
+        let err = fetch_bbox_tracked_with(
+            &client,
+            bounds,
+            "https://api.openstreetmap.org",
+            None,
+            &handle,
+        )
+        .unwrap_err();
+        assert!(matches!(err, OsmApiError::Cancelled));
+        assert_eq!(client.request_count(), 1);
+        assert_eq!(err.to_string(), "Download cancelled");
     }
 
     #[test]

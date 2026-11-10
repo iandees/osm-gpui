@@ -93,10 +93,25 @@ mode:
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
 
-# Long-running background operations, shown with a spinner in the status bar.
-activity:
-  uploading: "Uploading changes…"
-  downloading: "Downloading OSM data…"
+# Long-running network transfers, shown with a spinner in the status bar (and,
+# for uploads, in the upload dialog).
+transfer:
+  # `%{size}` and `%{total}` are byte counts such as "1.4 MB".
+  download:
+    requesting: "Requesting OSM data…"
+    downloading: "Downloading OSM data…"
+    downloading_bytes: "Downloading OSM data… %{size}"
+    downloading_total: "Downloading OSM data… %{size} of %{total}"
+    reading: "Reading OSM data…"
+    cancel: "Cancel"
+    cancelled: "Download cancelled"
+  upload:
+    opening: "Opening changeset…"
+    uploading:
+      one: "Uploading %{count} change…"
+      other: "Uploading %{count} changes…"
+    closing: "Closing changeset…"
+  busy: "Another transfer is already in progress"
 
 status:
   # One-line hint for what the mouse and keyboard do in each mode.
@@ -502,6 +517,8 @@ dialog:
     layer_summary: "%{layer}: %{created} created, %{modified} modified, %{deleted} deleted"
     comment_label: "Changeset comment"
     comment_placeholder: "Describe your changes (required)"
+    failed: "Upload failed"
+    retry: "Try again"
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
