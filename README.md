@@ -7,6 +7,7 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 **Working**
 - Navigation, clamped to zoom 1–20: trackpad two-finger scroll pans and pinch zooms; a mouse wheel zooms at the cursor (as does ⌘- or Ctrl-scroll on a trackpad); right-drag, middle-drag, or Space + left-drag pans; arrow keys pan and `+`/`-` zoom.
 - Web Mercator projection (EPSG:3857) with lat clamped to ±85.051°.
+- First launch: the app opens on the OpenStreetMap Carto layer, with a welcome card over the map while no OSM data is loaded. It offers "Download OSM data here" (or "Zoom in to download" when the view is too large for the API) and "Open file…", and goes away once a data layer exists. The map stays pannable and zoomable underneath.
 - OSM XML loading via **File > Open** (⌘O). First loaded file auto-fits viewport.
 - Data rendering tuned for tracing over imagery: thin colored ways with a dark casing (zoom ≥ 15), round outlined node markers (plain way vertices hidden below zoom 16), and direction arrows on one-way roads, roundabouts and flowing waterways (zoom ≥ 16). Hovering a feature in Select mode highlights what a click would select.
 - Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
