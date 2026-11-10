@@ -16,6 +16,7 @@ mod menu;
 mod mode_panel;
 mod script_harness;
 mod side_panel;
+mod status_bar;
 mod undo;
 
 use crate::menu::{
@@ -339,6 +340,16 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
+    /// Description of a long-running background operation (download,
+    /// upload) shown with a spinner in the status bar until it completes.
+    /// Unlike `status_message` it never expires on its own.
+    activity: Option<String>,
+    /// Bumped whenever layer data changes outside the undo stack (upload
+    /// reconciliation, layer add/delete); part of `pending_edits`' cache key.
+    data_generation: u64,
+    /// Cached pending-edit count for the status bar, keyed on
+    /// `(undo_stack.revision, data_generation)`.
+    pending_edits: Option<((u64, u64), usize)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
     /// Current mouse interaction: idle, a pending press, an in-progress
     /// box-select, or an in-progress move-drag of the selection. See
@@ -485,6 +496,9 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
+            activity: None,
+            data_generation: 0,
+            pending_edits: None,
             selected: Vec::new(),
             interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
@@ -653,6 +667,7 @@ impl MapViewer {
             }
         }
         let _ = self.layer_manager.remove_at(action.index);
+        self.data_generation += 1;
         cx.notify();
     }
 
@@ -1427,12 +1442,9 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
-        if self.building_progress.is_some()
-            || self.extrude_drag.is_some()
-            || self.add_progress.is_some()
-        {
-            cx.notify(); // repaint the live preview every move while building/extruding/adding
-        }
+        // Repaint on every move: the status bar shows the cursor's
+        // coordinates, and Add/Building/Extrude draw a live preview to it.
+        cx.notify();
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
             if let Some(delta_pt) =
@@ -2088,6 +2100,7 @@ impl MapViewer {
             self.fit_to_osm_data(&data);
             self.first_dataset_fitted = true;
         }
+        self.data_generation += 1;
         self.status_message = None;
         cx.notify();
     }
@@ -2392,7 +2405,8 @@ impl MapViewer {
             return;
         }
 
-        self.set_status("Uploading…");
+        self.status_message = None;
+        self.activity = Some("Uploading changes…".to_string());
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -2435,6 +2449,8 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
+                this.activity = None;
+                this.data_generation += 1;
                 match result {
                     Ok((changeset_id, upload_result)) => {
                         for id in &layer_ids {
@@ -2469,7 +2485,8 @@ impl MapViewer {
             return;
         }
 
-        self.set_status("Downloading OSM data…");
+        self.status_message = None;
+        self.activity = Some("Downloading OSM data…".to_string());
         cx.notify();
 
         let label = format!(
@@ -2495,6 +2512,8 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
+                this.activity = None;
+                this.data_generation += 1;
                 match result {
                     Ok(data) => {
                         let data_arc = Arc::new(data);
@@ -2540,13 +2559,15 @@ impl Render for MapViewer {
             bus.signal_done_and_frame();
         }
 
-        // Update viewport size to actual window dimensions minus the right panel
-        let window_size = window.bounds().size;
+        // Size the viewport to the map area: the window's content area (not
+        // `window.bounds()`, which includes the title bar) minus the side
+        // panels and the status bar.
+        let window_size = window.viewport_size();
         let panel_width = px(osm_gpui::ui::style::SIDE_PANEL_WIDTH);
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
-            window_size.height,
+            window_size.height - px(status_bar::STATUS_BAR_HEIGHT),
         );
         self.viewport.update_size(map_size);
 
@@ -2560,11 +2581,11 @@ impl Render for MapViewer {
         let zoom_level = self.viewport.zoom_level();
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
         let fps = self.tick_fps();
+        let status_bar = self.render_status_bar(cx);
 
-        div()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_size(osm_gpui::ui::style::current_text_scale().body)
+        let main_row = div()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_row()
             .child(self.render_mode_panel(cx))
@@ -2912,36 +2933,12 @@ impl Render for MapViewer {
                                 .text_color(cx.theme().popover_foreground)
                                 .opacity(0.9)
                                 .min_w_64()
-                                .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                                .child(format!(
-                                    "🌍 Center: {:.4}°N, {:.4}°W",
-                                    center_lat,
-                                    center_lon.abs()
-                                ))
-                                .child(format!("📊 Objects: {}", osm_objects))
-                                .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                                .child(format!("💾 Cache: {} files", cached_files))
-                                .child(format!("⚡ FPS: {:.0}", fps))
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }
-                    })
-                    .child({
-                        let status = self.status_message.clone();
-                        if let Some((msg, _)) = status {
-                            div()
-                                .absolute()
-                                .top_4()
-                                .right_4()
-                                .p_3()
-                                .bg(cx.theme().popover)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .text_color(cx.theme().popover_foreground)
-                                .opacity(0.9)
-                                .child(msg)
+                                .child(format!("Zoom: {:.1}", zoom_level))
+                                .child(format!("Center: {:.4}, {:.4}", center_lat, center_lon))
+                                .child(format!("Objects: {}", osm_objects))
+                                .child(format!("Tiles: {} visible", total_tiles))
+                                .child(format!("Cache: {} files", cached_files))
+                                .child(format!("FPS: {:.0}", fps))
                                 .into_any_element()
                         } else {
                             div().into_any_element()
@@ -3025,7 +3022,16 @@ impl Render for MapViewer {
             .child(
                 // Right panel with layer controls
                 self.render_side_panel(window, cx),
-            )
+            );
+
+        div()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_size(osm_gpui::ui::style::current_text_scale().body)
+            .flex()
+            .flex_col()
+            .child(main_row)
+            .child(status_bar)
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
