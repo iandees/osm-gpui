@@ -372,7 +372,6 @@ shortcut:
   action_split: "Split Way"
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
-  action_new_relation: "New Relation"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
 # menu, the Tools menu, and their status-bar messages. Each action id has a

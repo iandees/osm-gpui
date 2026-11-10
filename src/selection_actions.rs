@@ -400,7 +400,7 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
     },
     SelectionAction {
         id: "new_relation",
-        shortcut_id: Some("action_new_relation"),
+        shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,

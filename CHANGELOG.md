@@ -7,7 +7,7 @@ Release notes for osm-gpui. The section whose heading matches the pushed tag
 
 ### Editing
 
-- New Relation (`N`; context and Tools menus) creates a relation from the selected
+- New Relation (context and Tools menus) creates a relation from the selected
   nodes, ways and relations and selects it, so its tags and member roles can be
   filled in the side panel. One undo step.
 - Delete now works on a selected relation (its members are kept) and can be

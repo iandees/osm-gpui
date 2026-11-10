@@ -1,12 +1,14 @@
 # Creating and deleting relations: box-select the Approach Road and Exit Road
-# ways (and their nodes), make a relation from them with New Relation (N),
-# see it selected with its Members list, delete it (Backspace), and undo.
+# ways (and their nodes), make a relation from them with New Relation in the
+# right-click menu, see it selected with its Members list, delete it
+# (Backspace), and undo.
 #
 # Coordinates (window 1200x800, default 280px side panel, viewport as in
 # relation-editor.osmscript, same fixture): Approach Road runs from (300,400)
 # to (450,400) and Exit Road from (450,400) down to (450,500), so the box
-# below encloses both. The capture paths are absolute; point them at a
-# directory of your own before running.
+# below encloses both. The context menu opens with its top-left corner at the
+# click (340,400); its New Relation row, below Add to Relation…, is centred
+# at y=586 (menu entries depend on the selection, so adjust if it changes).
 
 window 1200 800
 load_osm docs/screenshots/fixtures/relation-editor.osm
@@ -15,27 +17,26 @@ wait_idle 5s
 
 drag 270,370 480,530 button=left
 wait_idle 2s
-capture /private/tmp/claude-501/-Users-iandees-SynologyDrive-Projects-OSM-osm-gpui/9432cf35-dd95-4458-a47c-17741106a81e/scratchpad/relation-ui-shots/01-selected.png
+capture out/relation-create-delete-01-selected.png
 
 # The context menu lists New Relation.
 click 340,400 button=right
 wait_idle 2s
-capture /private/tmp/claude-501/-Users-iandees-SynologyDrive-Projects-OSM-osm-gpui/9432cf35-dd95-4458-a47c-17741106a81e/scratchpad/relation-ui-shots/02-context-menu.png
-key escape
-wait_idle 1s
+capture out/relation-create-delete-02-context-menu.png
 
-# N makes the relation and selects it: Tags and Members show in the panel.
-key n
+# Clicking it makes the relation and selects it: Tags and Members show in the
+# panel.
+click 400,586
 wait_idle 2s
-capture /private/tmp/claude-501/-Users-iandees-SynologyDrive-Projects-OSM-osm-gpui/9432cf35-dd95-4458-a47c-17741106a81e/scratchpad/relation-ui-shots/03-created.png
+capture out/relation-create-delete-03-created.png
 
 # Delete removes the relation but not its members.
 key backspace
 wait_idle 2s
-capture /private/tmp/claude-501/-Users-iandees-SynologyDrive-Projects-OSM-osm-gpui/9432cf35-dd95-4458-a47c-17741106a81e/scratchpad/relation-ui-shots/04-deleted.png
+capture out/relation-create-delete-04-deleted.png
 
 # Undo brings it back, with its members.
 key cmd+z
 wait_idle 2s
-capture /private/tmp/claude-501/-Users-iandees-SynologyDrive-Projects-OSM-osm-gpui/9432cf35-dd95-4458-a47c-17741106a81e/scratchpad/relation-ui-shots/05-delete-undone.png
+capture out/relation-create-delete-05-delete-undone.png
 log done

@@ -372,7 +372,6 @@ shortcut:
   action_split: "Weg teilen"
   action_merge: "Knoten vereinigen"
   action_straighten: "Weg begradigen"
-  action_new_relation: "Neue Relation"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
 # und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
