@@ -46,6 +46,7 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
             way.tags.extend([marker()]);
         }
     }
+    baseline.relations.retain(|r| r.id >= 0);
     for relation in &mut baseline.relations {
         if edits.modified_relations.contains(&relation.id) {
             relation.tags.extend([marker()]);
@@ -60,6 +61,11 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
     for (id, way) in &edits.deleted_ways {
         if *id >= 0 {
             baseline.ways.insert(*id, way.clone());
+        }
+    }
+    for (id, relation) in &edits.deleted_relations {
+        if *id >= 0 {
+            baseline.relations.push(relation.clone());
         }
     }
     baseline
@@ -81,11 +87,13 @@ pub struct LayerDiff {
     /// (id, version-as-of-original) for ways present in the original
     /// snapshot but no longer present in the current data.
     pub deleted_way_ids: Vec<(i64, i32)>,
-    /// Relations whose members or tags differ from the baseline. Creating
-    /// and deleting relations isn't supported yet; when it is, the sibling
-    /// `created_relations` / `deleted_relation_ids` fields belong here and
-    /// are filled in `diff_relations`.
+    /// Relations whose members or tags differ from the baseline.
     pub modified_relations: Vec<OsmRelation>,
+    /// Relations absent from the baseline (negative local ids).
+    pub created_relations: Vec<OsmRelation>,
+    /// (id, version-as-of-original) for relations present in the original
+    /// snapshot but no longer present in the current data.
+    pub deleted_relation_ids: Vec<(i64, i32)>,
 }
 
 impl LayerDiff {
@@ -98,15 +106,20 @@ impl LayerDiff {
             && self.modified_ways.is_empty()
             && self.deleted_way_ids.is_empty()
             && self.modified_relations.is_empty()
+            && self.created_relations.is_empty()
+            && self.deleted_relation_ids.is_empty()
     }
 
     /// Total number of created/modified/deleted elements (nodes, ways and
     /// relations), for building a human-readable per-layer summary.
     pub fn counts(&self) -> (usize, usize, usize) {
-        let created = self.created_nodes.len() + self.created_ways.len();
+        let created =
+            self.created_nodes.len() + self.created_ways.len() + self.created_relations.len();
         let modified =
             self.modified_nodes.len() + self.modified_ways.len() + self.modified_relations.len();
-        let deleted = self.deleted_node_ids.len() + self.deleted_way_ids.len();
+        let deleted = self.deleted_node_ids.len()
+            + self.deleted_way_ids.len()
+            + self.deleted_relation_ids.len();
         (created, modified, deleted)
     }
 }
@@ -117,15 +130,21 @@ fn diff_relations(original: &OsmData, current: &OsmData, diff: &mut LayerDiff) {
     let originals: HashMap<i64, &OsmRelation> =
         original.relations.iter().map(|r| (r.id, r)).collect();
     for relation in &current.relations {
-        // A relation absent from the baseline would be a creation; that is
-        // not supported yet, so it is not reported.
-        if let Some(orig) = originals.get(&relation.id) {
-            if orig.members != relation.members || orig.tags != relation.tags {
-                diff.modified_relations.push(relation.clone());
+        match originals.get(&relation.id) {
+            None => diff.created_relations.push(relation.clone()),
+            Some(orig) => {
+                if orig.members != relation.members || orig.tags != relation.tags {
+                    diff.modified_relations.push(relation.clone());
+                }
             }
         }
     }
-    // Likewise a relation present only in the baseline would be a deletion.
+    let currents: std::collections::HashSet<i64> = current.relations.iter().map(|r| r.id).collect();
+    for orig in &original.relations {
+        if !currents.contains(&orig.id) {
+            diff.deleted_relation_ids.push((orig.id, orig.version));
+        }
+    }
 }
 
 /// Compare `original` against `current` by id and classify every node/way as
@@ -426,6 +445,48 @@ mod tests {
             .insert("type".into(), "route".into());
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_relations[0].id, 6);
+    }
+
+    #[test]
+    fn created_and_deleted_relations_are_reported_and_counted() {
+        use crate::osm::MemberType::Way;
+        let mut original = data(vec![], vec![]);
+        original
+            .relations
+            .push(relation(5, vec![member(Way, 10, "")]));
+        original
+            .relations
+            .push(relation(6, vec![member(Way, 12, "")]));
+
+        let mut current = original.clone();
+        current.relations.remove(0); // delete 5 (baseline version 4)
+        current
+            .relations
+            .push(relation(-1, vec![member(Way, 12, "")]));
+        current
+            .relations
+            .push(relation(-2, vec![member(Way, 12, "")]));
+
+        let diff = diff_osm_data(&original, &current);
+        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id).collect();
+        created.sort_unstable();
+        assert_eq!(created, vec![-2, -1]);
+        assert_eq!(diff.deleted_relation_ids, vec![(5, 4)]);
+        assert!(diff.modified_relations.is_empty());
+        assert_eq!(diff.counts(), (2, 0, 1));
+        assert!(!diff.is_empty());
+
+        // Each alone makes the diff non-empty.
+        let only_deleted = LayerDiff {
+            deleted_relation_ids: vec![(1, 1)],
+            ..Default::default()
+        };
+        assert!(!only_deleted.is_empty());
+        let only_created = LayerDiff {
+            created_relations: vec![relation(-1, vec![])],
+            ..Default::default()
+        };
+        assert!(!only_created.is_empty());
     }
 
     #[test]
