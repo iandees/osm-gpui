@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=osm-gpui
+Comment=Experimental OpenStreetMap editor
+Exec=osm-gpui
+Terminal=false
+Categories=Utility;Geography;Maps;
