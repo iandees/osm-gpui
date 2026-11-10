@@ -197,6 +197,7 @@ fn extend_target(
             editable.node_lat_lon(feature.id)?;
             topology::continue_from_node(feature.id, &ways_using(editable, feature.id))
         }
+        FeatureKind::Relation => None,
     }
 }
 
@@ -246,6 +247,10 @@ pub(crate) struct SelectionAction {
 /// carries a short message for the status bar and means nothing changed.
 pub(crate) type ApplyFn =
     fn(&mut LayerManager, &[FeatureRef], Option<LayerId>) -> Result<ActionOutcome, String>;
+
+/// Id of the "Add to Relation…" action, which opens a picker rather than
+/// applying right away.
+pub(crate) const ADD_TO_RELATION: &str = "add_to_relation";
 
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
@@ -376,16 +381,37 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_paste_tags,
     },
     SelectionAction {
+        id: ADD_TO_RELATION,
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !member_candidates(editable, layer_id, env.selection).is_empty()
+                && !editable.relation_ids().is_empty()
+        },
+        // Needs a relation chosen first, which takes a dialog: see
+        // `MapViewer::run_selection_action`, which opens the picker instead
+        // of applying, and `add_to_relation` below, which applies the choice.
+        apply: |_, _, _| Err(tr!("action.add_to_relation.hint").to_string()),
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
         needs_active_layer: false,
         in_tools_menu: false,
+        // Relations can't be deleted yet, so they don't count.
         is_applicable: |env| {
             env.selection.iter().any(|f| {
-                env.layers
-                    .find_layer(f.layer_id)
-                    .is_some_and(|l| l.as_editable().is_some())
+                f.kind != FeatureKind::Relation
+                    && env
+                        .layers
+                        .find_layer(f.layer_id)
+                        .is_some_and(|l| l.as_editable().is_some())
             })
         },
         apply: apply_delete,
@@ -435,6 +461,13 @@ impl SelectionAction {
     pub(crate) fn why_not(&self, env: &ActionEnv) -> SharedString {
         if self.needs_active_layer && env.active_editable().is_none() {
             tr!("action.no_data")
+        } else if self.id == "delete"
+            && env
+                .selection
+                .iter()
+                .any(|f| f.kind == FeatureKind::Relation)
+        {
+            tr!("action.delete.relation_hint")
         } else {
             self.hint()
         }
@@ -1256,6 +1289,67 @@ fn apply_extend(
     })
 }
 
+/// The selected nodes and ways of `layer_id` that exist in it, each once, in
+/// selection order: what Add to Relation appends.
+fn member_candidates(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<(MemberType, i64)> {
+    let mut out: Vec<(MemberType, i64)> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        let (member_type, exists) = match f.kind {
+            FeatureKind::Node => (MemberType::Node, editable.node_lat_lon(f.id).is_some()),
+            FeatureKind::Way => (MemberType::Way, editable.way_node_ids(f.id).is_some()),
+            FeatureKind::Relation => continue,
+        };
+        if exists && !out.contains(&(member_type, f.id)) {
+            out.push((member_type, f.id));
+        }
+    }
+    out
+}
+
+/// Append the selected nodes and ways of the active layer to relation
+/// `relation_id` (the picker's choice), each with an empty role; those that
+/// are already members are skipped. One undo step.
+pub(crate) fn add_to_relation(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    relation_id: i64,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let relation = editable
+        .relation(relation_id)
+        .ok_or_else(|| tr!("action.add_to_relation.hint").to_string())?;
+    let name = osm_gpui::relations::display_name(&relation);
+    let candidates = member_candidates(editable, layer_id, selection);
+    let after = osm_gpui::relations::add_members(&relation.members, &candidates)
+        .ok_or_else(|| tr!("action.add_to_relation.already", relation = name).to_string())?;
+    let added = after.len() - relation.members.len();
+    let before = editable
+        .set_relation_members(relation_id, after.clone())
+        .ok_or_else(|| tr!("action.add_to_relation.hint").to_string())?;
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
+        }),
+        status: tr!(
+            "action.add_to_relation.done",
+            features = tr_count!("action.feature_count", added),
+            relation = name
+        )
+        .to_string(),
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
 /// Delete every selected feature. Node deletion is refused per feature if the
 /// node is still referenced by a way (see `OsmLayer::delete_feature`); refused
 /// features are skipped. A deleted node or way is also removed from the
@@ -1272,7 +1366,13 @@ fn apply_delete(
     let mut deleted = 0usize;
     let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
     let mut refusal: Option<String> = None;
+    let mut skipped_relation = false;
     for feature in selection {
+        // Relations can't be deleted yet; the rest of the selection still can.
+        if feature.kind == FeatureKind::Relation {
+            skipped_relation = true;
+            continue;
+        }
         let Some(editable) = layers
             .find_layer_mut(feature.layer_id)
             .and_then(|l| l.as_editable_mut())
@@ -1290,6 +1390,7 @@ fn apply_delete(
                 editable.relations_containing_way(feature.id),
                 tr!("action.delete.kind.way"),
             ),
+            FeatureKind::Relation => continue,
         };
         // The memberships to drop; a refusal skips the feature entirely.
         let mut edits = Vec::new();
@@ -1335,7 +1436,13 @@ fn apply_delete(
         }
     }
     if deleted == 0 {
-        return Err(refusal.unwrap_or_else(|| tr!("status.nothing_to_delete").to_string()));
+        return Err(refusal.unwrap_or_else(|| {
+            if skipped_relation {
+                tr!("action.delete.relation_hint").to_string()
+            } else {
+                tr!("status.nothing_to_delete").to_string()
+            }
+        }));
     }
     let mut status = if changed_relations.is_empty() {
         tr_count!("status.deleted_features", deleted).to_string()

@@ -103,6 +103,7 @@ status:
   hint:
     select_empty: "Klicken zum Auswählen · Umschalt-Klick zum Ergänzen · Ziehen für Rahmenauswahl · Leertaste+Ziehen oder Rechtsziehen zum Verschieben der Karte"
     select_selection: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen"
+    select_relation: "Relation gewählt: ihre Mitglieder sind hervorgehoben · Esc zum Abwählen"
     add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Strg-Klick ohne Einrasten · Esc zum Beenden"
     add_started: "Klicken, um den Weg fortzusetzen · Enter oder Esc zum Abschließen"
     building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
@@ -119,6 +120,10 @@ status:
   open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
   open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
   tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
+  # Das Entfernen eines Mitglieds aus einer Relation wurde abgelehnt.
+  member_remove:
+    last: "Das letzte Mitglied der Relation %{relation} kann nicht entfernt werden"
+    restriction_role: "Entfernen nicht möglich: Der Abbiegebeschränkung %{relation} würde ein Mitglied mit der Rolle '%{role}' fehlen"
   nothing_to_delete: "Nichts zu löschen"
   deleted_features:
     one: "%{count} Objekt gelöscht"
@@ -174,7 +179,8 @@ panel:
     empty: "Klicken oder ziehen zum Auswählen."
     node: "Knoten"
     way: "Weg"
-    # `%{kind}` ist die Bezeichnung Knoten/Weg oben, `%{id}` die OSM-ID.
+    relation: "Relation"
+    # `%{kind}` ist die Bezeichnung Knoten/Weg/Relation oben, `%{id}` die OSM-ID.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
   fields:
@@ -199,6 +205,20 @@ panel:
   relations:
     title: "Relationen"
     no_role: "(keine Rolle)"
+    remove: "Aus dieser Relation entfernen"
+    # Ein Mitglied der Relation, das nicht in den geladenen Daten liegt.
+    not_downloaded: "%{kind} %{id} (nicht heruntergeladen)"
+  members:
+    title_count:
+      one: "Mitglieder (%{count})"
+      other: "Mitglieder (%{count})"
+    empty: "(keine Mitglieder)"
+    # Platzhalter im Rolleneingabefeld.
+    role: "Rolle"
+    move_up: "Nach oben"
+    move_down: "Nach unten"
+    remove: "Aus Relation entfernen"
+    show_all: "Alle %{count} anzeigen"
   history:
     title: "Verlauf"
     empty: "Noch keine Aktionen."
@@ -214,6 +234,7 @@ history:
   created_node: "1 Knoten erstellt"
   deleted_node: "1 Knoten gelöscht"
   deleted_way: "1 Weg gelöscht"
+  deleted_relation: "1 Relation gelöscht"
   created_way: "1 Weg erstellt"
   created_relation: "Relation erstellt"
   deleted_relation: "Relation gelöscht"
@@ -444,9 +465,16 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  add_to_relation:
+    label: "Zu Relation hinzufügen …"
+    hint: "Knoten oder Wege in einer Ebene mit Relationen wählen, um sie einer Relation hinzuzufügen"
+    # `%{features}` ist die Zahl aus `action.feature_count`.
+    done: "%{features} zur Relation %{relation} hinzugefügt"
+    already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"
+    relation_hint: "Relationen können noch nicht gelöscht werden"
     # `%{what}` ist die Art unten, `%{id}` die OSM-ID.
     kind:
       node: "Knoten"
@@ -508,6 +536,14 @@ dialog:
   preset_picker:
     title: "Objekttyp ändern"
     search_placeholder: "Objekttypen suchen …"
+  relation_picker:
+    title: "Zu Relation hinzufügen"
+    search_placeholder: "Relationen suchen …"
+    # `%{id}` ist die Relations-ID, `%{members}` die Anzahl unten.
+    detail: "Relation %{id} · %{members}"
+    members:
+      one: "%{count} Mitglied"
+      other: "%{count} Mitglieder"
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"

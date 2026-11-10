@@ -6,6 +6,7 @@ pub mod modal;
 pub mod nsi_dialog;
 pub mod preset_picker_dialog;
 pub mod quit_confirm_dialog;
+pub mod relation_picker_dialog;
 pub mod settings_window;
 pub mod sign_in_dialog;
 pub mod style;

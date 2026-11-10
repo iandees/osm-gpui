@@ -322,6 +322,7 @@ fn parse_assert_selected(line_no: usize, rest: &[&str]) -> Result<Op, ParseError
         let kind = match rest[0] {
             "node" => FeatureKind::Node,
             "way" => FeatureKind::Way,
+            "relation" => FeatureKind::Relation,
             other => {
                 return Err(err(
                     line_no,
@@ -537,6 +538,16 @@ mod tests {
             parse("assert_selected node 7").unwrap()[0].op,
             Op::AssertSelected {
                 feature: Some((FeatureKind::Node, 7))
+            }
+        );
+    }
+
+    #[test]
+    fn assert_selected_relation_parses() {
+        assert_eq!(
+            parse("assert_selected relation 9101").unwrap()[0].op,
+            Op::AssertSelected {
+                feature: Some((FeatureKind::Relation, 9101))
             }
         );
     }

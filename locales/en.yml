@@ -103,6 +103,7 @@ status:
   hint:
     select_empty: "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
     select_selection: "Drag the selection to move it · Delete to remove · Esc to deselect"
+    select_relation: "Relation selected: its members are highlighted · Esc to deselect"
     add_idle: "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
     add_started: "Click to continue the way · Enter or Esc to finish"
     building_idle: "Click to place the building's first corner · Esc to exit"
@@ -119,6 +120,10 @@ status:
   open_failed: "Could not open %{path}: %{error}"
   open_data_first: "Open or download OSM data before drawing"
   tag_needs_key: "A tag needs a key; the edit was discarded"
+  # Removing a member from a relation was refused.
+  member_remove:
+    last: "Can't remove the last member of relation %{relation}"
+    restriction_role: "Can't remove it: turn restriction %{relation} would be left without a '%{role}' member"
   nothing_to_delete: "Nothing to delete"
   deleted_features:
     one: "Deleted %{count} feature"
@@ -174,7 +179,8 @@ panel:
     empty: "Click or drag to select."
     node: "Node"
     way: "Way"
-    # `%{kind}` is the Node/Way label above, `%{id}` the OSM id.
+    relation: "Relation"
+    # `%{kind}` is the Node/Way/Relation label above, `%{id}` the OSM id.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
   fields:
@@ -199,6 +205,20 @@ panel:
   relations:
     title: "Relations"
     no_role: "(no role)"
+    remove: "Remove from this relation"
+    # A member that is in the relation but not in the loaded data.
+    not_downloaded: "%{kind} %{id} (not downloaded)"
+  members:
+    title_count:
+      one: "Members (%{count})"
+      other: "Members (%{count})"
+    empty: "(no members)"
+    # Placeholder in the role input.
+    role: "role"
+    move_up: "Move up"
+    move_down: "Move down"
+    remove: "Remove from relation"
+    show_all: "Show all %{count}"
   history:
     title: "History"
     empty: "No actions yet."
@@ -214,6 +234,7 @@ history:
   created_node: "Created 1 node"
   deleted_node: "Deleted 1 node"
   deleted_way: "Deleted 1 way"
+  deleted_relation: "Deleted 1 relation"
   created_way: "Created 1 way"
   created_relation: "Created a relation"
   deleted_relation: "Deleted a relation"
@@ -444,9 +465,16 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  add_to_relation:
+    label: "Add to Relation…"
+    hint: "Select nodes or ways in a layer that has relations to add them to one"
+    # `%{features}` is the count from `action.feature_count`.
+    done: "Added %{features} to relation %{relation}"
+    already: "The selected features are already members of %{relation}"
   delete:
     label: "Delete"
     hint: "Select something to delete"
+    relation_hint: "Relations can't be deleted yet"
     # `%{what}` is the kind below, `%{id}` the OSM id.
     kind:
       node: "node"
@@ -508,6 +536,14 @@ dialog:
   preset_picker:
     title: "Change Feature Type"
     search_placeholder: "Search feature types…"
+  relation_picker:
+    title: "Add to Relation"
+    search_placeholder: "Search relations…"
+    # `%{id}` is the relation id, `%{members}` the count below.
+    detail: "Relation %{id} · %{members}"
+    members:
+      one: "%{count} member"
+      other: "%{count} members"
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"

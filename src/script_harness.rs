@@ -366,6 +366,9 @@ impl MapViewer {
                                     osm_gpui::selection::FeatureKind::Way => {
                                         osm_gpui::script::FeatureKind::Way
                                     }
+                                    osm_gpui::selection::FeatureKind::Relation => {
+                                        osm_gpui::script::FeatureKind::Relation
+                                    }
                                 },
                                 only.id,
                             )),

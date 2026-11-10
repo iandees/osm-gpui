@@ -114,6 +114,15 @@ impl MapViewer {
                 .child(activity)
         } else if let Some((message, _)) = self.status_message.clone() {
             div().text_color(foreground).child(message)
+        } else if self.mode == EditMode::Select
+            && !self.selected.is_empty()
+            && self
+                .selected
+                .iter()
+                .all(|f| f.kind == osm_gpui::selection::FeatureKind::Relation)
+        {
+            // Relations don't move or delete; say what does work instead.
+            div().child(tr!("status.hint.select_relation"))
         } else {
             div().child(mode_hint(
                 self.mode,

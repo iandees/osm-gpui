@@ -124,6 +124,9 @@ pub enum HighlightKind {
     Selected,
     /// Under the cursor: what a click would select.
     Hovered,
+    /// A member of the selected relation: drawn like a selection but in a
+    /// different color, so it reads as "belongs to the selected thing".
+    Member,
 }
 
 /// The vector-editing surface a layer may support: hit-testing, selection
@@ -288,6 +291,9 @@ pub trait EditableLayer {
     /// A copy of the relation with this id (tags and members), if the layer
     /// has it.
     fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation>;
+
+    /// The ids of every relation the layer has, in the order it stores them.
+    fn relation_ids(&self) -> Vec<i64>;
 
     /// Replace a relation's whole member list and return the previous one
     /// (`None`, changing nothing, if the layer has no such relation).

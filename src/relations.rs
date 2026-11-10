@@ -17,7 +17,7 @@
 
 use crate::osm::{MemberType, OsmMember, OsmRelation};
 use crate::tr;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The roles every turn restriction needs.
 const RESTRICTION_ROLES: [&str; 3] = ["from", "via", "to"];
@@ -59,6 +59,94 @@ pub fn roles_of(relation: &OsmRelation, member_type: MemberType, id: i64) -> Vec
 
 fn is_way_member(member: &OsmMember, way_id: i64) -> bool {
     member.member_type == MemberType::Way && member.reference == way_id
+}
+
+// ---------------------------------------------------------------------------
+// Members as map features
+
+/// The nodes and ways a relation stands for on the map, in member order
+/// without repeats: its own node and way members, plus those of the relations
+/// among its members (one level of nesting; a nested relation's own relation
+/// members are not followed). `find` looks a relation up by id.
+pub fn flatten_members(
+    relation: &OsmRelation,
+    find: &dyn Fn(i64) -> Option<OsmRelation>,
+) -> Vec<(MemberType, i64)> {
+    fn push(
+        out: &mut Vec<(MemberType, i64)>,
+        seen: &mut HashSet<(MemberType, i64)>,
+        member: &OsmMember,
+    ) {
+        let key = (member.member_type, member.reference);
+        if seen.insert(key) {
+            out.push(key);
+        }
+    }
+    let mut out: Vec<(MemberType, i64)> = Vec::new();
+    let mut seen = HashSet::new();
+    for member in &relation.members {
+        match member.member_type {
+            MemberType::Node | MemberType::Way => push(&mut out, &mut seen, member),
+            MemberType::Relation => {
+                if member.reference == relation.id {
+                    continue;
+                }
+                if let Some(nested) = find(member.reference) {
+                    for inner in &nested.members {
+                        if inner.member_type != MemberType::Relation {
+                            push(&mut out, &mut seen, inner);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How to resolve members to geometry; `None` from a lookup means the
+/// element isn't loaded.
+pub struct MemberLookup<'a> {
+    /// A node's `(lat, lon)`.
+    pub node: &'a dyn Fn(i64) -> Option<(f64, f64)>,
+    /// A way's node ids.
+    pub way_nodes: &'a dyn Fn(i64) -> Option<Vec<i64>>,
+    pub relation: &'a dyn Fn(i64) -> Option<OsmRelation>,
+}
+
+/// The bounding box `(min_lat, max_lat, min_lon, max_lon)` of the members of
+/// `relation` that are loaded (nested relations followed one level), or
+/// `None` if none of them is.
+pub fn members_bounds(
+    relation: &OsmRelation,
+    lookup: &MemberLookup,
+) -> Option<(f64, f64, f64, f64)> {
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    let mut extend = |(lat, lon): (f64, f64)| {
+        let b = bounds.get_or_insert((lat, lat, lon, lon));
+        b.0 = b.0.min(lat);
+        b.1 = b.1.max(lat);
+        b.2 = b.2.min(lon);
+        b.3 = b.3.max(lon);
+    };
+    for (member_type, id) in flatten_members(relation, lookup.relation) {
+        match member_type {
+            MemberType::Node => {
+                if let Some(pos) = (lookup.node)(id) {
+                    extend(pos);
+                }
+            }
+            MemberType::Way => {
+                for node_id in (lookup.way_nodes)(id).unwrap_or_default() {
+                    if let Some(pos) = (lookup.node)(node_id) {
+                        extend(pos);
+                    }
+                }
+            }
+            MemberType::Relation => {}
+        }
+    }
+    bounds
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +492,14 @@ pub fn delete_member(
         .filter(|m| !is_target(m))
         .cloned()
         .collect();
+    check_remaining(relation, &members)?;
+    Ok(Some(members))
+}
+
+/// Whether `relation` may be left with `members` after members were removed:
+/// it needs at least one, and a turn restriction every one of `from`, `via`
+/// and `to` that it had.
+fn check_remaining(relation: &OsmRelation, members: &[OsmMember]) -> Result<(), DeleteError> {
     if members.is_empty() {
         return Err(DeleteError::WouldEmpty {
             relation_id: relation.id,
@@ -412,7 +508,7 @@ pub fn delete_member(
     if is_restriction(relation) {
         let has = |list: &[OsmMember], role: &str| list.iter().any(|m| m.role == role);
         for role in RESTRICTION_ROLES {
-            if has(&relation.members, role) && !has(&members, role) {
+            if has(&relation.members, role) && !has(members, role) {
                 return Err(DeleteError::RestrictionRole {
                     relation_id: relation.id,
                     role,
@@ -420,7 +516,165 @@ pub fn delete_member(
             }
         }
     }
+    Ok(())
+}
+
+impl DeleteError {
+    /// A short status-bar message for removing a member through the relation
+    /// editor or a member's Relations row (as opposed to deleting a feature).
+    pub fn remove_message(&self) -> String {
+        match self {
+            DeleteError::WouldEmpty { relation_id } => {
+                tr!("status.member_remove.last", relation = relation_id).to_string()
+            }
+            DeleteError::RestrictionRole { relation_id, role } => tr!(
+                "status.member_remove.restriction_role",
+                relation = relation_id,
+                role = role
+            )
+            .to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Editing a relation's member list
+
+/// The member list with the member at `index` removed, or `None` if there is
+/// none at `index`. Refused (like `delete_member`) if that would leave the
+/// relation empty or a turn restriction without a `from`, `via` or `to`.
+pub fn remove_member_at(
+    relation: &OsmRelation,
+    index: usize,
+) -> Result<Option<Vec<OsmMember>>, DeleteError> {
+    if index >= relation.members.len() {
+        return Ok(None);
+    }
+    let mut members = relation.members.clone();
+    members.remove(index);
+    check_remaining(relation, &members)?;
     Ok(Some(members))
+}
+
+/// The member list with the role of the member at `index` replaced (an empty
+/// role is fine), or `None` if there is no such member or its role is already
+/// `role`.
+pub fn set_member_role(members: &[OsmMember], index: usize, role: &str) -> Option<Vec<OsmMember>> {
+    let current = members.get(index)?;
+    if current.role == role {
+        return None;
+    }
+    let mut out = members.to_vec();
+    out[index].role = role.to_string();
+    Some(out)
+}
+
+/// The member list with the member at `index` moved `delta` places (negative
+/// is towards the start), or `None` if there is no such member or it would
+/// move past either end.
+pub fn move_member(members: &[OsmMember], index: usize, delta: isize) -> Option<Vec<OsmMember>> {
+    if index >= members.len() || delta == 0 {
+        return None;
+    }
+    let target = index.checked_add_signed(delta)?;
+    if target >= members.len() {
+        return None;
+    }
+    let mut out = members.to_vec();
+    let member = out.remove(index);
+    out.insert(target, member);
+    Some(out)
+}
+
+/// The member list with each `(type, id)` of `new` appended with an empty
+/// role, skipping any that is already a member (in any role) or that appears
+/// twice in `new`; `None` if nothing is left to add.
+pub fn add_members(members: &[OsmMember], new: &[(MemberType, i64)]) -> Option<Vec<OsmMember>> {
+    let mut out = members.to_vec();
+    for &(member_type, reference) in new {
+        let present = out
+            .iter()
+            .any(|m| m.member_type == member_type && m.reference == reference);
+        if !present {
+            out.push(OsmMember {
+                member_type,
+                reference,
+                role: String::new(),
+            });
+        }
+    }
+    (out.len() > members.len()).then_some(out)
+}
+
+/// A relation as the "Add to Relation" picker lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationChoice {
+    pub id: i64,
+    /// `display_name` of the relation.
+    pub name: String,
+    pub member_count: usize,
+}
+
+/// The picker's choices for `relations`, sorted by name (ignoring case), then
+/// id.
+pub fn relation_choices(relations: &[OsmRelation]) -> Vec<RelationChoice> {
+    let mut choices: Vec<RelationChoice> = relations
+        .iter()
+        .map(|r| RelationChoice {
+            id: r.id,
+            name: display_name(r),
+            member_count: r.members.len(),
+        })
+        .collect();
+    choices.sort_by_cached_key(|c| (c.name.to_lowercase(), c.id));
+    choices
+}
+
+/// The choices whose name or id contains `query` (ignoring case and
+/// surrounding space); all of them for an empty query.
+pub fn matching_choices<'a>(choices: &'a [RelationChoice], query: &str) -> Vec<&'a RelationChoice> {
+    let query = query.trim().to_lowercase();
+    choices
+        .iter()
+        .filter(|c| {
+            query.is_empty()
+                || c.name.to_lowercase().contains(&query)
+                || c.id.to_string().contains(&query)
+        })
+        .collect()
+}
+
+/// The kind of element, as the side panel names it ("Way").
+pub fn kind_label(member_type: MemberType) -> gpui::SharedString {
+    match member_type {
+        MemberType::Node => tr!("panel.selection.node"),
+        MemberType::Way => tr!("panel.selection.way"),
+        MemberType::Relation => tr!("panel.selection.relation"),
+    }
+}
+
+/// How a relation member is listed: for an element that is loaded, the same
+/// text its Selection row has ("Residential Road · Way 123", or "Way 123"
+/// when no preset name is known); for one that isn't, "Way 123 (not
+/// downloaded)". `described` is the loaded element's preset name, if any.
+pub fn member_label(
+    member_type: MemberType,
+    id: i64,
+    loaded: bool,
+    described: Option<&str>,
+) -> String {
+    let kind = kind_label(member_type);
+    match (loaded, described) {
+        (false, _) => tr!("panel.relations.not_downloaded", kind = kind, id = id).to_string(),
+        (true, Some(name)) => tr!(
+            "panel.selection.row_named",
+            name = name,
+            kind = kind,
+            id = id
+        )
+        .to_string(),
+        (true, None) => tr!("panel.selection.row", kind = kind, id = id).to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -865,5 +1119,228 @@ mod tests {
         }
         .message("node", 5);
         assert!(msg.contains("via") && msg.contains("900"), "{msg}");
+    }
+
+    // -- editing the member list --
+
+    fn roles(members: &[OsmMember]) -> Vec<(i64, &str)> {
+        refs(members)
+    }
+
+    #[test]
+    fn set_member_role_changes_one_role_and_allows_an_empty_one() {
+        let ms = vec![way(1, "outer"), way(2, "inner")];
+        let out = set_member_role(&ms, 1, "outer").unwrap();
+        assert_eq!(roles(&out), vec![(1, "outer"), (2, "outer")]);
+        let out = set_member_role(&ms, 0, "").unwrap();
+        assert_eq!(roles(&out), vec![(1, ""), (2, "inner")]);
+        // Unchanged, or no such member: nothing to do.
+        assert_eq!(set_member_role(&ms, 0, "outer"), None);
+        assert_eq!(set_member_role(&ms, 5, "x"), None);
+    }
+
+    #[test]
+    fn move_member_swaps_with_its_neighbour_and_stops_at_the_ends() {
+        let ms = vec![way(1, "a"), way(2, "b"), node(3, "c")];
+        assert_eq!(
+            roles(&move_member(&ms, 1, -1).unwrap()),
+            vec![(2, "b"), (1, "a"), (3, "c")]
+        );
+        assert_eq!(
+            roles(&move_member(&ms, 1, 1).unwrap()),
+            vec![(1, "a"), (3, "c"), (2, "b")]
+        );
+        assert_eq!(
+            roles(&move_member(&ms, 0, 2).unwrap()),
+            vec![(2, "b"), (3, "c"), (1, "a")]
+        );
+        assert_eq!(move_member(&ms, 0, -1), None);
+        assert_eq!(move_member(&ms, 2, 1), None);
+        assert_eq!(move_member(&ms, 3, -1), None);
+        assert_eq!(move_member(&ms, 1, 0), None);
+    }
+
+    #[test]
+    fn remove_member_at_drops_one_membership_only() {
+        let r = relation("route", vec![way(1, "a"), way(2, "b"), way(1, "c")]);
+        let out = remove_member_at(&r, 2).unwrap().unwrap();
+        assert_eq!(roles(&out), vec![(1, "a"), (2, "b")]);
+        assert_eq!(remove_member_at(&r, 3), Ok(None));
+    }
+
+    #[test]
+    fn remove_member_at_refuses_the_last_member_and_a_restrictions_required_roles() {
+        let r = relation("route", vec![way(1, "a")]);
+        assert_eq!(
+            remove_member_at(&r, 0),
+            Err(DeleteError::WouldEmpty { relation_id: 900 })
+        );
+        let r = relation(
+            "restriction",
+            vec![way(1, "from"), node(2, "via"), way(3, "to"), way(4, "to")],
+        );
+        assert_eq!(
+            remove_member_at(&r, 1),
+            Err(DeleteError::RestrictionRole {
+                relation_id: 900,
+                role: "via"
+            })
+        );
+        // A second `to` can go; so can the only `from` of a non-restriction.
+        assert!(remove_member_at(&r, 3).unwrap().is_some());
+        let msg = remove_member_at(&r, 0).unwrap_err().remove_message();
+        assert!(msg.contains("from") && msg.contains("900"), "{msg}");
+        let msg = DeleteError::WouldEmpty { relation_id: 7 }.remove_message();
+        assert!(msg.contains('7'), "{msg}");
+    }
+
+    #[test]
+    fn add_members_appends_with_an_empty_role_and_skips_duplicates() {
+        let ms = vec![way(1, "outer"), node(2, "stop")];
+        let out = add_members(
+            &ms,
+            &[
+                (MemberType::Way, 1),  // already a member, in a role
+                (MemberType::Way, 3),  // new
+                (MemberType::Node, 1), // same id, other type: new
+                (MemberType::Way, 3),  // repeated in the request
+                (MemberType::Node, 2), // already a member
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            out.iter()
+                .map(|m| (m.member_type, m.reference, m.role.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (MemberType::Way, 1, "outer"),
+                (MemberType::Node, 2, "stop"),
+                (MemberType::Way, 3, ""),
+                (MemberType::Node, 1, ""),
+            ]
+        );
+        assert_eq!(add_members(&ms, &[(MemberType::Way, 1)]), None);
+        assert_eq!(add_members(&ms, &[]), None);
+    }
+
+    #[test]
+    fn relation_choices_sort_by_name_and_filter_by_name_or_id() {
+        let mut named = rel(30, vec![way(1, "")]);
+        named.tags.insert("name".into(), "blue Line".into());
+        let mut other = rel(20, vec![]);
+        other.tags.insert("name".into(), "Airport Loop".into());
+        let unnamed = OsmRelation {
+            tags: HashMap::new(),
+            ..rel(7, vec![way(1, ""), way(2, "")])
+        };
+        let choices = relation_choices(&[named, other, unnamed]);
+        let names: Vec<(&str, usize)> = choices
+            .iter()
+            .map(|c| (c.name.as_str(), c.member_count))
+            .collect();
+        // The unnamed one is listed by its id.
+        assert_eq!(names, vec![("7", 2), ("Airport Loop", 0), ("blue Line", 1)]);
+
+        let ids = |query: &str| -> Vec<i64> {
+            matching_choices(&choices, query)
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        assert_eq!(ids(""), vec![7, 20, 30]);
+        assert_eq!(ids("  LINE "), vec![30]);
+        assert_eq!(ids("loop"), vec![20]);
+        assert_eq!(ids("30"), vec![30]);
+        assert!(ids("nothing").is_empty());
+    }
+
+    #[test]
+    fn member_label_matches_the_selection_row_or_says_not_downloaded() {
+        assert_eq!(
+            member_label(MemberType::Way, 123, true, Some("Residential Road")),
+            "Residential Road · Way 123"
+        );
+        assert_eq!(member_label(MemberType::Node, 5, true, None), "Node 5");
+        assert_eq!(
+            member_label(MemberType::Way, 123, false, None),
+            "Way 123 (not downloaded)"
+        );
+        assert_eq!(
+            member_label(MemberType::Relation, 9, false, Some("ignored")),
+            "Relation 9 (not downloaded)"
+        );
+    }
+
+    // -- members as map features --
+
+    fn rel(id: i64, members: Vec<OsmMember>) -> OsmRelation {
+        OsmRelation {
+            id,
+            ..relation("route", members)
+        }
+    }
+
+    #[test]
+    fn flatten_members_follows_nested_relations_one_level_without_repeats() {
+        let top = rel(
+            1,
+            vec![
+                way(10, ""),
+                member(MemberType::Relation, 2, ""),
+                node(5, ""),
+                member(MemberType::Relation, 404, ""),
+                // A relation naming itself is not followed.
+                member(MemberType::Relation, 1, ""),
+            ],
+        );
+        let child = rel(
+            2,
+            vec![
+                way(10, ""),
+                way(11, ""),
+                member(MemberType::Relation, 3, ""),
+            ],
+        );
+        let find = |id: i64| (id == 2).then(|| child.clone());
+        assert_eq!(
+            flatten_members(&top, &find),
+            vec![
+                (MemberType::Way, 10),
+                (MemberType::Way, 11),
+                (MemberType::Node, 5)
+            ]
+        );
+    }
+
+    #[test]
+    fn members_bounds_covers_loaded_members_only() {
+        let r = rel(
+            1,
+            vec![
+                node(1, ""),
+                way(20, ""),
+                way(21, ""),
+                node(99, ""),
+                member(MemberType::Relation, 2, ""),
+            ],
+        );
+        let nested = rel(2, vec![node(3, "")]);
+        let node_pos = |id: i64| match id {
+            1 => Some((10.0, 20.0)),
+            2 => Some((12.0, 18.0)),
+            3 => Some((5.0, 30.0)),
+            _ => None,
+        };
+        let way_nodes = |id: i64| (id == 20).then(|| vec![2, 777]);
+        let find = |id: i64| (id == 2).then(|| nested.clone());
+        let lookup = MemberLookup {
+            node: &node_pos,
+            way_nodes: &way_nodes,
+            relation: &find,
+        };
+        assert_eq!(members_bounds(&r, &lookup), Some((5.0, 12.0, 18.0, 30.0)));
+
+        let empty = rel(3, vec![node(99, ""), way(21, "")]);
+        assert_eq!(members_bounds(&empty, &lookup), None);
     }
 }

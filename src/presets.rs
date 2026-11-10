@@ -253,7 +253,7 @@ impl AreaKeys {
 /// by any way is a `Point`; a node referenced by at least one way is a
 /// `Vertex`; a way is a `Line` unless it's closed (first node id == last
 /// node id) and its tags qualify as an area per `area_keys`, in which case
-/// it's an `Area`. Returns `None` if the feature id isn't present in `data`.
+/// it's an `Area`; a relation is always `Relation`. Returns `None` if the feature id isn't present in `data`.
 pub fn classify_geometry(
     data: &OsmData,
     kind: FeatureKind,
@@ -279,6 +279,11 @@ pub fn classify_geometry(
                 Some(Geometry::Line)
             }
         }
+        FeatureKind::Relation => data
+            .relations
+            .iter()
+            .any(|r| r.id == id)
+            .then_some(Geometry::Relation),
     }
 }
 

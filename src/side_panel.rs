@@ -19,6 +19,17 @@ use crate::{
     ToggleLayerVisibilityAction,
 };
 
+/// One membership of the selected feature in a relation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Membership {
+    pub relation_id: i64,
+    /// The relation's display name.
+    pub name: String,
+    pub role: String,
+    /// Where the feature is in the relation's member list.
+    pub index: usize,
+}
+
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
 
@@ -53,6 +64,8 @@ impl MapViewer {
         let history_section = self.render_history_section(cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
+        let members_section = self.render_members_section(cx);
+        let open_members = self.side_panel_open[6];
 
         let open_layers = self.side_panel_open[0];
         let open_selection = self.side_panel_open[1];
@@ -132,6 +145,15 @@ impl MapViewer {
                         tags_section,
                         cx,
                     ))
+                    .children(members_section.map(|(count, section)| {
+                        self.collapsible_section(
+                            tr_count!("panel.members.title_count", count),
+                            6,
+                            open_members,
+                            section,
+                            cx,
+                        )
+                    }))
                     .children(relations_section.map(|section| {
                         self.collapsible_section(
                             tr!("panel.relations.title"),
@@ -154,9 +176,9 @@ impl MapViewer {
     }
 
     /// The relations the single selected feature belongs to, one entry per
-    /// membership: `(relation id, display name, role)`. Empty unless exactly
-    /// one feature is selected and a relation has it as a member.
-    pub(crate) fn selected_memberships(&self) -> Vec<(i64, String, String)> {
+    /// membership. Empty unless exactly one feature is selected and a
+    /// relation has it as a member.
+    pub(crate) fn selected_memberships(&self) -> Vec<Membership> {
         use osm_gpui::osm::MemberType;
         use osm_gpui::selection::FeatureKind;
 
@@ -179,6 +201,9 @@ impl MapViewer {
                 MemberType::Way,
                 editable.relations_containing_way(feature.id),
             ),
+            // The Relations section lists what the selected node or way
+            // belongs to; a relation's own contents are in its Members section.
+            FeatureKind::Relation => return Vec::new(),
         };
         let mut memberships = Vec::new();
         for relation_id in relation_ids {
@@ -186,11 +211,270 @@ impl MapViewer {
                 continue;
             };
             let name = osm_gpui::relations::display_name(&relation);
-            for role in osm_gpui::relations::roles_of(&relation, member_type, feature.id) {
-                memberships.push((relation_id, name.clone(), role.to_string()));
+            for (index, member) in relation.members.iter().enumerate() {
+                if member.member_type == member_type && member.reference == feature.id {
+                    memberships.push(Membership {
+                        relation_id,
+                        name: name.clone(),
+                        role: member.role.clone(),
+                        index,
+                    });
+                }
             }
         }
         memberships
+    }
+
+    /// How many members the Members list renders before "Show all": a route
+    /// can have hundreds, and every row is several elements.
+    const MEMBERS_INITIAL_ROWS: usize = 100;
+
+    /// The Members accordion section for a single selected relation, with
+    /// its member count (for the title): the ordered member list, each with
+    /// a name that selects it, an editable role, and move/remove buttons.
+    /// `None` unless exactly one relation is selected.
+    fn render_members_section(&self, cx: &mut Context<Self>) -> Option<(usize, gpui::AnyElement)> {
+        use crate::MemberRef;
+        use gpui_component::Disableable as _;
+        use osm_gpui::osm::MemberType;
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+
+        let [feature] = self.selected.as_slice() else {
+            return None;
+        };
+        if feature.kind != FeatureKind::Relation {
+            return None;
+        }
+        let layer_id = feature.layer_id;
+        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
+        let relation = editable.relation(feature.id)?;
+        let total = relation.members.len();
+        let muted = cx.theme().muted_foreground;
+        if total == 0 {
+            return Some((
+                0,
+                Label::new(tr!("panel.members.empty"))
+                    .text_color(muted)
+                    .into_any_element(),
+            ));
+        }
+        let shown = if self.members_show_all {
+            total
+        } else {
+            total.min(Self::MEMBERS_INITIAL_ROWS)
+        };
+
+        let rows = relation
+            .members
+            .iter()
+            .enumerate()
+            .take(shown)
+            .map(|(i, member)| {
+                let member_ref = MemberRef {
+                    layer_id,
+                    relation_id: relation.id,
+                    index: i,
+                };
+                let (kind, loaded) = match member.member_type {
+                    MemberType::Node => (
+                        FeatureKind::Node,
+                        editable.node_lat_lon(member.reference).is_some(),
+                    ),
+                    MemberType::Way => (
+                        FeatureKind::Way,
+                        editable.way_node_ids(member.reference).is_some(),
+                    ),
+                    MemberType::Relation => (
+                        FeatureKind::Relation,
+                        editable.relation(member.reference).is_some(),
+                    ),
+                };
+                let target = FeatureRef {
+                    layer_id,
+                    kind,
+                    id: member.reference,
+                };
+                let described = loaded
+                    .then(|| self.describe_selected_feature(&target))
+                    .flatten()
+                    .map(|(name, _)| name);
+                let label = osm_gpui::relations::member_label(
+                    member.member_type,
+                    member.reference,
+                    loaded,
+                    described.as_deref(),
+                );
+                let letter: String = osm_gpui::relations::kind_label(member.member_type)
+                    .chars()
+                    .take(1)
+                    .collect();
+
+                let name = div()
+                    .id(("member-name", i))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label);
+                let name = if loaded {
+                    let hover_bg = cx.theme().list_hover;
+                    name.cursor_pointer()
+                        .rounded_sm()
+                        .hover(move |this| this.bg(hover_bg))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                this.set_selection(vec![target]);
+                                cx.notify();
+                            }),
+                        )
+                } else {
+                    name.italic().text_color(muted)
+                };
+
+                let button = |id: &'static str, icon: IconName, tip: SharedString| {
+                    Button::new((id, i))
+                        .icon(icon)
+                        .ghost()
+                        .xsmall()
+                        .tooltip(tip)
+                };
+                let controls = div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .child(
+                        button("member-up", IconName::ArrowUp, tr!("panel.members.move_up"))
+                            .disabled(i == 0)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.move_relation_member(member_ref, -1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        button(
+                            "member-down",
+                            IconName::ArrowDown,
+                            tr!("panel.members.move_down"),
+                        )
+                        .disabled(i + 1 == total)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.move_relation_member(member_ref, 1);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        button(
+                            "member-remove",
+                            IconName::Close,
+                            tr!("panel.members.remove"),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_relation_member(member_ref);
+                            cx.notify();
+                        })),
+                    );
+
+                let role = member.role.clone();
+                let role_line = match self.role_edit.as_ref().filter(|e| e.member == member_ref) {
+                    Some(edit) => {
+                        let sizing = if role.is_empty() {
+                            tr!("panel.members.role")
+                        } else {
+                            SharedString::from(role.clone())
+                        };
+                        self.inline_input_cell(&edit.input, sizing, Self::cancel_role_edit, cx)
+                            .into_any_element()
+                    }
+                    None => {
+                        let text = if role.is_empty() {
+                            div().italic().child(tr!("panel.relations.no_role"))
+                        } else {
+                            div().child(role.clone())
+                        };
+                        text.id(("member-role", i))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .cursor_text()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.pending_role_edit_open = Some((member_ref, role.clone()));
+                                    cx.notify();
+                                }),
+                            )
+                            .into_any_element()
+                    }
+                };
+
+                div()
+                    .id(("member-row", i))
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .h(px(PANEL_ROW_HEIGHT))
+                            .px_1()
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .flex_shrink_0()
+                                    .text_size(muted_text_size())
+                                    .text_color(muted)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(letter),
+                            )
+                            .child(name)
+                            .child(controls),
+                    )
+                    // The role sits under the name, indented past the
+                    // type letter, so a narrow panel has room for both.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .pl(px(24.))
+                            .pr_1()
+                            .pb_1()
+                            .child(role_line),
+                    )
+            });
+
+        let mut column = div().flex().flex_col().gap_0p5().child(
+            div()
+                .id("members-list")
+                .flex()
+                .flex_col()
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .children(rows),
+        );
+        if shown < total {
+            column = column.child(
+                div().flex().flex_row().child(
+                    Button::new("members-show-all")
+                        .label(tr!("panel.members.show_all", count = total))
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.members_show_all = true;
+                            cx.notify();
+                        })),
+                ),
+            );
+        }
+        Some((total, column.into_any_element()))
     }
 
     /// The Relations accordion section: one read-only row per relation the
@@ -202,39 +486,72 @@ impl MapViewer {
             return None;
         }
         let muted = cx.theme().muted_foreground;
+        let layer_id = self.selected[0].layer_id;
         Some(
             div()
                 .flex()
                 .flex_col()
-                .children(
-                    memberships
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (_, name, role))| {
-                            let role_text = if role.is_empty() {
-                                div().italic().child(tr!("panel.relations.no_role"))
-                            } else {
-                                div().child(role)
-                            };
-                            panel_row(("relation-row", i))
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(name),
-                                )
-                                .child(
-                                    role_text
-                                        .flex_shrink_0()
-                                        .text_size(muted_text_size())
-                                        .text_color(muted),
-                                )
-                        }),
-                )
+                .children(memberships.into_iter().enumerate().map(
+                    |(
+                        i,
+                        Membership {
+                            relation_id,
+                            name,
+                            role,
+                            index,
+                        },
+                    )| {
+                        let member_ref = crate::MemberRef {
+                            layer_id,
+                            relation_id,
+                            index,
+                        };
+                        let role_text = if role.is_empty() {
+                            div().italic().child(tr!("panel.relations.no_role"))
+                        } else {
+                            div().child(role)
+                        };
+                        // Clicking the row selects the relation.
+                        interactive_row(("relation-row", i), false, cx)
+                            .gap_2()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.select_relation(layer_id, relation_id);
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .child(
+                                role_text
+                                    .flex_shrink_0()
+                                    .text_size(muted_text_size())
+                                    .text_color(muted),
+                            )
+                            // Takes this feature out of that relation. (A
+                            // Button swallows the mouse-down, so it doesn't
+                            // also select the relation.)
+                            .child(
+                                Button::new(("relation-remove", i))
+                                    .icon(IconName::Close)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip(tr!("panel.relations.remove"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_relation_member(member_ref);
+                                        cx.notify();
+                                    })),
+                            )
+                    },
+                ))
                 .into_any_element(),
         )
     }
@@ -330,8 +647,18 @@ impl MapViewer {
         let tags: std::collections::HashMap<String, String> =
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
-        let (name, icon_name) =
+        let (mut name, icon_name) =
             osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
+        // Only the catch-all "Relation" preset matches a relation of a kind
+        // the schema doesn't know; its `type` says more than that does.
+        if feat.kind == osm_gpui::selection::FeatureKind::Relation {
+            let matched = osm_gpui::presets::preset_index().match_feature(&tags, geometry);
+            if matched.is_none_or(|p| p.id == "relation") {
+                if let Some(kind) = tags.get("type").filter(|t| !t.trim().is_empty()) {
+                    name = kind.clone();
+                }
+            }
+        }
         let icon_path = icon_name.and_then(|n| osm_gpui::presets::icon_path(&n));
         Some((name, icon_path))
     }
@@ -361,6 +688,7 @@ impl MapViewer {
                 let kind_label = match feat.kind {
                     FeatureKind::Node => tr!("panel.selection.node"),
                     FeatureKind::Way => tr!("panel.selection.way"),
+                    FeatureKind::Relation => tr!("panel.selection.relation"),
                 };
                 let row_feat = *feat;
                 let described = self.describe_selected_feature(feat);
@@ -572,6 +900,17 @@ impl MapViewer {
         sizing_text: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        self.inline_input_cell(input, sizing_text, Self::cancel_tag_inline_edit, cx)
+    }
+
+    /// `tag_input_cell` for any inline edit: `cancel` is what Escape does.
+    fn inline_input_cell(
+        &self,
+        input: &gpui::Entity<gpui_component::input::InputState>,
+        sizing_text: impl Into<SharedString>,
+        cancel: fn(&mut Self, &mut gpui::Window, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         use gpui_component::Size;
 
         // `Size::Size(s)` renders input text at `s * 0.875` with 8px of
@@ -591,12 +930,14 @@ impl MapViewer {
             .relative()
             .flex_1()
             .min_w(px(0.))
-            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "escape" {
-                    this.cancel_tag_inline_edit(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                    if ev.keystroke.key == "escape" {
+                        cancel(this, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .child(div().invisible().child(sizing_text.into()))
             .child(
                 div()

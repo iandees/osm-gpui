@@ -494,6 +494,21 @@ struct MapViewer {
     /// click and acted on during the next `render()` — see
     /// `PendingTagEditOpen`'s doc comment.
     pending_tag_edit_open: Option<PendingTagEditOpen>,
+    /// The role of a relation member being edited in place in the Members
+    /// list, if any.
+    role_edit: Option<RoleEdit>,
+    /// A request to start a role edit, acted on during the next `render()`
+    /// for the same reason as `pending_tag_edit_open`.
+    pending_role_edit_open: Option<(MemberRef, String)>,
+    /// Whether the Members list shows every member of a long relation
+    /// instead of the first few.
+    members_show_all: bool,
+    /// Set by "Add to Relation…"; `render` opens the picker (it needs the
+    /// window) and clears it.
+    pending_relation_picker: bool,
+    /// Active "add to relation" picker dialog, if open.
+    relation_picker_dialog:
+        Option<gpui::Entity<osm_gpui::ui::relation_picker_dialog::RelationPickerDialog>>,
     /// The feature whose Fields section has its "Add field" list expanded.
     /// Keyed by feature so the list is closed again for any other selection
     /// without every selection-changing path having to reset it.
@@ -509,8 +524,9 @@ struct MapViewer {
     preset_picker_dialog:
         Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, in that order) is expanded.
-    side_panel_open: [bool; 6],
+    /// Tags, History, Relations, Members, by the indices `render_side_panel`
+    /// gives them) is expanded.
+    side_panel_open: [bool; 7],
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
@@ -611,6 +627,21 @@ struct PendingTagEditOpen {
     original_value: String,
     select: osm_gpui::ui::tag_edit::TagEditField,
     is_add: bool,
+}
+
+/// One member of a relation, by position: roles can repeat and so can
+/// members, so the index is the identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemberRef {
+    layer_id: LayerId,
+    relation_id: i64,
+    index: usize,
+}
+
+/// An in-place edit of one member's role in the Members list.
+struct RoleEdit {
+    member: MemberRef,
+    input: gpui::Entity<gpui_component::input::InputState>,
 }
 
 /// The mouse cursor to show over the map: a closed hand while pan-dragging,
@@ -715,9 +746,14 @@ impl MapViewer {
             ),
             side_panel_resize: None,
             pending_tag_edit_open: None,
+            role_edit: None,
+            pending_relation_picker: false,
+            relation_picker_dialog: None,
+            pending_role_edit_open: None,
+            members_show_all: false,
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true, true, true, true, true, true],
+            side_panel_open: [true; 7],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -1090,6 +1126,8 @@ impl MapViewer {
                         entry.extend(node_ids);
                     }
                 }
+                // A relation has no geometry of its own to drag.
+                FeatureKind::Relation => {}
             }
         }
 
@@ -1673,6 +1711,155 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// A copy of relation `relation_id` of `layer_id`, if the layer has it.
+    pub(crate) fn relation_of(
+        &self,
+        layer_id: LayerId,
+        relation_id: i64,
+    ) -> Option<osm_gpui::osm::OsmRelation> {
+        self.layer_manager
+            .find_layer(layer_id)?
+            .as_editable()?
+            .relation(relation_id)
+    }
+
+    /// Replace the member list of a relation with `after` as one undo step.
+    /// Does nothing if the layer has no such relation.
+    fn change_relation_members(
+        &mut self,
+        layer_id: LayerId,
+        relation_id: i64,
+        after: Vec<osm_gpui::osm::OsmMember>,
+    ) {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|layer| layer.as_editable_mut())
+        else {
+            return;
+        };
+        let Some(before) = editable.set_relation_members(relation_id, after.clone()) else {
+            return;
+        };
+        self.undo_stack.push(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
+        });
+    }
+
+    /// Move member `member.index` of a relation by `delta` places.
+    pub(crate) fn move_relation_member(&mut self, member: MemberRef, delta: isize) {
+        let Some(relation) = self.relation_of(member.layer_id, member.relation_id) else {
+            return;
+        };
+        if let Some(after) =
+            osm_gpui::relations::move_member(&relation.members, member.index, delta)
+        {
+            self.change_relation_members(member.layer_id, member.relation_id, after);
+        }
+    }
+
+    /// Remove member `member.index` from its relation, or say in the status
+    /// bar why that is refused.
+    pub(crate) fn remove_relation_member(&mut self, member: MemberRef) {
+        let Some(relation) = self.relation_of(member.layer_id, member.relation_id) else {
+            return;
+        };
+        match osm_gpui::relations::remove_member_at(&relation, member.index) {
+            Ok(Some(after)) => {
+                self.change_relation_members(member.layer_id, member.relation_id, after)
+            }
+            Ok(None) => {}
+            Err(e) => self.set_status(e.remove_message()),
+        }
+    }
+
+    /// Give member `member.index` the role `role`.
+    fn set_relation_member_role(&mut self, member: MemberRef, role: &str) {
+        let Some(relation) = self.relation_of(member.layer_id, member.relation_id) else {
+            return;
+        };
+        if let Some(after) =
+            osm_gpui::relations::set_member_role(&relation.members, member.index, role)
+        {
+            self.change_relation_members(member.layer_id, member.relation_id, after);
+        }
+    }
+
+    /// If a role click recorded a pending edit, build its input now. Called
+    /// from `Render::render`, for the reason `check_for_pending_tag_edit`
+    /// gives.
+    fn check_for_pending_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::input::{InputState, SelectAll};
+
+        let Some((member, original)) = self.pending_role_edit_open.take() else {
+            return;
+        };
+        // Finish any edit that is still open.
+        self.commit_role_edit(cx);
+
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder(tr!("panel.members.role"));
+            state.set_value(original, window, cx);
+            state
+        });
+        cx.subscribe_in(&input, window, |this, input, event, window, cx| {
+            this.on_role_input_event(input, event, window, cx);
+        })
+        .detach();
+        input.update(cx, |state, cx| state.focus(window, cx));
+        window.on_next_frame(|window, cx| {
+            window.dispatch_action(Box::new(SelectAll), cx);
+        });
+        self.role_edit = Some(RoleEdit { member, input });
+        cx.notify();
+    }
+
+    /// Enter and loss of focus commit the open role edit.
+    fn on_role_input_event(
+        &mut self,
+        input: &gpui::Entity<gpui_component::input::InputState>,
+        event: &gpui_component::input::InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::input::InputEvent;
+
+        // Ignore late events from an edit that was already finished.
+        if self.role_edit.as_ref().map(|edit| &edit.input) != Some(input) {
+            return;
+        }
+        match event {
+            InputEvent::PressEnter { .. } => {
+                self.commit_role_edit(cx);
+                window.focus(&self.focus_handle, cx);
+            }
+            InputEvent::Blur => self.commit_role_edit(cx),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// Apply the open role edit, if any, and close it. An empty role is a
+    /// valid role.
+    fn commit_role_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.role_edit.take() else {
+            return;
+        };
+        let role = edit.input.read(cx).value().trim().to_string();
+        self.set_relation_member_role(edit.member, &role);
+    }
+
+    /// Abandon the open role edit (Escape) and hand focus back to the map.
+    pub(crate) fn cancel_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.role_edit.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
     /// Delete every currently-selected feature (Delete/Backspace key, and
     /// Edit > Delete). Runs the "delete" entry of the selection-action table;
     /// silent when nothing is selected, so a stray key press doesn't flash a
@@ -1703,7 +1890,26 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        match (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer) {
+        if action.id == selection_actions::ADD_TO_RELATION {
+            // Which relation? Ask; `render` opens the picker (it needs the
+            // window), and the choice comes back through
+            // `add_selection_to_relation`.
+            self.pending_relation_picker = true;
+            cx.notify();
+            return;
+        }
+        let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
+        self.finish_selection_action(result);
+        cx.notify();
+    }
+
+    /// Record what a selection action produced: its undo step, selection
+    /// change and status message, or the reason it refused.
+    fn finish_selection_action(
+        &mut self,
+        result: Result<selection_actions::ActionOutcome, String>,
+    ) {
+        match result {
             Ok(outcome) => {
                 if let Some(undo) = outcome.undo {
                     self.undo_stack.push(undo);
@@ -1721,7 +1927,61 @@ impl MapViewer {
             }
             Err(message) => self.set_status(message),
         }
+    }
+
+    /// Open the "Add to Relation" picker if the action asked for it, listing
+    /// the relations of the active layer. Called from `Render::render`, as the
+    /// dialog needs the window.
+    fn check_for_pending_relation_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::relation_picker_dialog::{DialogEvent, RelationPickerDialog};
+
+        if !std::mem::take(&mut self.pending_relation_picker)
+            || self.relation_picker_dialog.is_some()
+        {
+            return;
+        }
+        let Some(editable) = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .and_then(|layer| layer.as_editable())
+        else {
+            return;
+        };
+        let relations: Vec<osm_gpui::osm::OsmRelation> = editable
+            .relation_ids()
+            .into_iter()
+            .filter_map(|id| editable.relation(id))
+            .collect();
+        let choices = osm_gpui::relations::relation_choices(&relations);
+        let dialog = cx.new(|cx| RelationPickerDialog::new(choices, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, event: &DialogEvent, cx| {
+                match event {
+                    DialogEvent::Cancelled => {}
+                    DialogEvent::Submitted(relation_id) => {
+                        this.add_selection_to_relation(*relation_id);
+                    }
+                }
+                this.relation_picker_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.relation_picker_dialog = Some(dialog);
         cx.notify();
+    }
+
+    /// Append the selected nodes and ways to relation `relation_id` as one
+    /// undo step (the picker's choice).
+    fn add_selection_to_relation(&mut self, relation_id: i64) {
+        let result = selection_actions::add_to_relation(
+            &mut self.layer_manager,
+            &self.selected,
+            self.active_layer,
+            relation_id,
+        );
+        self.finish_selection_action(result);
     }
 
     /// Menu bar (Tools) and context menu entry point for the selection
@@ -1757,10 +2017,24 @@ impl MapViewer {
     /// editing state so nothing from the previous selection leaks through.
     fn set_selection(&mut self, selection: Vec<osm_gpui::selection::FeatureRef>) {
         self.selected = selection;
+        // The Members list belongs to the selected relation.
+        self.role_edit = None;
+        self.pending_role_edit_open = None;
+        self.members_show_all = false;
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
         self.fields_open_combo = None;
         self.fields_promoted_more_fields.clear();
+    }
+
+    /// Select relation `id` of `layer_id` on its own (relations can't be
+    /// clicked on the map; this is the side panel's way in).
+    pub(crate) fn select_relation(&mut self, layer_id: LayerId, id: i64) {
+        self.set_selection(vec![osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Relation,
+            id,
+        }]);
     }
 
     /// Edit > Select All: every node and way in the active layer.
@@ -1837,6 +2111,26 @@ impl MapViewer {
                         }
                     }
                 }
+                // The box around the members that are loaded.
+                FeatureKind::Relation => {
+                    let Some(relation) = editable.relation(feature.id) else {
+                        continue;
+                    };
+                    let node = |id: i64| editable.node_lat_lon(id);
+                    let way_nodes = |id: i64| editable.way_node_ids(id);
+                    let find = |id: i64| editable.relation(id);
+                    let lookup = osm_gpui::relations::MemberLookup {
+                        node: &node,
+                        way_nodes: &way_nodes,
+                        relation: &find,
+                    };
+                    if let Some((min_lat, max_lat, min_lon, max_lon)) =
+                        osm_gpui::relations::members_bounds(&relation, &lookup)
+                    {
+                        extend((min_lat, min_lon));
+                        extend((max_lat, max_lon));
+                    }
+                }
             }
         }
 
@@ -1884,7 +2178,13 @@ impl MapViewer {
     ) {
         let selected = self.selected.clone();
         if !self.fit_to_features(&selected) {
-            self.set_status(tr!("status.nothing_selected"));
+            // A relation none of whose members is loaded selects something
+            // but has nowhere to zoom to.
+            self.set_status(if selected.is_empty() {
+                tr!("status.nothing_selected")
+            } else {
+                tr!("status.no_data_to_zoom")
+            });
         }
         cx.notify();
     }
@@ -3619,6 +3919,8 @@ impl Render for MapViewer {
         // background-task completions via `MAP_VIEWER_HANDLE`, so there's
         // nothing else to drain here.
         self.check_for_pending_tag_edit(window, cx);
+        self.check_for_pending_role_edit(window, cx);
+        self.check_for_pending_relation_picker(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -4329,6 +4631,7 @@ impl Render for MapViewer {
             .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
+            .children(self.relation_picker_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.render_context_menu(window, cx))
@@ -5009,6 +5312,39 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/relation-editor.osmscript` clicks the route's way on
+    /// the map and expects the route to be its relation, with a member that
+    /// is not downloaded and a relation nested in another.
+    #[test]
+    fn relation_editor_script_targets_and_fixture() {
+        use osm_gpui::selection::resolve_hits;
+        use osm_gpui::selection::FeatureKind::Way;
+
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/relation-editor.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let hit_at = |x: f32, y: f32| {
+            let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+            let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, at);
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        assert_eq!(hit_at(520.0, 200.0), Some((Way, 8202)));
+        assert_eq!(hit_at(340.0, 400.0), Some((Way, 8301)));
+
+        let editable: &dyn osm_gpui::layers::EditableLayer = &layer;
+        assert_eq!(editable.relations_containing_way(8202), vec![9101]);
+        let route = editable.relation(9101).unwrap();
+        assert_eq!(route.members.len(), 5);
+        // Way 8999 is a member but not loaded.
+        assert!(editable.way_node_ids(8999).is_none());
+        let find = |id| editable.relation(id);
+        let master = editable.relation(9103).unwrap();
+        let flat = osm_gpui::relations::flatten_members(&master, &find);
+        assert_eq!(flat.len(), 5);
+    }
+
     /// `docs/screenshots/relations.osmscript` clicks fixed window positions;
     /// check they pick what the script names, that the fixture's relations
     /// show up as the script expects, and that the split it runs keeps the
@@ -5062,6 +5398,7 @@ mod tests {
             let ids = match kind {
                 Node => editable.relations_containing_node(id),
                 Way => editable.relations_containing_way(id),
+                osm_gpui::selection::FeatureKind::Relation => Vec::new(),
             };
             ids.into_iter()
                 .map(|r| osm_gpui::relations::display_name(&editable.relation(r).unwrap()))
@@ -5564,15 +5901,15 @@ mod tests {
                 // Way 102 and node 7 are in relation 900, which has no name,
                 // so its ref stands in.
                 select(view, Way, &[102]);
-                assert_eq!(
-                    view.selected_memberships(),
-                    vec![(900, "7B".to_string(), String::new())]
-                );
+                let membership = |role: &str, index| side_panel::Membership {
+                    relation_id: 900,
+                    name: "7B".to_string(),
+                    role: role.to_string(),
+                    index,
+                };
+                assert_eq!(view.selected_memberships(), vec![membership("", 0)]);
                 select(view, Node, &[7]);
-                assert_eq!(
-                    view.selected_memberships(),
-                    vec![(900, "7B".to_string(), "stop".to_string())]
-                );
+                assert_eq!(view.selected_memberships(), vec![membership("stop", 1)]);
                 // In no relation, several features, or nothing selected: no
                 // section.
                 select(view, Way, &[100]);
@@ -5581,6 +5918,316 @@ mod tests {
                 assert!(view.selected_memberships().is_empty());
                 select(view, Way, &[]);
                 assert!(view.selected_memberships().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_relation_selected_from_a_members_row_edits_and_zooms(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Relation, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[102]);
+                let membership = view.selected_memberships().remove(0);
+                // What clicking the member's Relations row does.
+                view.select_relation(layer_id, membership.relation_id);
+                let only = view.selected.as_slice();
+                assert_eq!(only.len(), 1);
+                assert_eq!((only[0].kind, only[0].id), (Relation, 900));
+                // A relation lists no memberships of its own.
+                assert!(view.selected_memberships().is_empty());
+
+                // Tags edit like a way's: one undo step each.
+                let ctx = TagEditContext {
+                    features: view.selected.clone(),
+                    original_key: String::new(),
+                    original_value: String::new(),
+                    is_add: true,
+                };
+                view.apply_tag_edit(&ctx, "ref", "7B");
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+                assert_eq!(pending(view), (0, 1, 0));
+                undo_step(view);
+                assert!(tags_of(view, Relation, 900).is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+
+                // Copy Tags works; Delete is not applicable.
+                view.run_selection_action("copy_tags", cx);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.starts_with("Copied")));
+                let actions = view.undo_stack.actions.len();
+                view.run_selection_action("delete", cx);
+                assert_eq!(view.undo_stack.actions.len(), actions);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Relations can't be deleted yet")
+                );
+                assert_eq!(relation_members(view, 900).len(), 2);
+                // Nothing to drag.
+                assert!(view.resolve_move_targets().is_empty());
+
+                // Zoom to Selection fits the loaded members (way 102 and
+                // node 7), not the whole layer.
+                view.viewport.pan_to(10.0, 10.0);
+                assert!(view.fit_to_features(&view.selected.clone()));
+                let (lat, lon) = view.viewport.center();
+                assert!((lat - 40.002).abs() < 1e-3 && (lon + 73.994).abs() < 1e-3);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn role_move_and_remove_edits_are_one_undo_step_each_and_redoable(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let at = |index| MemberRef {
+                    layer_id,
+                    relation_id: 900,
+                    index,
+                };
+                let original = relation_members(view, 900);
+                assert_eq!(
+                    original,
+                    vec![(102, String::new()), (7, "stop".to_string())]
+                );
+
+                // Role: set, undo, redo; an empty role is fine; no change is
+                // not an undo step.
+                view.set_relation_member_role(at(0), "outer");
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                view.set_relation_member_role(at(0), "outer");
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let renamed = relation_members(view, 900);
+                assert_eq!(renamed[0], (102, "outer".to_string()));
+                assert_eq!(pending(view), (0, 1, 0));
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), renamed);
+                view.set_relation_member_role(at(1), "");
+                assert_eq!(relation_members(view, 900)[1], (7, String::new()));
+                undo_step(view);
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+
+                // Reorder: move down, undo, redo; the ends don't move.
+                assert_eq!(view.undo_stack.cursor, 0);
+                view.move_relation_member(at(0), 1);
+                assert_eq!(view.undo_stack.cursor, 1);
+                let moved = relation_members(view, 900);
+                assert_eq!(moved, vec![original[1].clone(), original[0].clone()]);
+                view.move_relation_member(at(1), 1);
+                view.move_relation_member(at(0), -1);
+                assert_eq!(relation_members(view, 900), moved);
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), moved);
+                undo_step(view);
+
+                // Remove: one step; the last member is refused with a reason.
+                assert_eq!(view.undo_stack.cursor, 0);
+                view.remove_relation_member(at(0));
+                assert_eq!(view.undo_stack.cursor, 1);
+                assert_eq!(relation_members(view, 900), vec![original[1].clone()]);
+                assert_eq!(pending(view), (0, 1, 0));
+                view.remove_relation_member(at(0));
+                assert_eq!(view.undo_stack.cursor, 1);
+                assert_eq!(relation_members(view, 900).len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Can't remove the last member of relation 900")
+                );
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                redo_step(view);
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn removing_a_feature_from_a_relation_on_its_relations_row_is_undoable(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = relation_members(view, 900);
+                // Node 7 is the relation's second member.
+                select(view, Node, &[7]);
+                let membership = view.selected_memberships().remove(0);
+                view.remove_relation_member(crate::MemberRef {
+                    layer_id,
+                    relation_id: membership.relation_id,
+                    index: membership.index,
+                });
+                assert_eq!(relation_members(view, 900), vec![original[0].clone()]);
+                assert!(view.selected_memberships().is_empty());
+                assert_eq!(pending(view), (0, 1, 0));
+
+                // The way is now the last member: its row refuses.
+                select(view, Way, &[102]);
+                let membership = view.selected_memberships().remove(0);
+                view.remove_relation_member(crate::MemberRef {
+                    layer_id,
+                    relation_id: membership.relation_id,
+                    index: membership.index,
+                });
+                assert_eq!(relation_members(view, 900).len(), 1);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.contains("last member")));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn add_to_relation_appends_the_new_members_as_one_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let original = relation_members(view, 900);
+                // Way 102 is already a member; 100, 103 and node 5 are not.
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100, 102, 103]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 5,
+                });
+                // The action asks for a relation first and changes nothing.
+                view.run_selection_action("add_to_relation", cx);
+                assert!(view.pending_relation_picker);
+                assert!(view.undo_stack.actions.is_empty());
+                // (Opening the picker needs a window root, which the test
+                // window lacks.)
+                view.pending_relation_picker = false;
+
+                view.add_selection_to_relation(900);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let added = relation_members(view, 900);
+                assert_eq!(
+                    added,
+                    vec![
+                        original[0].clone(),
+                        original[1].clone(),
+                        (100, String::new()),
+                        (103, String::new()),
+                        (5, String::new()),
+                    ]
+                );
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Added 3 features to relation 900")
+                );
+                assert_eq!(pending(view), (0, 1, 0));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), added);
+
+                // Everything is a member now: nothing to do, no undo step.
+                view.add_selection_to_relation(900);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("The selected features are already members of 900")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn add_to_relation_needs_features_and_a_relation_to_add_them_to(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network_with(cx, |data| data.relations.clear());
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[100]);
+                view.run_selection_action("add_to_relation", cx);
+                assert!(!view.pending_relation_picker);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.starts_with("Select nodes or ways")));
+            })
+            .unwrap();
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // A selected relation alone has nothing to add.
+                view.select_relation(view.active_layer.unwrap(), 900);
+                view.run_selection_action("add_to_relation", cx);
+                assert!(!view.pending_relation_picker);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn removing_a_restrictions_from_via_or_to_member_is_refused(cx: &mut TestAppContext) {
+        use osm_gpui::osm::{MemberType, OsmMember, OsmRelation};
+        let window = setup_network_with(cx, |data| {
+            let member = |member_type, reference, role: &str| OsmMember {
+                member_type,
+                reference,
+                role: role.to_string(),
+            };
+            data.relations = vec![OsmRelation {
+                id: 900,
+                version: 1,
+                tags: [("type".to_string(), "restriction".to_string())].into(),
+                members: vec![
+                    member(MemberType::Way, 100, "from"),
+                    member(MemberType::Node, 3, "via"),
+                    member(MemberType::Way, 101, "to"),
+                    member(MemberType::Node, 7, "note"),
+                ],
+            }];
+        });
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                for (index, role) in [(0, "from"), (1, "via"), (2, "to")] {
+                    view.remove_relation_member(MemberRef {
+                        layer_id,
+                        relation_id: 900,
+                        index,
+                    });
+                    assert!(view.undo_stack.actions.is_empty());
+                    assert_eq!(relation_members(view, 900).len(), 4);
+                    let status = view.status_message.as_ref().unwrap().0.to_string();
+                    assert!(status.contains(&format!("'{role}'")), "{status}");
+                }
+                // The other member may go.
+                view.remove_relation_member(MemberRef {
+                    layer_id,
+                    relation_id: 900,
+                    index: 3,
+                });
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(relation_members(view, 900).len(), 3);
             })
             .unwrap();
     }
