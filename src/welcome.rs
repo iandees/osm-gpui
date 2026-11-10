@@ -45,11 +45,15 @@ pub(crate) enum DownloadState {
     Busy,
 }
 
-/// The same area check the status bar and `request_download` use.
+/// The same area check the status bar and `request_download` use: the
+/// current server's advertised maximum (defaults until it is known).
 pub(crate) fn download_state(visible: &GeoBounds, downloading: bool) -> DownloadState {
     if downloading {
         DownloadState::Busy
-    } else if osm_gpui::osm_api::check_area(visible).is_err() {
+    } else if !osm_gpui::capabilities::allows_download(
+        &osm_gpui::settings_store::api_base_url(),
+        visible,
+    ) {
         DownloadState::ZoomIn
     } else {
         DownloadState::Ready

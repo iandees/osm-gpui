@@ -142,6 +142,7 @@ status:
     other: "%{count} ungesicherte Änderungen"
   not_signed_in: "Nicht angemeldet"
   zoom_in_to_download: "Zum Herunterladen näher heranzoomen"
+  api_offline: "Die OSM-API meldet, dass sie offline ist; bitte später erneut versuchen"
   open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
   open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
   tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
