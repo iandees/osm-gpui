@@ -205,6 +205,7 @@ panel:
   relations:
     title: "Relations"
     no_role: "(no role)"
+    remove: "Remove from this relation"
     # A member that is in the relation but not in the loaded data.
     not_downloaded: "%{kind} %{id} (not downloaded)"
   members:

@@ -5768,15 +5768,15 @@ mod tests {
                 // Way 102 and node 7 are in relation 900, which has no name,
                 // so its ref stands in.
                 select(view, Way, &[102]);
-                assert_eq!(
-                    view.selected_memberships(),
-                    vec![(900, "7B".to_string(), String::new())]
-                );
+                let membership = |role: &str, index| side_panel::Membership {
+                    relation_id: 900,
+                    name: "7B".to_string(),
+                    role: role.to_string(),
+                    index,
+                };
+                assert_eq!(view.selected_memberships(), vec![membership("", 0)]);
                 select(view, Node, &[7]);
-                assert_eq!(
-                    view.selected_memberships(),
-                    vec![(900, "7B".to_string(), "stop".to_string())]
-                );
+                assert_eq!(view.selected_memberships(), vec![membership("stop", 1)]);
                 // In no relation, several features, or nothing selected: no
                 // section.
                 select(view, Way, &[100]);
@@ -5797,9 +5797,9 @@ mod tests {
             .update(cx, |view, _window, cx| {
                 let layer_id = view.active_layer.unwrap();
                 select(view, Way, &[102]);
-                let (relation_id, _, _) = view.selected_memberships().remove(0);
+                let membership = view.selected_memberships().remove(0);
                 // What clicking the member's Relations row does.
-                view.select_relation(layer_id, relation_id);
+                view.select_relation(layer_id, membership.relation_id);
                 let only = view.selected.as_slice();
                 assert_eq!(only.len(), 1);
                 assert_eq!((only[0].kind, only[0].id), (Relation, 900));
@@ -5919,6 +5919,49 @@ mod tests {
                 assert_eq!(relation_members(view, 900), original);
                 redo_step(view);
                 undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn removing_a_feature_from_a_relation_on_its_relations_row_is_undoable(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = relation_members(view, 900);
+                // Node 7 is the relation's second member.
+                select(view, Node, &[7]);
+                let membership = view.selected_memberships().remove(0);
+                view.remove_relation_member(crate::MemberRef {
+                    layer_id,
+                    relation_id: membership.relation_id,
+                    index: membership.index,
+                });
+                assert_eq!(relation_members(view, 900), vec![original[0].clone()]);
+                assert!(view.selected_memberships().is_empty());
+                assert_eq!(pending(view), (0, 1, 0));
+
+                // The way is now the last member: its row refuses.
+                select(view, Way, &[102]);
+                let membership = view.selected_memberships().remove(0);
+                view.remove_relation_member(crate::MemberRef {
+                    layer_id,
+                    relation_id: membership.relation_id,
+                    index: membership.index,
+                });
+                assert_eq!(relation_members(view, 900).len(), 1);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.contains("last member")));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
                 assert_eq!(pending(view), (0, 0, 0));
             })
             .unwrap();

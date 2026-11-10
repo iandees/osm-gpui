@@ -19,6 +19,17 @@ use crate::{
     ToggleLayerVisibilityAction,
 };
 
+/// One membership of the selected feature in a relation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Membership {
+    pub relation_id: i64,
+    /// The relation's display name.
+    pub name: String,
+    pub role: String,
+    /// Where the feature is in the relation's member list.
+    pub index: usize,
+}
+
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
 
@@ -165,9 +176,9 @@ impl MapViewer {
     }
 
     /// The relations the single selected feature belongs to, one entry per
-    /// membership: `(relation id, display name, role)`. Empty unless exactly
-    /// one feature is selected and a relation has it as a member.
-    pub(crate) fn selected_memberships(&self) -> Vec<(i64, String, String)> {
+    /// membership. Empty unless exactly one feature is selected and a
+    /// relation has it as a member.
+    pub(crate) fn selected_memberships(&self) -> Vec<Membership> {
         use osm_gpui::osm::MemberType;
         use osm_gpui::selection::FeatureKind;
 
@@ -200,8 +211,15 @@ impl MapViewer {
                 continue;
             };
             let name = osm_gpui::relations::display_name(&relation);
-            for role in osm_gpui::relations::roles_of(&relation, member_type, feature.id) {
-                memberships.push((relation_id, name.clone(), role.to_string()));
+            for (index, member) in relation.members.iter().enumerate() {
+                if member.member_type == member_type && member.reference == feature.id {
+                    memberships.push(Membership {
+                        relation_id,
+                        name: name.clone(),
+                        role: member.role.clone(),
+                        index,
+                    });
+                }
             }
         }
         memberships
@@ -474,7 +492,20 @@ impl MapViewer {
                 .flex()
                 .flex_col()
                 .children(memberships.into_iter().enumerate().map(
-                    |(i, (relation_id, name, role))| {
+                    |(
+                        i,
+                        Membership {
+                            relation_id,
+                            name,
+                            role,
+                            index,
+                        },
+                    )| {
+                        let member_ref = crate::MemberRef {
+                            layer_id,
+                            relation_id,
+                            index,
+                        };
                         let role_text = if role.is_empty() {
                             div().italic().child(tr!("panel.relations.no_role"))
                         } else {
@@ -504,6 +535,20 @@ impl MapViewer {
                                     .flex_shrink_0()
                                     .text_size(muted_text_size())
                                     .text_color(muted),
+                            )
+                            // Takes this feature out of that relation. (A
+                            // Button swallows the mouse-down, so it doesn't
+                            // also select the relation.)
+                            .child(
+                                Button::new(("relation-remove", i))
+                                    .icon(IconName::Close)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip(tr!("panel.relations.remove"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_relation_member(member_ref);
+                                        cx.notify();
+                                    })),
                             )
                     },
                 ))
