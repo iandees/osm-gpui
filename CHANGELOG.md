@@ -5,9 +5,9 @@ Release notes for osm-gpui. The section whose heading matches the pushed tag
 
 ## Unreleased
 
-### Editing
-
-- Create relations from the selection (New Relation) and delete selected relations, with undo; relation member rows keep their object id visible when the name is truncated. ([#114](https://github.com/iandees/osm-gpui/pull/114))
+- The Linux build now includes the Wayland and X11 windowing backends and no longer panics at startup ("internal error: entered unreachable code").
+- Fixed File > Upload to OSM (and its shortcut) doing nothing: it now shows the sign-in prompt, a "Nothing to upload" message, or the changeset dialog. Add Custom Imagery… had the same defect and is fixed too.
+- Script harness: new `action <Name>` op dispatches an app action the way a menu item does.
 
 ## 0.2.0
 
