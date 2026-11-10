@@ -1,0 +1,884 @@
+window 1400 900
+wait 1s
+frame_stats startup
+load_osm perf-data/paris_a.osm
+wait 3s
+frame_stats A_load
+# ---- dataset A ----
+viewport 48.863 2.34 14
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z14_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z14_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.863 2.34 15.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z15.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z15.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.863 2.34 17
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z17_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z17_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.863 2.34 18.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z18.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z18.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.863 2.34 19.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z19.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats A_z19.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.863 2.34 17
+wait 1s
+frame_stats discard
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+frame_stats A_z17_pan
+viewport 48.863 2.34 18.5
+wait 1s
+frame_stats discard
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+frame_stats A_z18.5_pan
+viewport 48.863 2.34 17
+wait 1s
+frame_stats discard
+hover 200,150
+hover 270,150
+hover 340,150
+hover 410,150
+hover 480,150
+hover 550,150
+hover 620,150
+hover 690,150
+hover 760,150
+hover 830,150
+hover 900,150
+hover 970,150
+hover 970,250
+hover 900,250
+hover 830,250
+hover 760,250
+hover 690,250
+hover 620,250
+hover 550,250
+hover 480,250
+hover 410,250
+hover 340,250
+hover 270,250
+hover 200,250
+hover 200,350
+hover 270,350
+hover 340,350
+hover 410,350
+hover 480,350
+hover 550,350
+hover 620,350
+hover 690,350
+hover 760,350
+hover 830,350
+hover 900,350
+hover 970,350
+hover 970,450
+hover 900,450
+hover 830,450
+hover 760,450
+hover 690,450
+hover 620,450
+hover 550,450
+hover 480,450
+hover 410,450
+hover 340,450
+hover 270,450
+hover 200,450
+hover 200,550
+hover 270,550
+hover 340,550
+hover 410,550
+hover 480,550
+hover 550,550
+hover 620,550
+hover 690,550
+hover 760,550
+hover 830,550
+hover 900,550
+hover 970,550
+hover 970,650
+hover 900,650
+hover 830,650
+hover 760,650
+hover 690,650
+hover 620,650
+hover 550,650
+hover 480,650
+hover 410,650
+hover 340,650
+hover 270,650
+hover 200,650
+hover 200,750
+hover 270,750
+hover 340,750
+hover 410,750
+hover 480,750
+hover 550,750
+hover 620,750
+hover 690,750
+hover 760,750
+hover 830,750
+hover 900,750
+hover 970,750
+frame_stats A_z17_hover
+viewport 48.863 2.34 19.5
+wait 1s
+frame_stats discard
+hover 200,150
+hover 270,150
+hover 340,150
+hover 410,150
+hover 480,150
+hover 550,150
+hover 620,150
+hover 690,150
+hover 760,150
+hover 830,150
+hover 900,150
+hover 970,150
+hover 970,250
+hover 900,250
+hover 830,250
+hover 760,250
+hover 690,250
+hover 620,250
+hover 550,250
+hover 480,250
+hover 410,250
+hover 340,250
+hover 270,250
+hover 200,250
+hover 200,350
+hover 270,350
+hover 340,350
+hover 410,350
+hover 480,350
+hover 550,350
+hover 620,350
+hover 690,350
+hover 760,350
+hover 830,350
+hover 900,350
+hover 970,350
+hover 970,450
+hover 900,450
+hover 830,450
+hover 760,450
+hover 690,450
+hover 620,450
+hover 550,450
+hover 480,450
+hover 410,450
+hover 340,450
+hover 270,450
+hover 200,450
+hover 200,550
+hover 270,550
+hover 340,550
+hover 410,550
+hover 480,550
+hover 550,550
+hover 620,550
+hover 690,550
+hover 760,550
+hover 830,550
+hover 900,550
+hover 970,550
+hover 970,650
+hover 900,650
+hover 830,650
+hover 760,650
+hover 690,650
+hover 620,650
+hover 550,650
+hover 480,650
+hover 410,650
+hover 340,650
+hover 270,650
+hover 200,650
+hover 200,750
+hover 270,750
+hover 340,750
+hover 410,750
+hover 480,750
+hover 550,750
+hover 620,750
+hover 690,750
+hover 760,750
+hover 830,750
+hover 900,750
+hover 970,750
+frame_stats A_z19.5_hover
+viewport 48.863148 2.3402247 19.5
+wait 1s
+frame_stats discard
+drag 520,346 656,482 button=left
+wait 500ms
+capture target/perf/capture-A-selected.png
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+capture target/perf/capture-A-after-drag.png
+frame_stats A_nodedrag
+load_osm perf-data/paris_b.osm
+wait 4s
+frame_stats B_load
+# ---- dataset B ----
+viewport 48.872 2.85 14
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z14_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z14_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.872 2.85 15.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z15.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z15.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.872 2.85 17
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z17_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z17_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.872 2.85 18.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z18.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z18.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.872 2.85 19.5
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z19.5_static
+action ToggleDownloadedArea
+wait 1500ms
+frame_stats discard
+wait 3s
+frame_stats B_z19.5_nowash
+action ToggleDownloadedArea
+wait 500ms
+viewport 48.872 2.85 17
+wait 1s
+frame_stats discard
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+frame_stats B_z17_pan
+viewport 48.872 2.85 18.5
+wait 1s
+frame_stats discard
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+drag 588,438 498,388 duration=100ms
+wait 60ms
+drag 498,388 588,438 duration=100ms
+wait 60ms
+frame_stats B_z18.5_pan
+viewport 48.872 2.85 17
+wait 1s
+frame_stats discard
+hover 200,150
+hover 270,150
+hover 340,150
+hover 410,150
+hover 480,150
+hover 550,150
+hover 620,150
+hover 690,150
+hover 760,150
+hover 830,150
+hover 900,150
+hover 970,150
+hover 970,250
+hover 900,250
+hover 830,250
+hover 760,250
+hover 690,250
+hover 620,250
+hover 550,250
+hover 480,250
+hover 410,250
+hover 340,250
+hover 270,250
+hover 200,250
+hover 200,350
+hover 270,350
+hover 340,350
+hover 410,350
+hover 480,350
+hover 550,350
+hover 620,350
+hover 690,350
+hover 760,350
+hover 830,350
+hover 900,350
+hover 970,350
+hover 970,450
+hover 900,450
+hover 830,450
+hover 760,450
+hover 690,450
+hover 620,450
+hover 550,450
+hover 480,450
+hover 410,450
+hover 340,450
+hover 270,450
+hover 200,450
+hover 200,550
+hover 270,550
+hover 340,550
+hover 410,550
+hover 480,550
+hover 550,550
+hover 620,550
+hover 690,550
+hover 760,550
+hover 830,550
+hover 900,550
+hover 970,550
+hover 970,650
+hover 900,650
+hover 830,650
+hover 760,650
+hover 690,650
+hover 620,650
+hover 550,650
+hover 480,650
+hover 410,650
+hover 340,650
+hover 270,650
+hover 200,650
+hover 200,750
+hover 270,750
+hover 340,750
+hover 410,750
+hover 480,750
+hover 550,750
+hover 620,750
+hover 690,750
+hover 760,750
+hover 830,750
+hover 900,750
+hover 970,750
+frame_stats B_z17_hover
+viewport 48.872 2.85 19.5
+wait 1s
+frame_stats discard
+hover 200,150
+hover 270,150
+hover 340,150
+hover 410,150
+hover 480,150
+hover 550,150
+hover 620,150
+hover 690,150
+hover 760,150
+hover 830,150
+hover 900,150
+hover 970,150
+hover 970,250
+hover 900,250
+hover 830,250
+hover 760,250
+hover 690,250
+hover 620,250
+hover 550,250
+hover 480,250
+hover 410,250
+hover 340,250
+hover 270,250
+hover 200,250
+hover 200,350
+hover 270,350
+hover 340,350
+hover 410,350
+hover 480,350
+hover 550,350
+hover 620,350
+hover 690,350
+hover 760,350
+hover 830,350
+hover 900,350
+hover 970,350
+hover 970,450
+hover 900,450
+hover 830,450
+hover 760,450
+hover 690,450
+hover 620,450
+hover 550,450
+hover 480,450
+hover 410,450
+hover 340,450
+hover 270,450
+hover 200,450
+hover 200,550
+hover 270,550
+hover 340,550
+hover 410,550
+hover 480,550
+hover 550,550
+hover 620,550
+hover 690,550
+hover 760,550
+hover 830,550
+hover 900,550
+hover 970,550
+hover 970,650
+hover 900,650
+hover 830,650
+hover 760,650
+hover 690,650
+hover 620,650
+hover 550,650
+hover 480,650
+hover 410,650
+hover 340,650
+hover 270,650
+hover 200,650
+hover 200,750
+hover 270,750
+hover 340,750
+hover 410,750
+hover 480,750
+hover 550,750
+hover 620,750
+hover 690,750
+hover 760,750
+hover 830,750
+hover 900,750
+hover 970,750
+frame_stats B_z19.5_hover
+viewport 48.863148 2.8402247 19.5
+wait 1s
+frame_stats discard
+drag 520,346 656,482 button=left
+wait 500ms
+capture target/perf/capture-B-selected.png
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+drag 595,420 635,445 button=left
+wait 300ms
+drag 635,445 595,420 button=left
+wait 300ms
+capture target/perf/capture-B-after-drag.png
+frame_stats B_nodedrag
+log done

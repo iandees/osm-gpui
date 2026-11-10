@@ -80,13 +80,16 @@ def section(name, lat, lon, node_lat, node_lon, lon_shift):
     w(f"viewport {node_lat} {node_lon + lon_shift} 19.5")
     w("wait 1s")
     w("frame_stats discard")
-    w(f"click {CX},{CY}")
+    # Box-select the building's nodes (the map centre is about 24px above the
+    # window-coordinate centre because of the title bar), then drag from one
+    # selected node (595,420) and back.
+    w("drag 520,346 656,482 button=left")
     w("wait 500ms")
     w(f"capture target/perf/capture-{name}-selected.png")
     for i in range(6):
-        w(f"drag {CX},{CY} {CX + 40},{CY + 25} button=left")
+        w("drag 595,420 635,445 button=left")
         w("wait 300ms")
-        w(f"drag {CX + 40},{CY + 25} {CX},{CY} button=left")
+        w("drag 635,445 595,420 button=left")
         w("wait 300ms")
     w(f"capture target/perf/capture-{name}-after-drag.png")
     w(f"frame_stats {name}_nodedrag")
