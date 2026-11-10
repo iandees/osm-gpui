@@ -653,6 +653,28 @@ pub fn kind_label(member_type: MemberType) -> gpui::SharedString {
     }
 }
 
+/// `member_label` split for a row that truncates: the preset name (only for a
+/// loaded element that has one; this part may be cut short) and the part that
+/// must stay readable ("Way 123", or "Way 123 (not downloaded)").
+pub fn member_label_parts(
+    member_type: MemberType,
+    id: i64,
+    loaded: bool,
+    described: Option<&str>,
+) -> (Option<String>, String) {
+    let kind = kind_label(member_type);
+    if !loaded {
+        return (
+            None,
+            tr!("panel.relations.not_downloaded", kind = kind, id = id).to_string(),
+        );
+    }
+    (
+        described.map(str::to_string),
+        tr!("panel.selection.row", kind = kind, id = id).to_string(),
+    )
+}
+
 /// How a relation member is listed: for an element that is loaded, the same
 /// text its Selection row has ("Residential Road · Way 123", or "Way 123"
 /// when no preset name is known); for one that isn't, "Way 123 (not
@@ -1252,6 +1274,22 @@ mod tests {
         assert_eq!(ids("loop"), vec![20]);
         assert_eq!(ids("30"), vec![30]);
         assert!(ids("nothing").is_empty());
+    }
+
+    #[test]
+    fn member_label_parts_keep_the_id_apart_from_the_truncatable_name() {
+        assert_eq!(
+            member_label_parts(MemberType::Way, 8123, true, Some("Residential Road")),
+            (Some("Residential Road".to_string()), "Way 8123".to_string())
+        );
+        assert_eq!(
+            member_label_parts(MemberType::Node, 5, true, None),
+            (None, "Node 5".to_string())
+        );
+        assert_eq!(
+            member_label_parts(MemberType::Way, 1, false, Some("ignored")),
+            (None, "Way 1 (not downloaded)".to_string())
+        );
     }
 
     #[test]
