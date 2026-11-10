@@ -268,10 +268,9 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        if keybindings::def(id).category == keybindings::ShortcutCategory::Modes
-            && !keybindings::is_bare_key(&spec)
+        if keybindings::def(id).category.is_bare_key_category() && !keybindings::is_bare_key(&spec)
         {
-            self.shortcut_error = Some((id, "Mode shortcuts can't use modifier keys.".into()));
+            self.shortcut_error = Some((id, "This shortcut can't use modifier keys.".into()));
             cx.notify();
             return;
         }
@@ -746,6 +745,7 @@ impl SettingsWindow {
             ShortcutCategory::Edit => "Edit",
             ShortcutCategory::View => "View",
             ShortcutCategory::Modes => "Modes",
+            ShortcutCategory::Actions => "Selection Actions",
         };
 
         let mut groups = Vec::new();
@@ -755,6 +755,7 @@ impl SettingsWindow {
             ShortcutCategory::Edit,
             ShortcutCategory::View,
             ShortcutCategory::Modes,
+            ShortcutCategory::Actions,
         ] {
             let items: Vec<SettingItem> = SHORTCUTS
                 .iter()

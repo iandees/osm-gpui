@@ -7,7 +7,7 @@
 //!   defined in the binary crate (`src/main.rs`) and are turned into real
 //!   `gpui::KeyBinding`s there (this module can't reference those `Action`
 //!   types — they live in a different crate).
-//! - The `Modes` entries are unmodified single letters, matched
+//! - The `Modes` and `Actions` entries are unmodified single letters, matched
 //!   directly against `KeyDownEvent.keystroke.key` in the map canvas's
 //!   `on_key_down` handler (`src/main.rs`), never registered as
 //!   `KeyBinding`s (an unmodified-letter `KeyBinding` would fire even while
@@ -23,6 +23,17 @@ pub enum ShortcutCategory {
     Edit,
     View,
     Modes,
+    /// One-shot operations on the selection (square, circularize, ...).
+    /// Like `Modes`, these are bare unmodified keys.
+    Actions,
+}
+
+impl ShortcutCategory {
+    /// Whether shortcuts in this category are matched as bare, unmodified
+    /// keys in the map canvas's key handler (and so can't take modifiers).
+    pub fn is_bare_key_category(self) -> bool {
+        matches!(self, ShortcutCategory::Modes | ShortcutCategory::Actions)
+    }
 }
 
 /// One customizable shortcut: a stable id (used as the
@@ -142,6 +153,24 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         label: "Switch to Extrude mode",
         category: ShortcutCategory::Modes,
     },
+    ShortcutDef {
+        id: "action_square",
+        default_spec: "q",
+        label: "Square",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_circularize",
+        default_spec: "o",
+        label: "Circularize",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_reverse",
+        default_spec: "r",
+        label: "Reverse Way",
+        category: ShortcutCategory::Actions,
+    },
 ];
 
 /// Look up a shortcut's definition by id. Panics if `id` isn't in
@@ -193,8 +222,8 @@ pub fn is_reserved(spec: &str) -> bool {
 }
 
 /// True if `spec` has no modifier prefix (e.g. `"a"`, not `"cmd-a"`).
-/// `Modes`-category shortcuts must satisfy this, since they're matched as
-/// bare unmodified keys (see the module doc comment).
+/// Bare-key categories (`Modes`, `Actions`) must satisfy this, since they're
+/// matched as bare unmodified keys (see the module doc comment).
 pub fn is_bare_key(spec: &str) -> bool {
     !spec.contains('-')
 }

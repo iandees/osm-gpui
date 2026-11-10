@@ -15,6 +15,7 @@ mod fields_section;
 mod menu;
 mod mode_panel;
 mod script_harness;
+mod selection_actions;
 mod side_panel;
 mod status_bar;
 mod undo;
@@ -171,6 +172,16 @@ struct SetActiveLayer {
 #[serde(deny_unknown_fields)]
 struct ToggleLayerVisibilityAction {
     index: usize,
+}
+
+/// Action to run the selection action (see `selection_actions::ACTIONS`)
+/// with the given id on the current selection. Carried by the Tools menu and
+/// the right-click context menu.
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = selection)]
+#[serde(deny_unknown_fields)]
+struct RunSelectionAction {
+    id: SharedString,
 }
 
 /// The current map-interaction mode. `Select` is today's existing click/
@@ -1279,6 +1290,30 @@ impl MapViewer {
                 // Redo (forward) is intentionally a no-op, same reasoning as
                 // `ExtendWay`/`InsertNodeIntoWay` above.
             }
+            UndoableAction::ReverseWays { layer, way_ids } => {
+                // Reversing is its own inverse, so both directions are the
+                // same operation.
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                for way_id in way_ids {
+                    editable.reverse_way(*way_id);
+                }
+            }
+            UndoableAction::Batch { actions, .. } => {
+                if forward {
+                    for action in actions {
+                        self.apply_undo_action(action, true);
+                    }
+                } else {
+                    for action in actions.iter().rev() {
+                        self.apply_undo_action(action, false);
+                    }
+                }
+            }
         }
     }
 
@@ -1520,43 +1555,58 @@ impl MapViewer {
         cx.notify();
     }
 
-    /// Delete every currently-selected feature (Delete/Backspace key).
-    /// Node deletion is refused per-feature if the node is still referenced
-    /// by a way — see `OsmLayer::delete_feature`'s doc comment for that v1
-    /// limitation (a future version might offer to also delete the way, or
-    /// warn specifically, like JOSM/iD). Refused/not-found features are
-    /// simply skipped rather than surfacing a per-feature error; one
-    /// `DeleteFeature` undo action is pushed per feature actually deleted,
-    /// so undo restores them one at a time (in reverse order).
+    /// Delete every currently-selected feature (Delete/Backspace key, and
+    /// Edit > Delete). Runs the "delete" entry of the selection-action table;
+    /// silent when nothing is selected, so a stray key press doesn't flash a
+    /// status message. Node deletion is refused per feature if the node is
+    /// still referenced by a way (see `OsmLayer::delete_feature`).
     fn delete_selected_features(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             return;
         }
-        let features = std::mem::take(&mut self.selected);
-        let mut deleted = 0usize;
-        for feature in &features {
-            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
-                continue;
-            };
-            let Some(editable) = layer.as_editable_mut() else {
-                continue;
-            };
-            if let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) {
-                self.undo_stack.push(UndoableAction::DeleteFeature {
-                    layer: feature.layer_id,
-                    snapshot,
-                });
-                deleted += 1;
-            }
+        self.run_selection_action("delete", cx);
+    }
+
+    /// Run the selection action `id` on the current selection: check it is
+    /// applicable (else show why in the status bar), apply it, and record the
+    /// result as a single undo step.
+    fn run_selection_action(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(action) = selection_actions::find(id) else {
+            return;
+        };
+        let env = selection_actions::ActionEnv {
+            selection: &self.selected,
+            active_layer: self.active_layer,
+            layers: &self.layer_manager,
+        };
+        if !(action.is_applicable)(&env) {
+            let why = action.why_not(&env);
+            self.set_status(why);
+            cx.notify();
+            return;
         }
-        if deleted == 0 {
-            self.set_status("Nothing to delete");
-        } else if deleted == 1 {
-            self.set_status("Deleted 1 feature");
-        } else {
-            self.set_status(format!("Deleted {} features", deleted));
+        match (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer) {
+            Ok(outcome) => {
+                self.undo_stack.push(outcome.undo);
+                if outcome.clear_selection {
+                    self.set_selection(Vec::new());
+                }
+                self.set_status(outcome.status);
+            }
+            Err(message) => self.set_status(message),
         }
         cx.notify();
+    }
+
+    /// Menu bar (Tools) and context menu entry point for the selection
+    /// actions. Registered window-scoped on the root element in `render`.
+    fn on_run_selection_action(
+        &mut self,
+        action: &RunSelectionAction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_selection_action(&action.id, cx);
     }
 
     /// Replace the selection, resetting the Fields section's per-feature
@@ -3446,6 +3496,13 @@ impl Render for MapViewer {
                                     window,
                                     cx,
                                 );
+                            } else if let Some(action) =
+                                selection_actions::find_by_key(&settings, key)
+                            {
+                                // Like the mode keys above, these only fire
+                                // while the map area has focus, so typing in
+                                // a text input never triggers them.
+                                this.run_selection_action(action.id, cx);
                             }
                         }
                     }))
@@ -3903,6 +3960,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_set_active_layer))
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
             .on_action(cx.listener(Self::on_set_mode))
+            .on_action(cx.listener(Self::on_run_selection_action))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
