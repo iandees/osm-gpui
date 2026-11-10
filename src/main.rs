@@ -228,6 +228,27 @@ struct BuildingProgress {
     corner_b: Option<(f64, f64)>,
 }
 
+/// The squared way whose orientation Building mode borrows: captured when
+/// the mode is entered with exactly that way selected, and kept (even though
+/// the selection moves on to each new building) until the mode is exited.
+#[derive(Clone, Copy)]
+struct BuildingReference {
+    layer_id: LayerId,
+    way_id: i64,
+    /// Bearing of the way's longest edge in a local metric projection, in
+    /// radians in `[0, pi)` (see `osm_gpui::building`).
+    orientation: f64,
+}
+
+/// A left press in oriented Building mode, awaiting its release.
+#[derive(Clone, Copy)]
+struct BuildingPress {
+    down: gpui::Point<gpui::Pixels>,
+    /// True if this press placed the first corner (so releasing in place is
+    /// just a click and the building waits for a second one).
+    placed_first_corner: bool,
+}
+
 /// Extrude mode's in-progress drag: the way segment being extruded from,
 /// and the two endpoint node ids used to build the preview/final rectangle.
 struct ExtrudeDrag {
@@ -464,6 +485,12 @@ struct MapViewer {
     /// In-progress Building-mode rectangle state, or `None` between
     /// continuations (see `BuildingProgress`).
     building_progress: Option<BuildingProgress>,
+    /// The squared way Building mode is aligned to, if any (see
+    /// `BuildingReference`). When set, a building takes two corners instead
+    /// of three clicks.
+    building_reference: Option<BuildingReference>,
+    /// The pending left press in oriented Building mode.
+    building_press: Option<BuildingPress>,
     /// Last known mouse position within the map area, updated on every
     /// mouse-move; used to drive the live Building-mode preview (which
     /// needs a cursor position outside of a drag) during `render()`.
@@ -622,6 +649,8 @@ impl MapViewer {
             active_layer: None,
             add_progress: None,
             building_progress: None,
+            building_reference: None,
+            building_press: None,
             last_mouse_pos: None,
             hovered: None,
             extrude_drag: None,
@@ -825,12 +854,52 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        // Entering Building mode with one squared way selected borrows its
+        // orientation; staying in Building mode keeps the existing one.
+        self.building_reference = match mode {
+            EditMode::Building if self.mode == EditMode::Building => self.building_reference,
+            EditMode::Building => self.squared_selection_reference(),
+            _ => None,
+        };
+        self.building_press = None;
         self.mode = mode;
         self.hovered = None;
         self.add_progress = None;
         self.building_progress = None;
         self.extrude_drag = None;
         cx.notify();
+    }
+
+    /// If the selection is exactly one closed, squared way, the reference a
+    /// Building-mode session should align to.
+    fn squared_selection_reference(&self) -> Option<BuildingReference> {
+        use osm_gpui::selection::FeatureKind;
+        let [feature] = self.selected.as_slice() else {
+            return None;
+        };
+        if feature.kind != FeatureKind::Way {
+            return None;
+        }
+        let editable = self
+            .layer_manager
+            .find_layer(feature.layer_id)?
+            .as_editable()?;
+        let node_ids = editable.way_node_ids(feature.id)?;
+        if node_ids.len() < 4 || node_ids.first() != node_ids.last() {
+            return None;
+        }
+        let ring: Vec<(f64, f64)> = node_ids
+            .iter()
+            .map(|&id| editable.node_lat_lon(id))
+            .collect::<Option<_>>()?;
+        if !osm_gpui::building::is_squared(&ring, osm_gpui::building::SQUARED_TOLERANCE_DEG) {
+            return None;
+        }
+        Some(BuildingReference {
+            layer_id: feature.layer_id,
+            way_id: feature.id,
+            orientation: osm_gpui::building::dominant_orientation(&ring)?,
+        })
     }
 
     /// Convert a raw window-space mouse position (as delivered by every
@@ -856,6 +925,25 @@ impl MapViewer {
     /// `window_to_map`) — callers pass the raw event position through
     /// `window_to_map` first.
     fn handle_map_mouse_down(&mut self, position: gpui::Point<gpui::Pixels>) {
+        // Oriented Building mode owns the left button entirely (no
+        // box-select, and no move-drag of the selected reference way): the
+        // press places the first corner, the release decides click vs drag.
+        if self.mode == EditMode::Building && self.building_reference.is_some() {
+            let placed_first_corner = self.building_progress.is_none();
+            if placed_first_corner {
+                let corner = self.viewport.screen_to_geo(position);
+                self.building_progress = Some(BuildingProgress {
+                    corner_a: corner,
+                    corner_b: None,
+                });
+            }
+            self.building_press = Some(BuildingPress {
+                down: position,
+                placed_first_corner,
+            });
+            self.interaction = Interaction::Idle;
+            return;
+        }
         if self.mode == EditMode::Extrude {
             if let Some(layer_id) = self.active_layer {
                 if let Some(layer) = self.layer_manager.find_layer(layer_id) {
@@ -1838,6 +1926,12 @@ impl MapViewer {
         let up_pos = self.window_to_map(event.position);
         self.viewport.handle_mouse_up();
 
+        if let Some(press) = self.building_press.take() {
+            self.finish_oriented_building_press(press, up_pos);
+            cx.notify();
+            return;
+        }
+
         if let Some(drag) = self.extrude_drag.take() {
             let moved = (up_pos - drag.down).magnitude() >= 4.0;
             if moved {
@@ -1995,6 +2089,37 @@ impl MapViewer {
         }
     }
 
+    /// Release of an oriented-Building press. A release within a few pixels
+    /// of the press is a click: the first one leaves the corner placed and
+    /// waits, the second finishes the building at that point. A release
+    /// farther away is a drag and finishes the building at the release point.
+    fn finish_oriented_building_press(
+        &mut self,
+        press: BuildingPress,
+        up_pos: gpui::Point<gpui::Pixels>,
+    ) {
+        let (Some(reference), Some(layer_id), Some(progress)) = (
+            self.building_reference,
+            self.active_layer,
+            self.building_progress,
+        ) else {
+            return;
+        };
+        let moved = (up_pos - press.down).magnitude() >= interaction::DRAG_THRESHOLD as f64;
+        if press.placed_first_corner && !moved {
+            return;
+        }
+        let opposite = self.viewport.screen_to_geo(up_pos);
+        if let Some(corners) = osm_gpui::building::rectangle_from_opposite_corners(
+            progress.corner_a,
+            opposite,
+            reference.orientation,
+        ) {
+            self.commit_building_corners(layer_id, corners);
+            self.building_progress = None;
+        }
+    }
+
     /// Compute the far 2 corners of a rectangle whose near edge is
     /// `a`..`b` (geo coordinates), offset by `cursor`'s perpendicular
     /// distance from that edge. The offset math is done in screen-pixel
@@ -2041,6 +2166,12 @@ impl MapViewer {
         cursor: (f64, f64),
     ) {
         let (far_a, far_b) = self.rectangle_from_geo_edge(corner_a, corner_b, cursor);
+        self.commit_building_corners(layer_id, [corner_a, corner_b, far_b, far_a]);
+    }
+
+    /// Create 4 nodes and a closed `building=yes` way through them (corners
+    /// in ring order) as one undo action, and select the new way.
+    fn commit_building_corners(&mut self, layer_id: LayerId, corners: [(f64, f64); 4]) {
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
             return;
         };
@@ -2048,10 +2179,7 @@ impl MapViewer {
             return;
         };
 
-        let n0 = editable.add_node(corner_a.0, corner_a.1);
-        let n1 = editable.add_node(corner_b.0, corner_b.1);
-        let n2 = editable.add_node(far_b.0, far_b.1);
-        let n3 = editable.add_node(far_a.0, far_a.1);
+        let [n0, n1, n2, n3] = corners.map(|(lat, lon)| editable.add_node(lat, lon));
         let way_id = editable.add_way(
             vec![n0, n1, n2, n3, n0],
             vec![("building".to_string(), "yes".to_string())],
@@ -3201,8 +3329,10 @@ impl Render for MapViewer {
                                     }
                                 }
                                 EditMode::Building => {
+                                    this.building_press = None;
                                     if this.building_progress.take().is_none() {
                                         this.mode = EditMode::Select;
+                                        this.building_reference = None;
                                     }
                                 }
                                 EditMode::Extrude => {
@@ -3335,6 +3465,21 @@ impl Render for MapViewer {
                                             );
                                         }
 
+                                        if let Some(reference) = this.building_reference {
+                                            // Mark the way the building is aligned to.
+                                            this.layer_manager.render_highlight(
+                                                &osm_gpui::selection::FeatureRef {
+                                                    layer_id: reference.layer_id,
+                                                    kind: osm_gpui::selection::FeatureKind::Way,
+                                                    id: reference.way_id,
+                                                },
+                                                HighlightKind::Hovered,
+                                                &viewport_clone,
+                                                bounds,
+                                                window,
+                                            );
+                                        }
+
                                         if let Some(progress) = this.building_progress {
                                             let origin_x = bounds.origin.x;
                                             let origin_y = bounds.origin.y;
@@ -3343,6 +3488,49 @@ impl Render for MapViewer {
                                                 progress.corner_a.1,
                                             );
                                             match progress.corner_b {
+                                                None if this.building_reference.is_some() => {
+                                                    // Oriented: the cursor is the opposite
+                                                    // corner, so preview the whole rectangle.
+                                                    let half = px(4.0);
+                                                    let quad_bounds = Bounds {
+                                                        origin: point(
+                                                            a_screen.x + origin_x - half,
+                                                            a_screen.y + origin_y - half,
+                                                        ),
+                                                        size: size(px(8.0), px(8.0)),
+                                                    };
+                                                    window.paint_quad(fill(
+                                                        quad_bounds,
+                                                        rgb(0x3b82f6),
+                                                    ));
+                                                    let corners = this
+                                                        .building_reference
+                                                        .zip(this.last_mouse_pos)
+                                                        .and_then(|(reference, mouse)| {
+                                                            osm_gpui::building::rectangle_from_opposite_corners(
+                                                                progress.corner_a,
+                                                                viewport_clone.screen_to_geo(mouse),
+                                                                reference.orientation,
+                                                            )
+                                                        });
+                                                    if let Some(corners) = corners {
+                                                        let mut builder = PathBuilder::stroke(px(2.0));
+                                                        for (i, c) in
+                                                            corners.iter().chain(Some(&corners[0])).enumerate()
+                                                        {
+                                                            let p = viewport_clone.geo_to_screen(c.0, c.1);
+                                                            let p = point(p.x + origin_x, p.y + origin_y);
+                                                            if i == 0 {
+                                                                builder.move_to(p);
+                                                            } else {
+                                                                builder.line_to(p);
+                                                            }
+                                                        }
+                                                        if let Ok(path) = builder.build() {
+                                                            window.paint_path(path, rgb(0x3b82f6));
+                                                        }
+                                                    }
+                                                }
                                                 None => {
                                                     // Only corner A placed: draw a marker at the
                                                     // fixed corner plus a rubber-band line to the

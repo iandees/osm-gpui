@@ -34,8 +34,15 @@ pub(crate) fn mode_hint(
     mode: EditMode,
     progress: ModeProgress,
     has_selection: bool,
+    oriented: bool,
 ) -> &'static str {
     match (mode, progress) {
+        (EditMode::Building, ModeProgress::Idle) if oriented => {
+            "Click or drag to draw a building aligned to the selected way · Esc to exit"
+        }
+        (EditMode::Building, _) if oriented => {
+            "Click or release at the opposite corner to finish the building · Esc to cancel"
+        }
         (EditMode::Select, _) if has_selection => {
             "Drag the selection to move it · Delete to remove · Esc to deselect"
         }
@@ -127,6 +134,7 @@ impl MapViewer {
                 self.mode,
                 self.mode_progress(),
                 !self.selected.is_empty(),
+                self.building_reference.is_some(),
             ))
         };
 
@@ -185,21 +193,41 @@ mod tests {
 
     #[test]
     fn select_hint_depends_on_selection() {
-        let empty = mode_hint(EditMode::Select, ModeProgress::Idle, false);
-        let selected = mode_hint(EditMode::Select, ModeProgress::Idle, true);
+        let empty = mode_hint(EditMode::Select, ModeProgress::Idle, false, false);
+        let selected = mode_hint(EditMode::Select, ModeProgress::Idle, true, false);
         assert!(empty.starts_with("Click to select"));
         assert!(selected.contains("Esc to deselect"));
     }
 
     #[test]
     fn drawing_hints_follow_progress() {
-        assert!(mode_hint(EditMode::Add, ModeProgress::Idle, false).contains("start a way"));
-        assert!(mode_hint(EditMode::Add, ModeProgress::Started, false).contains("finish"));
-        assert!(mode_hint(EditMode::Building, ModeProgress::Idle, false).contains("first corner"));
+        assert!(mode_hint(EditMode::Add, ModeProgress::Idle, false, false).contains("start a way"));
+        assert!(mode_hint(EditMode::Add, ModeProgress::Started, false, false).contains("finish"));
         assert!(
-            mode_hint(EditMode::Building, ModeProgress::Started, false).contains("second corner")
+            mode_hint(EditMode::Building, ModeProgress::Idle, false, false)
+                .contains("first corner")
         );
-        assert!(mode_hint(EditMode::Building, ModeProgress::EdgePlaced, false).contains("depth"));
+        assert!(
+            mode_hint(EditMode::Building, ModeProgress::Started, false, false)
+                .contains("second corner")
+        );
+        assert!(
+            mode_hint(EditMode::Building, ModeProgress::EdgePlaced, false, false).contains("depth")
+        );
+    }
+
+    #[test]
+    fn oriented_building_hints() {
+        let idle = mode_hint(EditMode::Building, ModeProgress::Idle, true, true);
+        assert!(idle.contains("Click or drag"));
+        assert!(idle.contains("aligned to the selected way"));
+        let started = mode_hint(EditMode::Building, ModeProgress::Started, true, true);
+        assert!(started.contains("opposite corner"));
+        // Orientation is irrelevant outside Building mode.
+        assert_eq!(
+            mode_hint(EditMode::Select, ModeProgress::Idle, true, true),
+            mode_hint(EditMode::Select, ModeProgress::Idle, true, false)
+        );
     }
 
     #[test]
