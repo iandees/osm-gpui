@@ -109,6 +109,15 @@ pub trait MapLayer: Send + Sync {
     }
 }
 
+/// Why a feature is being highlighted, which picks the overlay's colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightKind {
+    /// Part of the current selection.
+    Selected,
+    /// Under the cursor: what a click would select.
+    Hovered,
+}
+
 /// The vector-editing surface a layer may support: hit-testing, selection
 /// highlight, tag read/write, node moves, and create/delete. Reached from a
 /// `&dyn MapLayer`/`&mut dyn MapLayer` via `as_editable`/`as_editable_mut`.
@@ -172,6 +181,7 @@ pub trait EditableLayer {
         bounds: Bounds<Pixels>,
         window: &mut Window,
         feature: &crate::selection::FeatureRef,
+        kind: HighlightKind,
     );
 
     /// Set a transient screen-space offset to apply when rendering the given
@@ -489,6 +499,7 @@ impl LayerManager {
     pub fn render_highlight(
         &self,
         feature: &crate::selection::FeatureRef,
+        kind: HighlightKind,
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
         window: &mut Window,
@@ -496,7 +507,7 @@ impl LayerManager {
         if let Some(layer) = self.find_layer(feature.layer_id) {
             if layer.is_visible() {
                 if let Some(editable) = layer.as_editable() {
-                    editable.render_highlight(viewport, bounds, window, feature);
+                    editable.render_highlight(viewport, bounds, window, feature, kind);
                 }
             }
         }
