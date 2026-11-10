@@ -1,0 +1,51 @@
+# Safety net: delete whatever the other live-test scripts left behind if one of
+# them stopped part way. It downloads the three small areas the scripts use
+# (lat -48.00 / -48.01 / -48.02 near lon -123, one window of map each), deletes
+# everything found there, and uploads the deletions.
+#
+#   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/99-cleanup.osmscript
+#
+# If the areas are already empty there is nothing to upload and the script
+# stops at "assert_dialog editing" saying no dialog is showing: that is the
+# clean state, not a failure. Only run it against the development server; the
+# areas are open ocean.
+
+assert_server dev
+assert_signed_in
+window 1200 800
+load_osm docs/live-test/empty.osm
+
+viewport -48.0000 -123.0000 18
+wait_idle 10s
+action DownloadFromOsm
+wait_transfer 60s
+capture out/live-99-01-area-1.png
+
+viewport -48.0100 -123.0100 18
+wait_idle 10s
+action DownloadFromOsm
+wait_transfer 60s
+capture out/live-99-02-area-2.png
+
+viewport -48.0200 -123.0200 18
+wait_idle 10s
+action DownloadFromOsm
+wait_transfer 60s
+capture out/live-99-03-area-3.png
+
+pause 1s Deleting everything downloaded
+action SelectAll
+action DeleteSelection
+wait_idle 2s
+capture out/live-99-04-selected-for-delete.png
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: cleanup
+upload_confirm
+capture_while_transferring out/live-99-05-progress every=500ms timeout=300s
+wait_transfer 300s
+assert_dialog none
+assert_pending 0
+capture out/live-99-06-cleaned-up.png
+log done

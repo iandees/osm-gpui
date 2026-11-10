@@ -1,0 +1,16 @@
+# Sign in to the OSM development server, once, so the other live-test scripts
+# can upload. Run it like this (the app opens your browser; approve the
+# request there within three minutes):
+#
+#   cargo run -- --api-server dev --script docs/live-test/00-sign-in.osmscript
+#
+# The login is stored the way the Settings window stores it, so later runs
+# find it. Nothing is uploaded.
+
+assert_server dev
+window 1200 800
+pause 2s Signing in to the OSM development server: approve the request in your browser
+sign_in
+wait_signed_in 200s
+pause 2s Signed in
+log signed in to the development server

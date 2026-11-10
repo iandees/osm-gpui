@@ -1,0 +1,133 @@
+# Live test 3: an upload too big for one changeset, sent as several. Run it
+# with OSM_GPUI_DEBUG_CHUNK_LIMIT=25 (a debug build only; the variable caps
+# the number of changes per changeset) so 60 nodes and 3 ways, 63 changes,
+# go up as three changesets of 25, 25 and 13. Open ocean near lat -48.02,
+# lon -123.02.
+#
+#   OSM_GPUI_DEBUG_CHUNK_LIMIT=25 cargo run -- --api-server dev --script-delay-ms 150 --script docs/live-test/03-chunked.osmscript
+#
+# Sign in first with 00-sign-in.osmscript. Captures go to out/live-03-*.png;
+# out/live-03-04-progress-NN.png are taken every 400 ms while the upload
+# runs and should include "Changeset 2 of 3". The cleanup upload (63
+# deletions) is chunked the same way. Comments: "osm-gpui live test: chunked".
+#
+# Window 1200x800. Three rows of 20 nodes, 20 px apart, at y=250, 350, 450
+# starting at x=300; Enter finishes each way.
+
+assert_server dev
+assert_signed_in
+window 1200 800
+load_osm docs/live-test/empty.osm
+viewport -48.0200 -123.0200 18
+wait_idle 10s
+assert_dialog none
+
+pause 1s Drawing three ways of 20 nodes each
+key a
+assert_mode add
+# Way 1
+click 300,250
+click 320,250
+click 340,250
+click 360,250
+click 380,250
+click 400,250
+click 420,250
+click 440,250
+click 460,250
+click 480,250
+click 500,250
+click 520,250
+click 540,250
+click 560,250
+click 580,250
+click 600,250
+click 620,250
+click 640,250
+click 660,250
+click 680,250
+key enter
+# Way 2
+click 300,350
+click 320,350
+click 340,350
+click 360,350
+click 380,350
+click 400,350
+click 420,350
+click 440,350
+click 460,350
+click 480,350
+click 500,350
+click 520,350
+click 540,350
+click 560,350
+click 580,350
+click 600,350
+click 620,350
+click 640,350
+click 660,350
+click 680,350
+key enter
+# Way 3
+click 300,450
+click 320,450
+click 340,450
+click 360,450
+click 380,450
+click 400,450
+click 420,450
+click 440,450
+click 460,450
+click 480,450
+click 500,450
+click 520,450
+click 540,450
+click 560,450
+click 580,450
+click 600,450
+click 620,450
+click 640,450
+click 660,450
+click 680,450
+key enter
+key escape
+assert_mode select
+assert_pending 63
+capture out/live-03-01-drawn.png
+
+# --- Upload: expect "will be sent as 3 changesets" ---------------------------
+pause 1s Uploading as three changesets
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: chunked
+capture out/live-03-02-dialog-three-changesets.png
+upload_confirm
+capture_while_transferring out/live-03-04-progress every=400ms timeout=180s
+wait_transfer 180s
+assert_dialog none
+assert_status_contains 3 changesets
+assert_pending 0
+capture out/live-03-05-uploaded.png
+
+# --- Clean up: delete everything, also sent as three changesets --------------
+pause 1s Deleting everything and uploading again
+action SelectAll
+action DeleteSelection
+wait_idle 2s
+assert_pending 63
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: chunked (cleanup)
+capture out/live-03-06-cleanup-dialog.png
+upload_confirm
+capture_while_transferring out/live-03-07-cleanup-progress every=400ms timeout=180s
+wait_transfer 180s
+assert_dialog none
+assert_status_contains 3 changesets
+assert_pending 0
+capture out/live-03-08-cleaned-up.png
+pause 2s Chunked upload finished: the server is clean
+log done
