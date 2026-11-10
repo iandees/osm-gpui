@@ -31,6 +31,7 @@ pub mod script;
 pub mod selection;
 pub mod settings_store;
 pub mod style;
+pub mod svg_normalize;
 pub mod tile_cache;
 pub mod tiles;
 pub mod topology;

@@ -213,14 +213,69 @@ pub fn describe_feature_in(
     }
 }
 
-/// Resolve a preset's `icon` field (e.g. `"maki-cafe"`) to an absolute
-/// filesystem path to its vendored SVG, if that file exists. Returns `None`
-/// for icons we didn't vendor (e.g. iD's own built-in icon names, which
-/// `examples/update_presets.rs` can't fetch from Maki/Temaki) so callers
-/// render no icon rather than pointing GPUI at a missing path.
+/// The icon-set prefixes a preset's `icon` name can carry, each vendored
+/// flat into `assets/presets/icons/<name>.svg` by
+/// `examples/update_presets.rs`: Maki, Temaki, iD's own preset icons,
+/// Röntgen and Font Awesome (solid, regular, brands).
+pub const ICON_PREFIXES: &[&str] = &[
+    "maki-",
+    "temaki-",
+    "iD-",
+    "roentgen-",
+    "fas-",
+    "far-",
+    "fab-",
+];
+
+/// Resolve a preset's `icon` field (e.g. `"maki-cafe"`, `"temaki-lock"`,
+/// `"iD-highway-residential"`) to an absolute filesystem path to its
+/// vendored SVG, if that file exists. Returns `None` for names with an
+/// unknown set prefix and for icons that could not be vendored, so callers
+/// render no icon (see [`icon_path_or_fallback`]) rather than pointing GPUI
+/// at a missing path.
 pub fn icon_path(icon_name: &str) -> Option<std::path::PathBuf> {
+    if !ICON_PREFIXES.iter().any(|p| icon_name.starts_with(p))
+        || icon_name.contains(['/', '\\', '.'])
+    {
+        return None;
+    }
     let path = std::path::Path::new(ICONS_DIR).join(format!("{}.svg", icon_name));
     path.exists().then_some(path)
+}
+
+/// The generic icon shown for a feature of this geometry when its preset has
+/// no icon (or its icon file is not vendored). Mirrors iD, which falls back
+/// to a point / vertex / line / area / relation glyph.
+pub fn fallback_icon_name(geometry: Geometry) -> &'static str {
+    match geometry {
+        Geometry::Point => "maki-marker-stroked",
+        Geometry::Vertex => "maki-circle-stroked",
+        Geometry::Line => "iD-other-line",
+        Geometry::Area => "maki-square-stroked",
+        Geometry::Relation => "iD-relation",
+    }
+}
+
+/// Every geometry's fallback icon name, so the fetch tool vendors them even
+/// if no preset happens to reference them.
+pub const FALLBACK_ICON_NAMES: &[&str] = &[
+    "maki-marker-stroked",
+    "maki-circle-stroked",
+    "iD-other-line",
+    "maki-square-stroked",
+    "iD-relation",
+];
+
+/// The icon file to draw for a feature: its preset icon when that resolves,
+/// else the geometry's generic fallback. `None` only if even the fallback
+/// file is missing.
+pub fn icon_path_or_fallback(
+    icon_name: Option<&str>,
+    geometry: Geometry,
+) -> Option<std::path::PathBuf> {
+    icon_name
+        .and_then(icon_path)
+        .or_else(|| icon_path(fallback_icon_name(geometry)))
 }
 
 /// Vendored copy of iD's `areaKeys.json`: which tag keys imply an area for
@@ -617,6 +672,114 @@ mod tests {
     #[test]
     fn icon_path_returns_none_for_unknown_icon() {
         assert_eq!(icon_path("not-a-real-icon-xyz"), None);
+        assert_eq!(icon_path("maki-not-a-real-icon-xyz"), None);
+    }
+
+    #[test]
+    fn icon_path_rejects_names_that_could_escape_the_icons_dir() {
+        assert_eq!(icon_path("maki-../presets"), None);
+        assert_eq!(icon_path("maki-a/b"), None);
+        assert_eq!(icon_path("../maki-cafe"), None);
+    }
+
+    #[test]
+    fn icon_path_resolves_one_icon_from_every_set() {
+        for name in [
+            "maki-cafe",
+            "temaki-bench",
+            "iD-highway-residential",
+            "roentgen-tree",
+            "fas-ambulance",
+            "far-snowflake",
+        ] {
+            let path = icon_path(name).unwrap_or_else(|| panic!("{name} should be vendored"));
+            assert!(path.ends_with(format!("{name}.svg")), "{path:?}");
+        }
+    }
+
+    /// Icon names a preset references that upstream does not ship at the
+    /// pinned versions (see `examples/update_presets.rs`); each falls back to
+    /// the geometry icon. Keep this list small and give a reason.
+    const KNOWN_MISSING_ICONS: &[(&str, &str)] = &[];
+
+    #[test]
+    fn every_bundled_preset_icon_resolves_or_is_allowlisted() {
+        let mut missing = Vec::new();
+        let mut referenced = std::collections::HashSet::new();
+        for preset in &preset_index().presets {
+            let Some(icon) = preset.icon.as_deref() else {
+                continue;
+            };
+            referenced.insert(icon);
+            if icon_path(icon).is_none() && !KNOWN_MISSING_ICONS.iter().any(|(n, _)| *n == icon) {
+                missing.push(format!("{} -> {icon}", preset.id));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "presets with an icon that is not vendored (run `cargo run --example update_presets`): {missing:#?}"
+        );
+        for (name, reason) in KNOWN_MISSING_ICONS {
+            assert!(!reason.is_empty(), "{name} needs a reason");
+            assert!(
+                referenced.contains(name),
+                "{name} is allowlisted but no preset uses it any more"
+            );
+            assert!(
+                icon_path(name).is_none(),
+                "{name} is vendored now; drop it from the allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_icons_resolve_and_match_the_fetch_list() {
+        for geometry in [
+            Geometry::Point,
+            Geometry::Vertex,
+            Geometry::Line,
+            Geometry::Area,
+            Geometry::Relation,
+        ] {
+            let name = fallback_icon_name(geometry);
+            assert!(FALLBACK_ICON_NAMES.contains(&name), "{name}");
+            assert!(icon_path(name).is_some(), "{name} should be vendored");
+        }
+    }
+
+    #[test]
+    fn icon_path_or_fallback_prefers_the_preset_icon() {
+        let own = icon_path_or_fallback(Some("maki-cafe"), Geometry::Point).unwrap();
+        assert!(own.ends_with("maki-cafe.svg"));
+    }
+
+    #[test]
+    fn icon_path_or_fallback_uses_the_geometry_icon_otherwise() {
+        let line = icon_path_or_fallback(None, Geometry::Line).unwrap();
+        assert!(line.ends_with("iD-other-line.svg"), "{line:?}");
+        let unknown = icon_path_or_fallback(Some("nope-xyz"), Geometry::Area).unwrap();
+        assert!(unknown.ends_with("maki-square-stroked.svg"), "{unknown:?}");
+    }
+
+    #[test]
+    fn every_vendored_icon_is_a_square_svg() {
+        let dir = std::path::Path::new(ICONS_DIR);
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "svg") {
+                continue;
+            }
+            let svg = std::fs::read_to_string(&path).unwrap();
+            let ratio = crate::svg_normalize::aspect_ratio(&svg)
+                .unwrap_or_else(|| panic!("{path:?} has no usable size"));
+            assert!(
+                (ratio - 1.0).abs() < 1e-6,
+                "{path:?} is not square: {ratio}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 100, "only {checked} icons found");
     }
 
     const FIELDS_FIXTURE: &str = r#"
