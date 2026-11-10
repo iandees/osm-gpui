@@ -54,6 +54,7 @@ menu:
     zoom_out: "Verkleinern"
     zoom_to_data: "Auf Daten zoomen"
     zoom_to_selection: "Auf Auswahl zoomen"
+    show_downloaded_area: "Heruntergeladenes Gebiet anzeigen"
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
   window:
     title: "Fenster"

@@ -351,12 +351,17 @@ impl MapViewer {
                     self.add_osm_dataset(name, data, &edits, cx);
                 }
                 ScriptCommand::Action { name } => {
-                    let qualified = if name.contains("::") {
-                        name.clone()
-                    } else {
-                        format!("osm_gpui::{name}")
+                    // `Name` or `Name {json}`; the JSON fills the action's fields.
+                    let (action_name, data) = match name.split_once(char::is_whitespace) {
+                        Some((n, json)) => (n, serde_json::from_str(json).ok()),
+                        None => (name.as_str(), None),
                     };
-                    let result = match cx.build_action(&qualified, None) {
+                    let qualified = if action_name.contains("::") {
+                        action_name.to_string()
+                    } else {
+                        format!("osm_gpui::{action_name}")
+                    };
+                    let result = match cx.build_action(&qualified, data) {
                         Ok(action) => {
                             // `App::dispatch_action`, deferred until this
                             // render's window lease is released, is the call

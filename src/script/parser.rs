@@ -71,7 +71,16 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             [name] => Ok(Op::Action {
                 name: name.to_string(),
             }),
-            _ => Err(err(line_no, "action: want ACTION_NAME like UploadToOsm")),
+            // `action AddImageryLayer {"id":"EsriWorldImagery"}`: the rest of
+            // the line is the action's JSON data, kept in `name` for the
+            // harness to split off.
+            [name, data @ ..] if data.join(" ").trim_start().starts_with('{') => Ok(Op::Action {
+                name: format!("{} {}", name, data.join(" ")),
+            }),
+            _ => Err(err(
+                line_no,
+                "action: want ACTION_NAME like UploadToOsm, optionally followed by JSON data",
+            )),
         },
         "log" => Ok(Op::Log {
             message: rest.join(" "),
@@ -606,6 +615,17 @@ mod tests {
         );
         assert!(parse("action").is_err());
         assert!(parse("action A B").is_err());
+    }
+
+    #[test]
+    fn action_accepts_trailing_json_data() {
+        let s = parse(r#"action AddImageryLayer {"id": "X"}"#).unwrap();
+        assert_eq!(
+            s[0].op,
+            Op::Action {
+                name: r#"AddImageryLayer {"id": "X"}"#.to_string()
+            }
+        );
     }
 
     #[test]

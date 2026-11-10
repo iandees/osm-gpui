@@ -54,6 +54,7 @@ menu:
     zoom_out: "Zoom Out"
     zoom_to_data: "Zoom to Data"
     zoom_to_selection: "Zoom to Selection"
+    show_downloaded_area: "Show Downloaded Area"
     toggle_debug_overlay: "Toggle Debug Overlay"
   window:
     title: "Window"

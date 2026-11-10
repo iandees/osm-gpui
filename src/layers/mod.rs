@@ -17,6 +17,10 @@ const DOWNLOAD_WASH_RGBA: u32 = 0x1e293b52;
 const DOWNLOAD_EDGE_RGBA: u32 = 0x1e3a8acc;
 /// Width of that line, in pixels.
 const DOWNLOAD_EDGE_WIDTH: f32 = 2.0;
+/// Pale halo drawn under the edge line (RGBA) and its total width, so the
+/// edge reads on dark aerial imagery as well as on light Carto.
+const DOWNLOAD_HALO_RGBA: u32 = 0xdbeafecc;
+const DOWNLOAD_HALO_WIDTH: f32 = 5.0;
 
 /// Stable identity for a layer, independent of its (user-visible, possibly
 /// renamed-for-uniqueness) display name. Allocated monotonically by
@@ -519,25 +523,29 @@ impl LayerManager {
                 wash,
             ));
         }
-        let half = DOWNLOAD_EDGE_WIDTH / 2.0;
-        let edge = rgba(DOWNLOAD_EDGE_RGBA);
-        for s in &region.outline {
-            let (x0, y0) = to_screen(s.x0, s.y1);
-            let (x1, y1) = to_screen(s.x1, s.y0);
-            if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
-                continue;
+        // A pale halo under the blue line keeps the edge visible over dark
+        // imagery, where blue alone vanishes.
+        for (width, color) in [
+            (DOWNLOAD_HALO_WIDTH, DOWNLOAD_HALO_RGBA),
+            (DOWNLOAD_EDGE_WIDTH, DOWNLOAD_EDGE_RGBA),
+        ] {
+            let half = width / 2.0;
+            let color = rgba(color);
+            for s in &region.outline {
+                let (x0, y0) = to_screen(s.x0, s.y1);
+                let (x1, y1) = to_screen(s.x1, s.y0);
+                if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+                    continue;
+                }
+                // Axis-aligned, so a thin quad centred on the segment.
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(px(x0 - half), px(y0 - half)),
+                        size: size(px(x1 - x0 + width), px(y1 - y0 + width)),
+                    },
+                    color,
+                ));
             }
-            // Axis-aligned, so a thin quad centred on the segment.
-            window.paint_quad(fill(
-                Bounds {
-                    origin: point(px(x0 - half), px(y0 - half)),
-                    size: size(
-                        px(x1 - x0 + DOWNLOAD_EDGE_WIDTH),
-                        px(y1 - y0 + DOWNLOAD_EDGE_WIDTH),
-                    ),
-                },
-                edge,
-            ));
         }
     }
 
