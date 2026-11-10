@@ -27,6 +27,7 @@ pub mod settings_store;
 pub mod style;
 pub mod tile_cache;
 pub mod tiles;
+pub mod topology;
 pub mod ui;
 pub mod viewport;
 
