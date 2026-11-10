@@ -304,17 +304,30 @@ pub fn is_colour_icon(asset_path: &str) -> bool {
 /// A square preset icon of `size` pixels for an asset path from
 /// [`icon_path`]. Single-colour icons are masks tinted with `color`;
 /// multi-colour ones ([`is_colour_icon`]) keep their own colours.
+///
+/// The colour icons use dark greys and black, which vanish on a dark theme,
+/// so with `dark_theme` they sit on a pale rounded chip.
 pub fn icon_element(
     path: gpui::SharedString,
     size: f32,
     color: gpui::Hsla,
+    dark_theme: bool,
 ) -> gpui::AnyElement {
-    use gpui::{IntoElement, ObjectFit, Styled, StyledImage};
+    use gpui::{IntoElement, ObjectFit, ParentElement, Styled, StyledImage};
     if is_colour_icon(&path) {
-        gpui::img(path)
+        let image = gpui::img(path)
             .size(gpui::px(size))
-            .object_fit(ObjectFit::Contain)
-            .into_any_element()
+            .object_fit(ObjectFit::Contain);
+        if dark_theme {
+            gpui::div()
+                .size(gpui::px(size))
+                .rounded(gpui::px(size / 6.0))
+                .bg(gpui::rgb(0xe5e7eb))
+                .child(image)
+                .into_any_element()
+        } else {
+            image.into_any_element()
+        }
     } else {
         gpui::svg()
             .path(path)
@@ -888,6 +901,13 @@ mod tests {
         assert!(icon_asset("preset-icons/nope.svg").is_none());
         assert!(icon_asset("icons/maki-cafe.svg").is_none());
         assert!(icon_asset("preset-icons/maki-cafe").is_none());
+    }
+
+    #[test]
+    fn only_id_icons_are_drawn_in_colour() {
+        assert!(is_colour_icon("preset-icons/iD-highway-primary.svg"));
+        assert!(!is_colour_icon("preset-icons/maki-cafe.svg"));
+        assert!(!is_colour_icon("icons/check.svg"));
     }
 
     #[test]

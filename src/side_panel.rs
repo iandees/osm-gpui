@@ -891,7 +891,12 @@ impl MapViewer {
                     .size(px(24.0))
                     .flex_shrink_0()
                     .children(icon_path.map(|path| {
-                        osm_gpui::presets::icon_element(path, 24.0, cx.theme().foreground)
+                        osm_gpui::presets::icon_element(
+                            path,
+                            24.0,
+                            cx.theme().foreground,
+                            cx.theme().is_dark(),
+                        )
                     })),
             )
             .child(
@@ -963,7 +968,14 @@ impl MapViewer {
                 // Reserve the icon slot even without an icon so the row
                 // text lines up across rows.
                 row = row.child(div().size(px(14.0)).flex_shrink_0().children(icon_path.map(
-                    |path| osm_gpui::presets::icon_element(path, 14.0, cx.theme().foreground),
+                    |path| {
+                        osm_gpui::presets::icon_element(
+                            path,
+                            14.0,
+                            cx.theme().foreground,
+                            cx.theme().is_dark(),
+                        )
+                    },
                 )));
 
                 row.child(row_text).on_mouse_down(

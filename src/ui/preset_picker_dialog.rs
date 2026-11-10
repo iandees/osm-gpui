@@ -201,6 +201,7 @@ impl Render for PresetPickerDialog {
                                             path,
                                             ROW_ICON_SIZE,
                                             cx.theme().foreground,
+                                            cx.theme().is_dark(),
                                         )
                                     })),
                             )
