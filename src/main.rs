@@ -1,3 +1,10 @@
+// Release builds on Windows are GUI-subsystem executables so no console window
+// opens; as a result stdout/stderr (e.g. `--script` output) is not shown.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use gpui::Action;
 use gpui::{
     actions, canvas, div, fill, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
