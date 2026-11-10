@@ -186,6 +186,19 @@ status:
       other: "%{count} local edits kept"
     separator: ", "
 
+# The OSM server's size limits (way nodes, relation members, elements per
+# changeset). Counts arrive already formatted with digit grouping.
+limits:
+  upload:
+    way: "Way %{id} has %{nodes} nodes; the server allows %{max}. Split it before uploading."
+    relation: "Relation %{id} has %{members} members; the server allows %{max}. Remove some members before uploading."
+    changeset: "This upload has %{count} changes; the server allows %{max} in one changeset. Upload fewer changes at a time."
+  edit:
+    way_full: "A way can have at most %{max} nodes on this server"
+    join: "Can't join: the combined way would have %{nodes} nodes; the server allows %{max}"
+    relation_add: "Can't add to the relation: it would have %{members} members; the server allows %{max}"
+    relation_new: "Can't create the relation: %{members} members is more than the server allows (%{max})"
+
 # Side panel sections. Preset and field labels shown inside them come from
 # the bundled iD tagging schema and are not translated here.
 panel:

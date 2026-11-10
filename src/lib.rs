@@ -17,6 +17,7 @@ pub mod imagery;
 pub mod interaction;
 pub mod keybindings;
 pub mod layers;
+pub mod limits;
 pub mod nsi;
 pub mod osm;
 pub mod osm_api;

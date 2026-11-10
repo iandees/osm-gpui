@@ -180,6 +180,22 @@ pub fn allows_download(base_url: &str, bounds: &GeoBounds) -> bool {
     for_server(base_url).allows_download(bounds)
 }
 
+/// Most nodes a way may have on the server at `base_url`.
+pub fn max_way_nodes(base_url: &str) -> usize {
+    for_server(base_url).waynodes_maximum as usize
+}
+
+/// Most members a relation may have on the server at `base_url`.
+pub fn max_relation_members(base_url: &str) -> usize {
+    for_server(base_url).relationmembers_maximum as usize
+}
+
+/// Most elements (created + modified + deleted) one changeset may hold on the
+/// server at `base_url`.
+pub fn max_changeset_elements(base_url: &str) -> usize {
+    for_server(base_url).changeset_maximum_elements as usize
+}
+
 fn log_debug(msg: &str) {
     if cfg!(debug_assertions) {
         eprintln!("capabilities: {msg}");
@@ -365,6 +381,21 @@ mod tests {
         // A healthy cached entry is not refetched.
         assert!(!refresh_blocking(&client, base, Instant::now()));
         assert_eq!(client.request_count(), 1);
+    }
+
+    #[test]
+    fn size_limit_accessors_follow_the_fetched_server() {
+        let base = "https://caps-limits.test";
+        assert_eq!(max_way_nodes(base), 2000);
+        assert_eq!(max_relation_members(base), 32000);
+        assert_eq!(max_changeset_elements(base), 10000);
+        let xml = r#"<osm><api><waynodes maximum="10"/><relationmembers maximum="20"/>
+            <changesets maximum_elements="30"/></api></osm>"#;
+        let client = FakeClient::new(vec![ok(200, xml)]);
+        assert!(refresh_blocking(&client, base, Instant::now()));
+        assert_eq!(max_way_nodes(base), 10);
+        assert_eq!(max_relation_members(base), 20);
+        assert_eq!(max_changeset_elements(base), 30);
     }
 
     #[test]
