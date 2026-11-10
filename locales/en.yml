@@ -326,6 +326,7 @@ shortcut:
   action_join: "Join Ways"
   action_separate: "Separate Node"
   action_extend: "Extend Way"
+  action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
@@ -375,6 +376,16 @@ action:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
     started: "Click to add nodes to the way; Enter or Esc to finish"
+  merge:
+    label: "Merge Nodes"
+    hint: "Select two or more nodes to merge them into one"
+    done:
+      one: "Merged %{count} node"
+      other: "Merged %{count} nodes"
+    error:
+      tag_conflict: "Can't merge: the nodes have different values for '%{key}'"
+      relation_member: "Can't merge: node %{id} is a member of a relation and would be deleted"
+      degenerate_way: "Can't merge: way %{id} would be left with fewer than two distinct nodes"
   straighten:
     label: "Straighten Way"
     hint: "Select an open way with 3 or more nodes to straighten it"

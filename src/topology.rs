@@ -240,23 +240,8 @@ pub fn plan_join(ways: &[JoinWay]) -> Result<JoinPlan, JoinError> {
     let order = chain_order(ways).ok_or(JoinError::NotChainable)?;
 
     // Union of tags; differing values for one key block the join.
-    let mut merged: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut conflict: Option<&str> = None;
-    for (k, v) in ways.iter().flat_map(|w| w.tags.iter()) {
-        match merged.get(k.as_str()) {
-            Some(existing) if *existing != v.as_str() => {
-                if conflict.is_none_or(|c| k.as_str() < c) {
-                    conflict = Some(k.as_str());
-                }
-            }
-            _ => {
-                merged.insert(k.as_str(), v.as_str());
-            }
-        }
-    }
-    if let Some(key) = conflict {
-        return Err(JoinError::TagConflict(key.to_string()));
-    }
+    let merged = union_tags(ways.iter().map(|w| w.tags.as_slice()))
+        .map_err(|key| JoinError::TagConflict(key.to_string()))?;
 
     // The chain can be walked either way round; pick the direction that
     // doesn't reverse any way whose tags depend on direction, preferring
@@ -298,11 +283,160 @@ pub fn plan_join(ways: &[JoinWay]) -> Result<JoinPlan, JoinError> {
     Ok(JoinPlan {
         keep,
         nodes,
-        tags: merged
+        tags: merged,
+        remove: ways.iter().map(|w| w.id).filter(|&id| id != keep).collect(),
+    })
+}
+
+/// The union of several features' tags, sorted by key. If two features have
+/// different values for one key, the (alphabetically first) such key is the
+/// error.
+fn union_tags<'a>(
+    sets: impl Iterator<Item = &'a [(String, String)]>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut merged: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut conflict: Option<&str> = None;
+    for (k, v) in sets.flatten() {
+        match merged.get(k.as_str()) {
+            Some(existing) if *existing != v.as_str() => {
+                if conflict.is_none_or(|c| k.as_str() < c) {
+                    conflict = Some(k.as_str());
+                }
+            }
+            _ => {
+                merged.insert(k.as_str(), v.as_str());
+            }
+        }
+    }
+    match conflict {
+        Some(key) => Err(key.to_string()),
+        None => Ok(merged
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-        remove: ways.iter().map(|w| w.id).filter(|&id| id != keep).collect(),
+            .collect()),
+    }
+}
+
+/// A node as the merge planner sees it.
+#[derive(Clone, Debug)]
+pub struct MergeNode {
+    pub id: i64,
+    pub tags: Vec<(String, String)>,
+    /// Whether a relation has this node as a member.
+    pub in_relation: bool,
+}
+
+/// Why a set of nodes can't be merged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MergeError {
+    /// Fewer than two distinct nodes.
+    NotEnoughNodes,
+    /// Two nodes have different values for this key.
+    TagConflict(String),
+    /// A node that would be removed is a member of a relation.
+    RelationMember(i64),
+    /// The way would be left with fewer than two distinct nodes.
+    DegenerateWay(i64),
+}
+
+impl MergeError {
+    /// A short status-bar message.
+    pub fn message(&self) -> String {
+        match self {
+            MergeError::NotEnoughNodes => crate::tr!("action.merge.hint").to_string(),
+            MergeError::TagConflict(key) => {
+                crate::tr!("action.merge.error.tag_conflict", key = key).to_string()
+            }
+            MergeError::RelationMember(id) => {
+                crate::tr!("action.merge.error.relation_member", id = id).to_string()
+            }
+            MergeError::DegenerateWay(id) => {
+                crate::tr!("action.merge.error.degenerate_way", id = id).to_string()
+            }
+        }
+    }
+}
+
+/// The outcome of merging nodes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergePlan {
+    /// The surviving node (keeps its position).
+    pub keep: i64,
+    /// The nodes to delete, in selection order.
+    pub remove: Vec<i64>,
+    /// The survivor's tags afterwards: the union of every node's tags.
+    pub tags: Vec<(String, String)>,
+    /// Every way that used a removed node, with its new node list.
+    pub way_edits: Vec<SeparateEdit>,
+}
+
+/// Plan merging `nodes` (in selection order, duplicates ignored) into one.
+/// `ways` holds every way that uses any of them, as `(id, node list)`.
+///
+/// The node already on the server (positive id) survives if exactly one is;
+/// otherwise the first selected. Tags are unioned (a conflict names its key).
+/// Ways use the survivor in place of each removed node, and consecutive
+/// repeats that creates collapse into one. Refused if a removed node is in a
+/// relation, or a way would be left with fewer than two distinct nodes.
+pub fn plan_merge_nodes(
+    nodes: &[MergeNode],
+    ways: &[(i64, Vec<i64>)],
+) -> Result<MergePlan, MergeError> {
+    let mut unique: Vec<&MergeNode> = Vec::new();
+    for node in nodes {
+        if !unique.iter().any(|n| n.id == node.id) {
+            unique.push(node);
+        }
+    }
+    if unique.len() < 2 {
+        return Err(MergeError::NotEnoughNodes);
+    }
+    let positive: Vec<i64> = unique.iter().map(|n| n.id).filter(|&id| id > 0).collect();
+    let keep = if positive.len() == 1 {
+        positive[0]
+    } else {
+        unique[0].id
+    };
+    if let Some(member) = unique.iter().find(|n| n.id != keep && n.in_relation) {
+        return Err(MergeError::RelationMember(member.id));
+    }
+    let tags =
+        union_tags(unique.iter().map(|n| n.tags.as_slice())).map_err(MergeError::TagConflict)?;
+    let remove: Vec<i64> = unique
+        .iter()
+        .map(|n| n.id)
+        .filter(|&id| id != keep)
+        .collect();
+
+    let mut way_edits = Vec::new();
+    for (way_id, before) in ways {
+        if !before.iter().any(|n| remove.contains(n)) {
+            continue;
+        }
+        let mut after: Vec<i64> = Vec::with_capacity(before.len());
+        for &node in before {
+            let node = if remove.contains(&node) { keep } else { node };
+            if after.last() != Some(&node) {
+                after.push(node);
+            }
+        }
+        let mut distinct = after.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if distinct.len() < 2 {
+            return Err(MergeError::DegenerateWay(*way_id));
+        }
+        way_edits.push(SeparateEdit {
+            way_id: *way_id,
+            before: before.clone(),
+            after,
+        });
+    }
+    Ok(MergePlan {
+        keep,
+        remove,
+        tags,
+        way_edits,
     })
 }
 
@@ -597,6 +731,129 @@ mod tests {
         assert!(is_direction_dependent(&t("incline", "up")));
         assert!(is_direction_dependent(&t("lanes:forward", "2")));
         assert!(!is_direction_dependent(&t("highway", "residential")));
+    }
+
+    fn node(id: i64, tags: &[(&str, &str)]) -> MergeNode {
+        MergeNode {
+            id,
+            tags: tags
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            in_relation: false,
+        }
+    }
+
+    #[test]
+    fn merge_keeps_the_only_server_node_else_the_first_selected() {
+        let plan = plan_merge_nodes(&[node(-1, &[]), node(7, &[]), node(-2, &[])], &[]).unwrap();
+        assert_eq!((plan.keep, plan.remove), (7, vec![-1, -2]));
+        let plan = plan_merge_nodes(&[node(-3, &[]), node(-1, &[])], &[]).unwrap();
+        assert_eq!((plan.keep, plan.remove), (-3, vec![-1]));
+        // Several server nodes: the first selected wins.
+        let plan = plan_merge_nodes(&[node(9, &[]), node(7, &[])], &[]).unwrap();
+        assert_eq!((plan.keep, plan.remove), (9, vec![7]));
+        // Listing a node twice doesn't make it two nodes.
+        assert_eq!(
+            plan_merge_nodes(&[node(9, &[]), node(9, &[])], &[]),
+            Err(MergeError::NotEnoughNodes)
+        );
+    }
+
+    #[test]
+    fn merge_unions_tags_and_names_a_conflicting_key() {
+        let plan = plan_merge_nodes(
+            &[
+                node(1, &[("highway", "crossing"), ("name", "A")]),
+                node(2, &[("name", "A"), ("crossing", "zebra")]),
+            ],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            plan.tags,
+            tags(&[
+                ("crossing", "zebra"),
+                ("highway", "crossing"),
+                ("name", "A")
+            ])
+        );
+        let err = plan_merge_nodes(
+            &[
+                node(1, &[("name", "A"), ("ref", "1")]),
+                node(2, &[("name", "B"), ("ref", "2")]),
+            ],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err, MergeError::TagConflict("name".to_string()));
+        assert_eq!(
+            err.message(),
+            "Can't merge: the nodes have different values for 'name'"
+        );
+    }
+
+    #[test]
+    fn merge_points_ways_at_the_survivor_and_collapses_repeats() {
+        let w = ways(&[
+            (10, &[1, 2, 3]),
+            (11, &[4, 5]),
+            (12, &[2, 3, 6]),
+            (13, &[7, 8]),
+        ]);
+        // 2 and 3 are neighbours in ways 10 and 12: they collapse to one.
+        let plan = plan_merge_nodes(&[node(2, &[]), node(3, &[])], &w).unwrap();
+        assert_eq!(plan.keep, 2);
+        assert_eq!(plan.way_edits.len(), 2);
+        assert_eq!(plan.way_edits[0].after, vec![1, 2]);
+        assert_eq!(plan.way_edits[0].before, vec![1, 2, 3]);
+        assert_eq!(plan.way_edits[1].way_id, 12);
+        assert_eq!(plan.way_edits[1].after, vec![2, 6]);
+        // Ways that don't touch a removed node aren't edited.
+        assert!(plan.way_edits.iter().all(|e| e.way_id != 13));
+    }
+
+    #[test]
+    fn merge_joins_two_ways_end_to_end_through_the_survivor() {
+        let w = ways(&[(10, &[1, 2]), (11, &[3, 4])]);
+        let plan = plan_merge_nodes(&[node(2, &[]), node(3, &[])], &w).unwrap();
+        // Way 10 already ends at the survivor: only way 11 is edited.
+        assert_eq!(plan.way_edits.len(), 1);
+        assert_eq!(plan.way_edits[0].way_id, 11);
+        assert_eq!(plan.way_edits[0].after, vec![2, 4]);
+    }
+
+    #[test]
+    fn merge_refuses_a_way_left_with_one_node() {
+        // Merging the only two nodes of a way would leave a single node.
+        let w = ways(&[(10, &[1, 2]), (11, &[2, 3])]);
+        assert_eq!(
+            plan_merge_nodes(&[node(1, &[]), node(2, &[])], &w),
+            Err(MergeError::DegenerateWay(10))
+        );
+        // A ring squeezed to two nodes is still two distinct nodes.
+        let ring = ways(&[(10, &[1, 2, 3, 1])]);
+        let plan = plan_merge_nodes(&[node(2, &[]), node(3, &[])], &ring).unwrap();
+        assert_eq!(plan.way_edits[0].after, vec![1, 2, 1]);
+        // But three-way merge of a triangle leaves nothing.
+        assert_eq!(
+            plan_merge_nodes(&[node(1, &[]), node(2, &[]), node(3, &[])], &ring),
+            Err(MergeError::DegenerateWay(10))
+        );
+    }
+
+    #[test]
+    fn merge_refuses_to_delete_a_relation_member_but_may_keep_one() {
+        let member = MergeNode {
+            in_relation: true,
+            ..node(5, &[])
+        };
+        // 5 is the only server node, so it survives: fine.
+        let plan = plan_merge_nodes(&[node(-1, &[]), member.clone()], &[]).unwrap();
+        assert_eq!(plan.keep, 5);
+        // Selected second, with another server node first, it would go.
+        let err = plan_merge_nodes(&[node(7, &[]), member], &[]).unwrap_err();
+        assert_eq!(err, MergeError::RelationMember(5));
     }
 
     fn tags(list: &[(&str, &str)]) -> Vec<(String, String)> {

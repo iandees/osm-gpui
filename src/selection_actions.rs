@@ -64,6 +64,14 @@ impl<'a> ActionEnv<'a> {
         extend_target(editable, layer_id, self.selection)
     }
 
+    /// How many distinct nodes of the active layer are selected.
+    fn selected_node_count(&self) -> usize {
+        let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
+            return 0;
+        };
+        merge_nodes_in(editable, layer_id, self.selection).len()
+    }
+
     fn can_separate_selection(&self) -> bool {
         let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
             return false;
@@ -281,6 +289,15 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         in_tools_menu: true,
         is_applicable: |env| env.extend_target().is_some(),
         apply: apply_extend,
+    },
+    SelectionAction {
+        id: "merge",
+        shortcut_id: Some("action_merge"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_node_count() >= 2,
+        apply: apply_merge,
     },
     SelectionAction {
         id: "straighten",
@@ -707,6 +724,104 @@ fn apply_separate(
     })
 }
 
+/// The distinct nodes of the active layer that are selected, in selection
+/// order, with what the merge planner needs to know about each.
+fn merge_nodes_in(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<topology::MergeNode> {
+    let mut nodes: Vec<topology::MergeNode> = Vec::new();
+    for f in selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Node)
+    {
+        if nodes.iter().any(|n| n.id == f.id) || editable.node_lat_lon(f.id).is_none() {
+            continue;
+        }
+        nodes.push(topology::MergeNode {
+            id: f.id,
+            tags: editable.feature_tags(f).unwrap_or_default(),
+            in_relation: !editable.relations_containing_node(f.id).is_empty(),
+        });
+    }
+    nodes
+}
+
+/// Merge the selected nodes into one (JOSM "Merge Nodes"). See
+/// `topology::plan_merge_nodes` for the survivor, tag, way-rewrite and refusal
+/// rules. One undo step: the survivor's added tags, the rewritten ways, then
+/// the deletion of the other nodes.
+fn apply_merge(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let nodes = merge_nodes_in(editable, layer_id, selection);
+    let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
+    for node in &nodes {
+        for way in ways_using(editable, node.id) {
+            if !ways.iter().any(|(id, _)| *id == way.0) {
+                ways.push(way);
+            }
+        }
+    }
+    let plan = topology::plan_merge_nodes(&nodes, &ways).map_err(|e| e.message())?;
+    let node_ref = |id| FeatureRef {
+        layer_id,
+        kind: FeatureKind::Node,
+        id,
+    };
+
+    let mut actions = Vec::new();
+    let kept = nodes
+        .iter()
+        .find(|n| n.id == plan.keep)
+        .expect("the plan keeps one of the given nodes");
+    let mut tag_entries = Vec::new();
+    for (key, value) in &plan.tags {
+        if !kept.tags.iter().any(|(k, _)| k == key) {
+            editable.set_tag(FeatureKind::Node, plan.keep, key, value);
+            tag_entries.push((node_ref(plan.keep), key.clone(), None, Some(value.clone())));
+        }
+    }
+    if !tag_entries.is_empty() {
+        actions.push(UndoableAction::SetTags {
+            entries: tag_entries,
+        });
+    }
+    for edit in plan.way_edits {
+        editable.set_way_nodes(edit.way_id, edit.after.clone());
+        actions.push(UndoableAction::SetWayNodes {
+            layer: layer_id,
+            way_id: edit.way_id,
+            before: edit.before,
+            after: edit.after,
+        });
+    }
+    for id in &plan.remove {
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, *id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+
+    let label = tr_count!("action.merge.done", nodes.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: Some(vec![node_ref(plan.keep)]),
+        continue_way: None,
+    })
+}
+
 /// Continue drawing the selected open way (iD "Continue this line"): from
 /// its last node, or from the selected end node. Changes no data itself; it
 /// puts Add mode into the state of having just placed that end node, so each
@@ -786,7 +901,8 @@ fn apply_delete(
 /// - way 103 `[8,4,9]` crosses way 101 at node 4;
 /// - way 105 `[5,10]` has `name=Elm`, which conflicts with way 101;
 /// - ways 106 `[11,12]` and 107 `[13,12]` are one-ways that run head to head;
-/// - way 108 `[14,15,16,14]` is a closed ring.
+/// - way 108 `[14,15,16,14]` is a closed ring;
+/// - node 7 is on no way, and is a member of relation 900 (as is way 102).
 #[cfg(test)]
 pub(crate) mod test_support {
     use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -838,11 +954,18 @@ pub(crate) mod test_support {
             ]),
             relations: vec![OsmRelation {
                 id: 900,
-                members: vec![OsmMember {
-                    member_type: MemberType::Way,
-                    reference: 102,
-                    role: String::new(),
-                }],
+                members: vec![
+                    OsmMember {
+                        member_type: MemberType::Way,
+                        reference: 102,
+                        role: String::new(),
+                    },
+                    OsmMember {
+                        member_type: MemberType::Node,
+                        reference: 7,
+                        role: "stop".to_string(),
+                    },
+                ],
                 version: 1,
                 tags: HashMap::new(),
             }],
@@ -1060,6 +1183,7 @@ mod tests {
         assert_eq!(find_by_key(&settings, "c").map(|a| a.id), Some("join"));
         assert_eq!(find_by_key(&settings, "g").map(|a| a.id), Some("separate"));
         assert_eq!(find_by_key(&settings, "e").map(|a| a.id), Some("extend"));
+        assert_eq!(find_by_key(&settings, "m").map(|a| a.id), Some("merge"));
         assert_eq!(
             find_by_key(&settings, "t").map(|a| a.id),
             Some("straighten")
@@ -1379,6 +1503,137 @@ mod tests {
                 .unwrap()
                 .commit_node_moves(&[(node, lat, lon)]);
         }
+    }
+
+    impl Net {
+        fn nodes(&self, ids: &[i64]) -> Vec<FeatureRef> {
+            ids.iter()
+                .map(|&id| self.feature(FeatureKind::Node, id))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn merge_is_offered_for_two_or_more_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.nodes(&[1, 2])).contains(&"merge"));
+        assert!(n.applicable(&n.nodes(&[1, 2, 3])).contains(&"merge"));
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"merge"));
+        assert!(!n.applicable(&n.nodes(&[1, 1])).contains(&"merge"));
+        assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"merge"));
+        assert!(!n.applicable(&[]).contains(&"merge"));
+    }
+
+    #[test]
+    fn merge_rewrites_ways_unions_tags_and_deletes_the_other_nodes() {
+        let mut n = net();
+        // Node 4 (a crossing) merged into the untagged node 8, selected first.
+        let out = n.run("merge", &n.nodes(&[8, 4])).unwrap();
+        assert_eq!(out.status, "Merged 2 nodes");
+        assert_eq!(out.select, Some(n.nodes(&[8])));
+        // 101 now passes through 8; 103 would have had 8 twice in a row.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 8, 5]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 9]));
+        assert_eq!(n.editable().node_lat_lon(4), None);
+        // The survivor keeps its place and picks up the crossing tag.
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 8),
+            pairs(&[("highway", "crossing")])
+        );
+        assert_eq!(
+            n.editable().node_lat_lon(8),
+            Some((40.0 + 0.0 * 0.001, -74.0 + 8.0 * 0.001))
+        );
+
+        // Node 4 deleted; node 8 (tag) and ways 101 and 103 modified.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 1));
+        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(label, "Merged 2 nodes");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetTags { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::DeleteFeature { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn merge_keeps_the_server_node_over_a_new_one() {
+        let mut n = net();
+        let fresh = n
+            .layers
+            .find_layer_mut(n.layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+            .create_node(40.5, -74.5, None)
+            .unwrap();
+        assert!(fresh < 0);
+        // The new node is selected first but node 6 is on the server.
+        let out = n.run("merge", &n.nodes(&[fresh, 6])).unwrap();
+        assert_eq!(out.select, Some(n.nodes(&[6])));
+        assert_eq!(n.editable().node_lat_lon(fresh), None);
+        // Merging into an existing node leaves no trace of the new one.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn merge_survivor_that_is_shared_joins_ways() {
+        let mut n = net();
+        // Ways 102 [5,6] and 105 [5,10]: merge their far ends, 6 and 10.
+        n.run("merge", &n.nodes(&[6, 10])).unwrap();
+        assert_eq!(n.editable().way_node_ids(105), Some(vec![5, 6]));
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+    }
+
+    #[test]
+    fn merge_refuses_conflicting_tags_naming_the_key() {
+        let mut n = net();
+        n.tag(FeatureKind::Node, 8, "highway", "bus_stop");
+        let Err(message) = n.run("merge", &n.nodes(&[8, 4])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: the nodes have different values for 'highway'"
+        );
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
+    }
+
+    #[test]
+    fn merge_refuses_to_leave_a_way_with_one_node() {
+        let mut n = net();
+        let Err(message) = n.run("merge", &n.nodes(&[5, 10])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: way 105 would be left with fewer than two distinct nodes"
+        );
+        assert!(!n.layer().is_modified());
+    }
+
+    #[test]
+    fn merge_refuses_to_delete_a_relation_member() {
+        let mut n = net();
+        // Node 7 is in relation 900; with 6 selected first, 7 would go.
+        let Err(message) = n.run("merge", &n.nodes(&[6, 7])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: node 7 is a member of a relation and would be deleted"
+        );
+        assert!(!n.layer().is_modified());
+        // Selected first, the member survives and the merge works.
+        n.run("merge", &n.nodes(&[7, 6])).unwrap();
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 7]));
     }
 
     #[test]

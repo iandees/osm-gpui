@@ -1603,15 +1603,24 @@ impl OsmLayer {
 
     /// The ids of the relations that have `way_id` as a member.
     pub fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
+        self.relations_containing(crate::osm::MemberType::Way, way_id)
+    }
+
+    /// The ids of the relations that have `node_id` as a member.
+    pub fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
+        self.relations_containing(crate::osm::MemberType::Node, node_id)
+    }
+
+    fn relations_containing(&self, member_type: crate::osm::MemberType, id: i64) -> Vec<i64> {
         self.osm_data
             .as_ref()
             .map(|d| {
                 d.relations
                     .iter()
                     .filter(|r| {
-                        r.members.iter().any(|m| {
-                            m.member_type == crate::osm::MemberType::Way && m.reference == way_id
-                        })
+                        r.members
+                            .iter()
+                            .any(|m| m.member_type == member_type && m.reference == id)
                     })
                     .map(|r| r.id)
                     .collect()
@@ -2538,6 +2547,9 @@ impl EditableLayer for OsmLayer {
 
     fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
         OsmLayer::relations_containing_way(self, way_id)
+    }
+    fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
+        OsmLayer::relations_containing_node(self, node_id)
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -5090,6 +5102,9 @@ mod tests {
         let layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data));
         assert_eq!(layer.relations_containing_way(11), vec![500]);
         assert!(layer.relations_containing_way(10).is_empty());
+        // Node membership is by node ref, not way ref.
+        assert_eq!(layer.relations_containing_node(10), vec![500]);
+        assert!(layer.relations_containing_node(11).is_empty());
     }
 
     #[test]

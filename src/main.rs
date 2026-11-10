@@ -5107,6 +5107,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn merge_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                // Node 4 is a crossing shared by ways 101 and 103; merge it
+                // into the untagged node 8 at the end of way 103.
+                select(view, Node, &[8, 4]);
+                view.run_selection_action("merge", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 8, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 9]);
+                assert_eq!(pending(view), (0, 3, 1));
+                assert_eq!(
+                    tags_of(view, Node, 8),
+                    tag_pairs(&[("highway", "crossing")])
+                );
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 8);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(
+                    tags_of(view, Node, 4),
+                    tag_pairs(&[("highway", "crossing")])
+                );
+                assert!(tags_of(view, Node, 8).is_empty());
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 8, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 9]);
+                assert_eq!(pending(view), (0, 3, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Way;
         let window = setup_network(cx);

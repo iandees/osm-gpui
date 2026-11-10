@@ -191,6 +191,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
+        id: "action_merge",
+        default_spec: "m",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
         id: "action_straighten",
         default_spec: "t",
         category: ShortcutCategory::Actions,
