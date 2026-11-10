@@ -26,6 +26,8 @@ menu:
     title: "Edit"
     undo: "Undo"
     redo: "Redo"
+    copy_tags: "Copy Tags"
+    paste_tags: "Paste Tags"
     delete: "Delete"
     select_all: "Select All"
     deselect_all: "Deselect All"
@@ -313,6 +315,8 @@ shortcut:
   undo: "Undo"
   redo: "Redo"
   select_all: "Select All"
+  copy_tags: "Copy Tags"
+  paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
   zoom_out: "Zoom Out"
   zoom_to_data: "Zoom to Data"
@@ -378,6 +382,22 @@ action:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
     started: "Click to add nodes to the way; Enter or Esc to finish"
+  # Plural pieces of the Copy/Paste Tags status messages.
+  tag_count:
+    one: "%{count} tag"
+    other: "%{count} tags"
+  feature_count:
+    one: "%{count} feature"
+    other: "%{count} features"
+  copy_tags:
+    label: "Copy Tags"
+    hint: "Select one feature that has tags to copy them"
+    done: "Copied %{tags}"
+  paste_tags:
+    label: "Paste Tags"
+    hint: "Copy a feature's tags first, then select what to paste them onto"
+    none: "The selected features already have the copied tags"
+    done: "Pasted %{tags} onto %{features}"
   split:
     label: "Split Way"
     hint: "Select a node inside a way (or two nodes of a closed way) to split it"

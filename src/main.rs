@@ -108,6 +108,14 @@ pub(crate) fn key_bindings_from_settings(
                 SelectAll,
                 Some(MAP_VIEWER_KEY_CONTEXT),
             )),
+            // Copy/Paste Tags run the same selection actions as the menus.
+            // Scoped to the map like Select All, so they never steal the
+            // keys from a focused text input.
+            "copy_tags" | "paste_tags" => Some(KeyBinding::new(
+                &spec,
+                RunSelectionAction { id: id.into() },
+                Some(MAP_VIEWER_KEY_CONTEXT),
+            )),
             "zoom_in" => Some(KeyBinding::new(&spec, ZoomIn, None)),
             "zoom_out" => Some(KeyBinding::new(&spec, ZoomOut, None)),
             "zoom_to_data" => Some(KeyBinding::new(&spec, ZoomToData, None)),
@@ -5127,6 +5135,64 @@ mod tests {
             .as_editable()
             .unwrap()
             .ways_using_node(node)
+    }
+
+    #[gpui::test]
+    fn copy_then_paste_tags_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Copying leaves no undo step and no edit behind.
+                select(view, Way, &[101]);
+                view.run_selection_action("copy_tags", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Copied 2 tags")
+                );
+
+                // Paste onto a way and a node at once.
+                let original_way = tags_of(view, Way, 103);
+                select(view, Way, &[103]);
+                let layer_id = view.active_layer.unwrap();
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 8,
+                });
+                view.run_selection_action("paste_tags", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let pasted = tag_pairs(&[("highway", "residential"), ("name", "Main")]);
+                assert_eq!(tags_of(view, Way, 103), pasted);
+                assert_eq!(tags_of(view, Node, 8), pasted);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Pasted 2 tags onto 2 features")
+                );
+                assert_eq!(pending(view), (0, 2, 0));
+
+                undo_step(view);
+                assert_eq!(tags_of(view, Way, 103), original_way);
+                assert!(tags_of(view, Node, 8).is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(tags_of(view, Way, 103), pasted);
+                assert_eq!(tags_of(view, Node, 8), pasted);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn tag_copy_and_paste_are_modifier_key_bindings_on_the_map_context() {
+        let bindings = key_bindings_from_settings(&settings_store::AppSettings::default());
+        let ids: Vec<String> = bindings
+            .iter()
+            .filter_map(|b| b.action().as_any().downcast_ref::<RunSelectionAction>())
+            .map(|a| a.id.to_string())
+            .collect();
+        assert_eq!(ids, ["copy_tags", "paste_tags"]);
     }
 
     #[gpui::test]

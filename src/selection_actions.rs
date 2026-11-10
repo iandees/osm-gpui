@@ -9,6 +9,7 @@
 //! `LayerManager` and returns a single `UndoableAction` — use
 //! `UndoableAction::Batch` to bundle several steps.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gpui::SharedString;
@@ -20,6 +21,24 @@ use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
 use crate::undo::{NodeMoveUndoEntry, UndoableAction};
+
+thread_local! {
+    /// The tags set aside by Copy Tags, for Paste Tags: the app's own tag
+    /// clipboard, kept apart from the system pasteboard. Actions only ever
+    /// run on the UI thread, which is why this can be a thread-local (it also
+    /// keeps parallel tests from sharing one).
+    static TAG_CLIPBOARD: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The tags currently on the tag clipboard, sorted by key.
+pub(crate) fn tag_clipboard() -> Vec<(String, String)> {
+    TAG_CLIPBOARD.with(|c| c.borrow().clone())
+}
+
+fn set_tag_clipboard(mut tags: Vec<(String, String)>) {
+    tags.sort();
+    TAG_CLIPBOARD.with(|c| *c.borrow_mut() = tags);
+}
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -327,6 +346,35 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_straighten,
     },
     SelectionAction {
+        id: "copy_tags",
+        shortcut_id: Some("copy_tags"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            copy_source(editable, layer_id, env.selection).is_some()
+        },
+        apply: apply_copy_tags,
+    },
+    SelectionAction {
+        id: "paste_tags",
+        shortcut_id: Some("paste_tags"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: |env| {
+            env.active_layer.is_some_and(|layer_id| {
+                env.active_editable().is_some()
+                    && !tag_clipboard().is_empty()
+                    && !paste_targets(layer_id, env.selection).is_empty()
+            })
+        },
+        apply: apply_paste_tags,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
@@ -354,8 +402,13 @@ pub(crate) fn find_by_key(
     key: &str,
 ) -> Option<&'static SelectionAction> {
     ACTIONS.iter().find(|a| {
-        a.shortcut_id
-            .is_some_and(|sid| osm_gpui::keybindings::effective_spec(settings, sid) == key)
+        a.shortcut_id.is_some_and(|sid| {
+            // Only the bare-key shortcuts; Copy/Paste Tags are key bindings.
+            osm_gpui::keybindings::def(sid)
+                .category
+                .is_bare_key_category()
+                && osm_gpui::keybindings::effective_spec(settings, sid) == key
+        })
     })
 }
 
@@ -403,11 +456,38 @@ impl SelectionAction {
 /// Human-readable form of a keystroke spec: a bare letter shows uppercase,
 /// as in menus ("q" -> "Q").
 pub(crate) fn display_shortcut(spec: &str) -> String {
-    match spec {
-        "backspace" | "delete" => "⌫".to_string(),
-        s if s.chars().count() == 1 => s.to_uppercase(),
-        s => s.to_string(),
+    // Modifier prefixes show as the macOS symbols, in the order macOS menus
+    // use: "cmd-shift-c" -> "⇧⌘C".
+    const MODIFIERS: [(&str, char); 4] = [
+        ("ctrl-", '⌃'),
+        ("alt-", '⌥'),
+        ("shift-", '⇧'),
+        ("cmd-", '⌘'),
+    ];
+    let mut held = [false; 4];
+    let mut key = spec;
+    'strip: loop {
+        for (i, (prefix, _)) in MODIFIERS.iter().enumerate() {
+            if let Some(rest) = key.strip_prefix(prefix) {
+                held[i] = true;
+                key = rest;
+                continue 'strip;
+            }
+        }
+        break;
     }
+    let symbols: String = MODIFIERS
+        .iter()
+        .zip(held)
+        .filter(|(_, held)| *held)
+        .map(|((_, symbol), _)| *symbol)
+        .collect();
+    let key = match key {
+        "backspace" | "delete" => "⌫".to_string(),
+        k if k.chars().count() == 1 => k.to_uppercase(),
+        k => k.to_string(),
+    };
+    format!("{symbols}{key}")
 }
 
 fn active_editable_mut(
@@ -732,6 +812,112 @@ fn apply_separate(
             actions,
         }),
         status: label,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// The tags of the one selected feature, if the selection is exactly one
+/// feature of the active layer and it has tags.
+fn copy_source(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<Vec<(String, String)>> {
+    let [feature] = selection else {
+        return None;
+    };
+    if feature.layer_id != layer_id {
+        return None;
+    }
+    editable
+        .feature_tags(feature)
+        .filter(|tags| !tags.is_empty())
+}
+
+/// The distinct selected features that live in the active layer.
+fn paste_targets(layer_id: LayerId, selection: &[FeatureRef]) -> Vec<FeatureRef> {
+    let mut targets: Vec<FeatureRef> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        if !targets.contains(f) {
+            targets.push(*f);
+        }
+    }
+    targets
+}
+
+/// Remember the tags of the one selected feature on the tag clipboard.
+fn apply_copy_tags(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let tags = copy_source(editable, layer_id, selection)
+        .ok_or_else(|| tr!("action.copy_tags.hint").to_string())?;
+    let status = tr!(
+        "action.copy_tags.done",
+        tags = tr_count!("action.tag_count", tags.len())
+    )
+    .to_string();
+    set_tag_clipboard(tags);
+    Ok(ActionOutcome {
+        undo: None,
+        status,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// Apply the tag clipboard to every selected feature of the active layer:
+/// the copied keys overwrite existing values, other tags stay. One `SetTags`
+/// undo step covering every change.
+fn apply_paste_tags(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let clipboard = tag_clipboard();
+    if clipboard.is_empty() {
+        return Err(tr!("action.paste_tags.hint").to_string());
+    }
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let targets = paste_targets(layer_id, selection);
+    if targets.is_empty() {
+        return Err(tr!("action.paste_tags.hint").to_string());
+    }
+
+    let mut entries = Vec::new();
+    let mut changed_features = 0usize;
+    for feature in &targets {
+        let Some(existing) = editable.feature_tags(feature) else {
+            continue;
+        };
+        let before = entries.len();
+        for (key, value) in &clipboard {
+            let old = existing.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+            if old == Some(value) {
+                continue;
+            }
+            editable.set_tag(feature.kind, feature.id, key, value);
+            entries.push((*feature, key.clone(), old.cloned(), Some(value.clone())));
+        }
+        changed_features += usize::from(entries.len() > before);
+    }
+    if entries.is_empty() {
+        return Err(tr!("action.paste_tags.none").to_string());
+    }
+    let status = tr!(
+        "action.paste_tags.done",
+        tags = tr_count!("action.tag_count", clipboard.len()),
+        features = tr_count!("action.feature_count", changed_features)
+    )
+    .to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::SetTags { entries }),
+        status,
         clear_selection: false,
         select: None,
         continue_way: None,
@@ -1170,7 +1356,7 @@ mod tests {
         assert!(applicable_ids(&f, &[]).is_empty());
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.rect)]),
-            ["square", "circularize", "reverse", "delete"]
+            ["square", "circularize", "reverse", "copy_tags", "delete"]
         );
         // An open two-node way can only be reversed (or deleted).
         assert_eq!(
@@ -1304,6 +1490,22 @@ mod tests {
             Some("straighten")
         );
         assert!(find_by_key(&settings, "z").is_none());
+        // Copy/Paste Tags are modifier key bindings, never bare keys.
+        assert!(find_by_key(&settings, "cmd-shift-c").is_none());
+        assert_eq!(
+            find("copy_tags")
+                .unwrap()
+                .shortcut_label(&settings)
+                .unwrap(),
+            "⇧⌘C"
+        );
+        assert_eq!(
+            find("paste_tags")
+                .unwrap()
+                .shortcut_label(&settings)
+                .unwrap(),
+            "⇧⌘V"
+        );
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),
             "Q"
@@ -1339,6 +1541,9 @@ mod tests {
     }
 
     fn net() -> Net {
+        // Each test starts with an empty tag clipboard, even when the test
+        // harness runs several tests on one thread.
+        set_tag_clipboard(Vec::new());
         let layer_id = LayerId(1);
         let layer = OsmLayer::new_with_data(
             layer_id,
@@ -1633,6 +1838,140 @@ mod tests {
                 .map(|&id| self.feature(FeatureKind::Node, id))
                 .collect()
         }
+    }
+
+    fn feature_list(n: &Net, list: &[(FeatureKind, i64)]) -> Vec<FeatureRef> {
+        list.iter().map(|&(k, id)| n.feature(k, id)).collect()
+    }
+
+    #[test]
+    fn copy_remembers_the_tags_of_exactly_one_tagged_feature() {
+        let mut n = net();
+        assert_eq!(tag_clipboard(), vec![]);
+        let out = n.run("copy_tags", &n.ways(&[101])).unwrap();
+        assert_eq!(out.status, "Copied 2 tags");
+        assert!(out.undo.is_none() && out.select.is_none() && !out.clear_selection);
+        assert_eq!(
+            tag_clipboard(),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // Copying changes no data.
+        assert!(!n.layer().is_modified());
+
+        // One tag reads "1 tag"; more than one feature, or one without
+        // tags, copy nothing and leave the clipboard alone.
+        let single = n
+            .run("copy_tags", &[n.feature(FeatureKind::Way, 103)])
+            .unwrap();
+        assert_eq!(single.status, "Copied 1 tag");
+        assert!(n.run("copy_tags", &n.ways(&[100, 101])).is_err());
+        assert!(n.run("copy_tags", &n.nodes(&[1])).is_err());
+        assert!(n.run("copy_tags", &[]).is_err());
+        assert_eq!(tag_clipboard(), pairs(&[("highway", "footway")]));
+        assert!(n.applicable(&n.ways(&[101])).contains(&"copy_tags"));
+        assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"copy_tags"));
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"copy_tags"));
+        assert!(n.applicable(&n.nodes(&[4])).contains(&"copy_tags"));
+    }
+
+    #[test]
+    fn paste_overwrites_copied_keys_keeps_others_and_is_one_set_tags_step() {
+        let mut n = net();
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        // Way 103 is a footway; node 8 has no tags; node 4 is a crossing.
+        let targets = feature_list(
+            &n,
+            &[
+                (FeatureKind::Way, 103),
+                (FeatureKind::Node, 8),
+                (FeatureKind::Node, 4),
+            ],
+        );
+        let out = n.run("paste_tags", &targets).unwrap();
+        assert_eq!(out.status, "Pasted 2 tags onto 3 features");
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 103),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 8),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // The crossing's own `highway` is overwritten; nothing else it had
+        // is lost (it had nothing else).
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 4),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // Untouched features stay as they were.
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 100),
+            pairs(&[("highway", "residential")])
+        );
+        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
+            panic!("expected one SetTags step");
+        };
+        // Way 103: 2 (highway overwritten, name added); node 8: 2; node 4: 2.
+        assert_eq!(entries.len(), 6);
+        let overwrite = entries
+            .iter()
+            .find(|e| e.0 == n.feature(FeatureKind::Way, 103) && e.1 == "highway")
+            .unwrap();
+        assert_eq!(overwrite.2.as_deref(), Some("footway"));
+        assert_eq!(overwrite.3.as_deref(), Some("residential"));
+        // Ways modified: 103 (tags); nodes: 8 and 4 (tags).
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 0));
+
+        // Nothing left to change.
+        assert_eq!(
+            n.run("paste_tags", &targets).err().as_deref(),
+            Some("The selected features already have the copied tags")
+        );
+    }
+
+    #[test]
+    fn paste_counts_only_features_that_changed() {
+        let mut n = net();
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        // Way 100 already has highway=residential: only `name` is new.
+        // Way 101 is the source and has both.
+        let out = n.run("paste_tags", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(out.status, "Pasted 2 tags onto 1 feature");
+        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
+            panic!("expected one SetTags step");
+        };
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn paste_needs_a_clipboard_and_something_selected() {
+        let mut n = net();
+        let sel = n.ways(&[100]);
+        assert!(!n.applicable(&sel).contains(&"paste_tags"));
+        assert_eq!(
+            n.run("paste_tags", &sel).err().as_deref(),
+            Some("Copy a feature's tags first, then select what to paste them onto")
+        );
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        assert!(n.applicable(&sel).contains(&"paste_tags"));
+        assert!(n.applicable(&n.nodes(&[1, 2])).contains(&"paste_tags"));
+        assert!(!n.applicable(&[]).contains(&"paste_tags"));
+        // Features of another layer are not pasted onto.
+        let elsewhere = FeatureRef {
+            layer_id: LayerId(99),
+            kind: FeatureKind::Way,
+            id: 100,
+        };
+        assert!(!n.applicable(&[elsewhere]).contains(&"paste_tags"));
+    }
+
+    #[test]
+    fn shortcut_labels_show_modifier_symbols() {
+        assert_eq!(display_shortcut("cmd-shift-c"), "⇧⌘C");
+        assert_eq!(display_shortcut("cmd-alt-ctrl-z"), "⌃⌥⌘Z");
+        assert_eq!(display_shortcut("cmd--"), "⌘-");
+        assert_eq!(display_shortcut("q"), "Q");
+        assert_eq!(display_shortcut("backspace"), "⌫");
     }
 
     #[test]
