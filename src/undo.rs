@@ -103,6 +103,20 @@ pub(crate) enum UndoableAction {
         snap_index: usize,
         node_id: i64,
     },
+    /// Selection action "Reverse": the listed ways had their node order
+    /// reversed. Reversing is its own inverse, so undo and redo both just
+    /// reverse them again.
+    ReverseWays {
+        layer: LayerId,
+        way_ids: Vec<i64>,
+    },
+    /// Several actions recorded as one undo step (e.g. deleting a whole
+    /// selection). Undo reverts them last-to-first; redo reapplies them in
+    /// order. `label` is the history-list text.
+    Batch {
+        label: String,
+        actions: Vec<UndoableAction>,
+    },
 }
 
 impl UndoableAction {
@@ -134,6 +148,14 @@ impl UndoableAction {
             UndoableAction::ExtrudeWay { .. } => "Extruded a way".to_string(),
             UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
             UndoableAction::SnapExtendWay { .. } => "Snapped a node onto a way".to_string(),
+            UndoableAction::ReverseWays { way_ids, .. } => {
+                if way_ids.len() == 1 {
+                    "Reversed 1 way".to_string()
+                } else {
+                    format!("Reversed {} ways", way_ids.len())
+                }
+            }
+            UndoableAction::Batch { label, .. } => label.clone(),
         }
     }
 }

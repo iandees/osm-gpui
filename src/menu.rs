@@ -9,13 +9,14 @@ use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 
+use crate::selection_actions;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
     DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm, ZoomIn, ZoomOut,
-    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm,
+    ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -375,6 +376,17 @@ pub(crate) fn rebuild_menus(
                 MenuItem::action("Change Feature Type…", ChangeFeatureType),
                 MenuItem::action("Apply NSI Preset…", ApplyNsiPreset),
             ],
+            disabled: false,
+        },
+        Menu {
+            name: "Tools".into(),
+            // Every selection action, applicable or not: running one that
+            // doesn't fit the selection explains why in the status bar.
+            items: selection_actions::ACTIONS
+                .iter()
+                .filter(|a| a.in_tools_menu)
+                .map(|a| MenuItem::action(a.label, RunSelectionAction { id: a.id.into() }))
+                .collect(),
             disabled: false,
         },
         Menu {

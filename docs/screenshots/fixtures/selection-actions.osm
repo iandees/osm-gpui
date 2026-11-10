@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="selection-actions fixture">
+  <node id="1001" version="1" lat="40.7116666" lon="-74.0070085"/>
+  <node id="1002" version="1" lat="40.7116666" lon="-74.0062575"/>
+  <node id="1003" version="1" lat="40.7119512" lon="-74.0061931"/>
+  <node id="1004" version="1" lat="40.7119512" lon="-74.0069441"/>
+  <node id="1005" version="1" lat="40.7123578" lon="-74.0052919"/>
+  <node id="1006" version="1" lat="40.7123578" lon="-74.0043263"/>
+  <node id="1007" version="1" lat="40.7125408" lon="-74.0041385"/>
+  <node id="1008" version="1" lat="40.7127441" lon="-74.0042995"/>
+  <node id="1009" version="1" lat="40.7129271" lon="-74.0045409"/>
+  <node id="1010" version="1" lat="40.7127644" lon="-74.0048359"/>
+  <node id="1011" version="1" lat="40.7129678" lon="-74.0051041"/>
+  <node id="1012" version="1" lat="40.7127035" lon="-74.0053455"/>
+  <node id="1013" version="1" lat="40.7125408" lon="-74.0051578"/>
+  <node id="1014" version="1" lat="40.7109753" lon="-74.0056138"/>
+  <node id="1015" version="1" lat="40.7109753" lon="-74.0047555"/>
+  <node id="1016" version="1" lat="40.7110973" lon="-74.0041117"/>
+  <way id="3001" version="1">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <nd ref="1003"/>
+    <nd ref="1004"/>
+    <nd ref="1001"/>
+    <tag k="building" v="yes"/>
+  </way>
+  <way id="3002" version="1">
+    <nd ref="1005"/>
+    <nd ref="1006"/>
+    <nd ref="1007"/>
+    <nd ref="1008"/>
+    <nd ref="1009"/>
+    <nd ref="1010"/>
+    <nd ref="1011"/>
+    <nd ref="1012"/>
+    <nd ref="1013"/>
+    <nd ref="1005"/>
+    <tag k="leisure" v="park"/>
+  </way>
+  <way id="3003" version="1">
+    <nd ref="1014"/>
+    <nd ref="1015"/>
+    <nd ref="1016"/>
+    <tag k="highway" v="residential"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+</osm>

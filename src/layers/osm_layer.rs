@@ -1533,6 +1533,28 @@ impl OsmLayer {
         self.modified = true;
     }
 
+    /// Reverse the node order of a way and refresh that way's derived caches.
+    /// Applying it twice restores the original order, so it is its own
+    /// inverse for undo/redo. Returns whether the way was found.
+    pub fn reverse_way(&mut self, way_id: i64) -> bool {
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return false;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return false;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return false;
+        };
+        way.nodes = crate::geometry::reversed(&way.nodes);
+        let way_snapshot = way.clone();
+        // The set of nodes (and so `node_to_ways`) is unchanged.
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+        self.modified = true;
+        true
+    }
+
     /// Create a new, tag-less node at `(lat, lon)`. If `id` is `None`, a
     /// fresh negative (not-yet-uploaded) id is allocated via `next_new_id`;
     /// if `Some(id)` is given (the redo path, so a recreated node reuses its
@@ -2436,6 +2458,10 @@ impl EditableLayer for OsmLayer {
 
     fn remove_node_from_way(&mut self, way_id: i64, index: usize) {
         OsmLayer::remove_node_from_way(self, way_id, index);
+    }
+
+    fn reverse_way(&mut self, way_id: i64) -> bool {
+        OsmLayer::reverse_way(self, way_id)
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -4904,6 +4930,24 @@ mod tests {
         let data = layer.get_osm_data().unwrap();
         let way = data.ways.get(&way_id).unwrap();
         assert_eq!(way.nodes, vec![n1, n2, n3]);
+    }
+
+    #[test]
+    fn reverse_way_flips_node_order_and_is_its_own_inverse() {
+        let mut layer = OsmLayer::new(LayerId(1));
+        let n1 = layer.add_node(40.0, -74.001);
+        let n2 = layer.add_node(40.0, -74.0);
+        let n3 = layer.add_node(40.001, -74.0);
+        let way_id = layer.add_way(vec![n1, n2, n3], vec![]);
+
+        assert!(layer.reverse_way(way_id));
+        assert_eq!(layer.way_node_ids(way_id), Some(vec![n3, n2, n1]));
+        assert!(layer.is_modified());
+
+        assert!(layer.reverse_way(way_id));
+        assert_eq!(layer.way_node_ids(way_id), Some(vec![n1, n2, n3]));
+
+        assert!(!layer.reverse_way(999));
     }
 
     #[test]

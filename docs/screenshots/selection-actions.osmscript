@@ -1,0 +1,62 @@
+# Selection actions: the right-click context menu and the Q / O / R shortcuts.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/selection-actions.osm is laid
+# out in window coordinates at zoom 18, centered on (40.7120, -74.0060):
+#   way 3001 skewed building (corners ~81/99 degrees)  bottom edge at (370, 470)
+#   way 3002 irregular nine-node park                  bottom edge at (710, 300)
+#   way 3003 one-way street (open)                     first segment (640, 640)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/selection-actions.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Square the building with the Q key.
+click 370,470
+wait_idle 2s
+assert_selected way 3001
+capture out/selection-actions-01-skewed.png
+key q
+wait_idle 2s
+capture out/selection-actions-02-squared.png
+
+# Undo is a single step.
+key cmd+z
+wait_idle 2s
+capture out/selection-actions-03-undone.png
+
+# Right-click a feature outside the selection: it becomes the selection and
+# the context menu opens at the cursor.
+click 100,700
+wait_idle 2s
+click 710,300 button=right
+wait_idle 2s
+assert_selected way 3002
+capture out/selection-actions-04-context-menu.png
+
+# Esc closes the menu.
+key escape
+wait_idle 2s
+capture out/selection-actions-05-menu-closed.png
+
+# Circularize the park with the O key.
+click 710,300
+wait_idle 2s
+key o
+wait_idle 2s
+capture out/selection-actions-06-circularized.png
+
+# An open way can be reversed (arrows flip) but not circularized.
+click 640,640
+wait_idle 2s
+assert_selected way 3003
+capture out/selection-actions-07-street.png
+key o
+wait_idle 2s
+capture out/selection-actions-08-inapplicable.png
+key r
+wait_idle 2s
+capture out/selection-actions-09-reversed.png
+
+log done
