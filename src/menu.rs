@@ -372,6 +372,19 @@ pub(crate) fn rebuild_menus(
                 MenuItem::action(tr!("menu.edit.undo"), Undo),
                 MenuItem::action(tr!("menu.edit.redo"), Redo),
                 MenuItem::separator(),
+                MenuItem::action(
+                    tr!("menu.edit.copy_tags"),
+                    RunSelectionAction {
+                        id: "copy_tags".into(),
+                    },
+                ),
+                MenuItem::action(
+                    tr!("menu.edit.paste_tags"),
+                    RunSelectionAction {
+                        id: "paste_tags".into(),
+                    },
+                ),
+                MenuItem::separator(),
                 MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.edit.select_all"), SelectAll),

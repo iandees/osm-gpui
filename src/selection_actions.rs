@@ -9,6 +9,7 @@
 //! `LayerManager` and returns a single `UndoableAction` — use
 //! `UndoableAction::Batch` to bundle several steps.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gpui::SharedString;
@@ -20,6 +21,24 @@ use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
 use crate::undo::{NodeMoveUndoEntry, UndoableAction};
+
+thread_local! {
+    /// The tags set aside by Copy Tags, for Paste Tags: the app's own tag
+    /// clipboard, kept apart from the system pasteboard. Actions only ever
+    /// run on the UI thread, which is why this can be a thread-local (it also
+    /// keeps parallel tests from sharing one).
+    static TAG_CLIPBOARD: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The tags currently on the tag clipboard, sorted by key.
+pub(crate) fn tag_clipboard() -> Vec<(String, String)> {
+    TAG_CLIPBOARD.with(|c| c.borrow().clone())
+}
+
+fn set_tag_clipboard(mut tags: Vec<(String, String)>) {
+    tags.sort();
+    TAG_CLIPBOARD.with(|c| *c.borrow_mut() = tags);
+}
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -62,6 +81,14 @@ impl<'a> ActionEnv<'a> {
     fn extend_target(&self) -> Option<topology::Continuation> {
         let (layer_id, editable) = (self.active_layer?, self.active_editable()?);
         extend_target(editable, layer_id, self.selection)
+    }
+
+    /// How many distinct nodes of the active layer are selected.
+    fn selected_node_count(&self) -> usize {
+        let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
+            return 0;
+        };
+        merge_nodes_in(editable, layer_id, self.selection).len()
     }
 
     fn can_separate_selection(&self) -> bool {
@@ -283,6 +310,71 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_extend,
     },
     SelectionAction {
+        id: "split",
+        shortcut_id: Some("action_split"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !split_plans(editable, layer_id, env.selection).is_empty()
+        },
+        apply: apply_split,
+    },
+    SelectionAction {
+        id: "merge",
+        shortcut_id: Some("action_merge"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_node_count() >= 2,
+        apply: apply_merge,
+    },
+    SelectionAction {
+        id: "straighten",
+        shortcut_id: Some("action_straighten"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            env.selected_ways()
+                .iter()
+                .any(|w| geometry::can_straighten(&w.points))
+        },
+        apply: apply_straighten,
+    },
+    SelectionAction {
+        id: "copy_tags",
+        shortcut_id: Some("copy_tags"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            copy_source(editable, layer_id, env.selection).is_some()
+        },
+        apply: apply_copy_tags,
+    },
+    SelectionAction {
+        id: "paste_tags",
+        shortcut_id: Some("paste_tags"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: |env| {
+            env.active_layer.is_some_and(|layer_id| {
+                env.active_editable().is_some()
+                    && !tag_clipboard().is_empty()
+                    && !paste_targets(layer_id, env.selection).is_empty()
+            })
+        },
+        apply: apply_paste_tags,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
@@ -310,8 +402,13 @@ pub(crate) fn find_by_key(
     key: &str,
 ) -> Option<&'static SelectionAction> {
     ACTIONS.iter().find(|a| {
-        a.shortcut_id
-            .is_some_and(|sid| osm_gpui::keybindings::effective_spec(settings, sid) == key)
+        a.shortcut_id.is_some_and(|sid| {
+            // Only the bare-key shortcuts; Copy/Paste Tags are key bindings.
+            osm_gpui::keybindings::def(sid)
+                .category
+                .is_bare_key_category()
+                && osm_gpui::keybindings::effective_spec(settings, sid) == key
+        })
     })
 }
 
@@ -359,11 +456,38 @@ impl SelectionAction {
 /// Human-readable form of a keystroke spec: a bare letter shows uppercase,
 /// as in menus ("q" -> "Q").
 pub(crate) fn display_shortcut(spec: &str) -> String {
-    match spec {
-        "backspace" | "delete" => "⌫".to_string(),
-        s if s.chars().count() == 1 => s.to_uppercase(),
-        s => s.to_string(),
+    // Modifier prefixes show as the macOS symbols, in the order macOS menus
+    // use: "cmd-shift-c" -> "⇧⌘C".
+    const MODIFIERS: [(&str, char); 4] = [
+        ("ctrl-", '⌃'),
+        ("alt-", '⌥'),
+        ("shift-", '⇧'),
+        ("cmd-", '⌘'),
+    ];
+    let mut held = [false; 4];
+    let mut key = spec;
+    'strip: loop {
+        for (i, (prefix, _)) in MODIFIERS.iter().enumerate() {
+            if let Some(rest) = key.strip_prefix(prefix) {
+                held[i] = true;
+                key = rest;
+                continue 'strip;
+            }
+        }
+        break;
     }
+    let symbols: String = MODIFIERS
+        .iter()
+        .zip(held)
+        .filter(|(_, held)| *held)
+        .map(|((_, symbol), _)| *symbol)
+        .collect();
+    let key = match key {
+        "backspace" | "delete" => "⌫".to_string(),
+        k if k.chars().count() == 1 => k.to_uppercase(),
+        k => k.to_string(),
+    };
+    format!("{symbols}{key}")
 }
 
 fn active_editable_mut(
@@ -378,15 +502,19 @@ fn active_editable_mut(
     Ok((id, editable))
 }
 
+/// Computes new positions for a way's points; see `reshape_ways`.
+type ReshapeFn = fn(&[LatLon]) -> Result<Option<Vec<LatLon>>, String>;
+
 /// Move nodes by running `reshape` over each selected way's positions.
-/// `reshape` returns new positions for every point of the way, or `None` to
-/// leave the way alone. Nodes shared between selected ways see each other's
-/// moves, and the whole thing is recorded as one `MoveNodes` step.
+/// `reshape` returns new positions for every point of the way, `Ok(None)` to
+/// leave the way alone, or `Err` with a message to refuse the whole action.
+/// Nodes shared between selected ways see each other's moves, and the whole
+/// thing is recorded as one `MoveNodes` step.
 fn reshape_ways(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
-    reshape: fn(&[LatLon]) -> Option<Vec<LatLon>>,
+    reshape: ReshapeFn,
     none_changed: fn() -> SharedString,
     done: fn(usize) -> SharedString,
 ) -> Result<ActionOutcome, String> {
@@ -403,7 +531,7 @@ fn reshape_ways(
             .zip(&way.points)
             .map(|(id, p)| *current.get(id).unwrap_or(p))
             .collect();
-        let Some(new_points) = reshape(&points) else {
+        let Some(new_points) = reshape(&points)? else {
             continue;
         };
         for ((&id, &old), new) in way.node_ids.iter().zip(&way.points).zip(new_points) {
@@ -451,9 +579,39 @@ fn apply_square(
         layers,
         selection,
         active,
-        geometry::orthogonalize,
+        |points| Ok(geometry::orthogonalize(points)),
         || tr!("action.square.none"),
         |n| tr_count!("action.square.done", n),
+    )
+}
+
+/// Straighten the selected open ways (iD "Straighten"): see
+/// `geometry::straighten`. A way that bends more than
+/// `geometry::STRAIGHTEN_MAX_DEVIATION` of its length refuses the whole
+/// action, so a curved road is never flattened by accident.
+fn apply_straighten(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    reshape_ways(
+        layers,
+        selection,
+        active,
+        |points| match geometry::straighten(points) {
+            Ok(straight) => Ok(Some(straight)),
+            Err(geometry::StraightenError::NotApplicable) => Ok(None),
+            Err(geometry::StraightenError::NoLine) => {
+                Err(tr!("action.straighten.error.no_line").to_string())
+            }
+            Err(geometry::StraightenError::TooCurved) => Err(tr!(
+                "action.straighten.error.too_curved",
+                percent = (geometry::STRAIGHTEN_MAX_DEVIATION * 100.0).round()
+            )
+            .to_string()),
+        },
+        || tr!("action.straighten.none"),
+        |n| tr_count!("action.straighten.done", n),
     )
 }
 
@@ -466,7 +624,7 @@ fn apply_circularize(
         layers,
         selection,
         active,
-        geometry::circularize,
+        |points| Ok(geometry::circularize(points)),
         || tr!("action.circularize.hint"),
         |n| tr_count!("action.circularize.done", n),
     )
@@ -480,20 +638,51 @@ fn apply_reverse(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = selected_ways_in(editable, layer_id, selection);
     let mut reversed = Vec::new();
+    let mut tag_entries = Vec::new();
     for way in ways.iter().filter(|w| w.node_ids.len() >= 2) {
-        if editable.reverse_way(way.way_id) {
-            reversed.push(way.way_id);
+        if !editable.reverse_way(way.way_id) {
+            continue;
+        }
+        reversed.push(way.way_id);
+        // Keep direction-dependent tags meaning the same thing.
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: way.way_id,
+        };
+        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
+        for (key, before, after) in topology::reversed_tag_changes(&tags) {
+            match &after {
+                Some(value) => editable.set_tag(FeatureKind::Way, way.way_id, &key, value),
+                None => editable.remove_tag(FeatureKind::Way, way.way_id, &key),
+            }
+            tag_entries.push((way_ref, key, before, after));
         }
     }
     if reversed.is_empty() {
         return Err(tr!("action.reverse.hint").to_string());
     }
     let status = tr_count!("action.reverse.done", reversed.len()).to_string();
+    let reverse = UndoableAction::ReverseWays {
+        layer: layer_id,
+        way_ids: reversed,
+    };
+    // The node order and the tag flips are one undo step.
+    let undo = if tag_entries.is_empty() {
+        reverse
+    } else {
+        UndoableAction::Batch {
+            label: status.clone(),
+            actions: vec![
+                reverse,
+                UndoableAction::SetTags {
+                    entries: tag_entries,
+                },
+            ],
+        }
+    };
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::ReverseWays {
-            layer: layer_id,
-            way_ids: reversed,
-        }),
+        undo: Some(undo),
         status,
         clear_selection: false,
         select: None,
@@ -629,6 +818,311 @@ fn apply_separate(
     })
 }
 
+/// The tags of the one selected feature, if the selection is exactly one
+/// feature of the active layer and it has tags.
+fn copy_source(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<Vec<(String, String)>> {
+    let [feature] = selection else {
+        return None;
+    };
+    if feature.layer_id != layer_id {
+        return None;
+    }
+    editable
+        .feature_tags(feature)
+        .filter(|tags| !tags.is_empty())
+}
+
+/// The distinct selected features that live in the active layer.
+fn paste_targets(layer_id: LayerId, selection: &[FeatureRef]) -> Vec<FeatureRef> {
+    let mut targets: Vec<FeatureRef> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        if !targets.contains(f) {
+            targets.push(*f);
+        }
+    }
+    targets
+}
+
+/// Remember the tags of the one selected feature on the tag clipboard.
+fn apply_copy_tags(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let tags = copy_source(editable, layer_id, selection)
+        .ok_or_else(|| tr!("action.copy_tags.hint").to_string())?;
+    let status = tr!(
+        "action.copy_tags.done",
+        tags = tr_count!("action.tag_count", tags.len())
+    )
+    .to_string();
+    set_tag_clipboard(tags);
+    Ok(ActionOutcome {
+        undo: None,
+        status,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// Apply the tag clipboard to every selected feature of the active layer:
+/// the copied keys overwrite existing values, other tags stay. One `SetTags`
+/// undo step covering every change.
+fn apply_paste_tags(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let clipboard = tag_clipboard();
+    if clipboard.is_empty() {
+        return Err(tr!("action.paste_tags.hint").to_string());
+    }
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let targets = paste_targets(layer_id, selection);
+    if targets.is_empty() {
+        return Err(tr!("action.paste_tags.hint").to_string());
+    }
+
+    let mut entries = Vec::new();
+    let mut changed_features = 0usize;
+    for feature in &targets {
+        let Some(existing) = editable.feature_tags(feature) else {
+            continue;
+        };
+        let before = entries.len();
+        for (key, value) in &clipboard {
+            let old = existing.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+            if old == Some(value) {
+                continue;
+            }
+            editable.set_tag(feature.kind, feature.id, key, value);
+            entries.push((*feature, key.clone(), old.cloned(), Some(value.clone())));
+        }
+        changed_features += usize::from(entries.len() > before);
+    }
+    if entries.is_empty() {
+        return Err(tr!("action.paste_tags.none").to_string());
+    }
+    let status = tr!(
+        "action.paste_tags.done",
+        tags = tr_count!("action.tag_count", clipboard.len()),
+        features = tr_count!("action.feature_count", changed_features)
+    )
+    .to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::SetTags { entries }),
+        status,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// What Split Way would do for the selection: one or two nodes of the active
+/// layer (two for a closed way), plus optionally one way to restrict it to.
+/// Empty unless the selection has that shape and something can be split.
+fn split_plans(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<topology::SplitPlan> {
+    let in_layer = |kind| {
+        let mut ids: Vec<i64> = Vec::new();
+        for f in selection
+            .iter()
+            .filter(|f| f.layer_id == layer_id && f.kind == kind)
+        {
+            if !ids.contains(&f.id) {
+                ids.push(f.id);
+            }
+        }
+        ids
+    };
+    let nodes = in_layer(FeatureKind::Node);
+    let selected_ways = in_layer(FeatureKind::Way);
+    if nodes.is_empty() || nodes.len() > 2 || selected_ways.len() > 1 {
+        return Vec::new();
+    }
+    let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
+    for &node in &nodes {
+        for way in ways_using(editable, node) {
+            if !ways.iter().any(|(id, _)| *id == way.0) {
+                ways.push(way);
+            }
+        }
+    }
+    topology::plan_split(&nodes, selected_ways.first().copied(), &ways)
+}
+
+/// Split the ways at the selected node(s) (JOSM "Split Way"): the original
+/// keeps its id and the longer part, a new way gets the rest with a copy of
+/// the tags, and both share the split node. Relation members aren't split,
+/// because relation edits can't be recorded, undone or uploaded. One undo
+/// step: per way, the new way's creation, then the original's new nodes.
+fn apply_split(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let plans = split_plans(editable, layer_id, selection);
+    if plans.is_empty() {
+        return Err(tr!("action.split.hint").to_string());
+    }
+    // Splitting must keep every relation that holds the way intact, which
+    // would mean adding the new half as a member; that edit isn't supported.
+    if let Some(plan) = plans
+        .iter()
+        .find(|p| !editable.relations_containing_way(p.way_id).is_empty())
+    {
+        return Err(tr!("action.split.error.relation_member", id = plan.way_id).to_string());
+    }
+
+    let mut actions = Vec::new();
+    for plan in plans.iter() {
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: plan.way_id,
+        };
+        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
+        let new_id = editable.add_way(plan.new.clone(), tags.clone());
+        actions.push(UndoableAction::CreateWay {
+            layer: layer_id,
+            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: FeatureKind::Way,
+                id: new_id,
+                tags,
+                way_nodes: plan.new.clone(),
+                node_lat_lon: None,
+            },
+        });
+        editable.set_way_nodes(plan.way_id, plan.keep.clone());
+        actions.push(UndoableAction::SetWayNodes {
+            layer: layer_id,
+            way_id: plan.way_id,
+            before: plan.before.clone(),
+            after: plan.keep.clone(),
+        });
+    }
+
+    let label = tr_count!("action.split.done", plans.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// The distinct nodes of the active layer that are selected, in selection
+/// order, with what the merge planner needs to know about each.
+fn merge_nodes_in(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<topology::MergeNode> {
+    let mut nodes: Vec<topology::MergeNode> = Vec::new();
+    for f in selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Node)
+    {
+        if nodes.iter().any(|n| n.id == f.id) || editable.node_lat_lon(f.id).is_none() {
+            continue;
+        }
+        nodes.push(topology::MergeNode {
+            id: f.id,
+            tags: editable.feature_tags(f).unwrap_or_default(),
+            in_relation: !editable.relations_containing_node(f.id).is_empty(),
+        });
+    }
+    nodes
+}
+
+/// Merge the selected nodes into one (JOSM "Merge Nodes"). See
+/// `topology::plan_merge_nodes` for the survivor, tag, way-rewrite and refusal
+/// rules. One undo step: the survivor's added tags, the rewritten ways, then
+/// the deletion of the other nodes.
+fn apply_merge(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let nodes = merge_nodes_in(editable, layer_id, selection);
+    let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
+    for node in &nodes {
+        for way in ways_using(editable, node.id) {
+            if !ways.iter().any(|(id, _)| *id == way.0) {
+                ways.push(way);
+            }
+        }
+    }
+    let plan = topology::plan_merge_nodes(&nodes, &ways).map_err(|e| e.message())?;
+    let node_ref = |id| FeatureRef {
+        layer_id,
+        kind: FeatureKind::Node,
+        id,
+    };
+
+    let mut actions = Vec::new();
+    let kept = nodes
+        .iter()
+        .find(|n| n.id == plan.keep)
+        .expect("the plan keeps one of the given nodes");
+    let mut tag_entries = Vec::new();
+    for (key, value) in &plan.tags {
+        if !kept.tags.iter().any(|(k, _)| k == key) {
+            editable.set_tag(FeatureKind::Node, plan.keep, key, value);
+            tag_entries.push((node_ref(plan.keep), key.clone(), None, Some(value.clone())));
+        }
+    }
+    if !tag_entries.is_empty() {
+        actions.push(UndoableAction::SetTags {
+            entries: tag_entries,
+        });
+    }
+    for edit in plan.way_edits {
+        editable.set_way_nodes(edit.way_id, edit.after.clone());
+        actions.push(UndoableAction::SetWayNodes {
+            layer: layer_id,
+            way_id: edit.way_id,
+            before: edit.before,
+            after: edit.after,
+        });
+    }
+    for id in &plan.remove {
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, *id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+
+    let label = tr_count!("action.merge.done", nodes.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: Some(vec![node_ref(plan.keep)]),
+        continue_way: None,
+    })
+}
+
 /// Continue drawing the selected open way (iD "Continue this line"): from
 /// its last node, or from the selected end node. Changes no data itself; it
 /// puts Add mode into the state of having just placed that end node, so each
@@ -708,7 +1202,8 @@ fn apply_delete(
 /// - way 103 `[8,4,9]` crosses way 101 at node 4;
 /// - way 105 `[5,10]` has `name=Elm`, which conflicts with way 101;
 /// - ways 106 `[11,12]` and 107 `[13,12]` are one-ways that run head to head;
-/// - way 108 `[14,15,16,14]` is a closed ring.
+/// - way 108 `[14,15,16,14]` is a closed ring;
+/// - node 7 is on no way, and is a member of relation 900 (as is way 102).
 #[cfg(test)]
 pub(crate) mod test_support {
     use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -760,11 +1255,18 @@ pub(crate) mod test_support {
             ]),
             relations: vec![OsmRelation {
                 id: 900,
-                members: vec![OsmMember {
-                    member_type: MemberType::Way,
-                    reference: 102,
-                    role: String::new(),
-                }],
+                members: vec![
+                    OsmMember {
+                        member_type: MemberType::Way,
+                        reference: 102,
+                        role: String::new(),
+                    },
+                    OsmMember {
+                        member_type: MemberType::Node,
+                        reference: 7,
+                        role: "stop".to_string(),
+                    },
+                ],
                 version: 1,
                 tags: HashMap::new(),
             }],
@@ -854,7 +1356,7 @@ mod tests {
         assert!(applicable_ids(&f, &[]).is_empty());
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.rect)]),
-            ["square", "circularize", "reverse", "delete"]
+            ["square", "circularize", "reverse", "copy_tags", "delete"]
         );
         // An open two-node way can only be reversed (or deleted).
         assert_eq!(
@@ -944,6 +1446,17 @@ mod tests {
     }
 
     #[test]
+    fn reverse_without_direction_tags_is_a_plain_reverse_step() {
+        let mut f = fixture();
+        let sel = [way_ref(&f, f.rect)];
+        let out = (find("reverse").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        assert!(matches!(
+            out.undo.as_ref().unwrap(),
+            UndoableAction::ReverseWays { .. }
+        ));
+    }
+
+    #[test]
     fn delete_is_one_undo_step_and_clears_the_selection() {
         let mut f = fixture();
         let sel = [way_ref(&f, f.rect), way_ref(&f, f.line)];
@@ -971,7 +1484,28 @@ mod tests {
         assert_eq!(find_by_key(&settings, "c").map(|a| a.id), Some("join"));
         assert_eq!(find_by_key(&settings, "g").map(|a| a.id), Some("separate"));
         assert_eq!(find_by_key(&settings, "e").map(|a| a.id), Some("extend"));
+        assert_eq!(find_by_key(&settings, "m").map(|a| a.id), Some("merge"));
+        assert_eq!(
+            find_by_key(&settings, "t").map(|a| a.id),
+            Some("straighten")
+        );
         assert!(find_by_key(&settings, "z").is_none());
+        // Copy/Paste Tags are modifier key bindings, never bare keys.
+        assert!(find_by_key(&settings, "cmd-shift-c").is_none());
+        assert_eq!(
+            find("copy_tags")
+                .unwrap()
+                .shortcut_label(&settings)
+                .unwrap(),
+            "⇧⌘C"
+        );
+        assert_eq!(
+            find("paste_tags")
+                .unwrap()
+                .shortcut_label(&settings)
+                .unwrap(),
+            "⇧⌘V"
+        );
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),
             "Q"
@@ -1007,6 +1541,9 @@ mod tests {
     }
 
     fn net() -> Net {
+        // Each test starts with an empty tag clipboard, even when the test
+        // harness runs several tests on one thread.
+        set_tag_clipboard(Vec::new());
         let layer_id = LayerId(1);
         let layer = OsmLayer::new_with_data(
             layer_id,
@@ -1220,6 +1757,562 @@ mod tests {
         assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
         let nodes = n.editable().way_node_ids(101).unwrap();
         assert!(nodes[1] < 0 && nodes[0] == 3 && nodes[2] == 5);
+    }
+
+    impl Net {
+        fn tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .set_tag(kind, id, key, value);
+        }
+        fn tags_of(&self, kind: FeatureKind, id: i64) -> Vec<(String, String)> {
+            let mut tags = self
+                .editable()
+                .feature_tags(&self.feature(kind, id))
+                .unwrap();
+            tags.sort();
+            tags
+        }
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn reverse_flips_direction_tags_in_the_same_undo_step() {
+        let mut n = net();
+        n.tag(FeatureKind::Way, 106, "lanes:forward", "2");
+        n.tag(FeatureKind::Way, 106, "incline", "8%");
+        let out = n.run("reverse", &n.ways(&[106])).unwrap();
+        assert_eq!(n.editable().way_node_ids(106), Some(vec![12, 11]));
+        // oneway=yes stays; the direction-relative tags flip.
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 106),
+            pairs(&[
+                ("highway", "residential"),
+                ("incline", "-8%"),
+                ("lanes:backward", "2"),
+                ("oneway", "yes"),
+            ])
+        );
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::ReverseWays { .. },
+                UndoableAction::SetTags { entries }
+            ] if entries.len() == 3
+        ));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 0));
+    }
+
+    impl Net {
+        fn nudge(&mut self, node: i64, lat: f64, lon: f64) {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .commit_node_moves(&[(node, lat, lon)]);
+        }
+    }
+
+    impl Net {
+        fn editable_mut(&mut self) -> &mut dyn EditableLayer {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+        }
+        fn nodes(&self, ids: &[i64]) -> Vec<FeatureRef> {
+            ids.iter()
+                .map(|&id| self.feature(FeatureKind::Node, id))
+                .collect()
+        }
+    }
+
+    fn feature_list(n: &Net, list: &[(FeatureKind, i64)]) -> Vec<FeatureRef> {
+        list.iter().map(|&(k, id)| n.feature(k, id)).collect()
+    }
+
+    #[test]
+    fn copy_remembers_the_tags_of_exactly_one_tagged_feature() {
+        let mut n = net();
+        assert_eq!(tag_clipboard(), vec![]);
+        let out = n.run("copy_tags", &n.ways(&[101])).unwrap();
+        assert_eq!(out.status, "Copied 2 tags");
+        assert!(out.undo.is_none() && out.select.is_none() && !out.clear_selection);
+        assert_eq!(
+            tag_clipboard(),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // Copying changes no data.
+        assert!(!n.layer().is_modified());
+
+        // One tag reads "1 tag"; more than one feature, or one without
+        // tags, copy nothing and leave the clipboard alone.
+        let single = n
+            .run("copy_tags", &[n.feature(FeatureKind::Way, 103)])
+            .unwrap();
+        assert_eq!(single.status, "Copied 1 tag");
+        assert!(n.run("copy_tags", &n.ways(&[100, 101])).is_err());
+        assert!(n.run("copy_tags", &n.nodes(&[1])).is_err());
+        assert!(n.run("copy_tags", &[]).is_err());
+        assert_eq!(tag_clipboard(), pairs(&[("highway", "footway")]));
+        assert!(n.applicable(&n.ways(&[101])).contains(&"copy_tags"));
+        assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"copy_tags"));
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"copy_tags"));
+        assert!(n.applicable(&n.nodes(&[4])).contains(&"copy_tags"));
+    }
+
+    #[test]
+    fn paste_overwrites_copied_keys_keeps_others_and_is_one_set_tags_step() {
+        let mut n = net();
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        // Way 103 is a footway; node 8 has no tags; node 4 is a crossing.
+        let targets = feature_list(
+            &n,
+            &[
+                (FeatureKind::Way, 103),
+                (FeatureKind::Node, 8),
+                (FeatureKind::Node, 4),
+            ],
+        );
+        let out = n.run("paste_tags", &targets).unwrap();
+        assert_eq!(out.status, "Pasted 2 tags onto 3 features");
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 103),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 8),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // The crossing's own `highway` is overwritten; nothing else it had
+        // is lost (it had nothing else).
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 4),
+            pairs(&[("highway", "residential"), ("name", "Main")])
+        );
+        // Untouched features stay as they were.
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 100),
+            pairs(&[("highway", "residential")])
+        );
+        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
+            panic!("expected one SetTags step");
+        };
+        // Way 103: 2 (highway overwritten, name added); node 8: 2; node 4: 2.
+        assert_eq!(entries.len(), 6);
+        let overwrite = entries
+            .iter()
+            .find(|e| e.0 == n.feature(FeatureKind::Way, 103) && e.1 == "highway")
+            .unwrap();
+        assert_eq!(overwrite.2.as_deref(), Some("footway"));
+        assert_eq!(overwrite.3.as_deref(), Some("residential"));
+        // Ways modified: 103 (tags); nodes: 8 and 4 (tags).
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 0));
+
+        // Nothing left to change.
+        assert_eq!(
+            n.run("paste_tags", &targets).err().as_deref(),
+            Some("The selected features already have the copied tags")
+        );
+    }
+
+    #[test]
+    fn paste_counts_only_features_that_changed() {
+        let mut n = net();
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        // Way 100 already has highway=residential: only `name` is new.
+        // Way 101 is the source and has both.
+        let out = n.run("paste_tags", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(out.status, "Pasted 2 tags onto 1 feature");
+        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
+            panic!("expected one SetTags step");
+        };
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn paste_needs_a_clipboard_and_something_selected() {
+        let mut n = net();
+        let sel = n.ways(&[100]);
+        assert!(!n.applicable(&sel).contains(&"paste_tags"));
+        assert_eq!(
+            n.run("paste_tags", &sel).err().as_deref(),
+            Some("Copy a feature's tags first, then select what to paste them onto")
+        );
+        n.run("copy_tags", &n.ways(&[101])).unwrap();
+        assert!(n.applicable(&sel).contains(&"paste_tags"));
+        assert!(n.applicable(&n.nodes(&[1, 2])).contains(&"paste_tags"));
+        assert!(!n.applicable(&[]).contains(&"paste_tags"));
+        // Features of another layer are not pasted onto.
+        let elsewhere = FeatureRef {
+            layer_id: LayerId(99),
+            kind: FeatureKind::Way,
+            id: 100,
+        };
+        assert!(!n.applicable(&[elsewhere]).contains(&"paste_tags"));
+    }
+
+    #[test]
+    fn shortcut_labels_show_modifier_symbols() {
+        assert_eq!(display_shortcut("cmd-shift-c"), "⇧⌘C");
+        assert_eq!(display_shortcut("cmd-alt-ctrl-z"), "⌃⌥⌘Z");
+        assert_eq!(display_shortcut("cmd--"), "⌘-");
+        assert_eq!(display_shortcut("q"), "Q");
+        assert_eq!(display_shortcut("backspace"), "⌫");
+    }
+
+    #[test]
+    fn split_is_offered_for_an_interior_node_or_two_ring_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.nodes(&[4])).contains(&"split"));
+        assert!(n.applicable(&n.nodes(&[2])).contains(&"split"));
+        // Node 4 with a way that uses it, or one that doesn't.
+        let with_way = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 103),
+        ];
+        assert!(n.applicable(&with_way).contains(&"split"));
+        let unrelated = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 100),
+        ];
+        assert!(!n.applicable(&unrelated).contains(&"split"));
+        // End nodes, a node on no way, nothing at all.
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"split"));
+        assert!(!n.applicable(&n.nodes(&[7])).contains(&"split"));
+        assert!(!n.applicable(&[]).contains(&"split"));
+        // Two nodes of an open way are ambiguous; of a ring they are fine,
+        // but one ring node alone is not.
+        assert!(!n.applicable(&n.nodes(&[2, 3])).contains(&"split"));
+        assert!(n.applicable(&n.nodes(&[14, 16])).contains(&"split"));
+        assert!(!n.applicable(&n.nodes(&[14])).contains(&"split"));
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"split"));
+    }
+
+    #[test]
+    fn split_at_a_shared_node_splits_every_way_and_copies_tags() {
+        let mut n = net();
+        let out = n.run("split", &n.nodes(&[4])).unwrap();
+        assert_eq!(out.status, "Split 2 ways");
+        assert!(out.select.is_none() && !out.clear_selection);
+        // Equal halves: the originals keep their first part.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        // The new ways (negative ids) take the rest, and everything still
+        // meets at node 4.
+        let users = n.editable().ways_using_node(4);
+        let new: Vec<i64> = users.iter().copied().filter(|&id| id < 0).collect();
+        assert_eq!(new.len(), 2);
+        assert_eq!(users.len(), 4);
+        let mut rests: Vec<Vec<i64>> = new
+            .iter()
+            .map(|&id| n.editable().way_node_ids(id).unwrap())
+            .collect();
+        rests.sort();
+        assert_eq!(rests, vec![vec![4, 5], vec![4, 9]]);
+        // Each new way carries a copy of its original's tags.
+        let tags_of_new: Vec<Vec<(String, String)>> = new
+            .iter()
+            .map(|&id| n.tags_of(FeatureKind::Way, id))
+            .collect();
+        assert!(tags_of_new.contains(&pairs(&[("highway", "residential"), ("name", "Main")])));
+        assert!(tags_of_new.contains(&pairs(&[("highway", "footway")])));
+        // The node itself is untouched.
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 4),
+            pairs(&[("highway", "crossing")])
+        );
+
+        // Two new ways, two modified ones.
+        assert_eq!(n.layer().diff_for_upload().counts(), (2, 2, 0));
+        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(label, "Split 2 ways");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn split_with_a_way_selected_splits_only_that_way() {
+        let mut n = net();
+        let sel = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 103),
+        ];
+        let out = n.run("split", &sel).unwrap();
+        assert_eq!(out.status, "Split 1 way");
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
+    }
+
+    #[test]
+    fn split_keeps_the_longer_part_in_the_original() {
+        let mut n = net();
+        // Make way 100 longer: [1,2,3,4,5]-ish by pointing it at more nodes.
+        n.editable_mut().set_way_nodes(100, vec![1, 2, 3, 9, 10]);
+        n.run("split", &n.nodes(&[2])).unwrap();
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![2, 3, 9, 10]));
+        let new = n.editable().ways_using_node(1)[0];
+        assert!(new < 0);
+        assert_eq!(n.editable().way_node_ids(new), Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn split_a_ring_at_two_nodes_makes_two_open_ways() {
+        let mut n = net();
+        let out = n.run("split", &n.nodes(&[16, 14])).unwrap();
+        assert_eq!(out.status, "Split 1 way");
+        // Ring [14,15,16,14]: arcs 14-15-16 (3 nodes) and 16-14 (2).
+        assert_eq!(n.editable().way_node_ids(108), Some(vec![14, 15, 16]));
+        let new = n.editable().ways_using_node(14);
+        assert_eq!(new.len(), 2);
+        assert_eq!(n.editable().way_node_ids(new[0]), Some(vec![16, 14]));
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, new[0]),
+            pairs(&[("building", "yes")])
+        );
+        assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
+    }
+
+    #[test]
+    fn split_refuses_a_relation_member_and_changes_nothing() {
+        let mut n = net();
+        // Way 102 is in relation 900; give it an interior node to split at.
+        n.editable_mut().set_way_nodes(102, vec![5, 6, 10]);
+        let before = n.layer().diff_for_upload().counts();
+        let Err(message) = n.run("split", &n.nodes(&[6])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't split: way 102 is a member of a relation, and relation changes aren't supported yet"
+        );
+        assert_eq!(n.layer().diff_for_upload().counts(), before);
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6, 10]));
+    }
+
+    #[test]
+    fn split_explains_when_inapplicable() {
+        let mut n = net();
+        let Err(message) = n.run("split", &n.nodes(&[1])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Select a node inside a way (or two nodes of a closed way) to split it"
+        );
+        assert!(!n.layer().is_modified());
+    }
+
+    #[test]
+    fn merge_is_offered_for_two_or_more_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.nodes(&[1, 2])).contains(&"merge"));
+        assert!(n.applicable(&n.nodes(&[1, 2, 3])).contains(&"merge"));
+        assert!(!n.applicable(&n.nodes(&[1])).contains(&"merge"));
+        assert!(!n.applicable(&n.nodes(&[1, 1])).contains(&"merge"));
+        assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"merge"));
+        assert!(!n.applicable(&[]).contains(&"merge"));
+    }
+
+    #[test]
+    fn merge_rewrites_ways_unions_tags_and_deletes_the_other_nodes() {
+        let mut n = net();
+        // Node 4 (a crossing) merged into the untagged node 8, selected first.
+        let out = n.run("merge", &n.nodes(&[8, 4])).unwrap();
+        assert_eq!(out.status, "Merged 2 nodes");
+        assert_eq!(out.select, Some(n.nodes(&[8])));
+        // 101 now passes through 8; 103 would have had 8 twice in a row.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 8, 5]));
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 9]));
+        assert_eq!(n.editable().node_lat_lon(4), None);
+        // The survivor keeps its place and picks up the crossing tag.
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, 8),
+            pairs(&[("highway", "crossing")])
+        );
+        assert_eq!(
+            n.editable().node_lat_lon(8),
+            Some((40.0 + 0.0 * 0.001, -74.0 + 8.0 * 0.001))
+        );
+
+        // Node 4 deleted; node 8 (tag) and ways 101 and 103 modified.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 1));
+        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(label, "Merged 2 nodes");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetTags { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::DeleteFeature { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn merge_keeps_the_server_node_over_a_new_one() {
+        let mut n = net();
+        let fresh = n
+            .layers
+            .find_layer_mut(n.layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+            .create_node(40.5, -74.5, None)
+            .unwrap();
+        assert!(fresh < 0);
+        // The new node is selected first but node 6 is on the server.
+        let out = n.run("merge", &n.nodes(&[fresh, 6])).unwrap();
+        assert_eq!(out.select, Some(n.nodes(&[6])));
+        assert_eq!(n.editable().node_lat_lon(fresh), None);
+        // Merging into an existing node leaves no trace of the new one.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn merge_survivor_that_is_shared_joins_ways() {
+        let mut n = net();
+        // Ways 102 [5,6] and 105 [5,10]: merge their far ends, 6 and 10.
+        n.run("merge", &n.nodes(&[6, 10])).unwrap();
+        assert_eq!(n.editable().way_node_ids(105), Some(vec![5, 6]));
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+    }
+
+    #[test]
+    fn merge_refuses_conflicting_tags_naming_the_key() {
+        let mut n = net();
+        n.tag(FeatureKind::Node, 8, "highway", "bus_stop");
+        let Err(message) = n.run("merge", &n.nodes(&[8, 4])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: the nodes have different values for 'highway'"
+        );
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
+    }
+
+    #[test]
+    fn merge_refuses_to_leave_a_way_with_one_node() {
+        let mut n = net();
+        let Err(message) = n.run("merge", &n.nodes(&[5, 10])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: way 105 would be left with fewer than two distinct nodes"
+        );
+        assert!(!n.layer().is_modified());
+    }
+
+    #[test]
+    fn merge_refuses_to_delete_a_relation_member() {
+        let mut n = net();
+        // Node 7 is in relation 900; with 6 selected first, 7 would go.
+        let Err(message) = n.run("merge", &n.nodes(&[6, 7])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't merge: node 7 is a member of a relation and would be deleted"
+        );
+        assert!(!n.layer().is_modified());
+        // Selected first, the member survives and the merge works.
+        n.run("merge", &n.nodes(&[7, 6])).unwrap();
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 7]));
+    }
+
+    #[test]
+    fn straighten_is_offered_for_open_ways_with_three_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.ways(&[100])).contains(&"straighten"));
+        assert!(n.applicable(&n.ways(&[100, 102])).contains(&"straighten"));
+        // Two nodes, a ring, or no way at all: nothing to straighten.
+        assert!(!n.applicable(&n.ways(&[102])).contains(&"straighten"));
+        assert!(!n.applicable(&n.ways(&[108])).contains(&"straighten"));
+        assert!(!n.applicable(&[]).contains(&"straighten"));
+        assert!(!n
+            .applicable(&[n.feature(FeatureKind::Node, 2)])
+            .contains(&"straighten"));
+    }
+
+    #[test]
+    fn straighten_puts_the_wobbly_node_back_on_the_line_in_one_move_step() {
+        let mut n = net();
+        // Way 100 is a straight line; push its middle node ~5 m off it.
+        let straight = n.editable().node_lat_lon(2).unwrap();
+        n.nudge(2, straight.0 + 0.00005, straight.1);
+        let out = n.run("straighten", &n.ways(&[100])).unwrap();
+        assert_eq!(out.status, "Straightened 1 way");
+        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
+            panic!("expected one MoveNodes step");
+        };
+        // Only the interior node moved: from the nudge back onto the line.
+        assert_eq!(per_layer[0].1.len(), 1);
+        let (id, before, after) = per_layer[0].1[0];
+        assert_eq!(id, 2);
+        assert_eq!(before, (straight.0 + 0.00005, straight.1));
+        // Projected onto the line through nodes 1 and 3 (the nudge was
+        // sideways to a diagonal line, so it also slides along it a little).
+        let (a, c) = (
+            n.editable().node_lat_lon(1).unwrap(),
+            n.editable().node_lat_lon(3).unwrap(),
+        );
+        let k = ((a.0 + c.0) / 2.0).to_radians().cos();
+        let cross = (after.1 - a.1) * k * (c.0 - a.0) - (after.0 - a.0) * (c.1 - a.1) * k;
+        assert!(cross.abs() < 1e-11, "not on the line: {cross}");
+        assert!((after.0 - straight.0).abs() < 1e-4);
+        assert_eq!(n.editable().node_lat_lon(2), Some(after));
+        // The way itself is untouched.
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3]));
+        // Straight now: running again has nothing to do.
+        assert_eq!(
+            n.run("straighten", &n.ways(&[100])).err().as_deref(),
+            Some("The selected ways are already straight")
+        );
+    }
+
+    #[test]
+    fn straighten_refuses_a_zigzag_and_changes_nothing() {
+        let mut n = net();
+        let Err(message) = n.run("straighten", &n.ways(&[101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't straighten: the way bends more than 10% of its length"
+        );
+        assert!(!n.layer().is_modified());
+        // One curved way among several refuses all of them.
+        assert!(n.run("straighten", &n.ways(&[100, 101])).is_err());
+        assert!(!n.layer().is_modified());
     }
 
     #[test]

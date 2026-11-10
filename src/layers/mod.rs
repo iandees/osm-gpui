@@ -281,6 +281,9 @@ pub trait EditableLayer {
 
     /// The ids of the relations that have `way_id` as a member.
     fn relations_containing_way(&self, way_id: i64) -> Vec<i64>;
+
+    /// The ids of the relations that have `node_id` as a member.
+    fn relations_containing_node(&self, node_id: i64) -> Vec<i64>;
 }
 
 /// Manager for all map layers

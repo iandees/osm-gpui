@@ -1,0 +1,117 @@
+# More selection actions: Split Way (P), Merge Nodes (M), Straighten Way (T),
+# Reverse Way flipping direction tags (R), Copy / Paste Tags (cmd+shift+c / v).
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/more-selection-actions.osm is
+# laid out in window coordinates at zoom 18, centered on (40.7120, -74.0060):
+#   A  way 5101   one road with nodes every 100 px along y=120 (x 350..750);
+#                 the middle node 7103 is at (550, 120)
+#   B  ways 5201 / 5202  two roads whose end nodes are 7202 at (540, 250) and
+#                 the new local node -7203 (tagged highway=crossing) at (556, 262)
+#   C  way 5301   a wobbly track along y~400, first/last nodes at x=350/750
+#   D  way 5401   a road at y=520 with lanes:forward/backward, cycleway:left
+#                 and incline tags
+#   E  ways 5501 / 5502  a tagged driveway at y=640 and a sparser track at y=700
+
+window 1200 800
+load_osm docs/screenshots/fixtures/more-selection-actions.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/more-01-start.png
+
+# Split: select the middle node of A and press P. The original keeps the
+# first half (the halves tie), the new way (id -1) gets the rest and a copy of
+# the tags; the node stays selected.
+click 550,120
+wait_idle 2s
+assert_selected node 7103
+capture out/more-02-split-node-selected.png
+key p
+wait_idle 2s
+assert_selected node 7103
+capture out/more-03-split-done.png
+click 700,120
+wait_idle 2s
+assert_selected way -1
+capture out/more-04-split-new-way-tags.png
+click 400,120
+wait_idle 2s
+assert_selected way 5101
+capture out/more-05-split-original-way-tags.png
+
+# One undo step puts the way back together; redo splits it again.
+key cmd+z
+wait_idle 2s
+click 700,120
+wait_idle 2s
+assert_selected way 5101
+capture out/more-06-split-undone.png
+key cmd+shift+z
+wait_idle 2s
+click 700,120
+wait_idle 2s
+assert_selected way -1
+capture out/more-07-split-redone.png
+
+# Merge: box-select the two end nodes of B (no way lies fully inside the box)
+# and press M. The server's node 7202 survives, picks up the crossing tag, and
+# both roads now meet there.
+drag 520,232 580,280 button=left
+wait_idle 2s
+capture out/more-08-merge-selected.png
+key m
+wait_idle 2s
+assert_selected node 7202
+capture out/more-09-merged.png
+click 650,262
+wait_idle 2s
+assert_selected way 5202
+capture out/more-10-merged-east-road.png
+
+# Straighten: the wobbly track becomes a straight line between its ends.
+click 500,401
+wait_idle 2s
+assert_selected way 5301
+capture out/more-11-straighten-before.png
+key t
+wait_idle 2s
+assert_selected way 5301
+capture out/more-12-straightened.png
+key cmd+z
+wait_idle 2s
+capture out/more-13-straighten-undone.png
+key cmd+shift+z
+wait_idle 2s
+capture out/more-14-straighten-redone.png
+
+# Reverse: lanes:forward/backward and cycleway:left/right swap, the incline
+# changes sign, oneway=yes stays.
+click 425,520
+wait_idle 2s
+assert_selected way 5401
+capture out/more-15-reverse-before.png
+key r
+wait_idle 2s
+capture out/more-16-reversed-tags.png
+
+# Copy the driveway's tags, paste them onto the track below it: the shared
+# keys (highway, surface) are overwritten, name and service are added, the
+# track's own tracktype stays.
+click 500,640
+wait_idle 2s
+assert_selected way 5501
+key cmd+shift+c
+wait_idle 2s
+capture out/more-17-tags-copied.png
+click 500,700
+wait_idle 2s
+assert_selected way 5502
+capture out/more-18-paste-before.png
+key cmd+shift+v
+wait_idle 2s
+capture out/more-19-tags-pasted.png
+key cmd+z
+wait_idle 2s
+capture out/more-20-paste-undone.png
+
+log done

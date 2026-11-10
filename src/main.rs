@@ -108,6 +108,14 @@ pub(crate) fn key_bindings_from_settings(
                 SelectAll,
                 Some(MAP_VIEWER_KEY_CONTEXT),
             )),
+            // Copy/Paste Tags run the same selection actions as the menus.
+            // Scoped to the map like Select All, so they never steal the
+            // keys from a focused text input.
+            "copy_tags" | "paste_tags" => Some(KeyBinding::new(
+                &spec,
+                RunSelectionAction { id: id.into() },
+                Some(MAP_VIEWER_KEY_CONTEXT),
+            )),
             "zoom_in" => Some(KeyBinding::new(&spec, ZoomIn, None)),
             "zoom_out" => Some(KeyBinding::new(&spec, ZoomOut, None)),
             "zoom_to_data" => Some(KeyBinding::new(&spec, ZoomToData, None)),
@@ -1181,6 +1189,19 @@ impl MapViewer {
                     editable.delete_feature(snapshot.kind, snapshot.id);
                 } else {
                     editable.restore_feature(snapshot.clone());
+                }
+            }
+            UndoableAction::CreateWay { layer, snapshot } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    editable.restore_feature(snapshot.clone());
+                } else {
+                    editable.delete_feature(snapshot.kind, snapshot.id);
                 }
             }
             UndoableAction::ExtendWay {
@@ -4926,6 +4947,119 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/more-selection-actions.osmscript` clicks and
+    /// box-selects fixed window positions; check they pick what the script
+    /// names, and that each action the script runs on them is accepted, with
+    /// the results the script's later clicks and assertions expect.
+    #[test]
+    fn more_actions_script_targets_hit_their_features_and_actions_apply() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        use osm_gpui::selection::{resolve_hits, FeatureRef};
+
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/more-selection-actions.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let mut layers = osm_gpui::layers::LayerManager::new();
+        layers.add_layer(Box::new(OsmLayer::new_with_data(
+            LayerId(1),
+            "L".to_string(),
+            Arc::new(data),
+        )));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+        let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
+            let layer = layers.find_layer(LayerId(1)).unwrap();
+            let hits = layer
+                .as_editable()
+                .unwrap()
+                .hit_test(&viewport, local(x, y));
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        let feature = |kind, id| FeatureRef {
+            layer_id: LayerId(1),
+            kind,
+            id,
+        };
+        let run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
+            let action = selection_actions::find(id).unwrap();
+            let env = selection_actions::ActionEnv {
+                selection: sel,
+                active_layer: Some(LayerId(1)),
+                layers,
+            };
+            assert!((action.is_applicable)(&env), "{id} not offered");
+            (action.apply)(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
+        };
+
+        for (x, y, kind, id) in [
+            (550.0, 120.0, Node, 7103),
+            (700.0, 120.0, Way, 5101),
+            (400.0, 120.0, Way, 5101),
+            (650.0, 262.0, Way, 5202),
+            (500.0, 401.0, Way, 5301),
+            (425.0, 520.0, Way, 5401),
+            (500.0, 640.0, Way, 5501),
+            (500.0, 700.0, Way, 5502),
+        ] {
+            assert_eq!(
+                hit_at(&layers, x, y),
+                Some((kind, id)),
+                "click at ({x}, {y})"
+            );
+        }
+
+        // Split at the middle node: the halves tie, so the original keeps the
+        // first; the new way is -1 and holds the part the script clicks at 700.
+        run(&mut layers, "split", &[feature(Node, 7103)]);
+        assert_eq!(hit_at(&layers, 700.0, 120.0), Some((Way, -1)));
+        assert_eq!(hit_at(&layers, 400.0, 120.0), Some((Way, 5101)));
+
+        // The box around B's end nodes picks exactly those two nodes.
+        let rect = gpui::Bounds::from_corners(local(520.0, 232.0), local(580.0, 280.0));
+        let boxed = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .hit_test_rect(&viewport, rect);
+        let mut ids: Vec<(osm_gpui::selection::FeatureKind, i64)> =
+            boxed.iter().map(|f| (f.kind, f.id)).collect();
+        ids.sort_by_key(|&(_, id)| id);
+        assert_eq!(ids, [(Node, -7203), (Node, 7202)]);
+        let merged = run(&mut layers, "merge", &boxed);
+        assert_eq!(merged.select, Some(vec![feature(Node, 7202)]));
+        assert_eq!(hit_at(&layers, 650.0, 262.0), Some((Way, 5202)));
+
+        // The wobbly track is within the straighten threshold.
+        run(&mut layers, "straighten", &[feature(Way, 5301)]);
+        // Reverse flips the direction tags.
+        run(&mut layers, "reverse", &[feature(Way, 5401)]);
+        let tags = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&feature(Way, 5401))
+            .unwrap();
+        assert!(tags.contains(&("lanes:forward".to_string(), "1".to_string())));
+        assert!(tags.contains(&("cycleway:right".to_string(), "lane".to_string())));
+        assert!(tags.contains(&("incline".to_string(), "-10%".to_string())));
+        assert!(tags.contains(&("oneway".to_string(), "yes".to_string())));
+        // Copy the driveway's tags and paste them onto the track.
+        run(&mut layers, "copy_tags", &[feature(Way, 5501)]);
+        run(&mut layers, "paste_tags", &[feature(Way, 5502)]);
+        let tags = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&feature(Way, 5502))
+            .unwrap();
+        assert!(tags.contains(&("tracktype".to_string(), "grade4".to_string())));
+        assert!(tags.contains(&("surface".to_string(), "gravel".to_string())));
+        assert!(tags.contains(&("name".to_string(), "Back Lane".to_string())));
+    }
+
     /// The same click, but delivered as real mouse events through the
     /// window's event dispatch, to cover the listeners in `render`.
     #[gpui::test]
@@ -5037,6 +5171,270 @@ mod tests {
                 let action = view.undo_stack.redo().unwrap();
                 view.apply_undo_action(&action, true);
                 assert_eq!(way_nodes(view, layer_id, 10), vec![2, 1]);
+            })
+            .unwrap();
+    }
+
+    /// The tags of way/node `id` in the view's active layer, sorted.
+    fn tags_of(
+        view: &MapViewer,
+        kind: osm_gpui::selection::FeatureKind,
+        id: i64,
+    ) -> Vec<(String, String)> {
+        let layer_id = view.active_layer.unwrap();
+        let mut tags = view
+            .layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&osm_gpui::selection::FeatureRef { layer_id, kind, id })
+            .unwrap();
+        tags.sort();
+        tags
+    }
+
+    fn tag_pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn reverse_flips_direction_tags_as_one_undoable_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = {
+                    let layer = view.layer_manager.find_layer_mut(layer_id).unwrap();
+                    let editable = layer.as_editable_mut().unwrap();
+                    editable.set_tag(Way, 100, "cycleway:left", "lane");
+                    editable.set_tag(Way, 100, "incline", "5%");
+                    tags_of(view, Way, 100)
+                };
+                select(view, Way, &[100]);
+                view.run_selection_action("reverse", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![3, 2, 1]);
+                let flipped = tag_pairs(&[
+                    ("cycleway:right", "lane"),
+                    ("highway", "residential"),
+                    ("incline", "-5%"),
+                ]);
+                assert_eq!(tags_of(view, Way, 100), flipped);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(tags_of(view, Way, 100), original);
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![3, 2, 1]);
+                assert_eq!(tags_of(view, Way, 100), flipped);
+            })
+            .unwrap();
+    }
+
+    fn node_position(view: &MapViewer, id: i64) -> (f64, f64) {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .node_lat_lon(id)
+            .unwrap()
+    }
+
+    fn ways_at_node(view: &MapViewer, node: i64) -> Vec<i64> {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .ways_using_node(node)
+    }
+
+    #[gpui::test]
+    fn copy_then_paste_tags_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Copying leaves no undo step and no edit behind.
+                select(view, Way, &[101]);
+                view.run_selection_action("copy_tags", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Copied 2 tags")
+                );
+
+                // Paste onto a way and a node at once.
+                let original_way = tags_of(view, Way, 103);
+                select(view, Way, &[103]);
+                let layer_id = view.active_layer.unwrap();
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 8,
+                });
+                view.run_selection_action("paste_tags", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let pasted = tag_pairs(&[("highway", "residential"), ("name", "Main")]);
+                assert_eq!(tags_of(view, Way, 103), pasted);
+                assert_eq!(tags_of(view, Node, 8), pasted);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Pasted 2 tags onto 2 features")
+                );
+                assert_eq!(pending(view), (0, 2, 0));
+
+                undo_step(view);
+                assert_eq!(tags_of(view, Way, 103), original_way);
+                assert!(tags_of(view, Node, 8).is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(tags_of(view, Way, 103), pasted);
+                assert_eq!(tags_of(view, Node, 8), pasted);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn tag_copy_and_paste_are_modifier_key_bindings_on_the_map_context() {
+        let bindings = key_bindings_from_settings(&settings_store::AppSettings::default());
+        let ids: Vec<String> = bindings
+            .iter()
+            .filter_map(|b| b.action().as_any().downcast_ref::<RunSelectionAction>())
+            .map(|a| a.id.to_string())
+            .collect();
+        assert_eq!(ids, ["copy_tags", "paste_tags"]);
+    }
+
+    #[gpui::test]
+    fn split_way_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Node, &[4]);
+                view.run_selection_action("split", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let split_users = ways_at_node(view, 4);
+                assert_eq!(split_users.len(), 4);
+                let new: Vec<i64> = split_users.iter().copied().filter(|&id| id < 0).collect();
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4]);
+                assert_eq!(pending(view), (2, 2, 0));
+                let new_tags: Vec<_> = new.iter().map(|&id| tags_of(view, Way, id)).collect();
+                // The node stays selected.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 4);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                assert_eq!(ways_at_node(view, 4), vec![101, 103]);
+                for &id in &new {
+                    assert!(way_nodes(view, layer_id, id).is_empty());
+                }
+                assert_eq!(pending(view), (0, 0, 0));
+
+                // Redo recreates the same ways under the same ids.
+                redo_step(view);
+                assert_eq!(ways_at_node(view, 4), split_users);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4]);
+                let redone_tags: Vec<_> = new.iter().map(|&id| tags_of(view, Way, id)).collect();
+                assert_eq!(redone_tags, new_tags);
+                assert_eq!(pending(view), (2, 2, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn merge_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                // Node 4 is a crossing shared by ways 101 and 103; merge it
+                // into the untagged node 8 at the end of way 103.
+                select(view, Node, &[8, 4]);
+                view.run_selection_action("merge", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 8, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 9]);
+                assert_eq!(pending(view), (0, 3, 1));
+                assert_eq!(
+                    tags_of(view, Node, 8),
+                    tag_pairs(&[("highway", "crossing")])
+                );
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 8);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(
+                    tags_of(view, Node, 4),
+                    tag_pairs(&[("highway", "crossing")])
+                );
+                assert!(tags_of(view, Node, 8).is_empty());
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 8, 5]);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 9]);
+                assert_eq!(pending(view), (0, 3, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let on_line = node_position(view, 2);
+                let off_line = (on_line.0 + 0.00005, on_line.1);
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .unwrap()
+                    .as_editable_mut()
+                    .unwrap()
+                    .commit_node_moves(&[(2, off_line.0, off_line.1)]);
+                select(view, Way, &[100]);
+                view.run_selection_action("straighten", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let straightened = node_position(view, 2);
+                // Moved back to the line through nodes 1 and 3 (which also
+                // slides it a little along it, since the line is diagonal).
+                assert_ne!(straightened, off_line);
+                assert!((straightened.0 - on_line.0).abs() < 1e-4);
+
+                undo_step(view);
+                assert_eq!(node_position(view, 2), off_line);
+                redo_step(view);
+                assert_eq!(node_position(view, 2), straightened);
+                // A curved way is refused with the reason and no undo step.
+                select(view, Way, &[101]);
+                view.run_selection_action("straighten", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Can't straighten: the way bends more than 10% of its length")
+                );
             })
             .unwrap();
     }

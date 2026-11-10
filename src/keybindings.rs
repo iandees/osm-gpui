@@ -121,6 +121,16 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
+        id: "copy_tags",
+        default_spec: "cmd-shift-c",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
+        id: "paste_tags",
+        default_spec: "cmd-shift-v",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
         id: "zoom_in",
         default_spec: "cmd-=",
         category: ShortcutCategory::View,
@@ -188,6 +198,21 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "action_extend",
         default_spec: "e",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_split",
+        default_spec: "p",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_merge",
+        default_spec: "m",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_straighten",
+        default_spec: "t",
         category: ShortcutCategory::Actions,
     },
 ];

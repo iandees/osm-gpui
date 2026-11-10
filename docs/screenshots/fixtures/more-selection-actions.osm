@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="more-selection-actions fixture">
+  <!-- A: one road, five nodes in a row (split at the middle one) -->
+  <node id="7101" version="1" lat="40.7130897" lon="-74.0067403"/>
+  <node id="7102" version="1" lat="40.7130897" lon="-74.0062038"/>
+  <node id="7103" version="1" lat="40.7130897" lon="-74.0056674"/>
+  <node id="7104" version="1" lat="40.7130897" lon="-74.0051310"/>
+  <node id="7105" version="1" lat="40.7130897" lon="-74.0045945"/>
+  <!-- B: two roads whose ends are separate nodes a few pixels apart; the
+       new local node -7203 carries a tag the merge should keep -->
+  <node id="7201" version="1" lat="40.7125611" lon="-74.0067403"/>
+  <node id="7202" version="1" lat="40.7125611" lon="-74.0057211"/>
+  <node id="-7203" version="1" lat="40.7125123" lon="-74.0056352">
+    <tag k="highway" v="crossing"/>
+  </node>
+  <node id="7204" version="1" lat="40.7125123" lon="-74.0045623"/>
+  <!-- C: a wobbly road (straighten) -->
+  <node id="7301" version="1" lat="40.7119512" lon="-74.0067403"/>
+  <node id="7302" version="1" lat="40.7119024" lon="-74.0062038"/>
+  <node id="7303" version="1" lat="40.7119919" lon="-74.0056674"/>
+  <node id="7304" version="1" lat="40.7119105" lon="-74.0051310"/>
+  <node id="7305" version="1" lat="40.7119512" lon="-74.0045945"/>
+  <!-- D: a road with direction-dependent tags (reverse) -->
+  <node id="7401" version="1" lat="40.7114633" lon="-74.0067403"/>
+  <node id="7402" version="1" lat="40.7114633" lon="-74.0059356"/>
+  <node id="7403" version="1" lat="40.7114633" lon="-74.0051310"/>
+  <!-- E: a tagged driveway to copy from and a bare track to paste onto -->
+  <node id="7501" version="1" lat="40.7109753" lon="-74.0067403"/>
+  <node id="7502" version="1" lat="40.7109753" lon="-74.0051310"/>
+  <node id="7503" version="1" lat="40.7107313" lon="-74.0067403"/>
+  <node id="7504" version="1" lat="40.7107313" lon="-74.0051310"/>
+  <way id="5101" version="1">
+    <nd ref="7101"/>
+    <nd ref="7102"/>
+    <nd ref="7103"/>
+    <nd ref="7104"/>
+    <nd ref="7105"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Split Street"/>
+  </way>
+  <way id="5201" version="1">
+    <nd ref="7201"/>
+    <nd ref="7202"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="West Road"/>
+  </way>
+  <way id="5202" version="1">
+    <nd ref="-7203"/>
+    <nd ref="7204"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="East Road"/>
+  </way>
+  <way id="5301" version="1">
+    <nd ref="7301"/>
+    <nd ref="7302"/>
+    <nd ref="7303"/>
+    <nd ref="7304"/>
+    <nd ref="7305"/>
+    <tag k="highway" v="track"/>
+    <tag k="name" v="Wobbly Track"/>
+  </way>
+  <way id="5401" version="1">
+    <nd ref="7401"/>
+    <nd ref="7402"/>
+    <nd ref="7403"/>
+    <tag k="highway" v="residential"/>
+    <tag k="lanes:forward" v="2"/>
+    <tag k="lanes:backward" v="1"/>
+    <tag k="cycleway:left" v="lane"/>
+    <tag k="incline" v="10%"/>
+    <tag k="oneway" v="yes"/>
+  </way>
+  <way id="5501" version="1">
+    <nd ref="7501"/>
+    <nd ref="7502"/>
+    <tag k="highway" v="service"/>
+    <tag k="service" v="driveway"/>
+    <tag k="surface" v="gravel"/>
+    <tag k="name" v="Back Lane"/>
+  </way>
+  <way id="5502" version="1">
+    <nd ref="7503"/>
+    <nd ref="7504"/>
+    <tag k="highway" v="track"/>
+    <tag k="surface" v="dirt"/>
+    <tag k="tracktype" v="grade4"/>
+  </way>
+</osm>
