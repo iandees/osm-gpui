@@ -1320,6 +1320,21 @@ impl MapViewer {
                     editable.reverse_way(*way_id);
                 }
             }
+            UndoableAction::SetWayNodes {
+                layer,
+                way_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let nodes = if forward { after } else { before };
+                editable.set_way_nodes(*way_id, nodes.clone());
+            }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
@@ -1607,6 +1622,9 @@ impl MapViewer {
                 self.undo_stack.push(outcome.undo);
                 if outcome.clear_selection {
                     self.set_selection(Vec::new());
+                }
+                if let Some(selection) = outcome.select {
+                    self.set_selection(selection);
                 }
                 self.set_status(outcome.status);
             }
@@ -4976,6 +4994,159 @@ mod tests {
                     .unwrap()
                     .node_lat_lon(1);
                 assert!(node.is_some());
+            })
+            .unwrap();
+    }
+
+    /// A view whose active layer holds `selection_actions::test_support`'s
+    /// road network, with a server baseline so the upload diff is meaningful.
+    fn setup_network(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _window, _cx| {
+                view.viewport =
+                    Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+                let layer_id = view.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data(
+                    layer_id,
+                    "Net".to_string(),
+                    Arc::new(selection_actions::test_support::network_data()),
+                );
+                view.layer_manager.add_layer(Box::new(layer));
+                view.active_layer = Some(layer_id);
+                view.mode = EditMode::Select;
+            })
+            .unwrap();
+        window
+    }
+
+    fn select(view: &mut MapViewer, kind: osm_gpui::selection::FeatureKind, ids: &[i64]) {
+        let layer_id = view.active_layer.unwrap();
+        view.set_selection(
+            ids.iter()
+                .map(|&id| osm_gpui::selection::FeatureRef { layer_id, kind, id })
+                .collect(),
+        );
+    }
+
+    fn pending(view: &MapViewer) -> (usize, usize, usize) {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .diff_for_upload()
+            .counts()
+    }
+
+    fn undo_step(view: &mut MapViewer) {
+        let action = view.undo_stack.undo().expect("something to undo");
+        view.apply_undo_action(&action, false);
+    }
+
+    fn redo_step(view: &mut MapViewer) {
+        let action = view.undo_stack.redo().expect("something to redo");
+        view.apply_undo_action(&action, true);
+    }
+
+    #[gpui::test]
+    fn join_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100, 101]);
+                view.run_selection_action("join", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3, 4, 5]);
+                assert!(way_nodes(view, layer_id, 101).is_empty());
+                assert_eq!(pending(view), (0, 1, 1));
+                // The joined way is what stays selected.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 100);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(pending(view), (0, 0, 0));
+                let tags = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap()
+                    .feature_tags(&osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Way,
+                        id: 100,
+                    })
+                    .unwrap();
+                assert!(!tags.iter().any(|(k, _)| k == "name"));
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3, 4, 5]);
+                assert!(way_nodes(view, layer_id, 101).is_empty());
+                assert_eq!(pending(view), (0, 1, 1));
+                // Undo once more to prove redo left a sound state.
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn refused_join_leaves_no_undo_step_and_shows_why(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[101, 105]);
+                view.run_selection_action("join", cx);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Can't join: the ways have different values for 'name'")
+                );
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn separate_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Node, &[4]);
+                view.run_selection_action("separate", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let separated = way_nodes(view, layer_id, 103);
+                let new_id = separated[1];
+                assert!(new_id < 0);
+                assert_eq!(pending(view), (1, 1, 0));
+                // The original node is still the selection.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 4);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                let editable = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap();
+                assert_eq!(editable.node_lat_lon(new_id), None);
+                assert_eq!(pending(view), (0, 0, 0));
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 103), separated);
+                assert_eq!(pending(view), (1, 1, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
             })
             .unwrap();
     }

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use osm_gpui::geometry::{self, LatLon};
 use osm_gpui::layers::{EditableLayer, LayerId, LayerManager};
 use osm_gpui::selection::{FeatureKind, FeatureRef};
+use osm_gpui::topology::{self, JoinWay};
 
 use crate::undo::{NodeMoveUndoEntry, UndoableAction};
 
@@ -38,6 +39,30 @@ impl<'a> ActionEnv<'a> {
             return Vec::new();
         };
         selected_ways_in(editable, layer_id, self.selection)
+    }
+}
+
+impl<'a> ActionEnv<'a> {
+    /// The selected ways of the active layer as join candidates.
+    fn selected_join_ways(&self) -> Vec<JoinWay> {
+        let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
+            return Vec::new();
+        };
+        join_ways_in(editable, layer_id, self.selection)
+    }
+
+    /// Whether the selection is a node that can be separated: one node of
+    /// the active layer (plus optionally one way, to detach just that way)
+    /// used in more than one place.
+    fn can_separate_selection(&self) -> bool {
+        let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
+            return false;
+        };
+        let Some((node, way)) = separate_target(layer_id, self.selection) else {
+            return false;
+        };
+        let ways = ways_using(editable, node);
+        topology::can_separate(node, &ways, way)
     }
 }
 
@@ -70,6 +95,62 @@ fn selected_ways_in(
         .collect()
 }
 
+fn join_ways_in(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<JoinWay> {
+    let mut seen = Vec::new();
+    let mut ways = Vec::new();
+    for f in selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Way)
+    {
+        if seen.contains(&f.id) {
+            continue;
+        }
+        seen.push(f.id);
+        if let Some(nodes) = editable.way_node_ids(f.id) {
+            ways.push(JoinWay {
+                id: f.id,
+                nodes,
+                tags: editable.feature_tags(f).unwrap_or_default(),
+            });
+        }
+    }
+    ways
+}
+
+/// The node to separate, and the way to detach it from if one is selected
+/// too. `None` unless the active layer's part of the selection is exactly one
+/// node and at most one way.
+fn separate_target(layer_id: LayerId, selection: &[FeatureRef]) -> Option<(i64, Option<i64>)> {
+    let mut nodes = selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Node);
+    let node = nodes.next()?.id;
+    if nodes.next().is_some() {
+        return None;
+    }
+    let mut ways = selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Way);
+    let way = ways.next().map(|f| f.id);
+    if ways.next().is_some() {
+        return None;
+    }
+    Some((node, way))
+}
+
+/// `(way id, node ids)` for every way that uses `node`.
+fn ways_using(editable: &dyn EditableLayer, node: i64) -> Vec<(i64, Vec<i64>)> {
+    editable
+        .ways_using_node(node)
+        .into_iter()
+        .filter_map(|id| Some((id, editable.way_node_ids(id)?)))
+        .collect()
+}
+
 /// What running an action produced; the caller records `undo` as one step.
 pub(crate) struct ActionOutcome {
     pub undo: UndoableAction,
@@ -77,6 +158,9 @@ pub(crate) struct ActionOutcome {
     pub status: String,
     /// Whether the selection no longer makes sense (e.g. after a delete).
     pub clear_selection: bool,
+    /// Replace the selection with these features (e.g. the surviving way
+    /// after a join). Takes effect after `clear_selection`.
+    pub select: Option<Vec<FeatureRef>>,
 }
 
 pub(crate) struct SelectionAction {
@@ -142,6 +226,28 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         hint: "Select a way to reverse it",
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 2),
         apply: apply_reverse,
+    },
+    SelectionAction {
+        id: "join",
+        label: "Join Ways",
+        shortcut_id: Some("action_join"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        hint: "Select two or more ways that connect end to end to join them",
+        is_applicable: |env| topology::can_chain(&env.selected_join_ways()),
+        apply: apply_join,
+    },
+    SelectionAction {
+        id: "separate",
+        label: "Separate Node",
+        shortcut_id: Some("action_separate"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        hint: "Select a node shared by two or more ways to separate it",
+        is_applicable: |env| env.can_separate_selection(),
+        apply: apply_separate,
     },
     SelectionAction {
         id: "delete",
@@ -298,6 +404,7 @@ fn reshape_ways(
         },
         status: format!("{verb} {}", plural(changed_ways, "way", "ways")),
         clear_selection: false,
+        select: None,
     })
 }
 
@@ -355,6 +462,138 @@ fn apply_reverse(
         },
         status,
         clear_selection: false,
+        select: None,
+    })
+}
+
+/// Join the selected ways into one (JOSM "Combine Way"). See
+/// `topology::plan_join` for the chaining, survivor and tag rules; ways that
+/// belong to a relation can't be removed, so the join is refused. One undo
+/// step: the survivor's new nodes and tags, then the deletion of the rest.
+fn apply_join(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let ways = join_ways_in(editable, layer_id, selection);
+    let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
+    for id in &plan.remove {
+        if !editable.relations_containing_way(*id).is_empty() {
+            return Err(format!(
+                "Can't join: way {id} is a member of a relation and would be deleted"
+            ));
+        }
+    }
+    let kept = ways
+        .iter()
+        .find(|w| w.id == plan.keep)
+        .expect("the plan keeps one of the given ways");
+    let way_ref = |id| FeatureRef {
+        layer_id,
+        kind: FeatureKind::Way,
+        id,
+    };
+
+    let mut actions = vec![UndoableAction::SetWayNodes {
+        layer: layer_id,
+        way_id: plan.keep,
+        before: kept.nodes.clone(),
+        after: plan.nodes.clone(),
+    }];
+    editable.set_way_nodes(plan.keep, plan.nodes);
+
+    let mut tag_entries = Vec::new();
+    for (key, value) in &plan.tags {
+        if !kept.tags.iter().any(|(k, _)| k == key) {
+            editable.set_tag(FeatureKind::Way, plan.keep, key, value);
+            tag_entries.push((way_ref(plan.keep), key.clone(), None, Some(value.clone())));
+        }
+    }
+    if !tag_entries.is_empty() {
+        actions.push(UndoableAction::SetTags {
+            entries: tag_entries,
+        });
+    }
+    for id in &plan.remove {
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Way, *id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+
+    let label = format!("Joined {}", plural(ways.len(), "way", "ways"));
+    Ok(ActionOutcome {
+        undo: UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        },
+        status: label,
+        clear_selection: false,
+        select: Some(vec![way_ref(plan.keep)]),
+    })
+}
+
+/// Give each way but the first that uses the selected node its own copy of
+/// it (iD "Disconnect", JOSM "Unglue"). With a way selected as well, only
+/// that way is moved off the node. The copies are untagged, at the same
+/// position, with fresh negative ids. One undo step.
+fn apply_separate(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    const HINT: &str = "Select a node shared by two or more ways to separate it";
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let (node, detach) = separate_target(layer_id, selection).ok_or(HINT)?;
+    let (lat, lon) = editable
+        .node_lat_lon(node)
+        .ok_or("The selected node is not in the active layer")?;
+    let ways = ways_using(editable, node);
+
+    let mut created = Vec::new();
+    let edits = topology::plan_separate(node, &ways, detach, || {
+        let id = editable
+            .create_node(lat, lon, None)
+            .expect("the layer has data, since the node exists");
+        created.push(id);
+        id
+    })
+    .ok_or(HINT)?;
+
+    let mut actions: Vec<UndoableAction> = created
+        .iter()
+        .map(|&id| UndoableAction::CreateNode {
+            layer: layer_id,
+            id,
+            lat,
+            lon,
+        })
+        .collect();
+    for edit in edits {
+        editable.set_way_nodes(edit.way_id, edit.after.clone());
+        actions.push(UndoableAction::SetWayNodes {
+            layer: layer_id,
+            way_id: edit.way_id,
+            before: edit.before,
+            after: edit.after,
+        });
+    }
+
+    let label = format!(
+        "Separated a node into {}",
+        plural(created.len() + 1, "copy", "copies")
+    );
+    Ok(ActionOutcome {
+        undo: UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        },
+        status: label,
+        clear_selection: false,
+        select: None,
     })
 }
 
@@ -399,7 +638,82 @@ fn apply_delete(
         undo,
         status,
         clear_selection: true,
+        select: None,
     })
+}
+
+/// A small road network with server (positive) ids, shared by the tests here
+/// and in `main.rs`:
+///
+/// - way 100 `[1,2,3]` and way 101 `[3,4,5]` chain end to end (101 also has
+///   `name=Main`);
+/// - way 102 `[5,6]` is a member of relation 900;
+/// - way 103 `[8,4,9]` crosses way 101 at node 4;
+/// - way 105 `[5,10]` has `name=Elm`, which conflicts with way 101;
+/// - ways 106 `[11,12]` and 107 `[13,12]` are one-ways that run head to head;
+/// - way 108 `[14,15,16,14]` is a closed ring.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
+    use std::collections::HashMap;
+
+    pub(crate) fn network_data() -> OsmData {
+        let nodes = (1..=16)
+            .map(|id| {
+                let node = OsmNode {
+                    id,
+                    lat: 40.0 + (id % 4) as f64 * 0.001,
+                    lon: -74.0 + id as f64 * 0.001,
+                    version: 1,
+                    tags: if id == 4 {
+                        HashMap::from([("highway".to_string(), "crossing".to_string())])
+                    } else {
+                        HashMap::new()
+                    },
+                };
+                (id, node)
+            })
+            .collect();
+        let way = |id: i64, nodes: &[i64], tags: &[(&str, &str)]| {
+            (
+                id,
+                OsmWay {
+                    id,
+                    nodes: nodes.to_vec(),
+                    version: 3,
+                    tags: tags
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                },
+            )
+        };
+        let road = ("highway", "residential");
+        OsmData {
+            nodes,
+            ways: HashMap::from([
+                way(100, &[1, 2, 3], &[road]),
+                way(101, &[3, 4, 5], &[road, ("name", "Main")]),
+                way(102, &[5, 6], &[road]),
+                way(103, &[8, 4, 9], &[("highway", "footway")]),
+                way(105, &[5, 10], &[road, ("name", "Elm")]),
+                way(106, &[11, 12], &[road, ("oneway", "yes")]),
+                way(107, &[13, 12], &[road, ("oneway", "yes")]),
+                way(108, &[14, 15, 16, 14], &[("building", "yes")]),
+            ]),
+            relations: vec![OsmRelation {
+                id: 900,
+                members: vec![OsmMember {
+                    member_type: MemberType::Way,
+                    reference: 102,
+                    role: String::new(),
+                }],
+                version: 1,
+                tags: HashMap::new(),
+            }],
+            bounds: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -592,6 +906,8 @@ mod tests {
             Some("circularize")
         );
         assert_eq!(find_by_key(&settings, "r").map(|a| a.id), Some("reverse"));
+        assert_eq!(find_by_key(&settings, "c").map(|a| a.id), Some("join"));
+        assert_eq!(find_by_key(&settings, "g").map(|a| a.id), Some("separate"));
         assert!(find_by_key(&settings, "z").is_none());
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),
@@ -610,5 +926,254 @@ mod tests {
                 assert!(osm_gpui::keybindings::SHORTCUTS.iter().any(|d| d.id == sid));
             }
         }
+    }
+
+    /// The `test_support` network, in a layer with a server baseline.
+    struct Net {
+        layers: LayerManager,
+        layer_id: LayerId,
+    }
+
+    fn net() -> Net {
+        let layer_id = LayerId(1);
+        let layer = OsmLayer::new_with_data(
+            layer_id,
+            "Net".to_string(),
+            std::sync::Arc::new(test_support::network_data()),
+        );
+        let mut layers = LayerManager::new();
+        layers.add_layer(Box::new(layer));
+        Net { layers, layer_id }
+    }
+
+    impl Net {
+        fn feature(&self, kind: FeatureKind, id: i64) -> FeatureRef {
+            FeatureRef {
+                layer_id: self.layer_id,
+                kind,
+                id,
+            }
+        }
+        fn ways(&self, ids: &[i64]) -> Vec<FeatureRef> {
+            ids.iter()
+                .map(|&id| self.feature(FeatureKind::Way, id))
+                .collect()
+        }
+        fn run(&mut self, action: &str, sel: &[FeatureRef]) -> Result<ActionOutcome, String> {
+            (find(action).unwrap().apply)(&mut self.layers, sel, Some(self.layer_id))
+        }
+        fn editable(&self) -> &dyn EditableLayer {
+            self.layers
+                .find_layer(self.layer_id)
+                .unwrap()
+                .as_editable()
+                .unwrap()
+        }
+        fn layer(&self) -> &dyn osm_gpui::layers::MapLayer {
+            self.layers.find_layer(self.layer_id).unwrap()
+        }
+        fn applicable(&self, sel: &[FeatureRef]) -> Vec<&'static str> {
+            let e = ActionEnv {
+                selection: sel,
+                active_layer: Some(self.layer_id),
+                layers: &self.layers,
+            };
+            SelectionAction::applicable(&e).map(|a| a.id).collect()
+        }
+    }
+
+    #[test]
+    fn join_and_separate_are_offered_for_the_right_selections() {
+        let n = net();
+        let node4 = n.feature(FeatureKind::Node, 4);
+        assert!(n.applicable(&n.ways(&[100, 101])).contains(&"join"));
+        // One way, ways that don't connect, or a ring: nothing to join.
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"join"));
+        assert!(!n.applicable(&n.ways(&[100, 103])).contains(&"join"));
+        assert!(!n.applicable(&n.ways(&[108, 100])).contains(&"join"));
+        // A conflicting join is still offered, so running it can explain.
+        assert!(n.applicable(&n.ways(&[101, 105])).contains(&"join"));
+
+        assert!(n.applicable(&[node4]).contains(&"separate"));
+        // Node 4 with a way that uses it, or one that doesn't.
+        let with_way = [node4, n.feature(FeatureKind::Way, 103)];
+        assert!(n.applicable(&with_way).contains(&"separate"));
+        let unrelated = [node4, n.feature(FeatureKind::Way, 100)];
+        assert!(!n.applicable(&unrelated).contains(&"separate"));
+        // Used by one way only; and two nodes at once.
+        assert!(!n
+            .applicable(&[n.feature(FeatureKind::Node, 1)])
+            .contains(&"separate"));
+        let two = [node4, n.feature(FeatureKind::Node, 3)];
+        assert!(!n.applicable(&two).contains(&"separate"));
+        assert!(!n.applicable(&[]).contains(&"separate"));
+    }
+
+    #[test]
+    fn join_chains_the_ways_unions_tags_and_leaves_the_result_selected() {
+        let mut n = net();
+        let out = n.run("join", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(out.status, "Joined 2 ways");
+        assert_eq!(out.select, Some(n.ways(&[100])));
+        assert!(!out.clear_selection);
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3, 4, 5]));
+        assert_eq!(n.editable().way_node_ids(101), None);
+        let tags = n
+            .editable()
+            .feature_tags(&n.feature(FeatureKind::Way, 100))
+            .unwrap();
+        assert!(tags.contains(&("name".to_string(), "Main".to_string())));
+        assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
+
+        // Marked modified, and the upload diff sees the survivor as changed
+        // and the other way as deleted (nodes are untouched).
+        assert!(n.layer().is_modified());
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        let UndoableAction::Batch { label, actions } = &out.undo else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(label, "Joined 2 ways");
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetTags { .. },
+                UndoableAction::DeleteFeature { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn join_keeps_the_first_selected_when_several_are_server_ways() {
+        let mut n = net();
+        n.run("join", &n.ways(&[101, 100])).unwrap();
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![1, 2, 3, 4, 5]));
+        assert_eq!(n.editable().way_node_ids(100), None);
+    }
+
+    #[test]
+    fn join_refuses_conflicting_tags_naming_the_key() {
+        let mut n = net();
+        let Err(message) = n.run("join", &n.ways(&[101, 105])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: the ways have different values for 'name'"
+        );
+        assert!(!n.layer().is_modified());
+    }
+
+    #[test]
+    fn join_refuses_to_delete_a_relation_member() {
+        let mut n = net();
+        // 102 would be deleted (101 is first, both are server ways).
+        let Err(message) = n.run("join", &n.ways(&[101, 102])) else {
+            panic!("expected a refusal");
+        };
+        assert!(message.contains("member of a relation"), "{message}");
+        assert!(!n.layer().is_modified());
+        // Selected first, the member way survives and the join works.
+        assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![3, 4, 5, 6]));
+    }
+
+    #[test]
+    fn join_refuses_to_reverse_a_oneway() {
+        let mut n = net();
+        let Err(message) = n.run("join", &n.ways(&[106, 107])) else {
+            panic!("expected a refusal");
+        };
+        assert!(message.contains("depend on its direction"), "{message}");
+        assert!(!n.layer().is_modified());
+    }
+
+    #[test]
+    fn separate_gives_the_other_way_a_new_untagged_node_at_the_same_spot() {
+        let mut n = net();
+        let node4 = n.feature(FeatureKind::Node, 4);
+        let out = n.run("separate", &[node4]).unwrap();
+        assert_eq!(out.status, "Separated a node into 2 copies");
+        // The node stays selected: no selection change requested.
+        assert!(out.select.is_none() && !out.clear_selection);
+
+        // Way 101 keeps node 4; 103 got a new negative node.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        let moved = n.editable().way_node_ids(103).unwrap();
+        assert_eq!((moved[0], moved[2]), (8, 9));
+        let new_id = moved[1];
+        assert!(new_id < 0);
+        assert_eq!(
+            n.editable().node_lat_lon(new_id),
+            n.editable().node_lat_lon(4)
+        );
+        assert!(n
+            .editable()
+            .feature_tags(&n.feature(FeatureKind::Node, new_id))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            n.editable().feature_tags(&node4).unwrap(),
+            vec![("highway".to_string(), "crossing".to_string())]
+        );
+
+        // One new node and one changed way show up in the upload diff.
+        assert!(n.layer().is_modified());
+        assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
+        let UndoableAction::Batch { actions, .. } = &out.undo else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateNode { .. },
+                UndoableAction::SetWayNodes { .. }
+            ]
+        ));
+
+        // Nothing left to separate.
+        assert!(n.run("separate", &[node4]).is_err());
+        assert!(!n.applicable(&[node4]).contains(&"separate"));
+    }
+
+    #[test]
+    fn separate_with_a_way_selected_detaches_only_that_way() {
+        let mut n = net();
+        let sel = [
+            n.feature(FeatureKind::Node, 4),
+            n.feature(FeatureKind::Way, 101),
+        ];
+        n.run("separate", &sel).unwrap();
+        // 103 keeps the original this time; 101 got the new node.
+        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
+        let nodes = n.editable().way_node_ids(101).unwrap();
+        assert!(nodes[1] < 0 && nodes[0] == 3 && nodes[2] == 5);
+    }
+
+    #[test]
+    fn join_and_separate_explain_when_inapplicable() {
+        let n = net();
+        let none = ActionEnv {
+            selection: &[],
+            active_layer: Some(n.layer_id),
+            layers: &n.layers,
+        };
+        assert_eq!(
+            find("join").unwrap().why_not(&none),
+            "Select two or more ways that connect end to end to join them"
+        );
+        assert_eq!(
+            find("separate").unwrap().why_not(&none),
+            "Select a node shared by two or more ways to separate it"
+        );
+        let no_layer = ActionEnv {
+            selection: &[],
+            active_layer: None,
+            layers: &n.layers,
+        };
+        assert_eq!(
+            find("join").unwrap().why_not(&no_layer),
+            "Open or download OSM data first"
+        );
     }
 }

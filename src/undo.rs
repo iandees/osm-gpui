@@ -110,6 +110,16 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         way_ids: Vec<i64>,
     },
+    /// A way's whole node list replaced (join, separate): undo restores
+    /// `before`, redo reapplies `after`. The nodes in either list must exist
+    /// whenever that direction is applied, so callers order the surrounding
+    /// `CreateNode`/`DeleteFeature` entries of a `Batch` accordingly.
+    SetWayNodes {
+        layer: LayerId,
+        way_id: i64,
+        before: Vec<i64>,
+        after: Vec<i64>,
+    },
     /// Several actions recorded as one undo step (e.g. deleting a whole
     /// selection). Undo reverts them last-to-first; redo reapplies them in
     /// order. `label` is the history-list text.
@@ -155,6 +165,7 @@ impl UndoableAction {
                     format!("Reversed {} ways", way_ids.len())
                 }
             }
+            UndoableAction::SetWayNodes { .. } => "Changed the nodes of a way".to_string(),
             UndoableAction::Batch { label, .. } => label.clone(),
         }
     }
