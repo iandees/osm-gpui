@@ -383,13 +383,13 @@ pub(crate) fn rebuild_menus(
             disabled: false,
         },
         Menu {
-            name: "Tools".into(),
+            name: tr!("menu.tools.title"),
             // Every selection action, applicable or not: running one that
             // doesn't fit the selection explains why in the status bar.
             items: selection_actions::ACTIONS
                 .iter()
                 .filter(|a| a.in_tools_menu)
-                .map(|a| MenuItem::action(a.label, RunSelectionAction { id: a.id.into() }))
+                .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
                 .collect(),
             disabled: false,
         },

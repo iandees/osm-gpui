@@ -166,13 +166,11 @@ impl UndoableAction {
                 osm_gpui::tr!("history.snapped_node").to_string()
             }
             UndoableAction::ReverseWays { way_ids, .. } => {
-                if way_ids.len() == 1 {
-                    "Reversed 1 way".to_string()
-                } else {
-                    format!("Reversed {} ways", way_ids.len())
-                }
+                osm_gpui::tr_count!("action.reverse.done", way_ids.len()).to_string()
             }
-            UndoableAction::SetWayNodes { .. } => "Changed the nodes of a way".to_string(),
+            UndoableAction::SetWayNodes { .. } => {
+                osm_gpui::tr!("history.changed_way_nodes").to_string()
+            }
             UndoableAction::Batch { label, .. } => label.clone(),
         }
     }

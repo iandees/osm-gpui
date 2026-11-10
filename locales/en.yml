@@ -31,6 +31,8 @@ menu:
     deselect_all: "Deselect All"
     change_feature_type: "Change Feature Type…"
     apply_nsi_preset: "Apply NSI Preset…"
+  tools:
+    title: "Tools"
   mode:
     title: "Mode"
   imagery:
@@ -203,6 +205,7 @@ history:
   extruded_way: "Extruded a way"
   inserted_node: "Inserted a node into a way"
   snapped_node: "Snapped a node onto a way"
+  changed_way_nodes: "Changed the nodes of a way"
 
 # Generic feature names used when no preset matches.
 geometry:
@@ -320,6 +323,60 @@ shortcut:
   action_square: "Square"
   action_circularize: "Circularize"
   action_reverse: "Reverse Way"
+  action_join: "Join Ways"
+  action_separate: "Separate Node"
+  action_extend: "Extend Way"
+
+# Selection actions (`selection_actions::ACTIONS`): the right-click context
+# menu, the Tools menu, and their status-bar messages. Each action id has a
+# `label` (menu item) and a `hint` (shown when the selection doesn't fit).
+action:
+  no_data: "Open or download OSM data first"
+  not_editable: "The active layer is not editable"
+  square:
+    label: "Square"
+    hint: "Select a closed way (or a way with 3+ nodes) to square it"
+    none: "No corners are close enough to 90° to square"
+    done:
+      one: "Squared %{count} way"
+      other: "Squared %{count} ways"
+  circularize:
+    label: "Circularize"
+    hint: "Select a closed way to circularize it"
+    done:
+      one: "Circularized %{count} way"
+      other: "Circularized %{count} ways"
+  reverse:
+    label: "Reverse Way"
+    hint: "Select a way to reverse it"
+    done:
+      one: "Reversed %{count} way"
+      other: "Reversed %{count} ways"
+  join:
+    label: "Join Ways"
+    hint: "Select two or more ways that connect end to end to join them"
+    done:
+      one: "Joined %{count} way"
+      other: "Joined %{count} ways"
+    error:
+      not_chainable: "Can't join: the ways don't connect end to end in one chain"
+      tag_conflict: "Can't join: the ways have different values for '%{key}'"
+      needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
+      relation_member: "Can't join: way %{id} is a member of a relation and would be deleted"
+  separate:
+    label: "Separate Node"
+    hint: "Select a node shared by two or more ways to separate it"
+    node_missing: "The selected node is not in the active layer"
+    done:
+      one: "Separated a node into %{count} copy"
+      other: "Separated a node into %{count} copies"
+  extend:
+    label: "Extend Way"
+    hint: "Select an open way, or the end node of one, to continue drawing it"
+    started: "Click to add nodes to the way; Enter or Esc to finish"
+  delete:
+    label: "Delete"
+    hint: "Select something to delete"
 
 shortcut_category:
   general: "General"

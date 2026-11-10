@@ -2797,7 +2797,7 @@ impl MapViewer {
                 if i > 0 && action.id == "delete" {
                     menu = menu.separator();
                 }
-                let label = action.label;
+                let label = action.label();
                 let shortcut = action.shortcut_label(&settings);
                 menu =
                     menu.item(
@@ -2806,7 +2806,7 @@ impl MapViewer {
                                 .w_full()
                                 .gap_6()
                                 .justify_between()
-                                .child(label)
+                                .child(label.clone())
                                 .children(shortcut.clone().map(|s| {
                                     div().text_color(cx.theme().muted_foreground).child(s)
                                 }))
