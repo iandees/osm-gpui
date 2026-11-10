@@ -302,7 +302,7 @@ impl MapViewer {
                         .id(format!("field-multicombo-add-{}", field.id))
                         .cursor_pointer()
                         .child(
-                            Label::new("+ Add")
+                            Label::new(tr!("panel.fields.multi_add"))
                                 .text_size(muted_text_size())
                                 .text_color(cx.theme().muted_foreground),
                         )

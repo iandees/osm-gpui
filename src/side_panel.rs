@@ -573,7 +573,7 @@ impl MapViewer {
                     .px_2()
                     .py_1()
                     .text_color(cx.theme().muted_foreground)
-                    .child("(no tags)"),
+                    .child(tr!("panel.tags.empty")),
             );
         } else {
             let mut description_list = DescriptionList::new()

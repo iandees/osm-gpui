@@ -174,10 +174,13 @@ panel:
     no_preset: "No matched preset."
     no_fields: "This feature type has no editable fields."
     add_field: "Add field (%{count})"
+    # Opens the value list of a multi-select field.
+    multi_add: "+ Add"
   tags:
     title: "Tags"
     no_selection: "No selection."
     add: "Add tag"
+    empty: "(no tags)"
     key_placeholder: "key"
     value_placeholder: "value"
   history:
@@ -370,3 +373,26 @@ dialog:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"
     downloading: "Downloading NSI data…"
+
+# Errors from the OSM API and OAuth code, shown in the status bar and the
+# Settings window. `%{detail}` is the server's or network layer's own
+# message, which is not translated.
+error:
+  network: "Network error: %{detail}"
+  api:
+    area_too_large: "Area too large for OSM API (zoom in and try again)"
+    rejected: "OSM API rejected request (400) — try a smaller area"
+    rate_limited: "OSM API rate-limited (509) — try again later"
+    http: "OSM API error %{status}: %{detail}"
+    parse: "Failed to parse OSM response: %{detail}"
+  upload:
+    conflict: "Upload conflict (409): another edit changed this data first. Re-download and reconcile before retrying. %{detail}"
+    precondition_failed: "Upload failed (412): something your edit refers to was changed or deleted first. Re-download and reconcile before retrying. %{detail}"
+  auth:
+    http: "OSM OAuth error %{status}: %{detail}"
+    no_redirect: "Login timed out waiting for browser redirect"
+    state_mismatch: "Login failed (state mismatch)"
+    no_config_dir: "No config directory available to store login"
+    denied: "Sign in was not completed: %{reason}"
+    not_logged_in: "Not logged in"
+    expired: "Login expired and can't be refreshed; please sign in again"

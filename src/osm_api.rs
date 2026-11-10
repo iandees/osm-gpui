@@ -3,6 +3,7 @@ use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
 };
 use crate::osm::{OsmData, OsmParseError, OsmParser};
+use crate::tr;
 
 const MAX_AREA_SQ_DEG: f64 = 0.25;
 
@@ -17,21 +18,23 @@ pub enum OsmApiError {
 impl std::fmt::Display for OsmApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OsmApiError::AreaTooLarge { .. } => {
-                write!(f, "Area too large for OSM API (zoom in and try again)")
-            }
+            OsmApiError::AreaTooLarge { .. } => write!(f, "{}", tr!("error.api.area_too_large")),
             OsmApiError::Http { status: 400, .. } => {
-                write!(f, "OSM API rejected request (400) — try a smaller area")
+                write!(f, "{}", tr!("error.api.rejected"))
             }
             OsmApiError::Http { status: 509, .. } => {
-                write!(f, "OSM API rate-limited (509) — try again later")
+                write!(f, "{}", tr!("error.api.rate_limited"))
             }
             OsmApiError::Http { status, body } => {
                 let first_line = body.lines().next().unwrap_or("");
-                write!(f, "OSM API error {}: {}", status, first_line)
+                write!(
+                    f,
+                    "{}",
+                    tr!("error.api.http", status = status, detail = first_line)
+                )
             }
-            OsmApiError::Network(msg) => write!(f, "Network error: {}", msg),
-            OsmApiError::Parse(e) => write!(f, "Failed to parse OSM response: {}", e),
+            OsmApiError::Network(msg) => write!(f, "{}", tr!("error.network", detail = msg)),
+            OsmApiError::Parse(e) => write!(f, "{}", tr!("error.api.parse", detail = e)),
         }
     }
 }
