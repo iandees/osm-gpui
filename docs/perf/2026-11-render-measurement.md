@@ -341,3 +341,63 @@ OSM_GPUI_FRAME_STATS=1 target/release/osm-gpui --script docs/perf/render-benchma
 same instrumentation applied and `python3 docs/perf/gen_benchmark_script.py ... notoggle`
 for the comparison script.) `frame_stats LABEL` is a script op that prints and clears the
 per-phase min / median / p95 / max / mean since the previous call.
+
+## After: node marker density rule (PR node-marker-culling)
+
+The rule is in `src/layers/node_markers.rs` (see its module doc). Each node gets
+a reveal zoom at load time from a stable density pass (tagged nodes first, then
+junctions and way ends, then plain vertices; world-keyed grid cells whose pixel
+size shrinks from 26 px at zoom 16 to 0 at zoom 18.5; untagged nodes never below
+zoom 15). Drawing, hover and click targeting, and box select all use it, so a
+hidden vertex is never a target. Selected nodes and the nodes of a selected way are
+always shown and targetable. From zoom 18.5 everything is shown as before.
+
+Same machine, `--release`, 1400 x 900 window, 60 Hz display. Medians; "before" is
+the build with only the counters added (`docs/perf/results/culling-before-A.txt`,
+`culling-before-B.txt`), "after" is `culling-after-full.txt`. Raw output of the v0.3.0
+comparison is `culling-v030-z17.txt`. Script: `gen_culling_script.py`.
+
+| view | layer paint med / p95 before | after | node phase before | after | markers drawn / nodes in view before | after | frame interval before | after |
+|---|---|---|---|---|---|---|---|---|
+| A z14 | 7.32 / 8.11 | 1.36 / 1.79 | 5.55 | 0.05 | 6149 / 24127 | 71 / 24127 | 49.9 | 16.7 |
+| A z15.5 | 10.01 / 10.91 | 3.61 / 4.28 | 6.19 | 0.17 | 6133 / 23867 | 386 / 23867 | 40.6 | 16.7 |
+| A z17 | 32.59 / 33.23 | 5.18 / 6.12 | 28.40 | 0.73 | 21059 / 21059 | 1550 / 21059 | 41.1 | 16.7 |
+| A z18.5 | 4.85 / 5.84 | 2.60 / 3.43 | 2.80 | 1.11 | 2344 / 2344 | 2344 / 2344 | 49.7 (noisy run) | 16.7 |
+| A z19.5 | 2.39 / 3.53 | 1.58 / 2.09 | 0.71 | 0.56 | 640 / 640 | 640 / 640 | 49.7 (noisy run) | 16.7 |
+| B z14 | 204.95 / 207.43 | 19.76 / 22.29 | 183.93 | 0.58 | 73768 / 289450 | 465 / 289450 | 235.4 | 45.7 |
+| B z15.5 | 104.89 / 106.23 | 37.19 / 38.79 | 71.33 | 1.82 | 49674 / 193767 | 1441 / 193767 | 135.6 | 67.9 |
+| B z17 | 51.29 / 53.76 | 8.38 / 9.87 | 42.94 | 1.19 | 27630 / 27630 | 1627 / 27630 | 66.6 | 21.0 |
+| B z18.5 | 4.46 / 6.04 | 3.72 / 4.82 | 2.54 | 2.30 | 3583 / 3583 | 3581 / 3581 | 16.7 | 16.7 |
+| B z19.5 | 3.20 / 5.41 | 1.63 / 3.12 | 1.14 | 0.71 | 1002 / 1002 | 1001 / 1001 | 49.9 | 16.7 |
+
+The "before" frame intervals at A z18.5 / z19.5 (about 50 ms with 2 to 5 ms of paint)
+came from a noisy stretch of that run and should not be read as a property of the old
+code. Layer paint at z18.5 and closer is not changed by the rule (all markers drawn).
+
+- Target 1, A under 8 ms at every zoom: met (worst 5.2 ms at z17; 5.4 ms in the 20 s z17 run,
+  pans 5.5, hover 5.0).
+- Target 2, B under 16 ms at z15.5 and closer: met at z17 (8.4 ms), z18.5 and z19.5;
+  **not met at z15.5 (37 ms)**. At B z15.5 the node phase is now 1.8 ms; what remains
+  is way building and painting (16 + 15 ms: casing, strokes, arrows) and fills. B z14 is
+  19.8 ms for the same reason (ways 15 ms).
+- Hover hit test: 0.03 ms (A), 0.09 ms (B) median, unchanged.
+- Load cost: `load.node_cache` rose from 4.7 to 7.0 ms on A and from 49 to 103 ms on
+  B (the density pass: a sort and about 17 hash-set levels).
+
+### zoom 17 on A, v0.3.0 against main (200+ frames each)
+
+Both builds ran the same script, back to back in time order (v0.3.0 first, then main
+before the change), 300 frames per view for v0.3.0 and 200 to 300 for main:
+
+| build | layer paint med / p95 | node loop med | ways phases med | frame interval med |
+|---|---|---|---|---|
+| v0.3.0 rep 1 / 2 | 25.1 / 26.1, 25.1 / 25.7 | 21.1, 21.2 | 3.9, 3.8 | 33.0, 32.8 |
+| main rep 1 / 2 | 32.8 / 33.5, 32.8 / 33.5 | 28.4, 28.5 | 4.3 (build 2.4 + paint 1.7) | 41.1, 41.1 |
+
+There is a real regression of about 7.5 ms (30 percent), reproducible across reps and
+runs, and the node phase carries all of it (+7.3 ms; the ways phases differ by 0.3 ms).
+The per-node loop and `paint_node_marker` are identical in the two builds, so the cause
+is not in that code; it is about 0.35 us more per `paint_quad`. Not identified (not
+isolated: candidates are a different scene state when the quads are recorded, such as
+the larger number of paths already in the scene, or something in the window chrome).
+The density rule removes 90 percent of the quads and so most of it.
