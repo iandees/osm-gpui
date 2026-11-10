@@ -266,6 +266,54 @@ impl UndoableAction {
         seen
     }
 
+    /// Every layer this step touches (a `MoveNodes` or `Batch` can span
+    /// several). Pure, like `affected_features`, but it also reports layers
+    /// whose part of the step names no features (an empty `per_layer` entry).
+    /// The result has no duplicates.
+    pub(crate) fn layers(&self) -> Vec<LayerId> {
+        let mut out: Vec<LayerId> = Vec::new();
+        self.collect_layers(&mut out);
+        out
+    }
+
+    fn collect_layers(&self, out: &mut Vec<LayerId>) {
+        let mut add = |layer: LayerId| {
+            if !out.contains(&layer) {
+                out.push(layer);
+            }
+        };
+        match self {
+            UndoableAction::MoveNodes { per_layer } => {
+                for (layer, _) in per_layer {
+                    add(*layer);
+                }
+            }
+            UndoableAction::SetTags { entries } => {
+                for (feature, ..) in entries {
+                    add(feature.layer_id);
+                }
+            }
+            UndoableAction::CreateNode { layer, .. }
+            | UndoableAction::DeleteFeature { layer, .. }
+            | UndoableAction::CreateWay { layer, .. }
+            | UndoableAction::ExtendWay { layer, .. }
+            | UndoableAction::CreateBuilding { layer, .. }
+            | UndoableAction::ExtrudeWay { layer, .. }
+            | UndoableAction::InsertNodeIntoWay { layer, .. }
+            | UndoableAction::SnapExtendWay { layer, .. }
+            | UndoableAction::ReverseWays { layer, .. }
+            | UndoableAction::SetWayNodes { layer, .. }
+            | UndoableAction::SetRelationMembers { layer, .. }
+            | UndoableAction::CreateRelation { layer, .. }
+            | UndoableAction::DeleteRelation { layer, .. } => add(*layer),
+            UndoableAction::Batch { actions, .. } => {
+                for action in actions {
+                    action.collect_layers(out);
+                }
+            }
+        }
+    }
+
     /// Human-readable label for the history list, e.g. "Moved 3 nodes".
     pub(crate) fn description(&self) -> String {
         match self {
@@ -368,6 +416,34 @@ impl UndoStack {
         before - self.actions.len()
     }
 
+    /// Remove every step (undoable or redoable) that belongs to `layer`,
+    /// keeping the rest in order with the cursor still pointing at the same
+    /// place among them. Returns how many steps were removed. Bumps the
+    /// revision.
+    ///
+    /// Used when the layer is deleted: its steps can never be applied again,
+    /// and applying one to a later layer would be worse than a no-op.
+    ///
+    /// Rule for steps spanning layers (a `MoveNodes` with several `per_layer`
+    /// lists, a `Batch` with parts in several layers): the whole step goes if
+    /// any part belongs to `layer`. Trimming only that part would leave a
+    /// step whose label, ordering assumptions (a `Batch` orders its parts so
+    /// each is valid after the previous one) and selection afterwards no
+    /// longer match what was recorded. The surviving layers' edits stay in
+    /// place; they just can't be undone from the history any more.
+    pub(crate) fn remove_layer(&mut self, layer: LayerId) -> usize {
+        let belongs = |a: &UndoableAction| a.layers().contains(&layer);
+        let before = self.actions.len();
+        let below_cursor_removed = self.actions[..self.cursor]
+            .iter()
+            .filter(|a| belongs(a))
+            .count();
+        self.actions.retain(|a| !belongs(a));
+        self.cursor -= below_cursor_removed;
+        self.revision += 1;
+        before - self.actions.len()
+    }
+
     /// Returns the action to invert, and moves the cursor back. `None` if
     /// there's nothing to undo.
     pub(crate) fn undo(&mut self) -> Option<UndoableAction> {
@@ -446,6 +522,94 @@ mod undo_stack_tests {
         stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
         assert_eq!(stack.remove_touching(&other_layer), 0);
         assert_eq!(stack.actions.len(), 1);
+    }
+
+    fn move_in(layer: u64, id: i64) -> UndoableAction {
+        UndoableAction::MoveNodes {
+            per_layer: vec![(LayerId(layer), vec![(id, (0.0, 0.0), (1.0, 1.0))])],
+        }
+    }
+
+    fn create_in(layer: u64, id: i64) -> UndoableAction {
+        UndoableAction::CreateNode {
+            layer: LayerId(layer),
+            id,
+            lat: 0.0,
+            lon: 0.0,
+        }
+    }
+
+    #[test]
+    fn remove_layer_keeps_other_layers_in_order_around_a_middle_cursor() {
+        let mut stack = UndoStack::default();
+        stack.push(move_in(1, 1)); // 0 keep
+        stack.push(move_in(2, 2)); // 1 drop
+        stack.push(create_in(1, -1)); // 2 keep
+        stack.push(create_in(2, -2)); // 3 drop (redoable)
+        stack.push(move_in(1, 3)); // 4 keep (redoable)
+        stack.push(move_in(2, 4)); // 5 drop (redoable)
+        stack.undo();
+        stack.undo();
+        stack.undo();
+        assert_eq!(stack.cursor, 3);
+        let revision = stack.revision;
+        assert_eq!(stack.remove_layer(LayerId(2)), 3);
+        assert!(stack.revision > revision);
+        assert_eq!((stack.actions.len(), stack.cursor), (3, 2));
+        assert!(stack.actions.iter().all(|a| a.layers() == vec![LayerId(1)]));
+        // Undoing walks back through the two surviving steps below the
+        // cursor, redo returns the surviving one above it.
+        assert_eq!(stack.undo().unwrap().description(), "Created 1 node");
+        assert_eq!(stack.undo().unwrap().description(), "Moved 1 node");
+        assert!(stack.undo().is_none());
+        stack.redo();
+        stack.redo();
+        assert_eq!(stack.redo().unwrap().description(), "Moved 1 node");
+        assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn remove_layer_drops_whole_steps_spanning_layers() {
+        let mut stack = UndoStack::default();
+        stack.push(UndoableAction::MoveNodes {
+            per_layer: vec![
+                (LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))]),
+                (LayerId(2), vec![(2, (0.0, 0.0), (1.0, 1.0))]),
+            ],
+        });
+        stack.push(UndoableAction::Batch {
+            label: "mixed".into(),
+            actions: vec![create_in(1, -1), create_in(3, -2)],
+        });
+        stack.push(UndoableAction::Batch {
+            label: "only one".into(),
+            actions: vec![create_in(1, -3), move_in(1, 5)],
+        });
+        // A layer with an empty entry still counts as touched.
+        stack.push(UndoableAction::MoveNodes {
+            per_layer: vec![
+                (LayerId(1), vec![(9, (0.0, 0.0), (1.0, 1.0))]),
+                (LayerId(2), vec![]),
+            ],
+        });
+        assert_eq!(stack.remove_layer(LayerId(2)), 2);
+        assert_eq!(stack.remove_layer(LayerId(3)), 1);
+        assert_eq!(stack.actions.len(), 1);
+        assert_eq!(stack.actions[0].description(), "only one");
+        assert_eq!(stack.cursor, 1);
+    }
+
+    #[test]
+    fn remove_layer_with_nothing_to_remove_changes_nothing() {
+        let mut stack = UndoStack::default();
+        stack.push(move_in(1, 1));
+        stack.push(move_in(1, 2));
+        stack.undo();
+        assert_eq!(stack.remove_layer(LayerId(7)), 0);
+        assert_eq!((stack.actions.len(), stack.cursor), (2, 1));
+        let mut empty = UndoStack::default();
+        assert_eq!(empty.remove_layer(LayerId(1)), 0);
+        assert_eq!(empty.cursor, 0);
     }
 
     #[test]
