@@ -128,6 +128,15 @@ pub fn init_store(settings: AppSettings) {
 pub fn update_store(settings: AppSettings) {
     APP_SETTINGS.update("settings_store", |g| *g = settings.clone());
     save(&settings);
+    // The server may have changed: learn its capabilities in the background
+    // (a no-op when already known). Never from unit tests: no network there.
+    #[cfg(not(test))]
+    {
+        let base = settings.api_base_url();
+        if base.starts_with("http://") || base.starts_with("https://") {
+            crate::capabilities::ensure_fetched(&base);
+        }
+    }
 }
 
 /// Return a snapshot of the current in-memory settings.

@@ -1,11 +1,10 @@
+use crate::capabilities;
 use crate::coordinates::GeoBounds;
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
 };
 use crate::osm::{OsmData, OsmParseError, OsmParser};
 use crate::tr;
-
-const MAX_AREA_SQ_DEG: f64 = 0.25;
 
 #[derive(Debug)]
 pub enum OsmApiError {
@@ -39,12 +38,15 @@ impl std::fmt::Display for OsmApiError {
     }
 }
 
-pub fn check_area(bounds: &GeoBounds) -> Result<(), OsmApiError> {
-    let area = (bounds.max_lon - bounds.min_lon) * (bounds.max_lat - bounds.min_lat);
-    if area > MAX_AREA_SQ_DEG {
-        Err(OsmApiError::AreaTooLarge { area_sq_deg: area })
-    } else {
+/// Refuse `bounds` if the server at `base_url` would (its advertised maximum
+/// area, or the public server's 0.25 sq. degrees until that is known).
+pub fn check_area(bounds: &GeoBounds, base_url: &str) -> Result<(), OsmApiError> {
+    if capabilities::allows_download(base_url, bounds) {
         Ok(())
+    } else {
+        Err(OsmApiError::AreaTooLarge {
+            area_sq_deg: capabilities::Capabilities::bbox_area(bounds),
+        })
     }
 }
 
@@ -78,7 +80,7 @@ pub(crate) fn fetch_bbox_with(
     base_url: &str,
     token: Option<&str>,
 ) -> Result<OsmData, OsmApiError> {
-    check_area(&bounds)?;
+    check_area(&bounds, base_url)?;
 
     let url = build_url(base_url, &bounds);
     let body = fetch_map_body(client, &url, token)?;
@@ -122,7 +124,7 @@ mod tests {
     fn area_check_rejects_large_bbox() {
         let b = GeoBounds::new(40.0, 41.0, -75.0, -74.0);
         assert!(matches!(
-            check_area(&b),
+            check_area(&b, "https://api.openstreetmap.org"),
             Err(OsmApiError::AreaTooLarge { .. })
         ));
     }
@@ -130,13 +132,13 @@ mod tests {
     #[test]
     fn area_check_accepts_small_bbox() {
         let b = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
-        assert!(check_area(&b).is_ok());
+        assert!(check_area(&b, "https://api.openstreetmap.org").is_ok());
     }
 
     #[test]
     fn area_check_accepts_exact_limit() {
         let b = GeoBounds::new(40.0, 40.5, -74.0, -73.5);
-        assert!(check_area(&b).is_ok());
+        assert!(check_area(&b, "https://api.openstreetmap.org").is_ok());
     }
 
     #[test]

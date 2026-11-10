@@ -3,6 +3,10 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+- The OSM server's `/api/capabilities` is read in the background, and its maximum download area now decides when "Zoom in to download" appears (instead of a fixed 0.25 square degrees); the API being reported offline is shown when you try to download.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of

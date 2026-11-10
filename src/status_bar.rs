@@ -138,10 +138,13 @@ impl MapViewer {
         let cursor = self
             .last_mouse_pos
             .map(|position| self.viewport.screen_to_geo(position));
-        // The OSM API refuses downloads above a maximum area; say so up
-        // front rather than only after a Download attempt fails.
-        let too_large_to_download =
-            osm_gpui::osm_api::check_area(&self.viewport.visible_bounds()).is_err();
+        // The OSM API refuses downloads above a maximum area (advertised by
+        // the server's capabilities); say so up front rather than only after
+        // a Download attempt fails.
+        let too_large_to_download = !osm_gpui::capabilities::allows_download(
+            &settings_store::api_base_url(),
+            &self.viewport.visible_bounds(),
+        );
 
         let segment = || div().flex_shrink_0();
 
