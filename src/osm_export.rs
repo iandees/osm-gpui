@@ -143,7 +143,7 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
     let _ = writeln!(
         out,
         "<osm version=\"0.6\" generator=\"{}\">",
-        xml_escape(crate::USER_AGENT)
+        xml_escape(crate::CREATED_BY)
     );
     if let Some(bounds) = &current.bounds {
         let _ = writeln!(
