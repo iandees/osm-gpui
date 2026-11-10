@@ -564,6 +564,9 @@ struct MapViewer {
     /// when it reopens. Cleared after a successful upload.
     upload_comment_draft: String,
     sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
+    /// Active "can't do that" notice (an upload refused for a server size
+    /// limit), if open.
+    notice_dialog: Option<gpui::Entity<osm_gpui::ui::notice_dialog::NoticeDialog>>,
     /// The tag currently being edited in place in the Tags table, if any.
     tag_inline_edit: Option<InlineTagEdit>,
     /// A request to start an inline tag edit, recorded by a cell/button
@@ -816,6 +819,7 @@ impl MapViewer {
             upload_dialog: None,
             upload_comment_draft: String::new(),
             sign_in_dialog: None,
+            notice_dialog: None,
             tag_inline_edit: None,
             fields_more_open_for: None,
             // Scripted runs use the default width, not the user's saved one,
@@ -4223,7 +4227,10 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.upload_dialog.is_some() || self.sign_in_dialog.is_some() {
+        if self.upload_dialog.is_some()
+            || self.sign_in_dialog.is_some()
+            || self.notice_dialog.is_some()
+        {
             return;
         }
 
@@ -4251,6 +4258,23 @@ impl MapViewer {
             })
             .collect();
 
+        // Refuse up front what the server would reject: a way or relation
+        // over its size limit. This comes before the sign-in check: it is
+        // about the data, and signing in would not help. More changes than
+        // one changeset holds are not refused: they are sent as several
+        // changesets.
+        let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
+        let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
+            pending.iter().map(|(_, d)| d).collect();
+        if let Err(violation) = osm_gpui::limits::check_upload(&diffs, &limits) {
+            self.refuse_upload(
+                &violation,
+                pending.iter().map(|(id, _)| *id).collect(),
+                window,
+                cx,
+            );
+            return;
+        }
         use osm_gpui::ui::upload_dialog::{plan_upload, UploadPlan};
         match plan_upload(signed_in_name, &summaries) {
             UploadPlan::SignIn => {
@@ -4268,17 +4292,6 @@ impl MapViewer {
             UploadPlan::ShowDialog => {}
         }
 
-        // Refuse up front what the server would reject: a way or relation
-        // over its size limit. More changes than one changeset holds are not
-        // refused: they are sent as several changesets.
-        let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
-        let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
-            pending.iter().map(|(_, d)| d).collect();
-        if let Err(violation) = osm_gpui::limits::check_upload(&diffs, &limits) {
-            self.refuse_upload(&violation, pending.iter().map(|(id, _)| *id).collect());
-            cx.notify();
-            return;
-        }
         let changesets =
             match osm_gpui::upload_chunks::plan_chunks(&diffs, limits.changeset_elements) {
                 Ok(chunks) => chunks.len(),
@@ -4322,13 +4335,16 @@ impl MapViewer {
     }
 
     /// Report why the upload can't go ahead (see `limits::check_upload`) in
-    /// the status bar, and for a way or relation over its limit select it and
-    /// zoom to it. `layers` are the layers the violation's `layer` index
-    /// refers to, in diff order.
+    /// a dialog that names the object and the limit (and in the status bar),
+    /// and for a way or relation over its limit select it and zoom to it.
+    /// `layers` are the layers the violation's `layer` index refers to, in
+    /// diff order.
     fn refuse_upload(
         &mut self,
         violation: &osm_gpui::limits::LimitViolation,
         layers: Vec<LayerId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
         use osm_gpui::limits::LimitViolation;
         use osm_gpui::selection::{FeatureKind, FeatureRef};
@@ -4347,6 +4363,24 @@ impl MapViewer {
             }
         }
         self.set_status(violation.message());
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::notice_dialog::NoticeDialog::new(
+                tr!("dialog.upload.refused_title"),
+                violation.message(),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, _event: &osm_gpui::ui::notice_dialog::DialogEvent, cx| {
+                this.notice_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.notice_dialog = Some(dialog);
+        cx.notify();
     }
 
     /// Show the "sign in to upload" prompt. "Open Settings" closes it and
@@ -4803,9 +4837,9 @@ impl MapViewer {
                 // or dropped along with it).
                 tainted.extend(self.resolution_taint(layer_id, kind, id, &server));
                 self.layer_manager
-                .find_layer_mut(layer_id)
-                .and_then(|l| l.as_editable_mut())
-                .is_some_and(|e| e.adopt_server_element(kind, id, server))
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .is_some_and(|e| e.adopt_server_element(kind, id, server))
             }
             ConflictAction::DropMyChange => {
                 tainted.push(osm_gpui::selection::FeatureRef { layer_id, kind, id });
@@ -5860,6 +5894,7 @@ impl Render for MapViewer {
             .children(self.relation_picker_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
+            .children(self.notice_dialog.clone())
             .children(self.render_context_menu(window, cx))
     }
 }
@@ -8953,6 +8988,15 @@ mod tests {
                 assert_eq!(view.selected.len(), 1);
                 assert_eq!(view.selected[0].id, 100);
                 assert_eq!(view.selected[0].layer_id, layer_id);
+                // The refusal is also a dialog naming the object and limit,
+                // and it is shown to a signed-out user too (signing in would
+                // not help).
+                let notice = view.notice_dialog.clone().expect("refusal dialog");
+                assert!(notice.read(cx).message().contains("Way 100 has 2,104 nodes"));
+                assert!(notice.read(cx).message().contains("allows 2,000"));
+                view.notice_dialog = None;
+                view.open_upload_dialog_as(None, window, cx);
+                assert!(view.notice_dialog.is_some() && view.sign_in_dialog.is_none());
             })
             .unwrap();
     }
@@ -9136,10 +9180,8 @@ mod tests {
                     relation_id,
                     index: 0,
                 };
-                let preset_tags = std::collections::HashMap::from([(
-                    "amenity".to_string(),
-                    "cafe".to_string(),
-                )]);
+                let preset_tags =
+                    std::collections::HashMap::from([("amenity".to_string(), "cafe".to_string())]);
                 select(view, FeatureKind::Node, &[1]);
 
                 // Each edit, as the side panel makes it.

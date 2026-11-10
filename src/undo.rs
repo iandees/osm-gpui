@@ -351,10 +351,7 @@ impl UndoStack {
     /// and don't depend on the removed steps, so they stay valid; any step
     /// that does name one (a `Batch` counts if any part of it does) could
     /// resurrect a stale version or content, so it goes.
-    pub(crate) fn remove_touching(
-        &mut self,
-        tainted: &[osm_gpui::selection::FeatureRef],
-    ) -> usize {
+    pub(crate) fn remove_touching(&mut self, tainted: &[osm_gpui::selection::FeatureRef]) -> usize {
         let touches = |a: &UndoableAction| {
             a.affected_features()
                 .iter()

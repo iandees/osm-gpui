@@ -558,6 +558,7 @@ dialog:
     comment_label: "Kommentar zum Änderungssatz"
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
     failed: "Hochladen fehlgeschlagen"
+    refused_title: "Hochladen noch nicht möglich"
     retry: "Erneut versuchen"
     large:
       one: "Dieser Upload ist groß und wird als %{count} Änderungssatz gesendet."
@@ -575,6 +576,8 @@ dialog:
       hint_deleted: "Jemand hat das Objekt auf dem Server gelöscht. Zeige es an und entferne deine Änderungen daran oder mache sie an anderer Stelle neu."
       hint_deleted_both: "Du hast es auch gelöscht, daher gibt es dafür nichts mehr hochzuladen. „Meine Änderung verwerfen“ vergisst dein Löschen."
       hint_related: "Korrigiere die beteiligten Objekte („Anzeigen“ findet sie) und versuche es erneut."
+  notice:
+    ok: "OK"
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."

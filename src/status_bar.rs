@@ -123,6 +123,10 @@ impl MapViewer {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
 
+        // A status message is never cut off: it wraps onto more lines (the
+        // bar grows) instead of ending in an ellipsis. The mode hints and
+        // transfer progress keep the single-line form.
+        let wraps = self.transfer.is_none() && self.status_message.is_some();
         let left = if let Some(progress) = self.transfer.as_ref().map(|t| t.snapshot()) {
             let cancellable = progress.is_cancellable();
             div()
@@ -188,7 +192,7 @@ impl MapViewer {
 
         div()
             .id("status-bar")
-            .h(px(STATUS_BAR_HEIGHT))
+            .min_h(px(STATUS_BAR_HEIGHT))
             .w_full()
             .flex_shrink_0()
             .flex()
@@ -204,9 +208,10 @@ impl MapViewer {
             .child(
                 left.flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis(),
+                    .when(wraps, |left| left.whitespace_normal().py_1())
+                    .when(!wraps, |left| {
+                        left.overflow_hidden().whitespace_nowrap().text_ellipsis()
+                    }),
             )
             .when(too_large_to_download, |bar| {
                 bar.child(segment().child(tr!("status.zoom_in_to_download")))
