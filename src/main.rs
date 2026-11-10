@@ -2210,7 +2210,7 @@ impl MapViewer {
         }]);
     }
 
-    /// Edit > Select All: every node and way in the active layer.
+    /// Edit > Select All: every node, way and relation in the active layer.
     fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         let all = self
             .active_layer
