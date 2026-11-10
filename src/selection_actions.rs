@@ -742,6 +742,11 @@ fn apply_join(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = join_ways_in(editable, layer_id, selection);
     let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
+    if let Some(m) =
+        osm_gpui::limits::way_over_limit(plan.nodes.len(), osm_gpui::limits::join_message)
+    {
+        return Err(m);
+    }
     // Work out the relations' new member lists before changing anything, so
     // a refusal leaves no trace.
     let mut relation_ids: Vec<i64> = plan
@@ -1082,6 +1087,22 @@ fn apply_split(
         way_nodes.insert(placeholder(k), plan.new.clone());
     }
 
+    // The new halves are added to the relations the way is in; refuse if that
+    // would push one past the server's member maximum (nothing is changed yet).
+    for relation in &relations {
+        let grew = editable
+            .relation(relation.id)
+            .is_some_and(|r| relation.members.len() > r.members.len());
+        if grew {
+            if let Some(m) = osm_gpui::limits::relation_over_limit(
+                relation.members.len(),
+                osm_gpui::limits::relation_add_message,
+            ) {
+                return Err(m);
+            }
+        }
+    }
+
     let mut actions = Vec::new();
     let mut new_ids = Vec::new();
     for plan in plans.iter() {
@@ -1357,6 +1378,11 @@ fn apply_new_relation(
     if members.is_empty() {
         return Err(tr!("action.new_relation.hint").to_string());
     }
+    if let Some(m) =
+        osm_gpui::limits::relation_over_limit(members.len(), osm_gpui::limits::relation_new_message)
+    {
+        return Err(m);
+    }
     let count = members.len();
     let id = editable
         .create_relation(Vec::new(), members)
@@ -1402,6 +1428,11 @@ pub(crate) fn add_to_relation(
     let candidates = member_candidates(editable, layer_id, selection);
     let after = osm_gpui::relations::add_members(&relation.members, &candidates)
         .ok_or_else(|| tr!("action.add_to_relation.already", relation = name).to_string())?;
+    if let Some(m) =
+        osm_gpui::limits::relation_over_limit(after.len(), osm_gpui::limits::relation_add_message)
+    {
+        return Err(m);
+    }
     let added = after.len() - relation.members.len();
     let before = editable
         .set_relation_members(relation_id, after.clone())
@@ -3312,5 +3343,120 @@ mod tests {
             "Select an open way, or the end node of one, to continue drawing it"
         );
         assert!(n.run("extend", &n.ways(&[108])).is_err());
+    }
+
+    // -- server size limits (default limits: 2,000 way nodes, 32,000 members) --
+
+    /// Way 100 reshaped to `len` nodes that start at node 1 and end at node 3
+    /// (the node it shares with way 101), the middle being node 2 repeated.
+    fn long_way_100(n: &mut Net, len: usize) {
+        let mut nodes = vec![1];
+        nodes.extend(std::iter::repeat_n(2, len - 2));
+        nodes.push(3);
+        assert!(n.editable_mut().set_way_nodes(100, nodes));
+    }
+
+    #[test]
+    fn join_is_refused_when_the_result_would_pass_the_way_node_limit() {
+        // 100 + 101 [3,4,5] share node 3, so the join is len + 2 nodes.
+        let mut n = net();
+        long_way_100(&mut n, 1999);
+        let Err(message) = n.run("join", &n.ways(&[100, 101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: the combined way would have 2,001 nodes; the server allows 2,000"
+        );
+        // Nothing changed: both ways are still there.
+        assert_eq!(n.editable().way_node_ids(100).unwrap().len(), 1999);
+        assert!(n.editable().way_node_ids(101).is_some());
+
+        // Exactly at the limit is fine.
+        let mut n = net();
+        long_way_100(&mut n, 1998);
+        n.run("join", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(n.editable().way_node_ids(100).unwrap().len(), 2000);
+    }
+
+    #[test]
+    fn an_already_oversized_way_can_still_be_edited_otherwise() {
+        let mut n = net();
+        long_way_100(&mut n, 2001);
+        n.run("reverse", &n.ways(&[100])).unwrap();
+        assert_eq!(n.editable().way_node_ids(100).unwrap()[0], 3);
+    }
+
+    fn members_of_kind(count: usize) -> Vec<osm_gpui::osm::OsmMember> {
+        (0..count)
+            .map(|i| osm_gpui::osm::OsmMember {
+                member_type: MemberType::Node,
+                reference: 1000 + i as i64,
+                role: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn add_to_relation_is_refused_past_the_member_limit() {
+        // Relation 900 with 31,999 members: one more is the limit, two is over.
+        let mut n = net_with(relation_900("route", &[]));
+        n.editable_mut()
+            .set_relation_members(900, members_of_kind(31_999));
+        let node1 = n.feature(FeatureKind::Node, 1);
+        let node2 = n.feature(FeatureKind::Node, 2);
+
+        let result = add_to_relation(&mut n.layers, &[node1, node2], Some(n.layer_id), 900);
+        assert_eq!(
+            result.err().as_deref(),
+            Some(
+                "Can't add to the relation: it would have 32,001 members; the server allows 32,000"
+            )
+        );
+        assert_eq!(n.editable().relation(900).unwrap().members.len(), 31_999);
+
+        add_to_relation(&mut n.layers, &[node1], Some(n.layer_id), 900).unwrap();
+        assert_eq!(n.editable().relation(900).unwrap().members.len(), 32_000);
+    }
+
+    #[test]
+    fn new_relation_is_refused_past_the_member_limit() {
+        let mut n = net();
+        let existing = n.editable().relation_ids().len();
+        let mut selection = Vec::new();
+        for i in 0..32_001 {
+            let id = n.editable_mut().add_node(1.0 + i as f64 * 1e-6, 2.0);
+            selection.push(n.feature(FeatureKind::Node, id));
+        }
+        let Err(message) = n.run("new_relation", &selection) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't create the relation: 32,001 members is more than the server allows (32,000)"
+        );
+        assert_eq!(n.editable().relation_ids().len(), existing);
+
+        selection.pop();
+        n.run("new_relation", &selection).unwrap();
+        assert_eq!(n.editable().relation_ids().len(), existing + 1);
+    }
+
+    #[test]
+    fn split_is_refused_when_a_full_relation_could_not_take_the_new_half() {
+        use MemberType::Way;
+        let mut members = vec![(Way, 101, "")];
+        members.extend(std::iter::repeat_n((Way, 100, ""), 31_999));
+        let mut n = net_with(relation_900("route", &members));
+        let Err(message) = n.run("split", &n.at_4_in(101)) else {
+            panic!("expected a refusal");
+        };
+        assert!(
+            message.contains("32,001") && message.contains("32,000"),
+            "{message}"
+        );
+        // Changed nothing: no new way, way 101 intact.
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        assert!(!n.layer().is_modified());
     }
 }

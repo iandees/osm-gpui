@@ -2759,6 +2759,9 @@ impl MapViewer {
     /// Double-click on a segment (no drag): insert a new node at the
     /// double-click position, splitting that segment.
     fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        if self.refuse_way_growth(drag.layer, drag.way_id, 1) {
+            return;
+        }
         let (lat, lon) = self.viewport.screen_to_geo(up_pos);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
             return;
@@ -2812,6 +2815,26 @@ impl MapViewer {
         self.fields_promoted_more_fields.clear();
     }
 
+    /// Edit-time server limit: whether growing way `way_id` by `by` nodes
+    /// would pass the server's way-node maximum. If so, say so in the status
+    /// bar and return true (the caller abandons the edit). A way already over
+    /// the limit stays editable otherwise: only growing it is refused.
+    fn refuse_way_growth(&mut self, layer_id: LayerId, way_id: i64, by: usize) -> bool {
+        let len = self
+            .layer_manager
+            .find_layer(layer_id)
+            .and_then(|l| l.as_editable())
+            .and_then(|e| e.way_node_ids(way_id))
+            .map_or(0, |nodes| nodes.len());
+        match osm_gpui::limits::way_over_limit(len + by, osm_gpui::limits::way_full_message) {
+            Some(message) => {
+                self.set_status(message);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Add mode: place a node, or extend/connect the in-progress way. See
     /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode"
     /// and docs/superpowers/specs/2026-07-08-add-mode-snap-to-way-design.md
@@ -2823,6 +2846,14 @@ impl MapViewer {
             return;
         };
         let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
+
+        // Every click after the first grows the way being drawn by a node.
+        let drawing_way = self.add_progress.as_ref().and_then(|p| p.way_id);
+        if let Some(way_id) = drawing_way {
+            if self.refuse_way_growth(layer_id, way_id, 1) {
+                return;
+            }
+        }
 
         // Clicking an existing node/way finishes the in-progress way by
         // connecting to it. Skipped entirely when Ctrl is held.
@@ -2860,6 +2891,14 @@ impl MapViewer {
                 .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
                 .and_then(|osm_layer| osm_layer.snap_to_way(&self.viewport, screen_pt, 6.0))
         };
+
+        // Snapping splices a node into the way under the cursor.
+        if let Some((snap_way, ..)) = snap_hit {
+            let by = 1 + usize::from(drawing_way == Some(snap_way));
+            if self.refuse_way_growth(layer_id, snap_way, by) {
+                return;
+            }
+        }
 
         // Note: `find_layer_mut` is re-called in each arm below (rather than
         // binding `layer` once above the match) so its mutable borrow ends
@@ -3677,13 +3716,21 @@ impl MapViewer {
             return;
         }
 
+        let pending: Vec<(LayerId, osm_gpui::layers::diff::LayerDiff)> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|l| l.is_modified())
+            .map(|l| (l.id(), l.diff_for_upload()))
+            .collect();
         let summaries: Vec<osm_gpui::ui::upload_dialog::LayerSummary> = self
             .layer_manager
             .layers()
             .iter()
             .filter(|l| l.is_modified())
-            .map(|l| {
-                let (created, modified, deleted) = l.diff_for_upload().counts();
+            .zip(&pending)
+            .map(|(l, (_, diff))| {
+                let (created, modified, deleted) = diff.counts();
                 osm_gpui::ui::upload_dialog::LayerSummary {
                     layer_name: l.name().to_string(),
                     created,
@@ -3710,6 +3757,17 @@ impl MapViewer {
             UploadPlan::ShowDialog => {}
         }
 
+        // Refuse up front what the server would reject: a way/relation over
+        // its size limit, or more changes than one changeset holds.
+        let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
+        let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
+            pending.iter().map(|(_, d)| d).collect();
+        if let Err(violation) = osm_gpui::limits::check_upload(&diffs, &limits) {
+            self.refuse_upload(&violation, pending.iter().map(|(id, _)| *id).collect());
+            cx.notify();
+            return;
+        }
+
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         cx.subscribe(
@@ -3732,6 +3790,35 @@ impl MapViewer {
         .detach();
         self.upload_dialog = Some(dialog);
         cx.notify();
+    }
+
+    /// Report why the upload can't go ahead (see `limits::check_upload`) in
+    /// the status bar, and for a way or relation over its limit select it and
+    /// zoom to it. `layers` are the layers the violation's `layer` index
+    /// refers to, in diff order.
+    fn refuse_upload(
+        &mut self,
+        violation: &osm_gpui::limits::LimitViolation,
+        layers: Vec<LayerId>,
+    ) {
+        use osm_gpui::limits::LimitViolation;
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+
+        let target = match *violation {
+            LimitViolation::WayTooLong { layer, id, .. } => Some((layer, FeatureKind::Way, id)),
+            LimitViolation::RelationTooLarge { layer, id, .. } => {
+                Some((layer, FeatureKind::Relation, id))
+            }
+            LimitViolation::TooManyElements { .. } => None,
+        };
+        if let Some((layer, kind, id)) = target {
+            if let Some(&layer_id) = layers.get(layer) {
+                let feature = FeatureRef { layer_id, kind, id };
+                self.set_selection(vec![feature]);
+                self.fit_to_features(&[feature]);
+            }
+        }
+        self.set_status(violation.message());
     }
 
     /// Show the "sign in to upload" prompt. "Open Settings" closes it and
@@ -7262,6 +7349,126 @@ mod tests {
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("Select an open way, or the end node of one, to continue drawing it")
                 );
+            })
+            .unwrap();
+    }
+
+    /// Way 100 reshaped to `len` nodes, still from node 1 to node 3.
+    fn long_way_nodes(len: usize) -> Vec<i64> {
+        let mut nodes = vec![1];
+        nodes.extend(std::iter::repeat_n(2, len - 2));
+        nodes.push(3);
+        nodes
+    }
+
+    #[gpui::test]
+    fn add_mode_refuses_to_grow_a_way_past_the_node_limit(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100]);
+                view.run_selection_action("extend", cx);
+                let set = |view: &mut MapViewer, len| {
+                    view.layer_manager
+                        .find_layer_mut(layer_id)
+                        .and_then(|l| l.as_editable_mut())
+                        .unwrap()
+                        .set_way_nodes(100, long_way_nodes(len));
+                };
+
+                // 1,999 nodes: one more click reaches the limit exactly.
+                set(view, 1999);
+                view.handle_add_click(empty_spot(view, 0.0), false);
+                assert_eq!(way_nodes(view, layer_id, 100).len(), 2000);
+                let undo_steps = view.undo_stack.actions.len();
+
+                // At the limit the next click is refused, with a message,
+                // and changes nothing (no node, no undo step).
+                let before = pending(view);
+                view.handle_add_click(empty_spot(view, 0.001), false);
+                assert_eq!(way_nodes(view, layer_id, 100).len(), 2000);
+                assert_eq!(pending(view), before);
+                assert_eq!(view.undo_stack.actions.len(), undo_steps);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("A way can have at most 2,000 nodes on this server")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn inserting_a_node_on_a_full_way_is_refused(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .set_way_nodes(100, long_way_nodes(2000));
+                let before = pending(view);
+                let drag = ExtrudeDrag {
+                    layer: layer_id,
+                    way_id: 100,
+                    node_a: 1,
+                    node_b: 2,
+                    down: point(px(0.0), px(0.0)),
+                };
+                view.insert_node_on_segment(&drag, point(px(400.0), px(300.0)));
+                assert_eq!(way_nodes(view, layer_id, 100).len(), 2000);
+                assert_eq!(pending(view), before);
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .set_way_nodes(100, long_way_nodes(2104));
+                view.open_upload_dialog_as(Some("me"), window, cx);
+                assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some(
+                        "Way 100 has 2,104 nodes; the server allows 2,000. Split it before uploading."
+                    )
+                );
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 100);
+                assert_eq!(view.selected[0].layer_id, layer_id);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn an_unmodified_oversized_way_does_not_block_other_changes(cx: &mut TestAppContext) {
+        let window = setup_network_with(cx, |data| {
+            data.ways.get_mut(&100).unwrap().nodes = long_way_nodes(2500);
+        });
+        window
+            .update(cx, |view, _window, _cx| {
+                make_pending_change(view);
+                let layer_id = view.active_layer.unwrap();
+                let diff = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .diff_for_upload();
+                assert!(diff.modified_ways.is_empty());
+                let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
+                assert_eq!(osm_gpui::limits::check_upload(&[&diff], &limits), Ok(()));
             })
             .unwrap();
     }

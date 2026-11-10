@@ -186,6 +186,19 @@ status:
       other: "%{count} lokale Änderungen behalten"
     separator: ", "
 
+# Größenlimits des OSM-Servers (Knoten pro Weg, Mitglieder pro Relation,
+# Elemente pro Änderungssatz). Zahlen kommen bereits mit Tausendertrennung an.
+limits:
+  upload:
+    way: "Weg %{id} hat %{nodes} Knoten; der Server erlaubt %{max}. Vor dem Hochladen aufteilen."
+    relation: "Relation %{id} hat %{members} Mitglieder; der Server erlaubt %{max}. Vor dem Hochladen einige Mitglieder entfernen."
+    changeset: "Dieser Upload enthält %{count} Änderungen; der Server erlaubt %{max} pro Änderungssatz. Weniger Änderungen auf einmal hochladen."
+  edit:
+    way_full: "Ein Weg darf auf diesem Server höchstens %{max} Knoten haben"
+    join: "Verbinden nicht möglich: der gemeinsame Weg hätte %{nodes} Knoten; der Server erlaubt %{max}"
+    relation_add: "Hinzufügen nicht möglich: die Relation hätte %{members} Mitglieder; der Server erlaubt %{max}"
+    relation_new: "Relation kann nicht erstellt werden: %{members} Mitglieder sind mehr als der Server erlaubt (%{max})"
+
 # Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
 # aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
 panel:
