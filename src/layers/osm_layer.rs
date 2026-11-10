@@ -2867,6 +2867,21 @@ impl EditableLayer for OsmLayer {
             return None;
         }
         let data = self.osm_data.as_ref()?;
+        if feature.kind == FeatureKind::Node {
+            // Same answer as `classify_geometry`, from the node-to-ways
+            // index instead of a scan of every way: a relation lists many
+            // nodes and this runs for each of them every frame.
+            data.nodes.get(&feature.id)?;
+            let used = self
+                .node_to_ways
+                .get(&feature.id)
+                .is_some_and(|ways| !ways.is_empty());
+            return Some(if used {
+                crate::presets::Geometry::Vertex
+            } else {
+                crate::presets::Geometry::Point
+            });
+        }
         crate::presets::classify_geometry(data, feature.kind, feature.id, area_keys)
     }
 

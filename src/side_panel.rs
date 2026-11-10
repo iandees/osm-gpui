@@ -53,6 +53,8 @@ impl MapViewer {
         let history_section = self.render_history_section(cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
+        let members_section = self.render_members_section(cx);
+        let open_members = self.side_panel_open[6];
 
         let open_layers = self.side_panel_open[0];
         let open_selection = self.side_panel_open[1];
@@ -132,6 +134,15 @@ impl MapViewer {
                         tags_section,
                         cx,
                     ))
+                    .children(members_section.map(|(count, section)| {
+                        self.collapsible_section(
+                            tr_count!("panel.members.title_count", count),
+                            6,
+                            open_members,
+                            section,
+                            cx,
+                        )
+                    }))
                     .children(relations_section.map(|section| {
                         self.collapsible_section(
                             tr!("panel.relations.title"),
@@ -194,6 +205,258 @@ impl MapViewer {
             }
         }
         memberships
+    }
+
+    /// How many members the Members list renders before "Show all": a route
+    /// can have hundreds, and every row is several elements.
+    const MEMBERS_INITIAL_ROWS: usize = 100;
+
+    /// The Members accordion section for a single selected relation, with
+    /// its member count (for the title): the ordered member list, each with
+    /// a name that selects it, an editable role, and move/remove buttons.
+    /// `None` unless exactly one relation is selected.
+    fn render_members_section(&self, cx: &mut Context<Self>) -> Option<(usize, gpui::AnyElement)> {
+        use crate::MemberRef;
+        use gpui_component::Disableable as _;
+        use osm_gpui::osm::MemberType;
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+
+        let [feature] = self.selected.as_slice() else {
+            return None;
+        };
+        if feature.kind != FeatureKind::Relation {
+            return None;
+        }
+        let layer_id = feature.layer_id;
+        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
+        let relation = editable.relation(feature.id)?;
+        let total = relation.members.len();
+        let muted = cx.theme().muted_foreground;
+        if total == 0 {
+            return Some((
+                0,
+                Label::new(tr!("panel.members.empty"))
+                    .text_color(muted)
+                    .into_any_element(),
+            ));
+        }
+        let shown = if self.members_show_all {
+            total
+        } else {
+            total.min(Self::MEMBERS_INITIAL_ROWS)
+        };
+
+        let rows = relation
+            .members
+            .iter()
+            .enumerate()
+            .take(shown)
+            .map(|(i, member)| {
+                let member_ref = MemberRef {
+                    layer_id,
+                    relation_id: relation.id,
+                    index: i,
+                };
+                let (kind, loaded) = match member.member_type {
+                    MemberType::Node => (
+                        FeatureKind::Node,
+                        editable.node_lat_lon(member.reference).is_some(),
+                    ),
+                    MemberType::Way => (
+                        FeatureKind::Way,
+                        editable.way_node_ids(member.reference).is_some(),
+                    ),
+                    MemberType::Relation => (
+                        FeatureKind::Relation,
+                        editable.relation(member.reference).is_some(),
+                    ),
+                };
+                let target = FeatureRef {
+                    layer_id,
+                    kind,
+                    id: member.reference,
+                };
+                let described = loaded
+                    .then(|| self.describe_selected_feature(&target))
+                    .flatten()
+                    .map(|(name, _)| name);
+                let label = osm_gpui::relations::member_label(
+                    member.member_type,
+                    member.reference,
+                    loaded,
+                    described.as_deref(),
+                );
+                let letter: String = osm_gpui::relations::kind_label(member.member_type)
+                    .chars()
+                    .take(1)
+                    .collect();
+
+                let name = div()
+                    .id(("member-name", i))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(label);
+                let name = if loaded {
+                    let hover_bg = cx.theme().list_hover;
+                    name.cursor_pointer()
+                        .rounded_sm()
+                        .hover(move |this| this.bg(hover_bg))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                this.set_selection(vec![target]);
+                                cx.notify();
+                            }),
+                        )
+                } else {
+                    name.italic().text_color(muted)
+                };
+
+                let button = |id: &'static str, icon: IconName, tip: SharedString| {
+                    Button::new((id, i))
+                        .icon(icon)
+                        .ghost()
+                        .xsmall()
+                        .tooltip(tip)
+                };
+                let controls = div()
+                    .flex()
+                    .flex_row()
+                    .flex_shrink_0()
+                    .child(
+                        button("member-up", IconName::ArrowUp, tr!("panel.members.move_up"))
+                            .disabled(i == 0)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.move_relation_member(member_ref, -1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        button(
+                            "member-down",
+                            IconName::ArrowDown,
+                            tr!("panel.members.move_down"),
+                        )
+                        .disabled(i + 1 == total)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.move_relation_member(member_ref, 1);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        button(
+                            "member-remove",
+                            IconName::Close,
+                            tr!("panel.members.remove"),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_relation_member(member_ref);
+                            cx.notify();
+                        })),
+                    );
+
+                let role = member.role.clone();
+                let role_line = match self.role_edit.as_ref().filter(|e| e.member == member_ref) {
+                    Some(edit) => {
+                        let sizing = if role.is_empty() {
+                            tr!("panel.members.role")
+                        } else {
+                            SharedString::from(role.clone())
+                        };
+                        self.inline_input_cell(&edit.input, sizing, Self::cancel_role_edit, cx)
+                            .into_any_element()
+                    }
+                    None => {
+                        let text = if role.is_empty() {
+                            div().italic().child(tr!("panel.relations.no_role"))
+                        } else {
+                            div().child(role.clone())
+                        };
+                        text.id(("member-role", i))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .cursor_text()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.pending_role_edit_open = Some((member_ref, role.clone()));
+                                    cx.notify();
+                                }),
+                            )
+                            .into_any_element()
+                    }
+                };
+
+                div()
+                    .id(("member-row", i))
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .h(px(PANEL_ROW_HEIGHT))
+                            .px_1()
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .flex_shrink_0()
+                                    .text_size(muted_text_size())
+                                    .text_color(muted)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(letter),
+                            )
+                            .child(name)
+                            .child(controls),
+                    )
+                    // The role sits under the name, indented past the
+                    // type letter, so a narrow panel has room for both.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .pl(px(24.))
+                            .pr_1()
+                            .pb_1()
+                            .child(role_line),
+                    )
+            });
+
+        let mut column = div().flex().flex_col().gap_0p5().child(
+            div()
+                .id("members-list")
+                .flex()
+                .flex_col()
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .children(rows),
+        );
+        if shown < total {
+            column = column.child(
+                div().flex().flex_row().child(
+                    Button::new("members-show-all")
+                        .label(tr!("panel.members.show_all", count = total))
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.members_show_all = true;
+                            cx.notify();
+                        })),
+                ),
+            );
+        }
+        Some((total, column.into_any_element()))
     }
 
     /// The Relations accordion section: one read-only row per relation the
@@ -592,6 +855,17 @@ impl MapViewer {
         sizing_text: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        self.inline_input_cell(input, sizing_text, Self::cancel_tag_inline_edit, cx)
+    }
+
+    /// `tag_input_cell` for any inline edit: `cancel` is what Escape does.
+    fn inline_input_cell(
+        &self,
+        input: &gpui::Entity<gpui_component::input::InputState>,
+        sizing_text: impl Into<SharedString>,
+        cancel: fn(&mut Self, &mut gpui::Window, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         use gpui_component::Size;
 
         // `Size::Size(s)` renders input text at `s * 0.875` with 8px of
@@ -611,12 +885,14 @@ impl MapViewer {
             .relative()
             .flex_1()
             .min_w(px(0.))
-            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                if ev.keystroke.key == "escape" {
-                    this.cancel_tag_inline_edit(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                    if ev.keystroke.key == "escape" {
+                        cancel(this, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .child(div().invisible().child(sizing_text.into()))
             .child(
                 div()

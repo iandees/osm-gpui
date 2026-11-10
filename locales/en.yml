@@ -120,6 +120,10 @@ status:
   open_failed: "Could not open %{path}: %{error}"
   open_data_first: "Open or download OSM data before drawing"
   tag_needs_key: "A tag needs a key; the edit was discarded"
+  # Removing a member from a relation was refused.
+  member_remove:
+    last: "Can't remove the last member of relation %{relation}"
+    restriction_role: "Can't remove it: turn restriction %{relation} would be left without a '%{role}' member"
   nothing_to_delete: "Nothing to delete"
   deleted_features:
     one: "Deleted %{count} feature"
@@ -201,6 +205,19 @@ panel:
   relations:
     title: "Relations"
     no_role: "(no role)"
+    # A member that is in the relation but not in the loaded data.
+    not_downloaded: "%{kind} %{id} (not downloaded)"
+  members:
+    title_count:
+      one: "Members (%{count})"
+      other: "Members (%{count})"
+    empty: "(no members)"
+    # Placeholder in the role input.
+    role: "role"
+    move_up: "Move up"
+    move_down: "Move down"
+    remove: "Remove from relation"
+    show_all: "Show all %{count}"
   history:
     title: "History"
     empty: "No actions yet."

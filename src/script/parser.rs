@@ -543,6 +543,16 @@ mod tests {
     }
 
     #[test]
+    fn assert_selected_relation_parses() {
+        assert_eq!(
+            parse("assert_selected relation 9101").unwrap()[0].op,
+            Op::AssertSelected {
+                feature: Some((FeatureKind::Relation, 9101))
+            }
+        );
+    }
+
+    #[test]
     fn assert_selected_bad_kind_errors() {
         assert!(parse("assert_selected building 1").is_err());
     }

@@ -120,6 +120,10 @@ status:
   open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
   open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
   tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
+  # Das Entfernen eines Mitglieds aus einer Relation wurde abgelehnt.
+  member_remove:
+    last: "Das letzte Mitglied der Relation %{relation} kann nicht entfernt werden"
+    restriction_role: "Entfernen nicht möglich: Der Abbiegebeschränkung %{relation} würde ein Mitglied mit der Rolle '%{role}' fehlen"
   nothing_to_delete: "Nichts zu löschen"
   deleted_features:
     one: "%{count} Objekt gelöscht"
@@ -201,6 +205,19 @@ panel:
   relations:
     title: "Relationen"
     no_role: "(keine Rolle)"
+    # Ein Mitglied der Relation, das nicht in den geladenen Daten liegt.
+    not_downloaded: "%{kind} %{id} (nicht heruntergeladen)"
+  members:
+    title_count:
+      one: "Mitglieder (%{count})"
+      other: "Mitglieder (%{count})"
+    empty: "(keine Mitglieder)"
+    # Platzhalter im Rolleneingabefeld.
+    role: "Rolle"
+    move_up: "Nach oben"
+    move_down: "Nach unten"
+    remove: "Aus Relation entfernen"
+    show_all: "Alle %{count} anzeigen"
   history:
     title: "Verlauf"
     empty: "Noch keine Aktionen."
