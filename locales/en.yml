@@ -141,10 +141,73 @@ status:
       other: "%{count} local edits kept"
     separator: ", "
 
+# Side panel sections. Preset and field labels shown inside them come from
+# the bundled iD tagging schema and are not translated here.
 panel:
+  layers:
+    title: "Layers"
+    empty: "No layers yet"
+    # Badge on the layer that drawing modes write into.
+    editing: "editing"
+    set_active: "Set as active layer"
+    move_up: "Move up"
+    move_down: "Move down"
+    hide: "Hide"
+    show: "Show"
+    delete: "Delete"
+  selection:
+    title: "Selection"
+    title_count:
+      one: "Selection (%{count} item)"
+      other: "Selection (%{count} items)"
+    empty: "Click or drag to select."
+    node: "Node"
+    way: "Way"
+    # `%{kind}` is the Node/Way label above, `%{id}` the OSM id.
+    row: "%{kind} %{id}"
+    row_named: "%{name} · %{kind} %{id}"
+  fields:
+    title: "Fields"
+    no_selection: "No selection."
+    select_single: "Select a single feature to edit fields."
+    change_type: "Change feature type…"
+    no_preset: "No matched preset."
+    no_fields: "This feature type has no editable fields."
+    add_field: "Add field (%{count})"
   tags:
+    title: "Tags"
+    no_selection: "No selection."
+    add: "Add tag"
     key_placeholder: "key"
     value_placeholder: "value"
+  history:
+    title: "History"
+    empty: "No actions yet."
+
+# Undo history entries.
+history:
+  moved_nodes:
+    one: "Moved %{count} node"
+    other: "Moved %{count} nodes"
+  changed_tags:
+    one: "Changed %{count} tag"
+    other: "Changed %{count} tags"
+  created_node: "Created 1 node"
+  deleted_node: "Deleted 1 node"
+  deleted_way: "Deleted 1 way"
+  extended_way: "Extended a way"
+  created_building: "Created a building"
+  extruded_way: "Extruded a way"
+  inserted_node: "Inserted a node into a way"
+  snapped_node: "Snapped a node onto a way"
+
+# Generic feature names used when no preset matches.
+geometry:
+  point: "Point"
+  vertex: "Vertex"
+  line: "Line"
+  area: "Area"
+  relation: "Relation"
 
 settings:
   window_title: "Settings"

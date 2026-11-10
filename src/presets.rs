@@ -46,13 +46,13 @@ impl Geometry {
     /// Name used when no preset matches at all (should be rare in
     /// practice, since the vendored schema itself includes a
     /// geometry-only fallback preset per `Geometry` variant).
-    pub fn fallback_name(&self) -> &'static str {
+    pub fn fallback_name(&self) -> gpui::SharedString {
         match self {
-            Geometry::Point => "Point",
-            Geometry::Vertex => "Vertex",
-            Geometry::Line => "Line",
-            Geometry::Area => "Area",
-            Geometry::Relation => "Relation",
+            Geometry::Point => crate::tr!("geometry.point"),
+            Geometry::Vertex => crate::tr!("geometry.vertex"),
+            Geometry::Line => crate::tr!("geometry.line"),
+            Geometry::Area => crate::tr!("geometry.area"),
+            Geometry::Relation => crate::tr!("geometry.relation"),
         }
     }
 }

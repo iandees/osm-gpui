@@ -125,29 +125,31 @@ impl UndoableAction {
         match self {
             UndoableAction::MoveNodes { per_layer } => {
                 let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
-                if count == 1 {
-                    "Moved 1 node".to_string()
-                } else {
-                    format!("Moved {} nodes", count)
-                }
+                osm_gpui::tr_count!("history.moved_nodes", count).to_string()
             }
             UndoableAction::SetTags { entries } => {
-                if entries.len() == 1 {
-                    "Changed 1 tag".to_string()
-                } else {
-                    format!("Changed {} tags", entries.len())
-                }
+                osm_gpui::tr_count!("history.changed_tags", entries.len()).to_string()
             }
-            UndoableAction::CreateNode { .. } => "Created 1 node".to_string(),
+            UndoableAction::CreateNode { .. } => osm_gpui::tr!("history.created_node").to_string(),
             UndoableAction::DeleteFeature { snapshot, .. } => match snapshot.kind {
-                osm_gpui::selection::FeatureKind::Node => "Deleted 1 node".to_string(),
-                osm_gpui::selection::FeatureKind::Way => "Deleted 1 way".to_string(),
+                osm_gpui::selection::FeatureKind::Node => {
+                    osm_gpui::tr!("history.deleted_node").to_string()
+                }
+                osm_gpui::selection::FeatureKind::Way => {
+                    osm_gpui::tr!("history.deleted_way").to_string()
+                }
             },
-            UndoableAction::ExtendWay { .. } => "Extended a way".to_string(),
-            UndoableAction::CreateBuilding { .. } => "Created a building".to_string(),
-            UndoableAction::ExtrudeWay { .. } => "Extruded a way".to_string(),
-            UndoableAction::InsertNodeIntoWay { .. } => "Inserted a node into a way".to_string(),
-            UndoableAction::SnapExtendWay { .. } => "Snapped a node onto a way".to_string(),
+            UndoableAction::ExtendWay { .. } => osm_gpui::tr!("history.extended_way").to_string(),
+            UndoableAction::CreateBuilding { .. } => {
+                osm_gpui::tr!("history.created_building").to_string()
+            }
+            UndoableAction::ExtrudeWay { .. } => osm_gpui::tr!("history.extruded_way").to_string(),
+            UndoableAction::InsertNodeIntoWay { .. } => {
+                osm_gpui::tr!("history.inserted_node").to_string()
+            }
+            UndoableAction::SnapExtendWay { .. } => {
+                osm_gpui::tr!("history.snapped_node").to_string()
+            }
             UndoableAction::ReverseWays { way_ids, .. } => {
                 if way_ids.len() == 1 {
                     "Reversed 1 way".to_string()
