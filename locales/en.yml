@@ -178,6 +178,8 @@ status:
   export_failed: "Export failed: %{error}"
   nothing_to_upload: "Nothing to upload"
   uploaded: "Uploaded changes (changeset %{changeset})"
+  upload_blocks_edits: "An upload is in progress. Wait for it to finish before editing."
+  upload_blocks_quit: "An upload is in progress. Wait for it to finish before quitting."
   # Sent as several changesets; `%{changeset}` is the last one.
   uploaded_many:
     one: "Uploaded changes in %{count} changeset (last: changeset %{changeset})"

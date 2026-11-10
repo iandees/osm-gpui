@@ -6471,7 +6471,7 @@ mod tests {
     mod chunked {
         use super::*;
         use crate::http::fake::{ok, status_err, FakeClient};
-        use crate::upload_chunks::{merge_results, run_chunked_upload};
+        use crate::upload_chunks::run_chunked_upload;
 
         const BASE: &str = "https://osm.test";
 
@@ -6537,16 +6537,18 @@ mod tests {
             max: usize,
         ) -> crate::upload_chunks::ChunkedUpload {
             let layers = [("L", layer.diff_for_upload())];
-            let out = run_chunked_upload(client, BASE, "tok", "edit", &layers, max, &mut |_, _| {})
-                .unwrap();
-            if out.failure.is_some() {
-                for c in &out.completed {
-                    layer.apply_chunk_result(&c.result, &c.chunk);
-                }
-            } else {
-                layer.apply_upload_result(&merge_results(&out.completed));
-            }
-            out
+            // Each accepted chunk is applied as it lands, as the app does.
+            run_chunked_upload(
+                client,
+                BASE,
+                "tok",
+                "edit",
+                &layers,
+                max,
+                &mut |_, _| {},
+                &mut |done| crate::upload_chunks::apply_to_layer(layer, done),
+            )
+            .unwrap()
         }
 
         #[test]
@@ -6586,6 +6588,78 @@ mod tests {
             assert_eq!(ways, vec![-2, -1]);
             assert_eq!(rest.counts(), (5, 0, 0));
             assert!(rest.modified_nodes.is_empty() && rest.deleted_node_ids.is_empty());
+        }
+
+        /// Records the start of each changeset in `log`.
+        struct Logging {
+            inner: FakeClient,
+            log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        impl crate::http::HttpClient for Logging {
+            fn request(
+                &self,
+                req: crate::http::HttpRequest,
+            ) -> Result<crate::http::HttpResponse, crate::http::HttpError> {
+                if req.url.ends_with("/create") {
+                    self.log.lock().unwrap().push("create".to_string());
+                }
+                self.inner.request(req)
+            }
+        }
+
+        #[test]
+        fn the_layer_has_server_ids_for_chunk_one_before_chunk_two_is_opened() {
+            let mut layer = layer_with_new_data();
+            let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let client = Logging {
+                inner: FakeClient::new(vec![
+                    ok(200, "101"),
+                    ok(200, nodes_result(&[(-1, 5001), (-2, 5002), (-3, 5003)])),
+                    ok(200, ""),
+                    // Chunk 2 never gets as far as an upload: the sequence ends.
+                    crate::http::fake::transport_err("connection reset"),
+                ]),
+                log: log.clone(),
+            };
+            let layers = [("L", layer.diff_for_upload())];
+            let seen = log.clone();
+            let out = run_chunked_upload(
+                &client,
+                BASE,
+                "tok",
+                "edit",
+                &layers,
+                3,
+                &mut |_, _| {},
+                &mut |done| {
+                    crate::upload_chunks::apply_to_layer(&mut layer, done);
+                    let mut ids: Vec<i64> = layer
+                        .get_osm_data()
+                        .unwrap()
+                        .nodes
+                        .keys()
+                        .copied()
+                        .filter(|&id| id > 0)
+                        .collect();
+                    ids.sort();
+                    seen.lock().unwrap().push(format!("layer has {ids:?}"));
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                *log.lock().unwrap(),
+                vec!["create", "layer has [5001, 5002, 5003]", "create"]
+            );
+
+            // The sequence stopped right after chunk 1 (as if dropped): what
+            // is pending is exactly chunks 2 and 3, so another upload would
+            // not create chunk 1's objects again.
+            assert_eq!(out.completed.len(), 1);
+            let rest = layer.diff_for_upload();
+            assert_eq!(rest.counts(), (5, 0, 0));
+            assert!(rest.created_nodes.iter().all(|n| n.id < 0));
+            assert!(layer.is_modified());
         }
 
         #[test]

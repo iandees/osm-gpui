@@ -44,6 +44,36 @@ pub enum TransferPhase {
     ClosingChangeset,
 }
 
+/// Whether `transfer` is an upload in progress. While one runs the layers
+/// must not change under it: later changesets were planned from the diff at
+/// the start, and each accepted changeset is reflected in the layer as it
+/// lands. Edits, undo/redo and layer removal are refused meanwhile.
+pub fn blocks_edits(transfer: Option<&TransferHandle>) -> bool {
+    transfer.is_some_and(|t| t.snapshot().kind == TransferKind::Upload)
+}
+
+/// What Quit (or closing the window) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuitDecision {
+    /// Nothing pending: quit.
+    Quit,
+    /// Unsaved changes: ask first.
+    ConfirmUnsaved,
+    /// An upload is running: don't quit, say why. Quitting between two
+    /// changesets would leave the layer out of step with the server.
+    UploadInProgress,
+}
+
+pub fn quit_decision(upload_active: bool, unsaved_changes: bool) -> QuitDecision {
+    if upload_active {
+        QuitDecision::UploadInProgress
+    } else if unsaved_changes {
+        QuitDecision::ConfirmUnsaved
+    } else {
+        QuitDecision::Quit
+    }
+}
+
 /// A point-in-time view of one transfer.
 #[derive(Clone, Debug)]
 pub struct TransferProgress {
@@ -403,6 +433,20 @@ mod tests {
         assert_eq!(p.label(), "Uploading 12 changes…");
         p.phase = TransferPhase::ClosingChangeset;
         assert_eq!(p.label(), "Closing changeset…");
+    }
+
+    #[test]
+    fn only_an_upload_blocks_edits_and_quitting() {
+        let up = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
+        let down = TransferHandle::new(TransferKind::Download, TransferPhase::Downloading);
+        assert!(blocks_edits(Some(&up)));
+        assert!(!blocks_edits(Some(&down)));
+        assert!(!blocks_edits(None));
+
+        assert_eq!(quit_decision(false, false), QuitDecision::Quit);
+        assert_eq!(quit_decision(false, true), QuitDecision::ConfirmUnsaved);
+        assert_eq!(quit_decision(true, false), QuitDecision::UploadInProgress);
+        assert_eq!(quit_decision(true, true), QuitDecision::UploadInProgress);
     }
 
     #[test]
