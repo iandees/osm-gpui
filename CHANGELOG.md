@@ -3,6 +3,10 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+- Downloads and uploads now show their progress: the status bar shows the stage (requesting, bytes received, reading data) with a spinner and a Cancel button for downloads, and the upload dialog shows the changeset stage and stays open to show an error and offer a retry.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of

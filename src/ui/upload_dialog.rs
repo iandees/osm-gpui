@@ -5,16 +5,18 @@
 
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    Window,
+    SharedString, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     label::Label,
-    v_flex, ActiveTheme as _, Disableable as _,
+    spinner::Spinner,
+    v_flex, ActiveTheme as _, Disableable as _, Sizable as _,
 };
 
 use crate::tr;
+use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
 
 /// One row of the pending-changes summary: a layer name plus its
@@ -52,10 +54,34 @@ pub enum DialogEvent {
     Cancelled,
 }
 
+/// Where the dialog is in the upload: reviewing, sending, or stopped by an error.
+enum UploadState {
+    Editing,
+    /// The upload is running; the stage comes from the shared handle.
+    InFlight(TransferHandle),
+    /// The upload failed; the message is shown and the user may retry.
+    Failed(SharedString),
+}
+
+impl UploadState {
+    /// Whether the confirm button can be pressed. Disabled while sending so a
+    /// second upload can't start.
+    fn confirm_enabled(&self, comment_empty: bool) -> bool {
+        !comment_empty && !matches!(self, UploadState::InFlight(_))
+    }
+
+    /// Whether Cancel/Esc closes the dialog. An upload in flight can't be
+    /// abandoned: a half-applied changeset is worse than waiting.
+    fn can_dismiss(&self) -> bool {
+        !matches!(self, UploadState::InFlight(_))
+    }
+}
+
 pub struct UploadDialog {
     summaries: Vec<LayerSummary>,
     comment: Entity<InputState>,
     focus_handle: FocusHandle,
+    state: UploadState,
 }
 
 impl EventEmitter<DialogEvent> for UploadDialog {}
@@ -71,7 +97,20 @@ impl UploadDialog {
             summaries,
             comment,
             focus_handle,
+            state: UploadState::Editing,
         }
+    }
+
+    /// Show the running upload's stage (read from `handle` on each render).
+    pub fn begin_transfer(&mut self, handle: TransferHandle, cx: &mut Context<Self>) {
+        self.state = UploadState::InFlight(handle);
+        cx.notify();
+    }
+
+    /// Show why the upload stopped and let the user try again.
+    pub fn fail(&mut self, message: SharedString, cx: &mut Context<Self>) {
+        self.state = UploadState::Failed(message);
+        cx.notify();
     }
 
     fn comment_text(&self, cx: &Context<Self>) -> String {
@@ -80,13 +119,16 @@ impl UploadDialog {
 
     fn upload(&mut self, cx: &mut Context<Self>) {
         let comment = self.comment_text(cx);
-        if comment.is_empty() {
+        if !self.state.confirm_enabled(comment.is_empty()) {
             return;
         }
         cx.emit(DialogEvent::Upload { comment });
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if !self.state.can_dismiss() {
+            return;
+        }
         cx.emit(DialogEvent::Cancelled);
     }
 
@@ -109,6 +151,7 @@ impl Render for UploadDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let comment_empty = self.comment.read(cx).value().trim().is_empty();
+        let in_flight = matches!(self.state, UploadState::InFlight(_));
 
         let mut summary_list = v_flex().gap_1();
         if self.summaries.is_empty() {
@@ -121,7 +164,7 @@ impl Render for UploadDialog {
             }
         }
 
-        let body = v_flex()
+        let mut body = v_flex()
             .gap_3()
             .child(
                 v_flex()
@@ -144,6 +187,39 @@ impl Render for UploadDialog {
                     .child(Input::new(&self.comment)),
             );
 
+        match &self.state {
+            UploadState::Editing => {}
+            UploadState::InFlight(handle) => {
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .text_color(cx.theme().foreground)
+                        .child(Spinner::new().small())
+                        .child(Label::new(handle.snapshot().label())),
+                );
+            }
+            UploadState::Failed(message) => {
+                body = body.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            Label::new(tr!("dialog.upload.failed"))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(cx.theme().danger),
+                        )
+                        .child(Label::new(message.clone()).text_color(cx.theme().danger)),
+                );
+            }
+        }
+
+        let confirm_label = if matches!(self.state, UploadState::Failed(_)) {
+            tr!("dialog.upload.retry")
+        } else {
+            tr!("dialog.upload.confirm")
+        };
         let footer = div()
             .flex()
             .flex_row()
@@ -152,13 +228,14 @@ impl Render for UploadDialog {
             .child(
                 Button::new("upload-cancel")
                     .label(tr!("dialog.cancel"))
+                    .disabled(in_flight)
                     .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
             )
             .child(
                 Button::new("upload-confirm")
                     .primary()
-                    .label(tr!("dialog.upload.confirm"))
-                    .disabled(comment_empty)
+                    .label(confirm_label)
+                    .disabled(!self.state.confirm_enabled(comment_empty))
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             );
 
@@ -216,6 +293,26 @@ mod tests {
             deleted: 0,
         };
         assert_eq!(s.describe(), "Downtown: 2 created, 1 modified, 0 deleted");
+    }
+
+    #[test]
+    fn confirm_is_disabled_while_the_upload_is_in_flight() {
+        use crate::transfer::{TransferHandle, TransferKind, TransferPhase};
+        let handle = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
+        let in_flight = UploadState::InFlight(handle);
+        assert!(!in_flight.confirm_enabled(false));
+        assert!(!in_flight.can_dismiss());
+
+        assert!(UploadState::Editing.confirm_enabled(false));
+        assert!(!UploadState::Editing.confirm_enabled(true));
+        assert!(UploadState::Editing.can_dismiss());
+
+        let failed = UploadState::Failed("nope".into());
+        assert!(
+            failed.confirm_enabled(false),
+            "a failed upload can be retried"
+        );
+        assert!(failed.can_dismiss());
     }
 
     #[test]
