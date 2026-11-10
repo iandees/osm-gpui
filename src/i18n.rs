@@ -295,6 +295,115 @@ mod tests {
         assert_eq!(current_locale(), "en");
     }
 
+    /// Flatten a catalog file into `(dotted.key, raw value)` pairs. The
+    /// catalogs use a fixed subset of YAML (two-space indentation, `key:`
+    /// parents, `key: "value"` leaves, `#` comment lines), so a line-based
+    /// reader is enough and avoids a YAML dev-dependency.
+    fn flatten_catalog(text: &str) -> Vec<(String, String)> {
+        let mut path: Vec<(usize, String)> = Vec::new();
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            let Some((key, value)) = trimmed.split_once(':') else {
+                panic!("unparseable catalog line: {line}");
+            };
+            while path.last().is_some_and(|(i, _)| *i >= indent) {
+                path.pop();
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                path.push((indent, key.to_string()));
+            } else {
+                let mut full: Vec<&str> = path.iter().map(|(_, k)| k.as_str()).collect();
+                full.push(key);
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(value);
+                out.push((full.join("."), value.to_string()));
+            }
+        }
+        out
+    }
+
+    /// The sorted, distinct `%{name}` placeholder names in `message`.
+    fn placeholders(message: &str) -> Vec<String> {
+        let mut names: Vec<String> = message
+            .split("%{")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('}').map(|(name, _)| name.to_string()))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    const PLURAL_CATEGORIES: [&str; 6] = ["zero", "one", "two", "few", "many", "other"];
+
+    /// A key with a trailing plural category removed (`a.b.one` -> `a.b`).
+    /// Keys that are not plural forms are returned unchanged.
+    fn plural_base(key: &str) -> &str {
+        match key.rsplit_once('.') {
+            Some((base, last)) if PLURAL_CATEGORIES.contains(&last) => base,
+            _ => key,
+        }
+    }
+
+    /// Every catalog in `locales/` has the same keys as English (plural forms
+    /// may differ by category) and uses the same placeholders in each message.
+    #[test]
+    fn catalogs_match_english_keys_and_placeholders() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let read = |name: &str| flatten_catalog(&std::fs::read_to_string(dir.join(name)).unwrap());
+        let english = read("en.yml");
+        let english_bases: std::collections::BTreeSet<&str> =
+            english.iter().map(|(k, _)| plural_base(k)).collect();
+
+        assert!(english.len() > 100, "English catalog failed to parse");
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".yml") || name == "en.yml" {
+                continue;
+            }
+            let catalog = read(&name);
+            let bases: std::collections::BTreeSet<&str> =
+                catalog.iter().map(|(k, _)| plural_base(k)).collect();
+            let missing: Vec<_> = english_bases.difference(&bases).collect();
+            let extra: Vec<_> = bases.difference(&english_bases).collect();
+            assert!(missing.is_empty(), "{name} lacks keys: {missing:?}");
+            assert!(extra.is_empty(), "{name} has keys not in en.yml: {extra:?}");
+
+            for (key, message) in &catalog {
+                // Plural forms are compared with English's `.other` when the
+                // exact category does not exist in English.
+                let is_plural = english_bases.contains(plural_base(key)) && plural_base(key) != key;
+                let counterpart = english
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .or_else(|| {
+                        let other = format!("{}.other", plural_base(key));
+                        english.iter().find(|(k, _)| *k == other)
+                    })
+                    .unwrap_or_else(|| panic!("{name}: `{key}` has no English counterpart"));
+                let mut expected = placeholders(&counterpart.1);
+                let mut actual = placeholders(message);
+                if is_plural {
+                    // A singular form may spell the number out ("ein Weg").
+                    expected.retain(|p| p != "count");
+                    actual.retain(|p| p != "count");
+                }
+                assert_eq!(
+                    actual, expected,
+                    "{name}: placeholders of `{key}` differ from English"
+                );
+            }
+        }
+    }
+
     fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

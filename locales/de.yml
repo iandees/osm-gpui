@@ -1,0 +1,455 @@
+_version: 1
+
+# Deutscher Meldungskatalog (maschinell entworfen, noch nicht von
+# Muttersprachlern geprüft). Schlüssel und `%{platzhalter}` sind identisch
+# mit locales/en.yml; Pluralformen haben je einen Schlüssel pro Kategorie.
+
+meta:
+  # Wird im Sprachmenü der Einstellungen in der Sprache selbst angezeigt.
+  language_name: "Deutsch"
+
+menu:
+  app:
+    settings: "Einstellungen …"
+    services: "Dienste"
+    hide: "%{app} ausblenden"
+    hide_others: "Andere ausblenden"
+    show_all: "Alle einblenden"
+    quit: "%{app} beenden"
+  file:
+    title: "Ablage"
+    open: "Öffnen …"
+    export: "Exportieren …"
+    download: "Von OSM herunterladen"
+    upload: "Auf OSM hochladen …"
+  edit:
+    title: "Bearbeiten"
+    undo: "Widerrufen"
+    redo: "Wiederholen"
+    delete: "Löschen"
+    select_all: "Alles auswählen"
+    deselect_all: "Auswahl aufheben"
+    change_feature_type: "Objekttyp ändern …"
+    apply_nsi_preset: "NSI-Vorlage anwenden …"
+  tools:
+    title: "Werkzeuge"
+  mode:
+    title: "Modus"
+  imagery:
+    title: "Hintergrundbild"
+    custom: "Eigenes Hintergrundbild"
+    custom_add: "Hinzufügen …"
+    osm_carto: "OpenStreetMap Carto"
+    coordinate_grid: "Koordinatengitter"
+    loading: "(Lade Bildquellenverzeichnis …)"
+    unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
+    # Eine empfohlene Bildquelle im Menü.
+    best_entry: "★ %{name}"
+  view:
+    title: "Darstellung"
+    zoom_in: "Vergrößern"
+    zoom_out: "Verkleinern"
+    zoom_to_data: "Auf Daten zoomen"
+    zoom_to_selection: "Auf Auswahl zoomen"
+    toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
+  window:
+    title: "Fenster"
+    minimize: "Im Dock ablegen"
+    zoom: "Zoomen"
+  help:
+    title: "Hilfe"
+    map_features_wiki: "OpenStreetMap-Wiki: Map Features"
+    project_page: "%{app} auf GitHub"
+  open_dialog:
+    title: "OSM-Datei zum Öffnen auswählen"
+    osm_files: "OSM-Dateien"
+    all_files: "Alle Dateien"
+  export_dialog:
+    title: "OSM-Daten exportieren"
+
+# Bearbeitungsmodi. `name` ist der Menüeintrag, `label` der kurze Text unter
+# dem Symbol der schmalen Werkzeugleiste, `tooltip` die Hilfe beim Darüberfahren.
+mode:
+  select:
+    name: "Auswählen"
+    label: "Wahl"
+    tooltip: "Objekte auswählen und verschieben"
+  add:
+    name: "Hinzufügen"
+    label: "Neu"
+    tooltip: "Knoten und Wege hinzufügen"
+  building:
+    name: "Gebäude"
+    label: "Geb."
+    tooltip: "Rechteckiges Gebäude zeichnen"
+  extrude:
+    name: "Ausziehen"
+    label: "Ausz."
+    tooltip: "Wegsegment ausziehen"
+  # `%{shortcut}` ist die Taste, die den Modus aktiviert, z. B. „A“.
+  tooltip: "%{name} (%{shortcut})"
+  tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
+
+# Länger laufende Hintergrundvorgänge, in der Statusleiste mit Aktivitätsanzeige.
+activity:
+  uploading: "Änderungen werden hochgeladen …"
+  downloading: "OSM-Daten werden heruntergeladen …"
+
+status:
+  # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
+  hint:
+    select_empty: "Klicken zum Auswählen · Umschalt-Klick zum Ergänzen · Ziehen für Rahmenauswahl · Leertaste+Ziehen oder Rechtsziehen zum Verschieben der Karte"
+    select_selection: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen"
+    add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Strg-Klick ohne Einrasten · Esc zum Beenden"
+    add_started: "Klicken, um den Weg fortzusetzen · Enter oder Esc zum Abschließen"
+    building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
+    building_started: "Klicken, um die zweite Ecke zu setzen · Esc zum Abbrechen"
+    building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
+    building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc zum Beenden"
+    building_oriented_started: "Klicken oder loslassen an der gegenüberliegenden Ecke zum Abschließen · Esc zum Abbrechen"
+    extrude: "Wegsegment ziehen zum Ausziehen · Doppelklick auf Segment fügt Knoten ein · Esc zum Beenden"
+  pending_edits:
+    one: "%{count} ungesicherte Änderung"
+    other: "%{count} ungesicherte Änderungen"
+  not_signed_in: "Nicht angemeldet"
+  zoom_in_to_download: "Zum Herunterladen näher heranzoomen"
+  open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
+  open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
+  tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
+  nothing_to_delete: "Nichts zu löschen"
+  deleted_features:
+    one: "%{count} Objekt gelöscht"
+    other: "%{count} Objekte gelöscht"
+  no_data_to_zoom: "Keine OSM-Daten zum Zoomen"
+  nothing_selected: "Nichts ausgewählt"
+  no_data_to_export: "Keine OSM-Daten zum Exportieren"
+  exported: "Exportiert nach %{path}"
+  export_failed: "Export fehlgeschlagen: %{error}"
+  nothing_to_upload: "Nichts hochzuladen"
+  uploaded: "Änderungen hochgeladen (Änderungssatz %{changeset})"
+  upload_failed_changeset_open: "%{error} (Änderungssatz %{changeset} wurde geöffnet, aber nicht hochgeladen — ggf. manuell schließen)"
+  downloaded: "OSM-Daten heruntergeladen: %{summary}"
+  # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
+  merge:
+    nothing_new: "nichts Neues"
+    added:
+      one: "%{count} neu"
+      other: "%{count} neu"
+    updated:
+      one: "%{count} aktualisiert"
+      other: "%{count} aktualisiert"
+    kept_local:
+      one: "%{count} lokale Änderung behalten"
+      other: "%{count} lokale Änderungen behalten"
+    separator: ", "
+
+# Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
+# aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
+panel:
+  layers:
+    title: "Ebenen"
+    empty: "Noch keine Ebenen"
+    # Markierung der Ebene, in die die Zeichenmodi schreiben.
+    editing: "aktiv"
+    set_active: "Als aktive Ebene festlegen"
+    move_up: "Nach oben"
+    move_down: "Nach unten"
+    hide: "Ausblenden"
+    show: "Einblenden"
+    delete: "Löschen"
+  selection:
+    title: "Auswahl"
+    title_count:
+      one: "Auswahl (%{count} Element)"
+      other: "Auswahl (%{count} Elemente)"
+    empty: "Klicken oder ziehen zum Auswählen."
+    node: "Knoten"
+    way: "Weg"
+    # `%{kind}` ist die Bezeichnung Knoten/Weg oben, `%{id}` die OSM-ID.
+    row: "%{kind} %{id}"
+    row_named: "%{name} · %{kind} %{id}"
+  fields:
+    title: "Felder"
+    no_selection: "Keine Auswahl."
+    select_single: "Ein einzelnes Objekt wählen, um Felder zu bearbeiten."
+    change_type: "Objekttyp ändern …"
+    no_preset: "Keine passende Vorlage."
+    no_fields: "Dieser Objekttyp hat keine bearbeitbaren Felder."
+    add_field: "Feld hinzufügen (%{count})"
+    # Öffnet die Wertliste eines Mehrfachauswahlfelds.
+    multi_add: "+ Hinzufügen"
+  tags:
+    title: "Tags"
+    no_selection: "Keine Auswahl."
+    add: "Tag hinzufügen"
+    empty: "(keine Tags)"
+    key_placeholder: "Schlüssel"
+    value_placeholder: "Wert"
+  history:
+    title: "Verlauf"
+    empty: "Noch keine Aktionen."
+
+# Einträge des Rückgängig-Verlaufs.
+history:
+  moved_nodes:
+    one: "%{count} Knoten verschoben"
+    other: "%{count} Knoten verschoben"
+  changed_tags:
+    one: "%{count} Tag geändert"
+    other: "%{count} Tags geändert"
+  created_node: "1 Knoten erstellt"
+  deleted_node: "1 Knoten gelöscht"
+  deleted_way: "1 Weg gelöscht"
+  extended_way: "Weg verlängert"
+  created_building: "Gebäude erstellt"
+  extruded_way: "Weg ausgezogen"
+  inserted_node: "Knoten in Weg eingefügt"
+  snapped_node: "Knoten an Weg eingerastet"
+  changed_way_nodes: "Knoten eines Wegs geändert"
+
+# Allgemeine Objektbezeichnungen, wenn keine Vorlage passt.
+geometry:
+  point: "Punkt"
+  vertex: "Stützpunkt"
+  line: "Linie"
+  area: "Fläche"
+  relation: "Relation"
+
+settings:
+  window_title: "Einstellungen"
+  save: "Sichern"
+  language:
+    group: "Sprache"
+    title: "Sprache"
+    system_default: "Systemstandard"
+    description: "Wird nach einem Neustart der App wirksam."
+  appearance:
+    title: "Erscheinungsbild"
+    text_group: "Text"
+    text_size: "Textgröße"
+    text_size_description: "Größe des Texts in der gesamten App."
+    size_small: "Klein"
+    size_medium: "Mittel"
+    size_large: "Groß"
+  account:
+    title: "Konto"
+    api_server_group: "API-Server"
+    osm_account_group: "OpenStreetMap-Konto"
+    server: "Server"
+    server_description: "Den zu verwendenden OpenStreetMap-API-Server wählen."
+    server_primary: "Haupt-Server (api.openstreetmap.org)"
+    server_dev: "Entwicklung / Test (master.apis.dev.openstreetmap.org)"
+    server_custom: "Eigener"
+    custom_url: "Eigene API-URL"
+    custom_url_description: "Die Basis-URL eines selbst betriebenen oder anderen OSM-API-Servers."
+    url: "URL"
+    client_id: "OAuth-Client-ID"
+    client_id_description: "Die für diesen Server verwendete OAuth-client_id überschreiben (leer lassen für Standard)."
+    client_id_field: "Client-ID"
+    client_id_placeholder: "Standard"
+    account: "Konto"
+    account_description: "Mit dem OpenStreetMap-Konto anmelden, um Daten zu bearbeiten."
+    sign_in: "Mit OpenStreetMap anmelden"
+    signing_in: "Anmeldung läuft … im Browser abschließen."
+    logged_in: "✅ Angemeldet als %{name}"
+    sign_out: "Abmelden"
+    try_again: "Erneut versuchen"
+    error:
+      invalid_url: "Eine gültige http(s)-URL eingeben"
+  imagery:
+    title: "Hintergrundbild"
+    custom_sources: "Eigene Quellen"
+    empty: "Keine eigenen Bildquellen eingerichtet."
+    new_source: "Neue Quelle"
+    # `%{url}` ist die Kachel-URL-Vorlage; Zoomstufen sind Zahlen.
+    entry_summary: "%{url} · Zoom %{min}–%{max}"
+    add_source: "Quelle hinzufügen"
+    edit: "Bearbeiten"
+    delete: "Löschen"
+    confirm_delete: "%{name} löschen?"
+  cache:
+    group: "Kachel-Zwischenspeicher"
+    # `%{tiles}` und `%{sources}` stammen aus den Pluralmeldungen unten.
+    summary: "%{size} in %{tiles} aus %{sources}"
+    tiles:
+      one: "%{count} Kachel"
+      other: "%{count} Kacheln"
+    sources:
+      one: "%{count} Quelle"
+      other: "%{count} Quellen"
+    source_size: "%{size} · %{tiles}"
+    budget: "Speichergrenze (MB)"
+    budget_description: "Maximale Größe des Kachel-Zwischenspeichers auf der Festplatte. Ein niedrigerer Wert löscht nicht sofort etwas — der Speicher schrumpft beim nächsten Schreiben auf die neue Grenze."
+    megabytes: "Megabyte"
+    empty: "Noch keine Kacheln zwischengespeichert."
+    clear_all: "Alle löschen"
+    clear_source: "Löschen"
+    error:
+      too_small: "Die Grenze muss mindestens 10 MB betragen"
+      not_a_number: "Eine ganze Zahl in Megabyte eingeben"
+      clear_source: "%{source} konnte nicht geleert werden: %{error}"
+      clear_all: "Zwischenspeicher konnte nicht geleert werden: %{error}"
+  shortcuts:
+    title: "Tastaturkürzel"
+    reset_all: "Alle auf Standard zurücksetzen"
+    recording: "Tasten drücken … (Esc zum Abbrechen)"
+    record: "Aufnehmen"
+    reset: "Zurücksetzen"
+    error:
+      in_use: "Bereits belegt durch %{other}."
+      reserved: "Diese Taste ist reserviert."
+      mode_modifier: "Dieses Kürzel darf keine Sondertasten enthalten."
+
+# Anzeigenamen der Tastaturkürzel, einer pro Kürzel-ID in
+# `keybindings::SHORTCUTS`. Die IDs selbst sind stabil und nicht übersetzt.
+shortcut:
+  open_settings: "Einstellungen …"
+  quit: "Beenden"
+  open_osm_file: "Öffnen …"
+  download_osm: "Von OSM herunterladen"
+  upload_osm: "Auf OSM hochladen …"
+  export_osm_file: "Exportieren …"
+  undo: "Widerrufen"
+  redo: "Wiederholen"
+  select_all: "Alles auswählen"
+  zoom_in: "Vergrößern"
+  zoom_out: "Verkleinern"
+  zoom_to_data: "Auf Daten zoomen"
+  zoom_to_selection: "Auf Auswahl zoomen"
+  mode_select: "Zum Modus „Auswählen“ wechseln"
+  mode_add: "Zum Modus „Hinzufügen“ wechseln"
+  mode_building: "Zum Modus „Gebäude“ wechseln"
+  mode_extrude: "Zum Modus „Ausziehen“ wechseln"
+  action_square: "Rechtwinklig machen"
+  action_circularize: "Kreisförmig anordnen"
+  action_reverse: "Weg umkehren"
+  action_join: "Wege verbinden"
+  action_separate: "Knoten abtrennen"
+  action_extend: "Weg verlängern"
+
+# Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
+# und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
+# einen `hint` (wird gezeigt, wenn die Auswahl nicht passt).
+action:
+  no_data: "Zuerst OSM-Daten öffnen oder herunterladen"
+  not_editable: "Die aktive Ebene ist nicht bearbeitbar"
+  square:
+    label: "Rechtwinklig machen"
+    hint: "Einen geschlossenen Weg (oder Weg mit 3+ Knoten) zum Rechtwinkligmachen wählen"
+    none: "Keine Ecke liegt nah genug an 90° zum Rechtwinkligmachen"
+    done:
+      one: "%{count} Weg rechtwinklig gemacht"
+      other: "%{count} Wege rechtwinklig gemacht"
+  circularize:
+    label: "Kreisförmig anordnen"
+    hint: "Einen geschlossenen Weg zum kreisförmigen Anordnen wählen"
+    done:
+      one: "%{count} Weg kreisförmig angeordnet"
+      other: "%{count} Wege kreisförmig angeordnet"
+  reverse:
+    label: "Weg umkehren"
+    hint: "Einen Weg zum Umkehren wählen"
+    done:
+      one: "%{count} Weg umgekehrt"
+      other: "%{count} Wege umgekehrt"
+  join:
+    label: "Wege verbinden"
+    hint: "Zwei oder mehr Wege wählen, die Ende an Ende anschließen"
+    done:
+      one: "%{count} Weg verbunden"
+      other: "%{count} Wege verbunden"
+    error:
+      not_chainable: "Verbinden nicht möglich: Die Wege bilden keine zusammenhängende Kette"
+      tag_conflict: "Verbinden nicht möglich: Die Wege haben verschiedene Werte für „%{key}“"
+      needs_reversal: "Verbinden nicht möglich: Weg %{id} müsste umgekehrt werden, aber seine Tags hängen von der Richtung ab"
+      relation_member: "Verbinden nicht möglich: Weg %{id} ist Mitglied einer Relation und würde gelöscht"
+  separate:
+    label: "Knoten abtrennen"
+    hint: "Einen Knoten wählen, der zu mehreren Wegen gehört, um ihn abzutrennen"
+    node_missing: "Der gewählte Knoten liegt nicht in der aktiven Ebene"
+    done:
+      one: "Knoten in %{count} Kopie aufgetrennt"
+      other: "Knoten in %{count} Kopien aufgetrennt"
+  extend:
+    label: "Weg verlängern"
+    hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"
+    started: "Klicken, um Knoten hinzuzufügen; Enter oder Esc zum Abschließen"
+  delete:
+    label: "Löschen"
+    hint: "Etwas zum Löschen auswählen"
+
+shortcut_category:
+  general: "Allgemein"
+  file: "Ablage"
+  edit: "Bearbeiten"
+  view: "Darstellung"
+  modes: "Modi"
+  actions: "Auswahlaktionen"
+
+dialog:
+  cancel: "Abbrechen"
+  no_matches: "Keine Treffer."
+  upload:
+    title: "Auf OpenStreetMap hochladen"
+    confirm: "Hochladen"
+    pending_changes: "Ausstehende Änderungen"
+    no_changes: "Keine ausstehenden Änderungen."
+    layer_summary: "%{layer}: %{created} erstellt, %{modified} geändert, %{deleted} gelöscht"
+    comment_label: "Kommentar zum Änderungssatz"
+    comment_placeholder: "Änderungen beschreiben (erforderlich)"
+  sign_in:
+    title: "Zum Hochladen anmelden"
+    body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
+    open_settings: "Einstellungen öffnen"
+  quit:
+    title: "Ungesicherte Änderungen"
+    body: "Es gibt ungesicherte Änderungen. Trotzdem beenden?"
+    confirm: "Beenden"
+  custom_imagery:
+    title: "Eigenes Hintergrundbild"
+    name: "Name"
+    name_placeholder: "Mein Hintergrundbild"
+    url_template: "URL-Vorlage"
+    min_zoom: "Min. Zoom"
+    max_zoom: "Max. Zoom"
+    confirm: "Hinzufügen"
+    # `{z}`, `{x}`, `{y}` und `{-y}` sind feste Platzhalter der Kachel-URL
+    # und müssen genau so erhalten bleiben.
+    error:
+      name_empty: "Ein Name ist erforderlich."
+      template_empty: "Eine URL-Vorlage ist erforderlich."
+      template_missing_placeholder: "Die URL-Vorlage muss {z}, {x} und {y} (oder {-y}) enthalten."
+      template_y_and_minus_y: "Die URL-Vorlage darf {y} oder {-y} verwenden, nicht beides."
+      min_zoom_invalid: "Min. Zoom muss eine ganze Zahl von 0 bis 24 sein."
+      max_zoom_invalid: "Max. Zoom muss eine ganze Zahl von 0 bis 24 sein."
+      min_zoom_above_max: "Min. Zoom darf nicht größer als Max. Zoom sein."
+  preset_picker:
+    title: "Objekttyp ändern"
+    search_placeholder: "Objekttypen suchen …"
+  nsi:
+    title: "NSI-Vorlage anwenden"
+    search_placeholder: "Marken suchen …"
+    downloading: "NSI-Daten werden heruntergeladen …"
+
+# Fehler der OSM-API und des OAuth-Codes, in Statusleiste und Einstellungen.
+# `%{detail}` ist die Meldung des Servers bzw. der Netzwerkschicht und wird
+# nicht übersetzt.
+error:
+  network: "Netzwerkfehler: %{detail}"
+  api:
+    area_too_large: "Gebiet für die OSM-API zu groß (näher heranzoomen und erneut versuchen)"
+    rejected: "OSM-API hat die Anfrage abgelehnt (400) — kleineres Gebiet versuchen"
+    rate_limited: "OSM-API begrenzt die Anfragen (509) — später erneut versuchen"
+    http: "OSM-API-Fehler %{status}: %{detail}"
+    parse: "OSM-Antwort konnte nicht gelesen werden: %{detail}"
+  upload:
+    conflict: "Hochladekonflikt (409): Eine andere Änderung hat diese Daten zuvor geändert. Vor einem neuen Versuch neu herunterladen und abgleichen. %{detail}"
+    precondition_failed: "Hochladen fehlgeschlagen (412): Etwas, worauf sich die Änderung bezieht, wurde zuvor geändert oder gelöscht. Vor einem neuen Versuch neu herunterladen und abgleichen. %{detail}"
+  auth:
+    http: "OSM-OAuth-Fehler %{status}: %{detail}"
+    no_redirect: "Anmeldung abgelaufen: keine Weiterleitung vom Browser erhalten"
+    state_mismatch: "Anmeldung fehlgeschlagen (state stimmt nicht überein)"
+    no_config_dir: "Kein Konfigurationsordner zum Speichern der Anmeldung verfügbar"
+    denied: "Die Anmeldung wurde nicht abgeschlossen: %{reason}"
+    not_logged_in: "Nicht angemeldet"
+    expired: "Anmeldung abgelaufen und nicht erneuerbar; bitte erneut anmelden"
