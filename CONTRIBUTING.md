@@ -55,6 +55,28 @@ Scripted screenshot sessions:
 cargo run --release -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
+## Live test against the OSM dev server
+
+The upload path is unit-tested against a fake HTTP client. `examples/dev_live.rs` runs the real code (changeset create, diff upload, close, conflict resolution, chunked uploads) against the OpenStreetMap development server, `https://master.apis.dev.openstreetmap.org`, a sandbox with its own accounts and database. It opens no window.
+
+```bash
+cargo run --example dev_live -- login                 # browser sign-in, once
+cargo run --example dev_live -- run                   # all scenarios
+cargo run --example dev_live -- run --only chunked    # one scenario
+cargo run --example dev_live -- logout                # delete the saved token
+```
+
+You need an account on the dev server (it is separate from your openstreetmap.org account). `login` runs the app's OAuth2 PKCE flow with the dev server's built-in client id and the scopes `read_prefs write_api`, then prints your dev-server display name and the token file's path.
+
+`run` prints one `PASS`/`FAIL` line per scenario with the changesets it opened (as dev-server URLs) and exits non-zero if any failed. Scenarios: `roundtrip` (create a node pair, a way and a relation with `& < > "` and non-ASCII tags, read them back byte for byte), `modify_delete`, `conflict_version` (stale edit, then "Use theirs" and "Keep mine"), `conflict_deleted` (including "Drop my change"), `chunked` (about 60 new nodes at a 25-element limit, so three changesets and ids carried between them) and `capabilities`.
+
+What it writes, and where:
+
+- On the dev server: a few dozen test nodes, ways and relations in open ocean (around lat -48, lon -123, shifted by up to 0.5 degrees per run), in changesets commented `osm-gpui automated live test (<scenario>)`. Each scenario deletes what it created afterwards, even when it fails; if the run is killed, leftovers are harmless sandbox data.
+- On your disk: only `<config_dir>/osm-gpui/dev-live-token.json` (on macOS `~/Library/Application Support/osm-gpui/`), created with 0600 permissions. The harness never touches the platform keyring, `oauth.json` or `settings.json`, and never prints the token.
+
+It can only talk to the dev server: the API base is a constant, there is no flag, environment variable or setting to change it, and every request passes a host check (`osm_gpui::dev_live::ensure_dev_url`) right before it is sent. A diff upload is attempted exactly once, as in the app.
+
 ## Code conventions
 
 ### Pure logic and testability
