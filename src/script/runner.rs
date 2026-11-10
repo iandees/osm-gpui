@@ -25,6 +25,9 @@ pub trait AppHandle {
     /// Move the mouse to `at` with no button held.
     fn dispatch_hover(&mut self, at: (f32, f32));
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
+    /// Dispatch the named action (as a native menu item would). Errors if
+    /// the name is not a registered action.
+    fn dispatch_action(&mut self, name: &str) -> Result<(), String>;
     /// Yield until the next frame has been rendered.
     fn wait_frame(&mut self);
     /// Parse and load an OSM file, making it a new layer on the map.
@@ -114,6 +117,13 @@ impl Runner {
             }
             Op::Key { chord } => {
                 app.dispatch_key(chord);
+                Ok(())
+            }
+            Op::Action { name } => {
+                app.dispatch_action(name).map_err(|e| RunError {
+                    line_no: step.line_no,
+                    message: format!("action: {}", e),
+                })?;
                 Ok(())
             }
             Op::Capture { path } => {
@@ -211,6 +221,7 @@ fn describe(op: &Op) -> String {
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
         Op::Hover { at } => format!("hover {:?}", at),
         Op::Key { chord } => format!("key {:?}", chord),
+        Op::Action { name } => format!("action {}", name),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
         Op::LoadOsm { path } => format!("load_osm {}", path),
@@ -240,6 +251,9 @@ mod tests {
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
         fn dispatch_hover(&mut self, _: (f32, f32)) {}
         fn dispatch_key(&mut self, _: &Chord) {}
+        fn dispatch_action(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
         fn wait_frame(&mut self) {
             self.frames_waited += 1;
             if self.frames_waited == 1 {

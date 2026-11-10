@@ -129,13 +129,14 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.request_download(cx));
 }
 
-// Handle the File > Upload to OSM menu action. Same pattern as `quit`/
-// `open_custom_imagery_dialog`: applied directly to the live `MapViewer` via
-// `with_map_viewer_in`, which decides whether there's anything to upload at
-// all (setting a "Nothing to upload" status if not) before actually opening
-// the dialog.
+// Global fallback for the File > Upload to OSM menu action; the normal path
+// is `MapViewer::on_upload_to_osm`, a window-scoped listener. A global
+// handler runs while the map window is still checked out for the dispatch, so
+// looking it up via `with_map_viewer_in` right here silently did nothing (the
+// bug this fixes). Deferred like `quit` so the lookup succeeds when no
+// window-scoped listener was in the dispatch path (e.g. nothing focused).
 pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
-    with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx));
+    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx)));
 }
 
 // Global fallback for the `Quit` action, registered once at app startup
@@ -207,8 +208,9 @@ pub(crate) fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
 }
 
 // Handle the Imagery > Add Custom Imagery… menu action
+// (Global fallback, deferred; see `upload_to_osm`.)
 pub(crate) fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
-    with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx));
+    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx)));
 }
 
 // Handle the Imagery > Custom Imagery > <saved entry> menu action
