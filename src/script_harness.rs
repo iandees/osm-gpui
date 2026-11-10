@@ -58,7 +58,12 @@ pub(crate) enum ScriptCommand {
     Capture { path: std::path::PathBuf },
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
     /// the runner thread, before this is submitted — see `load_osm` below).
-    LoadOsm { name: String, data: OsmData },
+    /// The data and the file's recorded pending edits are boxed to keep
+    /// this enum small.
+    LoadOsm {
+        name: String,
+        loaded: Box<(OsmData, osm_gpui::osm::FileEdits)>,
+    },
     /// Compare `MapViewer.mode` against `want`.
     AssertMode(crate::EditMode),
     /// Compare `MapViewer.selected` against `want`.
@@ -287,8 +292,9 @@ impl MapViewer {
                     })();
                     bus.set_capture_result(result);
                 }
-                ScriptCommand::LoadOsm { name, data } => {
-                    self.add_osm_dataset(name, data, cx);
+                ScriptCommand::LoadOsm { name, loaded } => {
+                    let (data, edits) = *loaded;
+                    self.add_osm_dataset(name, data, &edits, cx);
                 }
                 ScriptCommand::AssertMode(want) => {
                     let result = if self.mode == want {
@@ -446,7 +452,9 @@ impl AppHandle for LiveApp {
     fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String> {
         let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
-        let data = parser.parse_file(&path_str).map_err(|e| e.to_string())?;
+        let loaded = parser
+            .parse_file_with_edits(&path_str)
+            .map_err(|e| e.to_string())?;
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -455,7 +463,10 @@ impl AppHandle for LiveApp {
         // `submit` blocks until the main thread has processed the command
         // (i.e. `MapViewer::add_osm_dataset` has run), so the layer exists
         // as soon as this returns — no separate `wait_frame` needed.
-        self.bus.submit(ScriptCommand::LoadOsm { name: stem, data });
+        self.bus.submit(ScriptCommand::LoadOsm {
+            name: stem,
+            loaded: Box::new(loaded),
+        });
         Ok(())
     }
 

@@ -62,6 +62,7 @@ actions!(
         ApplyNsiPreset,
         ChangeFeatureType,
         UploadToOsm,
+        ExportOsmFile,
         SelectAll,
         DeselectAll,
         DeleteSelection,
@@ -112,6 +113,7 @@ pub(crate) fn key_bindings_from_settings(
             "open_osm_file" => Some(KeyBinding::new(&spec, OpenOsmFile, None)),
             "download_osm" => Some(KeyBinding::new(&spec, DownloadFromOsm, None)),
             "upload_osm" => Some(KeyBinding::new(&spec, UploadToOsm, None)),
+            "export_osm_file" => Some(KeyBinding::new(&spec, ExportOsmFile, None)),
             "undo" => Some(KeyBinding::new(&spec, Undo, None)),
             "redo" => Some(KeyBinding::new(&spec, Redo, None)),
             _ => None,
@@ -2474,7 +2476,16 @@ impl MapViewer {
     /// `menu::open_osm_file` (once its background parse completes) and by
     /// the script harness's `ScriptCommand::LoadOsm` — replaces the old
     /// `SHARED_OSM_DATA` queue drained once per frame.
-    pub(crate) fn add_osm_dataset(&mut self, name: String, data: OsmData, cx: &mut Context<Self>) {
+    ///
+    /// `edits` are the pending local edits the file recorded (empty for a
+    /// plain server extract); they stay pending in the new layer.
+    pub(crate) fn add_osm_dataset(
+        &mut self,
+        name: String,
+        data: OsmData,
+        edits: &osm_gpui::osm::FileEdits,
+        cx: &mut Context<Self>,
+    ) {
         let file_name = if name.is_empty() {
             "OSM".to_string()
         } else {
@@ -2483,7 +2494,7 @@ impl MapViewer {
         let candidate = self.layer_manager.unique_name(&file_name);
         let data_arc = Arc::new(data.clone());
         let layer_id = self.layer_manager.alloc_id();
-        let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
+        let layer = OsmLayer::new_with_edits(layer_id, candidate, data_arc, edits);
         self.layer_manager.add_layer(Box::new(layer));
         if self.active_layer.is_none() {
             self.active_layer = Some(layer_id);
@@ -2495,6 +2506,60 @@ impl MapViewer {
         self.data_generation += 1;
         self.status_message = None;
         cx.notify();
+    }
+
+    /// The `(name, .osm document)` of the layer File > Export… writes: the
+    /// active OSM layer, or with none active the first layer that has
+    /// anything to export.
+    fn exportable_layer(&self) -> Option<(String, String)> {
+        self.active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .into_iter()
+            .chain(
+                self.layer_manager
+                    .layers()
+                    .iter()
+                    .map(|layer| layer.as_ref()),
+            )
+            .find_map(|layer| Some((layer.name().to_string(), layer.export_xml()?)))
+    }
+
+    /// File > Export…: write a layer (see `exportable_layer`) to a
+    /// JOSM-style `.osm` file chosen in a save dialog. The file includes
+    /// pending edits, so it can be reopened here or in JOSM and uploaded
+    /// later.
+    fn on_export_osm_file(&mut self, _: &ExportOsmFile, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((layer_name, xml)) = self.exportable_layer() else {
+            self.set_status("No OSM data to export");
+            cx.notify();
+            return;
+        };
+
+        cx.spawn(async move |this, cx| {
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("OSM files", &["osm"])
+                .set_title("Export OSM data")
+                .set_file_name(format!("{layer_name}.osm"))
+                .save_file()
+                .await
+            else {
+                return;
+            };
+            let path = file.path().to_path_buf();
+            let write_path = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { std::fs::write(&write_path, xml) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => this.set_status(format!("Exported to {}", path.display())),
+                    Err(e) => this.set_status(format!("Export failed: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Apply a `LayerRequest`, adding the corresponding layer. Called
@@ -3589,6 +3654,7 @@ impl Render for MapViewer {
                         }),
                     )
             })
+            .on_action(cx.listener(Self::on_export_osm_file))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))
             .on_action(cx.listener(Self::on_delete_selection))
@@ -4165,6 +4231,54 @@ mod tests {
                 assert_eq!(layers[0].name(), DOWNLOAD_LAYER_NAME);
                 assert_eq!(view.active_layer, Some(layers[0].id()));
                 assert!(!layers[0].is_modified());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                // Two kinds of pending edit: a moved node and a created one.
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+                view.handle_add_click(point(px(50.0), px(50.0)), false);
+                let pending = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .diff_for_upload()
+                    .counts();
+                assert_eq!(pending, (1, 1, 0));
+
+                let (name, xml) = view.exportable_layer().expect("active layer exports");
+                assert_eq!(name, "L");
+
+                // Reopen the exported document as File > Open would.
+                let (data, edits) = osm_gpui::osm::OsmParser::new()
+                    .parse_str_with_edits(&xml)
+                    .unwrap();
+                view.add_osm_dataset("reopened".to_string(), data, &edits, cx);
+
+                let reopened = view.layer_manager.layer_named("reopened").unwrap();
+                assert_eq!(reopened.diff_for_upload().counts(), pending);
+                assert!(reopened.is_modified());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn nothing_to_export_without_an_osm_layer(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.exportable_layer().is_none());
             })
             .unwrap();
     }
