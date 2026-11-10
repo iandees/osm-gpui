@@ -1064,6 +1064,7 @@ fn apply_split(
                 tags,
                 way_nodes: plan.new.clone(),
                 node_lat_lon: None,
+                version: 0,
             },
         });
         editable.set_way_nodes(plan.way_id, plan.keep.clone());

@@ -37,6 +37,10 @@ pub struct DeletedFeatureSnapshot {
     pub way_nodes: Vec<i64>,
     /// For a node: its (lat, lon) at the time of deletion. `None` for a way.
     pub node_lat_lon: Option<(f64, f64)>,
+    /// The server version the feature had when it was deleted (0 for one
+    /// created locally). Restoring must put it back: an upload sends the
+    /// current version in `<modify>`, and the API rejects a wrong one.
+    pub version: i32,
 }
 
 /// Shortest distance (in screen pixels) from point `p` to line segment `a`-`b`.

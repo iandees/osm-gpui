@@ -1703,7 +1703,7 @@ impl OsmLayer {
                 id
             }
         };
-        self.insert_node(new_id, lat, lon, HashMap::new());
+        self.insert_node(new_id, lat, lon, HashMap::new(), 0);
         Some(new_id)
     }
 
@@ -1714,7 +1714,14 @@ impl OsmLayer {
     /// auto-allocation never collides with an explicitly-inserted id (e.g.
     /// from a redo). Marks the layer modified. No-op if this layer has no
     /// data loaded.
-    fn insert_node(&mut self, id: i64, lat: f64, lon: f64, tags: HashMap<String, String>) {
+    fn insert_node(
+        &mut self,
+        id: i64,
+        lat: f64,
+        lon: f64,
+        tags: HashMap<String, String>,
+        version: i32,
+    ) {
         let Some(arc) = self.osm_data.as_mut() else {
             return;
         };
@@ -1723,7 +1730,7 @@ impl OsmLayer {
             id,
             lat,
             lon,
-            version: 0,
+            version,
             tags,
         };
         data.nodes.insert(id, node.clone());
@@ -1816,6 +1823,7 @@ impl OsmLayer {
             tags: node.tags.into_iter().collect(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((node.lat, node.lon)),
+            version: node.version,
         };
         Some(snapshot)
     }
@@ -1873,6 +1881,7 @@ impl OsmLayer {
             tags: way.tags.into_iter().collect(),
             way_nodes: way.nodes,
             node_lat_lon: None,
+            version: way.version,
         };
         Some(snapshot)
     }
@@ -1897,7 +1906,13 @@ impl OsmLayer {
                 {
                     return;
                 }
-                self.insert_node(snapshot.id, lat, lon, snapshot.tags.into_iter().collect());
+                self.insert_node(
+                    snapshot.id,
+                    lat,
+                    lon,
+                    snapshot.tags.into_iter().collect(),
+                    snapshot.version,
+                );
             }
             FeatureKind::Way => self.restore_way(snapshot),
         }
@@ -1919,7 +1934,7 @@ impl OsmLayer {
         let way = OsmWay {
             id: snapshot.id,
             nodes: snapshot.way_nodes,
-            version: 0,
+            version: snapshot.version,
             tags: snapshot.tags.into_iter().collect(),
         };
 
@@ -4774,6 +4789,52 @@ mod tests {
         let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
         assert!((vmx - mx).abs() < 1e-6);
         assert!((vmy - my).abs() < 1e-6);
+    }
+
+    #[test]
+    fn undoing_a_delete_keeps_the_server_version_in_the_uploaded_modify() {
+        let node = |id, version| OsmNode {
+            id,
+            lat: 40.0,
+            lon: -74.0,
+            tags: empty_tags(),
+            version,
+        };
+        let way = OsmWay {
+            id: 10,
+            nodes: vec![1, 2],
+            tags: empty_tags(),
+            version: 7,
+        };
+        let data = data_with(vec![node(1, 2), node(2, 2), node(3, 4)], vec![way]);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+
+        let way_snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
+        let node_snapshot = layer.delete_feature(FeatureKind::Node, 3).unwrap();
+        assert_eq!((way_snapshot.version, node_snapshot.version), (7, 4));
+        // Redo (delete again after undo) reads the version from the layer.
+        layer.restore_feature(node_snapshot.clone());
+        layer.restore_feature(way_snapshot.clone());
+        assert_eq!(layer.get_osm_data().unwrap().nodes[&3].version, 4);
+        assert_eq!(layer.get_osm_data().unwrap().ways[&10].version, 7);
+        // Undone: nothing to upload yet.
+        assert!(layer.diff_for_upload().is_empty());
+
+        layer.set_tag(FeatureKind::Way, 10, "highway", "path");
+        layer.set_tag(FeatureKind::Node, 3, "amenity", "cafe");
+        let xml = crate::osm_upload::build_osm_change_xml(1, &[("L", layer.diff_for_upload())]);
+        assert!(xml.contains(r#"<way id="10" version="7""#), "{xml}");
+        assert!(
+            xml.contains(r#"<node id="3" lat="40" lon="-74" version="4""#),
+            "{xml}"
+        );
+
+        // Deleting the restored objects again reports the original versions.
+        layer.delete_feature(FeatureKind::Way, 10).unwrap();
+        layer.delete_feature(FeatureKind::Node, 3).unwrap();
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.deleted_way_ids, vec![(10, 7)]);
+        assert_eq!(diff.deleted_node_ids, vec![(3, 4)]);
     }
 
     // -- Upload diff/apply-result model --

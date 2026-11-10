@@ -391,6 +391,7 @@ mod undo_stack_tests {
             tags: vec![("amenity".to_string(), "cafe".to_string())],
             way_nodes: Vec::new(),
             node_lat_lon: Some((40.0, -74.0)),
+            version: 1,
         }
     }
 
@@ -401,6 +402,7 @@ mod undo_stack_tests {
             tags: vec![("highway".to_string(), "residential".to_string())],
             way_nodes: vec![1, 2],
             node_lat_lon: None,
+            version: 1,
         }
     }
 
