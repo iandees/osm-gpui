@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Generate docs/perf/render-benchmark.osmscript.
 
-usage: gen_benchmark_script.py A.osm B.osm > render-benchmark.osmscript
+usage: gen_benchmark_script.py A.osm B.osm [notoggle] > render-benchmark.osmscript
+
+`notoggle` leaves out the ToggleDownloadedArea measurements (v0.3.0 has no
+such action; its wash cannot be switched off).
 
 A.osm is one OSM API download of central Paris (bbox 2.335,48.860,2.345,48.866).
 B.osm is that file tiled 3x4 with shifted ids/coordinates and moved 0.5 degrees
@@ -17,6 +20,7 @@ refresh and the phase timings in `frame_stats` are per frame.
 import sys
 
 A, B = sys.argv[1], sys.argv[2]
+TOGGLE = 'notoggle' not in sys.argv[3:]
 # Window 1400x900: map area is 1064x876 starting at x=56 (mode panel 56, side
 # panel 280, status bar 24), so the map centre is window (588, 438).
 CX, CY = 588, 438
@@ -37,14 +41,15 @@ def section(name, lat, lon, node_lat, node_lon, lon_shift):
         w("frame_stats discard")
         w("wait 3s")
         w(f"frame_stats {name}_z{z}_static")
-        # Same view without the downloaded-area wash.
-        w("action ToggleDownloadedArea")
-        w("wait 1500ms")
-        w("frame_stats discard")
-        w("wait 3s")
-        w(f"frame_stats {name}_z{z}_nowash")
-        w("action ToggleDownloadedArea")
-        w("wait 500ms")
+        if TOGGLE:
+            # Same view without the downloaded-area wash.
+            w("action ToggleDownloadedArea")
+            w("wait 1500ms")
+            w("frame_stats discard")
+            w("wait 3s")
+            w(f"frame_stats {name}_z{z}_nowash")
+            w("action ToggleDownloadedArea")
+            w("wait 500ms")
     # Pans (drags): the view moves every frame it is dispatched.
     for z in (17, 18.5):
         w(f"viewport {lat} {lon} {z}")

@@ -5137,6 +5137,9 @@ const DOWNLOAD_LAYER_NAME: &str = "OSM data";
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Times building the element tree (not layout or paint).
+        let _render_scope =
+            osm_gpui::frame_stats::Scoped::new("view.render", osm_gpui::frame_stats::start());
         // Consume any pending script command first.
         self.process_script_command(window, cx);
 
