@@ -267,6 +267,10 @@ pub trait EditableLayer {
     /// Inverse of `insert_node_into_way`: remove the node at `index` from a
     /// way's node list without deleting the node.
     fn remove_node_from_way(&mut self, way_id: i64, index: usize);
+
+    /// Reverse a way's node order. Its own inverse (applying it twice
+    /// restores the original). Returns whether the way was found.
+    fn reverse_way(&mut self, way_id: i64) -> bool;
 }
 
 /// Manager for all map layers
