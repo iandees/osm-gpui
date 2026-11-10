@@ -41,6 +41,13 @@ earcutr = "0.4"
 rust-i18n = "4.1"
 sys-locale = "0.3.2"
 
+# gpui_linux is pulled in with default-features = false, so without these two
+# features no windowing backend is compiled in and gpui panics at startup
+# (`unreachable!()` in gpui_linux::current_platform). Same package/rev as the
+# dependency above; cargo merges the features for Linux/FreeBSD builds only.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["wayland", "x11"] }
+
 [dev-dependencies]
 
 [target.'cfg(windows)'.build-dependencies]
