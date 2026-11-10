@@ -5862,100 +5862,6 @@ fn main() {
                             }
                         }
                     }
-                })
-                .detach();
-
-            let map_window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                            origin: point(px(100.0), px(100.0)),
-                            size: size(px(win_w as f32), px(win_h as f32)),
-                        })),
-                        titlebar: Some(gpui::TitlebarOptions {
-                            title: Some(menu::APP_NAME.into()),
-                            appears_transparent: false,
-                            traffic_light_position: None,
-                        }),
-                        focus: true,
-                        ..Default::default()
-                    },
-                    |window, cx| {
-                        // Register keyboard bindings in the window context.
-                        // Built from the user's effective shortcut settings
-                        // (defaults, overridden by any customizations saved
-                        // in Settings > Keyboard Shortcuts).
-                        //
-                        // Note: the "a"/"b"/"x" mode-switch shortcuts are
-                        // deliberately NOT registered here as global key
-                        // bindings. Unlike the cmd-modified bindings above,
-                        // these are plain unmodified letter keys, which would
-                        // otherwise risk firing while the user is typing into a
-                        // text input elsewhere in the app (e.g. the tag-edit
-                        // dialog's key/value fields). Instead they're handled in
-                        // the map area's local `on_key_down` handler below,
-                        // which only fires when the map area itself has focus —
-                        // see the `on_key_down` closure in `render()`.
-                        cx.bind_keys(key_bindings_from_settings(
-                            &osm_gpui::settings_store::snapshot(),
-                        ));
-                        let view = cx.new(|cx| {
-                            let mut viewer = MapViewer::new(window, cx);
-                            // Start on the standard map, not a blank canvas.
-                            viewer.add_default_layers();
-                            viewer
-                        });
-                        #[cfg(debug_assertions)]
-                        view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
-
-                        // Publish a weak handle to the live view so the
-                        // `on_window_should_close` closure below (which only has
-                        // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
-                        // reach it and query its *live* `layer_manager` state at
-                        // decision time, rather than a cached boolean.
-                        let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
-
-                        // Intercept the OS window-close button (traffic-light / titlebar
-                        // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
-                        // hook: unlike `on_window_closed` below (which only fires *after*
-                        // the window is already gone and can't stop anything), this one
-                        // can veto the close by returning `false`. If there are unsaved
-                        // changes (checked live, per layer, via `has_unsaved_changes`)
-                        // we cancel the close and ask the live `MapViewer` to show the
-                        // same confirmation dialog as Cmd+Q, directly (this closure
-                        // already has a `Window`, so no need to go through
-                        // `with_map_viewer_in`'s window-lookup-by-entity-id path);
-                        // otherwise we let the close proceed, which triggers
-                        // `on_window_closed` -> `cx.quit()` as before.
-                        window.on_window_should_close(cx, |window, cx| {
-                            if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                                if osm_gpui::transfer::blocks_edits(view.read(cx).transfer.as_ref())
-                                {
-                                    view.update(cx, |v, cx| v.refuse_quit_during_upload(cx));
-                                    return false;
-                                }
-                            }
-                            if has_unsaved_changes(cx) {
-                                if let Some(view) =
-                                    MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade())
-                                {
-                                    view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
-                                }
-                                false
-                            } else {
-                                true
-                            }
-                        });
-
-                        cx.new(|cx| gpui_component::Root::new(view, window, cx))
-                    },
-                )
-                .unwrap();
-
-            let map_window_id = map_window.window_id();
-            cx.on_window_closed(move |cx, window_id| {
-                if window_id == map_window_id {
-                    cx.quit();
                 }
             })
             .detach();
@@ -6040,6 +5946,12 @@ fn main() {
                     // otherwise we let the close proceed, which triggers
                     // `on_window_closed` -> `cx.quit()` as before.
                     window.on_window_should_close(cx, |window, cx| {
+                        if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                            if osm_gpui::transfer::blocks_edits(view.read(cx).transfer.as_ref()) {
+                                view.update(cx, |v, cx| v.refuse_quit_during_upload(cx));
+                                return false;
+                            }
+                        }
                         if has_unsaved_changes(cx) {
                             if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
                                 view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
