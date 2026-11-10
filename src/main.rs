@@ -6714,6 +6714,64 @@ mod tests {
             .unwrap();
     }
 
+    /// Adds a second editable layer (a copy of the fixture) and returns its id.
+    fn add_second_layer(view: &mut MapViewer) -> LayerId {
+        let id = view.layer_manager.alloc_id();
+        let layer = OsmLayer::new_with_data(
+            id,
+            "L2".to_string(),
+            Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+        );
+        view.layer_manager.add_layer(Box::new(layer));
+        id
+    }
+
+    /// Records a Create Node step by clicking at `pt` in Add mode on `layer`.
+    fn click_node_in(view: &mut MapViewer, layer: LayerId, pt: (f32, f32)) {
+        view.active_layer = Some(layer);
+        view.add_progress = None;
+        view.handle_add_click(point(px(pt.0), px(pt.1)), false);
+        view.add_progress = None;
+    }
+
+    /// History: [B create, A create, A extend, B create], A being the first
+    /// layer of `setup` and B a second one. Returns (A, B).
+    fn mixed_layer_history(view: &mut MapViewer) -> (LayerId, LayerId) {
+        let a = view.active_layer.unwrap();
+        let b = add_second_layer(view);
+        click_node_in(view, b, (50.0, 50.0));
+        click_node_in(view, a, (50.0, 100.0));
+        view.active_layer = Some(a);
+        view.handle_add_click(point(px(50.0), px(150.0)), false);
+        view.handle_add_click(point(px(50.0), px(200.0)), false);
+        view.add_progress = None;
+        click_node_in(view, b, (50.0, 250.0));
+        (a, b)
+    }
+
+    #[gpui::test]
+    fn deleting_a_layer_leaves_its_undo_steps_behind_today(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let (a, _b) = mixed_layer_history(view);
+                let before = view.undo_stack.actions.len();
+                assert!(before >= 4);
+                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
+                assert!(view.layer_manager.find_layer(a).is_none());
+                // Current behaviour: nothing is pruned.
+                assert_eq!(view.undo_stack.actions.len(), before);
+                // Undoing a step of the deleted layer is a silent no-op that
+                // still moves the cursor.
+                view.undo_stack.undo(); // B's last step
+                let cursor = view.undo_stack.cursor;
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(view.undo_stack.cursor, cursor - 1);
+                assert!(view.status_message.is_none());
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
         let window = setup(cx);
