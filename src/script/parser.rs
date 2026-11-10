@@ -160,21 +160,35 @@ fn parse_wait(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
 
 fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.len() < 2 {
-        return Err(err(line_no, "drag: want X1,Y1 X2,Y2 [duration=Nms]"));
+        return Err(err(
+            line_no,
+            "drag: want X1,Y1 X2,Y2 [duration=Nms] [button=left|pan]",
+        ));
     }
     let from = parse_point(line_no, rest[0])?;
     let to = parse_point(line_no, rest[1])?;
     let mut duration = Duration::from_millis(200);
+    let mut left = false;
     for kv in &rest[2..] {
         let (k, v) = kv
             .split_once('=')
             .ok_or_else(|| err(line_no, format!("drag: bad kv '{}'", kv)))?;
         match k {
             "duration" => duration = parse_duration(line_no, v)?,
+            "button" => match v {
+                "left" => left = true,
+                "pan" => left = false,
+                _ => return Err(err(line_no, format!("drag: bad button '{}'", v))),
+            },
             _ => return Err(err(line_no, format!("drag: unknown key '{}'", k))),
         }
     }
-    Ok(Op::Drag { from, to, duration })
+    Ok(Op::Drag {
+        from,
+        to,
+        duration,
+        left,
+    })
 }
 
 fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
@@ -413,8 +427,16 @@ mod tests {
                 from: Point2 { x: 10.0, y: 20.0 },
                 to: Point2 { x: 30.0, y: 40.0 },
                 duration: Duration::from_millis(200),
+                left: false,
             }
         );
+    }
+
+    #[test]
+    fn drag_button_left_parses() {
+        let s = parse("drag 10,20 30,40 button=left").unwrap();
+        assert!(matches!(s[0].op, Op::Drag { left: true, .. }));
+        assert!(parse("drag 10,20 30,40 button=middle").is_err());
     }
 
     #[test]

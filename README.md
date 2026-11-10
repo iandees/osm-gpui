@@ -92,6 +92,7 @@ Defaults; all but the fixed window/app ones can be changed in **Settings > Keybo
 - ⌘Z undo · ⌘⇧Z redo · ⌘A select all · Delete removes the selection · Esc cancels/deselects
 - ⌘= / ⌘- zoom in/out · ⌘0 zoom to data · ⌘J zoom to selection
 - `S` / `A` / `B` / `X` — Select / Add / Building / Extrude mode (map focused)
+- Building mode: click three times (corner, corner, depth). With one squared closed way (e.g. a rectangular building) selected when you press `B`, new buildings align to it instead: click or drag from one corner to the opposite corner; Esc exits the mode
 - Arrow keys pan a quarter of the view · `+` / `-` zoom a level · hold Space to pan with a left-drag (map focused; not customizable)
 - ⌘M minimize · ⌘H hide · ⌥⌘H hide others
 

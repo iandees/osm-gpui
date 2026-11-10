@@ -58,6 +58,9 @@ pub enum Op {
         from: Point2,
         to: Point2,
         duration: Duration,
+        /// Drag with the left button (a press-drag-release gesture handled by
+        /// the current edit mode) instead of the default map pan.
+        left: bool,
     },
     Click {
         at: Point2,
