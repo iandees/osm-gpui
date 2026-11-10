@@ -1555,6 +1555,70 @@ impl OsmLayer {
         true
     }
 
+    /// Replace a way's node list and refresh its derived caches and the
+    /// node-to-ways index. The nodes must already exist. Marks the layer
+    /// modified. Returns whether the way was found.
+    pub fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool {
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return false;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return false;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return false;
+        };
+        let old = std::mem::replace(&mut way.nodes, node_ids);
+        let way_snapshot = way.clone();
+
+        for dropped in old.iter().filter(|n| !way_snapshot.nodes.contains(n)) {
+            if let Some(way_idxs) = self.node_to_ways.get_mut(dropped) {
+                way_idxs.remove(&way_idx);
+                if way_idxs.is_empty() {
+                    self.node_to_ways.remove(dropped);
+                }
+            }
+        }
+        for &added in &way_snapshot.nodes {
+            self.node_to_ways.entry(added).or_default().insert(way_idx);
+        }
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+        self.modified = true;
+        true
+    }
+
+    /// The ids of the ways whose node list includes `node_id`, ascending.
+    pub fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
+        let mut ids: Vec<i64> = self
+            .node_to_ways
+            .get(&node_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|&idx| self.way_ids.get(idx).copied())
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The ids of the relations that have `way_id` as a member.
+    pub fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
+        self.osm_data
+            .as_ref()
+            .map(|d| {
+                d.relations
+                    .iter()
+                    .filter(|r| {
+                        r.members.iter().any(|m| {
+                            m.member_type == crate::osm::MemberType::Way && m.reference == way_id
+                        })
+                    })
+                    .map(|r| r.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Create a new, tag-less node at `(lat, lon)`. If `id` is `None`, a
     /// fresh negative (not-yet-uploaded) id is allocated via `next_new_id`;
     /// if `Some(id)` is given (the redo path, so a recreated node reuses its
@@ -2462,6 +2526,18 @@ impl EditableLayer for OsmLayer {
 
     fn reverse_way(&mut self, way_id: i64) -> bool {
         OsmLayer::reverse_way(self, way_id)
+    }
+
+    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool {
+        OsmLayer::set_way_nodes(self, way_id, node_ids)
+    }
+
+    fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
+        OsmLayer::ways_using_node(self, node_id)
+    }
+
+    fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
+        OsmLayer::relations_containing_way(self, way_id)
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -4948,6 +5024,72 @@ mod tests {
         assert_eq!(layer.way_node_ids(way_id), Some(vec![n1, n2, n3]));
 
         assert!(!layer.reverse_way(999));
+    }
+
+    #[test]
+    fn set_way_nodes_rewrites_the_list_and_tracks_node_usage() {
+        let mut layer = OsmLayer::new(LayerId(1));
+        let n1 = layer.add_node(40.0, -74.001);
+        let n2 = layer.add_node(40.0, -74.0);
+        let n3 = layer.add_node(40.001, -74.0);
+        let w1 = layer.add_way(vec![n1, n2], vec![]);
+        let w2 = layer.add_way(vec![n2, n3], vec![]);
+        assert_eq!(layer.ways_using_node(n2), vec![w2, w1]);
+
+        // Swap w2's use of n2 for a fresh node at the same spot.
+        let copy = layer.add_node(40.0, -74.0);
+        assert!(layer.set_way_nodes(w2, vec![copy, n3]));
+        assert_eq!(layer.way_node_ids(w2), Some(vec![copy, n3]));
+        assert_eq!(layer.ways_using_node(n2), vec![w1]);
+        assert_eq!(layer.ways_using_node(copy), vec![w2]);
+
+        // A node no way uses any more can be deleted again.
+        assert!(layer.set_way_nodes(w2, vec![n3, n1]));
+        assert!(layer.delete_feature(FeatureKind::Node, copy).is_some());
+        assert!(!layer.set_way_nodes(999, vec![]));
+    }
+
+    #[test]
+    fn relations_containing_way_reads_member_refs() {
+        let node = |id| OsmNode {
+            id,
+            lat: 40.0,
+            lon: -74.0 + id as f64 * 0.001,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = |id, nodes: Vec<i64>| OsmWay {
+            id,
+            nodes,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let mut data = (*data_with(
+            vec![node(1), node(2), node(3)],
+            vec![way(10, vec![1, 2]), way(11, vec![2, 3])],
+        ))
+        .clone();
+        data.relations.push(crate::osm::OsmRelation {
+            id: 500,
+            members: vec![
+                crate::osm::OsmMember {
+                    member_type: crate::osm::MemberType::Way,
+                    reference: 11,
+                    role: String::new(),
+                },
+                // A node with the same numeric id is not the way.
+                crate::osm::OsmMember {
+                    member_type: crate::osm::MemberType::Node,
+                    reference: 10,
+                    role: String::new(),
+                },
+            ],
+            version: 1,
+            tags: HashMap::new(),
+        });
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data));
+        assert_eq!(layer.relations_containing_way(11), vec![500]);
+        assert!(layer.relations_containing_way(10).is_empty());
     }
 
     #[test]

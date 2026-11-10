@@ -171,6 +171,24 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         label: "Reverse Way",
         category: ShortcutCategory::Actions,
     },
+    ShortcutDef {
+        id: "action_join",
+        default_spec: "c",
+        label: "Join Ways",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_separate",
+        default_spec: "g",
+        label: "Separate Node",
+        category: ShortcutCategory::Actions,
+    },
+    ShortcutDef {
+        id: "action_extend",
+        default_spec: "e",
+        label: "Extend Way",
+        category: ShortcutCategory::Actions,
+    },
 ];
 
 /// Look up a shortcut's definition by id. Panics if `id` isn't in
