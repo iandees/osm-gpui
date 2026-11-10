@@ -132,18 +132,18 @@ welcome:
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
   hint:
-    select_empty: "Klicken zum Auswählen · Umschalt-Klick zum Ergänzen · Ziehen für Rahmenauswahl · Leertaste+Ziehen oder Rechtsziehen zum Verschieben der Karte"
+    select_empty: "Klicken zum Wählen · Umschalt-Klick ergänzt · Ziehen für Rahmen · Leertaste+Ziehen verschiebt"
     select_selection: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen"
     select_relation: "Relation gewählt: ihre Mitglieder sind hervorgehoben · Esc zum Abwählen"
-    select_member_way: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen · Relation im Seitenpanel wählen"
+    select_member_way: "Ziehen zum Verschieben · Entf zum Löschen · Esc zum Abwählen · Relation im Seitenpanel"
     add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Strg-Klick ohne Einrasten · Esc zum Beenden"
     add_started: "Klicken, um den Weg fortzusetzen · Enter oder Esc zum Abschließen"
     building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
     building_started: "Klicken, um die zweite Ecke zu setzen · Esc zum Abbrechen"
     building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
-    building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc zum Beenden"
-    building_oriented_started: "Klicken oder loslassen an der gegenüberliegenden Ecke zum Abschließen · Esc zum Abbrechen"
-    extrude: "Wegsegment ziehen, um es heraus- oder hineinzuschieben · Cmd/Strg-Ziehen verschiebt es · Alt-Ziehen erzeugt einen neuen Weg · Doppelklick fügt Knoten ein · Esc zum Beenden"
+    building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc beendet"
+    building_oriented_started: "Klicken oder loslassen an der Gegenecke zum Abschließen · Esc bricht ab"
+    extrude: "Ziehen formt um · Alt-Ziehen: neuer Weg · Cmd/Strg-Ziehen verschiebt · Esc beendet"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
