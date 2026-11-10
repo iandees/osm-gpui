@@ -373,7 +373,6 @@ action:
       not_chainable: "Can't join: the ways don't connect end to end in one chain"
       tag_conflict: "Can't join: the ways have different values for '%{key}'"
       needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
-      relation_member: "Can't join: way %{id} is a member of a relation and would be deleted"
       restriction: "Can't join: way %{way} is part of turn restriction %{relation}"
       role_mismatch: "Can't join: way %{way} has a different role in relation %{relation} than the way it would be joined into"
   separate:

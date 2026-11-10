@@ -691,9 +691,11 @@ fn apply_reverse(
 }
 
 /// Join the selected ways into one (JOSM "Combine Way"). See
-/// `topology::plan_join` for the chaining, survivor and tag rules; ways that
-/// belong to a relation can't be removed, so the join is refused. One undo
-/// step: the survivor's new nodes and tags, then the deletion of the rest.
+/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
+/// way that is a relation member is folded into the survivor's membership (see
+/// `relations::join_members`; roles that differ, and turn restrictions, refuse
+/// the join). One undo step: the survivor's new nodes and tags, the relations'
+/// new member lists, then the deletion of the rest.
 fn apply_join(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -702,9 +704,24 @@ fn apply_join(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = join_ways_in(editable, layer_id, selection);
     let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
-    for id in &plan.remove {
-        if !editable.relations_containing_way(*id).is_empty() {
-            return Err(tr!("action.join.error.relation_member", id = id).to_string());
+    // Work out the relations' new member lists before changing anything, so
+    // a refusal leaves no trace.
+    let mut relation_ids: Vec<i64> = plan
+        .remove
+        .iter()
+        .flat_map(|&id| editable.relations_containing_way(id))
+        .collect();
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    let mut relation_edits = Vec::new();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        let after = osm_gpui::relations::join_members(&relation, plan.keep, &plan.remove)
+            .map_err(|e| e.message())?;
+        if let Some(after) = after {
+            relation_edits.push((relation_id, relation.members, after));
         }
     }
     let kept = ways
@@ -735,6 +752,15 @@ fn apply_join(
     if !tag_entries.is_empty() {
         actions.push(UndoableAction::SetTags {
             entries: tag_entries,
+        });
+    }
+    for (relation_id, before, after) in relation_edits {
+        editable.set_relation_members(relation_id, after.clone());
+        actions.push(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
         });
     }
     for id in &plan.remove {
@@ -1755,17 +1781,76 @@ mod tests {
     }
 
     #[test]
-    fn join_refuses_to_delete_a_relation_member() {
+    fn join_points_a_removed_members_relation_at_the_survivor() {
         let mut n = net();
-        // 102 would be deleted (101 is first, both are server ways).
-        let Err(message) = n.run("join", &n.ways(&[101, 102])) else {
-            panic!("expected a refusal");
+        // 102 (a member of relation 900) would be deleted: 101 is first and
+        // both are server ways. 101 isn't in the relation, so 102's
+        // membership is re-pointed at it.
+        let out = n.run("join", &n.ways(&[101, 102])).unwrap();
+        assert_eq!(n.members(), members_of(&[(101, ""), (7, "stop")]));
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5, 6]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 2, 1));
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
         };
-        assert!(message.contains("member of a relation"), "{message}");
-        assert!(!n.layer().is_modified());
-        // Selected first, the member way survives and the join works.
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetRelationMembers {
+                    relation_id: 900,
+                    ..
+                },
+                UndoableAction::DeleteFeature { .. }
+            ]
+        ));
+        // Selected the other way round, the member way survives untouched.
+        let mut n = net();
         assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
         assert_eq!(n.editable().way_node_ids(102), Some(vec![3, 4, 5, 6]));
+        assert_eq!(n.relation_edits(), 0);
+    }
+
+    #[test]
+    fn join_drops_the_removed_way_when_the_survivor_is_a_member_with_the_same_role() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, "forward"), (Way, 101, "forward"), (Way, 102, "")],
+        ));
+        n.run("join", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(n.members(), members_of(&[(100, "forward"), (102, "")]));
+    }
+
+    #[test]
+    fn join_refuses_different_roles_and_restrictions_and_changes_nothing() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, "forward"), (Way, 101, "backward")],
+        ));
+        let Err(message) = n.run("join", &n.ways(&[100, 101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: way 101 has a different role in relation 900 than the way it would be joined into"
+        );
+        assert!(!n.layer().is_modified());
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 100, "from"), (Node, 3, "via"), (Way, 101, "to")],
+        ));
+        let Err(message) = n.run("join", &n.ways(&[100, 101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: way 101 is part of turn restriction 900"
+        );
+        assert!(!n.layer().is_modified());
     }
 
     #[test]

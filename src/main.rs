@@ -5415,6 +5415,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn joining_relation_member_ways_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network_with(cx, route_over(&[(100, "forward"), (101, "forward")]));
+        window
+            .update(cx, |view, _window, cx| {
+                let original = relation_members(view, 900);
+                select(view, Way, &[100, 101]);
+                view.run_selection_action("join", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let joined = relation_members(view, 900);
+                assert_eq!(joined, vec![(100, "forward".to_string())]);
+                // Joined way, relation, and the deleted way.
+                assert_eq!(pending(view), (0, 2, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), joined);
+                assert_eq!(pending(view), (0, 2, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn merging_relation_member_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Node;
         let window = setup_network(cx);

@@ -373,7 +373,6 @@ action:
       not_chainable: "Verbinden nicht möglich: Die Wege bilden keine zusammenhängende Kette"
       tag_conflict: "Verbinden nicht möglich: Die Wege haben verschiedene Werte für „%{key}“"
       needs_reversal: "Verbinden nicht möglich: Weg %{id} müsste umgekehrt werden, aber seine Tags hängen von der Richtung ab"
-      relation_member: "Verbinden nicht möglich: Weg %{id} ist Mitglied einer Relation und würde gelöscht"
       restriction: "Verbinden nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}"
       role_mismatch: "Verbinden nicht möglich: Weg %{way} hat in Relation %{relation} eine andere Rolle als der Weg, in den er verbunden würde"
   separate:
