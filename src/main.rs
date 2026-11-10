@@ -1090,6 +1090,8 @@ impl MapViewer {
                         entry.extend(node_ids);
                     }
                 }
+                // A relation has no geometry of its own to drag.
+                FeatureKind::Relation => {}
             }
         }
 
@@ -1746,6 +1748,16 @@ impl MapViewer {
         self.fields_promoted_more_fields.clear();
     }
 
+    /// Select relation `id` of `layer_id` on its own (relations can't be
+    /// clicked on the map; this is the side panel's way in).
+    pub(crate) fn select_relation(&mut self, layer_id: LayerId, id: i64) {
+        self.set_selection(vec![osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Relation,
+            id,
+        }]);
+    }
+
     /// Edit > Select All: every node and way in the active layer.
     fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         let all = self
@@ -1820,6 +1832,26 @@ impl MapViewer {
                         }
                     }
                 }
+                // The box around the members that are loaded.
+                FeatureKind::Relation => {
+                    let Some(relation) = editable.relation(feature.id) else {
+                        continue;
+                    };
+                    let node = |id: i64| editable.node_lat_lon(id);
+                    let way_nodes = |id: i64| editable.way_node_ids(id);
+                    let find = |id: i64| editable.relation(id);
+                    let lookup = osm_gpui::relations::MemberLookup {
+                        node: &node,
+                        way_nodes: &way_nodes,
+                        relation: &find,
+                    };
+                    if let Some((min_lat, max_lat, min_lon, max_lon)) =
+                        osm_gpui::relations::members_bounds(&relation, &lookup)
+                    {
+                        extend((min_lat, min_lon));
+                        extend((max_lat, max_lon));
+                    }
+                }
             }
         }
 
@@ -1867,7 +1899,13 @@ impl MapViewer {
     ) {
         let selected = self.selected.clone();
         if !self.fit_to_features(&selected) {
-            self.set_status(tr!("status.nothing_selected"));
+            // A relation none of whose members is loaded selects something
+            // but has nowhere to zoom to.
+            self.set_status(if selected.is_empty() {
+                tr!("status.nothing_selected")
+            } else {
+                tr!("status.no_data_to_zoom")
+            });
         }
         cx.notify();
     }
@@ -5045,6 +5083,7 @@ mod tests {
             let ids = match kind {
                 Node => editable.relations_containing_node(id),
                 Way => editable.relations_containing_way(id),
+                osm_gpui::selection::FeatureKind::Relation => Vec::new(),
             };
             ids.into_iter()
                 .map(|r| osm_gpui::relations::display_name(&editable.relation(r).unwrap()))
@@ -5564,6 +5603,67 @@ mod tests {
                 assert!(view.selected_memberships().is_empty());
                 select(view, Way, &[]);
                 assert!(view.selected_memberships().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_relation_selected_from_a_members_row_edits_and_zooms(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Relation, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[102]);
+                let (relation_id, _, _) = view.selected_memberships().remove(0);
+                // What clicking the member's Relations row does.
+                view.select_relation(layer_id, relation_id);
+                let only = view.selected.as_slice();
+                assert_eq!(only.len(), 1);
+                assert_eq!((only[0].kind, only[0].id), (Relation, 900));
+                // A relation lists no memberships of its own.
+                assert!(view.selected_memberships().is_empty());
+
+                // Tags edit like a way's: one undo step each.
+                let ctx = TagEditContext {
+                    features: view.selected.clone(),
+                    original_key: String::new(),
+                    original_value: String::new(),
+                    is_add: true,
+                };
+                view.apply_tag_edit(&ctx, "ref", "7B");
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+                assert_eq!(pending(view), (0, 1, 0));
+                undo_step(view);
+                assert!(tags_of(view, Relation, 900).is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+
+                // Copy Tags works; Delete is not applicable.
+                view.run_selection_action("copy_tags", cx);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.starts_with("Copied")));
+                let actions = view.undo_stack.actions.len();
+                view.run_selection_action("delete", cx);
+                assert_eq!(view.undo_stack.actions.len(), actions);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Relations can't be deleted yet")
+                );
+                assert_eq!(relation_members(view, 900).len(), 2);
+                // Nothing to drag.
+                assert!(view.resolve_move_targets().is_empty());
+
+                // Zoom to Selection fits the loaded members (way 102 and
+                // node 7), not the whole layer.
+                view.viewport.pan_to(10.0, 10.0);
+                assert!(view.fit_to_features(&view.selected.clone()));
+                let (lat, lon) = view.viewport.center();
+                assert!((lat - 40.002).abs() < 1e-3 && (lon + 73.994).abs() < 1e-3);
             })
             .unwrap();
     }

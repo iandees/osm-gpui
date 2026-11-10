@@ -179,6 +179,9 @@ impl MapViewer {
                 MemberType::Way,
                 editable.relations_containing_way(feature.id),
             ),
+            // The Relations section lists what the selected node or way
+            // belongs to; a relation's own contents are in its Members section.
+            FeatureKind::Relation => return Vec::new(),
         };
         let mut memberships = Vec::new();
         for relation_id in relation_ids {
@@ -202,39 +205,45 @@ impl MapViewer {
             return None;
         }
         let muted = cx.theme().muted_foreground;
+        let layer_id = self.selected[0].layer_id;
         Some(
             div()
                 .flex()
                 .flex_col()
-                .children(
-                    memberships
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, (_, name, role))| {
-                            let role_text = if role.is_empty() {
-                                div().italic().child(tr!("panel.relations.no_role"))
-                            } else {
-                                div().child(role)
-                            };
-                            panel_row(("relation-row", i))
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(name),
-                                )
-                                .child(
-                                    role_text
-                                        .flex_shrink_0()
-                                        .text_size(muted_text_size())
-                                        .text_color(muted),
-                                )
-                        }),
-                )
+                .children(memberships.into_iter().enumerate().map(
+                    |(i, (relation_id, name, role))| {
+                        let role_text = if role.is_empty() {
+                            div().italic().child(tr!("panel.relations.no_role"))
+                        } else {
+                            div().child(role)
+                        };
+                        // Clicking the row selects the relation.
+                        interactive_row(("relation-row", i), false, cx)
+                            .gap_2()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                    this.select_relation(layer_id, relation_id);
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            )
+                            .child(
+                                role_text
+                                    .flex_shrink_0()
+                                    .text_size(muted_text_size())
+                                    .text_color(muted),
+                            )
+                    },
+                ))
                 .into_any_element(),
         )
     }
@@ -330,8 +339,18 @@ impl MapViewer {
         let tags: std::collections::HashMap<String, String> =
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
-        let (name, icon_name) =
+        let (mut name, icon_name) =
             osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
+        // Only the catch-all "Relation" preset matches a relation of a kind
+        // the schema doesn't know; its `type` says more than that does.
+        if feat.kind == osm_gpui::selection::FeatureKind::Relation {
+            let matched = osm_gpui::presets::preset_index().match_feature(&tags, geometry);
+            if matched.is_none_or(|p| p.id == "relation") {
+                if let Some(kind) = tags.get("type").filter(|t| !t.trim().is_empty()) {
+                    name = kind.clone();
+                }
+            }
+        }
         let icon_path = icon_name.and_then(|n| osm_gpui::presets::icon_path(&n));
         Some((name, icon_path))
     }
@@ -361,6 +380,7 @@ impl MapViewer {
                 let kind_label = match feat.kind {
                     FeatureKind::Node => tr!("panel.selection.node"),
                     FeatureKind::Way => tr!("panel.selection.way"),
+                    FeatureKind::Relation => tr!("panel.selection.relation"),
                 };
                 let row_feat = *feat;
                 let described = self.describe_selected_feature(feat);

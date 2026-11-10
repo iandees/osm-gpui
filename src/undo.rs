@@ -171,6 +171,9 @@ impl UndoableAction {
                 osm_gpui::selection::FeatureKind::Way => {
                     osm_gpui::tr!("history.deleted_way").to_string()
                 }
+                osm_gpui::selection::FeatureKind::Relation => {
+                    osm_gpui::tr!("history.deleted_relation").to_string()
+                }
             },
             UndoableAction::CreateWay { .. } => osm_gpui::tr!("history.created_way").to_string(),
             UndoableAction::ExtendWay { .. } => osm_gpui::tr!("history.extended_way").to_string(),

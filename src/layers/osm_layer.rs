@@ -411,6 +411,8 @@ fn apply_style_refresh(
                 way_styles[idx] = style;
             }
         }
+        // A relation has no drawn style of its own.
+        FeatureKind::Relation => {}
     }
 }
 
@@ -1209,6 +1211,11 @@ impl OsmLayer {
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
             FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
+            FeatureKind::Relation => data
+                .relations
+                .iter_mut()
+                .find(|r| r.id == id)
+                .map(|r| &mut r.tags),
         };
         let Some(tags) = tags else {
             return;
@@ -1240,6 +1247,11 @@ impl OsmLayer {
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
             FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
+            FeatureKind::Relation => data
+                .relations
+                .iter_mut()
+                .find(|r| r.id == id)
+                .map(|r| &mut r.tags),
         };
         let Some(tags) = tags else {
             return;
@@ -1768,6 +1780,8 @@ impl OsmLayer {
         match kind {
             FeatureKind::Node => self.delete_node(id),
             FeatureKind::Way => self.delete_way(id),
+            // Relations can't be deleted yet.
+            FeatureKind::Relation => None,
         }
     }
 
@@ -1900,6 +1914,8 @@ impl OsmLayer {
                 self.insert_node(snapshot.id, lat, lon, snapshot.tags.into_iter().collect());
             }
             FeatureKind::Way => self.restore_way(snapshot),
+            // Relations are never deleted yet, so there is nothing to restore.
+            FeatureKind::Relation => {}
         }
     }
 
@@ -2828,6 +2844,10 @@ impl EditableLayer for OsmLayer {
                 let w = data.ways.get(&feature.id)?;
                 w.tags.clone()
             }
+            FeatureKind::Relation => {
+                let r = data.relations.iter().find(|r| r.id == feature.id)?;
+                r.tags.clone()
+            }
         };
         let mut kv: Vec<(String, String)> = tags.into_iter().collect();
         kv.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2977,6 +2997,7 @@ impl EditableLayer for OsmLayer {
                     paint_node_marker(window, *p, *style);
                 }
             }
+            FeatureKind::Relation => {}
         }
     }
 }
@@ -2986,7 +3007,7 @@ mod tests {
     use crate::layers::osm_layer::OsmLayer;
     use crate::layers::{EditableLayer, LayerId, MapLayer};
     use crate::osm::{OsmData, OsmNode, OsmWay};
-    use crate::selection::FeatureKind;
+    use crate::selection::{FeatureKind, FeatureRef};
     use crate::style::Stylesheet;
     use crate::viewport::Viewport;
     use gpui::{point, px, size, Bounds};
@@ -4965,6 +4986,50 @@ mod tests {
         // Putting the old list back leaves nothing to upload.
         layer.set_relation_members(500, vec![member(10)]);
         assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn relation_tags_read_edit_and_remove_through_the_layer() {
+        use crate::osm::OsmRelation;
+        let mut base = (*data_with(vec![], vec![])).clone();
+        base.relations.push(OsmRelation {
+            id: 500,
+            version: 3,
+            tags: HashMap::from([("type".to_string(), "route".to_string())]),
+            members: vec![],
+        });
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
+        let rel = FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Relation,
+            id: 500,
+        };
+        let missing = FeatureRef { id: 404, ..rel };
+        assert_eq!(
+            EditableLayer::feature_tags(&layer, &rel),
+            Some(vec![("type".to_string(), "route".to_string())])
+        );
+        assert_eq!(EditableLayer::feature_tags(&layer, &missing), None);
+        assert_eq!(
+            EditableLayer::feature_geometry(&layer, &rel, crate::presets::area_keys()),
+            Some(crate::presets::Geometry::Relation)
+        );
+        assert!(!layer.is_modified());
+
+        layer.set_tag(FeatureKind::Relation, 500, "name", "Blue Line");
+        assert!(layer.is_modified());
+        assert_eq!(EditableLayer::feature_tags(&layer, &rel).unwrap().len(), 2);
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.modified_relations.len(), 1);
+        assert_eq!(diff.modified_relations[0].tags["name"], "Blue Line");
+
+        layer.remove_tag(FeatureKind::Relation, 500, "name");
+        assert!(layer.diff_for_upload().is_empty(), "back to the original");
+
+        // A relation can't be deleted yet, and a missing one is ignored.
+        assert!(layer.delete_feature(FeatureKind::Relation, 500).is_none());
+        assert!(layer.relation(500).is_some());
+        layer.set_tag(FeatureKind::Relation, 404, "a", "b");
     }
 
     #[test]

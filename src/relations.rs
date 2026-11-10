@@ -62,6 +62,89 @@ fn is_way_member(member: &OsmMember, way_id: i64) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Members as map features
+
+/// The nodes and ways a relation stands for on the map, in member order
+/// without repeats: its own node and way members, plus those of the relations
+/// among its members (one level of nesting; a nested relation's own relation
+/// members are not followed). `find` looks a relation up by id.
+pub fn flatten_members(
+    relation: &OsmRelation,
+    find: &dyn Fn(i64) -> Option<OsmRelation>,
+) -> Vec<(MemberType, i64)> {
+    fn push(out: &mut Vec<(MemberType, i64)>, member: &OsmMember) {
+        let key = (member.member_type, member.reference);
+        if !out.contains(&key) {
+            out.push(key);
+        }
+    }
+    let mut out: Vec<(MemberType, i64)> = Vec::new();
+    for member in &relation.members {
+        match member.member_type {
+            MemberType::Node | MemberType::Way => push(&mut out, member),
+            MemberType::Relation => {
+                if member.reference == relation.id {
+                    continue;
+                }
+                if let Some(nested) = find(member.reference) {
+                    for inner in &nested.members {
+                        if inner.member_type != MemberType::Relation {
+                            push(&mut out, inner);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How to resolve members to geometry; `None` from a lookup means the
+/// element isn't loaded.
+pub struct MemberLookup<'a> {
+    /// A node's `(lat, lon)`.
+    pub node: &'a dyn Fn(i64) -> Option<(f64, f64)>,
+    /// A way's node ids.
+    pub way_nodes: &'a dyn Fn(i64) -> Option<Vec<i64>>,
+    pub relation: &'a dyn Fn(i64) -> Option<OsmRelation>,
+}
+
+/// The bounding box `(min_lat, max_lat, min_lon, max_lon)` of the members of
+/// `relation` that are loaded (nested relations followed one level), or
+/// `None` if none of them is.
+pub fn members_bounds(
+    relation: &OsmRelation,
+    lookup: &MemberLookup,
+) -> Option<(f64, f64, f64, f64)> {
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    let mut extend = |(lat, lon): (f64, f64)| {
+        let b = bounds.get_or_insert((lat, lat, lon, lon));
+        b.0 = b.0.min(lat);
+        b.1 = b.1.max(lat);
+        b.2 = b.2.min(lon);
+        b.3 = b.3.max(lon);
+    };
+    for (member_type, id) in flatten_members(relation, lookup.relation) {
+        match member_type {
+            MemberType::Node => {
+                if let Some(pos) = (lookup.node)(id) {
+                    extend(pos);
+                }
+            }
+            MemberType::Way => {
+                for node_id in (lookup.way_nodes)(id).unwrap_or_default() {
+                    if let Some(pos) = (lookup.node)(node_id) {
+                        extend(pos);
+                    }
+                }
+            }
+            MemberType::Relation => {}
+        }
+    }
+    bounds
+}
+
+// ---------------------------------------------------------------------------
 // Split Way
 
 /// One way being split, as the relation rules need to see it.
@@ -865,5 +948,78 @@ mod tests {
         }
         .message("node", 5);
         assert!(msg.contains("via") && msg.contains("900"), "{msg}");
+    }
+
+    // -- members as map features --
+
+    fn rel(id: i64, members: Vec<OsmMember>) -> OsmRelation {
+        OsmRelation {
+            id,
+            ..relation("route", members)
+        }
+    }
+
+    #[test]
+    fn flatten_members_follows_nested_relations_one_level_without_repeats() {
+        let top = rel(
+            1,
+            vec![
+                way(10, ""),
+                member(MemberType::Relation, 2, ""),
+                node(5, ""),
+                member(MemberType::Relation, 404, ""),
+                // A relation naming itself is not followed.
+                member(MemberType::Relation, 1, ""),
+            ],
+        );
+        let child = rel(
+            2,
+            vec![
+                way(10, ""),
+                way(11, ""),
+                member(MemberType::Relation, 3, ""),
+            ],
+        );
+        let find = |id: i64| (id == 2).then(|| child.clone());
+        assert_eq!(
+            flatten_members(&top, &find),
+            vec![
+                (MemberType::Way, 10),
+                (MemberType::Way, 11),
+                (MemberType::Node, 5)
+            ]
+        );
+    }
+
+    #[test]
+    fn members_bounds_covers_loaded_members_only() {
+        let r = rel(
+            1,
+            vec![
+                node(1, ""),
+                way(20, ""),
+                way(21, ""),
+                node(99, ""),
+                member(MemberType::Relation, 2, ""),
+            ],
+        );
+        let nested = rel(2, vec![node(3, "")]);
+        let node_pos = |id: i64| match id {
+            1 => Some((10.0, 20.0)),
+            2 => Some((12.0, 18.0)),
+            3 => Some((5.0, 30.0)),
+            _ => None,
+        };
+        let way_nodes = |id: i64| (id == 20).then(|| vec![2, 777]);
+        let find = |id: i64| (id == 2).then(|| nested.clone());
+        let lookup = MemberLookup {
+            node: &node_pos,
+            way_nodes: &way_nodes,
+            relation: &find,
+        };
+        assert_eq!(members_bounds(&r, &lookup), Some((5.0, 12.0, 18.0, 30.0)));
+
+        let empty = rel(3, vec![node(99, ""), way(21, "")]);
+        assert_eq!(members_bounds(&empty, &lookup), None);
     }
 }

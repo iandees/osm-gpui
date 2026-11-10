@@ -322,6 +322,7 @@ fn parse_assert_selected(line_no: usize, rest: &[&str]) -> Result<Op, ParseError
         let kind = match rest[0] {
             "node" => FeatureKind::Node,
             "way" => FeatureKind::Way,
+            "relation" => FeatureKind::Relation,
             other => {
                 return Err(err(
                     line_no,

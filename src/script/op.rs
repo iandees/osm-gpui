@@ -35,6 +35,7 @@ pub enum EditMode {
 pub enum FeatureKind {
     Node,
     Way,
+    Relation,
 }
 
 #[derive(Debug, Clone, PartialEq)]

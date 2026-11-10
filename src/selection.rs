@@ -8,6 +8,9 @@ use crate::layers::LayerId;
 pub enum FeatureKind {
     Node,
     Way,
+    /// Never hit-tested on the map: a relation is selected from the side
+    /// panel (a member's Relations row, or the relation editor).
+    Relation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -197,6 +197,7 @@ fn extend_target(
             editable.node_lat_lon(feature.id)?;
             topology::continue_from_node(feature.id, &ways_using(editable, feature.id))
         }
+        FeatureKind::Relation => None,
     }
 }
 
@@ -381,11 +382,14 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         fixed_shortcut: Some("⌫"),
         needs_active_layer: false,
         in_tools_menu: false,
+        // Relations can't be deleted yet, so they don't count.
         is_applicable: |env| {
             env.selection.iter().any(|f| {
-                env.layers
-                    .find_layer(f.layer_id)
-                    .is_some_and(|l| l.as_editable().is_some())
+                f.kind != FeatureKind::Relation
+                    && env
+                        .layers
+                        .find_layer(f.layer_id)
+                        .is_some_and(|l| l.as_editable().is_some())
             })
         },
         apply: apply_delete,
@@ -435,6 +439,13 @@ impl SelectionAction {
     pub(crate) fn why_not(&self, env: &ActionEnv) -> SharedString {
         if self.needs_active_layer && env.active_editable().is_none() {
             tr!("action.no_data")
+        } else if self.id == "delete"
+            && env
+                .selection
+                .iter()
+                .any(|f| f.kind == FeatureKind::Relation)
+        {
+            tr!("action.delete.relation_hint")
         } else {
             self.hint()
         }
@@ -1271,7 +1282,13 @@ fn apply_delete(
     let mut deleted = 0usize;
     let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
     let mut refusal: Option<String> = None;
+    let mut skipped_relation = false;
     for feature in selection {
+        // Relations can't be deleted yet; the rest of the selection still can.
+        if feature.kind == FeatureKind::Relation {
+            skipped_relation = true;
+            continue;
+        }
         let Some(editable) = layers
             .find_layer_mut(feature.layer_id)
             .and_then(|l| l.as_editable_mut())
@@ -1289,6 +1306,7 @@ fn apply_delete(
                 editable.relations_containing_way(feature.id),
                 tr!("action.delete.kind.way"),
             ),
+            FeatureKind::Relation => continue,
         };
         // The memberships to drop; a refusal skips the feature entirely.
         let mut edits = Vec::new();
@@ -1334,7 +1352,13 @@ fn apply_delete(
         }
     }
     if deleted == 0 {
-        return Err(refusal.unwrap_or_else(|| tr!("status.nothing_to_delete").to_string()));
+        return Err(refusal.unwrap_or_else(|| {
+            if skipped_relation {
+                tr!("action.delete.relation_hint").to_string()
+            } else {
+                tr!("status.nothing_to_delete").to_string()
+            }
+        }));
     }
     let mut status = if changed_relations.is_empty() {
         tr_count!("status.deleted_features", deleted).to_string()
