@@ -17,13 +17,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::http::{HttpClient, HttpError, HttpRequest, HttpResponse, RetryPolicy, UreqClient};
-use crate::settings_store::PRIMARY_API_URL;
+use crate::settings_store::{DEV_API_URL, PRIMARY_API_URL};
 use crate::tr;
 
 /// Client ID used when no per-server override is configured in settings (see
 /// `client_id_for`). Registered on the primary OSM instance; the dev instance has its
 /// own separate app database and generally needs its own registered client_id.
 const DEFAULT_CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
+/// Client ID of the application registered on the OSM development server
+/// (`DEV_API_URL`), used when the user has not configured an override for it. This is a
+/// public (non-confidential) PKCE client id, not a secret.
+pub const DEV_CLIENT_ID: &str = "Wg9OmNYvMvftXbLvVnMX-9QJHiFzOXJbtNgVDSNRBRU";
 // This is a PKCE loopback flow, i.e. a public client: the code_verifier already proves
 // possession of the authorization code, so no client_secret is needed (and one embedded
 // in a public repo would protect nothing anyway). If OSM's token endpoint ever rejects
@@ -36,16 +40,30 @@ const DEFAULT_CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 const SCOPES: &str = "read_prefs write_api";
 
 /// The client_id to use for a given OAuth base URL: the user's configured override for
-/// that server if one is set in settings, otherwise `DEFAULT_CLIENT_ID`. OSM's primary
-/// and dev instances have separate app registrations, so a client_id valid on one is
-/// unknown to the other ("invalid_client") and each server may need its own.
+/// that server if one is set in settings, otherwise the built-in id for it
+/// (`DEV_CLIENT_ID` for the dev server, `DEFAULT_CLIENT_ID` for everything else).
+/// OSM's primary and dev instances have separate app registrations, so a client_id valid
+/// on one is unknown to the other ("invalid_client") and each server needs its own.
 pub fn client_id_for(oauth_base_url: &str) -> String {
-    crate::settings_store::snapshot()
-        .client_ids
+    client_id_with_overrides(oauth_base_url, &crate::settings_store::snapshot().client_ids)
+}
+
+/// `client_id_for`, with the user's per-server overrides passed in.
+fn client_id_with_overrides(oauth_base_url: &str, overrides: &HashMap<String, String>) -> String {
+    overrides
         .get(oauth_base_url)
         .filter(|s| !s.is_empty())
         .cloned()
-        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
+        .unwrap_or_else(|| default_client_id_for(oauth_base_url).to_string())
+}
+
+/// The built-in client_id for an OAuth base URL, ignoring user overrides.
+fn default_client_id_for(oauth_base_url: &str) -> &'static str {
+    if oauth_base_url.trim_end_matches('/') == DEV_API_URL {
+        DEV_CLIENT_ID
+    } else {
+        DEFAULT_CLIENT_ID
+    }
 }
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const CALLBACK_PATH: &str = "/callback";
@@ -217,6 +235,26 @@ fn wait_for_callback(
 pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let oauth_base = oauth_base_for(api_base_url);
     let client_id = client_id_for(&oauth_base);
+    let token = obtain_token(&UreqClient::new(), api_base_url, &client_id)?;
+    set_token(&oauth_base, token.clone());
+
+    Ok(LoginResult {
+        oauth_base_url: oauth_base,
+        token,
+    })
+}
+
+/// The PKCE browser flow of `login` without any persistence: authorize `client_id`
+/// against `api_base_url`'s OAuth server (opening the browser, catching the redirect on
+/// a loopback server), exchange the code and look up the account. The caller decides
+/// where the token goes (`login` hands it to the token store; the dev-server live-test
+/// harness keeps it in a file of its own). Requests go through `client`.
+pub fn obtain_token(
+    client: &dyn HttpClient,
+    api_base_url: &str,
+    client_id: &str,
+) -> Result<StoredToken, AuthError> {
+    let oauth_base = oauth_base_for(api_base_url);
 
     let server =
         tiny_http::Server::http("127.0.0.1:0").map_err(|e| AuthError::Network(e.to_string()))?;
@@ -230,7 +268,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let authorize_url = format!(
         "{}/oauth2/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         oauth_base,
-        urlencoding::encode(&client_id),
+        urlencoding::encode(client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(SCOPES),
         urlencoding::encode(&state),
@@ -274,31 +312,25 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let code = code.ok_or(AuthError::NoRedirect)?;
 
     let (access_token, refresh_token, expires_at) = token_request_with(
-        &UreqClient::new(),
+        client,
         &oauth_base,
         vec![
             ("grant_type".to_string(), "authorization_code".to_string()),
-            ("client_id".to_string(), client_id.clone()),
+            ("client_id".to_string(), client_id.to_string()),
             ("code".to_string(), code),
             ("redirect_uri".to_string(), redirect_uri),
             ("code_verifier".to_string(), code_verifier),
         ],
     )?;
 
-    let (display_name, user_id) = fetch_user_details(api_base_url, &access_token)?;
+    let (display_name, user_id) = fetch_user_details_with(client, api_base_url, &access_token)?;
 
-    let token = StoredToken {
+    Ok(StoredToken {
         access_token,
         display_name,
         user_id,
         refresh_token,
         expires_at,
-    };
-    set_token(&oauth_base, token.clone());
-
-    Ok(LoginResult {
-        oauth_base_url: oauth_base,
-        token,
     })
 }
 
@@ -316,33 +348,45 @@ pub(crate) fn refresh_with(
     oauth_base_url: &str,
 ) -> Result<StoredToken, AuthError> {
     let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
+    let client_id = client_id_for(oauth_base_url);
+    let token = refresh_token_with(client, oauth_base_url, &client_id, &existing)?;
+    set_token(oauth_base_url, token.clone());
+    Ok(token)
+}
+
+/// The `refresh_token` grant for `existing`, with no persistence: returns the renewed
+/// token (keeping the known display name/user id and, if the server sent no new one, the
+/// old refresh token). The caller stores it.
+pub fn refresh_token_with(
+    client: &dyn HttpClient,
+    oauth_base_url: &str,
+    client_id: &str,
+    existing: &StoredToken,
+) -> Result<StoredToken, AuthError> {
     let refresh_token_value = existing
         .refresh_token
         .clone()
         .ok_or(AuthError::NoRefreshToken)?;
-    let client_id = client_id_for(oauth_base_url);
 
     let (access_token, refresh_token, expires_at) = token_request_with(
         client,
         oauth_base_url,
         vec![
             ("grant_type".to_string(), "refresh_token".to_string()),
-            ("client_id".to_string(), client_id),
+            ("client_id".to_string(), client_id.to_string()),
             ("refresh_token".to_string(), refresh_token_value),
         ],
     )?;
 
-    let token = StoredToken {
+    Ok(StoredToken {
         access_token,
-        display_name: existing.display_name,
+        display_name: existing.display_name.clone(),
         user_id: existing.user_id,
         // Some servers rotate the refresh token on use and some don't return a new one
         // at all; keep the old one if the response didn't include a replacement.
-        refresh_token: refresh_token.or(existing.refresh_token),
+        refresh_token: refresh_token.or_else(|| existing.refresh_token.clone()),
         expires_at,
-    };
-    set_token(oauth_base_url, token.clone());
-    Ok(token)
+    })
 }
 
 /// Return the current token for `oauth_base_url`, transparently refreshing it first if
@@ -418,13 +462,8 @@ fn parse_token_response(
     }
 }
 
-/// `GET /api/0.6/user/details.json` with the given bearer token. Returns (display_name, id).
-fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String, u64), AuthError> {
-    fetch_user_details_with(&UreqClient::new(), api_base_url, access_token)
-}
-
-/// Same as `fetch_user_details`, but against an injected `HttpClient` so it's testable
-/// without a real network.
+/// `GET /api/0.6/user/details.json` with the given bearer token, against an injected
+/// `HttpClient` so it's testable without a real network. Returns (display_name, id).
 fn fetch_user_details_with(
     client: &dyn HttpClient,
     api_base_url: &str,
@@ -781,6 +820,50 @@ mod tests {
         assert_eq!(
             oauth_base_for("https://master.apis.dev.openstreetmap.org"),
             "https://master.apis.dev.openstreetmap.org"
+        );
+    }
+
+    #[test]
+    fn dev_server_has_a_built_in_client_id() {
+        let overrides = HashMap::new();
+        assert_eq!(
+            client_id_with_overrides("https://master.apis.dev.openstreetmap.org", &overrides),
+            "Wg9OmNYvMvftXbLvVnMX-9QJHiFzOXJbtNgVDSNRBRU"
+        );
+        assert_eq!(
+            client_id_with_overrides("https://master.apis.dev.openstreetmap.org/", &overrides),
+            DEV_CLIENT_ID
+        );
+        assert_eq!(
+            oauth_base_for(DEV_API_URL),
+            DEV_API_URL,
+            "login() looks the id up by this base"
+        );
+    }
+
+    #[test]
+    fn other_servers_keep_the_default_client_id() {
+        let overrides = HashMap::new();
+        assert_eq!(
+            client_id_with_overrides("https://www.openstreetmap.org", &overrides),
+            DEFAULT_CLIENT_ID
+        );
+        assert_eq!(
+            client_id_with_overrides("https://example.test", &overrides),
+            DEFAULT_CLIENT_ID
+        );
+    }
+
+    #[test]
+    fn user_override_beats_the_built_in_client_id() {
+        let mut overrides = HashMap::new();
+        overrides.insert(DEV_API_URL.to_string(), "mine".to_string());
+        assert_eq!(client_id_with_overrides(DEV_API_URL, &overrides), "mine");
+        // An empty override counts as unset.
+        overrides.insert(DEV_API_URL.to_string(), String::new());
+        assert_eq!(
+            client_id_with_overrides(DEV_API_URL, &overrides),
+            DEV_CLIENT_ID
         );
     }
 
