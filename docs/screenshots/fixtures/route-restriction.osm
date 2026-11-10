@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="relation overlay fixture">
+  <!-- Laid out in window coordinates at zoom 18, centered on (40.7120, -74.0060)
+       in a 1200x800 window; see route-restriction.osmscript. Main St (ways 8101-8103)
+       runs west-east, Oak Ave crosses it at node 8003 (ways 8104, 8105), Elm St
+       leaves node 8004 to the south (8107). 8106 is a footpath.
+       Relations: 8201 bus route on Main St; 8202 bicycle route with a colour tag
+       (shares way 8102 with the bus route; also lists a way that is not loaded);
+       8203 hiking route (palette colour); 8204 no_left_turn via 8003;
+       8205 only_straight_on via 8004; 8206 restriction whose via node is missing. -->
+  <node id="8001" version="1" lat="40.712358" lon="-74.008081"/>
+  <node id="8002" version="1" lat="40.712358" lon="-74.007009"/>
+  <node id="8003" version="1" lat="40.712358" lon="-74.005936"/>
+  <node id="8004" version="1" lat="40.712358" lon="-74.004863"/>
+  <node id="8005" version="1" lat="40.712358" lon="-74.004058"/>
+  <node id="8006" version="1" lat="40.713090" lon="-74.005936"/>
+  <node id="8007" version="1" lat="40.711463" lon="-74.005936"/>
+  <node id="8008" version="1" lat="40.711748" lon="-74.004863"/>
+  <node id="8009" version="1" lat="40.711138" lon="-74.007813"/>
+  <node id="8010" version="1" lat="40.710935" lon="-74.006472"/>
+  <node id="8011" version="1" lat="40.711138" lon="-74.004863"/>
+  <way id="8101" version="1">
+    <nd ref="8001"/>
+    <nd ref="8002"/>
+    <nd ref="8003"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Main St"/>
+  </way>
+  <way id="8102" version="1">
+    <nd ref="8003"/>
+    <nd ref="8004"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Main St"/>
+  </way>
+  <way id="8103" version="1">
+    <nd ref="8004"/>
+    <nd ref="8005"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Main St"/>
+  </way>
+  <way id="8104" version="1">
+    <nd ref="8006"/>
+    <nd ref="8003"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Oak Ave"/>
+  </way>
+  <way id="8105" version="1">
+    <nd ref="8003"/>
+    <nd ref="8007"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Oak Ave"/>
+  </way>
+  <way id="8106" version="1">
+    <nd ref="8009"/>
+    <nd ref="8010"/>
+    <nd ref="8011"/>
+    <tag k="highway" v="path"/>
+    <tag k="name" v="Ridge Trail"/>
+  </way>
+  <way id="8107" version="1">
+    <nd ref="8004"/>
+    <nd ref="8008"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Elm St"/>
+  </way>
+  <relation id="8201" version="1">
+    <member type="way" ref="8101" role=""/>
+    <member type="way" ref="8102" role=""/>
+    <member type="way" ref="8103" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="bus"/>
+    <tag k="ref" v="7"/>
+  </relation>
+  <relation id="8202" version="1">
+    <member type="way" ref="8104" role=""/>
+    <member type="way" ref="8102" role=""/>
+    <member type="way" ref="99999" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="bicycle"/>
+    <tag k="colour" v="#e6007e"/>
+  </relation>
+  <relation id="8203" version="1">
+    <member type="way" ref="8106" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="hiking"/>
+  </relation>
+  <relation id="8204" version="1">
+    <member type="way" ref="8101" role="from"/>
+    <member type="node" ref="8003" role="via"/>
+    <member type="way" ref="8105" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_left_turn"/>
+  </relation>
+  <relation id="8205" version="1">
+    <member type="way" ref="8102" role="from"/>
+    <member type="node" ref="8004" role="via"/>
+    <member type="way" ref="8103" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="only_straight_on"/>
+  </relation>
+  <relation id="8206" version="1">
+    <member type="way" ref="8101" role="from"/>
+    <member type="node" ref="99998" role="via"/>
+    <member type="way" ref="8104" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_right_turn"/>
+  </relation>
+</osm>

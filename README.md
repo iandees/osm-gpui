@@ -29,6 +29,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - New Relation creates a relation from the selection, Add to Relation appends the selection to a relation chosen from a search dialog, and Delete removes a selected relation without touching its members.
 - Split, Merge, Join, and Delete keep relation memberships consistent. Modified relations are included in uploads and exports.
 - Multipolygon and boundary relations are drawn as filled areas with holes. Double-click inside one to select the relation.
+- Route relations are drawn as a translucent coloured line under each member way (the relation's `colour` tag, else a colour by route type; a way in several routes shows the lowest relation id's). Turn restrictions get a small marker beside the via node (red ring for `no_*`, blue disc for `only_*`) at zoom 16 and closer; click it to select the restriction.
 
 **Data**
 - On first launch the map opens on OpenStreetMap Carto with a welcome card offering Download and Open.
@@ -172,7 +173,7 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 ## Known limitations
 
-- Only multipolygon and boundary relations are drawn. Routes, turn restrictions and other relations show only as highlighted members when selected, and can only be selected through one of their members.
+- Only multipolygon, boundary, route and turn restriction relations are drawn. Other relations show only as highlighted members when selected, and can only be selected through one of their members. Route overlays do not follow the order of a route's ways and show one route per way; restriction markers have no per-type arrows.
 - Upload conflict handling, multi-changeset uploads, and uploads of created, modified or deleted relations have been tested against a simulated server only, not a live OSM server.
 - Upload conflicts are resolved one object at a time, and taking the server's version of an object clears the undo history.
 - Export always asks where to write; there is no save back to the opened file.

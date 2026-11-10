@@ -31,6 +31,7 @@ pub mod persist;
 pub mod preset_recents;
 pub mod preset_translations;
 pub mod presets;
+pub mod relation_overlay;
 pub mod relations;
 pub mod script;
 pub mod selection;

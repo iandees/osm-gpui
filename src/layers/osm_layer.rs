@@ -462,6 +462,18 @@ struct MpCache {
     way_to_rels: HashMap<i64, Vec<i64>>,
     /// Relation id -> its member way ids, to unmap them on refresh.
     rel_ways: HashMap<i64, Vec<i64>>,
+    /// Route relations (`type=route`) by id.
+    routes: BTreeMap<i64, crate::relation_overlay::RouteEntry>,
+    /// Member way id -> the route relations listing it, ascending. The
+    /// first one decides the way's overlay colour.
+    route_ways: HashMap<i64, Vec<i64>>,
+    /// Turn restrictions (`type=restriction`) with a drawable position.
+    restrictions: BTreeMap<i64, crate::relation_overlay::RestrictionEntry>,
+    /// Restriction member node id -> restriction relations, so moving,
+    /// deleting or restoring that node refreshes them.
+    node_to_rels: HashMap<i64, Vec<i64>>,
+    /// Restriction id -> its member node ids, to unmap them on refresh.
+    rel_nodes: HashMap<i64, Vec<i64>>,
     version: u64,
 }
 
@@ -558,6 +570,95 @@ impl MpCache {
         self.version = version;
         for relation in &data.relations {
             self.install(relation, build_mp(data, node_cache, stylesheet, relation));
+            self.install_overlay(relation, data, node_cache);
+        }
+    }
+
+    /// The overlay colour of a way that belongs to a route, if any.
+    fn route_colour_of_way(&self, way_id: i64) -> Option<u32> {
+        let rel = self.route_ways.get(&way_id)?.first()?;
+        self.routes.get(rel).map(|r| r.colour)
+    }
+
+    fn remove_overlay(&mut self, id: i64) {
+        if let Some(route) = self.routes.remove(&id) {
+            for way in route.ways {
+                if let Some(rels) = self.route_ways.get_mut(&way) {
+                    rels.retain(|&r| r != id);
+                    if rels.is_empty() {
+                        self.route_ways.remove(&way);
+                    }
+                }
+            }
+        }
+        self.restrictions.remove(&id);
+        if let Some(nodes) = self.rel_nodes.remove(&id) {
+            for node in nodes {
+                if let Some(rels) = self.node_to_rels.get_mut(&node) {
+                    rels.retain(|&r| r != id);
+                    if rels.is_empty() {
+                        self.node_to_rels.remove(&node);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cache the route / restriction drawing of `relation`, if it is one.
+    /// A restriction is also mapped from its member ways (through
+    /// `way_to_rels`/`rel_ways`, like area relations) and member nodes, so
+    /// the edits that move them refresh it. A route only lists way ids, so it
+    /// needs no geometry refresh.
+    fn install_overlay(
+        &mut self,
+        relation: &crate::osm::OsmRelation,
+        data: &OsmData,
+        node_cache: &NodeCache,
+    ) {
+        if let Some(route) = crate::relation_overlay::build_route(relation) {
+            for &w in &route.ways {
+                let rels = self.route_ways.entry(w).or_default();
+                if let Err(at) = rels.binary_search(&relation.id) {
+                    rels.insert(at, relation.id);
+                }
+            }
+            self.routes.insert(relation.id, route);
+            return;
+        }
+        if !crate::relation_overlay::is_restriction(&relation.tags) {
+            return;
+        }
+        // Map every member, drawable or not, so the edit that supplies a
+        // missing via (an undo that restores it) refreshes the restriction.
+        let mut ways: Vec<i64> = Vec::new();
+        let mut nodes: Vec<i64> = Vec::new();
+        for m in &relation.members {
+            match m.member_type {
+                crate::osm::MemberType::Way => ways.push(m.reference),
+                crate::osm::MemberType::Node => nodes.push(m.reference),
+                crate::osm::MemberType::Relation => {}
+            }
+        }
+        ways.sort_unstable();
+        ways.dedup();
+        nodes.sort_unstable();
+        nodes.dedup();
+        for &w in &ways {
+            self.way_to_rels.entry(w).or_default().push(relation.id);
+        }
+        for &n in &nodes {
+            self.node_to_rels.entry(n).or_default().push(relation.id);
+        }
+        self.rel_ways.insert(relation.id, ways);
+        self.rel_nodes.insert(relation.id, nodes);
+        let position = |id: i64| {
+            node_cache
+                .index_by_id
+                .get(&id)
+                .map(|&i| (node_cache.flat[i].1, node_cache.flat[i].2))
+        };
+        if let Some(r) = crate::relation_overlay::build_restriction(data, relation, &position) {
+            self.restrictions.insert(relation.id, r);
         }
     }
 
@@ -577,6 +678,7 @@ impl MpCache {
         for &id in ids {
             self.entries.remove(&id);
             self.invalid.remove(&id);
+            self.remove_overlay(id);
             if let Some(ways) = self.rel_ways.remove(&id) {
                 for way in ways {
                     if let Some(rels) = self.way_to_rels.get_mut(&way) {
@@ -589,6 +691,7 @@ impl MpCache {
             }
             if let Some(relation) = data.relations.iter().find(|r| r.id == id) {
                 self.install(relation, build_mp(data, node_cache, stylesheet, relation));
+                self.install_overlay(relation, data, node_cache);
             }
         }
     }
@@ -941,6 +1044,44 @@ fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: No
         rgb(CASING_COLOR),
         BorderStyle::Solid,
     ));
+}
+
+/// Extra half-width of a route overlay line beyond the way's casing, in
+/// pixels, so the way stays readable on top of it.
+const ROUTE_OVERLAY_EXTRA: f32 = 3.0;
+
+/// Diameter of a turn-restriction marker, in pixels.
+const RESTRICTION_MARKER_DIAMETER: f32 = 14.0;
+
+/// Where a turn-restriction marker sits relative to its via position (right
+/// and up), so it doesn't cover the via node and the node stays pickable.
+const RESTRICTION_OFFSET_PX: (f32, f32) = (11.0, -11.0);
+
+/// Paint a turn-restriction marker centered on `center`: a red ring for a
+/// `no_*` restriction, a blue disc for an `only_*` one, on a white backing.
+fn paint_restriction_marker(window: &mut Window, center: Point<Pixels>, only: bool) {
+    use crate::relation_overlay::{RESTRICTION_NO_COLOUR, RESTRICTION_ONLY_COLOUR};
+    let d = RESTRICTION_MARKER_DIAMETER;
+    window.paint_quad(quad(
+        circle_bounds(center, d),
+        px(d / 2.0),
+        rgb(0xFFFFFF),
+        px(1.0),
+        rgb(CASING_COLOR),
+        BorderStyle::Solid,
+    ));
+    if only {
+        window.paint_quad(quad(
+            circle_bounds(center, d - 4.0),
+            px((d - 4.0) / 2.0),
+            rgb(RESTRICTION_ONLY_COLOUR),
+            px(0.0),
+            gpui::transparent_black(),
+            BorderStyle::Solid,
+        ));
+    } else {
+        paint_ring(window, center, d - 2.0, 2.5, RESTRICTION_NO_COLOUR);
+    }
 }
 
 /// Paint a `width`-px ring of `diameter` centered on `center`.
@@ -1611,6 +1752,7 @@ impl OsmLayer {
         // Multipolygons made of those ways follow the move.
         let touched_way_ids: Vec<i64> = touched_ways.iter().map(|&i| self.way_ids[i]).collect();
         self.mp_refresh_ways(&touched_way_ids);
+        self.mp_refresh_nodes(&moved_ids);
     }
 
     /// Set (insert or overwrite) a single tag on one node or way this layer
@@ -1748,6 +1890,7 @@ impl OsmLayer {
         self.modified = true;
         self.osm_data = Some(Arc::new(data));
         self.mp_refresh_ways(&using_ways);
+        self.mp_refresh_nodes(&[node_id]);
     }
 
     /// Insert a brand-new way referencing existing node ids (must already
@@ -2070,6 +2213,38 @@ impl OsmLayer {
         let mut relations: Vec<i64> = way_ids
             .iter()
             .filter_map(|w| self.mp.way_to_rels.get(w))
+            .flatten()
+            .copied()
+            .collect();
+        relations.sort_unstable();
+        relations.dedup();
+        self.mp_refresh_relations(&relations);
+    }
+
+    /// The route overlay colour of a way, as the renderer sees it.
+    #[cfg(test)]
+    pub(crate) fn route_overlay_colour(&self, way_id: i64) -> Option<u32> {
+        self.mp.route_colour_of_way(way_id)
+    }
+
+    /// The drawn restriction markers: `(relation id, mercator x, y, only)`.
+    #[cfg(test)]
+    pub(crate) fn restriction_markers(&self) -> Vec<(i64, f64, f64, bool)> {
+        self.mp
+            .restrictions
+            .iter()
+            .map(|(&id, r)| (id, r.x, r.y, r.only))
+            .collect()
+    }
+
+    /// Refresh the turn restrictions whose `via` node is one of these.
+    fn mp_refresh_nodes(&mut self, node_ids: &[i64]) {
+        if self.mp.node_to_rels.is_empty() {
+            return;
+        }
+        let mut relations: Vec<i64> = node_ids
+            .iter()
+            .filter_map(|n| self.mp.node_to_rels.get(n))
             .flatten()
             .copied()
             .collect();
@@ -2427,6 +2602,7 @@ impl OsmLayer {
         }
         self.node_to_ways.remove(&id);
         self.modified = true;
+        self.mp_refresh_nodes(&[id]);
 
         let snapshot = DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
@@ -2518,13 +2694,16 @@ impl OsmLayer {
                 {
                     return;
                 }
+                let id = snapshot.id;
                 self.insert_node(
-                    snapshot.id,
+                    id,
                     lat,
                     lon,
                     snapshot.tags.into_iter().collect(),
                     snapshot.version,
                 );
+                // A restriction whose via this was draws again.
+                self.mp_refresh_nodes(&[id]);
             }
             FeatureKind::Way => self.restore_way(snapshot),
             // Relations are never deleted yet, so there is nothing to restore.
@@ -3191,6 +3370,19 @@ impl MapLayer for OsmLayer {
         let mut way_group_index: HashMap<(u32, u32), usize> = HashMap::new();
         let mut way_groups: Vec<WayGroup> = Vec::new();
 
+        // Route overlays: a translucent line under each route member way,
+        // one path per colour. Looked up per visible way from the cache
+        // (`MpCache::route_ways`), never by scanning relations.
+        struct OverlayGroup {
+            rgba: u32,
+            path: Option<Path<Pixels>>,
+            bounds_min_max: (f32, f32, f32, f32),
+        }
+        let has_routes = !self.mp.route_ways.is_empty();
+        let mut overlay_index: HashMap<u32, usize> = HashMap::new();
+        let mut overlay_groups: Vec<OverlayGroup> = Vec::new();
+        let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
+
         // The casing: one dark path under every way's stroke (and direction
         // arrows), slightly wider than the stroke, so thin light lines stay
         // readable over light imagery. Built in the same pass as the strokes
@@ -3250,6 +3442,26 @@ impl MapLayer for OsmLayer {
             });
             let group = &mut way_groups[group_idx];
 
+            let overlay_idx = if has_routes {
+                self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
+                    *overlay_index.entry(colour).or_insert_with(|| {
+                        overlay_groups.push(OverlayGroup {
+                            rgba: (colour << 8) | overlay_alpha,
+                            path: None,
+                            bounds_min_max: (
+                                f32::INFINITY,
+                                f32::NEG_INFINITY,
+                                f32::INFINITY,
+                                f32::NEG_INFINITY,
+                            ),
+                        });
+                        overlay_groups.len() - 1
+                    })
+                })
+            } else {
+                None
+            };
+
             scratch_pts.clear();
             for &(node_id, mx, my) in verts {
                 let mut sp = viewport.mercator_to_screen(mx, my);
@@ -3275,6 +3487,16 @@ impl MapLayer for OsmLayer {
             let mut since_arrow = ARROW_SPACING_PX / 2.0;
             for (a, b) in decimate_segments(&scratch_pts, MIN_SEGMENT_PX) {
                 let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
+                if let Some(oi) = overlay_idx {
+                    let og = &mut overlay_groups[oi];
+                    push_segment_quad(
+                        &mut og.path,
+                        &mut og.bounds_min_max,
+                        p0,
+                        p1,
+                        group.half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
+                    );
+                }
                 if draw_casing {
                     push_segment_quad(
                         &mut casing_path,
@@ -3320,6 +3542,17 @@ impl MapLayer for OsmLayer {
                         push_triangle(&mut casing_path, &mut casing_bounds, tip, left, right);
                     }
                 }
+            }
+        }
+
+        for g in overlay_groups {
+            if let Some(mut path) = g.path {
+                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
+                path.bounds = Bounds {
+                    origin: point(px(min_x), px(min_y)),
+                    size: size(px(max_x - min_x), px(max_y - min_y)),
+                };
+                window.paint_path(path, rgba(g.rgba));
             }
         }
 
@@ -3369,6 +3602,27 @@ impl MapLayer for OsmLayer {
             }
             sp += self.drag_preview_offset(id);
             paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
+        }
+
+        // Turn restrictions: a sign-like marker beside the via position.
+        if show_vertices {
+            for r in self.mp.restrictions.values() {
+                if r.x < vmin_x || r.x > vmax_x || r.y < vmin_y || r.y > vmax_y {
+                    continue;
+                }
+                let sp = viewport.mercator_to_screen(r.x, r.y);
+                if !is_point_valid(sp) {
+                    continue;
+                }
+                paint_restriction_marker(
+                    window,
+                    point(
+                        sp.x + origin_x + px(RESTRICTION_OFFSET_PX.0),
+                        sp.y + origin_y + px(RESTRICTION_OFFSET_PX.1),
+                    ),
+                    r.only,
+                );
+            }
         }
     }
 
@@ -3539,6 +3793,38 @@ impl EditableLayer for OsmLayer {
 
         if self.osm_data.is_none() {
             return Vec::new();
+        }
+
+        // Phase 0: a turn-restriction marker (drawn only where vertices are).
+        // Checked first because the marker sits beside its via node, never
+        // on it, so it can't steal a click aimed at the node.
+        if viewport.zoom_level() >= VERTEX_MIN_ZOOM {
+            let mut marker_hits: Vec<HitCandidate> = Vec::new();
+            for (&relation_id, r) in &self.mp.restrictions {
+                let sp = viewport.mercator_to_screen(r.x, r.y);
+                if !is_point_valid(sp) {
+                    continue;
+                }
+                let c = point(
+                    sp.x + px(RESTRICTION_OFFSET_PX.0),
+                    sp.y + px(RESTRICTION_OFFSET_PX.1),
+                );
+                let dist = (c - screen_pt).magnitude() as f32;
+                if dist <= RESTRICTION_MARKER_DIAMETER / 2.0 + 1.0 {
+                    marker_hits.push(HitCandidate {
+                        feature: FeatureRef {
+                            layer_id: self.id,
+                            kind: FeatureKind::Relation,
+                            id: relation_id,
+                        },
+                        kind: FeatureKind::Relation,
+                        dist_px: dist,
+                    });
+                }
+            }
+            if !marker_hits.is_empty() {
+                return marker_hits;
+            }
         }
 
         let max_tol = NODE_TOL.max(WAY_TOL);
@@ -7686,5 +7972,196 @@ mod multipolygon_tests {
         assert_eq!(layer.multipolygon_state(500), valid(1, 1));
         layer.clear_osm_data();
         assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+    }
+}
+
+#[cfg(test)]
+mod relation_overlay_tests {
+    use super::{lat_lon_to_mercator, OsmLayer, RESTRICTION_OFFSET_PX};
+    use crate::layers::{EditableLayer, LayerId};
+    use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
+    use crate::selection::FeatureKind;
+    use crate::viewport::Viewport;
+    use gpui::{point, px, size};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
+        OsmNode {
+            id,
+            lat,
+            lon,
+            version: 1,
+            tags: HashMap::new(),
+        }
+    }
+
+    fn way(id: i64, nodes: &[i64]) -> OsmWay {
+        OsmWay {
+            id,
+            nodes: nodes.to_vec(),
+            version: 1,
+            tags: HashMap::from([("highway".to_string(), "residential".to_string())]),
+        }
+    }
+
+    fn rel(id: i64, tags: &[(&str, &str)], members: &[(MemberType, i64, &str)]) -> OsmRelation {
+        OsmRelation {
+            id,
+            version: 1,
+            tags: tags
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            members: members
+                .iter()
+                .map(|&(member_type, reference, role)| OsmMember {
+                    member_type,
+                    reference,
+                    role: role.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Ways 1 (nodes 1-2) and 2 (nodes 2-3) meet at node 2. Route 10 (bus)
+    /// has both, route 11 (bicycle, colour tag) has way 2 and a way that
+    /// isn't loaded. Restriction 20 is a `no_left_turn` via node 2, 21 an
+    /// `only_straight_on` via a node that isn't loaded.
+    fn layer() -> OsmLayer {
+        use MemberType::*;
+        let mut nodes = HashMap::new();
+        for n in [
+            node(4, 40.002, -73.99),
+            node(1, 40.0, -74.0),
+            node(2, 40.0, -73.999),
+            node(3, 40.001, -73.999),
+        ] {
+            nodes.insert(n.id, n);
+        }
+        let mut ways = HashMap::new();
+        for w in [way(1, &[1, 2]), way(2, &[2, 3])] {
+            ways.insert(w.id, w);
+        }
+        let data = OsmData {
+            nodes,
+            ways,
+            relations: vec![
+                rel(
+                    11,
+                    &[
+                        ("type", "route"),
+                        ("route", "bicycle"),
+                        ("colour", "#ff0000"),
+                    ],
+                    &[(Way, 2, ""), (Way, 99, "")],
+                ),
+                rel(
+                    10,
+                    &[("type", "route"), ("route", "bus")],
+                    &[(Way, 1, ""), (Way, 2, "")],
+                ),
+                rel(
+                    12,
+                    &[("type", "route_master"), ("route", "bus")],
+                    &[(Way, 1, "")],
+                ),
+                rel(
+                    20,
+                    &[("type", "restriction"), ("restriction", "no_left_turn")],
+                    &[(Way, 1, "from"), (Node, 2, "via"), (Way, 2, "to")],
+                ),
+                rel(
+                    21,
+                    &[("type", "restriction"), ("restriction", "only_straight_on")],
+                    &[(Way, 1, "from"), (Node, 777, "via"), (Way, 2, "to")],
+                ),
+                rel(
+                    22,
+                    &[("type", "restriction"), ("restriction", "no_u_turn")],
+                    &[(Way, 1, "from"), (Node, 4, "via"), (Way, 2, "to")],
+                ),
+            ],
+            bounds: Vec::new(),
+        };
+        OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))
+    }
+
+    #[test]
+    fn a_way_in_several_routes_gets_the_lowest_relation_id() {
+        let layer = layer();
+        assert_eq!(layer.route_overlay_colour(1), Some(0x9B30D9));
+        // Routes 10 (bus) and 11 (red): 10 wins.
+        assert_eq!(layer.route_overlay_colour(2), Some(0x9B30D9));
+        // Not a member of anything, or not loaded.
+        assert_eq!(layer.route_overlay_colour(98), None);
+    }
+
+    #[test]
+    fn route_edits_follow_the_relation() {
+        let mut layer = layer();
+        layer.set_tag(FeatureKind::Relation, 10, "type", "route_master");
+        assert_eq!(layer.route_overlay_colour(1), None);
+        assert_eq!(layer.route_overlay_colour(2), Some(0xFF0000));
+        layer.set_tag(FeatureKind::Relation, 10, "type", "route");
+        assert_eq!(layer.route_overlay_colour(1), Some(0x9B30D9));
+    }
+
+    #[test]
+    fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
+        let layer = layer();
+        let markers = layer.restriction_markers();
+        // 21's via node isn't loaded: no marker.
+        assert_eq!(markers.iter().map(|m| m.0).collect::<Vec<_>>(), [20, 22]);
+        let (_, x, y, only) = markers[0];
+        assert!(!only);
+        let (ex, ey) = lat_lon_to_mercator(40.0, -73.999);
+        assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
+    }
+
+    #[test]
+    fn moving_or_deleting_the_via_node_updates_the_marker() {
+        let mut layer = layer();
+        layer.commit_node_moves(&[(2, 40.0005, -73.998)]);
+        let (_, x, y, _) = layer.restriction_markers()[0];
+        let (ex, ey) = lat_lon_to_mercator(40.0005, -73.998);
+        assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
+
+        // Node 4 is a standalone via, so it can be deleted.
+        let snapshot = layer.delete_feature(FeatureKind::Node, 4).unwrap();
+        assert_eq!(layer.restriction_markers().len(), 1);
+        layer.restore_feature(snapshot);
+        assert_eq!(layer.restriction_markers().len(), 2);
+    }
+
+    #[test]
+    fn clicking_the_marker_selects_the_restriction_only_at_vertex_zoom() {
+        let layer = layer();
+        let v = Viewport::new(40.0005, -73.9985, 18.0, size(px(800.0), px(600.0)));
+        let via = v.geo_to_screen(40.0, -73.999);
+        let on_marker = point(
+            via.x + px(RESTRICTION_OFFSET_PX.0),
+            via.y + px(RESTRICTION_OFFSET_PX.1),
+        );
+        let hit = layer.hit_test(&v, on_marker);
+        assert_eq!(hit.len(), 1);
+        assert_eq!(
+            (hit[0].kind, hit[0].feature.id),
+            (FeatureKind::Relation, 20)
+        );
+        // The via node itself is still the node.
+        let hit = layer.hit_test(&v, point(via.x, via.y));
+        assert_eq!(hit[0].kind, FeatureKind::Node);
+        // Zoomed out, no marker to click.
+        let far = Viewport::new(40.0005, -73.9985, 12.0, size(px(800.0), px(600.0)));
+        let via = far.geo_to_screen(40.0, -73.999);
+        let hit = layer.hit_test(
+            &far,
+            point(
+                via.x + px(RESTRICTION_OFFSET_PX.0),
+                via.y + px(RESTRICTION_OFFSET_PX.1),
+            ),
+        );
+        assert!(hit.iter().all(|h| h.kind != FeatureKind::Relation));
     }
 }
