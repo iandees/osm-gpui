@@ -1,0 +1,63 @@
+# Building mode borrows the orientation of a selected squared way.
+#
+# Coordinate model: see select.osmscript — viewport center is window (488, 388).
+#
+# Fixture layout at zoom 18, centered on (40.7120, -74.0060):
+#   way 5001  a rectangular building rotated 30 degrees; its first edge
+#             midpoint is at window (258, 389).
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/oriented_building.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+capture out/00-loaded.png
+
+# Select the rectangular building: click its edge, then double-click its
+# interior (a double-click inside a closed way selects it too).
+click 258,389
+wait_idle 1s
+click 245,366 count=2
+wait_idle 2s
+assert_selected way 5001
+capture out/01-selected.png
+
+key b
+wait_idle 1s
+assert_mode building
+
+# Click, click: the preview follows the mouse after the first corner.
+click 520,330
+hover 640,420
+wait_idle 1s
+capture out/02-preview.png
+click 640,420
+wait_idle 1s
+capture out/03-clicked.png
+
+# Press, drag, release: a second building, still aligned to the reference.
+drag 520,500 700,590 button=left
+wait_idle 1s
+capture out/04-dragged.png
+
+# Leaving the mode forgets the reference: with nothing selected, Building
+# mode is the ordinary three-click flow.
+key escape
+wait_idle 1s
+assert_mode select
+key escape
+wait_idle 1s
+key b
+wait_idle 1s
+assert_mode building
+click 600,200
+click 700,200
+hover 700,260
+wait_idle 1s
+click 700,260
+wait_idle 1s
+capture out/05-unoriented.png
+
+log done

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7100" minlon="-74.0100" maxlat="40.7140" maxlon="-74.0020"/>
+
+  <!-- A 50m x 24m rectangular building rotated 30 degrees counter-clockwise -->
+  <node id="1" lat="40.7118842" lon="-74.0074891"/>
+  <node id="2" lat="40.7121088" lon="-74.0069759"/>
+  <node id="3" lat="40.7122955" lon="-74.0071181"/>
+  <node id="4" lat="40.7120709" lon="-74.0076313"/>
+
+  <way id="5001">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <nd ref="1"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>
