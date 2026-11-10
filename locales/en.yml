@@ -120,6 +120,8 @@ transfer:
       other: "Changeset %{index} of %{total}: uploading %{changes} changes…"
     part_closing: "Changeset %{index} of %{total}: closing…"
   busy: "Another transfer is already in progress"
+  # Shown while the app waits on the system keychain's access prompt for the saved login.
+  waiting_keychain: "Waiting for access to your saved login… (check for a keychain prompt)"
 
 # The card over the map while no OSM data is loaded.
 welcome:
@@ -681,3 +683,5 @@ error:
     denied: "Sign in was not completed: %{reason}"
     not_logged_in: "Not logged in"
     expired: "Login expired and can't be refreshed; please sign in again"
+    # `%{detail}` is the system's reason (e.g. "access denied").
+    keychain_read: "Couldn't read your saved login from the system keychain (%{detail}). Your login and edits are kept; try again and allow access when asked."
