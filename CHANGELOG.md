@@ -3,11 +3,38 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
-## Unreleased
+Each release's section is written just before tagging, with one line per
+change and a link to its pull request. Feature pull requests do not edit this
+file.
 
-- The Linux build now includes the Wayland and X11 windowing backends and no longer panics at startup ("internal error: entered unreachable code").
-- Fixed File > Upload to OSM (and its shortcut) doing nothing: it now shows the sign-in prompt, a "Nothing to upload" message, or the changeset dialog. Add Custom Imagery… had the same defect and is fixed too.
-- Script harness: new `action <Name>` op dispatches an app action the way a menu item does.
+## 0.3.0
+
+### Fixes
+
+- The Linux build now includes the Wayland and X11 windowing backends; the 0.2.0 Linux binary panicked at startup. ([#113](https://github.com/iandees/osm-gpui/pull/113))
+- File > Upload to OSM and Add Custom Imagery… did nothing when chosen from the menu or their shortcuts; both work again. ([#115](https://github.com/iandees/osm-gpui/pull/115))
+
+### Relations
+
+- Modified relations are uploaded and exported, and Split, Merge, Join and Delete keep relation memberships intact. ([#110](https://github.com/iandees/osm-gpui/pull/110))
+- Undoing a delete keeps the object's version, so the restored object uploads correctly. ([#111](https://github.com/iandees/osm-gpui/pull/111))
+- Select a relation from a member's Relations list to highlight its members and edit its tags, member order and roles; Add to Relation… adds the selection to an existing relation. ([#112](https://github.com/iandees/osm-gpui/pull/112))
+- Create a relation from the selection (New Relation) and delete a selected relation, with undo. ([#114](https://github.com/iandees/osm-gpui/pull/114))
+
+### Download and upload
+
+- Progress is shown while downloading (with Cancel) and while uploading, and a failed upload keeps the dialog open with a Try again button. ([#119](https://github.com/iandees/osm-gpui/pull/119))
+- The area outside the downloaded data is dimmed and outlined, and the downloaded bounds are kept when exporting. ([#120](https://github.com/iandees/osm-gpui/pull/120))
+- The download size limit comes from the server's capabilities instead of a fixed value, and a server that reports itself offline is not queried. ([#121](https://github.com/iandees/osm-gpui/pull/121), [#122](https://github.com/iandees/osm-gpui/pull/122))
+
+### Interface
+
+- The app opens on OpenStreetMap Carto with a welcome card offering Download and Open until data is loaded. ([#116](https://github.com/iandees/osm-gpui/pull/116))
+- Clearer side panel: distinct Layers, Selection and History areas, a header for the selected feature, and a single message when nothing is selected. ([#117](https://github.com/iandees/osm-gpui/pull/117))
+
+### Documentation
+
+- Rewritten README covering features, install, usage, shortcuts and development, with Linux build prerequisites per distribution. ([#118](https://github.com/iandees/osm-gpui/pull/118))
 
 ## 0.2.0
 
