@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the node-marker culling benchmark script.
+"""Generate the node-marker node marker benchmark script.
 
 usage: gen_culling_script.py A.osm B.osm TAG MODE > script.osmscript
 
@@ -26,6 +26,7 @@ import re
 import sys
 
 A, B, TAG, MODE = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+SEL_ZOOM = 16.5  # zoom of the selected-way screenshot
 
 # Window 1400x900: map area is 1064x876 starting at x=56 (mode panel 56, side
 # panel 280, status bar 24), so the map centre is window (588, 438).
@@ -47,6 +48,7 @@ def to_window(lat, lon, zoom):
 
 def pick_way(path, zoom):
     nodes = {}
+    tagged = []
     ways = []
     cur = None
     for line in open(path, encoding="utf-8"):
@@ -55,6 +57,8 @@ def pick_way(path, zoom):
             m = re.search(r'id="(\d+)".*?lat="([-0-9.]+)".*?lon="([-0-9.]+)"', t)
             if m:
                 nodes[m.group(1)] = (float(m.group(2)), float(m.group(3)))
+                if not t.endswith("/>"):
+                    tagged.append(nodes[m.group(1)])
         elif t.startswith("<way "):
             cur = {"refs": [], "hw": False}
         elif cur is not None and t.startswith("<nd "):
@@ -65,6 +69,7 @@ def pick_way(path, zoom):
             if cur and cur["hw"]:
                 ways.append(cur)
             cur = None
+    tagged_px = [to_window(la, lo, zoom) for la, lo in tagged]
     best = None
     for w in ways:
         pts = [to_window(*nodes[r], zoom) for r in w["refs"] if r in nodes]
@@ -75,6 +80,9 @@ def pick_way(path, zoom):
             seg = math.hypot(q[0] - p[0], q[1] - p[1])
             near = math.hypot(mid[0] - CX, mid[1] - CY)
             if near > 220 or seg < 25:
+                continue
+            # keep clear of tagged nodes, whose markers would win the click
+            if any(math.hypot(mid[0] - a, mid[1] - b) < 16 for a, b in tagged_px):
                 continue
             total = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
             score = total - near
@@ -95,9 +103,9 @@ def long_view(name, lat, lon, zoom, seconds):
     w(f"frame_stats {name}")
 
 
-def section(name, lat, lon, secs, shots):
+def section(name, lat, lon, secs, shots, zooms=(14, 15.5, 17, 18.5, 19.5)):
     w(f"# ---- dataset {name} ----")
-    for z in (14, 15.5, 17, 18.5, 19.5):
+    for z in zooms:
         w(f"viewport {lat} {lon} {z}")
         w("wait 1500ms")
         w("frame_stats discard")
@@ -140,18 +148,18 @@ w("frame_stats A_load")
 long_view("A_z17_rep1", LAT0, LON0, 17, 10)
 long_view("A_z17_rep2", LAT0, LON0, 17, 10)
 if MODE in ("full", "A"):
-    section("A", LAT0, LON0, 4, True)
+    section("A", LAT0, LON0, 4, True, (14, 15.5, 17, 17.5, 18, 18.5, 19.5))
     # Selected way at low zoom: its own nodes are drawn, the rest are not.
-    pick = pick_way(A, 15.5)
+    pick = pick_way(A, SEL_ZOOM)
     if pick:
         _, (mx, my), total, n = pick
         w(f"# way of {n} nodes, {total:.0f}px long at z15.5, click at {mx:.0f},{my:.0f}")
-        w(f"viewport {LAT0} {LON0} 15.5")
+        w(f"viewport {LAT0} {LON0} {SEL_ZOOM}")
         w("wait 1s")
         for k, dy in enumerate((0, -24, 24)):
             w(f"click {mx:.0f},{my + dy:.0f}")
             w("wait 800ms")
-            w(f"capture target/perf/{TAG}-A-z15.5-selected-try{k}.png")
+            w(f"capture target/perf/{TAG}-A-z{SEL_ZOOM}-selected-try{k}.png")
             w("click 80,860")
             w("wait 300ms")
     w(f"viewport {LAT0} {LON0} 19")

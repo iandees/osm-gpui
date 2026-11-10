@@ -342,47 +342,73 @@ same instrumentation applied and `python3 docs/perf/gen_benchmark_script.py ... 
 for the comparison script.) `frame_stats LABEL` is a script op that prints and clears the
 per-phase min / median / p95 / max / mean since the previous call.
 
-## After: node marker density rule (PR node-marker-culling)
+## After: node marker zoom rule (PR node-marker-culling)
 
-The rule is in `src/layers/node_markers.rs` (see its module doc). Each node gets
-a reveal zoom at load time from a stable density pass (tagged nodes first, then
-junctions and way ends, then plain vertices; world-keyed grid cells whose pixel
-size shrinks from 26 px at zoom 16 to 0 at zoom 18.5; untagged nodes never below
-zoom 15). Drawing, hover and click targeting, and box select all use it, so a
-hidden vertex is never a target. Selected nodes and the nodes of a selected way are
-always shown and targetable. From zoom 18.5 everything is shown as before.
+The rule is in `src/layers/node_markers.rs` (one function, `node_form`), by zoom and
+tags only:
 
-Same machine, `--release`, 1400 x 900 window, 60 Hz display. Medians; "before" is
-the build with only the counters added (`docs/perf/results/culling-before-A.txt`,
-`culling-before-B.txt`), "after" is `culling-after-full.txt`. Raw output of the v0.3.0
-comparison is `culling-v030-z17.txt`. Script: `gen_culling_script.py`.
+- **Untagged nodes** (plain way vertices) are not drawn below zoom 18
+  (`UNTAGGED_MIN_ZOOM`); from 18 they are drawn in full, as before.
+- **Tagged nodes** are drawn at every zoom. From zoom 18 in full; below it as a single
+  small orange square (no casing, no ring, no icon): 3 px from zoom 16, 2 px below
+  (`SIMPLE_SMALL_ZOOM`, `SIMPLE_SIZE`, `SIMPLE_TINY_SIZE`).
+- The simple squares of a frame are pushed as raw triangles into one path (the way
+  the direction arrows are), not as one quad each.
+- Selected nodes, the hovered node and the nodes of a selected way are drawn in full at
+  any zoom.
+- Hit testing and box select use the same function: a node that is not drawn is not
+  a hover or click target (the click goes to the way); a simple square is a target with a
+  5 px radius (8 px for a full marker); box select takes the nodes that are drawn plus
+  enclosed ways.
 
-| view | layer paint med / p95 before | after | node phase before | after | markers drawn / nodes in view before | after | frame interval before | after |
-|---|---|---|---|---|---|---|---|---|
-| A z14 | 7.32 / 8.11 | 1.36 / 1.79 | 5.55 | 0.05 | 6149 / 24127 | 71 / 24127 | 49.9 | 16.7 |
-| A z15.5 | 10.01 / 10.91 | 3.61 / 4.28 | 6.19 | 0.17 | 6133 / 23867 | 386 / 23867 | 40.6 | 16.7 |
-| A z17 | 32.59 / 33.23 | 5.18 / 6.12 | 28.40 | 0.73 | 21059 / 21059 | 1550 / 21059 | 41.1 | 16.7 |
-| A z18.5 | 4.85 / 5.84 | 2.60 / 3.43 | 2.80 | 1.11 | 2344 / 2344 | 2344 / 2344 | 49.7 (noisy run) | 16.7 |
-| A z19.5 | 2.39 / 3.53 | 1.58 / 2.09 | 0.71 | 0.56 | 640 / 640 | 640 / 640 | 49.7 (noisy run) | 16.7 |
-| B z14 | 204.95 / 207.43 | 19.76 / 22.29 | 183.93 | 0.58 | 73768 / 289450 | 465 / 289450 | 235.4 | 45.7 |
-| B z15.5 | 104.89 / 106.23 | 37.19 / 38.79 | 71.33 | 1.82 | 49674 / 193767 | 1441 / 193767 | 135.6 | 67.9 |
-| B z17 | 51.29 / 53.76 | 8.38 / 9.87 | 42.94 | 1.19 | 27630 / 27630 | 1627 / 27630 | 66.6 | 21.0 |
-| B z18.5 | 4.46 / 6.04 | 3.72 / 4.82 | 2.54 | 2.30 | 3583 / 3583 | 3581 / 3581 | 16.7 | 16.7 |
-| B z19.5 | 3.20 / 5.41 | 1.63 / 3.12 | 1.14 | 0.71 | 1002 / 1002 | 1001 / 1001 | 49.9 | 16.7 |
+Threshold choice: with the rule at 18, layer paint on A is at most 5.0 ms (median)
+anywhere in 14 to 19.5. A z18 view with all vertices drawn is the costliest one (5300
+markers, 3.5 ms of node phase). Drawing vertices at z17.5 would add roughly 11,000
+full markers (about 14 ms by the old per-marker cost), which is over the 8 ms budget;
+and from about 18 on, vertices of a street are a few pixels apart.
 
-The "before" frame intervals at A z18.5 / z19.5 (about 50 ms with 2 to 5 ms of paint)
-came from a noisy stretch of that run and should not be read as a property of the old
-code. Layer paint at z18.5 and closer is not changed by the rule (all markers drawn).
+Same machine, `--release`, 1400 x 900 window, 60 Hz display. Medians; the "before"
+columns are main with only the counters added (`culling-before-A.txt`,
+`culling-before-B.txt`), "density" is the earlier revision of this PR (a per-node reveal
+zoom from a grid pass, numbers kept for comparison only), "zoom rule" is
+`zoomrule-A.txt` and `zoomrule-B.txt`. Script: `gen_culling_script.py`.
 
-- Target 1, A under 8 ms at every zoom: met (worst 5.2 ms at z17; 5.4 ms in the 20 s z17 run,
-  pans 5.5, hover 5.0).
-- Target 2, B under 16 ms at z15.5 and closer: met at z17 (8.4 ms), z18.5 and z19.5;
-  **not met at z15.5 (37 ms)**. At B z15.5 the node phase is now 1.8 ms; what remains
-  is way building and painting (16 + 15 ms: casing, strokes, arrows) and fills. B z14 is
-  19.8 ms for the same reason (ways 15 ms).
-- Hover hit test: 0.03 ms (A), 0.09 ms (B) median, unchanged.
-- Load cost: `load.node_cache` rose from 4.7 to 7.0 ms on A and from 49 to 103 ms on
-  B (the density pass: a sort and about 17 hash-set levels).
+| view | layer paint med / p95: before | density | zoom rule | node phase: before | density | zoom rule | markers drawn / nodes in view: before | zoom rule | frame interval: before | density | zoom rule |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| A z14 | 7.32 / 8.11 | 1.36 / 1.79 | 1.70 / 2.10 | 5.55 | 0.05 | 0.35 | 6149 / 24127 | 6149 / 24131 | 49.9 | 16.7 | 16.7 |
+| A z15.5 | 10.01 / 10.91 | 3.61 / 4.28 | 3.13 / 3.80 | 6.19 | 0.17 | 0.21 | 6133 / 23867 | 6135 / 23874 | 40.6 | 16.7 | 16.7 |
+| A z17 | 32.59 / 33.23 | 5.18 / 6.12 | 3.57 / 4.50 | 28.40 | 0.73 | 0.16 | 21059 / 21059 | 5962 / 22215 | 41.1 | 16.7 | 16.7 |
+| A z17.5 | not measured | not measured | 3.71 / 5.22 | | | 0.16 | | 3478 / 11597 | | | 16.7 |
+| A z18 | not measured | not measured | 4.97 / 6.38 | | | 3.45 | | 5300 / 5300 | | | 16.7 |
+| A z18.5 | 4.85 / 5.84 | 2.60 / 3.43 | 2.63 / 3.83 | 2.80 | 1.11 | 1.61 | 2344 / 2344 | 2449 / 2449 | 49.7 (noisy) | 16.7 | 16.7 |
+| A z19.5 | 2.39 / 3.53 | 1.58 / 2.09 | 1.82 / 2.68 | 0.71 | 0.56 | 0.67 | 640 / 640 | 698 / 698 | 49.7 (noisy) | 16.7 | 16.7 |
+| B z14 | 204.95 / 207.43 | 19.76 / 22.29 | 22.48 / 24.21 | 183.93 | 0.58 | 4.65 | 73768 / 289450 | 73768 / 289468 | 235.4 | 45.7 | 50.5 |
+| B z15.5 | 104.89 / 106.23 | 37.19 / 38.79 | 38.38 / 40.17 | 71.33 | 1.82 | 4.31 | 49674 / 193767 | 52869 / 205636 | 135.6 | 67.9 | 69.0 |
+| B z17 | 51.29 / 53.76 | 8.38 / 9.87 | 8.33 / 11.24 | 42.94 | 1.19 | 0.66 | 27630 / 27630 | 7290 / 29510 | 66.6 | 21.0 | 19.1 |
+| B z18.5 | 4.46 / 6.04 | 3.72 / 4.82 | 4.77 / 5.98 | 2.54 | 2.30 | 2.98 | 3583 / 3583 | 3841 / 3841 | 16.7 | 16.7 | 16.7 |
+| B z19.5 | 3.20 / 5.41 | 1.63 / 3.12 | 1.88 / 3.15 | 1.14 | 0.71 | 0.84 | 1002 / 1002 | 1065 / 1065 | 49.9 | 16.7 | 16.7 |
+
+The A and B rows of the zoom-rule column come from the same launch for B (final
+build except that the simple square was 4 px from zoom 15 and the zoom-15.5 view
+therefore drew 4 px squares; cost does not depend on size) and a later launch for
+A (final build). Small differences in the count of "nodes in view" between runs come
+from the slightly different view bounds. The "before" frame intervals at A z18.5 and
+z19.5 came from a noisy stretch and are not a property of the old code.
+
+- A is under 8 ms at every zoom (worst 5.0 ms median, 6.4 ms p95, at z18; pan at
+  z17 4.7 ms, hover 3.9 ms).
+- B z14 and B z15.5 are not under budget: 22.5 ms and 38.4 ms. The node phase there
+  is 4.7 and 4.3 ms for 74,000 and 53,000 tagged squares, so what remains is way
+  building and painting (as in the density revision). B z17 is 8.3 ms.
+- Why one path rather than quads: with one `paint_quad` per square the same rule gave
+  A z14 / z15.5 / z17 node phases of 6.25 / 5.22 / 3.26 ms and layer paints of
+  7.3 / 8.2 / 7.7 ms (`zoomrule-A-one-quad-each.txt`, 6000 markers, about 1 us each),
+  over the 8 ms budget at z15.5. The triangle path brings the node phase to
+  0.35 / 0.21 / 0.16 ms. The earlier remark about Lyon fill batching being slow does not
+  apply, since this path does no tessellation.
+- Load cost: `load.node_cache` is 4.8 / 5.0 ms on A and 49.0 ms on B, back to the old
+  4.7 and 49 ms (the density pass had made it 7.0 and 103 ms).
+- Hover hit test is unchanged in cost (about 0.03 ms on A).
 
 ### zoom 17 on A, v0.3.0 against main (200+ frames each)
 
@@ -400,4 +426,4 @@ The per-node loop and `paint_node_marker` are identical in the two builds, so th
 is not in that code; it is about 0.35 us more per `paint_quad`. Not identified (not
 isolated: candidates are a different scene state when the quads are recorded, such as
 the larger number of paths already in the scene, or something in the window chrome).
-The density rule removes 90 percent of the quads and so most of it.
+The zoom rule removes most of the quads and so most of it.
