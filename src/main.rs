@@ -1630,6 +1630,9 @@ impl MapViewer {
         let Some(pending) = self.pending_tag_edit_open.take() else {
             return;
         };
+        if self.edits_blocked(cx) {
+            return;
+        }
         // Finish any edit that is still open: its input doesn't blur when
         // the click that got us here landed on a button.
         self.commit_tag_inline_edit(cx);
@@ -1771,6 +1774,9 @@ impl MapViewer {
     /// and push one `UndoableAction::SetTags` (skipped entirely if there
     /// were no actual changes).
     fn apply_tag_edit(&mut self, ctx: &TagEditContext, key: &str, value: &str) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let snapshots = self.feature_tag_snapshots(&ctx.features);
 
         let entries = osm_gpui::selection::compute_tag_edit_entries(
@@ -1804,6 +1810,9 @@ impl MapViewer {
     /// applying immediately and pushing one `UndoableAction::SetTags` (no
     /// dialog involved).
     fn delete_tag(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let entries: Vec<_> = self
             .selected_feature_tag_snapshots()
             .into_iter()
@@ -1848,6 +1857,9 @@ impl MapViewer {
         relation_id: i64,
         after: Vec<osm_gpui::osm::OsmMember>,
     ) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(editable) = self
             .layer_manager
             .find_layer_mut(layer_id)
@@ -1914,6 +1926,9 @@ impl MapViewer {
         let Some((member, original)) = self.pending_role_edit_open.take() else {
             return;
         };
+        if self.edits_blocked(cx) {
+            return;
+        }
         // Finish any edit that is still open.
         self.commit_role_edit(cx);
 
@@ -2092,6 +2107,9 @@ impl MapViewer {
     /// Append the selected nodes and ways to relation `relation_id` as one
     /// undo step (the picker's choice).
     fn add_selection_to_relation(&mut self, relation_id: i64) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let result = selection_actions::add_to_relation(
             &mut self.layer_manager,
             &self.selected,
@@ -2328,11 +2346,23 @@ impl MapViewer {
     /// Whether an upload is running, which freezes the layers (see
     /// `transfer::blocks_edits`). When it is, say so in the status bar.
     fn edits_blocked(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.refuse_edit_during_upload() {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    /// The same check for code paths without a `cx` (the edit primitives the
+    /// side panel and map gestures end in): true, with the status message
+    /// set, while an upload runs. Every way of changing the layers checks
+    /// this, so a field typed into, a preset picked or a member reordered
+    /// during an upload is refused as well as undo and delete.
+    fn refuse_edit_during_upload(&mut self) -> bool {
         if !osm_gpui::transfer::blocks_edits(self.transfer.as_ref()) {
             return false;
         }
         self.set_status(tr!("status.upload_blocks_edits"));
-        cx.notify();
         true
     }
 
@@ -2519,6 +2549,9 @@ impl MapViewer {
         preset_tags: &std::collections::HashMap<String, String>,
         preset_geometry: &[osm_gpui::presets::Geometry],
     ) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(editable) = self
             .layer_manager
             .find_layer(target.layer_id)
@@ -2574,6 +2607,9 @@ impl MapViewer {
         target: &osm_gpui::selection::FeatureRef,
         preset_tags: std::collections::HashMap<String, String>,
     ) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(layer) = self.layer_manager.find_layer(target.layer_id) else {
             return;
         };
@@ -2711,6 +2747,10 @@ impl MapViewer {
                             editable.clear_drag_preview();
                         }
                     }
+                }
+                if self.refuse_edit_during_upload() {
+                    cx.notify();
+                    return;
                 }
 
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
@@ -2931,6 +2971,9 @@ impl MapViewer {
     /// Create 4 nodes and a closed `building=yes` way through them (corners
     /// in ring order) as one undo action, and select the new way.
     fn commit_building_corners(&mut self, layer_id: LayerId, corners: [(f64, f64); 4]) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
             return;
         };
@@ -2966,6 +3009,9 @@ impl MapViewer {
     /// works on any way segment, not just buildings, so it must not assume
     /// `building=yes`), push one `ExtrudeWay` undo action.
     fn commit_extrude(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(layer) = self.layer_manager.find_layer(drag.layer) else {
             return;
         };
@@ -3085,6 +3131,9 @@ impl MapViewer {
     /// (`CreateNode`), the way's rewritten node list (`SetWayNodes`) and the
     /// moved nodes (`MoveNodes`), in that order so undo runs them backwards.
     fn commit_extrude_reshape(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         use osm_gpui::extrude::PlanNode;
 
         let Some(result) = self.compute_extrude(drag, up_pos) else {
@@ -3180,6 +3229,9 @@ impl MapViewer {
     /// Double-click on a segment (no drag): insert a new node at the
     /// double-click position, splitting that segment.
     fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         if self.refuse_way_growth(drag.layer, drag.way_id, 1) {
             return;
         }
@@ -3263,6 +3315,9 @@ impl MapViewer {
     /// a nearby existing node and snapping onto a nearby way's line
     /// geometry, always producing a fully independent node.
     fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, ctrl_held: bool) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
         let Some(layer_id) = self.active_layer else {
             return;
         };
@@ -9035,6 +9090,138 @@ mod tests {
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("An upload is in progress. Wait for it to finish before quitting.")
                 );
+            })
+            .unwrap();
+    }
+
+    /// Every way the side panel (and the map) changes the layers is refused
+    /// during an upload, with the standard message and nothing recorded.
+    #[gpui::test]
+    fn side_panel_edits_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
+        use osm_gpui::osm::{MemberType, OsmMember};
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+        const REFUSAL: &str = "An upload is in progress. Wait for it to finish before editing.";
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let members = vec![
+                    OsmMember {
+                        member_type: MemberType::Node,
+                        reference: 1,
+                        role: "a".into(),
+                    },
+                    OsmMember {
+                        member_type: MemberType::Node,
+                        reference: 2,
+                        role: "b".into(),
+                    },
+                ];
+                let relation_id = editable(view)
+                    .create_relation(Vec::new(), members.clone())
+                    .unwrap();
+                let node1 = FeatureRef {
+                    layer_id,
+                    kind: FeatureKind::Node,
+                    id: 1,
+                };
+                let ctx = TagEditContext {
+                    features: vec![node1],
+                    original_key: String::new(),
+                    original_value: String::new(),
+                    is_add: true,
+                };
+                let member = MemberRef {
+                    layer_id,
+                    relation_id,
+                    index: 0,
+                };
+                let preset_tags = std::collections::HashMap::from([(
+                    "amenity".to_string(),
+                    "cafe".to_string(),
+                )]);
+                select(view, FeatureKind::Node, &[1]);
+
+                // Each edit, as the side panel makes it.
+                type Edit = Box<dyn Fn(&mut MapViewer, &mut Context<MapViewer>)>;
+                let edits: Vec<(&str, Edit)> = vec![
+                    ("tag edit", {
+                        let ctx = TagEditContext {
+                            features: ctx.features.clone(),
+                            original_key: String::new(),
+                            original_value: String::new(),
+                            is_add: true,
+                        };
+                        Box::new(move |v, _| v.apply_tag_edit(&ctx, "amenity", "cafe"))
+                    }),
+                    ("tag delete", Box::new(|v, cx| v.delete_tag("amenity", cx))),
+                    (
+                        "preset",
+                        Box::new({
+                            let tags = preset_tags.clone();
+                            move |v, _| v.apply_preset(&node1, &tags, &[])
+                        }),
+                    ),
+                    (
+                        "field / NSI preset",
+                        Box::new({
+                            let tags = preset_tags.clone();
+                            move |v, _| v.apply_nsi_preset(&node1, tags.clone())
+                        }),
+                    ),
+                    (
+                        "member role",
+                        Box::new(move |v, _| v.set_relation_member_role(member, "z")),
+                    ),
+                    (
+                        "member order",
+                        Box::new(move |v, _| v.move_relation_member(member, 1)),
+                    ),
+                    (
+                        "member remove",
+                        Box::new(move |v, _| v.remove_relation_member(member)),
+                    ),
+                    (
+                        "add to relation",
+                        Box::new(move |v, _| v.add_selection_to_relation(relation_id)),
+                    ),
+                    (
+                        "map add click",
+                        Box::new(|v, _| v.handle_add_click(point(px(400.0), px(300.0)), false)),
+                    ),
+                ];
+
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::UploadingChanges { count: 1 },
+                ));
+                let before = (
+                    pending(view),
+                    view.undo_stack.actions.len(),
+                    view.relation_of(layer_id, relation_id).unwrap().members,
+                );
+                for (name, edit) in &edits {
+                    view.status_message = None;
+                    edit(view, cx);
+                    assert_eq!(status_text(view), Some(REFUSAL), "{name} not refused");
+                    let after = (
+                        pending(view),
+                        view.undo_stack.actions.len(),
+                        view.relation_of(layer_id, relation_id).unwrap().members,
+                    );
+                    assert_eq!(before, after, "{name} changed the data");
+                }
+
+                // A download does not block the same edits.
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Download,
+                    TransferPhase::Downloading,
+                ));
+                view.status_message = None;
+                view.apply_tag_edit(&ctx, "amenity", "cafe");
+                view.set_relation_member_role(member, "z");
+                assert_ne!(status_text(view), Some(REFUSAL));
+                assert_eq!(view.undo_stack.actions.len(), 2);
             })
             .unwrap();
     }
