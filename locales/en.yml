@@ -561,6 +561,9 @@ dialog:
     comment_label: "Changeset comment"
     comment_placeholder: "Describe your changes (required)"
     failed: "Upload failed"
+    # Title when the pending changes break a server size limit (the body is
+    # one of `limits.upload.*`).
+    refused_title: "Can't upload yet"
     retry: "Try again"
     # More changes than one changeset holds: `%{count}` changesets will be used.
     large:
@@ -580,6 +583,8 @@ dialog:
       hint_deleted: "Someone deleted it on the server. Show it, then remove your edits to it or redo them elsewhere."
       hint_deleted_both: "You deleted it too, so there is nothing left to upload for it. Drop my change forgets your delete."
       hint_related: "Fix the objects involved (Show finds them), then try again."
+  notice:
+    ok: "OK"
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
@@ -656,7 +661,7 @@ upload_conflict:
   kept_mine: "Kept your version of %{object}. Press Upload to send it."
   used_theirs: "Replaced %{object} with the server's version; your change to it is gone. Press Upload to continue."
   dropped: "Forgot your delete of %{object}, which the server had already done. Press Upload to continue."
-  undo_cleared: "The undo history was cleared."
+  undo_trimmed: "Undo steps that involved it were removed."
 
 error:
   network: "Network error: %{detail}"

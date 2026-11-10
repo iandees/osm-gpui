@@ -320,6 +320,18 @@ impl UploadDialog {
         cx.notify();
     }
 
+    /// The comment as typed (not trimmed), so the app can keep it when the
+    /// dialog closes without uploading.
+    pub fn draft_comment(&self, cx: &App) -> String {
+        self.comment.read(cx).value().to_string()
+    }
+
+    /// Put a previously kept comment back in the field.
+    pub fn set_draft_comment(&self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.comment
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
     fn comment_text(&self, cx: &Context<Self>) -> String {
         self.comment.read(cx).value().trim().to_string()
     }
