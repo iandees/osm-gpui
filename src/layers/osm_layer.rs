@@ -1,5 +1,5 @@
 use gpui::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
@@ -82,6 +82,16 @@ struct WayBbox {
 }
 
 impl WayBbox {
+    /// A box containing nothing, for `extend` to grow.
+    fn empty() -> Self {
+        Self {
+            min_x: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+        }
+    }
+
     /// Conservatively grow this bbox to include `(x, y)`. Never shrinks.
     fn extend(&mut self, x: f64, y: f64) {
         if x < self.min_x {
@@ -155,6 +165,8 @@ pub struct OsmLayer {
     /// style has a fill. Aligned with `way_vertices`/`way_styles` by index.
     /// See `compute_fill_tris`.
     way_fill_tris: Vec<Option<Vec<u32>>>,
+    /// Assembled and triangulated multipolygon relations; see [`MpCache`].
+    mp: MpCache,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
@@ -378,6 +390,238 @@ fn compute_way_tables(
         styles.push(style);
     }
     (ids, bboxes, vertices, styles, fill_tris)
+}
+
+/// One assembled polygon of a multipolygon relation, projected and
+/// triangulated once.
+#[derive(Debug, Clone)]
+struct MpPolygon {
+    /// `(node id, x, y)` in Web Mercator meters for the outer ring followed
+    /// by each hole, none repeating its first vertex. The node ids let the
+    /// renderer apply a drag preview.
+    verts: Vec<(i64, f64, f64)>,
+    /// Start offset of each ring in `verts`, then `verts.len()`: ring `k` is
+    /// `verts[ring_starts[k]..ring_starts[k + 1]]`; ring 0 is the outer one.
+    ring_starts: Vec<usize>,
+    /// Earcut triangles (indices into `verts`), outer minus holes. Empty when
+    /// the relation's style has no fill.
+    tris: Vec<u32>,
+    bbox: WayBbox,
+}
+
+impl MpPolygon {
+    fn ring(&self, k: usize) -> &[(i64, f64, f64)] {
+        &self.verts[self.ring_starts[k]..self.ring_starts[k + 1]]
+    }
+    fn ring_count(&self) -> usize {
+        self.ring_starts.len() - 1
+    }
+}
+
+/// A multipolygon relation that assembled into valid rings.
+#[derive(Debug, Clone)]
+struct MpEntry {
+    /// Resolved from the relation's tags as for a closed way.
+    style: WayStyle,
+    polygons: Vec<MpPolygon>,
+    bbox: WayBbox,
+    /// Area in mercator square meters, holes excluded.
+    area: f64,
+    /// Whether the relation carries tags besides `type`. An untagged
+    /// multipolygon is the old style, whose tags live on the outer way: that
+    /// way stays what a click selects.
+    tagged: bool,
+}
+
+/// What became of a relation in the cache (tests inspect this).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MpState {
+    /// Not a multipolygon/boundary (or not in the data).
+    NotArea,
+    /// A multipolygon that couldn't be assembled; it is not drawn.
+    Invalid(crate::multipolygon::Problem),
+    /// Assembled into polygons with this many holes in all.
+    Valid { polygons: usize, holes: usize },
+}
+
+/// Assembled multipolygon relations, kept in step with the data.
+///
+/// Built from scratch with the rest of the layer's caches, and then patched
+/// per relation: every edit that can change a relation's rings (a member
+/// node moved, a member way reshaped, split, joined, added or removed, the
+/// member list or the relation's tags changed, and the undo/redo of each)
+/// calls [`OsmLayer::mp_refresh_relations`] or [`OsmLayer::mp_refresh_ways`]
+/// for just the relations involved. `version` counts those refreshes so a
+/// test (or a future consumer) can tell a rebuild happened.
+#[derive(Debug, Clone, Default)]
+struct MpCache {
+    entries: BTreeMap<i64, MpEntry>,
+    invalid: BTreeMap<i64, crate::multipolygon::Problem>,
+    /// Member way id -> area relations listing it (valid or not).
+    way_to_rels: HashMap<i64, Vec<i64>>,
+    /// Relation id -> its member way ids, to unmap them on refresh.
+    rel_ways: HashMap<i64, Vec<i64>>,
+    version: u64,
+}
+
+/// Assemble and triangulate one relation. `None` when it isn't an area
+/// relation.
+fn build_mp(
+    data: &OsmData,
+    node_cache: &NodeCache,
+    stylesheet: &Stylesheet,
+    relation: &crate::osm::OsmRelation,
+) -> Option<Result<MpEntry, crate::multipolygon::Problem>> {
+    use crate::multipolygon::{assemble, triangulate, WayMember};
+    if !crate::multipolygon::is_area_relation(&relation.tags) {
+        return None;
+    }
+    let members: Vec<WayMember> = relation
+        .members
+        .iter()
+        .filter(|m| m.member_type == crate::osm::MemberType::Way)
+        .map(|m| WayMember {
+            way_id: m.reference,
+            role: &m.role,
+            nodes: data.ways.get(&m.reference).map(|w| w.nodes.as_slice()),
+        })
+        .collect();
+    let position = |id: i64| {
+        node_cache
+            .index_by_id
+            .get(&id)
+            .map(|&i| (node_cache.flat[i].1, node_cache.flat[i].2))
+    };
+    let assembled = match assemble(&members, &position) {
+        Ok(a) => a,
+        Err(problem) => return Some(Err(problem)),
+    };
+    let style = stylesheet.way_style(&relation.tags, true);
+    let mut polygons = Vec::with_capacity(assembled.polygons.len());
+    let mut total = WayBbox::empty();
+    for polygon in &assembled.polygons {
+        let mut verts: Vec<(i64, f64, f64)> = Vec::new();
+        let mut ring_starts = vec![0];
+        let mut bbox = WayBbox::empty();
+        for (k, ring) in std::iter::once(&polygon.outer)
+            .chain(polygon.inners.iter())
+            .enumerate()
+        {
+            for &id in &ring[..ring.len() - 1] {
+                let Some((x, y)) = position(id) else {
+                    return Some(Err(crate::multipolygon::Problem::MissingNode(id)));
+                };
+                verts.push((id, x, y));
+                if k == 0 {
+                    bbox.extend(x, y);
+                }
+            }
+            ring_starts.push(verts.len());
+        }
+        total.extend(bbox.min_x, bbox.min_y);
+        total.extend(bbox.max_x, bbox.max_y);
+        let tris = if style.fill.is_some() {
+            let rings: Vec<Vec<(f64, f64)>> = (0..ring_starts.len() - 1)
+                .map(|k| {
+                    verts[ring_starts[k]..ring_starts[k + 1]]
+                        .iter()
+                        .map(|&(_, x, y)| (x, y))
+                        .collect()
+                })
+                .collect();
+            let refs: Vec<&[(f64, f64)]> = rings.iter().map(|r| r.as_slice()).collect();
+            triangulate(&refs).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        polygons.push(MpPolygon {
+            verts,
+            ring_starts,
+            tris,
+            bbox,
+        });
+    }
+    Some(Ok(MpEntry {
+        style,
+        polygons,
+        bbox: total,
+        area: assembled.area(),
+        tagged: relation.tags.keys().any(|k| k != "type"),
+    }))
+}
+
+impl MpCache {
+    fn rebuild_all(&mut self, data: &OsmData, node_cache: &NodeCache, stylesheet: &Stylesheet) {
+        let version = self.version + 1;
+        *self = MpCache::default();
+        self.version = version;
+        for relation in &data.relations {
+            self.install(relation, build_mp(data, node_cache, stylesheet, relation));
+        }
+    }
+
+    /// Recompute just these relations (dropping any that are gone or no
+    /// longer area relations).
+    fn refresh(
+        &mut self,
+        ids: &[i64],
+        data: &OsmData,
+        node_cache: &NodeCache,
+        stylesheet: &Stylesheet,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        self.version += 1;
+        for &id in ids {
+            self.entries.remove(&id);
+            self.invalid.remove(&id);
+            if let Some(ways) = self.rel_ways.remove(&id) {
+                for way in ways {
+                    if let Some(rels) = self.way_to_rels.get_mut(&way) {
+                        rels.retain(|&r| r != id);
+                        if rels.is_empty() {
+                            self.way_to_rels.remove(&way);
+                        }
+                    }
+                }
+            }
+            if let Some(relation) = data.relations.iter().find(|r| r.id == id) {
+                self.install(relation, build_mp(data, node_cache, stylesheet, relation));
+            }
+        }
+    }
+
+    fn install(
+        &mut self,
+        relation: &crate::osm::OsmRelation,
+        built: Option<Result<MpEntry, crate::multipolygon::Problem>>,
+    ) {
+        let Some(built) = built else {
+            return;
+        };
+        let mut ways: Vec<i64> = relation
+            .members
+            .iter()
+            .filter(|m| m.member_type == crate::osm::MemberType::Way)
+            .map(|m| m.reference)
+            .collect();
+        ways.sort_unstable();
+        ways.dedup();
+        for &w in &ways {
+            self.way_to_rels.entry(w).or_default().push(relation.id);
+        }
+        self.rel_ways.insert(relation.id, ways);
+        match built {
+            Ok(entry) => {
+                self.entries.insert(relation.id, entry);
+            }
+            Err(problem) => {
+                self.invalid.insert(relation.id, problem);
+            }
+        }
+    }
 }
 
 /// Recompute and return the resolved style for a single already-mutated
@@ -765,6 +1009,7 @@ impl OsmLayer {
             way_vertices: Vec::new(),
             way_styles: Vec::new(),
             way_fill_tris: Vec::new(),
+            mp: MpCache::default(),
             layer_bbox: None,
             download_rects: Vec::new(),
             node_cache: NodeCache {
@@ -790,6 +1035,8 @@ impl OsmLayer {
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         let (way_ids, way_bboxes, way_vertices, way_styles, way_fill_tris) =
             compute_way_tables(&osm_data, &node_cache, &stylesheet);
+        let mut mp = MpCache::default();
+        mp.rebuild_all(&osm_data, &node_cache, &stylesheet);
         let layer_bbox = compute_layer_bbox(&node_cache);
         let node_index = build_node_index(&node_cache);
         let ways_sorted = sorted_ways(&osm_data);
@@ -809,6 +1056,7 @@ impl OsmLayer {
             way_vertices,
             way_styles,
             way_fill_tris,
+            mp,
             layer_bbox,
             download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
             node_cache,
@@ -873,6 +1121,8 @@ impl OsmLayer {
         self.way_vertices = verts;
         self.way_styles = styles;
         self.way_fill_tris = fill_tris;
+        self.mp
+            .rebuild_all(&osm_data, &self.node_cache, &self.stylesheet);
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
         self.node_index = build_node_index(&self.node_cache);
         let ways_sorted = sorted_ways(&osm_data);
@@ -1357,6 +1607,10 @@ impl OsmLayer {
             self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
             self.way_styles[way_idx] = style;
         }
+
+        // Multipolygons made of those ways follow the move.
+        let touched_way_ids: Vec<i64> = touched_ways.iter().map(|&i| self.way_ids[i]).collect();
+        self.mp_refresh_ways(&touched_way_ids);
     }
 
     /// Set (insert or overwrite) a single tag on one node or way this layer
@@ -1396,6 +1650,11 @@ impl OsmLayer {
             &mut self.way_fill_tris,
             &self.stylesheet,
         );
+        if kind == FeatureKind::Relation {
+            // The relation's style (or whether it is a multipolygon at all)
+            // follows its tags.
+            self.mp_refresh_relations(&[id]);
+        }
     }
 
     /// Remove a single tag key from one node or way this layer owns. Marks
@@ -1432,6 +1691,9 @@ impl OsmLayer {
             &mut self.way_fill_tris,
             &self.stylesheet,
         );
+        if kind == FeatureKind::Relation {
+            self.mp_refresh_relations(&[id]);
+        }
     }
 
     /// Insert a brand-new node at `(lat, lon)`, assigning the next
@@ -1481,9 +1743,11 @@ impl OsmLayer {
                 }
             }
         }
+        let using_ways = self.ways_using_node(node_id);
         self.node_to_ways.remove(&node_id);
         self.modified = true;
         self.osm_data = Some(Arc::new(data));
+        self.mp_refresh_ways(&using_ways);
     }
 
     /// Insert a brand-new way referencing existing node ids (must already
@@ -1544,6 +1808,7 @@ impl OsmLayer {
         data.ways.insert(way.id, way);
 
         self.modified = true;
+        self.mp_refresh_ways(&[id]);
         id
     }
 
@@ -1594,6 +1859,7 @@ impl OsmLayer {
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
 
         self.modified = true;
+        self.mp_refresh_ways(&[way_id]);
     }
 
     /// Recompute and store the vertex/bbox/style/fill-tri cache entries for
@@ -1633,6 +1899,8 @@ impl OsmLayer {
         self.way_vertices[way_idx] = verts;
         self.way_bboxes[way_idx] = bbox;
         self.way_styles[way_idx] = style;
+        // A reshaped way reshapes the multipolygons it belongs to.
+        self.mp_refresh_ways(&[way_id]);
     }
 
     /// Append `node_id` (must already exist in this layer) to an existing
@@ -1785,6 +2053,71 @@ impl OsmLayer {
         true
     }
 
+    /// Reassemble and retriangulate these relations (and drop any that are
+    /// gone or no longer multipolygons). Every edit that can change a
+    /// relation's rings ends in one of the `mp_refresh_*` calls.
+    fn mp_refresh_relations(&mut self, relation_ids: &[i64]) {
+        let Some(data) = self.osm_data.clone() else {
+            return;
+        };
+        self.mp
+            .refresh(relation_ids, &data, &self.node_cache, &self.stylesheet);
+    }
+
+    /// Refresh the multipolygon relations that list any of these ways. Cheap
+    /// (a map lookup) when none does, which is the common case.
+    fn mp_refresh_ways(&mut self, way_ids: &[i64]) {
+        let mut relations: Vec<i64> = way_ids
+            .iter()
+            .filter_map(|w| self.mp.way_to_rels.get(w))
+            .flatten()
+            .copied()
+            .collect();
+        relations.sort_unstable();
+        relations.dedup();
+        self.mp_refresh_relations(&relations);
+    }
+
+    /// How many times the multipolygon cache has been rebuilt or patched.
+    #[cfg(test)]
+    pub(crate) fn multipolygon_version(&self) -> u64 {
+        self.mp.version
+    }
+
+    /// The cached mercator position of `node_id` in the relation's polygons,
+    /// and the relation's total fill triangle count.
+    #[cfg(test)]
+    pub(crate) fn multipolygon_geometry(
+        &self,
+        relation_id: i64,
+        node_id: i64,
+    ) -> Option<((f64, f64), usize)> {
+        let entry = self.mp.entries.get(&relation_id)?;
+        let tris = entry.polygons.iter().map(|p| p.tris.len() / 3).sum();
+        let pos = entry
+            .polygons
+            .iter()
+            .flat_map(|p| p.verts.iter())
+            .find(|v| v.0 == node_id)
+            .map(|v| (v.1, v.2))?;
+        Some((pos, tris))
+    }
+
+    /// What became of this relation in the multipolygon cache.
+    #[cfg(test)]
+    pub(crate) fn multipolygon_state(&self, relation_id: i64) -> MpState {
+        if let Some(entry) = self.mp.entries.get(&relation_id) {
+            MpState::Valid {
+                polygons: entry.polygons.len(),
+                holes: entry.polygons.iter().map(|p| p.ring_count() - 1).sum(),
+            }
+        } else if let Some(&problem) = self.mp.invalid.get(&relation_id) {
+            MpState::Invalid(problem)
+        } else {
+            MpState::NotArea
+        }
+    }
+
     /// The ids of the ways whose node list includes `node_id`, ascending.
     pub fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
         let mut ids: Vec<i64> = self
@@ -1831,6 +2164,7 @@ impl OsmLayer {
         let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
         let previous = std::mem::replace(&mut relation.members, members);
         self.modified = true;
+        self.mp_refresh_relations(&[relation_id]);
         Some(previous)
     }
 
@@ -1881,6 +2215,7 @@ impl OsmLayer {
             tags: tags.into_iter().collect(),
         });
         self.modified = true;
+        self.mp_refresh_relations(&[id]);
         Some(id)
     }
 
@@ -1903,6 +2238,7 @@ impl OsmLayer {
         let data = Arc::make_mut(self.osm_data.as_mut()?);
         let relation = data.relations.remove(index);
         self.modified = true;
+        self.mp_refresh_relations(&[relation_id]);
         Some(DeletedRelationSnapshot { relation, index })
     }
 
@@ -1928,6 +2264,7 @@ impl OsmLayer {
             self.next_placeholder_way_id = id - 1;
         }
         self.modified = true;
+        self.mp_refresh_relations(&[id]);
         true
     }
 
@@ -2148,6 +2485,7 @@ impl OsmLayer {
         }
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
         self.modified = true;
+        self.mp_refresh_ways(&[id]);
 
         let snapshot = DeletedFeatureSnapshot {
             kind: FeatureKind::Way,
@@ -2240,8 +2578,10 @@ impl OsmLayer {
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
         self.way_styles.push(style);
+        let restored_id = way.id;
         data.ways.insert(way.id, way);
         self.modified = true;
+        self.mp_refresh_ways(&[restored_id]);
     }
 
     /// Get the OSM data from this layer, as a snapshot `Arc`.
@@ -2268,6 +2608,10 @@ impl OsmLayer {
         self.way_vertices.clear();
         self.way_styles.clear();
         self.way_fill_tris.clear();
+        self.mp = MpCache {
+            version: self.mp.version + 1,
+            ..MpCache::default()
+        };
         self.layer_bbox = None;
         self.download_rects.clear();
         self.node_cache.index_by_id.clear();
@@ -2303,6 +2647,8 @@ impl OsmLayer {
             self.way_vertices = verts;
             self.way_styles = styles;
             self.way_fill_tris = fill_tris;
+            self.mp
+                .rebuild_all(&data, &self.node_cache, &self.stylesheet);
             self.layer_bbox = compute_layer_bbox(&self.node_cache);
             self.node_index = build_node_index(&self.node_cache);
             self.way_index = build_way_index(&self.way_bboxes, &sorted_ways(&data));
@@ -2319,6 +2665,171 @@ impl OsmLayer {
         match &self.drag_preview {
             Some((ids, delta)) if ids.contains(&node_id) => *delta,
             _ => Point::default(),
+        }
+    }
+
+    /// The CPU half of the multipolygon fill pass of `render_canvas` (cull,
+    /// project, emit triangles — everything but handing the path to the GPU),
+    /// run through the same code, and the number of path vertices it
+    /// produced. For `examples/perf_bench.rs`, which has no window.
+    pub fn multipolygon_fill_cpu(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> usize {
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let screen_rect = (
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.origin.x + bounds.size.width),
+            f32::from(bounds.origin.y + bounds.size.height),
+        );
+        let mut path: Option<Path<Pixels>> = None;
+        let mut min_max = (0.0, 0.0, 0.0, 0.0);
+        let mut pts = Vec::new();
+        for entry in self.mp.entries.values() {
+            let b = &entry.bbox;
+            if entry.style.fill.is_none()
+                || b.max_x < vmin_x
+                || b.min_x > vmax_x
+                || b.max_y < vmin_y
+                || b.min_y > vmax_y
+            {
+                continue;
+            }
+            for polygon in &entry.polygons {
+                self.push_polygon_fill(
+                    polygon,
+                    viewport,
+                    (bounds.origin.x, bounds.origin.y),
+                    screen_rect,
+                    &mut pts,
+                    &mut path,
+                    &mut min_max,
+                );
+            }
+        }
+        path.map_or(0, |p| p.vertices.len())
+    }
+
+    /// Paint a multipolygon's fill (holes left out) as a translucent wash in
+    /// `color`, for the selection and hover highlights. Triangulates on the
+    /// fly only when the relation's own style has no fill (the cached
+    /// triangles exist only for filled styles); that's a per-selection cost,
+    /// not a per-edit one.
+    fn render_area_tint(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        entry: &MpEntry,
+        color: u32,
+        kind: HighlightKind,
+    ) {
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let b = &entry.bbox;
+        if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+            return;
+        }
+        let alpha = match kind {
+            HighlightKind::Selected => 0.30,
+            _ => 0.20,
+        };
+        let screen_rect = (
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.origin.x + bounds.size.width),
+            f32::from(bounds.origin.y + bounds.size.height),
+        );
+        let mut path: Option<Path<Pixels>> = None;
+        let mut min_max = (
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        );
+        let mut pts = Vec::new();
+        for polygon in &entry.polygons {
+            if polygon.tris.is_empty() {
+                // Unfilled style: triangulate this polygon just for the wash.
+                let rings: Vec<Vec<(f64, f64)>> = (0..polygon.ring_count())
+                    .map(|k| polygon.ring(k).iter().map(|&(_, x, y)| (x, y)).collect())
+                    .collect();
+                let refs: Vec<&[(f64, f64)]> = rings.iter().map(|r| r.as_slice()).collect();
+                let Some(tris) = crate::multipolygon::triangulate(&refs) else {
+                    continue;
+                };
+                let filled = MpPolygon {
+                    tris,
+                    ..polygon.clone()
+                };
+                self.push_polygon_fill(
+                    &filled,
+                    viewport,
+                    (bounds.origin.x, bounds.origin.y),
+                    screen_rect,
+                    &mut pts,
+                    &mut path,
+                    &mut min_max,
+                );
+            } else {
+                self.push_polygon_fill(
+                    polygon,
+                    viewport,
+                    (bounds.origin.x, bounds.origin.y),
+                    screen_rect,
+                    &mut pts,
+                    &mut path,
+                    &mut min_max,
+                );
+            }
+        }
+        if let Some(mut path) = path {
+            let (min_x, max_x, min_y, max_y) = min_max;
+            path.bounds = Bounds {
+                origin: point(px(min_x), px(min_y)),
+                size: size(px(max_x - min_x), px(max_y - min_y)),
+            };
+            let a = (alpha * 255.0) as u32;
+            window.paint_path(path, rgba((color << 8) | a));
+        }
+    }
+
+    /// Project `polygon` to the screen and append its fill triangles to
+    /// `path`. `screen_rect` is `(left, top, right, bottom)` of the canvas in
+    /// window pixels; triangles wholly outside it are skipped, so a huge
+    /// multipolygon zoomed in on costs only what is visible. A polygon with
+    /// an unprojectable vertex is skipped whole (the triangle indices would
+    /// no longer line up).
+    #[allow(clippy::too_many_arguments)]
+    fn push_polygon_fill(
+        &self,
+        polygon: &MpPolygon,
+        viewport: &Viewport,
+        origin: (Pixels, Pixels),
+        screen_rect: (f32, f32, f32, f32),
+        pts: &mut Vec<Point<Pixels>>,
+        path: &mut Option<Path<Pixels>>,
+        bounds_min_max: &mut (f32, f32, f32, f32),
+    ) {
+        pts.clear();
+        for &(node_id, mx, my) in &polygon.verts {
+            let mut sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) {
+                return;
+            }
+            sp += self.drag_preview_offset(node_id);
+            pts.push(point(sp.x + origin.0, sp.y + origin.1));
+        }
+        let (left, top, right, bottom) = screen_rect;
+        for t in polygon.tris.as_chunks::<3>().0 {
+            let tri = [pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]];
+            let xs = tri.map(|p| f32::from(p.x));
+            let ys = tri.map(|p| f32::from(p.y));
+            if xs.iter().all(|&x| x < left)
+                || xs.iter().all(|&x| x > right)
+                || ys.iter().all(|&y| y < top)
+                || ys.iter().all(|&y| y > bottom)
+            {
+                continue;
+            }
+            push_triangle(path, bounds_min_max, tri[0], tri[1], tri[2]);
         }
     }
 
@@ -2526,6 +3037,56 @@ impl MapLayer for OsmLayer {
         let mut fill_group_index: HashMap<u32, usize> = HashMap::new();
         let mut fill_groups: Vec<FillGroup> = Vec::new();
         let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
+
+        // Multipolygon relations first, so a closed way's own fill (an
+        // island, a building inside a forest) paints over them.
+        let screen_rect = (
+            f32::from(origin_x),
+            f32::from(origin_y),
+            f32::from(origin_x + bounds.size.width),
+            f32::from(origin_y + bounds.size.height),
+        );
+        for entry in self.mp.entries.values() {
+            let Some(fill) = entry.style.fill else {
+                continue;
+            };
+            let b = &entry.bbox;
+            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+                continue;
+            }
+            let alpha = (fill.opacity * 255.0).round() as u32;
+            let rgba_key = (fill.color << 8) | alpha;
+            let group_idx = *fill_group_index.entry(rgba_key).or_insert_with(|| {
+                fill_groups.push(FillGroup {
+                    rgba: rgba_key,
+                    path: None,
+                    bounds_min_max: (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    ),
+                });
+                fill_groups.len() - 1
+            });
+            let group = &mut fill_groups[group_idx];
+            for polygon in &entry.polygons {
+                let pb = &polygon.bbox;
+                if pb.max_x < vmin_x || pb.min_x > vmax_x || pb.max_y < vmin_y || pb.min_y > vmax_y
+                {
+                    continue;
+                }
+                self.push_polygon_fill(
+                    polygon,
+                    viewport,
+                    (origin_x, origin_y),
+                    screen_rect,
+                    &mut fill_pts,
+                    &mut group.path,
+                    &mut group.bounds_min_max,
+                );
+            }
+        }
 
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
@@ -3112,6 +3673,44 @@ impl EditableLayer for OsmLayer {
                 });
             }
         }
+
+        // Multipolygon relations compete with the closed ways on area, holes
+        // excluded: the point must be inside an outer ring and in none of its
+        // holes. Only tagged relations take part (an untagged, old-style
+        // multipolygon leaves the click to its tagged outer way), and the
+        // area is scaled by a hair so a relation beats a closed way of
+        // exactly the same area, e.g. its own single outer way.
+        let (x0, _) = viewport.screen_to_mercator(point(px(0.0), px(0.0)));
+        let (x1, _) = viewport.screen_to_mercator(point(px(1.0), px(0.0)));
+        let m_per_px = (x1 - x0).abs();
+        for (&relation_id, entry) in &self.mp.entries {
+            let b = &entry.bbox;
+            if !entry.tagged || mx < b.min_x || mx > b.max_x || my < b.min_y || my > b.max_y {
+                continue;
+            }
+            let xy = |v: &(i64, f64, f64)| (v.1, v.2);
+            let inside = entry.polygons.iter().any(|p| {
+                let pb = &p.bbox;
+                mx >= pb.min_x
+                    && mx <= pb.max_x
+                    && my >= pb.min_y
+                    && my <= pb.max_y
+                    && crate::multipolygon::point_in_ring(mx, my, p.ring(0), xy)
+                    && !(1..p.ring_count())
+                        .any(|k| crate::multipolygon::point_in_ring(mx, my, p.ring(k), xy))
+            });
+            if inside && m_per_px > 0.0 {
+                hits.push(HitCandidate {
+                    feature: FeatureRef {
+                        layer_id: self.id,
+                        kind: FeatureKind::Relation,
+                        id: relation_id,
+                    },
+                    kind: FeatureKind::Relation,
+                    dist_px: (entry.area / (m_per_px * m_per_px)) as f32 * 0.999,
+                });
+            }
+        }
         hits
     }
 
@@ -3440,6 +4039,11 @@ impl EditableLayer for OsmLayer {
                 let Some(relation) = osm_data.relations.iter().find(|r| r.id == feature.id) else {
                     return;
                 };
+                // A multipolygon is an area: tint it in the highlight's color
+                // so the whole shape reads as selected, under the members.
+                if let Some(entry) = self.mp.entries.get(&feature.id) {
+                    self.render_area_tint(viewport, bounds, window, entry, core, kind);
+                }
                 let find = |id: i64| osm_data.relations.iter().find(|r| r.id == id).cloned();
                 for (member_type, id) in crate::relations::flatten_members(relation, &find) {
                     let kind = match member_type {
@@ -6758,5 +7362,329 @@ mod tests {
             assert_eq!(rest.deleted_node_ids, vec![(3, 1)]);
             assert!(layer.is_modified());
         }
+    }
+}
+
+#[cfg(test)]
+mod multipolygon_tests {
+    use super::{MpState, OsmLayer};
+    use crate::layers::{EditableLayer, LayerId};
+    use crate::multipolygon::Problem;
+    use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
+    use crate::selection::{resolve_hits, FeatureKind};
+    use crate::viewport::Viewport;
+    use gpui::{point, px, size, Pixels, Point};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// Node at grid column `c`, row `r`: 0.001 degrees apart from (40, -74).
+    fn nid(c: i64, r: i64) -> i64 {
+        1 + r * 100 + c
+    }
+
+    fn lat_lon(c: i64, r: i64) -> (f64, f64) {
+        (40.0 + r as f64 * 0.001, -74.0 + c as f64 * 0.001)
+    }
+
+    /// A closed square of grid nodes, as a way's node list.
+    fn square(c0: i64, r0: i64, c1: i64, r1: i64) -> Vec<i64> {
+        vec![
+            nid(c0, r0),
+            nid(c1, r0),
+            nid(c1, r1),
+            nid(c0, r1),
+            nid(c0, r0),
+        ]
+    }
+
+    fn way(id: i64, nodes: Vec<i64>) -> OsmWay {
+        OsmWay {
+            id,
+            nodes,
+            version: 1,
+            tags: HashMap::new(),
+        }
+    }
+
+    fn member(way_id: i64, role: &str) -> OsmMember {
+        OsmMember {
+            member_type: MemberType::Way,
+            reference: way_id,
+            role: role.to_string(),
+        }
+    }
+
+    fn relation(id: i64, tags: &[(&str, &str)], members: Vec<OsmMember>) -> OsmRelation {
+        OsmRelation {
+            id,
+            version: 1,
+            tags: tags
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            members,
+        }
+    }
+
+    const LAKE_TAGS: [(&str, &str); 2] = [("type", "multipolygon"), ("natural", "water")];
+
+    /// A lake (way 10, 10x10 cells) with an island (way 11) as relation 500,
+    /// plus a two-way outer (ways 20 and 21 making a square east of the
+    /// lake) as relation 501, and a never-closing one (way 30 + 31) as 502.
+    fn layer() -> OsmLayer {
+        let mut nodes = HashMap::new();
+        for r in 0..=12 {
+            for c in 0..=40 {
+                let (lat, lon) = lat_lon(c, r);
+                nodes.insert(
+                    nid(c, r),
+                    OsmNode {
+                        id: nid(c, r),
+                        lat,
+                        lon,
+                        version: 1,
+                        tags: HashMap::new(),
+                    },
+                );
+            }
+        }
+        let mut ways = HashMap::new();
+        for w in [
+            way(10, square(0, 0, 10, 10)),
+            way(11, square(3, 3, 6, 6)),
+            // 15..=25 square split into a west and an east half.
+            way(20, vec![nid(20, 0), nid(15, 0), nid(15, 10), nid(20, 10)]),
+            way(21, vec![nid(20, 0), nid(25, 0), nid(25, 10), nid(20, 10)]),
+            // Two halves of a ring that stops short of closing.
+            way(30, vec![nid(30, 0), nid(35, 0), nid(35, 10)]),
+            way(31, vec![nid(35, 10), nid(30, 10)]),
+        ] {
+            ways.insert(w.id, w);
+        }
+        let data = OsmData {
+            nodes,
+            ways,
+            relations: vec![
+                relation(
+                    500,
+                    &LAKE_TAGS,
+                    vec![member(10, "outer"), member(11, "inner")],
+                ),
+                relation(
+                    501,
+                    &[("type", "multipolygon"), ("landuse", "forest")],
+                    vec![member(20, "outer"), member(21, "outer")],
+                ),
+                relation(
+                    502,
+                    &[("type", "multipolygon"), ("landuse", "forest")],
+                    vec![member(30, "outer"), member(31, "outer")],
+                ),
+            ],
+            bounds: Vec::new(),
+        };
+        OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))
+    }
+
+    fn viewport() -> Viewport {
+        Viewport::new(40.006, -73.985, 14.0, size(px(800.0), px(600.0)))
+    }
+
+    fn at(viewport: &Viewport, c: f64, r: f64) -> Point<Pixels> {
+        let p = viewport.geo_to_screen(40.0 + r * 0.001, -74.0 + c * 0.001);
+        point(p.x, p.y)
+    }
+
+    /// What a double-click at grid position (c, r) would select.
+    fn double_click(layer: &OsmLayer, c: f64, r: f64) -> Option<(FeatureKind, i64)> {
+        let v = viewport();
+        let p = at(&v, c, r);
+        if !layer.hit_test(&v, p).is_empty() {
+            return resolve_hits(vec![layer.hit_test(&v, p)]).map(|h| (h.kind, h.id));
+        }
+        resolve_hits(vec![layer.hit_test_interior(&v, p)]).map(|h| (h.kind, h.id))
+    }
+
+    fn valid(polygons: usize, holes: usize) -> MpState {
+        MpState::Valid { polygons, holes }
+    }
+
+    #[test]
+    fn relations_assemble_when_the_layer_loads() {
+        let layer = layer();
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+        assert_eq!(layer.multipolygon_state(501), valid(1, 0));
+        assert_eq!(
+            layer.multipolygon_state(502),
+            MpState::Invalid(Problem::Unclosed)
+        );
+        assert_eq!(layer.multipolygon_state(999), MpState::NotArea);
+        // The lake style has a fill, so it is triangulated: 4 outer + 4 hole
+        // vertices make 8 triangles.
+        let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+        assert_eq!(tris, 8);
+    }
+
+    #[test]
+    fn double_click_in_the_water_selects_the_relation_but_on_the_island_the_island() {
+        let layer = layer();
+        assert_eq!(
+            double_click(&layer, 1.5, 8.5),
+            Some((FeatureKind::Relation, 500))
+        );
+        // The island is a hole of the relation: the island way wins.
+        assert_eq!(double_click(&layer, 4.5, 4.5), Some((FeatureKind::Way, 11)));
+        assert_eq!(double_click(&layer, 11.5, 11.5), None);
+    }
+
+    #[test]
+    fn a_two_way_outer_is_selectable_by_its_interior() {
+        let layer = layer();
+        assert_eq!(
+            double_click(&layer, 17.5, 5.5),
+            Some((FeatureKind::Relation, 501))
+        );
+        assert_eq!(
+            double_click(&layer, 22.5, 5.5),
+            Some((FeatureKind::Relation, 501))
+        );
+    }
+
+    #[test]
+    fn a_broken_relation_is_not_selectable_by_its_interior() {
+        let layer = layer();
+        assert_eq!(double_click(&layer, 32.5, 5.5), None);
+    }
+
+    #[test]
+    fn an_untagged_old_style_relation_leaves_the_click_to_its_outer_way() {
+        let mut layer = layer();
+        layer.remove_tag(FeatureKind::Relation, 500, "natural");
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+        assert_eq!(double_click(&layer, 1.5, 8.5), Some((FeatureKind::Way, 10)));
+    }
+
+    #[test]
+    fn moving_a_member_node_rebuilds_only_the_relations_it_belongs_to() {
+        let mut layer = layer();
+        let before = layer.multipolygon_version();
+        let (old, _) = layer.multipolygon_geometry(500, nid(10, 10)).unwrap();
+
+        // A node of another relation's ring: this one's cache is untouched
+        // but the version still counts the patch.
+        layer.commit_node_moves(&[(nid(30, 0), 40.0, -73.969)]);
+        assert!(layer.multipolygon_version() > before);
+
+        // A node no relation uses: no patch at all.
+        let before = layer.multipolygon_version();
+        layer.commit_node_moves(&[(nid(12, 12), 40.0121, -73.9881)]);
+        assert_eq!(layer.multipolygon_version(), before);
+
+        layer.commit_node_moves(&[(nid(10, 10), 40.0105, -73.9895)]);
+        assert!(layer.multipolygon_version() > before);
+        let (new, tris) = layer.multipolygon_geometry(500, nid(10, 10)).unwrap();
+        assert_ne!(new, old);
+        assert_eq!(tris, 8);
+    }
+
+    #[test]
+    fn reshaping_splitting_and_removing_member_ways_updates_the_relation() {
+        let mut layer = layer();
+        // Cutting the ring open invalidates the lake...
+        let ring = square(0, 0, 10, 10);
+        assert!(layer.set_way_nodes(10, ring[..4].to_vec()));
+        assert_eq!(
+            layer.multipolygon_state(500),
+            MpState::Invalid(Problem::Unclosed)
+        );
+        // (An open way has no interior either, so nothing is selectable.)
+        assert_eq!(double_click(&layer, 1.5, 8.5), None);
+        // ...and putting it back (the undo) restores it.
+        assert!(layer.set_way_nodes(10, ring));
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+
+        // Deleting the island way (a member) leaves a relation with a missing
+        // member; restoring it brings the hole back.
+        let snapshot = layer.delete_feature(FeatureKind::Way, 11).unwrap();
+        assert_eq!(
+            layer.multipolygon_state(500),
+            MpState::Invalid(Problem::MissingWay(11))
+        );
+        layer.restore_feature(snapshot);
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+
+        // Adding a vertex to the outer way keeps it valid and re-triangulates.
+        layer.insert_node_into_way(10, 1, 39.9997, -73.995);
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+        let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+        assert_eq!(tris, 9);
+        layer.remove_node_from_way(10, 1);
+        let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+        assert_eq!(tris, 8);
+    }
+
+    #[test]
+    fn changing_members_roles_and_tags_updates_the_relation() {
+        let mut layer = layer();
+        // Dropping the inner leaves a plain outer.
+        let previous = layer
+            .set_relation_members(500, vec![member(10, "outer")])
+            .unwrap();
+        assert_eq!(layer.multipolygon_state(500), valid(1, 0));
+        // Undo: the old member list is back, with its hole.
+        layer.set_relation_members(500, previous);
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+
+        // The island as an outer too: two polygons, no hole.
+        layer.set_relation_members(500, vec![member(10, "outer"), member(11, "outer")]);
+        assert_eq!(layer.multipolygon_state(500), valid(2, 0));
+        layer.set_relation_members(500, vec![member(10, "outer"), member(11, "inner")]);
+
+        // Removing the type makes it a plain relation; putting it back
+        // makes it a multipolygon again.
+        layer.remove_tag(FeatureKind::Relation, 500, "type");
+        assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+        assert_eq!(double_click(&layer, 1.5, 8.5), Some((FeatureKind::Way, 10)));
+        layer.set_tag(FeatureKind::Relation, 500, "type", "multipolygon");
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+
+        // Delete and restore the relation (undo of a delete).
+        let snapshot = layer.delete_relation(500).unwrap();
+        assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+        assert!(layer.restore_relation(snapshot));
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+
+        // A newly created multipolygon appears at once.
+        let id = layer
+            .create_relation(
+                vec![
+                    ("type".to_string(), "multipolygon".to_string()),
+                    ("building".to_string(), "yes".to_string()),
+                ],
+                vec![member(11, "outer")],
+            )
+            .unwrap();
+        assert_eq!(layer.multipolygon_state(id), valid(1, 0));
+    }
+
+    #[test]
+    fn a_style_change_re_resolves_the_fill() {
+        let mut layer = layer();
+        assert!(layer.multipolygon_geometry(500, nid(0, 0)).unwrap().1 > 0);
+        // No fill style for this tag: assembled (selectable) but not
+        // triangulated.
+        layer.set_tag(FeatureKind::Relation, 500, "natural", "bare_rock");
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+        assert_eq!(layer.multipolygon_geometry(500, nid(0, 0)).unwrap().1, 0);
+    }
+
+    #[test]
+    fn the_cache_is_rebuilt_from_scratch_on_reload_and_dropped_on_clear() {
+        let mut layer = layer();
+        let data = layer.get_osm_data().unwrap();
+        layer.set_osm_data(data);
+        assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+        layer.clear_osm_data();
+        assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
     }
 }

@@ -510,4 +510,231 @@ fn main() {
         l.set_osm_data(data.clone());
         l.has_data() as u64
     });
+
+    multipolygon_section(&data);
+}
+
+/// A circle of `n` nodes of radius `radius_deg` degrees around
+/// `(lat, lon)`, wobbled a little so it isn't a perfect polygon. Node ids
+/// start at `first_id`.
+fn ring_nodes(
+    rng: &mut Lcg,
+    first_id: i64,
+    n: usize,
+    lat: f64,
+    lon: f64,
+    radius_deg: f64,
+) -> Vec<OsmNode> {
+    (0..n)
+        .map(|i| {
+            let a = i as f64 / n as f64 * std::f64::consts::TAU;
+            let r = radius_deg * (1.0 + (rng.f64() - 0.5) * 0.1);
+            OsmNode {
+                id: first_id + i as i64,
+                lat: lat + r * a.sin(),
+                lon: lon + r * a.cos() * 1.3,
+                tags: HashMap::new(),
+                version: 1,
+            }
+        })
+        .collect()
+}
+
+/// `base` plus multipolygon relations: 200 lakes/forests (120-node outer ring
+/// in 2 ways, one 40-node island) scattered over the same box, and one huge
+/// lake (6000-node outer ring in 40 ways, 3000-node island).
+fn with_multipolygons(base: &OsmData) -> OsmData {
+    use osm_gpui::osm::{MemberType, OsmMember, OsmRelation};
+    let mut rng = Lcg(7);
+    let mut data = base.clone();
+    let mut next_node: i64 = 10_000_000;
+    let mut next_way: i64 = 1_000_000;
+    let member = |way: i64, role: &str| OsmMember {
+        member_type: MemberType::Way,
+        reference: way,
+        role: role.to_string(),
+    };
+    let add_ring = |data: &mut OsmData,
+                    nodes: Vec<OsmNode>,
+                    split: usize,
+                    role: &str,
+                    next_way: &mut i64|
+     -> Vec<OsmMember> {
+        let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+        for n in nodes {
+            data.nodes.insert(n.id, n);
+        }
+        // `split` ways that chain around the ring, the last one closing it.
+        let per = ids.len() / split;
+        let mut members = Vec::new();
+        for s in 0..split {
+            let lo = s * per;
+            let hi = if s + 1 == split {
+                ids.len()
+            } else {
+                (s + 1) * per + 1
+            };
+            let mut way_nodes: Vec<i64> = ids[lo..hi].to_vec();
+            if s + 1 == split {
+                way_nodes.push(ids[0]);
+            }
+            let id = *next_way;
+            *next_way += 1;
+            data.ways.insert(
+                id,
+                OsmWay {
+                    id,
+                    nodes: way_nodes,
+                    tags: HashMap::new(),
+                    version: 1,
+                },
+            );
+            members.push(member(id, role));
+        }
+        members
+    };
+    let mut relations = Vec::new();
+    for r in 0..200i64 {
+        let lat = CENTER_LAT + (rng.f64() - 0.5) * 0.045;
+        let lon = CENTER_LON + (rng.f64() - 0.5) * 0.045;
+        let outer = ring_nodes(&mut rng, next_node, 120, lat, lon, 0.0008);
+        next_node += 120;
+        let inner = ring_nodes(&mut rng, next_node, 40, lat, lon, 0.0003);
+        next_node += 40;
+        let mut members = add_ring(&mut data, outer, 2, "outer", &mut next_way);
+        members.extend(add_ring(&mut data, inner, 1, "inner", &mut next_way));
+        relations.push(OsmRelation {
+            id: 1 + r,
+            members,
+            version: 1,
+            tags: if r % 2 == 0 {
+                tags(&[("type", "multipolygon"), ("natural", "water")])
+            } else {
+                tags(&[("type", "multipolygon"), ("landuse", "forest")])
+            },
+        });
+    }
+    let outer = ring_nodes(&mut rng, next_node, 6000, CENTER_LAT, CENTER_LON, 0.01);
+    next_node += 6000;
+    let inner = ring_nodes(&mut rng, next_node, 3000, CENTER_LAT, CENTER_LON, 0.004);
+    let mut members = add_ring(&mut data, outer, 40, "outer", &mut next_way);
+    members.extend(add_ring(&mut data, inner, 1, "inner", &mut next_way));
+    relations.push(OsmRelation {
+        id: HUGE_RELATION,
+        members,
+        version: 1,
+        tags: tags(&[("type", "multipolygon"), ("natural", "water")]),
+    });
+    data.relations = relations;
+    data
+}
+
+const HUGE_RELATION: i64 = 9_999;
+/// A node of the huge lake's outer ring (the first node `with_multipolygons`
+/// allocates after the 200 small relations' 200 x 160 nodes).
+const HUGE_RING_NODE: i64 = 10_000_000 + 200 * 160 + 17;
+
+/// The "before" and "after" for multipolygon rendering. `main` before this
+/// change parsed relations and drew none of them, so a layer built from data
+/// with its relations stripped does exactly the work `main` did; the layer
+/// built from the full data adds assembly, triangulation and the fill pass.
+fn multipolygon_section(base: &Arc<OsmData>) {
+    let full = Arc::new(with_multipolygons(base));
+    let stripped = {
+        let mut d = (*full).clone();
+        d.relations.clear();
+        Arc::new(d)
+    };
+    println!(
+        "\n-- multipolygons: {} relations (200 x ~160 nodes + one 9000-node lake in 41 ways) --",
+        full.relations.len()
+    );
+    println!("   ('before' = relations stripped: the work main did; 'after' = relations drawn)");
+
+    bench("load (new_with_data) BEFORE", 5, || {
+        OsmLayer::new_with_data(LayerId(1), "b", stripped.clone()).has_data() as u64
+    });
+    bench("load (new_with_data) AFTER", 5, || {
+        OsmLayer::new_with_data(LayerId(1), "a", full.clone()).has_data() as u64
+    });
+
+    let mut before = OsmLayer::new_with_data(LayerId(1), "before", stripped.clone());
+    let mut after = OsmLayer::new_with_data(LayerId(1), "after", full.clone());
+
+    let bounds = gpui::Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size: size(px(1600.0), px(1000.0)),
+    };
+    let z14 = Viewport::new(CENTER_LAT, CENTER_LON, 14.0, size(px(1600.0), px(1000.0)));
+    let z17 = Viewport::new(CENTER_LAT, CENTER_LON, 17.0, size(px(1600.0), px(1000.0)));
+    let z17_edge = Viewport::new(
+        CENTER_LAT,
+        CENTER_LON + 0.0095,
+        17.0,
+        size(px(1600.0), px(1000.0)),
+    );
+
+    println!("\n   per frame, CPU side of the fill pass (cull + project + triangles):");
+    bench("fill pass z14, everything visible: BEFORE (none)", 20, || 0);
+    bench("fill pass z14, everything visible: AFTER", 20, || {
+        after.multipolygon_fill_cpu(&z14, bounds) as u64
+    });
+    bench(
+        "fill pass z17, center (huge lake hole): BEFORE (none)",
+        20,
+        || 0,
+    );
+    bench("fill pass z17, center (huge lake hole): AFTER", 20, || {
+        after.multipolygon_fill_cpu(&z17, bounds) as u64
+    });
+    bench("fill pass z17, on the huge lake's rim: AFTER", 20, || {
+        after.multipolygon_fill_cpu(&z17_edge, bounds) as u64
+    });
+
+    println!("\n   interaction:");
+    let center = point(px(800.0), px(500.0));
+    bench("hit_test_interior (double-click): BEFORE", 20, || {
+        before.hit_test_interior(&z14, center).len() as u64
+    });
+    bench("hit_test_interior (double-click): AFTER", 20, || {
+        after.hit_test_interior(&z14, center).len() as u64
+    });
+
+    println!("\n   edit (patch only the relations whose ways were touched):");
+    bench(
+        "commit_node_moves, node of a small lake: BEFORE",
+        20,
+        || {
+            before.commit_node_moves(&[(10_000_000 + 5, CENTER_LAT + 0.01, CENTER_LON)]);
+            before.is_modified() as u64
+        },
+    );
+    bench("commit_node_moves, node of a small lake: AFTER", 20, || {
+        after.commit_node_moves(&[(10_000_000 + 5, CENTER_LAT + 0.01, CENTER_LON)]);
+        after.is_modified() as u64
+    });
+    bench(
+        "commit_node_moves, node of the 9000-node lake: BEFORE",
+        10,
+        || {
+            before.commit_node_moves(&[(HUGE_RING_NODE, CENTER_LAT + 0.0101, CENTER_LON)]);
+            before.is_modified() as u64
+        },
+    );
+    bench(
+        "commit_node_moves, node of the 9000-node lake: AFTER",
+        10,
+        || {
+            after.commit_node_moves(&[(HUGE_RING_NODE, CENTER_LAT + 0.0101, CENTER_LON)]);
+            after.is_modified() as u64
+        },
+    );
+    bench("commit_node_moves, node in no relation: BEFORE", 20, || {
+        before.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
+        before.is_modified() as u64
+    });
+    bench("commit_node_moves, node in no relation: AFTER", 20, || {
+        after.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
+        after.is_modified() as u64
+    });
 }

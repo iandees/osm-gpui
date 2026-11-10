@@ -8,8 +8,10 @@ use crate::layers::LayerId;
 pub enum FeatureKind {
     Node,
     Way,
-    /// Never hit-tested on the map: a relation is selected from the side
-    /// panel (a member's Relations row, or the relation editor).
+    /// Hit-tested on the map only through the interior of a drawn
+    /// multipolygon (a double-click, like a closed way's); otherwise a
+    /// relation is selected from the side panel (a member's Relations row,
+    /// or the relation editor).
     Relation,
 }
 
