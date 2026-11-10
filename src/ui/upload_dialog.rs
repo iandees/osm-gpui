@@ -46,6 +46,31 @@ impl LayerSummary {
     }
 }
 
+/// What File > Upload to OSM (or its shortcut) should do. Every outcome is
+/// visible to the user: a dialog or a status-bar message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadPlan {
+    /// Not signed in: show the "sign in to upload" dialog.
+    SignIn,
+    /// Signed in, but no layer has changes (or there is no layer at all):
+    /// show the "Nothing to upload" status message.
+    NothingToUpload,
+    /// Signed in with changes: show the changeset comment dialog.
+    ShowDialog,
+}
+
+/// Decide what an upload request does, given the signed-in account's display
+/// name (if any) and the per-layer summaries of modified layers.
+pub fn plan_upload(signed_in_display_name: Option<&str>, summaries: &[LayerSummary]) -> UploadPlan {
+    if crate::ui::sign_in_dialog::needs_sign_in(signed_in_display_name) {
+        UploadPlan::SignIn
+    } else if summaries.iter().all(|s| s.is_empty()) {
+        UploadPlan::NothingToUpload
+    } else {
+        UploadPlan::ShowDialog
+    }
+}
+
 pub enum DialogEvent {
     /// User clicked "Upload" with a non-empty comment.
     Upload {
@@ -293,6 +318,32 @@ mod tests {
             deleted: 0,
         };
         assert_eq!(s.describe(), "Downtown: 2 created, 1 modified, 0 deleted");
+    }
+
+    fn summary(created: usize) -> LayerSummary {
+        LayerSummary {
+            layer_name: "L".to_string(),
+            created,
+            modified: 0,
+            deleted: 0,
+        }
+    }
+
+    #[test]
+    fn plan_upload_covers_every_state() {
+        // Signed out always gets the sign-in prompt, changes or not.
+        assert_eq!(plan_upload(None, &[summary(1)]), UploadPlan::SignIn);
+        assert_eq!(plan_upload(None, &[]), UploadPlan::SignIn);
+        // Signed in: no layers / no changes -> message; changes -> dialog.
+        assert_eq!(plan_upload(Some("me"), &[]), UploadPlan::NothingToUpload);
+        assert_eq!(
+            plan_upload(Some("me"), &[summary(0)]),
+            UploadPlan::NothingToUpload
+        );
+        assert_eq!(
+            plan_upload(Some("me"), &[summary(0), summary(2)]),
+            UploadPlan::ShowDialog
+        );
     }
 
     #[test]
