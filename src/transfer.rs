@@ -54,6 +54,9 @@ pub struct TransferProgress {
     /// Body size from `Content-Length`, when the server sent one.
     pub total: Option<u64>,
     pub started_at: Instant,
+    /// Upload sent as several changesets: which one this is, `(index from 1,
+    /// how many)`. `None` for an upload that is a single changeset.
+    pub part: Option<(usize, usize)>,
 }
 
 impl TransferProgress {
@@ -64,6 +67,7 @@ impl TransferProgress {
             bytes: 0,
             total: None,
             started_at,
+            part: None,
         }
     }
 
@@ -92,6 +96,26 @@ impl TransferProgress {
 
     /// The one-line description shown in the status bar and the upload dialog.
     pub fn label(&self) -> SharedString {
+        if let Some((index, total)) = self.part {
+            match self.phase {
+                TransferPhase::OpeningChangeset => {
+                    return tr!("transfer.upload.part_opening", index = index, total = total)
+                }
+                TransferPhase::UploadingChanges { count } => {
+                    return tr_count!(
+                        "transfer.upload.part_uploading",
+                        count,
+                        index = index,
+                        total = total,
+                        changes = crate::limits::group_digits(count)
+                    )
+                }
+                TransferPhase::ClosingChangeset => {
+                    return tr!("transfer.upload.part_closing", index = index, total = total)
+                }
+                _ => {}
+            }
+        }
         match self.phase {
             TransferPhase::Requesting => tr!("transfer.download.requesting"),
             TransferPhase::Downloading if self.bytes == 0 => {
@@ -151,6 +175,15 @@ impl TransferHandle {
 
     pub fn set_phase(&self, phase: TransferPhase) {
         self.with(|p| p.phase = phase);
+    }
+
+    /// Set the phase together with which changeset of a multi-changeset
+    /// upload it belongs to (`None` for a single changeset).
+    pub fn set_upload_phase(&self, part: Option<(usize, usize)>, phase: TransferPhase) {
+        self.with(|p| {
+            p.part = part;
+            p.phase = phase;
+        });
     }
 
     pub fn set_bytes(&self, bytes: u64, total: Option<u64>) {
@@ -370,6 +403,27 @@ mod tests {
         assert_eq!(p.label(), "Uploading 12 changes…");
         p.phase = TransferPhase::ClosingChangeset;
         assert_eq!(p.label(), "Closing changeset…");
+    }
+
+    #[test]
+    fn a_multi_changeset_upload_says_which_changeset_it_is_on() {
+        let now = Instant::now();
+        let mut p =
+            TransferProgress::new(TransferKind::Upload, TransferPhase::OpeningChangeset, now);
+        p.part = Some((2, 3));
+        assert_eq!(p.label(), "Changeset 2 of 3: opening…");
+        p.phase = TransferPhase::UploadingChanges { count: 10_000 };
+        assert_eq!(p.label(), "Changeset 2 of 3: uploading 10,000 changes…");
+        p.phase = TransferPhase::UploadingChanges { count: 1 };
+        assert_eq!(p.label(), "Changeset 2 of 3: uploading 1 change…");
+        p.phase = TransferPhase::ClosingChangeset;
+        assert_eq!(p.label(), "Changeset 2 of 3: closing…");
+
+        let handle = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
+        handle.set_upload_phase(Some((1, 2)), TransferPhase::ClosingChangeset);
+        assert_eq!(handle.snapshot().part, Some((1, 2)));
+        handle.set_upload_phase(None, TransferPhase::ClosingChangeset);
+        assert_eq!(handle.snapshot().label(), "Closing changeset…");
     }
 
     #[test]

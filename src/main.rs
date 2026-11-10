@@ -53,9 +53,9 @@ use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
-use osm_gpui::tr;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 use osm_gpui::viewport::Viewport;
+use osm_gpui::{tr, tr_count};
 
 actions!(
     osm_gpui,
@@ -470,13 +470,21 @@ struct CliArgs {
     keep_open: bool,
     /// UI language for this run, overriding the saved setting.
     language: Option<String>,
+    /// `.osm` files to open as layers at startup (positional arguments).
+    files: Vec<PathBuf>,
 }
 
 fn parse_cli_args() -> CliArgs {
+    parse_cli_args_from(std::env::args().skip(1))
+}
+
+fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
     let mut out = CliArgs::default();
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(a) = args.next() {
         match a.as_str() {
+            // Everything after `--` is a file, even if it starts with `-`.
+            "--" => out.files.extend(args.by_ref().map(PathBuf::from)),
             "--script" => {
                 out.script = Some(PathBuf::from(args.next().expect("--script needs a path")))
             }
@@ -489,7 +497,10 @@ fn parse_cli_args() -> CliArgs {
             "--language" => {
                 out.language = Some(args.next().expect("--language needs a locale tag"))
             }
-            other => eprintln!("ignoring unknown arg: {}", other),
+            other if other.starts_with('-') && other.len() > 1 => {
+                eprintln!("ignoring unknown arg: {}", other)
+            }
+            other => out.files.push(PathBuf::from(other)),
         }
     }
     out
@@ -497,7 +508,18 @@ fn parse_cli_args() -> CliArgs {
 
 /// How a background upload ended.
 enum UploadOutcome {
-    Done(u64, osm_upload::UploadResult),
+    /// Every changeset was accepted.
+    Done(Vec<osm_gpui::upload_chunks::CompletedChunk>),
+    /// The sequence stopped: the changesets accepted before that (in order),
+    /// how many were planned, and why it stopped.
+    Stopped {
+        completed: Vec<osm_gpui::upload_chunks::CompletedChunk>,
+        total: usize,
+        why: UploadStop,
+    },
+}
+
+enum UploadStop {
     /// The server refused the diff (409/410/412); the changeset is closed.
     Refused(osm_upload::UploadConflict),
     /// Any other failure, as a message.
@@ -4098,8 +4120,9 @@ impl MapViewer {
             UploadPlan::ShowDialog => {}
         }
 
-        // Refuse up front what the server would reject: a way/relation over
-        // its size limit, or more changes than one changeset holds.
+        // Refuse up front what the server would reject: a way or relation
+        // over its size limit. More changes than one changeset holds are not
+        // refused: they are sent as several changesets.
         let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
         let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
             pending.iter().map(|(_, d)| d).collect();
@@ -4108,9 +4131,19 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        let changesets =
+            match osm_gpui::upload_chunks::plan_chunks(&diffs, limits.changeset_elements) {
+                Ok(chunks) => chunks.len(),
+                Err(e) => {
+                    self.set_status(e.to_string());
+                    cx.notify();
+                    return;
+                }
+            };
 
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
+        dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
@@ -4153,7 +4186,6 @@ impl MapViewer {
             LimitViolation::RelationTooLarge { layer, id, .. } => {
                 Some((layer, FeatureKind::Relation, id))
             }
-            LimitViolation::TooManyElements { .. } => None,
         };
         if let Some((layer, kind, id)) = target {
             if let Some(&layer_id) = layers.get(layer) {
@@ -4242,31 +4274,51 @@ impl MapViewer {
         let oauth_base = auth::oauth_base_for(&base_url);
         let names_for_bg: Vec<String> = modified.iter().map(|(_, name)| name.clone()).collect();
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
+        let max_elements = osm_gpui::limits::Limits::for_server(&base_url).changeset_elements;
 
         cx.spawn(async move |this, cx| {
             let outcome: UploadOutcome = cx
                 .background_executor()
                 .spawn(async move {
+                    let stopped = |why: UploadStop| UploadOutcome::Stopped {
+                        completed: Vec::new(),
+                        total: 0,
+                        why,
+                    };
                     let token = match auth::ensure_fresh_token(&oauth_base) {
                         Ok(token) => token,
-                        Err(e) => return UploadOutcome::Failed(e.to_string()),
+                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
                     };
                     let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> =
                         names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
-                    match osm_upload::run_upload(
+                    let run = osm_gpui::upload_chunks::run_chunked_upload(
                         &osm_gpui::http::UreqClient::new(),
                         &base_url,
                         &token.access_token,
                         &comment,
                         &layers_for_xml,
-                        &mut |phase| progress.set_phase(phase),
-                    ) {
-                        Ok((changeset_id, result)) => UploadOutcome::Done(changeset_id, result),
-                        Err(osm_upload::UploadFailure {
+                        max_elements,
+                        &mut |part, phase| progress.set_upload_phase(part, phase),
+                    );
+                    let run = match run {
+                        Ok(run) => run,
+                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
+                    };
+                    match run.failure {
+                        None => UploadOutcome::Done(run.completed),
+                        Some(osm_upload::UploadFailure {
                             error: osm_upload::UploadError::Conflict(conflict),
                             ..
-                        }) => UploadOutcome::Refused(conflict),
-                        Err(failure) => UploadOutcome::Failed(failure.error.to_string()),
+                        }) => UploadOutcome::Stopped {
+                            completed: run.completed,
+                            total: run.total,
+                            why: UploadStop::Refused(conflict),
+                        },
+                        Some(failure) => UploadOutcome::Stopped {
+                            completed: run.completed,
+                            total: run.total,
+                            why: UploadStop::Failed(failure.error.to_string()),
+                        },
                     }
                 })
                 .await;
@@ -4275,39 +4327,116 @@ impl MapViewer {
                 this.transfer = None;
                 this.data_generation += 1;
                 match outcome {
-                    UploadOutcome::Done(changeset_id, upload_result) => {
+                    UploadOutcome::Done(completed) => {
+                        let upload_result = osm_gpui::upload_chunks::merge_results(&completed);
                         for id in &layer_ids {
                             if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
                         this.upload_dialog = None;
-                        this.set_status(tr!("status.uploaded", changeset = changeset_id));
-                    }
-                    UploadOutcome::Refused(conflict) => {
-                        // Keep the dialog open: it names the object and
-                        // offers the ways forward.
-                        let message = conflict.describe();
-                        let view = this.conflict_view(conflict);
-                        if let Some(dialog) = &this.upload_dialog {
-                            dialog.update(cx, |dialog, cx| dialog.fail_with_conflict(view, cx));
+                        let last = completed.last().map(|c| c.changeset_id).unwrap_or(0);
+                        if completed.len() > 1 {
+                            this.set_status(tr_count!(
+                                "status.uploaded_many",
+                                completed.len(),
+                                changeset = last
+                            ));
+                        } else {
+                            this.set_status(tr!("status.uploaded", changeset = last));
                         }
-                        this.set_status(message);
                     }
-                    UploadOutcome::Failed(e) => {
-                        // Keep the dialog open on the error so it can be
-                        // read and the upload retried; the status bar gets
-                        // the message too.
-                        if let Some(dialog) = &this.upload_dialog {
-                            dialog.update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                    UploadOutcome::Stopped {
+                        completed,
+                        total,
+                        why,
+                    } => {
+                        // The changesets the server accepted are on the
+                        // server for good: reflect each in the layers, in
+                        // order, so what is still pending is exactly what
+                        // was not sent.
+                        for chunk in &completed {
+                            for id in &layer_ids {
+                                if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
+                                    layer.apply_chunk_result(&chunk.result, &chunk.chunk);
+                                }
+                            }
                         }
-                        this.set_status(e);
+                        if let Some(dialog) = this.upload_dialog.clone() {
+                            if !completed.is_empty() {
+                                this.refresh_upload_dialog(&dialog, cx);
+                            }
+                            let partial = (total > 1).then_some((completed.len(), total));
+                            dialog.update(cx, |dialog, _| dialog.set_partial(partial));
+                        }
+                        match why {
+                            UploadStop::Refused(conflict) => {
+                                // Keep the dialog open: it names the object
+                                // and offers the ways forward.
+                                let message = conflict.describe();
+                                let view = this.conflict_view(conflict);
+                                if let Some(dialog) = &this.upload_dialog {
+                                    dialog.update(cx, |dialog, cx| {
+                                        dialog.fail_with_conflict(view, cx)
+                                    });
+                                }
+                                this.set_status(message);
+                            }
+                            UploadStop::Failed(e) => {
+                                // Keep the dialog open on the error so it can
+                                // be read and the upload retried; the status
+                                // bar gets the message too.
+                                if let Some(dialog) = &this.upload_dialog {
+                                    dialog
+                                        .update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                                }
+                                this.set_status(e);
+                            }
+                        }
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Bring an open upload dialog's pending counts and changeset count up to
+    /// date with the layers (after part of an upload went through).
+    fn refresh_upload_dialog(
+        &self,
+        dialog: &gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>,
+        cx: &mut Context<Self>,
+    ) {
+        let pending: Vec<(String, osm_gpui::layers::diff::LayerDiff)> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|l| l.is_modified())
+            .map(|l| (l.name().to_string(), l.diff_for_upload()))
+            .collect();
+        let summaries: Vec<osm_gpui::ui::upload_dialog::LayerSummary> = pending
+            .iter()
+            .map(|(name, diff)| {
+                let (created, modified, deleted) = diff.counts();
+                osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: name.clone(),
+                    created,
+                    modified,
+                    deleted,
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
+        let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
+            pending.iter().map(|(_, d)| d).collect();
+        let changesets = osm_gpui::upload_chunks::plan_chunks(&diffs, limits.changeset_elements)
+            .map(|c| c.len())
+            .unwrap_or(1);
+        dialog.update(cx, |dialog, cx| {
+            dialog.set_pending(summaries, changesets, cx)
+        });
     }
 
     /// The layer that holds `(kind, id)` or has it as a local deletion.
@@ -5593,188 +5722,226 @@ fn main() {
         });
     }
 
-    gpui_platform::application()
-        .with_assets(osm_gpui::assets::AppAssets)
-        .run(move |cx: &mut App| {
-            gpui_component::init(cx);
+    // Files to open: command-line paths now, and on macOS whatever Finder
+    // hands over later (or at launch, before the window exists). They all
+    // wait in `open_queue` until the window is up; `open_wake` tells the
+    // foreground task that something new arrived.
+    let open_queue = Arc::new(Mutex::new(osm_gpui::open_files::OpenQueue::default()));
+    let (open_wake_tx, mut open_wake_rx) = futures::channel::mpsc::unbounded::<()>();
+    open_queue.lock().unwrap().push(args.files.clone());
+    let _ = open_wake_tx.unbounded_send(());
 
-            // Bring the menu bar to the foreground
-            cx.activate(true);
+    let app = gpui_platform::application().with_assets(osm_gpui::assets::AppAssets);
+    {
+        let open_queue = open_queue.clone();
+        app.on_open_urls(move |urls| {
+            let paths = osm_gpui::open_files::urls_to_paths(&urls);
+            if paths.is_empty() {
+                return;
+            }
+            open_queue.lock().unwrap().push(paths);
+            let _ = open_wake_tx.unbounded_send(());
+        });
+    }
+    app.run(move |cx: &mut App| {
+        gpui_component::init(cx);
 
-            // Register the open file action
-            cx.on_action(open_osm_file);
-            cx.on_action(add_osm_carto);
-            cx.on_action(add_coordinate_grid);
-            cx.on_action(download_from_osm);
-            cx.on_action(toggle_debug_overlay);
-            cx.on_action(add_imagery_layer);
-            cx.on_action(add_saved_custom_imagery);
-            cx.on_action(no_op_imagery_info);
-            cx.on_action(open_custom_imagery_dialog);
-            cx.on_action(open_settings);
-            cx.on_action(upload_to_osm);
-            cx.on_action(quit);
-            menu::register_app_actions(cx);
+        // Bring the menu bar to the foreground
+        cx.activate(true);
 
-            // Load persisted custom imagery entries.
-            let loaded = custom_imagery_store::load();
-            custom_imagery_store::init_store(loaded);
+        // Register the open file action
+        cx.on_action(open_osm_file);
+        cx.on_action(add_osm_carto);
+        cx.on_action(add_coordinate_grid);
+        cx.on_action(download_from_osm);
+        cx.on_action(toggle_debug_overlay);
+        cx.on_action(add_imagery_layer);
+        cx.on_action(add_saved_custom_imagery);
+        cx.on_action(no_op_imagery_info);
+        cx.on_action(open_custom_imagery_dialog);
+        cx.on_action(open_settings);
+        cx.on_action(upload_to_osm);
+        cx.on_action(quit);
+        menu::register_app_actions(cx);
 
-            // Load persisted app settings (OSM API server choice, cache budget) and
-            // OAuth login. Seed the tile cache's live budget from the persisted value
-            // before the cache does any work.
-            let app_settings = settings_store::load();
-            osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
-            // Pick the UI language before any menu or window text is built.
-            // `--language` overrides the saved setting for this run only.
-            osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
-            settings_store::init_store(app_settings);
-            auth::init_store(auth::load());
-            // Learn the server's limits (max download area etc.) in the
-            // background; defaults apply until it answers.
-            osm_gpui::capabilities::ensure_fetched(&settings_store::api_base_url());
+        // Load persisted custom imagery entries.
+        let loaded = custom_imagery_store::load();
+        custom_imagery_store::init_store(loaded);
 
-            // Initial menu (before ELI loads). MapViewer's render loop will call
-            // rebuild_menus again whenever the load state or viewport changes.
-            rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading, true);
+        // Load persisted app settings (OSM API server choice, cache budget) and
+        // OAuth login. Seed the tile cache's live budget from the persisted value
+        // before the cache does any work.
+        let app_settings = settings_store::load();
+        osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
+        // Pick the UI language before any menu or window text is built.
+        // `--language` overrides the saved setting for this run only.
+        osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
+        settings_store::init_store(app_settings);
+        auth::init_store(auth::load());
+        // Learn the server's limits (max download area etc.) in the
+        // background; defaults apply until it answers.
+        osm_gpui::capabilities::ensure_fetched(&settings_store::api_base_url());
 
-            // Kick off background download/parse of the Editor Layer Index.
-            cx.background_executor()
-                .spawn(async move {
-                    match imagery::fetch_and_cache() {
-                        Ok(body) => {
-                            let entries = imagery::parse(&body);
-                            eprintln!("imagery: loaded {} ELI entries", entries.len());
-                            if let Some(index) = IMAGERY_INDEX.get() {
-                                if let Ok(mut guard) = index.lock() {
-                                    *guard = entries;
-                                }
-                            }
-                            if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                                if let Ok(mut g) = state.lock() {
-                                    *g = ImageryLoadState::Ready;
-                                }
+        // Initial menu (before ELI loads). MapViewer's render loop will call
+        // rebuild_menus again whenever the load state or viewport changes.
+        rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading, true);
+
+        // Kick off background download/parse of the Editor Layer Index.
+        cx.background_executor()
+            .spawn(async move {
+                match imagery::fetch_and_cache() {
+                    Ok(body) => {
+                        let entries = imagery::parse(&body);
+                        eprintln!("imagery: loaded {} ELI entries", entries.len());
+                        if let Some(index) = IMAGERY_INDEX.get() {
+                            if let Ok(mut guard) = index.lock() {
+                                *guard = entries;
                             }
                         }
-                        Err(e) => {
-                            eprintln!("imagery: failed to load ELI: {}", e);
-                            if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                                if let Ok(mut g) = state.lock() {
-                                    *g = ImageryLoadState::Failed;
-                                }
+                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                            if let Ok(mut g) = state.lock() {
+                                *g = ImageryLoadState::Ready;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("imagery: failed to load ELI: {}", e);
+                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
+                            if let Ok(mut g) = state.lock() {
+                                *g = ImageryLoadState::Failed;
                             }
                         }
                     }
-                })
-                .detach();
-
-            // Kick off background fetch/parse of the Name Suggestion Index.
-            osm_gpui::nsi::init_store();
-            cx.background_executor()
-                .spawn(async move {
-                    match osm_gpui::nsi::fetch_and_cache() {
-                        Ok(body) => {
-                            let entries = osm_gpui::nsi::parse(&body);
-                            eprintln!("nsi: loaded {} brand entries", entries.len());
-                            osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(
-                                entries,
-                            ));
-                        }
-                        Err(e) => {
-                            eprintln!("nsi: failed to load NSI data: {}", e);
-                        }
-                    }
-                })
-                .detach();
-
-            let map_window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                            origin: point(px(100.0), px(100.0)),
-                            size: size(px(win_w as f32), px(win_h as f32)),
-                        })),
-                        titlebar: Some(gpui::TitlebarOptions {
-                            title: Some(menu::APP_NAME.into()),
-                            appears_transparent: false,
-                            traffic_light_position: None,
-                        }),
-                        focus: true,
-                        ..Default::default()
-                    },
-                    |window, cx| {
-                        // Register keyboard bindings in the window context.
-                        // Built from the user's effective shortcut settings
-                        // (defaults, overridden by any customizations saved
-                        // in Settings > Keyboard Shortcuts).
-                        //
-                        // Note: the "a"/"b"/"x" mode-switch shortcuts are
-                        // deliberately NOT registered here as global key
-                        // bindings. Unlike the cmd-modified bindings above,
-                        // these are plain unmodified letter keys, which would
-                        // otherwise risk firing while the user is typing into a
-                        // text input elsewhere in the app (e.g. the tag-edit
-                        // dialog's key/value fields). Instead they're handled in
-                        // the map area's local `on_key_down` handler below,
-                        // which only fires when the map area itself has focus —
-                        // see the `on_key_down` closure in `render()`.
-                        cx.bind_keys(key_bindings_from_settings(
-                            &osm_gpui::settings_store::snapshot(),
-                        ));
-                        let view = cx.new(|cx| {
-                            let mut viewer = MapViewer::new(window, cx);
-                            // Start on the standard map, not a blank canvas.
-                            viewer.add_default_layers();
-                            viewer
-                        });
-                        #[cfg(debug_assertions)]
-                        view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
-
-                        // Publish a weak handle to the live view so the
-                        // `on_window_should_close` closure below (which only has
-                        // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
-                        // reach it and query its *live* `layer_manager` state at
-                        // decision time, rather than a cached boolean.
-                        let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
-
-                        // Intercept the OS window-close button (traffic-light / titlebar
-                        // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
-                        // hook: unlike `on_window_closed` below (which only fires *after*
-                        // the window is already gone and can't stop anything), this one
-                        // can veto the close by returning `false`. If there are unsaved
-                        // changes (checked live, per layer, via `has_unsaved_changes`)
-                        // we cancel the close and ask the live `MapViewer` to show the
-                        // same confirmation dialog as Cmd+Q, directly (this closure
-                        // already has a `Window`, so no need to go through
-                        // `with_map_viewer_in`'s window-lookup-by-entity-id path);
-                        // otherwise we let the close proceed, which triggers
-                        // `on_window_closed` -> `cx.quit()` as before.
-                        window.on_window_should_close(cx, |window, cx| {
-                            if has_unsaved_changes(cx) {
-                                if let Some(view) =
-                                    MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade())
-                                {
-                                    view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
-                                }
-                                false
-                            } else {
-                                true
-                            }
-                        });
-
-                        cx.new(|cx| gpui_component::Root::new(view, window, cx))
-                    },
-                )
-                .unwrap();
-
-            let map_window_id = map_window.window_id();
-            cx.on_window_closed(move |cx, window_id| {
-                if window_id == map_window_id {
-                    cx.quit();
                 }
             })
             .detach();
-        });
+
+        // Kick off background fetch/parse of the Name Suggestion Index.
+        osm_gpui::nsi::init_store();
+        cx.background_executor()
+            .spawn(async move {
+                match osm_gpui::nsi::fetch_and_cache() {
+                    Ok(body) => {
+                        let entries = osm_gpui::nsi::parse(&body);
+                        eprintln!("nsi: loaded {} brand entries", entries.len());
+                        osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(entries));
+                    }
+                    Err(e) => {
+                        eprintln!("nsi: failed to load NSI data: {}", e);
+                    }
+                }
+            })
+            .detach();
+
+        let map_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
+                        origin: point(px(100.0), px(100.0)),
+                        size: size(px(win_w as f32), px(win_h as f32)),
+                    })),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some(menu::APP_NAME.into()),
+                        appears_transparent: false,
+                        traffic_light_position: None,
+                    }),
+                    focus: true,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    // Register keyboard bindings in the window context.
+                    // Built from the user's effective shortcut settings
+                    // (defaults, overridden by any customizations saved
+                    // in Settings > Keyboard Shortcuts).
+                    //
+                    // Note: the "a"/"b"/"x" mode-switch shortcuts are
+                    // deliberately NOT registered here as global key
+                    // bindings. Unlike the cmd-modified bindings above,
+                    // these are plain unmodified letter keys, which would
+                    // otherwise risk firing while the user is typing into a
+                    // text input elsewhere in the app (e.g. the tag-edit
+                    // dialog's key/value fields). Instead they're handled in
+                    // the map area's local `on_key_down` handler below,
+                    // which only fires when the map area itself has focus —
+                    // see the `on_key_down` closure in `render()`.
+                    cx.bind_keys(key_bindings_from_settings(
+                        &osm_gpui::settings_store::snapshot(),
+                    ));
+                    let view = cx.new(|cx| {
+                        let mut viewer = MapViewer::new(window, cx);
+                        // Start on the standard map, not a blank canvas.
+                        viewer.add_default_layers();
+                        viewer
+                    });
+                    #[cfg(debug_assertions)]
+                    view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
+
+                    // Publish a weak handle to the live view so the
+                    // `on_window_should_close` closure below (which only has
+                    // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
+                    // reach it and query its *live* `layer_manager` state at
+                    // decision time, rather than a cached boolean.
+                    let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
+
+                    // Intercept the OS window-close button (traffic-light / titlebar
+                    // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
+                    // hook: unlike `on_window_closed` below (which only fires *after*
+                    // the window is already gone and can't stop anything), this one
+                    // can veto the close by returning `false`. If there are unsaved
+                    // changes (checked live, per layer, via `has_unsaved_changes`)
+                    // we cancel the close and ask the live `MapViewer` to show the
+                    // same confirmation dialog as Cmd+Q, directly (this closure
+                    // already has a `Window`, so no need to go through
+                    // `with_map_viewer_in`'s window-lookup-by-entity-id path);
+                    // otherwise we let the close proceed, which triggers
+                    // `on_window_closed` -> `cx.quit()` as before.
+                    window.on_window_should_close(cx, |window, cx| {
+                        if has_unsaved_changes(cx) {
+                            if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                                view.update(cx, |v, cx| v.show_quit_confirm_dialog(window, cx));
+                            }
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                },
+            )
+            .unwrap();
+
+        let map_window_id = map_window.window_id();
+        cx.on_window_closed(move |cx, window_id| {
+            if window_id == map_window_id {
+                cx.quit();
+            }
+        })
+        .detach();
+
+        // The single window exists now: open everything queued so far
+        // (command-line files, a launch-by-Finder document), then keep
+        // serving files that arrive while the app runs. They become
+        // layers of this window; no second window is ever opened.
+        open_queue.lock().unwrap().mark_ready();
+        cx.spawn(async move |cx| {
+            use futures::StreamExt;
+            while open_wake_rx.next().await.is_some() {
+                let paths = open_queue.lock().unwrap().take_ready();
+                if paths.is_empty() {
+                    continue;
+                }
+                cx.update(|cx| {
+                    for path in paths {
+                        menu::open_osm_path(path, cx);
+                    }
+                    // Bring an already-running app forward.
+                    cx.activate(true);
+                });
+            }
+        })
+        .detach();
+    });
 }
 
 fn append_custom_imagery(entry: CustomImageryEntry) {
@@ -5790,6 +5957,63 @@ mod tests {
 
     fn empty_tags() -> HashMap<String, String> {
         HashMap::new()
+    }
+
+    fn args(list: &[&str]) -> CliArgs {
+        parse_cli_args_from(list.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn cli_positional_files_mix_with_flags() {
+        let a = args(&[
+            "a.osm",
+            "--window-size",
+            "800x600",
+            "dir/b b.osm",
+            "--keep-open",
+            "--language",
+            "de",
+            "--script",
+            "s.osmscript",
+            "c.osm",
+        ]);
+        assert_eq!(
+            a.files,
+            vec![
+                PathBuf::from("a.osm"),
+                PathBuf::from("dir/b b.osm"),
+                PathBuf::from("c.osm")
+            ]
+        );
+        assert_eq!(a.window_size, Some((800, 600)));
+        assert!(a.keep_open);
+        assert_eq!(a.language.as_deref(), Some("de"));
+        assert_eq!(a.script, Some(PathBuf::from("s.osmscript")));
+    }
+
+    #[test]
+    fn cli_flag_values_are_not_taken_as_files() {
+        let a = args(&["--script", "x.osmscript", "--language", "de"]);
+        assert!(a.files.is_empty());
+    }
+
+    #[test]
+    fn cli_unknown_flags_are_ignored_and_double_dash_forces_files() {
+        let a = args(&["--bogus", "a.osm", "--", "-weird.osm", "--keep-open"]);
+        assert_eq!(
+            a.files,
+            vec![
+                PathBuf::from("a.osm"),
+                PathBuf::from("-weird.osm"),
+                PathBuf::from("--keep-open")
+            ]
+        );
+        assert!(!a.keep_open);
+    }
+
+    #[test]
+    fn cli_no_args_means_no_files() {
+        assert!(args(&[]).files.is_empty());
     }
 
     /// A single 2-node way `10 = [1, 2]`, both nodes at `center_lat`, lon

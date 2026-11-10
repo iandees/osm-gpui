@@ -84,6 +84,43 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <!-- Offer the app for .osm files (Open With, drop on the Dock icon).
+       Alternate rank: never become the default over JOSM and friends. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>OpenStreetMap data</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>org.openstreetmap.osm</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.openstreetmap.osm</string>
+      <key>UTTypeDescription</key>
+      <string>OpenStreetMap data</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.xml</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>osm</string>
+        </array>
+      </dict>
+    </dict>
+  </array>
 $ICON_KEY
 </dict>
 </plist>

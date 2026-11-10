@@ -21,6 +21,7 @@ pub mod keybindings;
 pub mod layers;
 pub mod limits;
 pub mod nsi;
+pub mod open_files;
 pub mod osm;
 pub mod osm_api;
 pub mod osm_export;
@@ -39,6 +40,7 @@ pub mod tiles;
 pub mod topology;
 pub mod transfer;
 pub mod ui;
+pub mod upload_chunks;
 pub mod version;
 pub mod viewport;
 

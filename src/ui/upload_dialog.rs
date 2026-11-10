@@ -16,9 +16,9 @@ use gpui_component::{
 };
 
 use crate::osm_upload::{ConflictKind, UploadConflict};
-use crate::tr;
 use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
+use crate::{tr, tr_count};
 
 /// One row of the pending-changes summary: a layer name plus its
 /// created/modified/deleted counts (nodes + ways combined).
@@ -209,6 +209,12 @@ pub struct UploadDialog {
     state: UploadState,
     /// Shown while editing: what was just done about a conflict.
     notice: Option<SharedString>,
+    /// How many changesets the pending changes will be sent as; the dialog
+    /// says so before uploading when it is more than one.
+    changesets: usize,
+    /// After a stop part way through a multi-changeset upload: how many of
+    /// how many changesets the server accepted.
+    partial: Option<(usize, usize)>,
 }
 
 impl EventEmitter<DialogEvent> for UploadDialog {}
@@ -226,13 +232,41 @@ impl UploadDialog {
             focus_handle,
             state: UploadState::Editing,
             notice: None,
+            changesets: 1,
+            partial: None,
         }
+    }
+
+    /// Say how many changesets the pending changes will be sent as (shown
+    /// when more than one).
+    pub fn set_changesets(&mut self, count: usize, cx: &mut Context<Self>) {
+        self.changesets = count;
+        cx.notify();
+    }
+
+    /// The edits still pending after part of an upload went through: the new
+    /// per-layer counts and how many changesets they will take.
+    pub fn set_pending(
+        &mut self,
+        summaries: Vec<LayerSummary>,
+        changesets: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.summaries = summaries;
+        self.set_changesets(changesets, cx);
+    }
+
+    /// Record that an upload stopped after `done` of `total` changesets (call
+    /// before `fail` / `fail_with_conflict`); `None` clears it.
+    pub fn set_partial(&mut self, progress: Option<(usize, usize)>) {
+        self.partial = progress;
     }
 
     /// Show the running upload's stage (read from `handle` on each render).
     pub fn begin_transfer(&mut self, handle: TransferHandle, cx: &mut Context<Self>) {
         self.state = UploadState::InFlight(handle);
         self.notice = None;
+        self.partial = None;
         cx.notify();
     }
 
@@ -387,6 +421,12 @@ impl Render for UploadDialog {
         };
         match &self.state {
             UploadState::Editing => {
+                if self.changesets > 1 {
+                    body = body.child(
+                        Label::new(tr_count!("dialog.upload.large", self.changesets))
+                            .text_color(cx.theme().foreground),
+                    );
+                }
                 if let Some(notice) = &self.notice {
                     body = body.child(Label::new(notice.clone()).text_color(cx.theme().foreground));
                 }
@@ -406,6 +446,12 @@ impl Render for UploadDialog {
                             .text_color(cx.theme().danger),
                     )
                     .child(Label::new(failure.message.clone()).text_color(cx.theme().danger));
+                if let Some((done, total)) = self.partial.filter(|&(done, _)| done > 0) {
+                    failed = failed.child(
+                        Label::new(tr!("dialog.upload.partial", done = done, total = total))
+                            .text_color(cx.theme().foreground),
+                    );
+                }
                 if let Some(view) = &failure.conflict {
                     if let Some(hint) = view.hint() {
                         failed = failed.child(

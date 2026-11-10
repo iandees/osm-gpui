@@ -112,6 +112,13 @@ transfer:
       one: "Uploading %{count} change…"
       other: "Uploading %{count} changes…"
     closing: "Closing changeset…"
+    # An upload too big for one changeset is sent as several. `%{index}` of
+    # `%{total}` says which; `%{changes}` is the count with digit grouping.
+    part_opening: "Changeset %{index} of %{total}: opening…"
+    part_uploading:
+      one: "Changeset %{index} of %{total}: uploading %{changes} change…"
+      other: "Changeset %{index} of %{total}: uploading %{changes} changes…"
+    part_closing: "Changeset %{index} of %{total}: closing…"
   busy: "Another transfer is already in progress"
 
 # The card over the map while no OSM data is loaded.
@@ -171,6 +178,10 @@ status:
   export_failed: "Export failed: %{error}"
   nothing_to_upload: "Nothing to upload"
   uploaded: "Uploaded changes (changeset %{changeset})"
+  # Sent as several changesets; `%{changeset}` is the last one.
+  uploaded_many:
+    one: "Uploaded changes in %{count} changeset (last: changeset %{changeset})"
+    other: "Uploaded changes in %{count} changesets (last: changeset %{changeset})"
   downloaded: "Downloaded OSM data: %{summary}"
   # The parts of the download summary above, joined with `separator`.
   merge:
@@ -192,7 +203,6 @@ limits:
   upload:
     way: "Way %{id} has %{nodes} nodes; the server allows %{max}. Split it before uploading."
     relation: "Relation %{id} has %{members} members; the server allows %{max}. Remove some members before uploading."
-    changeset: "This upload has %{count} changes; the server allows %{max} in one changeset. Upload fewer changes at a time."
   edit:
     way_full: "A way can have at most %{max} nodes on this server"
     join: "Can't join: the combined way would have %{nodes} nodes; the server allows %{max}"
@@ -549,6 +559,12 @@ dialog:
     comment_placeholder: "Describe your changes (required)"
     failed: "Upload failed"
     retry: "Try again"
+    # More changes than one changeset holds: `%{count}` changesets will be used.
+    large:
+      one: "This upload is large and will be sent as %{count} changeset."
+      other: "This upload is large and will be sent as %{count} changesets."
+    # Stopped part way: `%{done}` of `%{total}` changesets are on the server.
+    partial: "%{done} of %{total} changesets were uploaded; the rest of your changes are still pending."
     # Ways forward when the server refuses the upload (see `upload_conflict`).
     conflict:
       keep_mine: "Keep mine"
@@ -611,6 +627,10 @@ dialog:
 # Errors from the OSM API and OAuth code, shown in the status bar and the
 # Settings window. `%{detail}` is the server's or network layer's own
 # message, which is not translated.
+# Splitting a large upload into several changesets.
+upload_chunks:
+  cycle_too_large: "%{size} new relations contain each other and must be uploaded together, but the server allows only %{max} changes in one changeset. Break the cycle before uploading."
+
 # What the server's refusal of an upload means, in plain words, and what
 # resolving it does. `%{object}` is "Node 12345" / "Way 5" / "Relation 7" (or
 # `something` when the server names none).

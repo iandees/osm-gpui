@@ -4586,6 +4586,7 @@ dependencies = [
  "base64",
  "dirs",
  "earcutr",
+ "futures",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
