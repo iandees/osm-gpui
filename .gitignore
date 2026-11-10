@@ -89,3 +89,6 @@ config.local.*
 
 # Test artifacts
 test-results/
+
+# Script output captures
+/out/

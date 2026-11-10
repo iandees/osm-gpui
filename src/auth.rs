@@ -40,12 +40,26 @@ const SCOPES: &str = "read_prefs write_api";
 /// and dev instances have separate app registrations, so a client_id valid on one is
 /// unknown to the other ("invalid_client") and each server may need its own.
 pub fn client_id_for(oauth_base_url: &str) -> String {
-    crate::settings_store::snapshot()
-        .client_ids
-        .get(oauth_base_url)
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string())
+    client_id_from(
+        &crate::settings_store::snapshot().client_ids,
+        oauth_base_url,
+    )
+}
+
+/// Client ID registered for the OSM development server (a public, non-confidential
+/// PKCE client, not a secret). Used for the dev server when settings hold no override.
+const DEV_CLIENT_ID: &str = "Wg9OmNYvMvftXbLvVnMX-9QJHiFzOXJbtNgVDSNRBRU";
+
+/// `client_id_for` against an explicit override map: the override for the server wins,
+/// then the built-in id for the dev server, then `DEFAULT_CLIENT_ID`.
+fn client_id_from(overrides: &HashMap<String, String>, oauth_base_url: &str) -> String {
+    if let Some(id) = overrides.get(oauth_base_url).filter(|s| !s.is_empty()) {
+        return id.clone();
+    }
+    if oauth_base_url.trim_end_matches('/') == crate::settings_store::DEV_API_URL {
+        return DEV_CLIENT_ID.to_string();
+    }
+    DEFAULT_CLIENT_ID.to_string()
 }
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const CALLBACK_PATH: &str = "/callback";
@@ -766,6 +780,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn client_id_dev_server_has_a_built_in_id() {
+        let none = HashMap::new();
+        assert_eq!(
+            client_id_from(&none, "https://master.apis.dev.openstreetmap.org"),
+            "Wg9OmNYvMvftXbLvVnMX-9QJHiFzOXJbtNgVDSNRBRU"
+        );
+    }
+
+    #[test]
+    fn client_id_override_beats_built_in_and_empty_override_is_ignored() {
+        let dev = "https://master.apis.dev.openstreetmap.org".to_string();
+        let mut m = HashMap::new();
+        m.insert(dev.clone(), "mine".to_string());
+        assert_eq!(client_id_from(&m, &dev), "mine");
+        m.insert(dev.clone(), String::new());
+        assert_eq!(client_id_from(&m, &dev), DEV_CLIENT_ID);
+    }
+
+    #[test]
+    fn client_id_other_servers_use_the_default() {
+        let none = HashMap::new();
+        assert_eq!(
+            client_id_from(&none, "https://www.openstreetmap.org"),
+            DEFAULT_CLIENT_ID
+        );
+        assert_eq!(
+            client_id_from(&none, "https://example.com"),
+            DEFAULT_CLIENT_ID
+        );
+        assert_eq!(
+            client_id_from(&none, "https://master.apis.dev.openstreetmap.org.evil.com"),
+            DEFAULT_CLIENT_ID
+        );
     }
 
     #[test]

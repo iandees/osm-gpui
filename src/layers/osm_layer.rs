@@ -4265,8 +4265,11 @@ impl EditableLayer for OsmLayer {
             ids.into_iter()
                 .map(move |id| FeatureRef { layer_id, kind, id })
         };
+        let mut relation_ids: Vec<i64> = data.relations.iter().map(|r| r.id).collect();
+        relation_ids.sort_unstable();
         refs(FeatureKind::Node, node_ids)
             .chain(refs(FeatureKind::Way, way_ids))
+            .chain(refs(FeatureKind::Relation, relation_ids))
             .collect()
     }
 

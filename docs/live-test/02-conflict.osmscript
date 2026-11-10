@@ -1,0 +1,201 @@
+# Live test 2: upload conflicts against the OSM development server. A stale
+# copy of a node is edited after the server moved on; the upload is refused
+# and each way forward is taken in turn: Use theirs, Keep mine, and (for a
+# node both sides deleted) Drop my change. Open ocean near lat -48.01,
+# lon -123.01.
+#
+#   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/02-conflict.osmscript
+#
+# Sign in first with 00-sign-in.osmscript. Captures go to out/live-02-*.png and
+# the stale copies to out/live-02-stale*.osm. The server is left clean (the
+# node is deleted at the end). Comments: "osm-gpui live test: conflict ...".
+#
+# The dialog keeps what was typed when it is closed without uploading, so the
+# comments here are set (replacing the field) rather than typed (appending).
+#
+# Window 1200x800; the node is drawn at the viewport centre, window (488, 388).
+# Layer 0 is the map tiles; the data layer is always layer 1 (the previous one
+# is dropped before the stale copy is loaded, which then becomes active).
+
+assert_server dev
+assert_signed_in
+window 1200 800
+load_osm docs/live-test/empty.osm
+viewport -48.0100 -123.0100 18
+wait_idle 10s
+assert_dialog none
+
+# --- 1. Create a node and upload it (server version 1) -----------------------
+pause 1s Creating a node
+key a
+assert_mode add
+click 488,388
+key enter
+key escape
+assert_mode select
+assert_pending 1
+click 488,388
+wait_idle 2s
+assert_selection node
+set_tag note conflict test: version 1
+assert_pending 1
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (create)
+upload_confirm
+wait_transfer 60s
+assert_dialog none
+assert_pending 0
+
+# --- 2. Keep a copy that will go stale ---------------------------------------
+export_layer out/live-02-stale.osm
+
+# --- 3. Edit the node and upload (server version 2) --------------------------
+pause 1s Editing the node on the server (version 2)
+click 488,388
+wait_idle 2s
+assert_selection node
+set_tag note conflict test: server version 2
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (server edit)
+upload_confirm
+wait_transfer 60s
+assert_dialog none
+assert_pending 0
+
+# --- 4. Open the stale copy and edit the same node: Use theirs ---------------
+pause 1s Opening the stale copy and editing the same node
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+load_osm out/live-02-stale.osm
+wait_idle 2s
+click 488,388
+wait_idle 2s
+assert_selection node
+set_tag note conflict test: stale local edit
+assert_pending 1
+capture out/live-02-01-stale-edit.png
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (stale, use theirs)
+upload_confirm
+wait_transfer 60s
+assert_dialog conflict version_mismatch node
+capture out/live-02-02-conflict-use-theirs.png
+
+pause 1s Choosing Use theirs
+resolve_conflict use_theirs
+wait_transfer 60s
+assert_dialog editing
+assert_pending 0
+capture out/live-02-03-after-use-theirs.png
+upload_cancel
+wait_idle 1s
+assert_dialog none
+# The local copy now has the server's tags (note: ... server version 2).
+click 488,388
+wait_idle 2s
+assert_selection node
+capture out/live-02-04-theirs-tags.png
+
+# --- 5. A second stale copy: Keep mine ---------------------------------------
+# Export this layer (server version 2), push version 3 from here, then edit
+# the older copy.
+export_layer out/live-02-stale2.osm
+set_tag note conflict test: server version 3
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (server edit 2)
+upload_confirm
+wait_transfer 60s
+assert_dialog none
+assert_pending 0
+
+pause 1s Opening the second stale copy and editing the same node
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+load_osm out/live-02-stale2.osm
+wait_idle 2s
+click 488,388
+wait_idle 2s
+assert_selection node
+set_tag note conflict test: kept local edit
+assert_pending 1
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (stale, keep mine)
+upload_confirm
+wait_transfer 60s
+assert_dialog conflict version_mismatch node
+capture out/live-02-05-conflict-keep-mine.png
+
+pause 1s Choosing Keep mine
+resolve_conflict keep_mine
+wait_transfer 60s
+assert_dialog editing
+capture out/live-02-06-after-keep-mine.png
+# The comment is still in the field; upload again.
+upload_confirm
+capture_while_transferring out/live-02-07-progress every=500ms timeout=60s
+wait_transfer 60s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-02-08-kept-mine-uploaded.png
+
+# --- 6. Deleted on the server and here: Drop my change -----------------------
+# Export (server version 4), delete the node here and upload; then delete it
+# again from the older copy.
+export_layer out/live-02-stale3.osm
+click 488,388
+wait_idle 2s
+assert_selection node
+action DeleteSelection
+wait_idle 2s
+assert_pending 1
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (delete)
+upload_confirm
+wait_transfer 60s
+assert_dialog none
+assert_pending 0
+
+pause 1s Opening the third stale copy and deleting the node again
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+load_osm out/live-02-stale3.osm
+wait_idle 2s
+click 488,388
+wait_idle 2s
+assert_selection node
+action DeleteSelection
+wait_idle 2s
+assert_pending 1
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+set_comment osm-gpui live test: conflict (stale delete)
+upload_confirm
+wait_transfer 60s
+assert_dialog conflict already_deleted node
+capture out/live-02-09-conflict-already-deleted.png
+
+pause 1s Choosing Drop my change
+resolve_conflict drop_mine
+wait_transfer 30s
+assert_dialog editing
+assert_pending 0
+capture out/live-02-10-after-drop.png
+upload_cancel
+wait_idle 1s
+assert_dialog none
+pause 2s Conflict scenarios finished: the node is deleted on the server
+log done

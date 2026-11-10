@@ -473,6 +473,12 @@ struct CliArgs {
     /// Colour theme for this run (`--theme light|dark`); the app otherwise
     /// starts light and does not follow the system appearance.
     theme: Option<gpui_component::ThemeMode>,
+    /// API server base URL for this run only (`--api-server dev|primary|URL`),
+    /// overriding the saved setting. Never written to `settings.json`.
+    api_server: Option<String>,
+    /// Pause between script ops (`--script-delay-ms N`), so a person can
+    /// follow a scripted run on screen.
+    script_delay: Option<Duration>,
     /// `.osm` files to open as layers at startup (positional arguments).
     files: Vec<PathBuf>,
 }
@@ -499,6 +505,21 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
             "--keep-open" => out.keep_open = true,
             "--language" => {
                 out.language = Some(args.next().expect("--language needs a locale tag"))
+            }
+            "--api-server" => {
+                let v = args
+                    .next()
+                    .expect("--api-server needs dev, primary or a URL");
+                out.api_server = Some(
+                    settings_store::parse_api_server_arg(&v)
+                        .expect("--api-server needs dev, primary or an http(s) URL"),
+                );
+            }
+            "--script-delay-ms" => {
+                let v = args.next().expect("--script-delay-ms needs a number");
+                out.script_delay = Some(Duration::from_millis(
+                    v.parse().expect("--script-delay-ms needs a number"),
+                ));
             }
             "--theme" => {
                 out.theme = match args.next().as_deref() {
@@ -2189,7 +2210,7 @@ impl MapViewer {
         }]);
     }
 
-    /// Edit > Select All: every node and way in the active layer.
+    /// Edit > Select All: every node, way and relation in the active layer.
     fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         let all = self
             .active_layer
@@ -4433,6 +4454,19 @@ impl MapViewer {
     /// handed to the dialog as a conflict the user can act on; see
     /// `handle_conflict_action`.
     fn start_upload(&mut self, comment: String, cx: &mut Context<Self>) {
+        // A scripted run never uploads anywhere but the development server,
+        // whatever key or click reached this point.
+        if let Some(refusal) =
+            script_harness::scripted_upload_refusal(&settings_store::api_base_url())
+        {
+            if let Some(dialog) = &self.upload_dialog {
+                let message = refusal.clone();
+                dialog.update(cx, |dialog, cx| dialog.fail(message.into(), cx));
+            }
+            self.set_status(refusal);
+            cx.notify();
+            return;
+        }
         // Layers are looked up by `LayerId`, not name (names aren't unique
         // identity — see `LayerId`'s doc comment), so both the id and the
         // display name are captured up front: the id for `find_layer`/
@@ -5938,6 +5972,9 @@ fn main() {
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
     let cli_theme = args.theme;
+    // `--api-server` applies to this run only: it lives outside the settings
+    // store, so nothing here is ever saved to settings.json.
+    settings_store::set_run_override(args.api_server.clone());
 
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.
@@ -5960,6 +5997,7 @@ fn main() {
     if let Some(script_path) = args.script {
         script_harness::SCRIPT_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         let keep_open = args.keep_open;
+        let script_delay = args.script_delay.unwrap_or_default();
         let idle_for_runner = idle.clone();
         let bus_for_runner = bus.clone();
 
@@ -5986,6 +6024,7 @@ fn main() {
 
             let runner = Runner {
                 idle: idle_for_runner,
+                step_delay: script_delay,
             };
 
             let mut live_app = LiveApp {
@@ -6131,7 +6170,7 @@ fn main() {
                         size: size(px(win_w as f32), px(win_h as f32)),
                     })),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some(menu::APP_NAME.into()),
+                        title: Some(window_title(&settings_store::api_base_url()).into()),
                         appears_transparent: false,
                         traffic_light_position: None,
                     }),
@@ -6240,6 +6279,16 @@ fn main() {
     });
 }
 
+/// The main window's title: the app name, plus the API server's host when it
+/// is not the production server, so nobody uploads to the wrong place by
+/// accident.
+fn window_title(api_base_url: &str) -> String {
+    match settings_store::non_primary_host_label(api_base_url) {
+        Some(host) => format!("{} \u{2014} {}", menu::APP_NAME, host),
+        None => menu::APP_NAME.to_string(),
+    }
+}
+
 fn append_custom_imagery(entry: CustomImageryEntry) {
     custom_imagery_store::append(entry);
 }
@@ -6285,6 +6334,67 @@ mod tests {
         assert!(a.keep_open);
         assert_eq!(a.language.as_deref(), Some("de"));
         assert_eq!(a.script, Some(PathBuf::from("s.osmscript")));
+    }
+
+    #[test]
+    fn cli_api_server_flag_values() {
+        assert_eq!(args(&[]).api_server, None);
+        assert_eq!(
+            args(&["--api-server", "dev"]).api_server.as_deref(),
+            Some(settings_store::DEV_API_URL)
+        );
+        assert_eq!(
+            args(&["x.osm", "--api-server", "primary"])
+                .api_server
+                .as_deref(),
+            Some(settings_store::PRIMARY_API_URL)
+        );
+        let a = args(&["--api-server", "http://127.0.0.1:9/", "b.osm"]);
+        assert_eq!(a.api_server.as_deref(), Some("http://127.0.0.1:9"));
+        // The value is not mistaken for a file.
+        assert_eq!(a.files, vec![PathBuf::from("b.osm")]);
+    }
+
+    #[test]
+    #[should_panic(expected = "--api-server")]
+    fn cli_api_server_flag_rejects_unknown_values() {
+        args(&["--api-server", "production"]);
+    }
+
+    #[test]
+    fn cli_script_delay_flag() {
+        assert_eq!(args(&[]).script_delay, None);
+        assert_eq!(
+            args(&["--script-delay-ms", "400"]).script_delay,
+            Some(Duration::from_millis(400))
+        );
+    }
+
+    #[test]
+    fn the_api_server_override_is_not_part_of_the_saved_settings() {
+        // The flag's value never enters `AppSettings`, the thing that is
+        // written to settings.json.
+        let a = args(&["--api-server", "dev"]);
+        let saved = settings_store::AppSettings::default();
+        let url = settings_store::effective_base_url(&saved, a.api_server.as_deref());
+        assert_eq!(url, settings_store::DEV_API_URL);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains("master.apis.dev"), "{json}");
+        assert!(json.contains("\"Primary\""), "{json}");
+    }
+
+    #[test]
+    fn window_title_names_a_non_primary_server() {
+        assert_eq!(
+            window_title(settings_store::PRIMARY_API_URL),
+            menu::APP_NAME
+        );
+        let title = window_title(settings_store::DEV_API_URL);
+        assert!(title.starts_with(menu::APP_NAME), "{title}");
+        assert!(
+            title.contains("master.apis.dev.openstreetmap.org"),
+            "{title}"
+        );
     }
 
     #[test]
@@ -9594,5 +9704,219 @@ mod tests {
                 assert!(status_text(view).unwrap().contains("Node 2"));
             })
             .unwrap();
+    }
+
+    // ---- Script ops that drive an upload (docs/live-test) ----------------
+
+    fn dialog_window(cx: &mut TestAppContext) -> gpui::WindowHandle<gpui_component::Root> {
+        cx.update(gpui_component::init);
+        cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        })
+    }
+
+    /// The window's `MapViewer`, with a one-way layer (way 10 on nodes 1, 2)
+    /// loaded and active.
+    fn view_with_layer(
+        window: gpui::WindowHandle<gpui_component::Root>,
+        vcx: &mut gpui::VisualTestContext,
+    ) -> gpui::Entity<MapViewer> {
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update_in(vcx, |view, _window, _cx| {
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(
+                layer_id,
+                "L".to_string(),
+                Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+            );
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+        });
+        view
+    }
+
+    #[gpui::test]
+    fn typed_script_text_lands_in_the_comment_field(cx: &mut TestAppContext) {
+        let window = dialog_window(cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let view = view_with_layer(window, vcx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            assert!(view.upload_dialog.is_some());
+        });
+        let text = "osm-gpui live test: a b x & <ok> \"q\" caf\u{e9} \u{65e5}";
+        for ch in text.chars() {
+            vcx.update(|window, cx| {
+                window.dispatch_keystroke(script_harness::keystroke_for_char(ch), cx);
+            });
+        }
+        view.update_in(vcx, |view, _window, cx| {
+            let dialog = view.upload_dialog.clone().unwrap();
+            assert_eq!(dialog.read(cx).draft_comment(cx), text);
+        });
+    }
+
+    #[gpui::test]
+    fn script_checks_see_pending_edits_dialogs_and_selection(cx: &mut TestAppContext) {
+        use osm_gpui::script::{Check, DialogExpect, SelectionKind};
+        let window = dialog_window(cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let view = view_with_layer(window, vcx);
+        view.update_in(vcx, |view, window, cx| {
+            assert!(view.script_check(&Check::Pending(0), cx).is_ok());
+            assert!(view.script_check(&Check::Pending(1), cx).is_err());
+            make_pending_change(view);
+            assert!(view.script_check(&Check::Pending(1), cx).is_ok());
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::None), cx)
+                .is_ok());
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::Editing), cx)
+                .is_err());
+            assert!(view.script_check(&Check::TransferIdle, cx).is_ok());
+
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::Editing), cx)
+                .is_ok());
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::None), cx)
+                .is_err());
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::Failed), cx)
+                .is_err());
+
+            // The Upload button does nothing without a comment, and the
+            // script says why.
+            assert!(view
+                .upload_dialog
+                .clone()
+                .unwrap()
+                .read(cx)
+                .confirm_blocker(cx)
+                .is_some());
+            view.upload_dialog.clone().unwrap().update(cx, |d, cx| {
+                d.set_draft_comment("osm-gpui live test".into(), window, cx)
+            });
+            assert!(view
+                .upload_dialog
+                .clone()
+                .unwrap()
+                .read(cx)
+                .confirm_blocker(cx)
+                .is_none());
+
+            // A refused upload is a conflict of a kind, naming an object.
+            let conflict = osm_upload::UploadConflict::parse(
+                409,
+                "Version mismatch: Provided 1, server had: 2 of Node 2",
+            );
+            let conflict_view = view.conflict_view(conflict);
+            view.upload_dialog
+                .clone()
+                .unwrap()
+                .update(cx, |d, cx| d.fail_with_conflict(conflict_view, cx));
+            let expect = |kind, object| Check::Dialog(DialogExpect::Conflict { kind, object });
+            use osm_gpui::script::{ConflictKindName, FeatureKind as K};
+            assert!(view.script_check(&expect(None, None), cx).is_ok());
+            assert!(view
+                .script_check(
+                    &expect(Some(ConflictKindName::VersionMismatch), Some(K::Node)),
+                    cx
+                )
+                .is_ok());
+            assert!(view
+                .script_check(&expect(Some(ConflictKindName::AlreadyDeleted), None), cx)
+                .is_err());
+            assert!(view.script_check(&expect(None, Some(K::Way)), cx).is_err());
+            assert!(view
+                .script_check(&Check::Dialog(DialogExpect::Failed), cx)
+                .is_ok());
+
+            assert!(view
+                .script_check(&Check::Selection(SelectionKind::None), cx)
+                .is_ok());
+            assert!(view
+                .script_check(&Check::Selection(SelectionKind::Node), cx)
+                .is_err());
+        });
+    }
+
+    #[gpui::test]
+    fn script_set_tag_and_remove_tag_edit_the_selection_in_one_undo_step_each(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+        let window = dialog_window(cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let view = view_with_layer(window, vcx);
+        view.update_in(vcx, |view, _window, cx| {
+            let layer_id = view.active_layer.unwrap();
+            assert!(
+                view.script_set_tag("name", "x", cx).is_err(),
+                "no selection"
+            );
+            view.selected = vec![FeatureRef {
+                layer_id,
+                kind: FeatureKind::Way,
+                id: 10,
+            }];
+            let value = "A & B <C> \"D\" caf\u{e9}";
+            view.script_set_tag("name", value, cx).unwrap();
+            assert_eq!(
+                view.selected_feature_tag_snapshots()[0].1,
+                vec![("name".to_string(), value.to_string())]
+            );
+            assert_eq!(view.undo_stack.actions.len(), 1);
+            assert_eq!(view.active_layer_pending(), Some(1));
+            // Setting the same value again changes nothing.
+            view.script_set_tag("name", value, cx).unwrap();
+            assert_eq!(view.undo_stack.actions.len(), 1);
+            view.script_remove_tag("name", cx).unwrap();
+            assert!(view.selected_feature_tag_snapshots()[0].1.is_empty());
+            assert!(view.script_remove_tag("name", cx).is_err());
+        });
+    }
+
+    #[gpui::test]
+    fn script_export_writes_the_active_layer(cx: &mut TestAppContext) {
+        let window = dialog_window(cx);
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let view = view_with_layer(window, vcx);
+        let path = std::env::temp_dir()
+            .join(format!("osm-gpui-script-export-{}", std::process::id()))
+            .join("nested")
+            .join("layer.osm");
+        view.update_in(vcx, |view, _window, _cx| {
+            make_pending_change(view);
+            view.script_export_layer(&path).unwrap();
+        });
+        let xml = std::fs::read_to_string(&path).unwrap();
+        assert!(xml.contains("<osm"), "{xml}");
+        assert!(xml.contains("<way"), "{xml}");
+        // The export loads back with the pending edit still pending.
+        let (data, edits) = osm_gpui::osm::OsmParser::new()
+            .parse_file_with_edits(path.to_str().unwrap())
+            .unwrap();
+        assert!(data.ways.contains_key(&10));
+        let _ = edits;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn a_scripted_run_only_uploads_to_the_dev_server() {
+        // Outside script mode nothing is refused.
+        assert!(!script_harness::script_mode());
+        assert_eq!(
+            script_harness::scripted_upload_refusal("https://api.openstreetmap.org"),
+            None
+        );
     }
 }

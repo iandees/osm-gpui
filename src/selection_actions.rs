@@ -1532,10 +1532,11 @@ fn apply_delete(
         }
     }
     deleted += deleted_relations;
-    for feature in selection {
-        if feature.kind == FeatureKind::Relation {
-            continue;
-        }
+    // Ways go before nodes, so a node selected together with the ways that
+    // use it is free to go by the time its turn comes.
+    let ways = selection.iter().filter(|f| f.kind == FeatureKind::Way);
+    let nodes = selection.iter().filter(|f| f.kind == FeatureKind::Node);
+    for feature in ways.chain(nodes) {
         let Some(editable) = layers
             .find_layer_mut(feature.layer_id)
             .and_then(|l| l.as_editable_mut())
@@ -2055,6 +2056,22 @@ mod tests {
             "Deleted 2 features and removed them from 2 relations"
         );
         assert_eq!(n.layer().diff_for_upload().modified_relations.len(), 2);
+    }
+
+    #[test]
+    fn select_all_then_delete_removes_everything() {
+        use MemberType::Way;
+        // Way 102 is the only member of relation 900, and every node is used
+        // by a way: with the relation and the ways in the same selection,
+        // nothing is refused, whatever order the selection lists them in.
+        let mut n = net_with(relation_900("route", &[(Way, 102, "")]));
+        let all = n.editable().all_features();
+        assert!(all.iter().any(|f| f.kind == FeatureKind::Relation));
+        assert_eq!(all.first().map(|f| f.kind), Some(FeatureKind::Node));
+        let out = n.run("delete", &all).unwrap();
+        assert!(out.status.starts_with("Deleted "), "{}", out.status);
+        assert!(!out.status.contains("Can't"), "{}", out.status);
+        assert!(n.editable().all_features().is_empty());
     }
 
     #[test]
