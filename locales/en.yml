@@ -122,6 +122,12 @@ status:
   deleted_features:
     one: "Deleted %{count} feature"
     other: "Deleted %{count} features"
+  # `%{relations}` is the relation count from `action.relation_count`.
+  deleted_features_in_relations:
+    one: "Deleted %{count} feature and removed it from %{relations}"
+    other: "Deleted %{count} features and removed them from %{relations}"
+  # A delete that skipped some features: what was done, then why the rest wasn't.
+  delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "No OSM data to zoom to"
   nothing_selected: "Nothing selected"
   no_data_to_export: "No OSM data to export"
@@ -393,6 +399,9 @@ action:
   feature_count:
     one: "%{count} feature"
     other: "%{count} features"
+  relation_count:
+    one: "%{count} relation"
+    other: "%{count} relations"
   copy_tags:
     label: "Copy Tags"
     hint: "Select one feature that has tags to copy them"

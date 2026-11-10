@@ -194,11 +194,29 @@ pub fn plural(key: &str, count: u64) -> SharedString {
 
 /// [`plural`] for an explicit locale.
 pub fn plural_in(locale: &str, key: &str, count: u64) -> SharedString {
+    plural_with_in(locale, key, count, &[])
+}
+
+/// [`plural`] with further `%{name}` placeholders besides `%{count}`, for a
+/// message that also embeds another (already pluralised) piece of text.
+pub fn plural_with(key: &str, count: u64, args: &[(&str, &dyn Display)]) -> SharedString {
+    plural_with_in(&rust_i18n::locale(), key, count, args)
+}
+
+/// [`plural_with`] for an explicit locale.
+pub fn plural_with_in(
+    locale: &str,
+    key: &str,
+    count: u64,
+    args: &[(&str, &dyn Display)],
+) -> SharedString {
     let category = plural_category(locale, count);
     let message = lookup_in(locale, &format!("{key}.{category}"))
         .or_else(|| lookup_in(locale, &format!("{key}.other")))
         .unwrap_or_else(|| Cow::Owned(format!("{locale}.{key}.{category}")));
-    substitute(message, &[("count", &count)])
+    let mut all: Vec<(&str, &dyn Display)> = vec![("count", &count)];
+    all.extend_from_slice(args);
+    substitute(message, &all)
 }
 
 /// Look up a UI message in the current locale: `tr!("key")` or
@@ -223,6 +241,13 @@ macro_rules! tr {
 macro_rules! tr_count {
     ($key:expr, $count:expr) => {
         $crate::i18n::plural($key, ($count) as u64)
+    };
+    ($key:expr, $count:expr, $($name:ident = $value:expr),+ $(,)?) => {
+        $crate::i18n::plural_with(
+            $key,
+            ($count) as u64,
+            &[$((stringify!($name), &$value as &dyn ::std::fmt::Display)),+],
+        )
     };
 }
 

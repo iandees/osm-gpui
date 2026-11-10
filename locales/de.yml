@@ -122,6 +122,12 @@ status:
   deleted_features:
     one: "%{count} Objekt gelöscht"
     other: "%{count} Objekte gelöscht"
+  # `%{relations}` ist die Relationenzahl aus `action.relation_count`.
+  deleted_features_in_relations:
+    one: "%{count} Objekt gelöscht und aus %{relations} entfernt"
+    other: "%{count} Objekte gelöscht und aus %{relations} entfernt"
+  # Löschen, bei dem einige Objekte übersprungen wurden: was getan wurde, dann warum der Rest nicht.
+  delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "Keine OSM-Daten zum Zoomen"
   nothing_selected: "Nichts ausgewählt"
   no_data_to_export: "Keine OSM-Daten zum Exportieren"
@@ -393,6 +399,9 @@ action:
   feature_count:
     one: "%{count} Objekt"
     other: "%{count} Objekte"
+  relation_count:
+    one: "%{count} Relation"
+    other: "%{count} Relationen"
   copy_tags:
     label: "Tags kopieren"
     hint: "Ein einzelnes Objekt mit Tags wählen, um sie zu kopieren"

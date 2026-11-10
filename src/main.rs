@@ -5415,6 +5415,38 @@ mod tests {
     }
 
     #[gpui::test]
+    fn deleting_a_relation_member_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Way 102 is a member of relation 900.
+                let original = relation_members(view, 900);
+                select(view, Way, &[102]);
+                view.run_selection_action("delete", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Deleted 1 feature and removed it from 1 relation")
+                );
+                let remaining = relation_members(view, 900);
+                assert_eq!(remaining, vec![(7, "stop".to_string())]);
+                // The deleted way and the relation that lost it.
+                assert_eq!(pending(view), (0, 1, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), remaining);
+                assert_eq!(pending(view), (0, 1, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn joining_relation_member_ways_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Way;
         let window = setup_network_with(cx, route_over(&[(100, "forward"), (101, "forward")]));

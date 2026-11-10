@@ -16,6 +16,7 @@ use gpui::SharedString;
 use osm_gpui::geometry::{self, LatLon};
 use osm_gpui::i18n::tr_dynamic;
 use osm_gpui::layers::{EditableLayer, LayerId, LayerManager};
+use osm_gpui::osm::MemberType;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
@@ -1256,13 +1257,20 @@ fn apply_extend(
 
 /// Delete every selected feature. Node deletion is refused per feature if the
 /// node is still referenced by a way (see `OsmLayer::delete_feature`); refused
-/// features are skipped. The deletions are one undo step.
+/// features are skipped. A deleted node or way is also removed from the
+/// relations it is a member of (see `relations::delete_member`); a feature
+/// whose removal would empty a relation or break a turn restriction is refused
+/// instead, with the reason in the status. The deletions and membership
+/// changes are one undo step.
 fn apply_delete(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     _active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
     let mut actions = Vec::new();
+    let mut deleted = 0usize;
+    let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
+    let mut refusal: Option<String> = None;
     for feature in selection {
         let Some(editable) = layers
             .find_layer_mut(feature.layer_id)
@@ -1270,19 +1278,75 @@ fn apply_delete(
         else {
             continue;
         };
-        if let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) {
-            actions.push(UndoableAction::DeleteFeature {
+        let (member_type, relation_ids, what) = match feature.kind {
+            FeatureKind::Node => (
+                MemberType::Node,
+                editable.relations_containing_node(feature.id),
+                tr!("action.delete.kind.node"),
+            ),
+            FeatureKind::Way => (
+                MemberType::Way,
+                editable.relations_containing_way(feature.id),
+                tr!("action.delete.kind.way"),
+            ),
+        };
+        // The memberships to drop; a refusal skips the feature entirely.
+        let mut edits = Vec::new();
+        let mut refused = false;
+        for relation_id in relation_ids {
+            let Some(relation) = editable.relation(relation_id) else {
+                continue;
+            };
+            match osm_gpui::relations::delete_member(&relation, member_type, feature.id) {
+                Ok(Some(after)) => edits.push((relation_id, relation.members, after)),
+                Ok(None) => {}
+                Err(e) => {
+                    refusal.get_or_insert_with(|| e.message(&what, feature.id));
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        if refused {
+            continue;
+        }
+        // The layer may still refuse (a node used by a way); then nothing
+        // about the relations changes either.
+        let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) else {
+            continue;
+        };
+        deleted += 1;
+        actions.push(UndoableAction::DeleteFeature {
+            layer: feature.layer_id,
+            snapshot,
+        });
+        for (relation_id, before, after) in edits {
+            editable.set_relation_members(relation_id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
                 layer: feature.layer_id,
-                snapshot,
+                relation_id,
+                before,
+                after,
             });
+            if !changed_relations.contains(&(feature.layer_id, relation_id)) {
+                changed_relations.push((feature.layer_id, relation_id));
+            }
         }
     }
-    let deleted = actions.len();
     if deleted == 0 {
-        return Err(tr!("status.nothing_to_delete").to_string());
+        return Err(refusal.unwrap_or_else(|| tr!("status.nothing_to_delete").to_string()));
     }
-    let status = tr_count!("status.deleted_features", deleted).to_string();
-    let undo = if deleted == 1 {
+    let mut status = if changed_relations.is_empty() {
+        tr_count!("status.deleted_features", deleted).to_string()
+    } else {
+        tr_count!(
+            "status.deleted_features_in_relations",
+            deleted,
+            relations = tr_count!("action.relation_count", changed_relations.len())
+        )
+        .to_string()
+    };
+    let undo = if actions.len() == 1 {
         actions.remove(0)
     } else {
         UndoableAction::Batch {
@@ -1290,6 +1354,9 @@ fn apply_delete(
             actions,
         }
     };
+    if let Some(reason) = refusal {
+        status = tr!("status.delete_skipped", done = status, reason = reason).to_string();
+    }
     Ok(ActionOutcome {
         undo: Some(undo),
         status,
@@ -1385,7 +1452,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
-    use osm_gpui::osm::{MemberType, OsmMember, OsmRelation};
+    use osm_gpui::osm::{OsmMember, OsmRelation};
 
     /// A layer holding one skewed closed rectangle ("way") and one open
     /// two-node way, plus the ids needed to select them.
@@ -1577,6 +1644,119 @@ mod tests {
             out.undo.as_ref().unwrap().description(),
             "Deleted 2 features"
         );
+    }
+
+    #[test]
+    fn delete_removes_the_feature_from_its_relations_in_the_same_step() {
+        use MemberType::{Node, Way};
+        // Way 102 and node 7 are members of relation 900.
+        let mut n = net();
+        let out = n.run("delete", &n.ways(&[102])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 1 relation"
+        );
+        assert_eq!(n.members(), members_of(&[(7, "stop")]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        let undo = out.undo.as_ref().unwrap();
+        assert_eq!(undo.description(), out.status);
+        let UndoableAction::Batch { actions, .. } = undo else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::DeleteFeature { .. },
+                UndoableAction::SetRelationMembers {
+                    relation_id: 900,
+                    ..
+                }
+            ]
+        ));
+
+        // A node that is on no way works the same.
+        let mut n = net();
+        let out = n.run("delete", &n.nodes(&[7])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 1 relation"
+        );
+        assert_eq!(n.members(), members_of(&[(102, "")]));
+
+        // Several features, several relations, properly pluralised.
+        let mut other = relation_900("route", &[(Way, 102, ""), (Way, 106, "")]);
+        other.id = 901;
+        let mut n = net_with_relations(vec![
+            relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
+            other,
+        ]);
+        let out = n.run("delete", &n.ways(&[102])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 2 relations"
+        );
+        assert_eq!(n.members(), members_of(&[(7, "stop")]));
+
+        // Two features in two relations: plural on both counts.
+        let mut second = relation_900("route", &[(Way, 106, ""), (Way, 107, "")]);
+        second.id = 901;
+        let mut n = net_with_relations(vec![
+            relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
+            second,
+        ]);
+        let out = n.run("delete", &n.ways(&[102, 106])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 2 features and removed them from 2 relations"
+        );
+        assert_eq!(n.layer().diff_for_upload().modified_relations.len(), 2);
+    }
+
+    #[test]
+    fn delete_refuses_to_empty_a_relation_or_break_a_restriction() {
+        use MemberType::{Node, Way};
+        // Way 102 is all of relation 900.
+        let mut n = net_with(relation_900("route", &[(Way, 102, "")]));
+        let Err(message) = n.run("delete", &n.ways(&[102])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't delete way 102: it is the only member of relation 900"
+        );
+        assert!(!n.layer().is_modified());
+        assert!(n.editable().way_node_ids(102).is_some());
+
+        // Node 7 is the restriction's via member.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 100, "from"), (Node, 7, "via"), (Way, 102, "to")],
+        ));
+        let Err(message) = n.run("delete", &n.nodes(&[7])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't delete node 7: turn restriction 900 would be left without a 'via' member"
+        );
+        assert!(!n.layer().is_modified());
+        assert!(n.editable().node_lat_lon(7).is_some());
+
+        // Part of a selection refused: the rest is still deleted, and the
+        // status says why the other wasn't.
+        let mut n = net_with(relation_900("route", &[(Way, 102, "")]));
+        let out = n.run("delete", &n.ways(&[102, 106])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature; Can't delete way 102: it is the only member of relation 900"
+        );
+        assert!(n.editable().way_node_ids(102).is_some());
+        assert!(n.editable().way_node_ids(106).is_none());
+        // The undo step is just the one deletion.
+        assert!(matches!(
+            out.undo.as_ref().unwrap(),
+            UndoableAction::DeleteFeature { .. }
+        ));
     }
 
     #[test]
@@ -2281,8 +2461,12 @@ mod tests {
 
     /// The network with relation 900 replaced by `relation`.
     fn net_with(relation: OsmRelation) -> Net {
+        net_with_relations(vec![relation])
+    }
+
+    fn net_with_relations(relations: Vec<OsmRelation>) -> Net {
         let mut data = test_support::network_data();
-        data.relations = vec![relation];
+        data.relations = relations;
         let layer_id = LayerId(1);
         let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), std::sync::Arc::new(data));
         let mut layers = LayerManager::new();
