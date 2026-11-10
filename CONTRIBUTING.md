@@ -55,6 +55,8 @@ Scripted screenshot sessions:
 cargo run --release -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
+The app always starts in the light theme (it does not follow the system appearance). To check the dark theme without the Settings window, start with `--theme dark` (or `--theme light`), or switch inside a script with `action SetThemeDark` / `action SetThemeLight` (see `docs/screenshots/interface-polish.osmscript`).
+
 ## Code conventions
 
 ### Pure logic and testability
