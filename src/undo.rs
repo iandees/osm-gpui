@@ -167,6 +167,105 @@ pub(crate) enum UndoableAction {
 }
 
 impl UndoableAction {
+    /// The features this step touched, whichever direction it is applied in.
+    /// After an undo or redo the caller selects the ones that still exist
+    /// (an undone create or a redone delete names features that are gone, so
+    /// those drop out when the caller prunes). Pure: it only reads the
+    /// recorded ids, never the layer. The result has no duplicates.
+    pub(crate) fn affected_features(&self) -> Vec<osm_gpui::selection::FeatureRef> {
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+        let node = |layer: LayerId, id: i64| FeatureRef {
+            layer_id: layer,
+            kind: FeatureKind::Node,
+            id,
+        };
+        let way = |layer: LayerId, id: i64| FeatureRef {
+            layer_id: layer,
+            kind: FeatureKind::Way,
+            id,
+        };
+        let mut out: Vec<FeatureRef> = Vec::new();
+        match self {
+            UndoableAction::MoveNodes { per_layer } => {
+                for (layer, entries) in per_layer {
+                    out.extend(entries.iter().map(|&(id, _, _)| node(*layer, id)));
+                }
+            }
+            UndoableAction::SetTags { entries } => {
+                out.extend(entries.iter().map(|(feature, ..)| *feature));
+            }
+            UndoableAction::CreateNode { layer, id, .. } => out.push(node(*layer, *id)),
+            UndoableAction::DeleteFeature { layer, snapshot }
+            | UndoableAction::CreateWay { layer, snapshot } => out.push(FeatureRef {
+                layer_id: *layer,
+                kind: snapshot.kind,
+                id: snapshot.id,
+            }),
+            UndoableAction::ExtendWay {
+                layer,
+                way_id,
+                node_id,
+                ..
+            } => {
+                out.push(way(*layer, *way_id));
+                out.push(node(*layer, *node_id));
+            }
+            // The helper nodes of a building / extrusion are an
+            // implementation detail; the way is what the user made.
+            UndoableAction::CreateBuilding { layer, way_id, .. }
+            | UndoableAction::ExtrudeWay { layer, way_id, .. } => out.push(way(*layer, *way_id)),
+            UndoableAction::InsertNodeIntoWay {
+                layer,
+                way_id,
+                node_id,
+                ..
+            } => {
+                out.push(way(*layer, *way_id));
+                out.push(node(*layer, *node_id));
+            }
+            UndoableAction::SnapExtendWay {
+                layer,
+                way_id,
+                snap_way_id,
+                node_id,
+                ..
+            } => {
+                out.push(way(*layer, *way_id));
+                out.push(way(*layer, *snap_way_id));
+                out.push(node(*layer, *node_id));
+            }
+            UndoableAction::ReverseWays { layer, way_ids } => {
+                out.extend(way_ids.iter().map(|&id| way(*layer, id)));
+            }
+            UndoableAction::SetWayNodes { layer, way_id, .. } => out.push(way(*layer, *way_id)),
+            UndoableAction::SetRelationMembers {
+                layer, relation_id, ..
+            } => out.push(FeatureRef {
+                layer_id: *layer,
+                kind: FeatureKind::Relation,
+                id: *relation_id,
+            }),
+            UndoableAction::CreateRelation { layer, snapshot }
+            | UndoableAction::DeleteRelation { layer, snapshot } => out.push(FeatureRef {
+                layer_id: *layer,
+                kind: FeatureKind::Relation,
+                id: snapshot.relation.id,
+            }),
+            UndoableAction::Batch { actions, .. } => {
+                for action in actions {
+                    out.extend(action.affected_features());
+                }
+            }
+        }
+        let mut seen: Vec<FeatureRef> = Vec::with_capacity(out.len());
+        for feature in out {
+            if !seen.contains(&feature) {
+                seen.push(feature);
+            }
+        }
+        seen
+    }
+
     /// Human-readable label for the history list, e.g. "Moved 3 nodes".
     pub(crate) fn description(&self) -> String {
         match self {
@@ -281,6 +380,7 @@ impl UndoStack {
 #[cfg(test)]
 mod undo_stack_tests {
     use super::{LayerId, UndoStack, UndoableAction};
+    use osm_gpui::selection::{FeatureKind, FeatureRef};
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
         UndoableAction::MoveNodes {
@@ -599,5 +699,122 @@ mod undo_stack_tests {
             panic!("expected ExtendWay");
         }
         assert!(stack.undo().is_none());
+    }
+
+    fn fref(kind: FeatureKind, id: i64) -> FeatureRef {
+        FeatureRef {
+            layer_id: LayerId(1),
+            kind,
+            id,
+        }
+    }
+
+    #[test]
+    fn affected_features_per_variant_family() {
+        use FeatureKind::{Node, Relation, Way};
+        let layer = LayerId(1);
+
+        assert_eq!(
+            move_one(3, (0.0, 0.0), (1.0, 1.0)).affected_features(),
+            vec![fref(Node, 3)]
+        );
+
+        let tags = UndoableAction::SetTags {
+            entries: vec![
+                (fref(Way, 5), "a".into(), None, Some("b".into())),
+                (fref(Way, 5), "c".into(), None, Some("d".into())),
+                (fref(Node, 6), "a".into(), None, Some("b".into())),
+            ],
+        };
+        assert_eq!(tags.affected_features(), vec![fref(Way, 5), fref(Node, 6)]);
+
+        let create_node = UndoableAction::CreateNode {
+            layer,
+            id: -1,
+            lat: 0.0,
+            lon: 0.0,
+        };
+        assert_eq!(create_node.affected_features(), vec![fref(Node, -1)]);
+
+        let delete = UndoableAction::DeleteFeature {
+            layer,
+            snapshot: way_snapshot(9),
+        };
+        assert_eq!(delete.affected_features(), vec![fref(Way, 9)]);
+
+        let reverse = UndoableAction::ReverseWays {
+            layer,
+            way_ids: vec![1, 2],
+        };
+        assert_eq!(
+            reverse.affected_features(),
+            vec![fref(Way, 1), fref(Way, 2)]
+        );
+
+        let set_nodes = UndoableAction::SetWayNodes {
+            layer,
+            way_id: 4,
+            before: vec![],
+            after: vec![],
+        };
+        assert_eq!(set_nodes.affected_features(), vec![fref(Way, 4)]);
+
+        let members = UndoableAction::SetRelationMembers {
+            layer,
+            relation_id: 900,
+            before: vec![],
+            after: vec![],
+        };
+        assert_eq!(members.affected_features(), vec![fref(Relation, 900)]);
+
+        let extend = extend_way(-20, 7, true, true);
+        assert_eq!(
+            extend.affected_features(),
+            vec![fref(Way, -20), fref(Node, 7)]
+        );
+
+        let building = UndoableAction::CreateBuilding {
+            layer,
+            way_id: -30,
+            node_ids: [-1, -2, -3, -4],
+        };
+        assert_eq!(building.affected_features(), vec![fref(Way, -30)]);
+
+        let snap = UndoableAction::SnapExtendWay {
+            layer,
+            way_id: -40,
+            way_created: true,
+            snap_way_id: 8,
+            snap_index: 1,
+            node_id: -5,
+            at_start: false,
+        };
+        assert_eq!(
+            snap.affected_features(),
+            vec![fref(Way, -40), fref(Way, 8), fref(Node, -5)]
+        );
+    }
+
+    #[test]
+    fn batch_affected_features_is_the_deduplicated_union() {
+        use FeatureKind::{Node, Way};
+        let batch = UndoableAction::Batch {
+            label: "x".into(),
+            actions: vec![
+                UndoableAction::ReverseWays {
+                    layer: LayerId(1),
+                    way_ids: vec![1],
+                },
+                move_one(3, (0.0, 0.0), (1.0, 1.0)),
+                UndoableAction::ReverseWays {
+                    layer: LayerId(1),
+                    way_ids: vec![1, 2],
+                },
+            ],
+        };
+        assert_eq!(
+            batch.affected_features(),
+            vec![fref(Way, 1), fref(Node, 3), fref(Way, 2)]
+        );
     }
 }
