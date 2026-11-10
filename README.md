@@ -44,6 +44,35 @@ cargo run
 - **Out-of-tree target dir.** `.cargo/config.toml` points `target-dir` to `~/.rust/osm-gpui/target` so build artifacts (~1 GB) stay out of the Dropbox/Synology-synced project folder. The `.cargo/` directory is gitignored because the path is user-specific. If cloning fresh on another machine, recreate it.
 - `gpui` is pulled from the `zed-industries/zed` git repo, so the first build takes several minutes.
 
+## Releases
+
+The version lives in one place: `version` in `Cargo.toml`. The app reads it with `env!("CARGO_PKG_VERSION")` (`src/version.rs`) for the HTTP `User-Agent` (`osm-gpui/<version> (+https://github.com/iandees/osm-gpui)`) and the changeset `created_by` tag (`osm-gpui <version>`).
+
+**Cutting a release**
+
+1. Bump `version` in `Cargo.toml` (and let `Cargo.lock` update), commit, and merge to `main`.
+2. Tag the commit and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
+
+`.github/workflows/release.yml` fails if the tag (without the `v`) differs from the `Cargo.toml` version. Otherwise it builds and attaches these files to a new GitHub Release with generated notes:
+
+- `osm-gpui-X.Y.Z-macos-universal.zip` — `osm-gpui.app` (Apple Silicon + Intel)
+- `osm-gpui-X.Y.Z-windows-x86_64.zip` — `osm-gpui.exe`
+- `osm-gpui-X.Y.Z-linux-x86_64.tar.gz` — binary and a `.desktop` file
+- `SHA256SUMS`
+
+The same build jobs run (without publishing) on pull requests that touch the workflow, `scripts/`, `packaging/` or `Cargo.toml`, and on manual `workflow_dispatch` runs; the packages are uploaded as workflow artifacts.
+
+**The macOS app is not notarized.** It is only ad-hoc signed (there is no Developer ID certificate), so Gatekeeper blocks the first launch of a downloaded copy. Right-click the app and choose Open, or run `xattr -dr com.apple.quarantine osm-gpui.app`.
+
+**Building the `.app` locally**
+
+```bash
+cargo build --release
+scripts/bundle-macos.sh        # writes dist/osm-gpui.app
+```
+
+Use `--binary PATH` to package a different executable (for example a `lipo`'d universal one) and `--out DIR` to change the output directory. If you use a custom target dir, set `CARGO_TARGET_DIR` so the script finds `release/osm-gpui`. There is no app icon in the repository yet, so the bundle has none.
+
 ## Architecture map
 
 Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but the real UI lives in `main.rs`.
