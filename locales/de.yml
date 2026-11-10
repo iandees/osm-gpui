@@ -463,6 +463,12 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  add_to_relation:
+    label: "Zu Relation hinzufügen …"
+    hint: "Knoten oder Wege in einer Ebene mit Relationen wählen, um sie einer Relation hinzuzufügen"
+    # `%{features}` ist die Zahl aus `action.feature_count`.
+    done: "%{features} zur Relation %{relation} hinzugefügt"
+    already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"
@@ -528,6 +534,14 @@ dialog:
   preset_picker:
     title: "Objekttyp ändern"
     search_placeholder: "Objekttypen suchen …"
+  relation_picker:
+    title: "Zu Relation hinzufügen"
+    search_placeholder: "Relationen suchen …"
+    # `%{id}` ist die Relations-ID, `%{members}` die Anzahl unten.
+    detail: "Relation %{id} · %{members}"
+    members:
+      one: "%{count} Mitglied"
+      other: "%{count} Mitglieder"
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"

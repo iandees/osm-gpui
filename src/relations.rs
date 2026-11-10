@@ -606,6 +606,44 @@ pub fn add_members(members: &[OsmMember], new: &[(MemberType, i64)]) -> Option<V
     (out.len() > members.len()).then_some(out)
 }
 
+/// A relation as the "Add to Relation" picker lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationChoice {
+    pub id: i64,
+    /// `display_name` of the relation.
+    pub name: String,
+    pub member_count: usize,
+}
+
+/// The picker's choices for `relations`, sorted by name (ignoring case), then
+/// id.
+pub fn relation_choices(relations: &[OsmRelation]) -> Vec<RelationChoice> {
+    let mut choices: Vec<RelationChoice> = relations
+        .iter()
+        .map(|r| RelationChoice {
+            id: r.id,
+            name: display_name(r),
+            member_count: r.members.len(),
+        })
+        .collect();
+    choices.sort_by_cached_key(|c| (c.name.to_lowercase(), c.id));
+    choices
+}
+
+/// The choices whose name or id contains `query` (ignoring case and
+/// surrounding space); all of them for an empty query.
+pub fn matching_choices<'a>(choices: &'a [RelationChoice], query: &str) -> Vec<&'a RelationChoice> {
+    let query = query.trim().to_lowercase();
+    choices
+        .iter()
+        .filter(|c| {
+            query.is_empty()
+                || c.name.to_lowercase().contains(&query)
+                || c.id.to_string().contains(&query)
+        })
+        .collect()
+}
+
 /// The kind of element, as the side panel names it ("Way").
 pub fn kind_label(member_type: MemberType) -> gpui::SharedString {
     match member_type {
@@ -1183,6 +1221,37 @@ mod tests {
         );
         assert_eq!(add_members(&ms, &[(MemberType::Way, 1)]), None);
         assert_eq!(add_members(&ms, &[]), None);
+    }
+
+    #[test]
+    fn relation_choices_sort_by_name_and_filter_by_name_or_id() {
+        let mut named = rel(30, vec![way(1, "")]);
+        named.tags.insert("name".into(), "blue Line".into());
+        let mut other = rel(20, vec![]);
+        other.tags.insert("name".into(), "Airport Loop".into());
+        let unnamed = OsmRelation {
+            tags: HashMap::new(),
+            ..rel(7, vec![way(1, ""), way(2, "")])
+        };
+        let choices = relation_choices(&[named, other, unnamed]);
+        let names: Vec<(&str, usize)> = choices
+            .iter()
+            .map(|c| (c.name.as_str(), c.member_count))
+            .collect();
+        // The unnamed one is listed by its id.
+        assert_eq!(names, vec![("7", 2), ("Airport Loop", 0), ("blue Line", 1)]);
+
+        let ids = |query: &str| -> Vec<i64> {
+            matching_choices(&choices, query)
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        assert_eq!(ids(""), vec![7, 20, 30]);
+        assert_eq!(ids("  LINE "), vec![30]);
+        assert_eq!(ids("loop"), vec![20]);
+        assert_eq!(ids("30"), vec![30]);
+        assert!(ids("nothing").is_empty());
     }
 
     #[test]

@@ -292,6 +292,9 @@ pub trait EditableLayer {
     /// has it.
     fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation>;
 
+    /// The ids of every relation the layer has, in the order it stores them.
+    fn relation_ids(&self) -> Vec<i64>;
+
     /// Replace a relation's whole member list and return the previous one
     /// (`None`, changing nothing, if the layer has no such relation).
     fn set_relation_members(

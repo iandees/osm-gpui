@@ -503,6 +503,12 @@ struct MapViewer {
     /// Whether the Members list shows every member of a long relation
     /// instead of the first few.
     members_show_all: bool,
+    /// Set by "Add to Relation…"; `render` opens the picker (it needs the
+    /// window) and clears it.
+    pending_relation_picker: bool,
+    /// Active "add to relation" picker dialog, if open.
+    relation_picker_dialog:
+        Option<gpui::Entity<osm_gpui::ui::relation_picker_dialog::RelationPickerDialog>>,
     /// The feature whose Fields section has its "Add field" list expanded.
     /// Keyed by feature so the list is closed again for any other selection
     /// without every selection-changing path having to reset it.
@@ -741,6 +747,8 @@ impl MapViewer {
             side_panel_resize: None,
             pending_tag_edit_open: None,
             role_edit: None,
+            pending_relation_picker: false,
+            relation_picker_dialog: None,
             pending_role_edit_open: None,
             members_show_all: false,
             nsi_dialog: None,
@@ -1865,7 +1873,26 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        match (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer) {
+        if action.id == selection_actions::ADD_TO_RELATION {
+            // Which relation? Ask; `render` opens the picker (it needs the
+            // window), and the choice comes back through
+            // `add_selection_to_relation`.
+            self.pending_relation_picker = true;
+            cx.notify();
+            return;
+        }
+        let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
+        self.finish_selection_action(result);
+        cx.notify();
+    }
+
+    /// Record what a selection action produced: its undo step, selection
+    /// change and status message, or the reason it refused.
+    fn finish_selection_action(
+        &mut self,
+        result: Result<selection_actions::ActionOutcome, String>,
+    ) {
+        match result {
             Ok(outcome) => {
                 if let Some(undo) = outcome.undo {
                     self.undo_stack.push(undo);
@@ -1883,7 +1910,61 @@ impl MapViewer {
             }
             Err(message) => self.set_status(message),
         }
+    }
+
+    /// Open the "Add to Relation" picker if the action asked for it, listing
+    /// the relations of the active layer. Called from `Render::render`, as the
+    /// dialog needs the window.
+    fn check_for_pending_relation_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::relation_picker_dialog::{DialogEvent, RelationPickerDialog};
+
+        if !std::mem::take(&mut self.pending_relation_picker)
+            || self.relation_picker_dialog.is_some()
+        {
+            return;
+        }
+        let Some(editable) = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .and_then(|layer| layer.as_editable())
+        else {
+            return;
+        };
+        let relations: Vec<osm_gpui::osm::OsmRelation> = editable
+            .relation_ids()
+            .into_iter()
+            .filter_map(|id| editable.relation(id))
+            .collect();
+        let choices = osm_gpui::relations::relation_choices(&relations);
+        let dialog = cx.new(|cx| RelationPickerDialog::new(choices, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, event: &DialogEvent, cx| {
+                match event {
+                    DialogEvent::Cancelled => {}
+                    DialogEvent::Submitted(relation_id) => {
+                        this.add_selection_to_relation(*relation_id);
+                    }
+                }
+                this.relation_picker_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.relation_picker_dialog = Some(dialog);
         cx.notify();
+    }
+
+    /// Append the selected nodes and ways to relation `relation_id` as one
+    /// undo step (the picker's choice).
+    fn add_selection_to_relation(&mut self, relation_id: i64) {
+        let result = selection_actions::add_to_relation(
+            &mut self.layer_manager,
+            &self.selected,
+            self.active_layer,
+            relation_id,
+        );
+        self.finish_selection_action(result);
     }
 
     /// Menu bar (Tools) and context menu entry point for the selection
@@ -3822,6 +3903,7 @@ impl Render for MapViewer {
         // nothing else to drain here.
         self.check_for_pending_tag_edit(window, cx);
         self.check_for_pending_role_edit(window, cx);
+        self.check_for_pending_relation_picker(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -4532,6 +4614,7 @@ impl Render for MapViewer {
             .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
+            .children(self.relation_picker_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.render_context_menu(window, cx))
@@ -5963,6 +6046,91 @@ mod tests {
                 undo_step(view);
                 assert_eq!(relation_members(view, 900), original);
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn add_to_relation_appends_the_new_members_as_one_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let original = relation_members(view, 900);
+                // Way 102 is already a member; 100, 103 and node 5 are not.
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100, 102, 103]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 5,
+                });
+                // The action asks for a relation first and changes nothing.
+                view.run_selection_action("add_to_relation", cx);
+                assert!(view.pending_relation_picker);
+                assert!(view.undo_stack.actions.is_empty());
+                // (Opening the picker needs a window root, which the test
+                // window lacks.)
+                view.pending_relation_picker = false;
+
+                view.add_selection_to_relation(900);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let added = relation_members(view, 900);
+                assert_eq!(
+                    added,
+                    vec![
+                        original[0].clone(),
+                        original[1].clone(),
+                        (100, String::new()),
+                        (103, String::new()),
+                        (5, String::new()),
+                    ]
+                );
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Added 3 features to relation 900")
+                );
+                assert_eq!(pending(view), (0, 1, 0));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), added);
+
+                // Everything is a member now: nothing to do, no undo step.
+                view.add_selection_to_relation(900);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("The selected features are already members of 900")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn add_to_relation_needs_features_and_a_relation_to_add_them_to(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network_with(cx, |data| data.relations.clear());
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[100]);
+                view.run_selection_action("add_to_relation", cx);
+                assert!(!view.pending_relation_picker);
+                assert!(view
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.starts_with("Select nodes or ways")));
+            })
+            .unwrap();
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // A selected relation alone has nothing to add.
+                view.select_relation(view.active_layer.unwrap(), 900);
+                view.run_selection_action("add_to_relation", cx);
+                assert!(!view.pending_relation_picker);
             })
             .unwrap();
     }

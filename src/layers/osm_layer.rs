@@ -2624,6 +2624,13 @@ impl EditableLayer for OsmLayer {
         OsmLayer::relation(self, relation_id)
     }
 
+    fn relation_ids(&self) -> Vec<i64> {
+        self.osm_data
+            .as_ref()
+            .map(|d| d.relations.iter().map(|r| r.id).collect())
+            .unwrap_or_default()
+    }
+
     fn set_relation_members(
         &mut self,
         relation_id: i64,

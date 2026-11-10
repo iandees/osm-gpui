@@ -463,6 +463,12 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  add_to_relation:
+    label: "Add to Relation…"
+    hint: "Select nodes or ways in a layer that has relations to add them to one"
+    # `%{features}` is the count from `action.feature_count`.
+    done: "Added %{features} to relation %{relation}"
+    already: "The selected features are already members of %{relation}"
   delete:
     label: "Delete"
     hint: "Select something to delete"
@@ -528,6 +534,14 @@ dialog:
   preset_picker:
     title: "Change Feature Type"
     search_placeholder: "Search feature types…"
+  relation_picker:
+    title: "Add to Relation"
+    search_placeholder: "Search relations…"
+    # `%{id}` is the relation id, `%{members}` the count below.
+    detail: "Relation %{id} · %{members}"
+    members:
+      one: "%{count} member"
+      other: "%{count} members"
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"

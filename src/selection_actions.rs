@@ -248,6 +248,10 @@ pub(crate) struct SelectionAction {
 pub(crate) type ApplyFn =
     fn(&mut LayerManager, &[FeatureRef], Option<LayerId>) -> Result<ActionOutcome, String>;
 
+/// Id of the "Add to Relation…" action, which opens a picker rather than
+/// applying right away.
+pub(crate) const ADD_TO_RELATION: &str = "add_to_relation";
+
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
         id: "square",
@@ -375,6 +379,24 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
             })
         },
         apply: apply_paste_tags,
+    },
+    SelectionAction {
+        id: ADD_TO_RELATION,
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !member_candidates(editable, layer_id, env.selection).is_empty()
+                && !editable.relation_ids().is_empty()
+        },
+        // Needs a relation chosen first, which takes a dialog: see
+        // `MapViewer::run_selection_action`, which opens the picker instead
+        // of applying, and `add_to_relation` below, which applies the choice.
+        apply: |_, _, _| Err(tr!("action.add_to_relation.hint").to_string()),
     },
     SelectionAction {
         id: "delete",
@@ -1263,6 +1285,67 @@ fn apply_extend(
             id: from.way_id,
         }]),
         continue_way: Some(from),
+    })
+}
+
+/// The selected nodes and ways of `layer_id` that exist in it, each once, in
+/// selection order: what Add to Relation appends.
+fn member_candidates(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<(MemberType, i64)> {
+    let mut out: Vec<(MemberType, i64)> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        let (member_type, exists) = match f.kind {
+            FeatureKind::Node => (MemberType::Node, editable.node_lat_lon(f.id).is_some()),
+            FeatureKind::Way => (MemberType::Way, editable.way_node_ids(f.id).is_some()),
+            FeatureKind::Relation => continue,
+        };
+        if exists && !out.contains(&(member_type, f.id)) {
+            out.push((member_type, f.id));
+        }
+    }
+    out
+}
+
+/// Append the selected nodes and ways of the active layer to relation
+/// `relation_id` (the picker's choice), each with an empty role; those that
+/// are already members are skipped. One undo step.
+pub(crate) fn add_to_relation(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    relation_id: i64,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let relation = editable
+        .relation(relation_id)
+        .ok_or_else(|| tr!("action.add_to_relation.hint").to_string())?;
+    let name = osm_gpui::relations::display_name(&relation);
+    let candidates = member_candidates(editable, layer_id, selection);
+    let after = osm_gpui::relations::add_members(&relation.members, &candidates)
+        .ok_or_else(|| tr!("action.add_to_relation.already", relation = name).to_string())?;
+    let added = after.len() - relation.members.len();
+    let before = editable
+        .set_relation_members(relation_id, after.clone())
+        .ok_or_else(|| tr!("action.add_to_relation.hint").to_string())?;
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
+        }),
+        status: tr!(
+            "action.add_to_relation.done",
+            features = tr_count!("action.feature_count", added),
+            relation = name
+        )
+        .to_string(),
+        clear_selection: false,
+        select: None,
+        continue_way: None,
     })
 }
 
