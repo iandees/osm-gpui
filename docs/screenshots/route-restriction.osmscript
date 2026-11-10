@@ -1,0 +1,44 @@
+# Route and turn restriction relations drawn on the map.
+#
+# Fixture docs/screenshots/fixtures/route-restriction.osm is laid out in window
+# coordinates at zoom 18, centered on (40.7120, -74.0060) (viewport center at
+# window (488, 388), see select.osmscript):
+#   Main St runs west-east at y=300 (x 100..850), Oak Ave crosses it at
+#   (500, 300), Elm St leaves (700, 300) to the south, Ridge Trail is a path
+#   at the bottom.
+#   Routes: a bus route on Main St, a magenta bicycle route (colour tag) on
+#   Oak Ave north and the Main St block 500..700 it shares with the bus, and a
+#   hiking trail.
+#   Restrictions: no_left_turn via (500, 300), only_straight_on via (700, 300);
+#   their markers sit 11px right and 11px up of the via node.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/route-restriction.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/route-restriction-01-drawn.png
+
+# Click the no_left_turn marker: the restriction relation is selected.
+click 511,289
+wait_idle 2s
+assert_selected relation 8204
+capture out/route-restriction-02-no-left-turn-selected.png
+
+# The only_straight_on marker.
+click 711,289
+wait_idle 2s
+assert_selected relation 8205
+capture out/route-restriction-03-only-straight-on-selected.png
+
+# The via node itself is still the node.
+click 500,300
+wait_idle 2s
+assert_selected node 8003
+capture out/route-restriction-04-via-node-selected.png
+
+# Zoomed out below the vertex zoom: route overlays stay, markers are not drawn.
+viewport 40.7120 -74.0060 15
+wait_idle 3s
+capture out/route-restriction-05-zoomed-out.png
+
+log done
