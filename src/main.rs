@@ -215,6 +215,25 @@ enum EditModeAction {
     Extrude,
 }
 
+/// Undo of a node attached to an existing way's end: pull `node_id` out of
+/// `way_id`, from the front if it was prepended, else from the back.
+fn detach_end_node(
+    editable: &mut dyn osm_gpui::layers::EditableLayer,
+    way_id: i64,
+    node_id: i64,
+    at_start: bool,
+) {
+    let node_ids = editable.way_node_ids(way_id).unwrap_or_default();
+    let idx = if at_start {
+        node_ids.iter().position(|id| *id == node_id)
+    } else {
+        node_ids.iter().rposition(|id| *id == node_id)
+    };
+    if let Some(idx) = idx {
+        editable.remove_node_from_way(way_id, idx);
+    }
+}
+
 impl From<EditModeAction> for EditMode {
     fn from(a: EditModeAction) -> Self {
         match a {
@@ -232,6 +251,9 @@ impl From<EditModeAction> for EditMode {
 struct AddProgress {
     way_id: Option<i64>,
     last_node_id: i64,
+    /// Continuing an existing way from its first node (Extend Way on a way's
+    /// start): new nodes are prepended to `way_id` instead of appended.
+    at_start: bool,
 }
 
 /// Building mode's in-progress rectangle: corner A is fixed after click 1;
@@ -1162,6 +1184,7 @@ impl MapViewer {
                 node_id,
                 way_created,
                 node_created,
+                at_start,
             } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
                     return;
@@ -1178,10 +1201,7 @@ impl MapViewer {
                     if *way_created {
                         editable.remove_way(*way_id);
                     } else {
-                        let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
-                        if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
-                            editable.remove_node_from_way(*way_id, idx);
-                        }
+                        detach_end_node(editable, *way_id, *node_id, *at_start);
                     }
                     // Only delete the node itself if this click created it —
                     // a pre-existing node the user connected to may be
@@ -1281,6 +1301,7 @@ impl MapViewer {
                 snap_way_id,
                 snap_index,
                 node_id,
+                at_start,
             } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
                     return;
@@ -1295,10 +1316,7 @@ impl MapViewer {
                     if *way_created {
                         editable.remove_way(*way_id);
                     } else {
-                        let node_ids = editable.way_node_ids(*way_id).unwrap_or_default();
-                        if let Some(idx) = node_ids.iter().rposition(|id| id == node_id) {
-                            editable.remove_node_from_way(*way_id, idx);
-                        }
+                        detach_end_node(editable, *way_id, *node_id, *at_start);
                     }
                     // Then remove it from the way it was snapped onto, and
                     // delete the node itself.
@@ -1320,6 +1338,21 @@ impl MapViewer {
                 for way_id in way_ids {
                     editable.reverse_way(*way_id);
                 }
+            }
+            UndoableAction::SetWayNodes {
+                layer,
+                way_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let nodes = if forward { after } else { before };
+                editable.set_way_nodes(*way_id, nodes.clone());
             }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
@@ -1605,9 +1638,17 @@ impl MapViewer {
         }
         match (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer) {
             Ok(outcome) => {
-                self.undo_stack.push(outcome.undo);
+                if let Some(undo) = outcome.undo {
+                    self.undo_stack.push(undo);
+                }
                 if outcome.clear_selection {
                     self.set_selection(Vec::new());
+                }
+                if let Some(selection) = outcome.select {
+                    self.set_selection(selection);
+                }
+                if let Some(from) = outcome.continue_way {
+                    self.continue_way_in_add_mode(from);
                 }
                 self.set_status(outcome.status);
             }
@@ -1625,6 +1666,24 @@ impl MapViewer {
         cx: &mut Context<Self>,
     ) {
         self.run_selection_action(&action.id, cx);
+    }
+
+    /// Switch to Add mode already drawing the existing way `from.way_id`:
+    /// the next click attaches a node next to `from.from_node` (before the
+    /// way's first node if `from.at_start`), as if the user had just placed
+    /// that end node while drawing.
+    fn continue_way_in_add_mode(&mut self, from: osm_gpui::topology::Continuation) {
+        self.mode = EditMode::Add;
+        self.hovered = None;
+        self.building_press = None;
+        self.building_progress = None;
+        self.building_reference = None;
+        self.extrude_drag = None;
+        self.add_progress = Some(AddProgress {
+            way_id: Some(from.way_id),
+            last_node_id: from.from_node,
+            at_start: from.at_start,
+        });
     }
 
     /// Replace the selection, resetting the Fields section's per-feature
@@ -2481,6 +2540,7 @@ impl MapViewer {
                 self.add_progress = Some(AddProgress {
                     way_id: None,
                     last_node_id: new_id,
+                    at_start: false,
                 });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
@@ -2507,11 +2567,13 @@ impl MapViewer {
                     ),
                     None => (editable.add_node(lat, lon), None),
                 };
+                let at_start = progress.at_start;
                 self.add_progress = Some(progress);
                 let way_id = self.add_extend_or_start_way(layer_id, new_id, true, snap);
                 self.add_progress = Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
+                    at_start,
                 });
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
@@ -2545,6 +2607,7 @@ impl MapViewer {
         snap: Option<(i64, usize)>,
     ) -> i64 {
         let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
+        let at_start = self.add_progress.as_ref().is_some_and(|p| p.at_start);
         let last_node_id = self
             .add_progress
             .as_ref()
@@ -2558,6 +2621,12 @@ impl MapViewer {
         };
 
         let (way_id, way_created) = match progress_way_id {
+            Some(way_id) if at_start => {
+                let mut nodes = editable.way_node_ids(way_id).unwrap_or_default();
+                nodes.insert(0, node_id);
+                editable.set_way_nodes(way_id, nodes);
+                (way_id, false)
+            }
             Some(way_id) => {
                 editable.extend_way(way_id, node_id);
                 (way_id, false)
@@ -2577,6 +2646,7 @@ impl MapViewer {
                     snap_way_id,
                     snap_index,
                     node_id,
+                    at_start,
                 });
             }
             None => {
@@ -2586,6 +2656,7 @@ impl MapViewer {
                     node_id,
                     way_created,
                     node_created,
+                    at_start,
                 });
             }
         }
@@ -4811,6 +4882,43 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/topology-actions.osmscript` clicks and box-selects
+    /// fixed window positions; check they pick what the script names.
+    #[test]
+    fn topology_script_targets_hit_their_features() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/topology-actions.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+        for (x, y, kind, id) in [
+            (640.0, 200.0, Node, 6302),
+            (600.0, 430.0, Way, 4107),
+            (560.0, 420.0, Node, 6401),
+        ] {
+            let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, local(x, y));
+            let hit = osm_gpui::selection::resolve_hits(vec![hits]).expect("a hit");
+            assert_eq!((hit.kind, hit.id), (kind, id), "click at ({x}, {y})");
+        }
+        // Box selects: both ways of a pair, and nothing from the others.
+        for (from, to, want) in [
+            ((70.0, 80.0), (450.0, 170.0), [-4102, 4101]),
+            ((70.0, 225.0), (450.0, 310.0), [4103, 4104]),
+        ] {
+            let rect = gpui::Bounds::from_corners(local(from.0, from.1), local(to.0, to.1));
+            let mut ways: Vec<i64> =
+                osm_gpui::layers::EditableLayer::hit_test_rect(&layer, &viewport, rect)
+                    .into_iter()
+                    .filter(|f| f.kind == Way)
+                    .map(|f| f.id)
+                    .collect();
+            ways.sort_unstable();
+            assert_eq!(ways, want, "box {from:?} to {to:?}");
+        }
+    }
+
     /// The same click, but delivered as real mouse events through the
     /// window's event dispatch, to cover the listeners in `render`.
     #[gpui::test]
@@ -4987,6 +5095,252 @@ mod tests {
                     .unwrap()
                     .node_lat_lon(1);
                 assert!(node.is_some());
+            })
+            .unwrap();
+    }
+
+    /// A view whose active layer holds `selection_actions::test_support`'s
+    /// road network, with a server baseline so the upload diff is meaningful.
+    fn setup_network(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _window, _cx| {
+                view.viewport =
+                    Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+                let layer_id = view.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data(
+                    layer_id,
+                    "Net".to_string(),
+                    Arc::new(selection_actions::test_support::network_data()),
+                );
+                view.layer_manager.add_layer(Box::new(layer));
+                view.active_layer = Some(layer_id);
+                view.mode = EditMode::Select;
+            })
+            .unwrap();
+        window
+    }
+
+    fn select(view: &mut MapViewer, kind: osm_gpui::selection::FeatureKind, ids: &[i64]) {
+        let layer_id = view.active_layer.unwrap();
+        view.set_selection(
+            ids.iter()
+                .map(|&id| osm_gpui::selection::FeatureRef { layer_id, kind, id })
+                .collect(),
+        );
+    }
+
+    fn pending(view: &MapViewer) -> (usize, usize, usize) {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .diff_for_upload()
+            .counts()
+    }
+
+    fn undo_step(view: &mut MapViewer) {
+        let action = view.undo_stack.undo().expect("something to undo");
+        view.apply_undo_action(&action, false);
+    }
+
+    fn redo_step(view: &mut MapViewer) {
+        let action = view.undo_stack.redo().expect("something to redo");
+        view.apply_undo_action(&action, true);
+    }
+
+    #[gpui::test]
+    fn join_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100, 101]);
+                view.run_selection_action("join", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3, 4, 5]);
+                assert!(way_nodes(view, layer_id, 101).is_empty());
+                assert_eq!(pending(view), (0, 1, 1));
+                // The joined way is what stays selected.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 100);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
+                assert_eq!(pending(view), (0, 0, 0));
+                let tags = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap()
+                    .feature_tags(&osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Way,
+                        id: 100,
+                    })
+                    .unwrap();
+                assert!(!tags.iter().any(|(k, _)| k == "name"));
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3, 4, 5]);
+                assert!(way_nodes(view, layer_id, 101).is_empty());
+                assert_eq!(pending(view), (0, 1, 1));
+                // Undo once more to prove redo left a sound state.
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn refused_join_leaves_no_undo_step_and_shows_why(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[101, 105]);
+                view.run_selection_action("join", cx);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Can't join: the ways have different values for 'name'")
+                );
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn separate_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Node, &[4]);
+                view.run_selection_action("separate", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let separated = way_nodes(view, layer_id, 103);
+                let new_id = separated[1];
+                assert!(new_id < 0);
+                assert_eq!(pending(view), (1, 1, 0));
+                // The original node is still the selection.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 4);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
+                let editable = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap();
+                assert_eq!(editable.node_lat_lon(new_id), None);
+                assert_eq!(pending(view), (0, 0, 0));
+
+                redo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 103), separated);
+                assert_eq!(pending(view), (1, 1, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    /// Window-independent screen point for a spot well clear of the network.
+    fn empty_spot(view: &MapViewer, east: f64) -> gpui::Point<gpui::Pixels> {
+        view.viewport.geo_to_screen(39.98, -73.98 + east)
+    }
+
+    #[gpui::test]
+    fn extend_from_a_way_end_appends_with_one_undo_step_per_click(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100]);
+                view.run_selection_action("extend", cx);
+                assert_eq!(view.mode, EditMode::Add);
+                let progress = view.add_progress.as_ref().unwrap();
+                assert_eq!((progress.way_id, progress.last_node_id), (Some(100), 3));
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+
+                view.handle_add_click(empty_spot(view, 0.0), false);
+                let after_one = way_nodes(view, layer_id, 100);
+                assert_eq!(&after_one[..3], &[1, 2, 3]);
+                assert_eq!(after_one.len(), 4);
+                view.handle_add_click(empty_spot(view, 0.001), false);
+                let after_two = way_nodes(view, layer_id, 100);
+                assert_eq!(&after_two[..4], &after_one[..]);
+                assert_eq!(after_two.len(), 5);
+                assert_eq!(view.undo_stack.actions.len(), 2);
+                assert_eq!(pending(view), (2, 1, 0));
+                assert_eq!(view.selected[0].id, 100);
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), after_one);
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn extend_from_a_start_node_prepends_and_undoes_from_the_front(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Node, &[1]);
+                view.run_selection_action("extend", cx);
+                assert_eq!(view.mode, EditMode::Add);
+                assert!(view.add_progress.as_ref().unwrap().at_start);
+
+                view.handle_add_click(empty_spot(view, 0.0), false);
+                let first = way_nodes(view, layer_id, 100);
+                assert_eq!(&first[1..], &[1, 2, 3]);
+                view.handle_add_click(empty_spot(view, 0.001), false);
+                let second = way_nodes(view, layer_id, 100);
+                assert_eq!(&second[2..], &[1, 2, 3]);
+                // The newest node leads, and the one before it follows.
+                assert_eq!(second[1], first[0]);
+                assert_eq!(pending(view), (2, 1, 0));
+
+                // Enter (or Esc) ends the continuation; the way is kept.
+                view.add_progress = None;
+
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), first);
+                undo_step(view);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn refused_extend_stays_in_select_mode(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Node, &[2]);
+                view.run_selection_action("extend", cx);
+                assert_eq!(view.mode, EditMode::Select);
+                assert!(view.add_progress.is_none());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Select an open way, or the end node of one, to continue drawing it")
+                );
             })
             .unwrap();
     }

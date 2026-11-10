@@ -271,6 +271,16 @@ pub trait EditableLayer {
     /// Reverse a way's node order. Its own inverse (applying it twice
     /// restores the original). Returns whether the way was found.
     fn reverse_way(&mut self, way_id: i64) -> bool;
+
+    /// Replace a way's whole node list (the nodes must already exist).
+    /// Returns whether the way was found.
+    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool;
+
+    /// The ids of the ways whose node list includes `node_id`.
+    fn ways_using_node(&self, node_id: i64) -> Vec<i64>;
+
+    /// The ids of the relations that have `way_id` as a member.
+    fn relations_containing_way(&self, way_id: i64) -> Vec<i64>;
 }
 
 /// Manager for all map layers

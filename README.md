@@ -15,7 +15,7 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 - Debug overlay: zoom, center coords, object/tile counts, cache stats.
 - Feature selection: click a node or way to select it; Shift-click to toggle; rectangular box-select. Right panel shows feature type, OSM link, and all tags.
 - **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tags are edited in place in the side panel's Tags table: click a key or value to edit it (Enter or clicking away commits, Esc abandons), "Add tag" appends a row. Create nodes (negative ID for new). Delete features. Edit multi-select to batch-apply tag changes.
-- **Selection actions** (`src/selection_actions.rs`): right-click (a click, not a drag, which still pans) opens a context menu of the actions that apply to the selection; right-clicking an unselected feature selects it first. Square (iD-style orthogonalize), Circularize, Reverse Way and Delete, each one undo step.
+- **Selection actions** (`src/selection_actions.rs`): right-click (a click, not a drag, which still pans) opens a context menu of the actions that apply to the selection; right-clicking an unselected feature selects it first. Square (iD-style orthogonalize), Circularize, Reverse Way, Join Ways, Separate Node, Extend Way and Delete, each one undo step.
 - **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
 - **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit); a download is merged by object id into the active layer, keeping local edits, so downloading again after a pan extends one dataset rather than stacking duplicate layers. Unsaved-changes warning on quit.
 - **Upload to OSM** as a changeset (**File > Upload to OSM…**, ⌘⇧U), and **export to a file** (**File > Export…**, ⌘E): a JOSM-style `.osm` holding the whole layer with pending edits marked by `action` attributes and negative ids, so it can be reopened here or in JOSM with those edits still pending.
@@ -95,7 +95,8 @@ Defaults; all but the fixed window/app ones can be changed in **Settings > Keybo
 - ⌘= / ⌘- zoom in/out · ⌘0 zoom to data · ⌘J zoom to selection
 - `S` / `A` / `B` / `X` — Select / Add / Building / Extrude mode (map focused)
 - Building mode: click three times (corner, corner, depth). With one squared closed way (e.g. a rectangular building) selected when you press `B`, new buildings align to it instead: click or drag from one corner to the opposite corner; Esc exits the mode
-- `Q` square · `O` circularize · `R` reverse way — selection actions (map focused); also in the **Tools** menu and the right-click context menu
+- `Q` square · `O` circularize · `R` reverse way · `C` join ways · `G` separate node · `E` extend way — selection actions (map focused); also in the **Tools** menu and the right-click context menu
+- Join (`C`): two or more ways that chain end to end become one (the server's way survives if exactly one is, else the first selected; tags are merged, and differing values for a key, a relation member that would be deleted, or a needed reversal of a `oneway` way refuse the join). Separate (`G`): with one node selected that several ways share, every way but the first gets its own copy; select a way as well to detach only that way. Extend (`E`): with an open way, or its first/last node, selected, switches to Add mode continuing that way from that end (Enter/Esc finish)
 - Arrow keys pan a quarter of the view · `+` / `-` zoom a level · hold Space to pan with a left-drag (map focused; not customizable)
 - ⌘M minimize · ⌘H hide · ⌥⌘H hide others
 

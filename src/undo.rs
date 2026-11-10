@@ -62,6 +62,9 @@ pub(crate) enum UndoableAction {
         node_id: i64,
         way_created: bool,
         node_created: bool,
+        /// True if the node was prepended (continuing a way from its first
+        /// node) rather than appended.
+        at_start: bool,
     },
     /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
     /// way, committed atomically. Undo deletes the way then all 4 nodes.
@@ -102,6 +105,8 @@ pub(crate) enum UndoableAction {
         snap_way_id: i64,
         snap_index: usize,
         node_id: i64,
+        /// True if the node was prepended to the drawn way, not appended.
+        at_start: bool,
     },
     /// Selection action "Reverse": the listed ways had their node order
     /// reversed. Reversing is its own inverse, so undo and redo both just
@@ -109,6 +114,16 @@ pub(crate) enum UndoableAction {
     ReverseWays {
         layer: LayerId,
         way_ids: Vec<i64>,
+    },
+    /// A way's whole node list replaced (join, separate): undo restores
+    /// `before`, redo reapplies `after`. The nodes in either list must exist
+    /// whenever that direction is applied, so callers order the surrounding
+    /// `CreateNode`/`DeleteFeature` entries of a `Batch` accordingly.
+    SetWayNodes {
+        layer: LayerId,
+        way_id: i64,
+        before: Vec<i64>,
+        after: Vec<i64>,
     },
     /// Several actions recorded as one undo step (e.g. deleting a whole
     /// selection). Undo reverts them last-to-first; redo reapplies them in
@@ -157,6 +172,7 @@ impl UndoableAction {
                     format!("Reversed {} ways", way_ids.len())
                 }
             }
+            UndoableAction::SetWayNodes { .. } => "Changed the nodes of a way".to_string(),
             UndoableAction::Batch { label, .. } => label.clone(),
         }
     }
@@ -432,6 +448,7 @@ mod undo_stack_tests {
             node_id,
             way_created,
             node_created,
+            at_start: false,
         }
     }
 
