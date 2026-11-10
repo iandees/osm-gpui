@@ -433,7 +433,8 @@ struct MpEntry {
     tagged: bool,
 }
 
-/// Why a relation has no [`MpEntry`].
+/// What became of a relation in the cache (tests inspect this).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MpState {
     /// Not a multipolygon/boundary (or not in the data).
@@ -2562,7 +2563,8 @@ impl OsmLayer {
             self.way_vertices = verts;
             self.way_styles = styles;
             self.way_fill_tris = fill_tris;
-            self.mp.rebuild_all(&data, &self.node_cache, &self.stylesheet);
+            self.mp
+                .rebuild_all(&data, &self.node_cache, &self.stylesheet);
             self.layer_bbox = compute_layer_bbox(&self.node_cache);
             self.node_index = build_node_index(&self.node_cache);
             self.way_index = build_way_index(&self.way_bboxes, &sorted_ways(&data));
@@ -2580,6 +2582,46 @@ impl OsmLayer {
             Some((ids, delta)) if ids.contains(&node_id) => *delta,
             _ => Point::default(),
         }
+    }
+
+    /// The CPU half of the multipolygon fill pass of `render_canvas` (cull,
+    /// project, emit triangles — everything but handing the path to the GPU),
+    /// run through the same code, and the number of path vertices it
+    /// produced. For `examples/perf_bench.rs`, which has no window.
+    pub fn multipolygon_fill_cpu(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> usize {
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let screen_rect = (
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.origin.x + bounds.size.width),
+            f32::from(bounds.origin.y + bounds.size.height),
+        );
+        let mut path: Option<Path<Pixels>> = None;
+        let mut min_max = (0.0, 0.0, 0.0, 0.0);
+        let mut pts = Vec::new();
+        for entry in self.mp.entries.values() {
+            let b = &entry.bbox;
+            if entry.style.fill.is_none()
+                || b.max_x < vmin_x
+                || b.min_x > vmax_x
+                || b.max_y < vmin_y
+                || b.min_y > vmax_y
+            {
+                continue;
+            }
+            for polygon in &entry.polygons {
+                self.push_polygon_fill(
+                    polygon,
+                    viewport,
+                    (bounds.origin.x, bounds.origin.y),
+                    screen_rect,
+                    &mut pts,
+                    &mut path,
+                    &mut min_max,
+                );
+            }
+        }
+        path.map_or(0, |p| p.vertices.len())
     }
 
     /// Paint a multipolygon's fill (holes left out) as a translucent wash in
@@ -2693,11 +2735,7 @@ impl OsmLayer {
         }
         let (left, top, right, bottom) = screen_rect;
         for t in polygon.tris.as_chunks::<3>().0 {
-            let tri = [
-                pts[t[0] as usize],
-                pts[t[1] as usize],
-                pts[t[2] as usize],
-            ];
+            let tri = [pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]];
             let xs = tri.map(|p| f32::from(p.x));
             let ys = tri.map(|p| f32::from(p.y));
             if xs.iter().all(|&x| x < left)
@@ -2927,10 +2965,7 @@ impl MapLayer for OsmLayer {
             let group = &mut fill_groups[group_idx];
             for polygon in &entry.polygons {
                 let pb = &polygon.bbox;
-                if pb.max_x < vmin_x
-                    || pb.min_x > vmax_x
-                    || pb.max_y < vmin_y
-                    || pb.min_y > vmax_y
+                if pb.max_x < vmin_x || pb.min_x > vmax_x || pb.max_y < vmin_y || pb.min_y > vmax_y
                 {
                     continue;
                 }
@@ -6988,14 +7023,8 @@ mod multipolygon_tests {
             way(10, square(0, 0, 10, 10)),
             way(11, square(3, 3, 6, 6)),
             // 15..=25 square split into a west and an east half.
-            way(
-                20,
-                vec![nid(20, 0), nid(15, 0), nid(15, 10), nid(20, 10)],
-            ),
-            way(
-                21,
-                vec![nid(20, 0), nid(25, 0), nid(25, 10), nid(20, 10)],
-            ),
+            way(20, vec![nid(20, 0), nid(15, 0), nid(15, 10), nid(20, 10)]),
+            way(21, vec![nid(20, 0), nid(25, 0), nid(25, 10), nid(20, 10)]),
             // Two halves of a ring that stops short of closing.
             way(30, vec![nid(30, 0), nid(35, 0), nid(35, 10)]),
             way(31, vec![nid(35, 10), nid(30, 10)]),
@@ -7228,5 +7257,4 @@ mod multipolygon_tests {
         layer.clear_osm_data();
         assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
     }
-
 }

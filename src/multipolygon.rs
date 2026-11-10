@@ -294,7 +294,12 @@ pub fn assemble(
             if area <= 0.0 || !area.is_finite() {
                 return Err(Problem::ZeroArea);
             }
-            let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            let mut bbox = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
             for &(x, y) in &pts {
                 bbox[0] = bbox[0].min(x);
                 bbox[1] = bbox[1].min(y);
@@ -606,7 +611,10 @@ mod tests {
     #[test]
     fn a_missing_node_invalidates_the_relation() {
         let w = vec![n(0, 0), n(10, 0), -5, n(0, 10), n(0, 0)];
-        assert_eq!(run(&[member(1, "outer", &w)]), Err(Problem::MissingNode(-5)));
+        assert_eq!(
+            run(&[member(1, "outer", &w)]),
+            Err(Problem::MissingNode(-5))
+        );
     }
 
     #[test]
