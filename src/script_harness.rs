@@ -81,6 +81,9 @@ pub(crate) enum ScriptCommand {
         name: String,
         loaded: Box<(OsmData, osm_gpui::osm::FileEdits)>,
     },
+    /// Dispatch the named action (bare name in the `osm_gpui` namespace,
+    /// e.g. `UploadToOsm`) the way a native menu item does.
+    Action { name: String },
     /// Compare `MapViewer.mode` against `want`.
     AssertMode(crate::EditMode),
     /// Compare `MapViewer.selected` against `want`.
@@ -347,6 +350,26 @@ impl MapViewer {
                     let (data, edits) = *loaded;
                     self.add_osm_dataset(name, data, &edits, cx);
                 }
+                ScriptCommand::Action { name } => {
+                    let qualified = if name.contains("::") {
+                        name.clone()
+                    } else {
+                        format!("osm_gpui::{name}")
+                    };
+                    let result = match cx.build_action(&qualified, None) {
+                        Ok(action) => {
+                            // `App::dispatch_action`, deferred until this
+                            // render's window lease is released, is the call
+                            // the macOS menu bar makes: it dispatches to the
+                            // active window's focused element (and on to the
+                            // global handlers).
+                            cx.defer(move |cx| cx.dispatch_action(action.as_ref()));
+                            Ok(())
+                        }
+                        Err(e) => Err(format!("unknown action '{name}': {e}")),
+                    };
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::AssertMode(want) => {
                     let result = if self.mode == want {
                         Ok(())
@@ -497,6 +520,16 @@ impl AppHandle for LiveApp {
         }
         // Wait for next frame so gpui processes the keystroke.
         self.bus.wait_frame();
+    }
+
+    fn dispatch_action(&mut self, name: &str) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::Action {
+            name: name.to_string(),
+        });
+        let result = self.bus.take_assert_result();
+        // Let the deferred dispatch (and the dialog it opens) render.
+        self.bus.wait_frame();
+        result
     }
 
     fn wait_frame(&mut self) {
