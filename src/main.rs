@@ -4940,6 +4940,119 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/more-selection-actions.osmscript` clicks and
+    /// box-selects fixed window positions; check they pick what the script
+    /// names, and that each action the script runs on them is accepted, with
+    /// the results the script's later clicks and assertions expect.
+    #[test]
+    fn more_actions_script_targets_hit_their_features_and_actions_apply() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        use osm_gpui::selection::{resolve_hits, FeatureRef};
+
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/more-selection-actions.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let mut layers = osm_gpui::layers::LayerManager::new();
+        layers.add_layer(Box::new(OsmLayer::new_with_data(
+            LayerId(1),
+            "L".to_string(),
+            Arc::new(data),
+        )));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+        let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
+            let layer = layers.find_layer(LayerId(1)).unwrap();
+            let hits = layer
+                .as_editable()
+                .unwrap()
+                .hit_test(&viewport, local(x, y));
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        let feature = |kind, id| FeatureRef {
+            layer_id: LayerId(1),
+            kind,
+            id,
+        };
+        let run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
+            let action = selection_actions::find(id).unwrap();
+            let env = selection_actions::ActionEnv {
+                selection: sel,
+                active_layer: Some(LayerId(1)),
+                layers,
+            };
+            assert!((action.is_applicable)(&env), "{id} not offered");
+            (action.apply)(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
+        };
+
+        for (x, y, kind, id) in [
+            (550.0, 120.0, Node, 7103),
+            (700.0, 120.0, Way, 5101),
+            (400.0, 120.0, Way, 5101),
+            (650.0, 262.0, Way, 5202),
+            (500.0, 401.0, Way, 5301),
+            (425.0, 520.0, Way, 5401),
+            (500.0, 640.0, Way, 5501),
+            (500.0, 700.0, Way, 5502),
+        ] {
+            assert_eq!(
+                hit_at(&layers, x, y),
+                Some((kind, id)),
+                "click at ({x}, {y})"
+            );
+        }
+
+        // Split at the middle node: the halves tie, so the original keeps the
+        // first; the new way is -1 and holds the part the script clicks at 700.
+        run(&mut layers, "split", &[feature(Node, 7103)]);
+        assert_eq!(hit_at(&layers, 700.0, 120.0), Some((Way, -1)));
+        assert_eq!(hit_at(&layers, 400.0, 120.0), Some((Way, 5101)));
+
+        // The box around B's end nodes picks exactly those two nodes.
+        let rect = gpui::Bounds::from_corners(local(520.0, 232.0), local(580.0, 280.0));
+        let boxed = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .hit_test_rect(&viewport, rect);
+        let mut ids: Vec<(osm_gpui::selection::FeatureKind, i64)> =
+            boxed.iter().map(|f| (f.kind, f.id)).collect();
+        ids.sort_by_key(|&(_, id)| id);
+        assert_eq!(ids, [(Node, -7203), (Node, 7202)]);
+        let merged = run(&mut layers, "merge", &boxed);
+        assert_eq!(merged.select, Some(vec![feature(Node, 7202)]));
+        assert_eq!(hit_at(&layers, 650.0, 262.0), Some((Way, 5202)));
+
+        // The wobbly track is within the straighten threshold.
+        run(&mut layers, "straighten", &[feature(Way, 5301)]);
+        // Reverse flips the direction tags.
+        run(&mut layers, "reverse", &[feature(Way, 5401)]);
+        let tags = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&feature(Way, 5401))
+            .unwrap();
+        assert!(tags.contains(&("lanes:forward".to_string(), "1".to_string())));
+        assert!(tags.contains(&("cycleway:right".to_string(), "lane".to_string())));
+        assert!(tags.contains(&("incline".to_string(), "-10%".to_string())));
+        assert!(tags.contains(&("oneway".to_string(), "yes".to_string())));
+        // Copy the driveway's tags and paste them onto the track.
+        run(&mut layers, "copy_tags", &[feature(Way, 5501)]);
+        run(&mut layers, "paste_tags", &[feature(Way, 5502)]);
+        let tags = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .feature_tags(&feature(Way, 5502))
+            .unwrap();
+        assert!(tags.contains(&("tracktype".to_string(), "grade4".to_string())));
+        assert!(tags.contains(&("surface".to_string(), "gravel".to_string())));
+        assert!(tags.contains(&("name".to_string(), "Back Lane".to_string())));
+    }
+
     /// The same click, but delivered as real mouse events through the
     /// window's event dispatch, to cover the listeners in `render`.
     #[gpui::test]
