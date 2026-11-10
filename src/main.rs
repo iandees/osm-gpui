@@ -7633,6 +7633,43 @@ mod tests {
             .unwrap();
     }
 
+    /// The same through the real key binding: Delete a way with the map
+    /// focused, then cmd-z restores and selects it.
+    #[gpui::test]
+    fn cmd_z_after_delete_selects_the_restored_way(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        cx.update(|cx| {
+            cx.bind_keys(key_bindings_from_settings(
+                &osm_gpui::settings_store::snapshot(),
+            ))
+        });
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        vcx.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                gpui::AvailableSpace::Definite(px(1200.0)),
+                gpui::AvailableSpace::Definite(px(800.0)),
+            ),
+            |_, _| gpui::AnyView::from(root),
+        );
+        window
+            .update(vcx, |view, _, cx| {
+                select(view, Way, &[102]);
+                view.delete_selected_features(cx);
+                assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+        vcx.simulate_keystrokes("cmd-z");
+        window
+            .update(vcx, |view, _, _| {
+                assert!(editable(view).way_node_ids(102).is_some());
+                assert_eq!(selected_ids(view, Way), vec![102]);
+            })
+            .unwrap();
+    }
+
     /// Mid-way through drawing in Add mode the selection is left alone apart
     /// from pruning, so undo can't disturb the drawing session.
     #[gpui::test]
