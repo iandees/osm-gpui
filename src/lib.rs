@@ -19,6 +19,7 @@ pub mod keybindings;
 pub mod layers;
 pub mod limits;
 pub mod nsi;
+pub mod open_files;
 pub mod osm;
 pub mod osm_api;
 pub mod osm_export;

@@ -45,35 +45,46 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
             return;
         };
 
-        let path = file_path.path().to_path_buf();
-        let path_str = path.to_string_lossy().to_string();
-
-        let result = cx
-            .background_executor()
-            .spawn(async move {
-                let parser = OsmParser::new();
-                // With edits: a file saved by File > Export… (or JOSM) may
-                // carry pending local changes, which must stay pending.
-                parser.parse_file_with_edits(&path_str)
-            })
-            .await;
-
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("OSM")
-            .to_string();
-        cx.update(|cx| {
-            with_map_viewer(cx, |v, cx| match result {
-                Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
-                Err(e) => {
-                    v.set_status(tr!("status.open_failed", path = path.display(), error = e));
-                    cx.notify();
-                }
-            });
-        });
+        load_osm_path(file_path.path().to_path_buf(), cx).await;
     })
     .detach();
+}
+
+/// Open an `.osm` file given by path (command line, Finder, ...) as a new
+/// layer, exactly as File > Open does after the picker; a file that cannot be
+/// read or parsed shows a status message instead.
+pub(crate) fn open_osm_path(path: std::path::PathBuf, cx: &mut App) {
+    cx.spawn(async move |cx| load_osm_path(path, cx).await)
+        .detach();
+}
+
+async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
+    let path_str = path.to_string_lossy().to_string();
+
+    let result = cx
+        .background_executor()
+        .spawn(async move {
+            let parser = OsmParser::new();
+            // With edits: a file saved by File > Export… (or JOSM) may
+            // carry pending local changes, which must stay pending.
+            parser.parse_file_with_edits(&path_str)
+        })
+        .await;
+
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("OSM")
+        .to_string();
+    cx.update(|cx| {
+        with_map_viewer(cx, |v, cx| match result {
+            Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
+            Err(e) => {
+                v.set_status(tr!("status.open_failed", path = path.display(), error = e));
+                cx.notify();
+            }
+        });
+    });
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {

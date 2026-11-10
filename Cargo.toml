@@ -37,6 +37,7 @@ smallvec = "1.0"
 tiny_http = "0.12"
 ureq = { version = "2.12", features = ["json"] }
 urlencoding = "2"
+futures = "0.3"
 earcutr = "0.4"
 rust-i18n = "4.1"
 sys-locale = "0.3.2"
