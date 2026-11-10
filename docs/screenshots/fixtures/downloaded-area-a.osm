@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <!-- First download: roughly 890 m x 1000 m. Used by downloaded-area.osmscript. -->
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-73.9980"/>
+
+  <node id="5001" lat="40.7095" lon="-74.0085"/>
+  <node id="5002" lat="40.7095" lon="-73.9995"/>
+  <node id="5003" lat="40.7125" lon="-74.0085"/>
+  <node id="5004" lat="40.7125" lon="-73.9995"/>
+  <node id="5005" lat="40.7150" lon="-74.0085"/>
+  <node id="5006" lat="40.7150" lon="-73.9995"/>
+  <node id="5007" lat="40.7095" lon="-74.0040"/>
+  <node id="5008" lat="40.7150" lon="-74.0040"/>
+  <node id="5009" lat="40.7125" lon="-74.0060"/>
+  <node id="5010" lat="40.7125" lon="-74.0050"/>
+  <node id="5011" lat="40.7135" lon="-74.0050"/>
+  <node id="5012" lat="40.7135" lon="-74.0060"/>
+
+  <node id="5101" lat="40.7140" lon="-74.0020">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Corner Cafe"/>
+  </node>
+  <node id="5102" lat="40.7110" lon="-74.0070">
+    <tag k="amenity" v="bench"/>
+  </node>
+
+  <way id="6001">
+    <nd ref="5001"/>
+    <nd ref="5002"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="South Street"/>
+  </way>
+  <way id="6002">
+    <nd ref="5003"/>
+    <nd ref="5004"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Main Street"/>
+  </way>
+  <way id="6003">
+    <nd ref="5005"/>
+    <nd ref="5006"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="North Street"/>
+  </way>
+  <way id="6004">
+    <nd ref="5007"/>
+    <nd ref="5008"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Elm Avenue"/>
+  </way>
+  <way id="6005">
+    <nd ref="5009"/>
+    <nd ref="5010"/>
+    <nd ref="5011"/>
+    <nd ref="5012"/>
+    <nd ref="5009"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>

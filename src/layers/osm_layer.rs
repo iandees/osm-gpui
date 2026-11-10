@@ -158,6 +158,11 @@ pub struct OsmLayer {
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
     layer_bbox: Option<WayBbox>,
+    /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
+    /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
+    /// can change: construction, `set_osm_data` (which `merge_download` ends
+    /// in) and `clear_osm_data`.
+    download_rects: Vec<crate::download_bounds::MercRect>,
     /// Precomputed mercator positions (+ resolved style) for every node.
     node_cache: NodeCache,
     /// Stylesheet used to pick per-feature colors/weights from OSM tags.
@@ -760,6 +765,7 @@ impl OsmLayer {
             way_styles: Vec::new(),
             way_fill_tris: Vec::new(),
             layer_bbox: None,
+            download_rects: Vec::new(),
             node_cache: NodeCache {
                 index_by_id: HashMap::new(),
                 flat: Vec::new(),
@@ -790,6 +796,7 @@ impl OsmLayer {
         let way_id_to_index = build_way_id_index(&ways_sorted);
         let node_to_ways = build_node_to_ways(&ways_sorted);
         let next_new_id = compute_next_new_id(&osm_data);
+        let osm_data_bounds = osm_data.bounds.clone();
         Self {
             id,
             name: name.into(),
@@ -802,6 +809,7 @@ impl OsmLayer {
             way_styles,
             way_fill_tris,
             layer_bbox,
+            download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
             node_cache,
             stylesheet,
             highlight: Vec::new(),
@@ -871,6 +879,7 @@ impl OsmLayer {
         self.way_id_to_index = build_way_id_index(&ways_sorted);
         self.node_to_ways = build_node_to_ways(&ways_sorted);
         self.next_new_id = compute_next_new_id(&osm_data);
+        self.download_rects = crate::download_bounds::merc_rects(&osm_data.bounds);
         self.osm_data = Some(osm_data.clone());
         self.original_data = Some(osm_data);
         self.modified = false;
@@ -886,13 +895,10 @@ impl OsmLayer {
             nodes: HashMap::new(),
             ways: HashMap::new(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         };
         let mut current = self.osm_data.as_deref().cloned().unwrap_or_else(empty);
         let mut original = self.original_data.as_deref().cloned().unwrap_or_else(empty);
-        if current.bounds.is_none() {
-            current.bounds = incoming.bounds.clone();
-        }
 
         let stats = merge::merge_download(&mut original, &mut current, incoming);
 
@@ -922,7 +928,7 @@ impl OsmLayer {
                     nodes: HashMap::new(),
                     ways: HashMap::new(),
                     relations: Vec::new(),
-                    bounds: None,
+                    bounds: Vec::new(),
                 };
                 diff_osm_data(&empty, current)
             }
@@ -1299,7 +1305,7 @@ impl OsmLayer {
                 nodes: HashMap::new(),
                 ways: HashMap::new(),
                 relations: Vec::new(),
-                bounds: None,
+                bounds: Vec::new(),
             }));
         }
         self.create_node(lat, lon, None)
@@ -1351,7 +1357,7 @@ impl OsmLayer {
                 nodes: HashMap::new(),
                 ways: HashMap::new(),
                 relations: Vec::new(),
-                bounds: None,
+                bounds: Vec::new(),
             }));
         }
         let arc = self
@@ -2120,6 +2126,7 @@ impl OsmLayer {
         self.way_styles.clear();
         self.way_fill_tris.clear();
         self.layer_bbox = None;
+        self.download_rects.clear();
         self.node_cache.index_by_id.clear();
         self.node_cache.flat.clear();
         self.node_cache.styles.clear();
@@ -2310,6 +2317,10 @@ impl MapLayer for OsmLayer {
         // per-node GPUI element layout cost. The selection ring is drawn in
         // `render_highlight` as a canvas outline.
         Vec::new()
+    }
+
+    fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
+        &self.download_rects
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -3249,8 +3260,54 @@ mod tests {
             nodes: map,
             ways: way_map,
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         })
+    }
+
+    fn bounds_data(rects: &[(f64, f64, f64, f64)]) -> OsmData {
+        let mut d = (*data_with(vec![], vec![])).clone();
+        d.bounds = rects
+            .iter()
+            .map(
+                |&(min_lat, max_lat, min_lon, max_lon)| crate::osm::OsmBounds {
+                    min_lat,
+                    max_lat,
+                    min_lon,
+                    max_lon,
+                },
+            )
+            .collect();
+        d
+    }
+
+    #[test]
+    fn layer_without_bounds_has_no_download_rects() {
+        let layer = OsmLayer::new_with_data(LayerId(1), "x", data_with(vec![], vec![]));
+        assert!(layer.download_rects().is_empty());
+    }
+
+    #[test]
+    fn download_rects_follow_loading_and_merging() {
+        let mut layer = OsmLayer::new_with_data(
+            LayerId(1),
+            "x",
+            Arc::new(bounds_data(&[(40.0, 40.1, -74.1, -74.0)])),
+        );
+        assert_eq!(layer.download_rects().len(), 1);
+
+        layer.merge_download(bounds_data(&[(40.1, 40.2, -74.1, -74.0)]));
+        assert_eq!(layer.download_rects().len(), 2);
+        let exported = layer.export_xml().unwrap();
+        assert_eq!(exported.matches("<bounds ").count(), 2);
+
+        // Merging data with no bounds keeps what is known.
+        layer.merge_download(bounds_data(&[]));
+        assert_eq!(layer.download_rects().len(), 2);
+        // The merge isn't an edit.
+        assert!(!layer.is_modified());
+
+        layer.clear_osm_data();
+        assert!(layer.download_rects().is_empty());
     }
 
     #[test]
@@ -5568,7 +5625,7 @@ mod tests {
             nodes: HashMap::new(),
             ways: HashMap::new(),
             relations: vec![server(500, 9), server(501, 1)],
-            bounds: None,
+            bounds: Vec::new(),
         };
         let stats = layer.merge_download(incoming);
         assert_eq!(

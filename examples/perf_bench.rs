@@ -115,7 +115,7 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
         nodes,
         ways,
         relations: Vec::new(),
-        bounds: None,
+        bounds: Vec::new(),
     })
 }
 

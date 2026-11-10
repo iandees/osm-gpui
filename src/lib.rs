@@ -7,6 +7,7 @@ pub mod building;
 pub mod capabilities;
 pub mod coordinates;
 pub mod custom_imagery_store;
+pub mod download_bounds;
 pub mod fields;
 pub mod geometry;
 pub mod http;

@@ -9,7 +9,9 @@ pub struct OsmData {
     pub nodes: HashMap<i64, OsmNode>,
     pub ways: HashMap<i64, OsmWay>,
     pub relations: Vec<OsmRelation>,
-    pub bounds: Option<OsmBounds>,
+    /// Every `<bounds>` element of the source document: the rectangles the
+    /// data was downloaded for. Empty when the source declared none.
+    pub bounds: Vec<OsmBounds>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,7 +272,7 @@ impl OsmParser {
             nodes: HashMap::new(),
             ways: HashMap::new(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         };
         let mut edits = FileEdits::default();
 
@@ -343,7 +345,7 @@ impl OsmParser {
             match xml_reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
+                        osm_data.bounds.push(self.parse_bounds(e)?);
                     }
                     b"node" => {
                         current_element = ElementType::Node;
@@ -371,7 +373,7 @@ impl OsmParser {
                 },
                 Ok(Event::Empty(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
-                        osm_data.bounds = Some(self.parse_bounds(e)?);
+                        osm_data.bounds.push(self.parse_bounds(e)?);
                     }
                     b"node" => {
                         let node = self.parse_node_start(e)?;
@@ -686,6 +688,48 @@ mod tests {
             version: 1,
             tags: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn parse_str_reads_one_bounds_element() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <bounds minlat="40.1" minlon="-74.2" maxlat="40.3" maxlon="-74.0"/>
+  <node id="1" lat="40.2" lon="-74.1"/>
+</osm>"#;
+        let data = OsmParser::new().parse_str(xml).unwrap();
+        assert_eq!(
+            data.bounds,
+            vec![OsmBounds {
+                min_lat: 40.1,
+                max_lat: 40.3,
+                min_lon: -74.2,
+                max_lon: -74.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_str_reads_every_bounds_element() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <bounds minlat="1" minlon="2" maxlat="3" maxlon="4"/>
+  <bounds minlat="3" minlon="2" maxlat="5" maxlon="6"></bounds>
+  <node id="1" lat="2" lon="3"/>
+</osm>"#;
+        let data = OsmParser::new().parse_str(xml).unwrap();
+        assert_eq!(data.bounds.len(), 2);
+        assert_eq!(data.bounds[0].max_lat, 3.0);
+        assert_eq!(data.bounds[1].max_lon, 6.0);
+    }
+
+    #[test]
+    fn parse_str_without_bounds_has_none() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <node id="1" lat="2" lon="3"/>
+</osm>"#;
+        assert!(OsmParser::new().parse_str(xml).unwrap().bounds.is_empty());
     }
 
     #[test]

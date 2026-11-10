@@ -4371,6 +4371,13 @@ impl Render for MapViewer {
                                         self.hovered.filter(|h| !self.selected.contains(h));
                                     move |bounds, _, window, cx| {
                                         let this = entity.read(cx);
+                                        // Downloaded-area wash first: above imagery,
+                                        // below every layer's features.
+                                        this.layer_manager.render_all_download_bounds(
+                                            &viewport_clone,
+                                            bounds,
+                                            window,
+                                        );
                                         this.layer_manager.render_all_canvas(
                                             &viewport_clone,
                                             bounds,
@@ -5119,7 +5126,7 @@ mod tests {
             nodes,
             ways,
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         }
     }
 

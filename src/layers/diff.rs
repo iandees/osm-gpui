@@ -213,7 +213,7 @@ mod tests {
             nodes: map,
             ways: way_map,
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         }
     }
 

@@ -9,6 +9,15 @@ pub mod merge;
 pub mod osm_layer;
 pub mod tile_layer;
 
+/// Wash laid over the part of the map that was not downloaded (RGBA): a cool
+/// slate at low opacity, which dims both the light Carto basemap and darker
+/// aerial imagery without hiding either.
+const DOWNLOAD_WASH_RGBA: u32 = 0x1e293b52;
+/// Colour of the line along the edge of the downloaded area (RGBA).
+const DOWNLOAD_EDGE_RGBA: u32 = 0x1e3a8acc;
+/// Width of that line, in pixels.
+const DOWNLOAD_EDGE_WIDTH: f32 = 2.0;
+
 /// Stable identity for a layer, independent of its (user-visible, possibly
 /// renamed-for-uniqueness) display name. Allocated monotonically by
 /// `LayerManager::alloc_id`; every layer stores the id it was allocated at
@@ -53,6 +62,12 @@ pub trait MapLayer: Send + Sync {
 
     /// Render this layer using canvas drawing (for vector content)
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window);
+
+    /// The rectangles (Web Mercator meters) this layer's data was downloaded
+    /// for; empty when that is not known. See `render_all_download_bounds`.
+    fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
+        &[]
+    }
 
     /// Update this layer (called on each frame)
     fn update(&mut self) {}
@@ -454,6 +469,78 @@ impl LayerManager {
         elements
     }
 
+    /// Dim the part of the view outside every downloaded rectangle of every
+    /// visible layer, and outline the edge of the downloaded area. One
+    /// region for all layers: area downloaded into any visible layer counts
+    /// as known, so a second layer never dims the first one's data. Nothing
+    /// is drawn while no visible layer knows its downloaded area. Call before
+    /// `render_all_canvas` so features paint on top of the wash.
+    pub fn render_all_download_bounds(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
+        let rects: Vec<crate::download_bounds::MercRect> = self
+            .layers
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .flat_map(|layer| layer.download_rects().iter().copied())
+            .collect();
+        if rects.is_empty() {
+            return;
+        }
+        let (min_x, max_x, min_y, max_y) = viewport.mercator_view_bounds();
+        let region = crate::download_bounds::outside_region(
+            crate::download_bounds::MercRect::new(min_x, max_x, min_y, max_y),
+            &rects,
+        );
+
+        // Mercator y grows northwards, screen y southwards.
+        let to_screen = |mx: f64, my: f64| {
+            let p = viewport.mercator_to_screen(mx, my);
+            (
+                p.x.as_f32() + bounds.origin.x.as_f32(),
+                p.y.as_f32() + bounds.origin.y.as_f32(),
+            )
+        };
+        let wash = rgba(DOWNLOAD_WASH_RGBA);
+        for r in &region.dim {
+            let (x0, y0) = to_screen(r.min_x, r.max_y);
+            let (x1, y1) = to_screen(r.max_x, r.min_y);
+            if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+                continue;
+            }
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(x0), px(y0)),
+                    size: size(px(x1 - x0), px(y1 - y0)),
+                },
+                wash,
+            ));
+        }
+        let half = DOWNLOAD_EDGE_WIDTH / 2.0;
+        let edge = rgba(DOWNLOAD_EDGE_RGBA);
+        for s in &region.outline {
+            let (x0, y0) = to_screen(s.x0, s.y1);
+            let (x1, y1) = to_screen(s.x1, s.y0);
+            if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+                continue;
+            }
+            // Axis-aligned, so a thin quad centred on the segment.
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(x0 - half), px(y0 - half)),
+                    size: size(
+                        px(x1 - x0 + DOWNLOAD_EDGE_WIDTH),
+                        px(y1 - y0 + DOWNLOAD_EDGE_WIDTH),
+                    ),
+                },
+                edge,
+            ));
+        }
+    }
+
     /// Render all visible layers using canvas drawing
     pub fn render_all_canvas(
         &self,
@@ -621,7 +708,7 @@ mod tests {
                 nodes: HashMap::new(),
                 ways: HashMap::new(),
                 relations: Vec::new(),
-                bounds: None,
+                bounds: Vec::new(),
             });
             let layer = crate::layers::osm_layer::OsmLayer::new_with_data(id, *name, data);
             manager.add_layer(Box::new(layer));
@@ -743,7 +830,7 @@ mod tests {
             nodes,
             ways: HashMap::new(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         });
 
         let mut manager = LayerManager::new();
@@ -788,7 +875,7 @@ mod tests {
             nodes,
             ways: HashMap::new(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         });
 
         let mut manager = LayerManager::new();

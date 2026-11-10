@@ -168,6 +168,15 @@ pub fn merge_download(
         &incoming.relations,
         &mut stats,
     );
+    // The downloaded area grows by the new rectangle(s), exact repeats
+    // excepted. Both snapshots carry them so the baseline stays in step.
+    for rect in incoming.bounds {
+        for snapshot in [&mut *original, &mut *current] {
+            if !snapshot.bounds.contains(&rect) {
+                snapshot.bounds.push(rect.clone());
+            }
+        }
+    }
     stats
 }
 
@@ -201,8 +210,57 @@ mod tests {
             nodes: nodes.into_iter().map(|n| (n.id, n)).collect(),
             ways: ways.into_iter().map(|w| (w.id, w)).collect(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         }
+    }
+
+    fn rect(min_lat: f64, max_lat: f64, min_lon: f64, max_lon: f64) -> crate::osm::OsmBounds {
+        crate::osm::OsmBounds {
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+        }
+    }
+
+    #[test]
+    fn merging_appends_the_downloaded_rectangle() {
+        let mut original = data(vec![node(1, 1.0, 1)], vec![]);
+        original.bounds = vec![rect(0.0, 1.0, 0.0, 1.0)];
+        let mut current = original.clone();
+        let mut incoming = data(vec![node(2, 2.0, 1)], vec![]);
+        incoming.bounds = vec![rect(1.0, 2.0, 0.0, 1.0)];
+
+        merge_download(&mut original, &mut current, incoming);
+
+        let expected = vec![rect(0.0, 1.0, 0.0, 1.0), rect(1.0, 2.0, 0.0, 1.0)];
+        assert_eq!(current.bounds, expected);
+        assert_eq!(original.bounds, expected);
+    }
+
+    #[test]
+    fn merging_the_same_rectangle_twice_does_not_duplicate_it() {
+        let mut original = data(vec![], vec![]);
+        let mut current = original.clone();
+        for _ in 0..2 {
+            let mut incoming = data(vec![], vec![]);
+            incoming.bounds = vec![rect(0.0, 1.0, 0.0, 1.0)];
+            merge_download(&mut original, &mut current, incoming);
+        }
+        assert_eq!(current.bounds, vec![rect(0.0, 1.0, 0.0, 1.0)]);
+    }
+
+    #[test]
+    fn merging_data_without_bounds_keeps_the_known_area() {
+        let mut original = data(vec![], vec![]);
+        original.bounds = vec![rect(0.0, 1.0, 0.0, 1.0)];
+        let mut current = original.clone();
+        merge_download(
+            &mut original,
+            &mut current,
+            data(vec![node(2, 2.0, 1)], vec![]),
+        );
+        assert_eq!(current.bounds, vec![rect(0.0, 1.0, 0.0, 1.0)]);
     }
 
     #[test]
