@@ -5415,6 +5415,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn merging_relation_member_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Relation 900 holds way 102 and node 7 ("stop").
+                let original = relation_members(view, 900);
+                select(view, Node, &[6, 7]);
+                view.run_selection_action("merge", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let merged = relation_members(view, 900);
+                assert_eq!(merged[1], (6, "stop".to_string()));
+                assert_eq!(pending(view), (0, 1, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), merged);
+                assert_eq!(pending(view), (0, 1, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Way;
         let window = setup_network(cx);

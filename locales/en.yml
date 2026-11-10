@@ -419,7 +419,6 @@ action:
       other: "Merged %{count} nodes"
     error:
       tag_conflict: "Can't merge: the nodes have different values for '%{key}'"
-      relation_member: "Can't merge: node %{id} is a member of a relation and would be deleted"
       degenerate_way: "Can't merge: way %{id} would be left with fewer than two distinct nodes"
   straighten:
     label: "Straighten Way"

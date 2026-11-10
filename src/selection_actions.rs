@@ -1099,7 +1099,6 @@ fn merge_nodes_in(
         nodes.push(topology::MergeNode {
             id: f.id,
             tags: editable.feature_tags(f).unwrap_or_default(),
-            in_relation: !editable.relations_containing_node(f.id).is_empty(),
         });
     }
     nodes
@@ -1107,8 +1106,10 @@ fn merge_nodes_in(
 
 /// Merge the selected nodes into one (JOSM "Merge Nodes"). See
 /// `topology::plan_merge_nodes` for the survivor, tag, way-rewrite and refusal
-/// rules. One undo step: the survivor's added tags, the rewritten ways, then
-/// the deletion of the other nodes.
+/// rules. Relations that have a removed node as a member get the survivor
+/// instead (see `relations::merge_node_members`). One undo step: the
+/// survivor's added tags, the rewritten ways, the relations' new member lists,
+/// then the deletion of the other nodes.
 fn apply_merge(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -1156,6 +1157,29 @@ fn apply_merge(
             before: edit.before,
             after: edit.after,
         });
+    }
+    let mut relation_ids: Vec<i64> = plan
+        .remove
+        .iter()
+        .flat_map(|&id| editable.relations_containing_node(id))
+        .collect();
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        if let Some(after) =
+            osm_gpui::relations::merge_node_members(&relation.members, &plan.remove, plan.keep)
+        {
+            editable.set_relation_members(relation_id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id,
+                before: relation.members,
+                after,
+            });
+        }
     }
     for id in &plan.remove {
         if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, *id) {
@@ -2501,20 +2525,59 @@ mod tests {
     }
 
     #[test]
-    fn merge_refuses_to_delete_a_relation_member() {
+    fn merge_moves_a_relation_membership_to_the_survivor() {
         let mut n = net();
-        // Node 7 is in relation 900; with 6 selected first, 7 would go.
-        let Err(message) = n.run("merge", &n.nodes(&[6, 7])) else {
-            panic!("expected a refusal");
+        // Node 7 is a "stop" in relation 900 (with way 102); with 6 selected
+        // first, 7 is the one removed.
+        let out = n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        assert_eq!(n.members(), members_of(&[(102, ""), (6, "stop")]));
+        assert_eq!(n.editable().node_lat_lon(7), None);
+        // Relation 900, the way untouched, the node gone.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
         };
-        assert_eq!(
-            message,
-            "Can't merge: node 7 is a member of a relation and would be deleted"
-        );
-        assert!(!n.layer().is_modified());
-        // Selected first, the member survives and the merge works.
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. },
+                UndoableAction::DeleteFeature { .. }
+            ] if before.len() == 2 && after.len() == 2
+        ));
+        // Selected the other way round, the member survives unchanged.
+        let mut n = net();
         n.run("merge", &n.nodes(&[7, 6])).unwrap();
+        assert_eq!(n.members(), members_of(&[(102, ""), (7, "stop")]));
         assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 7]));
+    }
+
+    #[test]
+    fn merge_drops_an_adjacent_duplicate_membership_it_creates() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900(
+            "route",
+            &[
+                (Node, 6, "stop"),
+                (Node, 7, "stop"),
+                (Way, 102, ""),
+                (Node, 7, "platform"),
+            ],
+        ));
+        n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        // 6/7 collapse where role and neighbours match; the platform keeps
+        // its own role.
+        assert_eq!(
+            n.members(),
+            members_of(&[(6, "stop"), (102, ""), (6, "platform")])
+        );
+    }
+
+    #[test]
+    fn merge_leaves_unrelated_relations_alone() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900("route", &[(Way, 100, "")]));
+        n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        assert_eq!(n.relation_edits(), 0);
     }
 
     #[test]
