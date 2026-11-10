@@ -30,8 +30,10 @@ pause 1s Creating a node
 key a
 assert_mode add
 click 488,388
+key enter
 key escape
 assert_mode select
+assert_pending 1
 click 488,388
 wait_idle 2s
 assert_selection node
