@@ -40,7 +40,7 @@ pub(crate) enum ScriptCommand {
     SetViewport { lat: f64, lon: f64, zoom: f64 },
     /// Resize the window
     SetWindowSize { w: u32, h: u32 },
-    /// Synthesize a left-button drag (from → to with sleep between steps)
+    /// Synthesize a pan-drag of the map (from → to)
     Drag { from: (f32, f32), to: (f32, f32) },
     /// Synthesize a mouse click
     Click {
@@ -200,30 +200,17 @@ impl MapViewer {
                     cx.notify();
                 }
                 ScriptCommand::Drag { from, to } => {
-                    // For drag: just do down + single move + up; the sleep between steps
-                    // happens in the runner thread, so here we do single events.
-                    let ev = MouseDownEvent {
-                        button: gpui::MouseButton::Left,
-                        position: point(px(from.0), px(from.1)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                        first_mouse: false,
-                    };
-                    self.handle_mouse_down(&ev);
+                    // A pan-drag (as with the right mouse button): down +
+                    // single move + up, all in this one frame.
+                    let start = self.window_to_map(point(px(from.0), px(from.1)));
+                    self.start_pan_drag(start, cx);
                     let ev = MouseMoveEvent {
                         position: point(px(to.0), px(to.1)),
-                        pressed_button: Some(gpui::MouseButton::Left),
+                        pressed_button: Some(gpui::MouseButton::Right),
                         modifiers: gpui::Modifiers::none(),
                     };
                     self.handle_mouse_move(&ev, cx);
-                    let ev = MouseUpEvent {
-                        button: gpui::MouseButton::Left,
-                        position: point(px(to.0), px(to.1)),
-                        modifiers: gpui::Modifiers::none(),
-                        click_count: 1,
-                    };
-                    self.handle_mouse_up(&ev, cx);
-                    cx.notify();
+                    self.end_pan_drag(cx);
                 }
                 ScriptCommand::Click {
                     x,

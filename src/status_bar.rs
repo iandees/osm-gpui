@@ -40,7 +40,7 @@ pub(crate) fn mode_hint(
             "Drag the selection to move it · Delete to remove · Esc to deselect"
         }
         (EditMode::Select, _) => {
-            "Click to select · Shift-click to add to the selection · drag to box-select · right-drag to pan"
+            "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
         }
         (EditMode::Add, ModeProgress::Idle) => {
             "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
