@@ -111,6 +111,17 @@ pub fn init(setting: Option<&str>) {
     let system = sys_locale::get_locale();
     let chosen = choose_locale(setting, system.as_deref(), &available_locales());
     rust_i18n::set_locale(&chosen);
+    let _ = REQUESTED.set(setting.map(str::to_string).or(system));
+}
+
+/// What the user asked for (the `language` setting or `--language`, else the
+/// system locale), as given, before resolving it against the UI catalogs.
+/// Other data with its own, wider set of languages (the preset translations)
+/// resolves this against what it has. `None` before [`init`] has run.
+static REQUESTED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+pub fn requested_locale() -> Option<&'static str> {
+    REQUESTED.get()?.as_deref()
 }
 
 /// The message for `key` in `locale`, with the fallback chain applied

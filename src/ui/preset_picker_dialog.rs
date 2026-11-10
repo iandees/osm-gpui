@@ -70,10 +70,17 @@ impl PresetPickerDialog {
     /// doesn't hold onto a `&'static Preset` borrow across renders.
     fn results(&self, cx: &Context<Self>) -> Vec<(String, String, HashMap<String, String>)> {
         let text = self.query.read(cx).value().to_string();
+        let translations = crate::preset_translations::active();
         crate::presets::preset_index()
-            .search(&text, self.geometry, MAX_RESULTS)
+            .search_in(translations, &text, self.geometry, MAX_RESULTS)
             .into_iter()
-            .map(|p| (p.name.clone(), p.id.clone(), p.tags.clone()))
+            .map(|p| {
+                (
+                    p.display_name(translations).to_string(),
+                    p.id.clone(),
+                    p.tags.clone(),
+                )
+            })
             .collect()
     }
 
