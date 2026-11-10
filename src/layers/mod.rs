@@ -5,6 +5,7 @@ use crate::viewport::Viewport;
 
 pub mod diff;
 pub mod grid_layer;
+pub mod merge;
 pub mod osm_layer;
 pub mod tile_layer;
 
@@ -140,6 +141,10 @@ pub trait EditableLayer {
         viewport: &Viewport,
         rect: Bounds<Pixels>,
     ) -> Vec<crate::selection::FeatureRef>;
+
+    /// Merge freshly downloaded server data into this layer, keeping local
+    /// edits. See `merge::merge_download` for the rules.
+    fn merge_download(&mut self, incoming: crate::osm::OsmData) -> merge::MergeStats;
 
     /// Every node and way this layer owns, nodes first, each sorted by id.
     /// Backs Edit > Select All and View > Zoom to Data.

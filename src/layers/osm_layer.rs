@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{diff_osm_data, LayerDiff};
+use crate::layers::merge::{self, MergeStats};
 use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
@@ -818,6 +819,35 @@ impl OsmLayer {
         self.osm_data = Some(osm_data.clone());
         self.original_data = Some(osm_data);
         self.modified = false;
+    }
+
+    /// Merge freshly downloaded server data into this layer by object id,
+    /// keeping local edits — see `merge::merge_download` for the rules.
+    /// Rebuilds every derived cache from scratch (like `set_osm_data`; a
+    /// download is not a per-frame path), but preserves the split between
+    /// the server baseline and local edits, and the `modified` flag.
+    pub fn merge_download(&mut self, incoming: OsmData) -> MergeStats {
+        let empty = || OsmData {
+            nodes: HashMap::new(),
+            ways: HashMap::new(),
+            relations: Vec::new(),
+            bounds: None,
+        };
+        let mut current = self.osm_data.as_deref().cloned().unwrap_or_else(empty);
+        let mut original = self.original_data.as_deref().cloned().unwrap_or_else(empty);
+        if current.bounds.is_none() {
+            current.bounds = incoming.bounds.clone();
+        }
+
+        let stats = merge::merge_download(&mut original, &mut current, incoming);
+
+        let modified = self.modified;
+        self.set_osm_data(Arc::new(current));
+        // `set_osm_data` treats its argument as a fresh server baseline;
+        // restore the real one so pending edits stay pending.
+        self.original_data = Some(Arc::new(original));
+        self.modified = modified;
+        stats
     }
 
     /// Compute the diff between this layer's original (last-synced)
@@ -2533,6 +2563,10 @@ impl EditableLayer for OsmLayer {
             });
         }
         out
+    }
+
+    fn merge_download(&mut self, incoming: OsmData) -> MergeStats {
+        OsmLayer::merge_download(self, incoming)
     }
 
     fn all_features(&self) -> Vec<FeatureRef> {
