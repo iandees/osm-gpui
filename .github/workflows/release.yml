@@ -144,7 +144,8 @@ jobs:
             build-essential clang cmake pkg-config \
             libasound2-dev libfontconfig-dev libwayland-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
-            libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev
+            libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev \
+            xvfb
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -156,6 +157,22 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      # Regression check for a gpui build with no windowing backend, which
+      # panics at startup with "internal error: entered unreachable code".
+      # Runners have no GPU, so the app may well exit for unrelated reasons
+      # (no Vulkan adapter, ...); only that specific panic fails the job.
+      - name: Smoke test (windowing backend present)
+        run: |
+          set +e
+          timeout 15 xvfb-run -a target/x86_64-unknown-linux-gnu/release/osm-gpui > smoke.log 2>&1
+          echo "exit status: $?"
+          cat smoke.log
+          if grep -q "entered unreachable code" smoke.log; then
+            echo "::error::osm-gpui panicked at startup (no windowing backend compiled in?)"
+            exit 1
+          fi
+          exit 0
 
       - name: Package
         run: |
