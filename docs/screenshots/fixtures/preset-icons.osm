@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="preset icons fixture">
+  <!-- One feature per preset icon set, laid out for the viewport in
+       preset-icons.osmscript (40.7120 -74.0060 zoom 18, window 1200x800).
+       Row y=300: nodes at x=100,200,...,800. Ways at y=400..700. -->
+  <node id="9001" version="1" lat="40.7123578" lon="-74.0080817">
+    <tag k="amenity" v="cafe"/>
+  </node>
+  <node id="9002" version="1" lat="40.7123578" lon="-74.0075447">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="9003" version="1" lat="40.7123578" lon="-74.0070084">
+    <tag k="natural" v="tree"/>
+  </node>
+  <node id="9004" version="1" lat="40.7123578" lon="-74.0064717">
+    <tag k="emergency" v="ambulance_station"/>
+  </node>
+  <node id="9005" version="1" lat="40.7123578" lon="-74.0059357">
+    <tag k="shop" v="farm"/>
+  </node>
+  <node id="9006" version="1" lat="40.7123578" lon="-74.0053991">
+    <tag k="shop" v="frozen_food"/>
+  </node>
+  <node id="9007" version="1" lat="40.7123578" lon="-74.0048627">
+    <tag k="emergency" v="life_ring"/>
+  </node>
+  <node id="9008" version="1" lat="40.7123578" lon="-74.0043262">
+    <tag k="note" v="no preset matches this: falls back to the point icon"/>
+  </node>
+
+  <node id="9101" version="1" lat="40.7119512" lon="-74.0080817"/>
+  <node id="9102" version="1" lat="40.7119512" lon="-74.0070084"/>
+  <way id="9201" version="1">
+    <nd ref="9101"/>
+    <nd ref="9102"/>
+    <tag k="highway" v="residential"/>
+  </way>
+
+  <node id="9111" version="1" lat="40.7115446" lon="-74.0080817"/>
+  <node id="9112" version="1" lat="40.7115446" lon="-74.0070084"/>
+  <way id="9202" version="1">
+    <nd ref="9111"/>
+    <nd ref="9112"/>
+    <tag k="highway" v="primary"/>
+  </way>
+
+  <node id="9121" version="1" lat="40.7111380" lon="-74.0080817"/>
+  <node id="9122" version="1" lat="40.7111380" lon="-74.0070084"/>
+  <way id="9203" version="1">
+    <nd ref="9121"/>
+    <nd ref="9122"/>
+    <tag k="note" v="line with no matching preset"/>
+  </way>
+
+  <node id="9131" version="1" lat="40.7107314" lon="-74.0080817"/>
+  <node id="9132" version="1" lat="40.7107314" lon="-74.0070084"/>
+  <way id="9204" version="1">
+    <nd ref="9131"/>
+    <nd ref="9132"/>
+    <tag k="power" v="line"/>
+  </way>
+</osm>

@@ -1,0 +1,63 @@
+# Preset icons: the selection header for one feature per icon set (Maki,
+# Temaki, Roentgen, Font Awesome incl. a wide and a tall glyph, iD road
+# icons), the geometry fallback icons, the multi-selection list, and the
+# Change Feature Type picker. fixtures/preset-icons.osm is laid out for the
+# viewport below: nodes 9001..9008 at x=100..800, y=300; ways 9201..9204 at
+# x=200, y=400/500/600/700.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/preset-icons.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 100,300
+wait_idle 2s
+assert_selected node 9001
+capture out/preset-icons-01-maki.png
+
+click 200,300
+wait_idle 2s
+assert_selected node 9002
+capture out/preset-icons-02-temaki.png
+
+click 300,300
+wait_idle 2s
+assert_selected node 9003
+capture out/preset-icons-03-roentgen.png
+
+click 400,300
+wait_idle 2s
+assert_selected node 9004
+capture out/preset-icons-04-fontawesome-wide.png
+
+click 500,300
+wait_idle 2s
+assert_selected node 9005
+capture out/preset-icons-05-fontawesome-tall.png
+
+click 800,300
+wait_idle 2s
+assert_selected node 9008
+capture out/preset-icons-06-point-fallback.png
+
+click 200,400
+wait_idle 2s
+assert_selected way 9201
+capture out/preset-icons-07-id-residential.png
+
+click 200,600
+wait_idle 2s
+assert_selected way 9203
+capture out/preset-icons-08-line-fallback.png
+
+drag 60,260 880,340 button=left
+wait_idle 2s
+capture out/preset-icons-09-selection-list.png
+
+click 500,300
+wait_idle 2s
+action ChangeFeatureType
+wait_idle 2s
+capture out/preset-icons-10-preset-picker.png
+
+log done
