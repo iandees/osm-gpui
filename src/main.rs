@@ -2300,13 +2300,15 @@ impl MapViewer {
         let Some(editable) = layer.as_editable() else {
             return;
         };
-        let Some(geometry) = editable.feature_geometry(&target, osm_gpui::presets::area_keys())
-        else {
+        // A closed way is offered both area and line presets, best first.
+        let geometries =
+            editable.feature_geometry_candidates(&target, osm_gpui::presets::area_keys());
+        if geometries.is_empty() {
             return;
-        };
+        }
 
         let dialog = cx.new(|cx| {
-            osm_gpui::ui::preset_picker_dialog::PresetPickerDialog::new(geometry, window, cx)
+            osm_gpui::ui::preset_picker_dialog::PresetPickerDialog::new(geometries, window, cx)
         });
         cx.subscribe(
             &dialog,
@@ -2320,8 +2322,8 @@ impl MapViewer {
                         this.preset_picker_dialog = None;
                         cx.notify();
                     }
-                    DialogEvent::Submitted(preset_tags) => {
-                        this.apply_nsi_preset(&target, preset_tags.clone());
+                    DialogEvent::Submitted { tags, geometry } => {
+                        this.apply_preset(&target, tags, geometry);
                         this.preset_picker_dialog = None;
                         cx.notify();
                     }
@@ -2331,6 +2333,59 @@ impl MapViewer {
         .detach();
         self.preset_picker_dialog = Some(dialog);
         cx.notify();
+    }
+
+    /// Apply a schema preset chosen in the picker: its tags (see
+    /// `presets::preset_tag_changes`, which also adds `area=yes` for an
+    /// area preset on a closed way that wouldn't otherwise be an area, and
+    /// removes it for a line preset) as one `SetTags` undo step.
+    fn apply_preset(
+        &mut self,
+        target: &osm_gpui::selection::FeatureRef,
+        preset_tags: &std::collections::HashMap<String, String>,
+        preset_geometry: &[osm_gpui::presets::Geometry],
+    ) {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(target.layer_id)
+            .and_then(|l| l.as_editable())
+        else {
+            return;
+        };
+        let Some(existing) = editable.feature_tags(target) else {
+            return;
+        };
+        let existing: std::collections::HashMap<String, String> = existing.into_iter().collect();
+        let closed = editable.feature_is_closed_way(target);
+        let entries: Vec<_> = osm_gpui::presets::preset_tag_changes(
+            preset_tags,
+            preset_geometry,
+            &existing,
+            closed,
+            osm_gpui::presets::area_keys(),
+        )
+        .into_iter()
+        .map(|(key, after)| {
+            let before = existing.get(&key).cloned();
+            (*target, key, before, after)
+        })
+        .collect();
+        if entries.is_empty() {
+            return;
+        }
+        if let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(target.layer_id)
+            .and_then(|l| l.as_editable_mut())
+        {
+            for (feature, key, _before, after) in &entries {
+                match after {
+                    Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
+                    None => editable.remove_tag(feature.kind, feature.id, key),
+                }
+            }
+        }
+        self.undo_stack.push(UndoableAction::SetTags { entries });
     }
 
     /// Apply `preset_tags` to `target`: for each preset key whose value

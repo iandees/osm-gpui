@@ -3151,6 +3151,35 @@ impl EditableLayer for OsmLayer {
         crate::presets::classify_geometry(data, feature.kind, feature.id, area_keys)
     }
 
+    fn feature_geometry_candidates(
+        &self,
+        feature: &FeatureRef,
+        area_keys: &crate::presets::AreaKeys,
+    ) -> Vec<crate::presets::Geometry> {
+        if feature.layer_id == self.id && feature.kind == FeatureKind::Way {
+            if let Some(way) = self.osm_data.as_ref().and_then(|d| d.ways.get(&feature.id)) {
+                return crate::presets::way_candidate_geometries(
+                    &way.tags,
+                    way.is_closed(),
+                    area_keys,
+                );
+            }
+        }
+        self.feature_geometry(feature, area_keys)
+            .into_iter()
+            .collect()
+    }
+
+    fn feature_is_closed_way(&self, feature: &FeatureRef) -> bool {
+        feature.layer_id == self.id
+            && feature.kind == FeatureKind::Way
+            && self
+                .osm_data
+                .as_ref()
+                .and_then(|d| d.ways.get(&feature.id))
+                .is_some_and(|w| w.is_closed())
+    }
+
     fn render_highlight(
         &self,
         viewport: &Viewport,

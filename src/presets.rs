@@ -169,17 +169,38 @@ impl PresetIndex {
         geometry: Geometry,
         limit: usize,
     ) -> Vec<&Preset> {
+        self.search_geometries_in(translations, query, &[geometry], limit)
+    }
+
+    /// [`Self::search_in`] across several geometries, best first: every
+    /// matching preset of `geometries[0]`, then those of `geometries[1]`
+    /// not already listed, and so on. This is how a closed way is offered
+    /// both area and line presets.
+    pub fn search_geometries_in(
+        &self,
+        translations: Option<&PresetTranslations>,
+        query: &str,
+        geometries: &[Geometry],
+        limit: usize,
+    ) -> Vec<&Preset> {
         let q = query.to_lowercase();
-        self.presets
-            .iter()
-            .filter(|p| p.geometry.contains(&geometry))
-            .filter(|p| {
-                q.is_empty()
-                    || p.name.to_lowercase().contains(&q)
-                    || translations.is_some_and(|t| t.preset_matches(&p.id, &q))
-            })
-            .take(limit)
-            .collect()
+        let mut out: Vec<&Preset> = Vec::new();
+        for geometry in geometries {
+            let found = self
+                .presets
+                .iter()
+                .filter(|p| p.geometry.contains(geometry))
+                .filter(|p| !out.iter().any(|seen| seen.id == p.id))
+                .filter(|p| {
+                    q.is_empty()
+                        || p.name.to_lowercase().contains(&q)
+                        || translations.is_some_and(|t| t.preset_matches(&p.id, &q))
+                })
+                .take(limit.saturating_sub(out.len()))
+                .collect::<Vec<_>>();
+            out.extend(found);
+        }
+        out
     }
 }
 
@@ -236,8 +257,17 @@ impl AreaKeys {
     }
 
     /// Whether a closed way with these tags should be treated as an area
-    /// rather than a line.
+    /// rather than a line (iD's `isArea` for a closed way): `area=yes`
+    /// always makes it one, `area=no` never does, otherwise any tag whose
+    /// key is an area key and whose value isn't excluded does. Says nothing
+    /// about open ways, which are never areas. An untagged closed way is
+    /// *not* an area by tags alone; see [`way_geometry`].
     pub fn closed_way_is_area(&self, tags: &HashMap<String, String>) -> bool {
+        match tags.get("area").map(String::as_str) {
+            Some("yes") => return true,
+            Some("no") => return false,
+            _ => {}
+        }
         for (key, value) in tags {
             if let Some(excluded_values) = self.0.get(key) {
                 if !excluded_values.contains_key(value) {
@@ -249,11 +279,97 @@ impl AreaKeys {
     }
 }
 
+/// The geometry a way is treated as for preset matching. An open way is a
+/// `Line`. A closed way is an `Area` when its tags say so (see
+/// [`AreaKeys::closed_way_is_area`]), a `Line` when they say otherwise, and
+/// an `Area` when it has no tags at all: that is a freshly drawn closed
+/// shape, and the generic Area preset (with the area presets reachable from
+/// the picker) is the least surprising reading of it.
+pub fn way_geometry(
+    tags: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Geometry {
+    if !closed {
+        Geometry::Line
+    } else if tags.is_empty() || area_keys.closed_way_is_area(tags) {
+        Geometry::Area
+    } else {
+        Geometry::Line
+    }
+}
+
+/// Geometries whose presets the picker offers for a way, best first. An
+/// open way is only ever a line. A closed way can be either (a roundabout or
+/// a fence loop is a closed line), so both are offered, ordered by
+/// [`way_geometry`]: an area (or untagged) closed way lists area presets
+/// first, a line-tagged closed way lists line presets first.
+pub fn way_candidate_geometries(
+    tags: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Vec<Geometry> {
+    if !closed {
+        return vec![Geometry::Line];
+    }
+    match way_geometry(tags, closed, area_keys) {
+        Geometry::Area => vec![Geometry::Area, Geometry::Line],
+        _ => vec![Geometry::Line, Geometry::Area],
+    }
+}
+
+/// The tag edits that applying a preset makes to a feature, as
+/// `(key, new value or None to remove)` sorted by key, omitting no-ops.
+/// Preset tags overwrite; a `*` value (any value of that key) keeps the
+/// feature's existing value or else becomes `yes`, as in iD. Existing tags
+/// the preset doesn't mention stay. For a closed way (`closed`), an
+/// area-only preset whose tags wouldn't by themselves make it an area also
+/// sets `area=yes`, and a line-only preset removes an existing `area=yes`.
+pub fn preset_tag_changes(
+    preset_tags: &HashMap<String, String>,
+    preset_geometry: &[Geometry],
+    existing: &HashMap<String, String>,
+    closed: bool,
+    area_keys: &AreaKeys,
+) -> Vec<(String, Option<String>)> {
+    let mut merged = existing.clone();
+    for (key, value) in preset_tags {
+        if value == "*" {
+            merged.entry(key.clone()).or_insert_with(|| "yes".into());
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    if closed {
+        let area_only =
+            preset_geometry.contains(&Geometry::Area) && !preset_geometry.contains(&Geometry::Line);
+        let line_only =
+            preset_geometry.contains(&Geometry::Line) && !preset_geometry.contains(&Geometry::Area);
+        if area_only && !area_keys.closed_way_is_area(&merged) {
+            merged.insert("area".into(), "yes".into());
+        } else if line_only && merged.get("area").map(String::as_str) == Some("yes") {
+            merged.remove("area");
+        }
+    }
+    let mut changes: Vec<(String, Option<String>)> = Vec::new();
+    for (key, after) in &merged {
+        if existing.get(key) != Some(after) {
+            changes.push((key.clone(), Some(after.clone())));
+        }
+    }
+    for key in existing.keys() {
+        if !merged.contains_key(key) {
+            changes.push((key.clone(), None));
+        }
+    }
+    changes.sort();
+    changes
+}
+
 /// Classify a feature's geometry for preset matching: a node not referenced
 /// by any way is a `Point`; a node referenced by at least one way is a
-/// `Vertex`; a way is a `Line` unless it's closed (first node id == last
-/// node id) and its tags qualify as an area per `area_keys`, in which case
-/// it's an `Area`; a relation is always `Relation`. Returns `None` if the feature id isn't present in `data`.
+/// `Vertex`; a way is classified by [`way_geometry`]; a relation is always
+/// `Relation`. Returns `None` if the feature id isn't present in `data`.
 pub fn classify_geometry(
     data: &OsmData,
     kind: FeatureKind,
@@ -272,12 +388,7 @@ pub fn classify_geometry(
         }
         FeatureKind::Way => {
             let way = data.ways.get(&id)?;
-            let closed = way.nodes.len() >= 2 && way.nodes.first() == way.nodes.last();
-            if closed && area_keys.closed_way_is_area(&way.tags) {
-                Some(Geometry::Area)
-            } else {
-                Some(Geometry::Line)
-            }
+            Some(way_geometry(&way.tags, way.is_closed(), area_keys))
         }
         FeatureKind::Relation => data
             .relations
