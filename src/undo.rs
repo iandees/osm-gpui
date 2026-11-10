@@ -243,6 +243,17 @@ impl UndoStack {
         self.cursor = self.actions.len();
     }
 
+    /// Forget every recorded action (and anything redoable). Returns how many
+    /// there were. Used when the data underneath the history was replaced
+    /// wholesale, so no entry can be trusted to apply cleanly any more.
+    pub(crate) fn clear(&mut self) -> usize {
+        let count = self.actions.len();
+        self.actions.clear();
+        self.cursor = 0;
+        self.revision += 1;
+        count
+    }
+
     /// Returns the action to invert, and moves the cursor back. `None` if
     /// there's nothing to undo.
     pub(crate) fn undo(&mut self) -> Option<UndoableAction> {
