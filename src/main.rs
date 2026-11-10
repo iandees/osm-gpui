@@ -5295,6 +5295,39 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/relation-editor.osmscript` clicks the route's way on
+    /// the map and expects the route to be its relation, with a member that
+    /// is not downloaded and a relation nested in another.
+    #[test]
+    fn relation_editor_script_targets_and_fixture() {
+        use osm_gpui::selection::resolve_hits;
+        use osm_gpui::selection::FeatureKind::Way;
+
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/relation-editor.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let hit_at = |x: f32, y: f32| {
+            let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+            let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, at);
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        assert_eq!(hit_at(520.0, 200.0), Some((Way, 8202)));
+        assert_eq!(hit_at(340.0, 400.0), Some((Way, 8301)));
+
+        let editable: &dyn osm_gpui::layers::EditableLayer = &layer;
+        assert_eq!(editable.relations_containing_way(8202), vec![9101]);
+        let route = editable.relation(9101).unwrap();
+        assert_eq!(route.members.len(), 5);
+        // Way 8999 is a member but not loaded.
+        assert!(editable.way_node_ids(8999).is_none());
+        let find = |id| editable.relation(id);
+        let master = editable.relation(9103).unwrap();
+        let flat = osm_gpui::relations::flatten_members(&master, &find);
+        assert_eq!(flat.len(), 5);
+    }
+
     /// `docs/screenshots/relations.osmscript` clicks fixed window positions;
     /// check they pick what the script names, that the fixture's relations
     /// show up as the script expects, and that the split it runs keeps the
