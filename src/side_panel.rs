@@ -802,7 +802,7 @@ impl MapViewer {
     pub(crate) fn describe_selected_feature(
         &self,
         feat: &osm_gpui::selection::FeatureRef,
-    ) -> Option<(String, Option<std::path::PathBuf>)> {
+    ) -> Option<(String, Option<SharedString>)> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
         let tags: std::collections::HashMap<String, String> =
@@ -885,7 +885,7 @@ impl MapViewer {
                     .flex_shrink_0()
                     .children(icon_path.map(|path| {
                         gpui::svg()
-                            .external_path(path.to_string_lossy().to_string())
+                            .path(path)
                             .size(px(24.0))
                             .text_color(cx.theme().foreground)
                     })),
@@ -961,7 +961,7 @@ impl MapViewer {
                 row = row.child(div().size(px(14.0)).flex_shrink_0().children(icon_path.map(
                     |path| {
                         gpui::svg()
-                            .external_path(path.to_string_lossy().to_string())
+                            .path(path)
                             .size(px(14.0))
                             .text_color(cx.theme().foreground)
                     },

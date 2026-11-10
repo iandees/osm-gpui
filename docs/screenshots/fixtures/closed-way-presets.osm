@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="closed-way-presets fixture">
+  <node id="1001" version="1" lat="40.7117" lon="-74.0063"/>
+  <node id="1002" version="1" lat="40.7117" lon="-74.0057"/>
+  <node id="1003" version="1" lat="40.7123" lon="-74.0057"/>
+  <node id="1004" version="1" lat="40.7123" lon="-74.0063"/>
+  <way id="3001" version="1">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <nd ref="1003"/>
+    <nd ref="1004"/>
+    <nd ref="1001"/>
+  </way>
+</osm>

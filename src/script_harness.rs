@@ -58,6 +58,7 @@ pub(crate) enum ScriptCommand {
         from: (f32, f32),
         to: (f32, f32),
         left: bool,
+        mods: script::DragMods,
     },
     /// Synthesize a mouse click
     Click {
@@ -230,12 +231,17 @@ impl MapViewer {
                     from,
                     to,
                     left: true,
+                    mods,
                 } => {
                     // A left-button press-drag-release, dispatched as real
                     // events so the current edit mode's handlers see it.
                     window.defer(cx, move |window, cx| {
                         let (from, to) = (point(px(from.0), px(from.1)), point(px(to.0), px(to.1)));
-                        let modifiers = gpui::Modifiers::none();
+                        let modifiers = gpui::Modifiers {
+                            alt: mods.alt,
+                            platform: mods.cmd,
+                            ..gpui::Modifiers::none()
+                        };
                         let button = gpui::MouseButton::Left;
                         let down = MouseDownEvent {
                             button,
@@ -462,9 +468,21 @@ impl AppHandle for LiveApp {
         });
     }
 
-    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration, left: bool) {
+    fn dispatch_drag(
+        &mut self,
+        from: (f32, f32),
+        to: (f32, f32),
+        _duration: Duration,
+        left: bool,
+        mods: script::DragMods,
+    ) {
         // Submit as a single command; the render fn handles the full down/move/up.
-        self.bus.submit(ScriptCommand::Drag { from, to, left });
+        self.bus.submit(ScriptCommand::Drag {
+            from,
+            to,
+            left,
+            mods,
+        });
     }
 
     fn dispatch_click(

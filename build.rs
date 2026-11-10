@@ -50,4 +50,43 @@ fn main() {
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("preset_translations.rs");
     std::fs::write(out, generated).unwrap();
+
+    embed_preset_icons();
+}
+
+// The preset icons in `assets/presets/icons/` are embedded as a table sorted
+// by icon name (`$OUT_DIR/preset_icons.rs`), looked up by binary search and
+// served to GPUI through `assets::AppAssets`.
+fn embed_preset_icons() {
+    let dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/presets/icons");
+    println!("cargo:rerun-if-changed={}", dir.display());
+
+    let mut icons: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|ext| ext == "svg"))
+                .filter_map(|p| {
+                    let name = p.file_stem()?.to_str()?.to_string();
+                    Some((name, p))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    icons.sort();
+
+    let mut generated = String::from("pub const PRESET_ICONS: &[(&str, &str)] = &[\n");
+    for (name, path) in &icons {
+        println!("cargo:rerun-if-changed={}", path.display());
+        generated.push_str(&format!(
+            "    ({name:?}, include_str!({:?})),\n",
+            path.display().to_string()
+        ));
+    }
+    generated.push_str("];\n");
+
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("preset_icons.rs");
+    std::fs::write(out, generated).unwrap();
 }

@@ -22,13 +22,10 @@ const MAX_RESULTS: usize = 30;
 const PREVIEW_TAG_COUNT: usize = 3;
 const ROW_ICON_SIZE: f32 = 20.0;
 
-/// The icon file for a result row: the preset's own icon, else the generic
+/// The icon asset for a result row: the preset's own icon, else the generic
 /// icon for the geometry being edited.
-fn icon_for_preset(preset_id: &str, geometry: Geometry) -> Option<std::path::PathBuf> {
-    let icon = crate::presets::preset_index()
-        .get(preset_id)
-        .and_then(|p| p.icon.as_deref());
-    crate::presets::icon_path_or_fallback(icon, geometry)
+fn icon_for_preset(icon_name: Option<&str>, geometry: Geometry) -> Option<gpui::SharedString> {
+    crate::presets::icon_path_or_fallback(icon_name, geometry)
 }
 
 /// Build the compact tag preview shown in a result row, e.g.
@@ -47,13 +44,29 @@ pub fn format_tag_preview(tags: &HashMap<String, String>) -> String {
 }
 
 pub enum DialogEvent {
-    Submitted(HashMap<String, String>),
+    /// The chosen preset's tags and the geometries it applies to (the
+    /// caller needs the latter to keep a closed way's `area=yes` right).
+    Submitted {
+        tags: HashMap<String, String>,
+        geometry: Vec<Geometry>,
+    },
     Cancelled,
 }
 
+/// One row of the picker: display name, tags, and the preset's geometries.
+/// and the preset's icon name.
+type PickerRow = (
+    String,
+    HashMap<String, String>,
+    Vec<Geometry>,
+    Option<String>,
+);
+
 pub struct PresetPickerDialog {
     query: Entity<InputState>,
-    geometry: Geometry,
+    /// Geometries to offer presets for, best first (a closed way gets both
+    /// area and line).
+    geometries: Vec<Geometry>,
     selected_index: usize,
     focus_handle: FocusHandle,
 }
@@ -61,7 +74,7 @@ pub struct PresetPickerDialog {
 impl EventEmitter<DialogEvent> for PresetPickerDialog {}
 
 impl PresetPickerDialog {
-    pub fn new(geometry: Geometry, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(geometries: Vec<Geometry>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("dialog.preset_picker.search_placeholder"))
         });
@@ -69,26 +82,27 @@ impl PresetPickerDialog {
         query.update(cx, |state, cx| state.focus(window, cx));
         Self {
             query,
-            geometry,
+            geometries,
             selected_index: 0,
             focus_handle,
         }
     }
 
-    /// Current search results for whatever's typed in the query box: (name,
-    /// id, tags) triples cloned out of the global index so the dialog
-    /// doesn't hold onto a `&'static Preset` borrow across renders.
-    fn results(&self, cx: &Context<Self>) -> Vec<(String, String, HashMap<String, String>)> {
+    /// Current search results for whatever's typed in the query box, cloned
+    /// out of the global index so the dialog doesn't hold onto a
+    /// `&'static Preset` borrow across renders.
+    fn results(&self, cx: &Context<Self>) -> Vec<PickerRow> {
         let text = self.query.read(cx).value().to_string();
         let translations = crate::preset_translations::active();
         crate::presets::preset_index()
-            .search_in(translations, &text, self.geometry, MAX_RESULTS)
+            .search_geometries_in(translations, &text, &self.geometries, MAX_RESULTS)
             .into_iter()
             .map(|p| {
                 (
                     p.display_name(translations).to_string(),
-                    p.id.clone(),
                     p.tags.clone(),
+                    p.geometry.clone(),
+                    p.icon.clone(),
                 )
             })
             .collect()
@@ -100,8 +114,11 @@ impl PresetPickerDialog {
 
     fn submit_selected(&mut self, cx: &mut Context<Self>) {
         let results = self.results(cx);
-        if let Some((_, _, tags)) = results.get(self.selected_index) {
-            cx.emit(DialogEvent::Submitted(tags.clone()));
+        if let Some((_, tags, geometry, _)) = results.get(self.selected_index) {
+            cx.emit(DialogEvent::Submitted {
+                tags: tags.clone(),
+                geometry: geometry.clone(),
+            });
         }
     }
 
@@ -147,61 +164,70 @@ impl Render for PresetPickerDialog {
                 .into_any_element()
         } else {
             let selected_index = self.selected_index;
+            // Rows without an icon of their own show the first (best)
+            // geometry's generic icon.
+            let fallback_geometry = self.geometries.first().copied().unwrap_or(Geometry::Point);
             div()
                 .id("preset-picker-results")
                 .flex()
                 .flex_col()
                 .h(gpui::px(240.0))
                 .overflow_y_scroll()
-                .children(results.iter().enumerate().map(|(i, (name, id, tags))| {
-                    let tags = tags.clone();
-                    let is_selected = i == selected_index;
-                    let icon = icon_for_preset(id, self.geometry);
-                    div()
-                        .id(("preset-picker-result", i))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .when(is_selected, |el| el.bg(cx.theme().accent))
-                        .hover(|el| el.bg(cx.theme().accent))
-                        // The icon slot is reserved even without an icon so
-                        // names line up down the list.
-                        .child(
-                            div()
-                                .size(gpui::px(ROW_ICON_SIZE))
-                                .flex_shrink_0()
-                                .children(icon.map(|path| {
-                                    gpui::svg()
-                                        .external_path(path.to_string_lossy().to_string())
-                                        .size(gpui::px(ROW_ICON_SIZE))
-                                        .text_color(cx.theme().foreground)
-                                })),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w(gpui::px(0.))
-                                .child(Label::new(name.clone()))
-                                .child(
-                                    Label::new(format_tag_preview(&tags))
-                                        .text_size(muted_text_size())
-                                        .text_color(muted),
-                                ),
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _ev, _, cx| {
-                                cx.emit(DialogEvent::Submitted(tags.clone()));
-                                let _ = this;
-                            }),
-                        )
-                }))
+                .children(results.iter().enumerate().map(
+                    |(i, (name, tags, geometry, icon_name))| {
+                        let tags = tags.clone();
+                        let geometry = geometry.clone();
+                        let is_selected = i == selected_index;
+                        let icon = icon_for_preset(icon_name.as_deref(), fallback_geometry);
+                        div()
+                            .id(("preset-picker-result", i))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .when(is_selected, |el| el.bg(cx.theme().accent))
+                            .hover(|el| el.bg(cx.theme().accent))
+                            // The icon slot is reserved even without an
+                            // icon so names line up down the list.
+                            .child(
+                                div()
+                                    .size(gpui::px(ROW_ICON_SIZE))
+                                    .flex_shrink_0()
+                                    .children(icon.map(|path| {
+                                        gpui::svg()
+                                            .path(path)
+                                            .size(gpui::px(ROW_ICON_SIZE))
+                                            .text_color(cx.theme().foreground)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(gpui::px(0.))
+                                    .child(Label::new(name.clone()))
+                                    .child(
+                                        Label::new(format_tag_preview(&tags))
+                                            .text_size(muted_text_size())
+                                            .text_color(muted),
+                                    ),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev, _, cx| {
+                                    cx.emit(DialogEvent::Submitted {
+                                        tags: tags.clone(),
+                                        geometry: geometry.clone(),
+                                    });
+                                    let _ = this;
+                                }),
+                            )
+                    },
+                ))
                 .into_any_element()
         };
 
