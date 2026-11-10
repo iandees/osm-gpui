@@ -1,24 +1,107 @@
-//! Refreshes the vendored iD tagging schema data under `assets/presets/`.
-//! Run manually with:
-//!   cargo run --example update_presets
+//! Refreshes the vendored iD tagging schema data and the preset icons under
+//! `assets/presets/`. Run manually with:
+//!   cargo run --example update_presets [-- <schema-version>]
+//!
+//! `<schema-version>` is the `@openstreetmap/id-tagging-schema` release to
+//! fetch (default: `DEFAULT_SCHEMA_VERSION`, the one the repo currently
+//! bundles). Every icon set is fetched from a pinned upstream release (the
+//! `*_VERSION` constants below); only icons some bundled preset references
+//! (plus the per-geometry fallback icons) are written. Icons are made square
+//! (see `osm_gpui::svg_normalize`) so GPUI does not squash them.
 //!
 //! Not part of CI or the app runtime — review the resulting git diff by hand
-//! after running it.
+//! after running it, and keep `assets/presets/LICENSE` and
+//! `assets/presets/icons/LICENSES.md` in step with the versions below.
 
 use osm_gpui::http::{fetch_with_retries, HttpRequest, RetryPolicy, UreqClient};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-const PRESETS_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/presets.json";
-const TRANSLATIONS_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/translations/en.json";
-const FIELDS_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema/dist/fields.json";
-const MAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@mapbox/maki/icons";
-const TEMAKI_BASE: &str = "https://cdn.jsdelivr.net/npm/@rapideditor/temaki/icons";
+/// The schema release the repo currently bundles (see
+/// `assets/presets/LICENSE`). Pass another version as the first argument.
+const DEFAULT_SCHEMA_VERSION: &str = "6.19.2";
+
+// Icon sources, each pinned to a tagged/published release. iD's preset
+// icons and Font Awesome both come from the iD repository, which keeps the
+// exact `iD-*` sprite sources and the Font Awesome Free glyphs under the
+// (alias-resolved) names the schema uses, e.g. `fas-apple-alt`.
+const MAKI_VERSION: &str = "8.2.0"; // npm @mapbox/maki (not git-tagged past 8.0.1)
+const TEMAKI_VERSION: &str = "v5.13.0";
+const ROENTGEN_VERSION: &str = "v0.16.0";
+const ID_VERSION: &str = "v2.42.3";
+// Font Awesome Free: fallback for names iD's copy no longer carries. iD
+// v2.42.3 builds against @fortawesome/*-svg-icons ^7.2.0.
+const FONT_AWESOME_VERSION: &str = "7.2.0";
+
+fn schema_base(version: &str) -> String {
+    format!(
+        "https://cdn.jsdelivr.net/npm/@openstreetmap/id-tagging-schema@{}/dist",
+        version
+    )
+}
+
+/// Candidate upstream URLs for a preset icon name such as `temaki-lock`, in
+/// order of preference; empty for a name with no known set prefix. Font
+/// Awesome icons try iD's alias-resolved copy first (the schema uses names
+/// like `fas-apple-alt`), then Font Awesome's own canonical file.
+fn icon_urls(icon_name: &str) -> Vec<String> {
+    let mut urls: Vec<String> = icon_url(icon_name).into_iter().collect();
+    for (prefix, dir) in [("fas-", "solid"), ("far-", "regular"), ("fab-", "brands")] {
+        if let Some(n) = icon_name.strip_prefix(prefix) {
+            urls.push(format!(
+                "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/{}/svgs/{}/{}.svg",
+                FONT_AWESOME_VERSION, dir, n
+            ));
+        }
+    }
+    urls
+}
+
+fn icon_url(icon_name: &str) -> Option<String> {
+    let raw = |repo: &str, version: &str, path: &str| {
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/{}",
+            repo, version, path
+        )
+    };
+    if let Some(n) = icon_name.strip_prefix("maki-") {
+        Some(format!(
+            "https://cdn.jsdelivr.net/npm/@mapbox/maki@{}/icons/{}.svg",
+            MAKI_VERSION, n
+        ))
+    } else if let Some(n) = icon_name.strip_prefix("temaki-") {
+        Some(raw(
+            "rapideditor/temaki",
+            TEMAKI_VERSION,
+            &format!("icons/{}.svg", n),
+        ))
+    } else if let Some(n) = icon_name.strip_prefix("roentgen-") {
+        Some(raw(
+            "enzet/Roentgen",
+            ROENTGEN_VERSION,
+            &format!("icons/{}.svg", n),
+        ))
+    } else if let Some(n) = icon_name.strip_prefix("iD-") {
+        Some(raw(
+            "openstreetmap/iD",
+            ID_VERSION,
+            &format!("svg/iD-sprite/presets/{}.svg", n),
+        ))
+    } else if ["fas-", "far-", "fab-"]
+        .iter()
+        .any(|p| icon_name.starts_with(p))
+    {
+        Some(raw(
+            "openstreetmap/iD",
+            ID_VERSION,
+            &format!("svg/fontawesome/{}.svg", icon_name),
+        ))
+    } else {
+        None
+    }
+}
 
 // Keys iD never treats as area-implying, regardless of what presets.json
 // says — mirrors iD's own `areaKeys()` ignore list in
@@ -30,18 +113,23 @@ const AREA_IGNORE_KEYS: &[&str] = &[
 const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets");
 
 fn main() {
+    let schema_version = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_SCHEMA_VERSION.to_string());
+    println!("id-tagging-schema {}", schema_version);
+    let base = schema_base(&schema_version);
     let client = UreqClient::new();
 
-    let presets_body = fetch(&client, PRESETS_URL);
+    let presets_body = fetch(&client, &format!("{}/presets.json", base));
     let presets_root: Value = serde_json::from_str(&presets_body).expect("parse presets.json");
 
-    let translations_body = fetch(&client, TRANSLATIONS_URL);
+    let translations_body = fetch(&client, &format!("{}/translations/en.json", base));
     let names = preset_names(&translations_body);
 
     let (trimmed_presets, icon_names) = trim_presets(&presets_root, &names);
     let area_keys = compute_area_keys(&presets_root);
 
-    let fields_body = fetch(&client, FIELDS_URL);
+    let fields_body = fetch(&client, &format!("{}/fields.json", base));
     let fields_root: Value = serde_json::from_str(&fields_body).expect("parse fields.json");
     let field_translations_map = field_translations(&translations_body);
     let (trimmed_fields, kept_field_ids) = trim_fields(&fields_root, &field_translations_map);
@@ -97,12 +185,25 @@ fn main() {
     let icons_dir = Path::new(OUT_DIR).join("icons");
     fs::create_dir_all(&icons_dir).expect("create icons dir");
 
+    // The geometry fallback icons are always vendored, even if no preset
+    // references them.
+    let icon_names: BTreeSet<String> = icon_names
+        .into_iter()
+        .chain(
+            osm_gpui::presets::FALLBACK_ICON_NAMES
+                .iter()
+                .map(|s| s.to_string()),
+        )
+        .collect();
+
     // Delete vendored icons no longer referenced by any preset, so re-runs
-    // don't accumulate stale files.
+    // don't accumulate stale files. Non-SVG files (LICENSES.md) stay.
     if let Ok(entries) = fs::read_dir(&icons_dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
-            let icon_name = file_name.trim_end_matches(".svg");
+            let Some(icon_name) = file_name.strip_suffix(".svg") else {
+                continue;
+            };
             if !icon_names.contains(icon_name) {
                 let _ = fs::remove_file(entry.path());
                 println!("removed stale icon: {}", file_name);
@@ -110,41 +211,66 @@ fn main() {
         }
     }
 
-    for icon_name in &icon_names {
-        let dest = icons_dir.join(format!("{}.svg", icon_name));
-        if dest.exists() {
-            continue;
+    // Fetch every referenced icon (always re-fetched, so a bumped version
+    // constant takes effect), a few at a time.
+    let queue: Vec<&String> = icon_names.iter().collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let missing = std::sync::Mutex::new(Vec::<(String, String)>::new());
+    let fetched = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Some(icon_name) = queue.get(i) else {
+                    break;
+                };
+                let urls = icon_urls(icon_name);
+                if urls.is_empty() {
+                    missing.lock().unwrap().push((
+                        icon_name.to_string(),
+                        "no vendor source for this icon-set prefix".to_string(),
+                    ));
+                    continue;
+                }
+                let url = urls.join(" or ");
+                match urls.iter().find_map(|u| fetch_optional(&client, u)) {
+                    Some(body) => {
+                        let dest = icons_dir.join(format!("{}.svg", icon_name));
+                        fs::write(&dest, osm_gpui::svg_normalize::square_viewbox(&body))
+                            .unwrap_or_else(|e| panic!("write {}: {}", dest.display(), e));
+                        fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    None => {
+                        // Don't keep a stale copy of something upstream no
+                        // longer ships at the pinned version.
+                        let _ = fs::remove_file(icons_dir.join(format!("{}.svg", icon_name)));
+                        missing.lock().unwrap().push((icon_name.to_string(), url));
+                    }
+                }
+            });
         }
-        if !icon_name.starts_with("maki-") && !icon_name.starts_with("temaki-") {
-            // iD's own built-in icon names aren't fetchable from Maki/Temaki;
-            // skip immediately rather than wasting retries on a bogus URL.
-            eprintln!(
-                "WARNING: no vendor source for icon '{}' (not maki-/temaki-), skipping",
-                icon_name
-            );
-            continue;
-        }
-        let url = icon_url(icon_name);
-        match fetch_optional(&client, &url) {
-            Some(body) => {
-                fs::write(&dest, body).unwrap_or_else(|e| {
-                    panic!("write {}: {}", dest.display(), e);
-                });
-                println!("fetched icon: {}", icon_name);
-            }
-            None => {
-                eprintln!("WARNING: could not fetch icon '{}' from {}", icon_name, url);
-            }
-        }
+    });
+
+    let mut missing = missing.into_inner().unwrap();
+    missing.sort();
+    for (icon_name, url) in &missing {
+        eprintln!("WARNING: could not fetch icon '{}' from {}", icon_name, url);
     }
 
     println!(
-        "done: {} presets, {} fields, {} icons in {}",
+        "done: {} presets, {} fields, {} icons fetched ({} referenced icons not found) in {}",
         trimmed_presets.len(),
         trimmed_fields.len(),
-        icon_names.len(),
+        fetched.load(std::sync::atomic::Ordering::SeqCst),
+        missing.len(),
         OUT_DIR
     );
+    if !missing.is_empty() {
+        println!(
+            "Add the missing names to KNOWN_MISSING_ICONS in src/presets.rs (with a reason), \
+             or bump the pinned versions above."
+        );
+    }
 }
 
 fn fetch(client: &UreqClient, url: &str) -> String {
@@ -155,23 +281,6 @@ fn fetch_optional(client: &UreqClient, url: &str) -> Option<String> {
     let req = HttpRequest::get(url).header("User-Agent", osm_gpui::USER_AGENT);
     let resp = fetch_with_retries(client, &req, &RetryPolicy::standard()).ok()?;
     resp.into_string().ok()
-}
-
-/// Given the icon name from a preset (e.g. "maki-cafe" or "temaki-lock"),
-/// build the jsDelivr URL for its SVG source. Only called for names already
-/// confirmed to start with "maki-" or "temaki-" (see the icon-fetch loop in
-/// `main`, which skips anything else before calling this).
-fn icon_url(icon_name: &str) -> String {
-    if let Some(name) = icon_name.strip_prefix("maki-") {
-        format!("{}/{}.svg", MAKI_BASE, name)
-    } else if let Some(name) = icon_name.strip_prefix("temaki-") {
-        format!("{}/icon-{}.svg", TEMAKI_BASE, name)
-    } else {
-        unreachable!(
-            "icon_url called with an unsupported icon name: {}",
-            icon_name
-        )
-    }
 }
 
 /// Parse `dist/translations/en.json` into a flat `preset id -> display name`
@@ -235,9 +344,7 @@ fn trim_presets(root: &Value, names: &HashMap<String, String>) -> (Vec<Value>, H
             .and_then(|v| v.as_str())
             .map(str::to_string);
         if let Some(icon_name) = &icon {
-            if icon_name.starts_with("maki-") || icon_name.starts_with("temaki-") {
-                icon_names.insert(icon_name.clone());
-            }
+            icon_names.insert(icon_name.clone());
         }
         let match_score = entry.get("matchScore").and_then(|v| v.as_f64());
 

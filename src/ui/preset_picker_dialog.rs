@@ -20,6 +20,13 @@ use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
 const PREVIEW_TAG_COUNT: usize = 3;
+const ROW_ICON_SIZE: f32 = 20.0;
+
+/// The icon asset for a result row: the preset's own icon, else the generic
+/// icon for the geometry being edited.
+fn icon_for_preset(icon_name: Option<&str>, geometry: Geometry) -> Option<gpui::SharedString> {
+    crate::presets::icon_path_or_fallback(icon_name, geometry)
+}
 
 /// Build the compact tag preview shown in a result row, e.g.
 /// "amenity=cafe, cuisine=coffee_shop" — up to `PREVIEW_TAG_COUNT` tags,
@@ -47,7 +54,13 @@ pub enum DialogEvent {
 }
 
 /// One row of the picker: display name, tags, and the preset's geometries.
-type PickerRow = (String, HashMap<String, String>, Vec<Geometry>);
+/// and the preset's icon name.
+type PickerRow = (
+    String,
+    HashMap<String, String>,
+    Vec<Geometry>,
+    Option<String>,
+);
 
 pub struct PresetPickerDialog {
     query: Entity<InputState>,
@@ -89,6 +102,7 @@ impl PresetPickerDialog {
                     p.display_name(translations).to_string(),
                     p.tags.clone(),
                     p.geometry.clone(),
+                    p.icon.clone(),
                 )
             })
             .collect()
@@ -100,7 +114,7 @@ impl PresetPickerDialog {
 
     fn submit_selected(&mut self, cx: &mut Context<Self>) {
         let results = self.results(cx);
-        if let Some((_, tags, geometry)) = results.get(self.selected_index) {
+        if let Some((_, tags, geometry, _)) = results.get(self.selected_index) {
             cx.emit(DialogEvent::Submitted {
                 tags: tags.clone(),
                 geometry: geometry.clone(),
@@ -150,47 +164,70 @@ impl Render for PresetPickerDialog {
                 .into_any_element()
         } else {
             let selected_index = self.selected_index;
+            // Rows without an icon of their own show the first (best)
+            // geometry's generic icon.
+            let fallback_geometry = self.geometries.first().copied().unwrap_or(Geometry::Point);
             div()
                 .id("preset-picker-results")
                 .flex()
                 .flex_col()
                 .h(gpui::px(240.0))
                 .overflow_y_scroll()
-                .children(
-                    results
-                        .iter()
-                        .enumerate()
-                        .map(|(i, (name, tags, geometry))| {
-                            let tags = tags.clone();
-                            let geometry = geometry.clone();
-                            let is_selected = i == selected_index;
-                            div()
-                                .id(("preset-picker-result", i))
-                                .flex()
-                                .flex_col()
-                                .px_2()
-                                .py_1()
-                                .cursor_pointer()
-                                .when(is_selected, |el| el.bg(cx.theme().accent))
-                                .hover(|el| el.bg(cx.theme().accent))
-                                .child(Label::new(name.clone()))
-                                .child(
-                                    Label::new(format_tag_preview(&tags))
-                                        .text_size(muted_text_size())
-                                        .text_color(muted),
-                                )
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, _ev, _, cx| {
-                                        cx.emit(DialogEvent::Submitted {
-                                            tags: tags.clone(),
-                                            geometry: geometry.clone(),
-                                        });
-                                        let _ = this;
-                                    }),
-                                )
-                        }),
-                )
+                .children(results.iter().enumerate().map(
+                    |(i, (name, tags, geometry, icon_name))| {
+                        let tags = tags.clone();
+                        let geometry = geometry.clone();
+                        let is_selected = i == selected_index;
+                        let icon = icon_for_preset(icon_name.as_deref(), fallback_geometry);
+                        div()
+                            .id(("preset-picker-result", i))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .when(is_selected, |el| el.bg(cx.theme().accent))
+                            .hover(|el| el.bg(cx.theme().accent))
+                            // The icon slot is reserved even without an
+                            // icon so names line up down the list.
+                            .child(
+                                div()
+                                    .size(gpui::px(ROW_ICON_SIZE))
+                                    .flex_shrink_0()
+                                    .children(icon.map(|path| {
+                                        gpui::svg()
+                                            .path(path)
+                                            .size(gpui::px(ROW_ICON_SIZE))
+                                            .text_color(cx.theme().foreground)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(gpui::px(0.))
+                                    .child(Label::new(name.clone()))
+                                    .child(
+                                        Label::new(format_tag_preview(&tags))
+                                            .text_size(muted_text_size())
+                                            .text_color(muted),
+                                    ),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev, _, cx| {
+                                    cx.emit(DialogEvent::Submitted {
+                                        tags: tags.clone(),
+                                        geometry: geometry.clone(),
+                                    });
+                                    let _ = this;
+                                }),
+                            )
+                    },
+                ))
                 .into_any_element()
         };
 

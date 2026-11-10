@@ -809,7 +809,7 @@ impl MapViewer {
     pub(crate) fn describe_selected_feature(
         &self,
         feat: &osm_gpui::selection::FeatureRef,
-    ) -> Option<(String, Option<std::path::PathBuf>)> {
+    ) -> Option<(String, Option<SharedString>)> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
         let tags: std::collections::HashMap<String, String> =
@@ -827,7 +827,7 @@ impl MapViewer {
                 }
             }
         }
-        let icon_path = icon_name.and_then(|n| osm_gpui::presets::icon_path(&n));
+        let icon_path = osm_gpui::presets::icon_path_or_fallback(icon_name.as_deref(), geometry);
         Some((name, icon_path))
     }
 
@@ -884,13 +884,19 @@ impl MapViewer {
             .gap_2()
             .px_3()
             .py_2p5()
-            .children(icon_path.map(|path| {
-                gpui::svg()
-                    .external_path(path.to_string_lossy().to_string())
+            // The icon slot is always reserved (empty when even the geometry
+            // fallback is missing) so the title never shifts between features.
+            .child(
+                div()
                     .size(px(24.0))
                     .flex_shrink_0()
-                    .text_color(cx.theme().foreground)
-            }))
+                    .children(icon_path.map(|path| {
+                        gpui::svg()
+                            .path(path)
+                            .size(px(24.0))
+                            .text_color(cx.theme().foreground)
+                    })),
+            )
             .child(
                 div()
                     .flex()
@@ -957,14 +963,16 @@ impl MapViewer {
                 let mut row = interactive_row(("selection-row", i), false, cx)
                     .text_color(cx.theme().foreground);
 
-                if let Some(path) = icon_path {
-                    row = row.child(
+                // Reserve the icon slot even without an icon so the row
+                // text lines up across rows.
+                row = row.child(div().size(px(14.0)).flex_shrink_0().children(icon_path.map(
+                    |path| {
                         gpui::svg()
-                            .external_path(path.to_string_lossy().to_string())
+                            .path(path)
                             .size(px(14.0))
-                            .text_color(cx.theme().foreground),
-                    );
-                }
+                            .text_color(cx.theme().foreground)
+                    },
+                )));
 
                 row.child(row_text).on_mouse_down(
                     gpui::MouseButton::Left,

@@ -5836,7 +5836,7 @@ fn main() {
     open_queue.lock().unwrap().push(args.files.clone());
     let _ = open_wake_tx.unbounded_send(());
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(osm_gpui::assets::AppAssets);
     {
         let open_queue = open_queue.clone();
         app.on_open_urls(move |urls| {
