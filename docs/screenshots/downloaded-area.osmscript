@@ -1,0 +1,29 @@
+# The downloaded area: everything outside the rectangles a layer's data was
+# downloaded for (its <bounds> elements) is dimmed, with a thin line along the
+# edge. Two layers' rectangles are unioned.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/downloaded-area-a.osm
+
+# Zoomed in on the NE corner of the first download: the outside is dimmed and
+# the corner is outlined.
+viewport 40.7150 -73.9990 17
+wait_idle 5s
+capture out/downloaded-area-01-edge.png
+
+# Zoomed out so the whole downloaded rectangle is in view.
+viewport 40.7120 -74.0040 16
+wait_idle 3s
+capture out/downloaded-area-02-whole.png
+
+# A second download (here: a second file) extends the known area; the outline
+# follows the union.
+load_osm docs/screenshots/fixtures/downloaded-area-b.osm
+viewport 40.7145 -74.0000 15.5
+wait_idle 5s
+capture out/downloaded-area-03-union.png
+
+log done

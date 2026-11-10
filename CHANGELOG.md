@@ -3,6 +3,10 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+- The map dims everything outside the area your data was downloaded for, with a thin outline along its edge, so empty-looking ground that was never downloaded is not mistaken for ground with nothing on it. Opened `.osm` files with `<bounds>` show it too, and exported files keep every `<bounds>` element.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of

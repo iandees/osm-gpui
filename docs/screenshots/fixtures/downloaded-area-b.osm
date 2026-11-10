@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <!-- Second download, overlapping the NE corner of downloaded-area-a.osm. -->
+  <bounds minlat="40.7130" minlon="-74.0040" maxlat="40.7210" maxlon="-73.9920"/>
+
+  <node id="5201" lat="40.7145" lon="-74.0030"/>
+  <node id="5202" lat="40.7145" lon="-73.9930"/>
+  <node id="5203" lat="40.7200" lon="-74.0030"/>
+  <node id="5204" lat="40.7200" lon="-73.9930"/>
+  <node id="5205" lat="40.7145" lon="-73.9960"/>
+  <node id="5206" lat="40.7200" lon="-73.9960"/>
+
+  <node id="5301" lat="40.7175" lon="-73.9975">
+    <tag k="amenity" v="pharmacy"/>
+    <tag k="name" v="Second Pharmacy"/>
+  </node>
+
+  <way id="6101">
+    <nd ref="5201"/>
+    <nd ref="5202"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Cross Street"/>
+  </way>
+  <way id="6102">
+    <nd ref="5203"/>
+    <nd ref="5204"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Upper Street"/>
+  </way>
+  <way id="6103">
+    <nd ref="5205"/>
+    <nd ref="5206"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Park Avenue"/>
+  </way>
+</osm>
