@@ -82,9 +82,143 @@ jobs:
             -output target/universal/osm-gpui
           lipo -info target/universal/osm-gpui
 
+      # Developer ID signing and notarization only happen for tag pushes, and
+      # only when the repository has the secrets (see README, "Signing and
+      # notarizing macOS builds"). `secrets` cannot be used in `if:`, so this
+      # step turns "are the secrets set?" into outputs. Secrets are handed
+      # only to the steps that need them (never to the cargo builds), and the
+      # expressions below resolve to '' on pull requests and manual runs, so
+      # those never see a secret.
+      - name: Check signing configuration
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.MACOS_CERTIFICATE_P12_BASE64 || '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
+          MACOS_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.MACOS_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY_BASE64: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_BASE64 || '' }}
+          APPLE_API_KEY_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER_ID || '' }}
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          sign=false
+          notarize=none
+          if [ -n "$MACOS_CERTIFICATE_P12_BASE64" ] && [ -n "$MACOS_CERTIFICATE_PASSWORD" ] && [ -n "$MACOS_SIGNING_IDENTITY" ]; then
+            sign=true
+            if [ -n "$APPLE_API_KEY_BASE64" ] && [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER_ID" ]; then
+              notarize=api
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              notarize=apple-id
+            fi
+          fi
+          echo "sign=$sign" >> "$GITHUB_OUTPUT"
+          echo "notarize=$notarize" >> "$GITHUB_OUTPUT"
+          if [ "$sign" = false ]; then
+            echo "Developer ID signing and notarization skipped (not a tag push, or signing secrets are not set): the app is ad-hoc signed only."
+          elif [ "$notarize" = none ]; then
+            echo "::warning::Signing certificate found but no notarization credentials: signing with Developer ID, notarization skipped."
+          else
+            echo "Developer ID signing and notarization (credentials: $notarize) enabled."
+          fi
+
+      - name: Import signing certificate
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/osm-gpui-signing.keychain-db"
+          cert="$RUNNER_TEMP/osm-gpui-cert.p12"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$keychain_password"
+          # Recorded first so the cleanup step removes it even if a later command fails.
+          echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+          echo "CERT_P12_PATH=$cert" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$cert"
+          security import "$cert" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -k "$keychain" -T /usr/bin/codesign
+          # Let codesign use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          # Put the temporary keychain first in the user search list.
+          existing="$(security list-keychains -d user | tr -d '"')"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$keychain" $existing
+          rm -f "$cert"
+
+      # With the signing secrets absent MACOS_SIGNING_IDENTITY is empty and the
+      # script falls back to the ad-hoc signature, exactly as before.
       - name: Bundle and sign .app
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ steps.signing.outputs.sign == 'true' && secrets.MACOS_SIGNING_IDENTITY || '' }}
         run: scripts/bundle-macos.sh --binary target/universal/osm-gpui --out dist
 
+      - name: Notarize and staple
+        if: steps.signing.outputs.sign == 'true' && steps.signing.outputs.notarize != 'none'
+        env:
+          NOTARIZE_MODE: ${{ steps.signing.outputs.notarize }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          api_key="$RUNNER_TEMP/osm-gpui-AuthKey.p8"
+          trap 'rm -f "$api_key"' EXIT
+
+          if [ "$NOTARIZE_MODE" = api ]; then
+            printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$api_key"
+            auth=(--key "$api_key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+          else
+            auth=(--apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID")
+          fi
+
+          submit_zip="$RUNNER_TEMP/osm-gpui-notarize.zip"
+          ditto -c -k --keepParent dist/osm-gpui.app "$submit_zip"
+
+          # notarytool can exit 0 for a rejected submission, so read the status.
+          result="$(xcrun notarytool submit "$submit_zip" "${auth[@]}" --wait --timeout 30m --output-format json)"
+          echo "$result"
+          status="$(printf '%s' "$result" | plutil -extract status raw -o - -)"
+          if [ "$status" != "Accepted" ]; then
+            id="$(printf '%s' "$result" | plutil -extract id raw -o - -)"
+            xcrun notarytool log "$id" "${auth[@]}" || true
+            echo "::error::Notarization finished with status: $status"
+            exit 1
+          fi
+
+          xcrun stapler staple dist/osm-gpui.app
+          xcrun stapler validate dist/osm-gpui.app
+
+      - name: Verify signature
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          NOTARIZE_MODE: ${{ steps.signing.outputs.notarize }}
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 dist/osm-gpui.app
+          codesign -dv --verbose=4 dist/osm-gpui.app 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q 'flags=.*runtime' "$RUNNER_TEMP/codesign.txt" || { echo "::error::hardened runtime flag missing"; exit 1; }
+          if [ "$NOTARIZE_MODE" != none ]; then
+            # Must report "source=Notarized Developer ID".
+            spctl -a -vv -t exec dist/osm-gpui.app
+          fi
+
+      - name: Remove temporary keychain
+        if: always() && steps.signing.outputs.sign == 'true'
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "${CERT_P12_PATH:-}" "$RUNNER_TEMP/osm-gpui-AuthKey.p8"
+
+      # Zips the final app: stapled if it was notarized.
       - name: Zip
         run: |
           mkdir -p out
