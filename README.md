@@ -94,6 +94,22 @@ cargo run --release
 
 Release builds are much faster than debug builds for panning and zooming large datasets; measure performance with `--release`.
 
+### Opening files
+
+Pass `.osm` files on the command line to open each as a layer at startup, for example `osm-gpui survey.osm other.osm`; flags such as `--language` can go anywhere among them. A file that cannot be read shows a message in the status bar and the rest still open.
+
+- macOS: the app declares itself as an editor for `.osm` files (at "Alternate" rank, so it does not take over from JOSM or another default). Use Finder's right-click > Open With, or drop a file on the Dock icon; in an already-running app the file opens as a new layer in the existing window.
+- Linux: the `.desktop` file passes files to the app (`Exec=osm-gpui %F`) and lists the `application/vnd.openstreetmap.data+xml` type. Most systems know no type for `.osm`, so the tarball includes `share/mime/packages/osm-gpui.xml`; install it, plus the `.desktop` file, to get "Open With":
+
+  ```bash
+  xdg-mime install --mode user share/mime/packages/osm-gpui.xml
+  desktop-file-install --dir ~/.local/share/applications osm-gpui.desktop
+  update-desktop-database ~/.local/share/applications
+  ```
+
+  The `Exec=` line needs `osm-gpui` on your `PATH`; edit it to the full path if not.
+- Windows: there is no installer, so no file association is registered. Use "Open with" > "Choose another app" and pick `osm-gpui.exe`, or drag a file onto the executable.
+
 ## Getting started
 
 1. Open an `.osm` file (File > Open) or zoom in on the map and choose File > Download from OSM. Zoom in further if it reports the area is too large.
