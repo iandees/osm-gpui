@@ -1931,7 +1931,7 @@ impl MapLayer for OsmLayer {
                 fill_groups.len() - 1
             });
             let group = &mut fill_groups[group_idx];
-            for t in tris.chunks_exact(3) {
+            for t in tris.as_chunks::<3>().0 {
                 push_triangle(
                     &mut group.path,
                     &mut group.bounds_min_max,
