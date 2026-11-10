@@ -1,0 +1,62 @@
+# Side panel captures: layer rows, the collapsed "Add field" list, and
+# editing tags in place.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation; fixtures/styles.osm is described in
+# styles.osmscript. The side panel is the default 280px wide, so it spans
+# window x 920..1200.
+#   node 2001 cafe          at      (448, 328)
+#   way  3005 untagged      through (188, 553)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/styles.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# A cafe: its twenty optional fields sit behind one "Add field" control, so
+# Tags and History stay on screen.
+click 448,328
+wait_idle 2s
+assert_selected node 2001
+capture docs/screenshots/side-panel-01-fields.png
+
+# An untagged way. "Add tag" appends a row of key/value inputs.
+click 188,553
+wait_idle 2s
+assert_selected way 3005
+click 960,360
+wait_idle 2s
+
+# Type the key, Enter moves to the value. (The pauses give the app a frame
+# to move the text cursor between inputs; scripted keys arrive far faster
+# than typed ones.)
+key t
+key e
+key s
+key t
+key enter
+wait 250ms
+key y
+key e
+key s
+wait 250ms
+capture docs/screenshots/side-panel-02-add-tag.png
+
+# Enter in the value commits the tag.
+key enter
+wait_idle 2s
+capture docs/screenshots/side-panel-03-tag-added.png
+
+# Clicking a value edits it in place.
+click 1050,324
+wait_idle 2s
+capture docs/screenshots/side-panel-04-edit-value.png
+key escape
+wait_idle 2s
+
+# The eye toggles a layer's visibility without changing the active layer.
+click 942,75
+wait_idle 2s
+capture docs/screenshots/side-panel-05-layer-hidden.png
+
+log done
