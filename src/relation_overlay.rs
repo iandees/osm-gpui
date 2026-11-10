@@ -21,7 +21,14 @@ pub const PALETTE: &[(&[&str], u32)] = &[
     (&["hiking", "foot", "walking"], 0xE8590C),
     (&["bus", "trolleybus", "share_taxi"], 0x9B30D9),
     (
-        &["tram", "train", "subway", "light_rail", "monorail", "railway"],
+        &[
+            "tram",
+            "train",
+            "subway",
+            "light_rail",
+            "monorail",
+            "railway",
+        ],
         0xD6249F,
     ),
     (&["road", "detour"], 0xC9A100),
