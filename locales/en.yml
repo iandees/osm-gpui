@@ -653,7 +653,7 @@ upload_conflict:
   kept_mine: "Kept your version of %{object}. Press Upload to send it."
   used_theirs: "Replaced %{object} with the server's version; your change to it is gone. Press Upload to continue."
   dropped: "Forgot your delete of %{object}, which the server had already done. Press Upload to continue."
-  undo_cleared: "The undo history was cleared."
+  undo_trimmed: "Undo steps that involved it were removed."
 
 error:
   network: "Network error: %{detail}"

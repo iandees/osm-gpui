@@ -559,6 +559,10 @@ struct MapViewer {
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
+    /// The changeset comment typed in the upload dialog, kept when the dialog
+    /// closes without uploading (Cancel, or Show on a conflict) and put back
+    /// when it reopens. Cleared after a successful upload.
+    upload_comment_draft: String,
     sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
     /// The tag currently being edited in place in the Tags table, if any.
     tag_inline_edit: Option<InlineTagEdit>,
@@ -810,6 +814,7 @@ impl MapViewer {
             quit_confirm_dialog: None,
             about_dialog: None,
             upload_dialog: None,
+            upload_comment_draft: String::new(),
             sign_in_dialog: None,
             tag_inline_edit: None,
             fields_more_open_for: None,
@@ -4232,13 +4237,17 @@ impl MapViewer {
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
+        if !self.upload_comment_draft.is_empty() {
+            let draft = self.upload_comment_draft.clone();
+            dialog.update(cx, |dialog, cx| dialog.set_draft_comment(draft, window, cx));
+        }
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
                 use osm_gpui::ui::upload_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.upload_dialog = None;
+                        this.close_upload_dialog_keeping_draft(cx);
                         cx.notify();
                     }
                     DialogEvent::Upload { comment } => {
@@ -4453,6 +4462,7 @@ impl MapViewer {
                 match stop {
                     None => {
                         this.upload_dialog = None;
+                        this.upload_comment_draft.clear();
                         if accepted > 1 {
                             this.set_status(tr_count!(
                                 "status.uploaded_many",
@@ -4504,6 +4514,14 @@ impl MapViewer {
             });
         })
         .detach();
+    }
+
+    /// Close the upload dialog without uploading, remembering what was typed
+    /// in the comment field so reopening it restores it.
+    fn close_upload_dialog_keeping_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.upload_dialog.take() {
+            self.upload_comment_draft = dialog.read(cx).draft_comment(cx);
+        }
     }
 
     /// Bring an open upload dialog's pending counts and changeset count up to
@@ -4585,7 +4603,7 @@ impl MapViewer {
     /// Carry out the way forward the user picked for a refused upload.
     ///
     /// - Show: select the object and zoom to it. The dialog is closed so the
-    ///   map is visible (File > Upload reopens it; the comment is not kept).
+    ///   map is visible (File > Upload reopens it with the comment restored).
     /// - Keep mine / Use theirs: ask the server for the object's current
     ///   state on a worker thread (reading is public: no sign-in needed),
     ///   then `apply_resolution`; the dialog returns to its ready state.
@@ -4609,7 +4627,7 @@ impl MapViewer {
                     self.set_selection(vec![feature]);
                     self.fit_to_features(&[feature]);
                 }
-                self.upload_dialog = None;
+                self.close_upload_dialog_keeping_draft(cx);
                 self.set_status(conflict.describe());
                 cx.notify();
             }
@@ -4685,16 +4703,16 @@ impl MapViewer {
     ///   isn't part of any history entry's effect, except that undoing a
     ///   delete restores the version it had then).
     /// - Use theirs replaces the object (and, for a way, its nodes) with the
-    ///   server's copy, or removes it if the server deleted it. This rewrites
-    ///   data that history entries refer to by id and content (a move of
-    ///   nodes the way now has different, a delete snapshot of an object that
-    ///   is back), and entries can depend on each other in a batch, so
-    ///   dropping only the entries that touch the object could leave later
-    ///   ones inapplicable. The whole undo history is cleared instead, and
-    ///   the note says so.
-    /// - Drop my change forgets a local delete the server already did; it
-    ///   clears the history the same way (undoing the delete would bring
-    ///   back an object the server no longer has).
+    ///   server's copy, or removes it if the server deleted it. History steps
+    ///   that name the object (for a way, also its old and new nodes) refer
+    ///   to data that was rewritten (a move of nodes the way now has
+    ///   different, a delete snapshot of an object that is back with another
+    ///   version) and are removed, whole batches included. Steps that name
+    ///   only other features don't depend on the removed ones and stay; the
+    ///   note says when steps were removed.
+    /// - Drop my change forgets a local delete the server already did; the
+    ///   steps naming the object go the same way (undoing the delete would
+    ///   bring back an object the server no longer has).
     fn apply_resolution(
         &mut self,
         action: osm_gpui::ui::upload_dialog::ConflictAction,
@@ -4708,6 +4726,7 @@ impl MapViewer {
         let not_found = || tr!("upload_conflict.not_found", object = name);
         let layer_id = self.conflict_layer(kind, id).ok_or_else(not_found)?;
 
+        let mut tainted: Vec<osm_gpui::selection::FeatureRef> = Vec::new();
         let changed = match action {
             ConflictAction::KeepMine => {
                 let Some(version) = server.version(kind, id) else {
@@ -4722,23 +4741,31 @@ impl MapViewer {
                 }
                 return Ok(tr!("upload_conflict.kept_mine", object = name));
             }
-            ConflictAction::UseTheirs => self
-                .layer_manager
+            ConflictAction::UseTheirs => {
+                // Which features' history can no longer be trusted: the
+                // object, and for a way both its old local nodes and the
+                // nodes of the server's copy (they are rewritten, restored
+                // or dropped along with it).
+                tainted.extend(self.resolution_taint(layer_id, kind, id, &server));
+                self.layer_manager
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
-                .is_some_and(|e| e.adopt_server_element(kind, id, server)),
-            ConflictAction::DropMyChange => self
-                .layer_manager
-                .find_layer_mut(layer_id)
-                .and_then(|l| l.as_editable_mut())
-                .is_some_and(|e| e.forget_local_delete(kind, id)),
+                .is_some_and(|e| e.adopt_server_element(kind, id, server))
+            }
+            ConflictAction::DropMyChange => {
+                tainted.push(osm_gpui::selection::FeatureRef { layer_id, kind, id });
+                self.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .is_some_and(|e| e.forget_local_delete(kind, id))
+            }
             ConflictAction::Show => return Err(not_found()),
         };
         if !changed {
             return Err(not_found());
         }
 
-        let cleared = self.undo_stack.clear();
+        let cleared = self.undo_stack.remove_touching(&tainted);
         self.data_generation += 1;
         self.hovered = None;
         // Drop anything selected that is no longer in the data.
@@ -4764,9 +4791,41 @@ impl MapViewer {
         .to_string();
         if cleared > 0 {
             note.push(' ');
-            note.push_str(&tr!("upload_conflict.undo_cleared"));
+            note.push_str(&tr!("upload_conflict.undo_trimmed"));
         }
         Ok(note.into())
+    }
+
+    /// The features whose undo steps stop being sound when "Use theirs"
+    /// replaces `(kind, id)` with `server`.
+    fn resolution_taint(
+        &self,
+        layer_id: LayerId,
+        kind: osm_gpui::selection::FeatureKind,
+        id: i64,
+        server: &osm_gpui::osm_api::ServerElement,
+    ) -> Vec<osm_gpui::selection::FeatureRef> {
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+        let mut out = vec![FeatureRef { layer_id, kind, id }];
+        if kind == FeatureKind::Way {
+            let mut nodes: Vec<i64> = self
+                .layer_manager
+                .find_layer(layer_id)
+                .and_then(|l| l.as_editable())
+                .and_then(|e| e.way_node_ids(id))
+                .unwrap_or_default();
+            if let osm_gpui::osm_api::ServerElement::Present(data) = server {
+                if let Some(way) = data.ways.get(&id) {
+                    nodes.extend(way.nodes.iter().copied());
+                }
+            }
+            out.extend(nodes.into_iter().map(|n| FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id: n,
+            }));
+        }
+        out
     }
 
     /// Debug builds only, and only when `OSM_GPUI_DEBUG_TRANSFER` is set:
@@ -8891,6 +8950,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_upload_comment_survives_closing_the_dialog(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update_in(vcx, |view, window, cx| {
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(
+                layer_id,
+                "L".to_string(),
+                Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+            );
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+            make_pending_change(view);
+
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("Add a cafe".into(), window, cx)
+            });
+            view.close_upload_dialog_keeping_draft(cx);
+            assert!(view.upload_dialog.is_none());
+            assert_eq!(view.upload_comment_draft, "Add a cafe");
+
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog reopens");
+            assert_eq!(dialog.read(cx).draft_comment(cx), "Add a cafe");
+        });
+    }
+
+    #[gpui::test]
     fn edits_and_undo_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
         let window = setup(cx);
         window
@@ -9105,26 +9203,29 @@ mod tests {
     }
 
     #[gpui::test]
-    fn use_theirs_replaces_the_object_and_clears_the_undo_history(cx: &mut TestAppContext) {
+    fn use_theirs_replaces_the_object_and_keeps_unrelated_undo_history(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Node;
         use osm_gpui::ui::upload_dialog::ConflictAction;
         let window = setup(cx);
         window
             .update(cx, |view, _window, _cx| {
                 tag_node_one(view);
-                // An unrelated earlier edit is on the stack too: all of it goes,
-                // and the note says so.
+                // An unrelated earlier edit is on the stack too: it stays.
                 view.undo_stack.push(UndoableAction::ReverseWays {
                     layer: view.active_layer.unwrap(),
-                    way_ids: vec![],
+                    way_ids: vec![99],
                 });
                 let note = view
                     .apply_resolution(ConflictAction::UseTheirs, Node, 1, server_node(5, 40.0))
                     .unwrap();
                 assert!(note.contains("Replaced Node 1"), "{note}");
-                assert!(note.contains("undo history was cleared"), "{note}");
-                assert!(view.undo_stack.actions.is_empty());
-                assert_eq!(view.undo_stack.cursor, 0);
+                assert!(note.contains("Undo steps that involved it"), "{note}");
+                assert_eq!(view.undo_stack.actions.len(), 1, "only the unrelated step");
+                assert_eq!(view.undo_stack.cursor, 1);
+                assert!(matches!(
+                    view.undo_stack.actions[0],
+                    UndoableAction::ReverseWays { .. }
+                ));
                 assert_eq!(pending(view), (0, 0, 0), "the change to it is gone");
                 let layer_id = view.active_layer.unwrap();
                 let tags = editable(view)

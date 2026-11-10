@@ -648,7 +648,7 @@ upload_conflict:
   kept_mine: "Deine Version von %{object} wird beibehalten. Auf „Hochladen“ klicken, um sie zu senden."
   used_theirs: "%{object} wurde durch die Server-Version ersetzt; deine Änderung daran ist verworfen. Auf „Hochladen“ klicken, um fortzufahren."
   dropped: "Dein Löschen von %{object} wurde vergessen, der Server hatte es bereits gelöscht. Auf „Hochladen“ klicken, um fortzufahren."
-  undo_cleared: "Der Rückgängig-Verlauf wurde geleert."
+  undo_trimmed: "Rückgängig-Schritte, die es betrafen, wurden entfernt."
 
 error:
   network: "Netzwerkfehler: %{detail}"

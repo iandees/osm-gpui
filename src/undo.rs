@@ -342,15 +342,33 @@ impl UndoStack {
         self.cursor = self.actions.len();
     }
 
-    /// Forget every recorded action (and anything redoable). Returns how many
-    /// there were. Used when the data underneath the history was replaced
-    /// wholesale, so no entry can be trusted to apply cleanly any more.
-    pub(crate) fn clear(&mut self) -> usize {
-        let count = self.actions.len();
-        self.actions.clear();
-        self.cursor = 0;
+    /// Remove every step (undoable or redoable) that touches one of
+    /// `tainted`, keeping the rest in order with the cursor still pointing
+    /// at the same place in it. Returns how many steps were removed.
+    ///
+    /// Used when the data behind some features was replaced from outside the
+    /// history. Steps that name none of them operate on other features only
+    /// and don't depend on the removed steps, so they stay valid; any step
+    /// that does name one (a `Batch` counts if any part of it does) could
+    /// resurrect a stale version or content, so it goes.
+    pub(crate) fn remove_touching(
+        &mut self,
+        tainted: &[osm_gpui::selection::FeatureRef],
+    ) -> usize {
+        let touches = |a: &UndoableAction| {
+            a.affected_features()
+                .iter()
+                .any(|f| tainted.iter().any(|t| t == f))
+        };
+        let before = self.actions.len();
+        let below_cursor_removed = self.actions[..self.cursor]
+            .iter()
+            .filter(|a| touches(a))
+            .count();
+        self.actions.retain(|a| !touches(a));
+        self.cursor -= below_cursor_removed;
         self.revision += 1;
-        count
+        before - self.actions.len()
     }
 
     /// Returns the action to invert, and moves the cursor back. `None` if
@@ -386,6 +404,51 @@ mod undo_stack_tests {
         UndoableAction::MoveNodes {
             per_layer: vec![(LayerId(1), vec![(id, before, after)])],
         }
+    }
+
+    #[test]
+    fn remove_touching_keeps_unrelated_steps_and_the_cursor_position() {
+        let tainted = [FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Node,
+            id: 2,
+        }];
+        let mut stack = UndoStack::default();
+        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(2, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(UndoableAction::Batch {
+            label: "batch".into(),
+            actions: vec![
+                move_one(3, (0.0, 0.0), (1.0, 1.0)),
+                move_one(2, (1.0, 1.0), (2.0, 2.0)),
+            ],
+        });
+        stack.push(move_one(4, (0.0, 0.0), (1.0, 1.0)));
+        // Undo the last step so it is redoable, then prune.
+        stack.undo();
+        assert_eq!((stack.actions.len(), stack.cursor), (4, 3));
+        let removed = stack.remove_touching(&tainted);
+        assert_eq!(removed, 2, "the direct step and the batch holding one");
+        assert_eq!((stack.actions.len(), stack.cursor), (2, 1));
+        // The surviving step below the cursor is node 1's, the redoable one node 4's.
+        assert!(stack.undo().is_some());
+        assert!(stack.undo().is_none());
+        assert!(stack.redo().is_some());
+        assert!(stack.redo().is_some());
+        assert!(stack.redo().is_none());
+    }
+
+    #[test]
+    fn remove_touching_matches_the_layer_too() {
+        let other_layer = [FeatureRef {
+            layer_id: LayerId(9),
+            kind: FeatureKind::Node,
+            id: 1,
+        }];
+        let mut stack = UndoStack::default();
+        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        assert_eq!(stack.remove_touching(&other_layer), 0);
+        assert_eq!(stack.actions.len(), 1);
     }
 
     #[test]
