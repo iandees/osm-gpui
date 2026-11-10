@@ -7,3 +7,75 @@ _version: 1
 meta:
   # Shown in the Settings language dropdown, in the language itself.
   language_name: "English"
+
+menu:
+  app:
+    settings: "Settings…"
+    services: "Services"
+    hide: "Hide %{app}"
+    hide_others: "Hide Others"
+    show_all: "Show All"
+    quit: "Quit %{app}"
+  file:
+    title: "File"
+    open: "Open…"
+    export: "Export…"
+    download: "Download from OSM"
+    upload: "Upload to OSM…"
+  edit:
+    title: "Edit"
+    undo: "Undo"
+    redo: "Redo"
+    delete: "Delete"
+    select_all: "Select All"
+    deselect_all: "Deselect All"
+    change_feature_type: "Change Feature Type…"
+    apply_nsi_preset: "Apply NSI Preset…"
+  mode:
+    title: "Mode"
+  imagery:
+    title: "Imagery"
+    custom: "Custom Imagery"
+    custom_add: "Add…"
+    osm_carto: "OpenStreetMap Carto"
+    coordinate_grid: "Coordinate Grid"
+    loading: "(Loading imagery index…)"
+    unavailable: "(Imagery index unavailable)"
+    # A recommended imagery source in the menu.
+    best_entry: "★ %{name}"
+  view:
+    title: "View"
+    zoom_in: "Zoom In"
+    zoom_out: "Zoom Out"
+    zoom_to_data: "Zoom to Data"
+    zoom_to_selection: "Zoom to Selection"
+    toggle_debug_overlay: "Toggle Debug Overlay"
+  window:
+    title: "Window"
+    minimize: "Minimize"
+    zoom: "Zoom"
+  help:
+    title: "Help"
+    map_features_wiki: "OpenStreetMap Wiki: Map Features"
+    project_page: "%{app} on GitHub"
+  open_dialog:
+    title: "Select OSM file to open"
+    osm_files: "OSM files"
+    all_files: "All files"
+
+# Edit modes (menu items, toolbar buttons, tooltips).
+mode:
+  select:
+    name: "Select"
+  add:
+    name: "Add"
+  building:
+    name: "Building"
+  extrude:
+    name: "Extrude"
+
+status:
+  open_failed: "Could not open %{path}: %{error}"
+
+settings:
+  window_title: "Settings"
