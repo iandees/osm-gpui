@@ -407,15 +407,21 @@ struct MapViewer {
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
-    /// Active tag-edit dialog, if open, plus the context needed to apply
-    /// its result.
-    tag_edit_dialog: Option<(
-        gpui::Entity<osm_gpui::ui::tag_edit_dialog::TagEditDialog>,
-        TagEditContext,
-    )>,
-    /// A dialog-open request recorded by a row/button click, to be acted on
-    /// during the next `render()` — see `PendingTagEditOpen`'s doc comment.
+    /// The tag currently being edited in place in the Tags table, if any.
+    tag_inline_edit: Option<InlineTagEdit>,
+    /// A request to start an inline tag edit, recorded by a cell/button
+    /// click and acted on during the next `render()` — see
+    /// `PendingTagEditOpen`'s doc comment.
     pending_tag_edit_open: Option<PendingTagEditOpen>,
+    /// The feature whose Fields section has its "Add field" list expanded.
+    /// Keyed by feature so the list is closed again for any other selection
+    /// without every selection-changing path having to reset it.
+    fields_more_open_for: Option<osm_gpui::selection::FeatureRef>,
+    /// Current width of the side panel in pixels (user-resizable).
+    side_panel_width: f32,
+    /// An in-progress drag of the side panel's resize handle: the window x
+    /// and panel width at mouse-down.
+    side_panel_resize: Option<(f32, f32)>,
     /// Active NSI preset search dialog, if open.
     nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
     /// Active "change feature type" preset picker dialog, if open.
@@ -468,10 +474,10 @@ struct MapViewer {
     extrude_drag: Option<ExtrudeDrag>,
 }
 
-/// Which features a `TagEditDialog` targets and the row's original text
-/// (used to detect whether the value box was actually touched before
-/// applying — see `compute_tag_edit_entries`). `original_key`/
-/// `original_value` are both empty for the "Add tag" flow.
+/// Which features an inline tag edit targets and the row's original text
+/// (used to detect whether the value was actually touched before applying
+/// — see `compute_tag_edit_entries`). `original_key`/`original_value` are
+/// both empty for the "Add tag" flow.
 struct TagEditContext {
     features: Vec<osm_gpui::selection::FeatureRef>,
     original_key: String,
@@ -479,17 +485,29 @@ struct TagEditContext {
     is_add: bool,
 }
 
-/// Recorded by a row's double-click or the "Add tag" button; consumed by
-/// `check_for_pending_tag_edit_dialog` (called from `Render::render`) to
-/// actually construct the dialog. This indirection exists so the dialog is
+/// An in-place edit of one tag in the Tags table. Both inputs always exist
+/// and are seeded with the row's original text, so committing reads them
+/// uniformly; `field` says which of them the table actually shows as an
+/// input (`Key` or `Value` for an existing row, `None` for the add row,
+/// which shows both).
+struct InlineTagEdit {
+    ctx: TagEditContext,
+    field: osm_gpui::ui::tag_edit::TagEditField,
+    key: gpui::Entity<gpui_component::input::InputState>,
+    value: gpui::Entity<gpui_component::input::InputState>,
+}
+
+/// Recorded by a tag cell click or the "Add tag" button; consumed by
+/// `check_for_pending_tag_edit` (called from `Render::render`) to actually
+/// build the inline inputs. This indirection exists so the inputs are
 /// always built from inside a render pass — never directly inside a click
-/// handler — which `TagEditDialog`'s deferred select-all-on-open (Task 4)
-/// depends on.
+/// handler — which the deferred select-all-on-open depends on (see
+/// `check_for_pending_tag_edit`).
 struct PendingTagEditOpen {
     features: Vec<osm_gpui::selection::FeatureRef>,
     original_key: String,
     original_value: String,
-    select: osm_gpui::ui::tag_edit_dialog::TagEditField,
+    select: osm_gpui::ui::tag_edit::TagEditField,
     is_add: bool,
 }
 
@@ -582,7 +600,12 @@ impl MapViewer {
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             upload_dialog: None,
-            tag_edit_dialog: None,
+            tag_inline_edit: None,
+            fields_more_open_for: None,
+            side_panel_width: osm_gpui::ui::style::initial_side_panel_width(
+                settings_store::snapshot().side_panel_width,
+            ),
+            side_panel_resize: None,
             pending_tag_edit_open: None,
             nsi_dialog: None,
             preset_picker_dialog: None,
@@ -1188,23 +1211,23 @@ impl MapViewer {
         self.feature_tag_snapshots(&self.selected)
     }
 
-    /// If a row/button click recorded a pending tag-edit-dialog open
-    /// request, construct the dialog now. Called from `Render::render` (see
-    /// Step 6) — never call this, or construct `TagEditDialog` directly,
-    /// from inside a click/action listener: `TagEditDialog`'s deferred
-    /// select-all-on-open (Task 4) only lands correctly when the dialog is
-    /// built during the same draw pass that first paints it. This is the one
-    /// dialog with that constraint — `CustomImageryDialog` and
-    /// `QuitConfirmDialog` have no such requirement and are built directly
-    /// from `MapViewer::open_custom_imagery_dialog` /
-    /// `show_quit_confirm_dialog` outside of `render()`.
-    fn check_for_pending_tag_edit_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// If a cell/button click recorded a pending inline tag edit, build its
+    /// inputs now. Called from `Render::render` — never build them directly
+    /// from inside a click/action listener: `Window::dispatch_action`
+    /// resolves its target in the last *painted* frame, so the deferred
+    /// select-all below only reaches the new input when it is created
+    /// during the same draw pass that first paints it.
+    fn check_for_pending_tag_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::input::{InputState, SelectAll};
+        use osm_gpui::ui::tag_edit::TagEditField;
+
         let Some(pending) = self.pending_tag_edit_open.take() else {
             return;
         };
-        if self.tag_edit_dialog.is_some() {
-            return; // one at a time; drop the request rather than queue it
-        }
+        // Finish any edit that is still open: its input doesn't blur when
+        // the click that got us here landed on a button.
+        self.commit_tag_inline_edit(cx);
+
         let PendingTagEditOpen {
             features,
             original_key,
@@ -1212,52 +1235,136 @@ impl MapViewer {
             select,
             is_add,
         } = pending;
-        let title = if is_add { "Add tag" } else { "Edit tag" };
-        let dialog = cx.new(|cx| {
-            osm_gpui::ui::tag_edit_dialog::TagEditDialog::new(
-                window,
-                cx,
-                title,
-                original_key.clone(),
-                original_value.clone(),
-                select,
-            )
-        });
-        cx.subscribe(&dialog, |this, _entity, event, cx| {
-            use osm_gpui::ui::tag_edit_dialog::DialogEvent;
-            match event {
-                DialogEvent::Cancelled => {
-                    this.tag_edit_dialog = None;
-                    cx.notify();
-                }
-                DialogEvent::Submitted { key, value } => {
-                    // apply_tag_edit already clears tag_edit_dialog via take().
-                    this.apply_tag_edit(key, value);
-                    cx.notify();
-                }
-            }
+
+        let mut new_input = |placeholder: &'static str, text: String| {
+            cx.new(|cx| {
+                let mut state = InputState::new(window, cx).placeholder(placeholder);
+                state.set_value(text, window, cx);
+                state
+            })
+        };
+        let key = new_input("key", original_key.clone());
+        let value = new_input("value", original_value.clone());
+        cx.subscribe_in(&key, window, |this, input, event, window, cx| {
+            this.on_tag_input_event(TagEditField::Key, input, event, window, cx);
         })
         .detach();
-        self.tag_edit_dialog = Some((
-            dialog,
-            TagEditContext {
+        cx.subscribe_in(&value, window, |this, input, event, window, cx| {
+            this.on_tag_input_event(TagEditField::Value, input, event, window, cx);
+        })
+        .detach();
+
+        let focused = if select == TagEditField::Value {
+            &value
+        } else {
+            &key
+        };
+        focused.update(cx, |state, cx| state.focus(window, cx));
+        if !is_add {
+            // Select the existing text so typing replaces it.
+            window.on_next_frame(|window, cx| {
+                window.dispatch_action(Box::new(SelectAll), cx);
+            });
+        }
+
+        self.tag_inline_edit = Some(InlineTagEdit {
+            ctx: TagEditContext {
                 features,
                 original_key,
                 original_value,
                 is_add,
             },
-        ));
+            field: select,
+            key,
+            value,
+        });
         cx.notify();
     }
 
-    /// Apply a submitted tag-edit dialog result: compute the per-feature
+    /// React to Enter or loss of focus in one of the inline tag edit's two
+    /// inputs (`which`). Enter commits — except in the add row's key input,
+    /// where it moves on to the value. Losing focus commits too, so clicking
+    /// away keeps what was typed; the add row's key input is the exception
+    /// again, since focus normally leaves it for the value input (an empty
+    /// key there abandons the row instead).
+    fn on_tag_input_event(
+        &mut self,
+        which: osm_gpui::ui::tag_edit::TagEditField,
+        input: &gpui::Entity<gpui_component::input::InputState>,
+        event: &gpui_component::input::InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::input::InputEvent;
+        use osm_gpui::ui::tag_edit::TagEditField;
+
+        let Some(edit) = &self.tag_inline_edit else {
+            return;
+        };
+        // Ignore late events from an edit that was already committed or
+        // cancelled (its inputs outlive it until their subscriptions drop).
+        let current = if which == TagEditField::Key {
+            &edit.key
+        } else {
+            &edit.value
+        };
+        if current != input {
+            return;
+        }
+        let add_row_key = edit.ctx.is_add && which == TagEditField::Key;
+
+        match event {
+            InputEvent::PressEnter { .. } if add_row_key => {
+                let value = edit.value.clone();
+                value.update(cx, |state, cx| state.focus(window, cx));
+            }
+            InputEvent::PressEnter { .. } => {
+                self.commit_tag_inline_edit(cx);
+                window.focus(&self.focus_handle, cx);
+            }
+            InputEvent::Blur if add_row_key => {
+                if edit.key.read(cx).value().trim().is_empty() {
+                    self.tag_inline_edit = None;
+                }
+            }
+            InputEvent::Blur => self.commit_tag_inline_edit(cx),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// Apply the open inline tag edit, if any, and close it. An empty key
+    /// discards the edit: silently for the add row, with a status message
+    /// for an existing row (which would otherwise look like a failed save).
+    fn commit_tag_inline_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.tag_inline_edit.take() else {
+            return;
+        };
+        let key = edit.key.read(cx).value().trim().to_string();
+        let value = edit.value.read(cx).value().to_string();
+        if key.is_empty() {
+            if !edit.ctx.is_add {
+                self.set_status("A tag needs a key; the edit was discarded");
+            }
+            return;
+        }
+        self.apply_tag_edit(&edit.ctx, &key, &value);
+    }
+
+    /// Abandon the open inline tag edit (Escape) and hand focus back to the
+    /// map.
+    pub(crate) fn cancel_tag_inline_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tag_inline_edit.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    /// Apply a tag edit to the features in `ctx`: compute the per-feature
     /// mutations via `compute_tag_edit_entries`, apply them immediately,
     /// and push one `UndoableAction::SetTags` (skipped entirely if there
     /// were no actual changes).
-    fn apply_tag_edit(&mut self, key: &str, value: &str) {
-        let Some((_, ctx)) = self.tag_edit_dialog.take() else {
-            return;
-        };
+    fn apply_tag_edit(&mut self, ctx: &TagEditContext, key: &str, value: &str) {
         let snapshots = self.feature_tag_snapshots(&ctx.features);
 
         let entries = osm_gpui::selection::compute_tag_edit_entries(
@@ -2471,6 +2578,43 @@ impl MapViewer {
         (total_tiles, cached_files, osm_nodes + osm_ways)
     }
 
+    /// Begin dragging the side panel's resize handle from window x `x`.
+    pub(crate) fn start_side_panel_resize(&mut self, x: f32, cx: &mut Context<Self>) {
+        self.side_panel_resize = Some((x, self.side_panel_width));
+        cx.notify();
+    }
+
+    fn drag_side_panel_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some((start_x, start_width)) = self.side_panel_resize else {
+            return;
+        };
+        // The button was released somewhere that never delivered the
+        // mouse-up (outside the window): stop here.
+        if event.pressed_button != Some(gpui::MouseButton::Left) {
+            self.finish_side_panel_resize(cx);
+            return;
+        }
+        self.side_panel_width = osm_gpui::ui::style::resized_side_panel_width(
+            start_width,
+            start_x,
+            event.position.x.as_f32(),
+        );
+        cx.notify();
+    }
+
+    /// End a side panel resize drag and remember the new width.
+    fn finish_side_panel_resize(&mut self, cx: &mut Context<Self>) {
+        if self.side_panel_resize.take().is_none() {
+            return;
+        }
+        let mut settings = settings_store::snapshot();
+        if settings.side_panel_width != Some(self.side_panel_width) {
+            settings.side_panel_width = Some(self.side_panel_width);
+            settings_store::update_store(settings);
+        }
+        cx.notify();
+    }
+
     fn set_status(&mut self, message: impl Into<String>) {
         self.status_message = Some((message.into(), Instant::now()));
     }
@@ -2494,8 +2638,8 @@ impl MapViewer {
 
     /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
     /// Called directly from the menu handler (via `with_map_viewer_in`) —
-    /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike the
-    /// tag-edit dialog, this dialog has no post-paint focus requirement, so
+    /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike an inline
+    /// tag edit, this dialog has no post-paint focus requirement, so
     /// it's safe to construct straight from the menu-triggered `update_in`
     /// call rather than deferring to the next render pass.
     pub(crate) fn open_custom_imagery_dialog(
@@ -2827,15 +2971,15 @@ impl Render for MapViewer {
         // Consume any pending script command first.
         self.process_script_command(window, cx);
 
-        // The tag-edit dialog is the one remaining case that must be opened
-        // from inside a render pass (its deferred select-all-on-open depends
-        // on being constructed after paint — see its doc comment). Every
-        // other former polling queue (new OSM data, layer requests, download
-        // requests, debug-overlay toggle, the two other dialogs) is now
-        // applied directly to `self` by menu handlers / background-task
-        // completions via `MAP_VIEWER_HANDLE`, so there's nothing left to
-        // drain here.
-        self.check_for_pending_tag_edit_dialog(window, cx);
+        // Starting an inline tag edit is the one remaining case that must
+        // happen inside a render pass (its deferred select-all-on-open
+        // depends on the inputs being built in the pass that first paints
+        // them — see its doc comment). Every other former polling queue (new
+        // OSM data, layer requests, download requests, debug-overlay toggle,
+        // the dialogs) is applied directly to `self` by menu handlers /
+        // background-task completions via `MAP_VIEWER_HANDLE`, so there's
+        // nothing else to drain here.
+        self.check_for_pending_tag_edit(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
@@ -2848,7 +2992,7 @@ impl Render for MapViewer {
         // `window.bounds()`, which includes the title bar) minus the side
         // panels and the status bar.
         let window_size = window.viewport_size();
-        let panel_width = px(osm_gpui::ui::style::SIDE_PANEL_WIDTH);
+        let panel_width = px(self.side_panel_width);
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
@@ -3417,6 +3561,21 @@ impl Render for MapViewer {
             .flex_col()
             .child(main_row)
             .child(status_bar)
+            // A side panel resize drag is tracked here, on the window-sized
+            // root, so it keeps following the pointer over the map and the
+            // panel alike.
+            .when(self.side_panel_resize.is_some(), |root| {
+                root.cursor_col_resize()
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                        this.drag_side_panel_resize(ev, cx);
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                            this.finish_side_panel_resize(cx);
+                        }),
+                    )
+            })
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))
             .on_action(cx.listener(Self::on_delete_selection))
@@ -3437,11 +3596,6 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_change_feature_type))
             .on_action(cx.listener(Self::on_quit))
             .children(self.custom_imagery_dialog.clone())
-            .children(
-                self.tag_edit_dialog
-                    .as_ref()
-                    .map(|(dialog, _)| dialog.clone()),
-            )
             .children(self.quit_confirm_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())

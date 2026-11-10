@@ -11,10 +11,10 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 - Data rendering tuned for tracing over imagery: thin colored ways with a dark casing (zoom ≥ 15), round outlined node markers (plain way vertices hidden below zoom 16), and direction arrows on one-way roads, roundabouts and flowing waterways (zoom ≥ 16). Hovering a feature in Select mode highlights what a click would select.
 - Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
 - Adaptive lat/lon grid overlay (configurable via settings).
-- Layer list in right panel with click-to-toggle visibility.
+- Resizable right panel (drag its left edge; the width is remembered). Its layer list has an eye toggle per layer for visibility; clicking an OSM layer's row makes it the active layer that the drawing modes write into.
 - Debug overlay: zoom, center coords, object/tile counts, cache stats.
 - Feature selection: click a node or way to select it; Shift-click to toggle; rectangular box-select. Right panel shows feature type, OSM link, and all tags.
-- **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tag editing via dialog on click or side-panel edit. Create nodes (negative ID for new). Delete features. Edit multi-select to batch-apply tag changes.
+- **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tags are edited in place in the side panel's Tags table: click a key or value to edit it (Enter or clicking away commits, Esc abandons), "Add tag" appends a row. Create nodes (negative ID for new). Delete features. Edit multi-select to batch-apply tag changes.
 - **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
 - **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit). Unsaved-changes warning on quit.
 - Settings window: choose OSM API server (prod/dev/custom), per-server OAuth client IDs, custom imagery sources.

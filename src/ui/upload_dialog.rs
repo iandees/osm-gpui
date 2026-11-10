@@ -1,6 +1,6 @@
 //! Modal dialog to review pending edits and provide a changeset comment
 //! before uploading to the OSM API. Mirrors `quit_confirm_dialog.rs`'s
-//! scrim/card/focus/Escape conventions and `tag_edit_dialog.rs`'s use of
+//! scrim/card/focus/Escape conventions, with a
 //! `gpui_component::input::{Input, InputState}` for the comment field.
 
 use gpui::{
