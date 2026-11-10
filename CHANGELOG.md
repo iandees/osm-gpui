@@ -5,7 +5,9 @@ Release notes for osm-gpui. The section whose heading matches the pushed tag
 
 ## Unreleased
 
-- Downloads and uploads now show their progress: the status bar shows the stage (requesting, bytes received, reading data) with a spinner and a Cancel button for downloads, and the upload dialog shows the changeset stage and stays open to show an error and offer a retry.
+- The Linux build now includes the Wayland and X11 windowing backends and no longer panics at startup ("internal error: entered unreachable code").
+- Fixed File > Upload to OSM (and its shortcut) doing nothing: it now shows the sign-in prompt, a "Nothing to upload" message, or the changeset dialog. Add Custom Imagery… had the same defect and is fixed too.
+- Script harness: new `action <Name>` op dispatches an app action the way a menu item does.
 
 ## 0.2.0
 
