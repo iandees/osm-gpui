@@ -178,6 +178,8 @@ panel:
     add_field: "Feld hinzufügen (%{count})"
     # Öffnet die Wertliste eines Mehrfachauswahlfelds.
     multi_add: "+ Hinzufügen"
+    # Anzeige in einem Auswahlfeld ohne gesetzten Wert.
+    none: "(keine)"
   tags:
     title: "Tags"
     no_selection: "Keine Auswahl."

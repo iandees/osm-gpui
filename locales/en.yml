@@ -178,6 +178,8 @@ panel:
     add_field: "Add field (%{count})"
     # Opens the value list of a multi-select field.
     multi_add: "+ Add"
+    # Shown in a dropdown field with no value set.
+    none: "(none)"
   tags:
     title: "Tags"
     no_selection: "No selection."

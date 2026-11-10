@@ -80,13 +80,16 @@ impl MapViewer {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        // Labels, placeholders and option labels follow the UI language;
+        // tag keys and values never do.
+        let tr = osm_gpui::preset_translations::active();
         match field.field_type {
             osm_gpui::fields::FieldType::Text => {
                 let current = tags.get(&field.key).cloned().unwrap_or_default();
                 let input = self.text_field_input(
                     &field.id,
                     &current,
-                    field.placeholder.as_deref(),
+                    field.display_placeholder(tr),
                     feature,
                     field.key.clone(),
                     window,
@@ -96,7 +99,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()))
+                    .child(Label::new(field.display_label(tr).to_string()))
                     .child(Input::new(&input))
                     .into_any_element()
             }
@@ -107,7 +110,7 @@ impl MapViewer {
                     gpui::SharedString::from(format!("field-check-{}", field.id)).into();
                 gpui_component::checkbox::Checkbox::new(element_id)
                     .checked(current)
-                    .label(field.label.clone())
+                    .label(field.display_label(tr).to_string())
                     .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
                         let value = if *checked { "yes" } else { "no" };
                         this.apply_nsi_preset(
@@ -132,7 +135,11 @@ impl MapViewer {
                     gpui::SharedString::from(format!("field-radio-{}", field.id)).into();
 
                 let group = gpui_component::radio::RadioGroup::horizontal(group_id)
-                    .children(options.iter().map(|opt| opt.label.clone()))
+                    .children(
+                        options
+                            .iter()
+                            .map(|opt| field.display_option_label(opt, tr).to_string()),
+                    )
                     .selected_index(selected_index)
                     .on_click(cx.listener(move |this, index: &usize, _window, cx| {
                         let Some(opt) = options.get(*index) else {
@@ -152,7 +159,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()))
+                    .child(Label::new(field.display_label(tr).to_string()))
                     .child(group)
                     .into_any_element()
             }
@@ -162,8 +169,8 @@ impl MapViewer {
                 let current_label = current_value
                     .as_ref()
                     .and_then(|v| field.options.iter().find(|o| &o.value == v))
-                    .map(|o| o.label.clone())
-                    .unwrap_or_else(|| "(none)".to_string());
+                    .map(|o| field.display_option_label(o, tr).to_string())
+                    .unwrap_or_else(|| tr!("panel.fields.none").to_string());
 
                 let field_id_for_toggle = field.id.clone();
                 let header = gpui::div()
@@ -192,7 +199,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()))
+                    .child(Label::new(field.display_label(tr).to_string()))
                     .child(header);
 
                 if is_open {
@@ -215,7 +222,9 @@ impl MapViewer {
                                     .py_1()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(cx.theme().accent))
-                                    .child(Label::new(opt.label.clone()))
+                                    .child(Label::new(
+                                        field.display_option_label(opt, tr).to_string(),
+                                    ))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _ev, _window, cx| {
@@ -253,7 +262,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.label.clone()));
+                    .child(Label::new(field.display_label(tr).to_string()));
 
                 // Chips for already-selected values, each removable.
                 let chips = gpui::div().flex().flex_row().flex_wrap().gap_1().children(
@@ -269,7 +278,7 @@ impl MapViewer {
                             .options
                             .iter()
                             .find(|o| &o.value == value)
-                            .map(|o| o.label.clone())
+                            .map(|o| field.display_option_label(o, tr).to_string())
                             .unwrap_or_else(|| value.clone());
                         gpui::div()
                             .id(format!("field-multicombo-chip-{}", value))
@@ -349,7 +358,9 @@ impl MapViewer {
                                             .py_1()
                                             .cursor_pointer()
                                             .hover(|el| el.bg(cx.theme().accent))
-                                            .child(Label::new(opt.label.clone()))
+                                            .child(Label::new(
+                                                field.display_option_label(opt, tr).to_string(),
+                                            ))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener(move |this, _ev, _window, cx| {
@@ -437,6 +448,7 @@ impl MapViewer {
                 .into_any_element();
         }
 
+        let tr = osm_gpui::preset_translations::active();
         let field_index = osm_gpui::fields::field_index();
         let fields = osm_gpui::fields::resolve_fields(field_index, &preset.fields);
         let mut field_elements: Vec<gpui::AnyElement> = fields
@@ -516,7 +528,7 @@ impl MapViewer {
                                 "field-add-more-{}",
                                 field_id
                             )))
-                            .label(f.label.clone())
+                            .label(f.display_label(tr).to_string())
                             .ghost()
                             .xsmall()
                             .on_click(cx.listener(

@@ -3,7 +3,13 @@ This directory vendors data from two upstream projects:
 - assets/presets/presets.json, assets/presets/area_keys.json, and
   assets/presets/fields.json are derived from the iD tagging schema
   (https://github.com/openstreetmap/id-tagging-schema), licensed under
-  the ISC License.
+  the ISC License. The vendored data matches id-tagging-schema 6.19.2.
+
+- assets/presets/translations/<locale>.json are the translations of those
+  presets and fields from the same project (dist/translations/<locale>.min.json
+  of the same release, trimmed to the ids and strings the app uses), under the
+  same ISC License. Translations are contributed through Transifex by the iD
+  community.
 
 - assets/presets/icons/maki-*.svg are from the Maki icon set
   (https://github.com/mapbox/maki), released under CC0 1.0 Universal.
@@ -11,4 +17,5 @@ This directory vendors data from two upstream projects:
 - assets/presets/icons/temaki-*.svg are from the Temaki icon set
   (https://github.com/rapideditor/temaki), released under CC0 1.0 Universal.
 
-Regenerate this directory with `cargo run --example update_presets`.
+Regenerate this directory with `cargo run --example update_presets`, and the translations with
+`cargo run --example update_preset_translations -- <schema-version> <locale>...`.

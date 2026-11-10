@@ -3,6 +3,7 @@
 //! Read-only, vendored the same way presets are — see
 //! `docs/superpowers/specs/2026-07-07-preset-fields-editor-design.md`.
 
+use crate::preset_translations::PresetTranslations;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -43,6 +44,38 @@ pub struct Field {
     pub placeholder: Option<String>,
     #[serde(default)]
     pub options: Vec<FieldOption>,
+}
+
+impl Field {
+    /// The label to show: translated when `translations` has one, else the
+    /// English schema label. The lookups borrow, so they don't allocate.
+    pub fn display_label<'a>(&'a self, translations: Option<&'a PresetTranslations>) -> &'a str {
+        translations
+            .and_then(|t| t.field_label(&self.id))
+            .unwrap_or(&self.label)
+    }
+
+    /// The placeholder to show, translated where possible.
+    pub fn display_placeholder<'a>(
+        &'a self,
+        translations: Option<&'a PresetTranslations>,
+    ) -> Option<&'a str> {
+        translations
+            .and_then(|t| t.field_placeholder(&self.id))
+            .or(self.placeholder.as_deref())
+    }
+
+    /// The label of one of this field's options, translated where possible.
+    /// The option's `value` (the tag value) is never changed.
+    pub fn display_option_label<'a>(
+        &'a self,
+        option: &'a FieldOption,
+        translations: Option<&'a PresetTranslations>,
+    ) -> &'a str {
+        translations
+            .and_then(|t| t.option_label(&self.id, &option.value))
+            .unwrap_or(&option.label)
+    }
 }
 
 /// A parsed, in-memory collection of vendored `Field`s, keyed by id.
@@ -184,6 +217,62 @@ mod tests {
         let resolved = resolve_more_fields(&index, &more_ids, &already_shown);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].id, "cuisine");
+    }
+
+    #[test]
+    fn german_label_placeholder_and_options() {
+        let de = crate::preset_translations::translations_for("de");
+        let index = field_index();
+        let surface = index.get("surface").unwrap();
+        assert_eq!(surface.label, "Surface");
+        assert_eq!(surface.display_label(de), "Oberfläche");
+        let gravel = surface
+            .options
+            .iter()
+            .find(|o| o.value == "gravel")
+            .unwrap();
+        assert_eq!(gravel.label, "Gravel");
+        assert_eq!(surface.display_option_label(gravel, de), "Grober Schotter");
+        // The tag value is untouched.
+        assert_eq!(gravel.value, "gravel");
+        let oneway = index.get("oneway").unwrap();
+        assert_eq!(oneway.display_label(de), "Einbahnstraße");
+        let image = index.get("image").unwrap();
+        assert_eq!(
+            image.placeholder.as_deref(),
+            Some("https://example.com/photo.jpg")
+        );
+        assert_eq!(
+            image.display_placeholder(de),
+            Some("https://beispiel.net/foto.jpg")
+        );
+    }
+
+    #[test]
+    fn missing_translations_fall_back_to_english() {
+        let index = FieldIndex::from_json(FIXTURE).unwrap();
+        let cuisine = index.get("cuisine").unwrap();
+        let name = index.get("name").unwrap();
+        // No locale at all, an unknown locale, and a locale that lacks the field.
+        let unknown = crate::preset_translations::translations_for("tlh");
+        let sparse =
+            PresetTranslations::from_json(r#"{"fields":{"pizza":{"label":"x"}}}"#).unwrap();
+        for tr in [None, unknown, Some(&sparse)] {
+            assert_eq!(cuisine.display_label(tr), "Cuisine");
+            assert_eq!(name.display_placeholder(tr), Some("Common name"));
+            assert_eq!(
+                cuisine.display_option_label(&cuisine.options[0], tr),
+                "Coffee Shop"
+            );
+        }
+        // An English placeholder survives when only the label is translated.
+        let label_only =
+            PresetTranslations::from_json(r#"{"fields":{"name":{"label":"Nom"}}}"#).unwrap();
+        assert_eq!(name.display_label(Some(&label_only)), "Nom");
+        assert_eq!(
+            name.display_placeholder(Some(&label_only)),
+            Some("Common name")
+        );
     }
 
     #[test]

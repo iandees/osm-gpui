@@ -5,6 +5,7 @@
 //! `docs/superpowers/specs/2026-07-07-id-preset-labels-design.md`.
 
 use crate::osm::OsmData;
+use crate::preset_translations::{active, PresetTranslations};
 use crate::selection::FeatureKind;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -78,6 +79,16 @@ pub struct Preset {
     pub more_fields: Vec<String>,
 }
 
+impl Preset {
+    /// The name to show: its translation when `translations` has one, else
+    /// the English schema name. Borrows, so it costs nothing per frame.
+    pub fn display_name<'a>(&'a self, translations: Option<&'a PresetTranslations>) -> &'a str {
+        translations
+            .and_then(|t| t.preset_name(&self.id))
+            .unwrap_or(&self.name)
+    }
+}
+
 /// A parsed, in-memory collection of vendored `Preset`s.
 pub struct PresetIndex {
     presets: Vec<Preset>,
@@ -142,13 +153,31 @@ impl PresetIndex {
     /// Search presets by name (case-insensitive substring, same normalize
     /// approach as brand search elsewhere in this codebase), filtered to
     /// only presets whose `geometry` includes `geometry`. Capped at
-    /// `limit` results, unordered beyond "substring matches first".
+    /// `limit` results, unordered beyond "substring matches first". Uses
+    /// the active UI language's translations (see [`Self::search_in`]).
     pub fn search(&self, query: &str, geometry: Geometry, limit: usize) -> Vec<&Preset> {
+        self.search_in(active(), query, geometry, limit)
+    }
+
+    /// [`Self::search`] against explicit translations: a preset matches on
+    /// its English name, its translated name, or any translated search term,
+    /// so typing either language finds it.
+    pub fn search_in(
+        &self,
+        translations: Option<&PresetTranslations>,
+        query: &str,
+        geometry: Geometry,
+        limit: usize,
+    ) -> Vec<&Preset> {
         let q = query.to_lowercase();
         self.presets
             .iter()
             .filter(|p| p.geometry.contains(&geometry))
-            .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q))
+            .filter(|p| {
+                q.is_empty()
+                    || p.name.to_lowercase().contains(&q)
+                    || translations.is_some_and(|t| t.preset_matches(&p.id, &q))
+            })
             .take(limit)
             .collect()
     }
@@ -164,8 +193,22 @@ pub fn describe_feature(
     tags: &HashMap<String, String>,
     geometry: Geometry,
 ) -> (String, Option<String>) {
+    describe_feature_in(active(), index, tags, geometry)
+}
+
+/// [`describe_feature`] with the name taken from explicit translations (the
+/// English schema name where they have none).
+pub fn describe_feature_in(
+    translations: Option<&PresetTranslations>,
+    index: &PresetIndex,
+    tags: &HashMap<String, String>,
+    geometry: Geometry,
+) -> (String, Option<String>) {
     match index.match_feature(tags, geometry) {
-        Some(preset) => (preset.name.clone(), preset.icon.clone()),
+        Some(preset) => (
+            preset.display_name(translations).to_string(),
+            preset.icon.clone(),
+        ),
         None => (geometry.fallback_name().to_string(), None),
     }
 }
@@ -614,6 +657,70 @@ mod tests {
         assert!(results.iter().any(|p| p.id == "amenity/cafe"));
         let area_only_results = index.search("cafe", Geometry::Line, 10);
         assert!(!area_only_results.iter().any(|p| p.id == "amenity/cafe"));
+    }
+
+    fn residential_road_tags() -> HashMap<String, String> {
+        HashMap::from([("highway".to_string(), "residential".to_string())])
+    }
+
+    #[test]
+    fn describe_feature_uses_the_german_name_when_translated() {
+        let de = crate::preset_translations::translations_for("de");
+        let (name, _) =
+            describe_feature_in(de, preset_index(), &residential_road_tags(), Geometry::Line);
+        assert_eq!(name, "Ortsstraße");
+        let (park, _) = describe_feature_in(
+            de,
+            preset_index(),
+            &HashMap::from([("leisure".to_string(), "park".to_string())]),
+            Geometry::Area,
+        );
+        assert_eq!(park, "Park");
+        let (building, _) = describe_feature_in(
+            de,
+            preset_index(),
+            &HashMap::from([("building".to_string(), "yes".to_string())]),
+            Geometry::Area,
+        );
+        assert_eq!(building, "Gebäude");
+    }
+
+    #[test]
+    fn describe_feature_falls_back_to_english_without_a_translation() {
+        // An unknown locale has no translations at all.
+        let none = crate::preset_translations::translations_for("tlh");
+        let (name, _) = describe_feature_in(
+            none,
+            preset_index(),
+            &residential_road_tags(),
+            Geometry::Line,
+        );
+        assert_eq!(name, "Residential Road");
+        // A preset the translation file lacks keeps its English name.
+        let de = PresetTranslations::from_json(r#"{"presets":{},"fields":{}}"#).unwrap();
+        let (name, _) = describe_feature_in(
+            Some(&de),
+            preset_index(),
+            &residential_road_tags(),
+            Geometry::Line,
+        );
+        assert_eq!(name, "Residential Road");
+    }
+
+    #[test]
+    fn search_finds_a_preset_by_its_german_or_english_name() {
+        let index = preset_index();
+        let de = crate::preset_translations::translations_for("de");
+        let by_german = index.search_in(de, "Gebäude", Geometry::Area, 1000);
+        assert!(by_german.iter().any(|p| p.id == "building"));
+        let by_english = index.search_in(de, "building", Geometry::Area, 1000);
+        assert!(by_english.iter().any(|p| p.id == "building"));
+        // A German search term that is not part of the name.
+        let by_term = index.search_in(de, "grünanlage", Geometry::Area, 1000);
+        assert!(by_term.iter().any(|p| p.id == "leisure/park"));
+        // Without translations the German name finds nothing.
+        let none = index.search_in(None, "Gebäude", Geometry::Area, 1000);
+        assert!(!none.iter().any(|p| p.id == "building"));
     }
 
     #[test]
