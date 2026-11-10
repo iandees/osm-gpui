@@ -2,7 +2,8 @@
 Type=Application
 Name=osm-gpui
 Comment=Experimental OpenStreetMap editor
-Exec=osm-gpui
+Exec=osm-gpui %F
 Icon=osm-gpui
 Terminal=false
 Categories=Utility;Geography;Maps;
+MimeType=application/vnd.openstreetmap.data+xml;

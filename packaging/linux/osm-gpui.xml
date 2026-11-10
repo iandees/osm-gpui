@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info does not define a type for OpenStreetMap XML (.osm), so
+     this declares one. See the README for how to install it. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/vnd.openstreetmap.data+xml">
+    <comment>OpenStreetMap data</comment>
+    <comment xml:lang="de">OpenStreetMap-Daten</comment>
+    <sub-class-of type="application/xml"/>
+    <!-- The type JOSM and some other tools use for the same files. -->
+    <alias type="application/x-osm+xml"/>
+    <glob pattern="*.osm"/>
+    <root-XML localName="osm"/>
+  </mime-type>
+</mime-info>
