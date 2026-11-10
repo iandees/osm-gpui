@@ -117,11 +117,26 @@ fn trim_presets(section: Option<&Value>, ids: &HashSet<String>) -> Map<String, V
         if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
             trimmed.insert("name".into(), Value::String(name.to_string()));
         }
+        // Older releases store `terms` as one comma-separated string and
+        // `aliases` as one newline-separated string; newer ones use arrays.
         let mut terms: Vec<Value> = Vec::new();
-        for key in ["terms", "aliases"] {
-            if let Some(list) = entry.get(key).and_then(|v| v.as_array()) {
-                terms.extend(list.iter().filter(|t| t.is_string()).cloned());
-            }
+        for (key, separator) in [("terms", ','), ("aliases", '\n')] {
+            let words: Vec<String> = match entry.get(key) {
+                Some(Value::String(s)) => {
+                    s.split(separator).map(|w| w.trim().to_string()).collect()
+                }
+                Some(Value::Array(list)) => list
+                    .iter()
+                    .filter_map(|w| w.as_str().map(|w| w.trim().to_string()))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            terms.extend(
+                words
+                    .into_iter()
+                    .filter(|w| !w.is_empty())
+                    .map(Value::String),
+            );
         }
         if !terms.is_empty() {
             trimmed.insert("terms".into(), Value::Array(terms));
