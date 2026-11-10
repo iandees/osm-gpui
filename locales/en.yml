@@ -211,6 +211,7 @@ history:
   inserted_node: "Inserted a node into a way"
   snapped_node: "Snapped a node onto a way"
   changed_way_nodes: "Changed the nodes of a way"
+  changed_relation_members: "Changed the members of a relation"
 
 # Generic feature names used when no preset matches.
 geometry:

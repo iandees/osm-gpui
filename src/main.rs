@@ -1380,6 +1380,21 @@ impl MapViewer {
                 let nodes = if forward { after } else { before };
                 editable.set_way_nodes(*way_id, nodes.clone());
             }
+            UndoableAction::SetRelationMembers {
+                layer,
+                relation_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let members = if forward { after } else { before };
+                editable.set_relation_members(*relation_id, members.clone());
+            }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
@@ -5615,6 +5630,72 @@ mod tests {
                 );
                 assert!(view.undo_stack.actions.is_empty());
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    fn relation_members(view: &MapViewer, relation_id: i64) -> Vec<(i64, String)> {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .relation(relation_id)
+            .unwrap()
+            .members
+            .iter()
+            .map(|m| (m.reference, m.role.clone()))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let before = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap()
+                    .relation(900)
+                    .unwrap()
+                    .members;
+                let mut after = before.clone();
+                after.push(osm_gpui::osm::OsmMember {
+                    member_type: osm_gpui::osm::MemberType::Way,
+                    reference: 101,
+                    role: "outer".to_string(),
+                });
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .unwrap()
+                    .as_editable_mut()
+                    .unwrap()
+                    .set_relation_members(900, after.clone());
+                let action = UndoableAction::SetRelationMembers {
+                    layer: layer_id,
+                    relation_id: 900,
+                    before,
+                    after,
+                };
+                assert_eq!(action.description(), "Changed the members of a relation");
+                view.undo_stack.push(action);
+                assert_eq!(relation_members(view, 900).len(), 3);
+                assert_eq!(pending(view), (0, 1, 0));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900).len(), 2);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(
+                    relation_members(view, 900).last(),
+                    Some(&(101, "outer".to_string()))
+                );
+                assert_eq!(pending(view), (0, 1, 0));
             })
             .unwrap();
     }

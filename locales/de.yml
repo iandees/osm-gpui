@@ -211,6 +211,7 @@ history:
   inserted_node: "Knoten in Weg eingefügt"
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"
+  changed_relation_members: "Mitglieder einer Relation geändert"
 
 # Allgemeine Objektbezeichnungen, wenn keine Vorlage passt.
 geometry:

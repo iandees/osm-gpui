@@ -132,6 +132,18 @@ pub(crate) enum UndoableAction {
         before: Vec<i64>,
         after: Vec<i64>,
     },
+    /// A relation's whole member list replaced (split, merge, join and
+    /// delete keeping their relations intact): undo restores `before`, redo
+    /// reapplies `after`. Members may name ways or nodes that only exist
+    /// while a neighbouring `Batch` entry is applied, which is fine: the
+    /// layer stores member refs without resolving them.
+    #[allow(dead_code)] // produced by the relation-aware selection actions
+    SetRelationMembers {
+        layer: LayerId,
+        relation_id: i64,
+        before: Vec<osm_gpui::osm::OsmMember>,
+        after: Vec<osm_gpui::osm::OsmMember>,
+    },
     /// Several actions recorded as one undo step (e.g. deleting a whole
     /// selection). Undo reverts them last-to-first; redo reapplies them in
     /// order. `label` is the history-list text.
@@ -178,6 +190,9 @@ impl UndoableAction {
             }
             UndoableAction::SetWayNodes { .. } => {
                 osm_gpui::tr!("history.changed_way_nodes").to_string()
+            }
+            UndoableAction::SetRelationMembers { .. } => {
+                osm_gpui::tr!("history.changed_relation_members").to_string()
             }
             UndoableAction::Batch { label, .. } => label.clone(),
         }

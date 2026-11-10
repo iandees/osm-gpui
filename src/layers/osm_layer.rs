@@ -1633,6 +1633,32 @@ impl OsmLayer {
         self.relations_containing(crate::osm::MemberType::Node, node_id)
     }
 
+    /// A copy of the relation with this id, if the layer has it.
+    pub fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
+        self.osm_data
+            .as_ref()?
+            .relations
+            .iter()
+            .find(|r| r.id == relation_id)
+            .cloned()
+    }
+
+    /// Replace a relation's whole member list and return the previous one,
+    /// or `None` (changing nothing) if the layer has no such relation. Marks
+    /// the layer modified. Members don't feed any render cache, so nothing
+    /// else needs refreshing.
+    pub fn set_relation_members(
+        &mut self,
+        relation_id: i64,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<Vec<crate::osm::OsmMember>> {
+        let data = Arc::make_mut(self.osm_data.as_mut()?);
+        let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
+        let previous = std::mem::replace(&mut relation.members, members);
+        self.modified = true;
+        Some(previous)
+    }
+
     fn relations_containing(&self, member_type: crate::osm::MemberType, id: i64) -> Vec<i64> {
         self.osm_data
             .as_ref()
@@ -2572,6 +2598,18 @@ impl EditableLayer for OsmLayer {
     }
     fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
         OsmLayer::relations_containing_node(self, node_id)
+    }
+
+    fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
+        OsmLayer::relation(self, relation_id)
+    }
+
+    fn set_relation_members(
+        &mut self,
+        relation_id: i64,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<Vec<crate::osm::OsmMember>> {
+        OsmLayer::set_relation_members(self, relation_id, members)
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -4891,6 +4929,41 @@ mod tests {
             "way must reference the node's NEW id, not the stale local one"
         );
         assert!(!layer.is_modified());
+        assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn set_relation_members_returns_the_previous_list_and_marks_the_layer_modified() {
+        use crate::osm::{MemberType, OsmMember, OsmRelation};
+        let member = |reference| OsmMember {
+            member_type: MemberType::Way,
+            reference,
+            role: "r".to_string(),
+        };
+        let mut base = (*data_with(vec![], vec![])).clone();
+        base.relations.push(OsmRelation {
+            id: 500,
+            version: 3,
+            tags: empty_tags(),
+            members: vec![member(10)],
+        });
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
+        assert!(!layer.is_modified());
+
+        assert_eq!(layer.set_relation_members(404, vec![]), None);
+        assert!(!layer.is_modified(), "unknown relation changes nothing");
+
+        let previous = layer.set_relation_members(500, vec![member(10), member(11)]);
+        assert_eq!(previous, Some(vec![member(10)]));
+        assert!(layer.is_modified());
+        assert_eq!(layer.relation(500).unwrap().members.len(), 2);
+        assert_eq!(layer.relations_containing_way(11), vec![500]);
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.modified_relations.len(), 1);
+        assert_eq!(diff.modified_relations[0].version, 3);
+
+        // Putting the old list back leaves nothing to upload.
+        layer.set_relation_members(500, vec![member(10)]);
         assert!(layer.diff_for_upload().is_empty());
     }
 
