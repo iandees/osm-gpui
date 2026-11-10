@@ -3614,10 +3614,13 @@ impl MapLayer for OsmLayer {
         crate::frame_stats::lap("osm.ways_paint", fs_phase);
         let fs_phase = crate::frame_stats::start();
         let show_vertices = zoom >= VERTEX_MIN_ZOOM;
+        let mut nodes_in_view = 0usize;
+        let mut markers_drawn = 0usize;
         for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
             }
+            nodes_in_view += 1;
             let style = self.node_cache.styles[idx];
             if !style.tagged && !show_vertices {
                 continue;
@@ -3627,8 +3630,11 @@ impl MapLayer for OsmLayer {
                 continue;
             }
             sp += self.drag_preview_offset(id);
+            markers_drawn += 1;
             paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
         }
+        crate::frame_stats::count("count.nodes_in_view", nodes_in_view);
+        crate::frame_stats::count("count.markers_drawn", markers_drawn);
 
         crate::frame_stats::lap("osm.nodes", fs_phase);
         let fs_phase = crate::frame_stats::start();
