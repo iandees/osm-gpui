@@ -5956,19 +5956,12 @@ mod tests {
                 redo_step(view);
                 assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
 
-                // Copy Tags works; Delete is not applicable.
+                // Copy Tags works.
                 view.run_selection_action("copy_tags", cx);
                 assert!(view
                     .status_message
                     .as_ref()
                     .is_some_and(|(m, _)| m.starts_with("Copied")));
-                let actions = view.undo_stack.actions.len();
-                view.run_selection_action("delete", cx);
-                assert_eq!(view.undo_stack.actions.len(), actions);
-                assert_eq!(
-                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
-                    Some("Relations can't be deleted yet")
-                );
                 assert_eq!(relation_members(view, 900).len(), 2);
                 // Nothing to drag.
                 assert!(view.resolve_move_targets().is_empty());
@@ -6689,14 +6682,6 @@ mod tests {
     fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
         use osm_gpui::osm::{MemberType, OsmMember};
         use osm_gpui::selection::DeletedRelationSnapshot;
-        fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
-            let layer_id = view.active_layer.unwrap();
-            view.layer_manager
-                .find_layer_mut(layer_id)
-                .unwrap()
-                .as_editable_mut()
-                .unwrap()
-        }
         let window = setup_network(cx);
         window
             .update(cx, |view, _window, _cx| {
@@ -6784,6 +6769,180 @@ mod tests {
                 assert!(editable(view).relation(900).is_none());
                 assert!(editable(view).relation(new_id).is_none());
                 assert_eq!(pending(view), (0, 0, 1));
+            })
+            .unwrap();
+    }
+
+    fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer_mut(layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+    }
+
+    fn status_text(view: &MapViewer) -> Option<&str> {
+        view.status_message.as_ref().map(|(m, _)| m.as_str())
+    }
+
+    #[gpui::test]
+    fn new_relation_collects_the_selection_and_is_one_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[101, 100]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 7,
+                });
+                view.run_selection_action("new_relation", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.undo_stack.actions[0].description(),
+                    "Created a relation"
+                );
+                assert_eq!(pending(view), (1, 0, 0));
+
+                // The new relation is selected, with the members in
+                // selection order and empty roles, and no tags.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].kind, Relation);
+                let new_id = view.selected[0].id;
+                assert!(new_id < 0);
+                let relation = editable(view).relation(new_id).unwrap();
+                assert!(relation.tags.is_empty());
+                let members: Vec<_> = relation
+                    .members
+                    .iter()
+                    .map(|m| (m.reference, m.role.as_str()))
+                    .collect();
+                assert_eq!(members, [(101, ""), (100, ""), (7, "")]);
+                assert_eq!(
+                    status_text(view),
+                    Some("Created a relation with 3 features. Add its tags and roles in the side panel")
+                );
+
+                undo_step(view);
+                assert!(editable(view).relation(new_id).is_none());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(editable(view).relation(new_id).unwrap(), relation);
+                assert_eq!(pending(view), (1, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn new_relation_needs_a_selection_and_accepts_relations(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.set_selection(Vec::new());
+                view.run_selection_action("new_relation", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(status_text(view).is_some_and(|m| m.starts_with("Select nodes, ways")));
+
+                // A selected relation can be a member of the new one.
+                view.select_relation(view.active_layer.unwrap(), 900);
+                select(view, Way, &[100]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id: view.active_layer.unwrap(),
+                    kind: osm_gpui::selection::FeatureKind::Relation,
+                    id: 900,
+                });
+                view.run_selection_action("new_relation", cx);
+                let new_id = view.selected[0].id;
+                let relation = editable(view).relation(new_id).unwrap();
+                assert_eq!(relation.members.len(), 2);
+                assert_eq!(relation.members[1].reference, 900);
+                assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_a_selected_relation_keeps_its_members_and_undoes(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = editable(view).relation(900).unwrap();
+                view.select_relation(layer_id, 900);
+                view.delete_selected_features(cx);
+
+                assert!(editable(view).relation(900).is_none());
+                // Its member way and node survive.
+                assert!(editable(view).way_node_ids(102).is_some());
+                assert!(editable(view).node_lat_lon(7).is_some());
+                assert!(view.selected.is_empty());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.undo_stack.actions[0].description(),
+                    "Deleted a relation"
+                );
+                assert_eq!(status_text(view), Some("Deleted 1 relation"));
+                assert_eq!(pending(view), (0, 0, 1));
+
+                undo_step(view);
+                assert_eq!(editable(view).relation(900).unwrap(), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert!(editable(view).relation(900).is_none());
+                assert_eq!(pending(view), (0, 0, 1));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_a_relation_that_is_a_member_is_refused_until_its_parent_goes(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::osm::{MemberType, OsmMember};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let parent = editable(view)
+                    .create_relation(
+                        vec![],
+                        vec![OsmMember {
+                            member_type: MemberType::Relation,
+                            reference: 900,
+                            role: String::new(),
+                        }],
+                    )
+                    .unwrap();
+
+                // Alone, 900 can't go: the parent would be left dangling.
+                view.select_relation(layer_id, 900);
+                view.delete_selected_features(cx);
+                assert!(editable(view).relation(900).is_some());
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(status_text(view)
+                    .is_some_and(|m| m.starts_with("Can't delete relation 900")
+                        && m.contains(&parent.to_string())));
+
+                // Selected together with its parent, both go as one step.
+                view.select_relation(layer_id, 900);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Relation,
+                    id: parent,
+                });
+                view.delete_selected_features(cx);
+                assert!(editable(view).relation(900).is_none());
+                assert!(editable(view).relation(parent).is_none());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(status_text(view), Some("Deleted 2 relations"));
+
+                undo_step(view);
+                assert!(editable(view).relation(900).is_some());
+                assert!(editable(view).relation(parent).is_some());
             })
             .unwrap();
     }
