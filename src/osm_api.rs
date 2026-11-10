@@ -135,7 +135,7 @@ pub(crate) fn fetch_bbox_tracked_with(
     token: Option<&str>,
     progress: &TransferHandle,
 ) -> Result<OsmData, OsmApiError> {
-    check_area(&bounds)?;
+    check_area(&bounds, base_url)?;
 
     let url = build_url(base_url, &bounds);
     let body = fetch_map_body(client, &url, token, Some(progress))?;
