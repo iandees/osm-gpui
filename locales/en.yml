@@ -410,7 +410,6 @@ action:
       one: "Split %{count} way"
       other: "Split %{count} ways"
     error:
-      relation_member: "Can't split: way %{id} is a member of a relation, and relation changes aren't supported yet"
       restriction_via: "Can't split: can't tell which part of way %{way} belongs in turn restriction %{relation}"
   merge:
     label: "Merge Nodes"

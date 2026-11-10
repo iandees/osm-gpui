@@ -137,7 +137,6 @@ pub(crate) enum UndoableAction {
     /// reapplies `after`. Members may name ways or nodes that only exist
     /// while a neighbouring `Batch` entry is applied, which is fine: the
     /// layer stores member refs without resolving them.
-    #[allow(dead_code)] // produced by the relation-aware selection actions
     SetRelationMembers {
         layer: LayerId,
         relation_id: i64,

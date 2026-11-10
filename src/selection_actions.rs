@@ -962,9 +962,11 @@ fn split_plans(
 
 /// Split the ways at the selected node(s) (JOSM "Split Way"): the original
 /// keeps its id and the longer part, a new way gets the rest with a copy of
-/// the tags, and both share the split node. Relation members aren't split,
-/// because relation edits can't be recorded, undone or uploaded. One undo
-/// step: per way, the new way's creation, then the original's new nodes.
+/// the tags, and both share the split node. Relations that hold the way keep
+/// working: see `relations::split_members` for where the new way goes (and
+/// the turn restriction exception, which can refuse the split). One undo
+/// step: per way, the new way's creation, then the original's new nodes, and
+/// finally the relations' new member lists.
 fn apply_split(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -975,16 +977,49 @@ fn apply_split(
     if plans.is_empty() {
         return Err(tr!("action.split.hint").to_string());
     }
-    // Splitting must keep every relation that holds the way intact, which
-    // would mean adding the new half as a member; that edit isn't supported.
-    if let Some(plan) = plans
-        .iter()
-        .find(|p| !editable.relations_containing_way(p.way_id).is_empty())
-    {
-        return Err(tr!("action.split.error.relation_member", id = plan.way_id).to_string());
+    // Work out every relation's new member list before changing anything, so
+    // a refusal leaves no trace. The new ways don't exist yet; each stands in
+    // under a placeholder id that is swapped for the real one below.
+    let placeholder = |k: usize| i64::MIN + k as i64;
+    let mut relations: Vec<osm_gpui::osm::OsmRelation> = Vec::new();
+    let mut way_nodes: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (k, plan) in plans.iter().enumerate() {
+        let step = osm_gpui::relations::SplitStep {
+            way_id: plan.way_id,
+            new_id: placeholder(k),
+            before: &plan.before,
+            keep: &plan.keep,
+            new: &plan.new,
+        };
+        for relation_id in editable.relations_containing_way(plan.way_id) {
+            let at = match relations.iter().position(|r| r.id == relation_id) {
+                Some(at) => at,
+                None => {
+                    let Some(relation) = editable.relation(relation_id) else {
+                        continue;
+                    };
+                    relations.push(relation);
+                    relations.len() - 1
+                }
+            };
+            let lookup = |id: i64| {
+                way_nodes
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| editable.way_node_ids(id))
+            };
+            let members = osm_gpui::relations::split_members(&relations[at], &step, &lookup)
+                .map_err(|e| e.message())?;
+            if let Some(members) = members {
+                relations[at].members = members;
+            }
+        }
+        way_nodes.insert(plan.way_id, plan.keep.clone());
+        way_nodes.insert(placeholder(k), plan.new.clone());
     }
 
     let mut actions = Vec::new();
+    let mut new_ids = Vec::new();
     for plan in plans.iter() {
         let way_ref = FeatureRef {
             layer_id,
@@ -993,6 +1028,7 @@ fn apply_split(
         };
         let tags = editable.feature_tags(&way_ref).unwrap_or_default();
         let new_id = editable.add_way(plan.new.clone(), tags.clone());
+        new_ids.push(new_id);
         actions.push(UndoableAction::CreateWay {
             layer: layer_id,
             snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
@@ -1010,6 +1046,26 @@ fn apply_split(
             before: plan.before.clone(),
             after: plan.keep.clone(),
         });
+    }
+    for relation in relations {
+        let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
+            continue;
+        };
+        let mut after = relation.members;
+        for member in &mut after {
+            if let Some(k) = (0..new_ids.len()).find(|&k| placeholder(k) == member.reference) {
+                member.reference = new_ids[k];
+            }
+        }
+        if after != before {
+            editable.set_relation_members(relation.id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id: relation.id,
+                before,
+                after,
+            });
+        }
     }
 
     let label = tr_count!("action.split.done", plans.len()).to_string();
@@ -1279,6 +1335,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
+    use osm_gpui::osm::{MemberType, OsmMember, OsmRelation};
 
     /// A layer holding one skewed closed rectangle ("way") and one open
     /// two-node way, plus the ids needed to select them.
@@ -2096,21 +2153,232 @@ mod tests {
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
     }
 
+    /// A relation with id 900 and the given `type`, over the test network.
+    fn relation_900(kind: &str, members: &[(MemberType, i64, &str)]) -> OsmRelation {
+        OsmRelation {
+            id: 900,
+            version: 1,
+            tags: HashMap::from([("type".to_string(), kind.to_string())]),
+            members: members
+                .iter()
+                .map(|&(member_type, reference, role)| OsmMember {
+                    member_type,
+                    reference,
+                    role: role.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The network with relation 900 replaced by `relation`.
+    fn net_with(relation: OsmRelation) -> Net {
+        let mut data = test_support::network_data();
+        data.relations = vec![relation];
+        let layer_id = LayerId(1);
+        let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), std::sync::Arc::new(data));
+        let mut layers = LayerManager::new();
+        layers.add_layer(Box::new(layer));
+        Net { layers, layer_id }
+    }
+
+    impl Net {
+        /// Relation 900's members as `(ref, role)`.
+        fn members(&self) -> Vec<(i64, String)> {
+            self.editable()
+                .relation(900)
+                .unwrap()
+                .members
+                .iter()
+                .map(|m| (m.reference, m.role.clone()))
+                .collect()
+        }
+        /// Node 4 plus a way through it: split just that way there.
+        fn at_4_in(&self, way: i64) -> Vec<FeatureRef> {
+            vec![
+                self.feature(FeatureKind::Node, 4),
+                self.feature(FeatureKind::Way, way),
+            ]
+        }
+        fn relation_edits(&self) -> usize {
+            self.layer().diff_for_upload().modified_relations.len()
+        }
+    }
+
+    fn members_of(list: &[(i64, &str)]) -> Vec<(i64, String)> {
+        list.iter().map(|&(r, s)| (r, s.to_string())).collect()
+    }
+
+    /// The id of the one way created by a split (the only negative id).
+    fn the_new_way(n: &Net) -> i64 {
+        let ids: Vec<i64> = n
+            .layer()
+            .diff_for_upload()
+            .created_ways
+            .iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(ids.len(), 1, "{ids:?}");
+        ids[0]
+    }
+
     #[test]
-    fn split_refuses_a_relation_member_and_changes_nothing() {
-        let mut n = net();
-        // Way 102 is in relation 900; give it an interior node to split at.
-        n.editable_mut().set_way_nodes(102, vec![5, 6, 10]);
-        let before = n.layer().diff_for_upload().counts();
-        let Err(message) = n.run("split", &n.nodes(&[6])) else {
-            panic!("expected a refusal");
-        };
+    fn split_adds_the_new_way_to_the_relation_next_to_the_original() {
+        use MemberType::Way;
+        // Way 101 [3,4,5] splits at 4 into [3,4] (kept) and [4,5] (new). Way
+        // 100 ends at 3, way 102 starts at 5.
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, ""), (Way, 101, "forward"), (Way, 102, "")],
+        ));
+        let out = n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        // The new half follows the original: it is the one that meets 102.
         assert_eq!(
-            message,
-            "Can't split: way 102 is a member of a relation, and relation changes aren't supported yet"
+            n.members(),
+            members_of(&[(100, ""), (101, "forward"), (new, "forward"), (102, "")])
         );
-        assert_eq!(n.layer().diff_for_upload().counts(), before);
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6, 10]));
+        assert_eq!(n.relation_edits(), 1);
+
+        // One undo step, with the relation change last.
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. }
+            ] if before.len() == 3 && after.len() == 4
+        ));
+    }
+
+    #[test]
+    fn split_puts_the_new_way_before_the_original_when_the_route_runs_backwards() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 102, ""), (Way, 101, ""), (Way, 100, "")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(102, ""), (new, ""), (101, ""), (100, "")])
+        );
+    }
+
+    #[test]
+    fn split_inserts_after_when_the_neighbours_do_not_say() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900("route", &[(Node, 7, "stop"), (Way, 101, "")]));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(7, "stop"), (101, ""), (new, "")])
+        );
+        // Neighbours that touch neither half count for nothing either.
+        let mut n = net_with(relation_900("route", &[(Way, 106, ""), (Way, 101, "")]));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(n.members(), members_of(&[(106, ""), (101, ""), (new, "")]));
+    }
+
+    #[test]
+    fn splitting_two_ways_of_one_relation_adds_both_halves() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900("route", &[(Way, 103, ""), (Way, 101, "")]));
+        // Node 4 is shared by ways 101 [3,4,5] and 103 [8,4,9].
+        n.run("split", &n.nodes(&[4])).unwrap();
+        let members = n.members();
+        assert_eq!(members.len(), 4);
+        assert_eq!(members[0].0, 103);
+        assert_eq!(members[2].0, 101);
+        assert!(members[1].0 < 0 && members[3].0 < 0 && members[1].0 != members[3].0);
+        assert_eq!(n.relation_edits(), 1);
+    }
+
+    #[test]
+    fn split_of_a_restriction_keeps_only_the_half_touching_the_via_node() {
+        use MemberType::{Node, Way};
+        // Way 101 [3,4,5]; the restriction's via node 5 is on the new half.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 101, "from"), (Node, 5, "via"), (Way, 102, "to")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(new, "from"), (5, "via"), (102, "to")])
+        );
+
+        // Via node 3 is on the original's half: the relation is untouched.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 101, "to"), (Node, 3, "via"), (Way, 100, "from")],
+        ));
+        let out = n.run("split", &n.at_4_in(101)).unwrap();
+        assert_eq!(n.relation_edits(), 0);
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(actions.len(), 2, "no relation step");
+    }
+
+    #[test]
+    fn split_of_a_restriction_finds_the_via_way_end() {
+        use MemberType::Way;
+        // Via way 102 [5,6] meets way 101 at node 5.
+        let mut n = net_with(relation_900(
+            "restriction:hgv",
+            &[(Way, 101, "from"), (Way, 102, "via"), (Way, 105, "to")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(n.members()[0], (new, "from".to_string()));
+        assert_eq!(n.members().len(), 3);
+    }
+
+    #[test]
+    fn split_refuses_a_restriction_whose_via_is_unknown_and_changes_nothing() {
+        use MemberType::{Node, Way};
+        for members in [
+            // No via member.
+            vec![(Way, 101, "from"), (Way, 102, "to")],
+            // A via node that isn't on the way.
+            vec![(Way, 101, "from"), (Node, 7, "via"), (Way, 102, "to")],
+        ] {
+            let mut n = net_with(relation_900("restriction", &members));
+            let before = n.layer().diff_for_upload().counts();
+            let Err(message) = n.run("split", &n.at_4_in(101)) else {
+                panic!("expected a refusal");
+            };
+            assert_eq!(
+                message,
+                "Can't split: can't tell which part of way 101 belongs in turn restriction 900"
+            );
+            assert_eq!(n.layer().diff_for_upload().counts(), before);
+            assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+            assert!(!n.layer().is_modified());
+        }
+    }
+
+    #[test]
+    fn splitting_a_closed_multipolygon_member_keeps_both_halves_with_the_role() {
+        use MemberType::Way;
+        // Ring 108 [14,15,16,14] split at 16 and 14.
+        let mut n = net_with(relation_900(
+            "multipolygon",
+            &[(Way, 100, "inner"), (Way, 108, "outer")],
+        ));
+        n.run("split", &n.nodes(&[16, 14])).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(100, "inner"), (108, "outer"), (new, "outer")])
+        );
     }
 
     #[test]

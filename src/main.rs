@@ -5522,6 +5522,17 @@ mod tests {
     /// A view whose active layer holds `selection_actions::test_support`'s
     /// road network, with a server baseline so the upload diff is meaningful.
     fn setup_network(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        setup_network_with(cx, |_| {})
+    }
+
+    /// `setup_network` with `edit` applied to the network data first (e.g. to
+    /// swap in different relations).
+    fn setup_network_with(
+        cx: &mut TestAppContext,
+        edit: impl FnOnce(&mut osm_gpui::osm::OsmData),
+    ) -> gpui::WindowHandle<MapViewer> {
+        let mut data = selection_actions::test_support::network_data();
+        edit(&mut data);
         cx.update(gpui_component::init);
         let window = cx.add_window(MapViewer::new);
         window
@@ -5529,17 +5540,87 @@ mod tests {
                 view.viewport =
                     Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
                 let layer_id = view.layer_manager.alloc_id();
-                let layer = OsmLayer::new_with_data(
-                    layer_id,
-                    "Net".to_string(),
-                    Arc::new(selection_actions::test_support::network_data()),
-                );
+                let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
                 view.layer_manager.add_layer(Box::new(layer));
                 view.active_layer = Some(layer_id);
                 view.mode = EditMode::Select;
             })
             .unwrap();
         window
+    }
+
+    /// Replace the network's relation 900 with a route over `members`
+    /// (`(way id, role)`).
+    fn route_over(
+        ways: &'static [(i64, &'static str)],
+    ) -> impl FnOnce(&mut osm_gpui::osm::OsmData) {
+        move |data| {
+            data.relations = vec![osm_gpui::osm::OsmRelation {
+                id: 900,
+                version: 4,
+                tags: [("type", "route"), ("name", "Test Route")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                members: ways
+                    .iter()
+                    .map(|&(reference, role)| osm_gpui::osm::OsmMember {
+                        member_type: osm_gpui::osm::MemberType::Way,
+                        reference,
+                        role: role.to_string(),
+                    })
+                    .collect(),
+            }];
+        }
+    }
+
+    #[gpui::test]
+    fn split_way_in_a_relation_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network_with(cx, route_over(&[(100, ""), (101, "forward"), (102, "")]));
+        window
+            .update(cx, |view, _window, cx| {
+                // Node 4 on way 101 only.
+                let layer_id = view.active_layer.unwrap();
+                view.set_selection(vec![
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Node,
+                        id: 4,
+                    },
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Way,
+                        id: 101,
+                    },
+                ]);
+                view.run_selection_action("split", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let after = relation_members(view, 900);
+                assert_eq!(after.len(), 4);
+                assert_eq!(after[1], (101, "forward".to_string()));
+                assert!(after[2].0 < 0 && after[2].1 == "forward");
+                // The new way, way 101, and the relation.
+                assert_eq!(pending(view), (1, 2, 0));
+
+                undo_step(view);
+                assert_eq!(
+                    relation_members(view, 900),
+                    vec![
+                        (100, String::new()),
+                        (101, "forward".to_string()),
+                        (102, String::new())
+                    ]
+                );
+                assert_eq!(pending(view), (0, 0, 0));
+
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), after);
+                assert_eq!(pending(view), (1, 2, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
     }
 
     fn select(view: &mut MapViewer, kind: osm_gpui::selection::FeatureKind, ids: &[i64]) {
