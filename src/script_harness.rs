@@ -410,6 +410,14 @@ impl AppHandle for LiveApp {
     }
 
     fn dispatch_key(&mut self, chord: &script::Chord) {
+        // `Window::dispatch_keystroke` simulates the text a key would type
+        // when `key_char` is unset — which lets `key` type into a focused
+        // input one character at a time, but also turns Enter into a
+        // literal "\n" inserted into whatever input still has focus after
+        // the key-down. A real Return never inserts text into a single-line
+        // input (and gpui panics shaping a line containing a newline), so
+        // give Enter an explicit empty `key_char` to suppress that.
+        let key_char = (chord.key == "enter").then(String::new);
         // Keystroke is Send (only contains String + bools), use the dedicated queue.
         let ks = Keystroke {
             modifiers: gpui::Modifiers {
@@ -420,7 +428,7 @@ impl AppHandle for LiveApp {
                 function: false,
             },
             key: chord.key.clone(),
-            key_char: None,
+            key_char,
         };
         if let Some(q) = KEYSTROKE_QUEUE.get() {
             if let Ok(mut guard) = q.lock() {
