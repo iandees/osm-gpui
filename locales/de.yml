@@ -112,6 +112,11 @@ transfer:
       one: "%{count} Änderung wird hochgeladen …"
       other: "%{count} Änderungen werden hochgeladen …"
     closing: "Änderungssatz wird geschlossen …"
+    part_opening: "Änderungssatz %{index} von %{total}: wird geöffnet …"
+    part_uploading:
+      one: "Änderungssatz %{index} von %{total}: %{changes} Änderung wird hochgeladen …"
+      other: "Änderungssatz %{index} von %{total}: %{changes} Änderungen werden hochgeladen …"
+    part_closing: "Änderungssatz %{index} von %{total}: wird geschlossen …"
   busy: "Es läuft bereits eine andere Übertragung"
 
 # Der Hinweiskasten über der Karte, solange keine OSM-Daten geladen sind.
@@ -171,6 +176,9 @@ status:
   export_failed: "Export fehlgeschlagen: %{error}"
   nothing_to_upload: "Nichts hochzuladen"
   uploaded: "Änderungen hochgeladen (Änderungssatz %{changeset})"
+  uploaded_many:
+    one: "Änderungen in %{count} Änderungssatz hochgeladen (zuletzt: Änderungssatz %{changeset})"
+    other: "Änderungen in %{count} Änderungssätzen hochgeladen (zuletzt: Änderungssatz %{changeset})"
   downloaded: "OSM-Daten heruntergeladen: %{summary}"
   # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
   merge:
@@ -192,7 +200,6 @@ limits:
   upload:
     way: "Weg %{id} hat %{nodes} Knoten; der Server erlaubt %{max}. Vor dem Hochladen aufteilen."
     relation: "Relation %{id} hat %{members} Mitglieder; der Server erlaubt %{max}. Vor dem Hochladen einige Mitglieder entfernen."
-    changeset: "Dieser Upload enthält %{count} Änderungen; der Server erlaubt %{max} pro Änderungssatz. Weniger Änderungen auf einmal hochladen."
   edit:
     way_full: "Ein Weg darf auf diesem Server höchstens %{max} Knoten haben"
     join: "Verbinden nicht möglich: der gemeinsame Weg hätte %{nodes} Knoten; der Server erlaubt %{max}"
@@ -548,6 +555,10 @@ dialog:
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
     failed: "Hochladen fehlgeschlagen"
     retry: "Erneut versuchen"
+    large:
+      one: "Dieser Upload ist groß und wird als %{count} Änderungssatz gesendet."
+      other: "Dieser Upload ist groß und wird als %{count} Änderungssätze gesendet."
+    partial: "%{done} von %{total} Änderungssätzen wurden hochgeladen; die übrigen Änderungen stehen weiterhin aus."
     # Wege weiter, wenn der Server das Hochladen ablehnt (siehe `upload_conflict`).
     conflict:
       keep_mine: "Meine behalten"
@@ -610,6 +621,10 @@ dialog:
 # Fehler der OSM-API und des OAuth-Codes, in Statusleiste und Einstellungen.
 # `%{detail}` ist die Meldung des Servers bzw. der Netzwerkschicht und wird
 # nicht übersetzt.
+# Ein großer Upload wird auf mehrere Änderungssätze aufgeteilt.
+upload_chunks:
+  cycle_too_large: "%{size} neue Relationen enthalten sich gegenseitig und müssen zusammen hochgeladen werden, aber der Server erlaubt nur %{max} Änderungen pro Änderungssatz. Löse den Zyklus auf, bevor du hochlädst."
+
 # Was die Ablehnung eines Uploads durch den Server bedeutet und was das
 # Auflösen bewirkt (maschinell vorübersetzt). `%{object}` ist „Knoten 12345“ /
 # „Weg 5“ / „Relation 7“ (oder `something`, wenn der Server nichts nennt).

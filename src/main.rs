@@ -53,9 +53,9 @@ use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
-use osm_gpui::tr;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 use osm_gpui::viewport::Viewport;
+use osm_gpui::{tr, tr_count};
 
 actions!(
     osm_gpui,
@@ -452,7 +452,18 @@ fn parse_cli_args() -> CliArgs {
 
 /// How a background upload ended.
 enum UploadOutcome {
-    Done(u64, osm_upload::UploadResult),
+    /// Every changeset was accepted.
+    Done(Vec<osm_gpui::upload_chunks::CompletedChunk>),
+    /// The sequence stopped: the changesets accepted before that (in order),
+    /// how many were planned, and why it stopped.
+    Stopped {
+        completed: Vec<osm_gpui::upload_chunks::CompletedChunk>,
+        total: usize,
+        why: UploadStop,
+    },
+}
+
+enum UploadStop {
     /// The server refused the diff (409/410/412); the changeset is closed.
     Refused(osm_upload::UploadConflict),
     /// Any other failure, as a message.
@@ -3799,8 +3810,9 @@ impl MapViewer {
             UploadPlan::ShowDialog => {}
         }
 
-        // Refuse up front what the server would reject: a way/relation over
-        // its size limit, or more changes than one changeset holds.
+        // Refuse up front what the server would reject: a way or relation
+        // over its size limit. More changes than one changeset holds are not
+        // refused: they are sent as several changesets.
         let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
         let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
             pending.iter().map(|(_, d)| d).collect();
@@ -3809,9 +3821,19 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        let changesets =
+            match osm_gpui::upload_chunks::plan_chunks(&diffs, limits.changeset_elements) {
+                Ok(chunks) => chunks.len(),
+                Err(e) => {
+                    self.set_status(e.to_string());
+                    cx.notify();
+                    return;
+                }
+            };
 
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
+        dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
@@ -3854,7 +3876,6 @@ impl MapViewer {
             LimitViolation::RelationTooLarge { layer, id, .. } => {
                 Some((layer, FeatureKind::Relation, id))
             }
-            LimitViolation::TooManyElements { .. } => None,
         };
         if let Some((layer, kind, id)) = target {
             if let Some(&layer_id) = layers.get(layer) {
@@ -3943,31 +3964,51 @@ impl MapViewer {
         let oauth_base = auth::oauth_base_for(&base_url);
         let names_for_bg: Vec<String> = modified.iter().map(|(_, name)| name.clone()).collect();
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
+        let max_elements = osm_gpui::limits::Limits::for_server(&base_url).changeset_elements;
 
         cx.spawn(async move |this, cx| {
             let outcome: UploadOutcome = cx
                 .background_executor()
                 .spawn(async move {
+                    let stopped = |why: UploadStop| UploadOutcome::Stopped {
+                        completed: Vec::new(),
+                        total: 0,
+                        why,
+                    };
                     let token = match auth::ensure_fresh_token(&oauth_base) {
                         Ok(token) => token,
-                        Err(e) => return UploadOutcome::Failed(e.to_string()),
+                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
                     };
                     let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> =
                         names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
-                    match osm_upload::run_upload(
+                    let run = osm_gpui::upload_chunks::run_chunked_upload(
                         &osm_gpui::http::UreqClient::new(),
                         &base_url,
                         &token.access_token,
                         &comment,
                         &layers_for_xml,
-                        &mut |phase| progress.set_phase(phase),
-                    ) {
-                        Ok((changeset_id, result)) => UploadOutcome::Done(changeset_id, result),
-                        Err(osm_upload::UploadFailure {
+                        max_elements,
+                        &mut |part, phase| progress.set_upload_phase(part, phase),
+                    );
+                    let run = match run {
+                        Ok(run) => run,
+                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
+                    };
+                    match run.failure {
+                        None => UploadOutcome::Done(run.completed),
+                        Some(osm_upload::UploadFailure {
                             error: osm_upload::UploadError::Conflict(conflict),
                             ..
-                        }) => UploadOutcome::Refused(conflict),
-                        Err(failure) => UploadOutcome::Failed(failure.error.to_string()),
+                        }) => UploadOutcome::Stopped {
+                            completed: run.completed,
+                            total: run.total,
+                            why: UploadStop::Refused(conflict),
+                        },
+                        Some(failure) => UploadOutcome::Stopped {
+                            completed: run.completed,
+                            total: run.total,
+                            why: UploadStop::Failed(failure.error.to_string()),
+                        },
                     }
                 })
                 .await;
@@ -3976,39 +4017,116 @@ impl MapViewer {
                 this.transfer = None;
                 this.data_generation += 1;
                 match outcome {
-                    UploadOutcome::Done(changeset_id, upload_result) => {
+                    UploadOutcome::Done(completed) => {
+                        let upload_result = osm_gpui::upload_chunks::merge_results(&completed);
                         for id in &layer_ids {
                             if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
                         this.upload_dialog = None;
-                        this.set_status(tr!("status.uploaded", changeset = changeset_id));
-                    }
-                    UploadOutcome::Refused(conflict) => {
-                        // Keep the dialog open: it names the object and
-                        // offers the ways forward.
-                        let message = conflict.describe();
-                        let view = this.conflict_view(conflict);
-                        if let Some(dialog) = &this.upload_dialog {
-                            dialog.update(cx, |dialog, cx| dialog.fail_with_conflict(view, cx));
+                        let last = completed.last().map(|c| c.changeset_id).unwrap_or(0);
+                        if completed.len() > 1 {
+                            this.set_status(tr_count!(
+                                "status.uploaded_many",
+                                completed.len(),
+                                changeset = last
+                            ));
+                        } else {
+                            this.set_status(tr!("status.uploaded", changeset = last));
                         }
-                        this.set_status(message);
                     }
-                    UploadOutcome::Failed(e) => {
-                        // Keep the dialog open on the error so it can be
-                        // read and the upload retried; the status bar gets
-                        // the message too.
-                        if let Some(dialog) = &this.upload_dialog {
-                            dialog.update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                    UploadOutcome::Stopped {
+                        completed,
+                        total,
+                        why,
+                    } => {
+                        // The changesets the server accepted are on the
+                        // server for good: reflect each in the layers, in
+                        // order, so what is still pending is exactly what
+                        // was not sent.
+                        for chunk in &completed {
+                            for id in &layer_ids {
+                                if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
+                                    layer.apply_chunk_result(&chunk.result, &chunk.chunk);
+                                }
+                            }
                         }
-                        this.set_status(e);
+                        if let Some(dialog) = this.upload_dialog.clone() {
+                            if !completed.is_empty() {
+                                this.refresh_upload_dialog(&dialog, cx);
+                            }
+                            let partial = (total > 1).then_some((completed.len(), total));
+                            dialog.update(cx, |dialog, _| dialog.set_partial(partial));
+                        }
+                        match why {
+                            UploadStop::Refused(conflict) => {
+                                // Keep the dialog open: it names the object
+                                // and offers the ways forward.
+                                let message = conflict.describe();
+                                let view = this.conflict_view(conflict);
+                                if let Some(dialog) = &this.upload_dialog {
+                                    dialog.update(cx, |dialog, cx| {
+                                        dialog.fail_with_conflict(view, cx)
+                                    });
+                                }
+                                this.set_status(message);
+                            }
+                            UploadStop::Failed(e) => {
+                                // Keep the dialog open on the error so it can
+                                // be read and the upload retried; the status
+                                // bar gets the message too.
+                                if let Some(dialog) = &this.upload_dialog {
+                                    dialog
+                                        .update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                                }
+                                this.set_status(e);
+                            }
+                        }
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Bring an open upload dialog's pending counts and changeset count up to
+    /// date with the layers (after part of an upload went through).
+    fn refresh_upload_dialog(
+        &self,
+        dialog: &gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>,
+        cx: &mut Context<Self>,
+    ) {
+        let pending: Vec<(String, osm_gpui::layers::diff::LayerDiff)> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|l| l.is_modified())
+            .map(|l| (l.name().to_string(), l.diff_for_upload()))
+            .collect();
+        let summaries: Vec<osm_gpui::ui::upload_dialog::LayerSummary> = pending
+            .iter()
+            .map(|(name, diff)| {
+                let (created, modified, deleted) = diff.counts();
+                osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: name.clone(),
+                    created,
+                    modified,
+                    deleted,
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
+        let diffs: Vec<&osm_gpui::layers::diff::LayerDiff> =
+            pending.iter().map(|(_, d)| d).collect();
+        let changesets = osm_gpui::upload_chunks::plan_chunks(&diffs, limits.changeset_elements)
+            .map(|c| c.len())
+            .unwrap_or(1);
+        dialog.update(cx, |dialog, cx| {
+            dialog.set_pending(summaries, changesets, cx)
+        });
     }
 
     /// The layer that holds `(kind, id)` or has it as a local deletion.

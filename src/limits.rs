@@ -48,8 +48,6 @@ pub enum LimitViolation {
         members: usize,
         max: usize,
     },
-    /// The diff as a whole has more elements than one changeset may hold.
-    TooManyElements { count: usize, max: usize },
 }
 
 impl LimitViolation {
@@ -72,21 +70,15 @@ impl LimitViolation {
                 max = group_digits(max)
             )
             .to_string(),
-            Self::TooManyElements { count, max } => tr!(
-                "limits.upload.changeset",
-                count = group_digits(count),
-                max = group_digits(max)
-            )
-            .to_string(),
         }
     }
 }
 
 /// Check the pending diffs against `limits`. Only created and modified
 /// objects are measured: an oversized way or relation that is unchanged is
-/// not part of the upload, and deleted ones carry no size. The per-object
-/// limits are reported before the changeset total, since they name something
-/// the user can fix.
+/// not part of the upload, and deleted ones carry no size. The number of
+/// changes is not limited here: more than one changeset holds is uploaded as
+/// several (see `upload_chunks`).
 pub fn check_upload(diffs: &[&LayerDiff], limits: &Limits) -> Result<(), LimitViolation> {
     for (layer, diff) in diffs.iter().enumerate() {
         for way in diff.created_ways.iter().chain(&diff.modified_ways) {
@@ -113,19 +105,6 @@ pub fn check_upload(diffs: &[&LayerDiff], limits: &Limits) -> Result<(), LimitVi
                 });
             }
         }
-    }
-    let count: usize = diffs
-        .iter()
-        .map(|d| {
-            let (created, modified, deleted) = d.counts();
-            created + modified + deleted
-        })
-        .sum();
-    if count > limits.changeset_elements {
-        return Err(LimitViolation::TooManyElements {
-            count,
-            max: limits.changeset_elements,
-        });
     }
     Ok(())
 }
@@ -333,23 +312,19 @@ mod tests {
     }
 
     #[test]
-    fn changeset_total_counts_every_layer_and_every_kind() {
+    fn more_changes_than_a_changeset_holds_are_not_refused() {
+        // They are split into several changesets instead.
         let l = limits(100, 100, 5);
-        let layer = |ways: usize, deleted: usize| LayerDiff {
-            created_ways: (0..ways as i64).map(|i| way(-1 - i, 2)).collect(),
-            deleted_node_ids: (0..deleted as i64).map(|i| (i + 1, 1)).collect(),
+        let diff = LayerDiff {
+            created_ways: (0..20).map(|i| way(-1 - i, 2)).collect(),
             ..Default::default()
         };
-        assert_eq!(check_upload(&[&layer(2, 1), &layer(1, 1)], &l), Ok(()));
-        assert_eq!(
-            check_upload(&[&layer(2, 1), &layer(1, 2)], &l),
-            Err(LimitViolation::TooManyElements { count: 6, max: 5 })
-        );
+        assert_eq!(check_upload(&[&diff], &l), Ok(()));
         assert_eq!(check_upload(&[], &l), Ok(()));
     }
 
     #[test]
-    fn a_way_problem_is_reported_before_the_changeset_total() {
+    fn a_way_problem_is_still_reported_when_the_upload_is_large() {
         let l = limits(3, 100, 2);
         let diff = LayerDiff {
             created_ways: vec![way(-1, 9), way(-2, 2), way(-3, 2)],
@@ -394,12 +369,6 @@ mod tests {
             m,
             "Way 123 has 2,104 nodes; the server allows 2,000. Split it before uploading."
         );
-        let m = LimitViolation::TooManyElements {
-            count: 12000,
-            max: 10000,
-        }
-        .message();
-        assert!(m.contains("12,000") && m.contains("10,000"), "{m}");
         let m = LimitViolation::RelationTooLarge {
             layer: 0,
             id: 7,
