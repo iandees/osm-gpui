@@ -81,7 +81,9 @@ actions!(
 /// Key context set on `MapViewer`'s root element. Bindings scoped to it lose
 /// to bindings scoped to a deeper context, which is what lets `cmd-a` mean
 /// "select all text" inside a focused text input and "select all features"
-/// everywhere else in the window.
+/// everywhere else in the window — and likewise `cmd-z` undo typing in an
+/// input rather than the last map edit. (A binding with no context at all
+/// would outrank the input's own.)
 const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
 
 /// Build the live `gpui::KeyBinding` list for the modifier-key actions from
@@ -114,8 +116,8 @@ pub(crate) fn key_bindings_from_settings(
             "download_osm" => Some(KeyBinding::new(&spec, DownloadFromOsm, None)),
             "upload_osm" => Some(KeyBinding::new(&spec, UploadToOsm, None)),
             "export_osm_file" => Some(KeyBinding::new(&spec, ExportOsmFile, None)),
-            "undo" => Some(KeyBinding::new(&spec, Undo, None)),
-            "redo" => Some(KeyBinding::new(&spec, Redo, None)),
+            "undo" => Some(KeyBinding::new(&spec, Undo, Some(MAP_VIEWER_KEY_CONTEXT))),
+            "redo" => Some(KeyBinding::new(&spec, Redo, Some(MAP_VIEWER_KEY_CONTEXT))),
             _ => None,
         })
         .chain(fixed)
@@ -3083,6 +3085,14 @@ impl Render for MapViewer {
         self.viewport.update_size(map_size);
 
         self.expire_status();
+
+        // Keyboard shortcuts scoped to this view only match while focus is
+        // somewhere inside it. With nothing focused at all — at launch, or
+        // after a focused text input was removed — give focus to the map so
+        // they (and the map's bare-key shortcuts) keep working.
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
 
         // Update all layers
         self.layer_manager.update_all();
