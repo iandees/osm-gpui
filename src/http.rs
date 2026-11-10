@@ -10,13 +10,16 @@ use std::time::Duration;
 pub enum Method {
     Get,
     Post,
+    Put,
 }
 
-/// Request body. `Form` is `application/x-www-form-urlencoded`, the only body shape
-/// the app sends today (OAuth token exchange/refresh).
+/// Request body. `Form` is `application/x-www-form-urlencoded` (OAuth token
+/// exchange/refresh); `Text` is a raw string sent as-is, whose `Content-Type`
+/// the caller sets with a header (OSM changeset XML).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     Form(Vec<(String, String)>),
+    Text(String),
 }
 
 /// An outgoing HTTP request, independent of any particular HTTP client implementation.
@@ -48,6 +51,17 @@ impl HttpRequest {
             url: url.into(),
             headers: Vec::new(),
             body: Some(Body::Form(form)),
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// A request with a raw text body (`Content-Type` is the caller's to set).
+    pub fn with_text(method: Method, url: impl Into<String>, text: Option<String>) -> Self {
+        HttpRequest {
+            method,
+            url: url.into(),
+            headers: Vec::new(),
+            body: text.map(Body::Text),
             timeout: Duration::from_secs(30),
         }
     }
@@ -161,6 +175,7 @@ impl HttpClient for UreqClient {
         let mut builder = match req.method {
             Method::Get => ureq::get(&req.url),
             Method::Post => ureq::post(&req.url),
+            Method::Put => ureq::put(&req.url),
         };
         builder = builder.set("User-Agent", crate::USER_AGENT);
         for (name, value) in &req.headers {
@@ -176,6 +191,7 @@ impl HttpClient for UreqClient {
                     .collect();
                 builder.send_form(&pairs)
             }
+            Some(Body::Text(text)) => builder.send_string(text),
             None => builder.call(),
         };
 

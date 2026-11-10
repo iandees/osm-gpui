@@ -7,6 +7,7 @@ pub mod diff;
 pub mod grid_layer;
 pub mod merge;
 pub mod osm_layer;
+pub mod resolve;
 pub mod tile_layer;
 
 /// Wash laid over the part of the map that was not downloaded (RGBA): a cool
@@ -174,6 +175,39 @@ pub trait EditableLayer {
     /// Merge freshly downloaded server data into this layer, keeping local
     /// edits. See `merge::merge_download` for the rules.
     fn merge_download(&mut self, incoming: crate::osm::OsmData) -> merge::MergeStats;
+
+    /// Whether this layer holds the node, way or relation `(kind, id)`
+    /// (locally deleted objects are not held).
+    fn has_feature(&self, kind: crate::selection::FeatureKind, id: i64) -> bool;
+
+    /// Whether `(kind, id)` is an object of the server that the user has
+    /// deleted here: known to the layer's baseline, absent from its data.
+    fn is_locally_deleted(&self, kind: crate::selection::FeatureKind, id: i64) -> bool;
+
+    /// Upload-conflict resolution "keep mine": make `version` the base
+    /// version of `(kind, id)` (see `resolve::set_base_version`). Returns
+    /// whether the layer knew the object.
+    fn set_base_version(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        version: i32,
+    ) -> bool;
+
+    /// Upload-conflict resolution "use theirs": replace `(kind, id)` — and,
+    /// for a way, its nodes — with the server's copy, or remove it if the
+    /// server deleted it (see `resolve::adopt_server_element`). Returns
+    /// whether anything changed.
+    fn adopt_server_element(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        server: crate::osm_api::ServerElement,
+    ) -> bool;
+
+    /// Forget a local delete of `(kind, id)` the server has already made
+    /// (see `resolve::forget_local_delete`). Returns whether it did.
+    fn forget_local_delete(&mut self, kind: crate::selection::FeatureKind, id: i64) -> bool;
 
     /// Every node and way this layer owns, nodes first, each sorted by id.
     /// Backs Edit > Select All and View > Zoom to Data.

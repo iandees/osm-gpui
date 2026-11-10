@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::merge::{self, MergeStats};
+use crate::layers::resolve;
 use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
@@ -909,6 +910,64 @@ impl OsmLayer {
         self.original_data = Some(Arc::new(original));
         self.modified = modified;
         stats
+    }
+
+    /// Run `change` on copies of the baseline and current data and, if it
+    /// reports a change, install them: caches rebuilt like `merge_download`
+    /// (this is a once-per-conflict path), the baseline kept separate from
+    /// the data, and `modified` recomputed from the diff since a resolution
+    /// can leave nothing to upload.
+    fn change_snapshots(
+        &mut self,
+        change: impl FnOnce(&mut OsmData, &mut OsmData) -> bool,
+    ) -> bool {
+        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
+        else {
+            return false;
+        };
+        let (mut current, mut original) = ((*current).clone(), (*original).clone());
+        if !change(&mut original, &mut current) {
+            return false;
+        }
+        self.set_osm_data(Arc::new(current));
+        self.original_data = Some(Arc::new(original));
+        self.modified = !self.diff_for_upload().is_empty();
+        true
+    }
+
+    /// See `resolve::set_base_version`. Only versions change, so nothing
+    /// derived needs rebuilding.
+    pub fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
+        let (Some(current), Some(original)) = (self.osm_data.as_mut(), self.original_data.as_mut())
+        else {
+            return false;
+        };
+        resolve::set_base_version(
+            Arc::make_mut(original),
+            Arc::make_mut(current),
+            kind,
+            id,
+            version,
+        )
+    }
+
+    /// See `resolve::adopt_server_element`.
+    pub fn adopt_server_element(
+        &mut self,
+        kind: FeatureKind,
+        id: i64,
+        server: crate::osm_api::ServerElement,
+    ) -> bool {
+        self.change_snapshots(|original, current| {
+            resolve::adopt_server_element(original, current, kind, id, server)
+        })
+    }
+
+    /// See `resolve::forget_local_delete`.
+    pub fn forget_local_delete(&mut self, kind: FeatureKind, id: i64) -> bool {
+        self.change_snapshots(|original, current| {
+            resolve::forget_local_delete(original, current, kind, id)
+        })
     }
 
     /// Compute the diff between this layer's original (last-synced)
@@ -2981,6 +3040,46 @@ impl EditableLayer for OsmLayer {
 
     fn merge_download(&mut self, incoming: OsmData) -> MergeStats {
         OsmLayer::merge_download(self, incoming)
+    }
+
+    fn has_feature(&self, kind: FeatureKind, id: i64) -> bool {
+        let Some(data) = self.osm_data.as_ref() else {
+            return false;
+        };
+        match kind {
+            FeatureKind::Node => data.nodes.contains_key(&id),
+            FeatureKind::Way => data.ways.contains_key(&id),
+            FeatureKind::Relation => data.relations.iter().any(|r| r.id == id),
+        }
+    }
+
+    fn is_locally_deleted(&self, kind: FeatureKind, id: i64) -> bool {
+        let Some(original) = self.original_data.as_ref() else {
+            return false;
+        };
+        let known = match kind {
+            FeatureKind::Node => original.nodes.contains_key(&id),
+            FeatureKind::Way => original.ways.contains_key(&id),
+            FeatureKind::Relation => original.relations.iter().any(|r| r.id == id),
+        };
+        known && !EditableLayer::has_feature(self, kind, id)
+    }
+
+    fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
+        OsmLayer::set_base_version(self, kind, id, version)
+    }
+
+    fn adopt_server_element(
+        &mut self,
+        kind: FeatureKind,
+        id: i64,
+        server: crate::osm_api::ServerElement,
+    ) -> bool {
+        OsmLayer::adopt_server_element(self, kind, id, server)
+    }
+
+    fn forget_local_delete(&mut self, kind: FeatureKind, id: i64) -> bool {
+        OsmLayer::forget_local_delete(self, kind, id)
     }
 
     fn all_features(&self) -> Vec<FeatureRef> {
@@ -5977,5 +6076,257 @@ mod tests {
             layer.feature_geometry(&feature, &area_keys),
             Some(crate::presets::Geometry::Area)
         );
+    }
+
+    // --- Upload conflicts, end to end against the fake HTTP client --------
+
+    mod conflicts {
+        use super::*;
+        use crate::http::fake::{ok, status_err, FakeClient};
+        use crate::osm_api::{fetch_element_with, ServerElement};
+        use crate::osm_upload::{run_upload, ConflictKind, UploadConflict, UploadError};
+
+        const BASE: &str = "https://osm.test";
+        const MISMATCH: &str = "Version mismatch: Provided 1, server had: 2 of Node 1";
+
+        fn node(id: i64, lat: f64, version: i32) -> OsmNode {
+            OsmNode {
+                id,
+                lat,
+                lon: -74.0,
+                version,
+                tags: empty_tags(),
+            }
+        }
+
+        /// A layer with node 1 (v1) and way 10 (v1) over nodes 1, 2; node 1 is
+        /// edited locally (tagged).
+        fn edited_layer() -> OsmLayer {
+            let way = OsmWay {
+                id: 10,
+                nodes: vec![1, 2],
+                version: 1,
+                tags: empty_tags(),
+            };
+            let data = data_with(vec![node(1, 40.0, 1), node(2, 40.001, 1)], vec![way]);
+            let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+            layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+            layer
+        }
+
+        /// Upload `layer`'s diff against `client`; the conflict it is refused with.
+        fn upload(layer: &OsmLayer, client: &FakeClient) -> Result<(), UploadConflict> {
+            let diff = layer.diff_for_upload();
+            match run_upload(client, BASE, "tok", "edit", &[("L", diff)], &mut |_| {}) {
+                Ok(_) => Ok(()),
+                Err(f) => match f.error {
+                    UploadError::Conflict(c) => Err(c),
+                    other => panic!("unexpected {other:?}"),
+                },
+            }
+        }
+
+        /// The osmChange body of the second request (the upload) `client` saw.
+        fn sent_xml(client: &FakeClient, upload_index: usize) -> String {
+            let requests = client.requests.lock().unwrap();
+            let uploads: Vec<_> = requests
+                .iter()
+                .filter(|r| r.url.ends_with("/upload"))
+                .collect();
+            match &uploads[upload_index].body {
+                Some(crate::http::Body::Text(xml)) => xml.clone(),
+                other => panic!("no xml body: {other:?}"),
+            }
+        }
+
+        fn refused_session() -> Vec<Result<crate::http::HttpResponse, crate::http::HttpError>> {
+            vec![ok(200, "42"), status_err(409, MISMATCH), ok(200, "")]
+        }
+
+        fn server_node_xml(version: i32, lat: f64) -> String {
+            format!(
+                r#"<osm version="0.6"><node id="1" visible="true" version="{version}" lat="{lat}" lon="-74.0"><tag k="shop" v="bakery"/></node></osm>"#
+            )
+        }
+
+        #[test]
+        fn keep_mine_makes_the_retry_overwrite_the_servers_version() {
+            let mut layer = edited_layer();
+            let client = FakeClient::new(refused_session());
+            let conflict = upload(&layer, &client).unwrap_err();
+            assert_eq!(
+                conflict.kind,
+                ConflictKind::VersionMismatch {
+                    provided: 1,
+                    server: 2
+                }
+            );
+            assert!(sent_xml(&client, 0).contains(r#"version="1" changeset="42""#));
+
+            // Fetch the server's version number and adopt it as the base.
+            let (kind, id) = conflict.object.unwrap();
+            let fetch = FakeClient::new(vec![ok(200, server_node_xml(2, 40.0))]);
+            let server = fetch_element_with(&fetch, BASE, None, kind, id, false).unwrap();
+            let version = server.version(kind, id).unwrap();
+            assert!(EditableLayer::set_base_version(
+                &mut layer, kind, id, version
+            ));
+
+            // The edit is still there, now against version 2.
+            assert_eq!(
+                layer.feature_tags(&FeatureRef {
+                    layer_id: LayerId(1),
+                    kind,
+                    id
+                }),
+                Some(vec![("amenity".to_string(), "cafe".to_string())])
+            );
+            let retry = FakeClient::new(vec![
+                ok(200, "43"),
+                ok(
+                    200,
+                    r#"<diffResult><node old_id="1" new_id="1" new_version="3"/></diffResult>"#,
+                ),
+                ok(200, ""),
+            ]);
+            upload(&layer, &retry).unwrap();
+            let xml = sent_xml(&retry, 0);
+            assert!(
+                xml.contains(r#"<node id="1" lat="40" lon="-74" version="2" changeset="43">"#),
+                "{xml}"
+            );
+            assert!(xml.contains(r#"<tag k="amenity" v="cafe"/>"#), "{xml}");
+        }
+
+        #[test]
+        fn use_theirs_replaces_the_object_and_the_retry_leaves_it_out() {
+            let mut layer = edited_layer();
+            // A second, unrelated edit that must survive.
+            layer.set_tag(FeatureKind::Way, 10, "highway", "path");
+            let client = FakeClient::new(refused_session());
+            let conflict = upload(&layer, &client).unwrap_err();
+            let (kind, id) = conflict.object.unwrap();
+
+            let fetch = FakeClient::new(vec![ok(200, server_node_xml(2, 40.5))]);
+            let server = fetch_element_with(&fetch, BASE, None, kind, id, false).unwrap();
+            assert!(EditableLayer::adopt_server_element(
+                &mut layer, kind, id, server
+            ));
+
+            let tags = layer
+                .feature_tags(&FeatureRef {
+                    layer_id: LayerId(1),
+                    kind,
+                    id,
+                })
+                .unwrap();
+            assert_eq!(tags, vec![("shop".to_string(), "bakery".to_string())]);
+            assert_eq!(layer.node_lat_lon(1), Some((40.5, -74.0)));
+
+            let retry = FakeClient::new(vec![
+                ok(200, "43"),
+                ok(
+                    200,
+                    r#"<diffResult><way old_id="10" new_id="10" new_version="2"/></diffResult>"#,
+                ),
+                ok(200, ""),
+            ]);
+            upload(&layer, &retry).unwrap();
+            let xml = sent_xml(&retry, 0);
+            assert!(!xml.contains(r#"<node id="1""#), "node 1 dropped: {xml}");
+            assert!(xml.contains(r#"<way id="10" version="1""#), "{xml}");
+            assert!(layer.is_modified());
+        }
+
+        #[test]
+        fn use_theirs_that_leaves_nothing_to_upload_clears_the_modified_flag() {
+            let mut layer = edited_layer();
+            assert!(layer.is_modified());
+            let fetch = FakeClient::new(vec![ok(200, server_node_xml(2, 40.0))]);
+            let server =
+                fetch_element_with(&fetch, BASE, None, FeatureKind::Node, 1, false).unwrap();
+            assert!(EditableLayer::adopt_server_element(
+                &mut layer,
+                FeatureKind::Node,
+                1,
+                server
+            ));
+            assert!(layer.diff_for_upload().is_empty());
+            assert!(!layer.is_modified());
+        }
+
+        #[test]
+        fn use_theirs_on_an_object_deleted_on_the_server_removes_it_locally() {
+            let mut layer = edited_layer();
+            // The way uses node 1, so edit the way instead: delete-on-server
+            // for way 10 after a local tag edit.
+            layer.set_tag(FeatureKind::Way, 10, "highway", "path");
+            let client = FakeClient::new(vec![
+                ok(200, "42"),
+                status_err(410, "The way with the id 10 has already been deleted"),
+                ok(200, ""),
+            ]);
+            let conflict = upload(&layer, &client).unwrap_err();
+            assert_eq!(conflict.kind, ConflictKind::AlreadyDeleted);
+            let (kind, id) = conflict.object.unwrap();
+            assert_eq!((kind, id), (FeatureKind::Way, 10));
+
+            let fetch = FakeClient::new(vec![status_err(410, "")]);
+            let server = fetch_element_with(&fetch, BASE, None, kind, id, true).unwrap();
+            assert_eq!(server, ServerElement::Gone);
+            assert!(EditableLayer::adopt_server_element(
+                &mut layer, kind, id, server
+            ));
+            assert!(!EditableLayer::has_feature(&layer, kind, id));
+            assert!(layer.way_node_ids(10).is_none());
+
+            let diff = layer.diff_for_upload();
+            assert!(diff.modified_ways.is_empty() && diff.deleted_way_ids.is_empty());
+            assert_eq!(diff.modified_nodes.len(), 1, "the node edit stays");
+        }
+
+        #[test]
+        fn drop_my_change_forgets_a_delete_the_server_already_did() {
+            let mut layer = edited_layer();
+            // Delete way 10 locally.
+            layer.delete_feature(FeatureKind::Way, 10).unwrap();
+            assert!(EditableLayer::is_locally_deleted(
+                &layer,
+                FeatureKind::Way,
+                10
+            ));
+            assert_eq!(layer.diff_for_upload().deleted_way_ids, vec![(10, 1)]);
+
+            assert!(EditableLayer::forget_local_delete(
+                &mut layer,
+                FeatureKind::Way,
+                10
+            ));
+            assert!(layer.diff_for_upload().deleted_way_ids.is_empty());
+            assert!(!EditableLayer::is_locally_deleted(
+                &layer,
+                FeatureKind::Way,
+                10
+            ));
+            // Nothing to forget for an object that is simply there.
+            assert!(!EditableLayer::forget_local_delete(
+                &mut layer,
+                FeatureKind::Node,
+                1
+            ));
+        }
+
+        #[test]
+        fn keep_mine_on_a_locally_deleted_object_updates_the_delete_version() {
+            let mut layer = edited_layer();
+            layer.delete_feature(FeatureKind::Way, 10).unwrap();
+            assert!(EditableLayer::set_base_version(
+                &mut layer,
+                FeatureKind::Way,
+                10,
+                5
+            ));
+            assert_eq!(layer.diff_for_upload().deleted_way_ids, vec![(10, 5)]);
+        }
     }
 }

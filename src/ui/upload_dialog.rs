@@ -15,6 +15,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _, Sizable as _,
 };
 
+use crate::osm_upload::{ConflictKind, UploadConflict};
 use crate::tr;
 use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
@@ -77,6 +78,99 @@ pub enum DialogEvent {
         comment: String,
     },
     Cancelled,
+    /// User picked a way forward from a refused upload.
+    Conflict {
+        action: ConflictAction,
+        conflict: UploadConflict,
+    },
+}
+
+/// What the user can do about a refused upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictAction {
+    /// Overwrite the server's newer version with the local object.
+    KeepMine,
+    /// Replace the local object with the server's, dropping the local change.
+    UseTheirs,
+    /// The server already deleted what the user deleted: forget that delete.
+    DropMyChange,
+    /// Select the object on the map and zoom to it.
+    Show,
+}
+
+impl ConflictAction {
+    fn label(self) -> SharedString {
+        match self {
+            ConflictAction::KeepMine => tr!("dialog.upload.conflict.keep_mine"),
+            ConflictAction::UseTheirs => tr!("dialog.upload.conflict.use_theirs"),
+            ConflictAction::DropMyChange => tr!("dialog.upload.conflict.drop_mine"),
+            ConflictAction::Show => tr!("dialog.upload.conflict.show"),
+        }
+    }
+}
+
+/// A refused upload together with what the editor knows about the object it
+/// names, which decides the offered actions.
+#[derive(Debug, Clone)]
+pub struct ConflictView {
+    pub conflict: UploadConflict,
+    /// The object is in the loaded data (so Show can find it).
+    pub located: bool,
+    /// The user deleted the object locally.
+    pub deleted_locally: bool,
+}
+
+impl ConflictView {
+    /// The actions to offer, in button order.
+    ///
+    /// - A version mismatch on a known object: keep mine / use theirs.
+    /// - The server already deleted an object the user also deleted: drop my
+    ///   change (nothing is left to show).
+    /// - Everything else is explained, with Show when the object is loaded.
+    pub fn actions(&self) -> Vec<ConflictAction> {
+        let mut actions = Vec::new();
+        let named = self.conflict.object.is_some();
+        match &self.conflict.kind {
+            ConflictKind::VersionMismatch { .. } if named => {
+                actions.push(ConflictAction::KeepMine);
+                actions.push(ConflictAction::UseTheirs);
+            }
+            ConflictKind::AlreadyDeleted if named && self.deleted_locally => {
+                actions.push(ConflictAction::DropMyChange);
+            }
+            _ => {}
+        }
+        if self.located {
+            actions.push(ConflictAction::Show);
+        }
+        actions
+    }
+
+    /// One line on what the choices mean, if there is a choice.
+    fn hint(&self) -> Option<SharedString> {
+        match &self.conflict.kind {
+            ConflictKind::VersionMismatch { .. } if self.conflict.object.is_some() => {
+                Some(tr!("dialog.upload.conflict.hint_version"))
+            }
+            ConflictKind::AlreadyDeleted if self.deleted_locally => {
+                Some(tr!("dialog.upload.conflict.hint_deleted_both"))
+            }
+            ConflictKind::AlreadyDeleted => Some(tr!("dialog.upload.conflict.hint_deleted")),
+            ConflictKind::StillInUse { .. } | ConflictKind::MissingDependency => {
+                Some(tr!("dialog.upload.conflict.hint_related"))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// An upload that stopped: the message, and for a refusal by the server the
+/// conflict with its actions.
+struct Failure {
+    message: SharedString,
+    conflict: Option<ConflictView>,
+    /// Why the last attempt to resolve the conflict didn't work, if it didn't.
+    resolve_error: Option<SharedString>,
 }
 
 /// Where the dialog is in the upload: reviewing, sending, or stopped by an error.
@@ -85,20 +179,26 @@ enum UploadState {
     /// The upload is running; the stage comes from the shared handle.
     InFlight(TransferHandle),
     /// The upload failed; the message is shown and the user may retry.
-    Failed(SharedString),
+    Failed(Failure),
+    /// A conflict is being resolved (asking the server); the label says how.
+    Resolving(SharedString),
 }
 
 impl UploadState {
     /// Whether the confirm button can be pressed. Disabled while sending so a
     /// second upload can't start.
     fn confirm_enabled(&self, comment_empty: bool) -> bool {
-        !comment_empty && !matches!(self, UploadState::InFlight(_))
+        !comment_empty && !self.is_busy()
     }
 
     /// Whether Cancel/Esc closes the dialog. An upload in flight can't be
     /// abandoned: a half-applied changeset is worse than waiting.
     fn can_dismiss(&self) -> bool {
-        !matches!(self, UploadState::InFlight(_))
+        !self.is_busy()
+    }
+
+    fn is_busy(&self) -> bool {
+        matches!(self, UploadState::InFlight(_) | UploadState::Resolving(_))
     }
 }
 
@@ -107,6 +207,8 @@ pub struct UploadDialog {
     comment: Entity<InputState>,
     focus_handle: FocusHandle,
     state: UploadState,
+    /// Shown while editing: what was just done about a conflict.
+    notice: Option<SharedString>,
 }
 
 impl EventEmitter<DialogEvent> for UploadDialog {}
@@ -123,18 +225,64 @@ impl UploadDialog {
             comment,
             focus_handle,
             state: UploadState::Editing,
+            notice: None,
         }
     }
 
     /// Show the running upload's stage (read from `handle` on each render).
     pub fn begin_transfer(&mut self, handle: TransferHandle, cx: &mut Context<Self>) {
         self.state = UploadState::InFlight(handle);
+        self.notice = None;
         cx.notify();
     }
 
     /// Show why the upload stopped and let the user try again.
     pub fn fail(&mut self, message: SharedString, cx: &mut Context<Self>) {
-        self.state = UploadState::Failed(message);
+        self.state = UploadState::Failed(Failure {
+            message,
+            conflict: None,
+            resolve_error: None,
+        });
+        cx.notify();
+    }
+
+    /// Show a refused upload: what happened in plain words, and the ways
+    /// forward `view` allows.
+    pub fn fail_with_conflict(&mut self, view: ConflictView, cx: &mut Context<Self>) {
+        self.state = UploadState::Failed(Failure {
+            message: view.conflict.describe().into(),
+            conflict: Some(view),
+            resolve_error: None,
+        });
+        cx.notify();
+    }
+
+    /// The chosen way forward is being carried out (`label` says how).
+    pub fn begin_resolving(&mut self, label: SharedString, cx: &mut Context<Self>) {
+        self.state = UploadState::Resolving(label);
+        cx.notify();
+    }
+
+    /// The conflict is dealt with: back to the review, ready for another
+    /// Upload, with `notice` saying what was done.
+    pub fn resolved(&mut self, notice: SharedString, cx: &mut Context<Self>) {
+        self.state = UploadState::Editing;
+        self.notice = Some(notice);
+        cx.notify();
+    }
+
+    /// Resolving didn't work (`error` says why): show the conflict again.
+    pub fn resolve_failed(
+        &mut self,
+        view: ConflictView,
+        error: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.state = UploadState::Failed(Failure {
+            message: view.conflict.describe().into(),
+            conflict: Some(view),
+            resolve_error: Some(error),
+        });
         cx.notify();
     }
 
@@ -147,7 +295,22 @@ impl UploadDialog {
         if !self.state.confirm_enabled(comment.is_empty()) {
             return;
         }
+        self.notice = None;
         cx.emit(DialogEvent::Upload { comment });
+    }
+
+    fn resolve(&mut self, action: ConflictAction, cx: &mut Context<Self>) {
+        let UploadState::Failed(Failure {
+            conflict: Some(view),
+            ..
+        }) = &self.state
+        else {
+            return;
+        };
+        cx.emit(DialogEvent::Conflict {
+            action,
+            conflict: view.conflict.clone(),
+        });
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -176,7 +339,7 @@ impl Render for UploadDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let comment_empty = self.comment.read(cx).value().trim().is_empty();
-        let in_flight = matches!(self.state, UploadState::InFlight(_));
+        let in_flight = self.state.is_busy();
 
         let mut summary_list = v_flex().gap_1();
         if self.summaries.is_empty() {
@@ -212,31 +375,67 @@ impl Render for UploadDialog {
                     .child(Input::new(&self.comment)),
             );
 
+        let busy_row = |label: SharedString| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .text_color(cx.theme().foreground)
+                .child(Spinner::new().small())
+                .child(Label::new(label))
+        };
         match &self.state {
-            UploadState::Editing => {}
-            UploadState::InFlight(handle) => {
-                body = body.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .text_color(cx.theme().foreground)
-                        .child(Spinner::new().small())
-                        .child(Label::new(handle.snapshot().label())),
-                );
+            UploadState::Editing => {
+                if let Some(notice) = &self.notice {
+                    body = body.child(Label::new(notice.clone()).text_color(cx.theme().foreground));
+                }
             }
-            UploadState::Failed(message) => {
-                body = body.child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            Label::new(tr!("dialog.upload.failed"))
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(cx.theme().danger),
-                        )
-                        .child(Label::new(message.clone()).text_color(cx.theme().danger)),
-                );
+            UploadState::InFlight(handle) => {
+                body = body.child(busy_row(handle.snapshot().label()));
+            }
+            UploadState::Resolving(label) => {
+                body = body.child(busy_row(label.clone()));
+            }
+            UploadState::Failed(failure) => {
+                let mut failed = v_flex()
+                    .gap_2()
+                    .child(
+                        Label::new(tr!("dialog.upload.failed"))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(cx.theme().danger),
+                    )
+                    .child(Label::new(failure.message.clone()).text_color(cx.theme().danger));
+                if let Some(view) = &failure.conflict {
+                    if let Some(hint) = view.hint() {
+                        failed = failed.child(
+                            Label::new(hint)
+                                .text_size(muted_text_size())
+                                .text_color(muted),
+                        );
+                    }
+                    let actions = view.actions();
+                    if !actions.is_empty() {
+                        let mut row = div().flex().flex_row().flex_wrap().gap_2();
+                        for action in actions {
+                            row = row.child(
+                                Button::new(SharedString::from(format!(
+                                    "upload-conflict-{action:?}"
+                                )))
+                                .label(action.label())
+                                .small()
+                                .on_click(
+                                    cx.listener(move |this, _, _w, cx| this.resolve(action, cx)),
+                                ),
+                            );
+                        }
+                        failed = failed.child(row);
+                    }
+                }
+                if let Some(error) = &failure.resolve_error {
+                    failed = failed.child(Label::new(error.clone()).text_color(cx.theme().danger));
+                }
+                body = body.child(failed);
             }
         }
 
@@ -308,6 +507,7 @@ impl Render for UploadDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selection::FeatureKind;
 
     #[test]
     fn layer_summary_describe_format() {
@@ -358,12 +558,79 @@ mod tests {
         assert!(!UploadState::Editing.confirm_enabled(true));
         assert!(UploadState::Editing.can_dismiss());
 
-        let failed = UploadState::Failed("nope".into());
+        let failed = UploadState::Failed(Failure {
+            message: "nope".into(),
+            conflict: None,
+            resolve_error: None,
+        });
         assert!(
             failed.confirm_enabled(false),
             "a failed upload can be retried"
         );
         assert!(failed.can_dismiss());
+
+        let resolving = UploadState::Resolving("asking".into());
+        assert!(!resolving.confirm_enabled(false));
+        assert!(!resolving.can_dismiss());
+    }
+
+    fn view(
+        kind: ConflictKind,
+        object: Option<(FeatureKind, i64)>,
+        located: bool,
+        deleted_locally: bool,
+    ) -> ConflictView {
+        ConflictView {
+            conflict: UploadConflict {
+                kind,
+                object,
+                status: 409,
+                message: String::new(),
+            },
+            located,
+            deleted_locally,
+        }
+    }
+
+    #[test]
+    fn conflict_actions_follow_the_kind_of_conflict() {
+        use ConflictAction::*;
+        let node = Some((FeatureKind::Node, 12345));
+        let mismatch = ConflictKind::VersionMismatch {
+            provided: 3,
+            server: 4,
+        };
+        assert_eq!(
+            view(mismatch.clone(), node, true, false).actions(),
+            vec![KeepMine, UseTheirs, Show]
+        );
+        // Deleted here, so there is nothing on the map to show.
+        assert_eq!(
+            view(mismatch.clone(), node, false, true).actions(),
+            vec![KeepMine, UseTheirs]
+        );
+        assert!(view(mismatch, None, false, false).actions().is_empty());
+
+        assert_eq!(
+            view(ConflictKind::AlreadyDeleted, node, false, true).actions(),
+            vec![DropMyChange]
+        );
+        // Deleted on the server but edited here: explained, shown, no fix.
+        assert_eq!(
+            view(ConflictKind::AlreadyDeleted, node, true, false).actions(),
+            vec![Show]
+        );
+        assert_eq!(
+            view(ConflictKind::StillInUse { by: vec![] }, node, true, false).actions(),
+            vec![Show]
+        );
+        assert_eq!(
+            view(ConflictKind::MissingDependency, node, true, false).actions(),
+            vec![Show]
+        );
+        assert!(view(ConflictKind::Other, None, false, false)
+            .actions()
+            .is_empty());
     }
 
     #[test]
