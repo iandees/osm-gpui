@@ -744,6 +744,7 @@ impl SettingsWindow {
             ShortcutCategory::General => "General",
             ShortcutCategory::File => "File",
             ShortcutCategory::Edit => "Edit",
+            ShortcutCategory::View => "View",
             ShortcutCategory::Modes => "Modes",
         };
 
@@ -752,6 +753,7 @@ impl SettingsWindow {
             ShortcutCategory::General,
             ShortcutCategory::File,
             ShortcutCategory::Edit,
+            ShortcutCategory::View,
             ShortcutCategory::Modes,
         ] {
             let items: Vec<SettingItem> = SHORTCUTS

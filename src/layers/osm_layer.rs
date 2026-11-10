@@ -1931,7 +1931,7 @@ impl MapLayer for OsmLayer {
                 fill_groups.len() - 1
             });
             let group = &mut fill_groups[group_idx];
-            for t in tris.chunks_exact(3) {
+            for t in tris.as_chunks::<3>().0 {
                 push_triangle(
                     &mut group.path,
                     &mut group.bounds_min_max,
@@ -2361,6 +2361,24 @@ impl EditableLayer for OsmLayer {
             });
         }
         out
+    }
+
+    fn all_features(&self) -> Vec<FeatureRef> {
+        let Some(data) = self.osm_data.as_ref() else {
+            return Vec::new();
+        };
+        let mut node_ids: Vec<i64> = data.nodes.keys().copied().collect();
+        node_ids.sort_unstable();
+        let mut way_ids: Vec<i64> = data.ways.keys().copied().collect();
+        way_ids.sort_unstable();
+        let refs = |kind: FeatureKind, ids: Vec<i64>| {
+            let layer_id = self.id;
+            ids.into_iter()
+                .map(move |id| FeatureRef { layer_id, kind, id })
+        };
+        refs(FeatureKind::Node, node_ids)
+            .chain(refs(FeatureKind::Way, way_ids))
+            .collect()
     }
 
     fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {

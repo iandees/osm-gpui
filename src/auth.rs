@@ -598,6 +598,18 @@ pub fn logout(oauth_base_url: &str) {
     save(&snapshot);
 }
 
+/// The display name of the account logged in at the given OAuth base URL, if
+/// any. Unlike `current_token`, this never touches the platform keyring (the
+/// display name is part of the on-disk metadata), so it's safe to call every
+/// frame — e.g. from the status bar.
+pub fn stored_display_name(oauth_base_url: &str) -> Option<String> {
+    TOKEN_STORE
+        .read("auth", |g| {
+            g.tokens.get(oauth_base_url).map(|t| t.display_name.clone())
+        })
+        .flatten()
+}
+
 /// The stored token for the given OAuth base URL, if the user is logged in
 /// there. The first call for a URL whose secret lives only in the platform
 /// keyring (see `load()`) performs a one-time keyring read here, resolving

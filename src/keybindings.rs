@@ -1,13 +1,13 @@
 //! Canonical table of user-customizable keyboard shortcuts, and helpers to
 //! resolve a shortcut's effective (possibly user-overridden) key spec.
 //!
-//! The ten entries here split into two groups, both driven by the same
+//! The entries here split into two groups, both driven by the same
 //! `AppSettings.keybindings` override map, but consumed differently:
-//! - The seven non-`Modes` entries correspond to gpui `Action` structs
+//! - The non-`Modes` entries correspond to gpui `Action` structs
 //!   defined in the binary crate (`src/main.rs`) and are turned into real
 //!   `gpui::KeyBinding`s there (this module can't reference those `Action`
 //!   types — they live in a different crate).
-//! - The three `Modes` entries are unmodified single letters, matched
+//! - The `Modes` entries are unmodified single letters, matched
 //!   directly against `KeyDownEvent.keystroke.key` in the map canvas's
 //!   `on_key_down` handler (`src/main.rs`), never registered as
 //!   `KeyBinding`s (an unmodified-letter `KeyBinding` would fire even while
@@ -21,6 +21,7 @@ pub enum ShortcutCategory {
     General,
     File,
     Edit,
+    View,
     Modes,
 }
 
@@ -80,6 +81,42 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         default_spec: "cmd-shift-z",
         label: "Redo",
         category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
+        id: "select_all",
+        default_spec: "cmd-a",
+        label: "Select All",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
+        id: "zoom_in",
+        default_spec: "cmd-=",
+        label: "Zoom In",
+        category: ShortcutCategory::View,
+    },
+    ShortcutDef {
+        id: "zoom_out",
+        default_spec: "cmd--",
+        label: "Zoom Out",
+        category: ShortcutCategory::View,
+    },
+    ShortcutDef {
+        id: "zoom_to_data",
+        default_spec: "cmd-0",
+        label: "Zoom to Data",
+        category: ShortcutCategory::View,
+    },
+    ShortcutDef {
+        id: "zoom_to_selection",
+        default_spec: "cmd-j",
+        label: "Zoom to Selection",
+        category: ShortcutCategory::View,
+    },
+    ShortcutDef {
+        id: "mode_select",
+        default_spec: "s",
+        label: "Switch to Select mode",
+        category: ShortcutCategory::Modes,
     },
     ShortcutDef {
         id: "mode_add",

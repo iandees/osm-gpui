@@ -16,6 +16,7 @@ mod menu;
 mod mode_panel;
 mod script_harness;
 mod side_panel;
+mod status_bar;
 mod undo;
 
 use crate::menu::{
@@ -59,20 +60,52 @@ actions!(
         Redo,
         ApplyNsiPreset,
         ChangeFeatureType,
-        UploadToOsm
+        UploadToOsm,
+        SelectAll,
+        DeselectAll,
+        DeleteSelection,
+        ZoomIn,
+        ZoomOut,
+        ZoomToData,
+        ZoomToSelection,
+        MinimizeWindow,
+        ZoomWindow,
+        HideApp,
+        HideOtherApps,
+        ShowAllApps
     ]
 );
 
-/// Build the live `gpui::KeyBinding` list for the 7 cmd-modified actions
-/// from the current effective shortcut settings. The 3 mode-switch letters
-/// (`mode_add`/`mode_building`/`mode_extrude`) are deliberately excluded —
-/// see the comment where this is called.
+/// Key context set on `MapViewer`'s root element. Bindings scoped to it lose
+/// to bindings scoped to a deeper context, which is what lets `cmd-a` mean
+/// "select all text" inside a focused text input and "select all features"
+/// everywhere else in the window.
+const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
+
+/// Build the live `gpui::KeyBinding` list for the modifier-key actions from
+/// the current effective shortcut settings, plus the fixed macOS-standard
+/// window/app bindings. The bare-letter mode-switch shortcuts (`mode_*`) are
+/// deliberately excluded — see the comment where this is called.
 pub(crate) fn key_bindings_from_settings(
     settings: &osm_gpui::settings_store::AppSettings,
 ) -> Vec<KeyBinding> {
+    let fixed = [
+        KeyBinding::new("cmd-m", MinimizeWindow, None),
+        KeyBinding::new("cmd-h", HideApp, None),
+        KeyBinding::new("alt-cmd-h", HideOtherApps, None),
+    ];
     osm_gpui::keybindings::effective_bindings(settings)
         .into_iter()
         .filter_map(|(id, spec)| match id {
+            "select_all" => Some(KeyBinding::new(
+                &spec,
+                SelectAll,
+                Some(MAP_VIEWER_KEY_CONTEXT),
+            )),
+            "zoom_in" => Some(KeyBinding::new(&spec, ZoomIn, None)),
+            "zoom_out" => Some(KeyBinding::new(&spec, ZoomOut, None)),
+            "zoom_to_data" => Some(KeyBinding::new(&spec, ZoomToData, None)),
+            "zoom_to_selection" => Some(KeyBinding::new(&spec, ZoomToSelection, None)),
             "open_settings" => Some(KeyBinding::new(&spec, OpenSettings, None)),
             "quit" => Some(KeyBinding::new(&spec, Quit, None)),
             "open_osm_file" => Some(KeyBinding::new(&spec, OpenOsmFile, None)),
@@ -82,6 +115,7 @@ pub(crate) fn key_bindings_from_settings(
             "redo" => Some(KeyBinding::new(&spec, Redo, None)),
             _ => None,
         })
+        .chain(fixed)
         .collect()
 }
 
@@ -339,6 +373,16 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(String, Instant)>,
+    /// Description of a long-running background operation (download,
+    /// upload) shown with a spinner in the status bar until it completes.
+    /// Unlike `status_message` it never expires on its own.
+    activity: Option<String>,
+    /// Bumped whenever layer data changes outside the undo stack (upload
+    /// reconciliation, layer add/delete); part of `pending_edits`' cache key.
+    data_generation: u64,
+    /// Cached pending-edit count for the status bar, keyed on
+    /// `(undo_stack.revision, data_generation)`.
+    pending_edits: Option<((u64, u64), usize)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
     /// Current mouse interaction: idle, a pending press, an in-progress
     /// box-select, or an in-progress move-drag of the selection. See
@@ -485,6 +529,9 @@ impl MapViewer {
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
+            activity: None,
+            data_generation: 0,
+            pending_edits: None,
             selected: Vec::new(),
             interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
@@ -653,6 +700,7 @@ impl MapViewer {
             }
         }
         let _ = self.layer_manager.remove_at(action.index);
+        self.data_generation += 1;
         cx.notify();
     }
 
@@ -702,7 +750,15 @@ impl MapViewer {
     /// handler is added here as a no-op placeholder for those clears and
     /// extended in each later task).
     fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
-        self.mode = action.mode.into();
+        let mode: EditMode = action.mode.into();
+        // The drawing modes need a layer to write into. The toolbar buttons
+        // are disabled in that state; this covers the keyboard and menu paths.
+        if mode != EditMode::Select && self.active_layer.is_none() {
+            self.set_status("Open or download OSM data before drawing");
+            cx.notify();
+            return;
+        }
+        self.mode = mode;
         self.add_progress = None;
         self.building_progress = None;
         self.extrude_drag = None;
@@ -828,17 +884,20 @@ impl MapViewer {
 
     /// Cancel an in-progress move-drag: clears the preview on every affected
     /// layer without mutating any data.
-    fn cancel_move_drag(&mut self, cx: &mut Context<Self>) {
-        if let Some(targets) = interaction::cancel_move_drag(&mut self.interaction) {
-            for (layer_id, _) in &targets {
-                if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                    if let Some(editable) = layer.as_editable_mut() {
-                        editable.clear_drag_preview();
-                    }
+    /// Returns whether a move-drag was actually in progress (and cancelled).
+    fn cancel_move_drag(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(targets) = interaction::cancel_move_drag(&mut self.interaction) else {
+            return false;
+        };
+        for (layer_id, _) in &targets {
+            if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
+                if let Some(editable) = layer.as_editable_mut() {
+                    editable.clear_drag_preview();
                 }
             }
-            cx.notify();
         }
+        cx.notify();
+        true
     }
 
     /// Apply an undo/redo step: `forward = true` reapplies the action's
@@ -1260,6 +1319,155 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Replace the selection, resetting the Fields section's per-feature
+    /// editing state so nothing from the previous selection leaks through.
+    fn set_selection(&mut self, selection: Vec<osm_gpui::selection::FeatureRef>) {
+        self.selected = selection;
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
+    }
+
+    /// Edit > Select All: every node and way in the active layer.
+    fn on_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        let all = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .and_then(|layer| layer.as_editable())
+            .map(|editable| editable.all_features())
+            .unwrap_or_default();
+        self.set_selection(all);
+        cx.notify();
+    }
+
+    fn on_deselect_all(&mut self, _: &DeselectAll, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected.is_empty() {
+            self.set_selection(Vec::new());
+            cx.notify();
+        }
+    }
+
+    fn on_delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
+        self.delete_selected_features(cx);
+    }
+
+    /// Zoom by `delta` levels around the center of the map area.
+    fn zoom_by(&mut self, delta: f64, cx: &mut Context<Self>) {
+        let size = self.viewport.transform.screen_size;
+        let center = gpui::point(size.width / 2.0, size.height / 2.0);
+        self.viewport.transform.zoom_at_point(center, delta);
+        cx.notify();
+    }
+
+    fn on_zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_by(1.0, cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_by(-1.0, cx);
+    }
+
+    /// Pan/zoom so every given feature is in view. Returns `false` (leaving
+    /// the viewport untouched) if none of them resolve to a position.
+    fn fit_to_features(&mut self, features: &[osm_gpui::selection::FeatureRef]) -> bool {
+        use osm_gpui::selection::FeatureKind;
+
+        // (min_lat, max_lat, min_lon, max_lon)
+        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        let mut extend = |(lat, lon): (f64, f64)| {
+            let b = bounds.get_or_insert((lat, lat, lon, lon));
+            b.0 = b.0.min(lat);
+            b.1 = b.1.max(lat);
+            b.2 = b.2.min(lon);
+            b.3 = b.3.max(lon);
+        };
+        for feature in features {
+            let Some(editable) = self
+                .layer_manager
+                .find_layer(feature.layer_id)
+                .and_then(|layer| layer.as_editable())
+            else {
+                continue;
+            };
+            match feature.kind {
+                FeatureKind::Node => {
+                    if let Some(pos) = editable.node_lat_lon(feature.id) {
+                        extend(pos);
+                    }
+                }
+                FeatureKind::Way => {
+                    for node_id in editable.way_node_ids(feature.id).unwrap_or_default() {
+                        if let Some(pos) = editable.node_lat_lon(node_id) {
+                            extend(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some((min_lat, max_lat, min_lon, max_lon)) = bounds else {
+            return false;
+        };
+        let size = self.viewport.transform.screen_size;
+        let (lat, lon, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+            size.width.to_f64(),
+            size.height.to_f64(),
+        );
+        self.viewport.pan_to(lat, lon);
+        self.viewport.set_zoom(zoom);
+        true
+    }
+
+    /// View > Zoom to Data: fit every visible OSM layer's data in view.
+    fn on_zoom_to_data(&mut self, _: &ZoomToData, _: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::selection::FeatureKind;
+
+        let nodes: Vec<osm_gpui::selection::FeatureRef> = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter(|layer| layer.is_visible())
+            .filter_map(|layer| layer.as_editable())
+            .flat_map(|editable| editable.all_features())
+            .filter(|feature| feature.kind == FeatureKind::Node)
+            .collect();
+        if !self.fit_to_features(&nodes) {
+            self.set_status("No OSM data to zoom to");
+        }
+        cx.notify();
+    }
+
+    fn on_zoom_to_selection(
+        &mut self,
+        _: &ZoomToSelection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.selected.clone();
+        if !self.fit_to_features(&selected) {
+            self.set_status("Nothing selected");
+        }
+        cx.notify();
+    }
+
+    fn on_minimize_window(
+        &mut self,
+        _: &MinimizeWindow,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        window.minimize_window();
+    }
+
+    fn on_zoom_window(&mut self, _: &ZoomWindow, window: &mut Window, _: &mut Context<Self>) {
+        window.zoom_window();
+    }
+
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = self.undo_stack.undo() {
             self.apply_undo_action(&action, false);
@@ -1427,12 +1635,9 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
-        if self.building_progress.is_some()
-            || self.extrude_drag.is_some()
-            || self.add_progress.is_some()
-        {
-            cx.notify(); // repaint the live preview every move while building/extruding/adding
-        }
+        // Repaint on every move: the status bar shows the cursor's
+        // coordinates, and Add/Building/Extrude draw a live preview to it.
+        cx.notify();
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
             if let Some(delta_pt) =
@@ -2088,6 +2293,7 @@ impl MapViewer {
             self.fit_to_osm_data(&data);
             self.first_dataset_fitted = true;
         }
+        self.data_generation += 1;
         self.status_message = None;
         cx.notify();
     }
@@ -2392,7 +2598,8 @@ impl MapViewer {
             return;
         }
 
-        self.set_status("Uploading…");
+        self.status_message = None;
+        self.activity = Some("Uploading changes…".to_string());
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -2435,6 +2642,8 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
+                this.activity = None;
+                this.data_generation += 1;
                 match result {
                     Ok((changeset_id, upload_result)) => {
                         for id in &layer_ids {
@@ -2469,7 +2678,8 @@ impl MapViewer {
             return;
         }
 
-        self.set_status("Downloading OSM data…");
+        self.status_message = None;
+        self.activity = Some("Downloading OSM data…".to_string());
         cx.notify();
 
         let label = format!(
@@ -2495,6 +2705,8 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
+                this.activity = None;
+                this.data_generation += 1;
                 match result {
                     Ok(data) => {
                         let data_arc = Arc::new(data);
@@ -2540,13 +2752,15 @@ impl Render for MapViewer {
             bus.signal_done_and_frame();
         }
 
-        // Update viewport size to actual window dimensions minus the right panel
-        let window_size = window.bounds().size;
+        // Size the viewport to the map area: the window's content area (not
+        // `window.bounds()`, which includes the title bar) minus the side
+        // panels and the status bar.
+        let window_size = window.viewport_size();
         let panel_width = px(osm_gpui::ui::style::SIDE_PANEL_WIDTH);
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
-            window_size.height,
+            window_size.height - px(status_bar::STATUS_BAR_HEIGHT),
         );
         self.viewport.update_size(map_size);
 
@@ -2560,11 +2774,11 @@ impl Render for MapViewer {
         let zoom_level = self.viewport.zoom_level();
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
         let fps = self.tick_fps();
+        let status_bar = self.render_status_bar(cx);
 
-        div()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_size(osm_gpui::ui::style::current_text_scale().body)
+        let main_row = div()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_row()
             .child(self.render_mode_panel(cx))
@@ -2606,16 +2820,37 @@ impl Render for MapViewer {
                         }),
                     )
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                        if ev.keystroke.key == "escape" {
-                            this.cancel_move_drag(cx);
-                            if this.mode == EditMode::Add {
-                                if this.add_progress.take().is_some() {
-                                    cx.notify();
-                                } else {
-                                    this.mode = EditMode::Select;
-                                    cx.notify();
+                        let modifiers = ev.keystroke.modifiers;
+                        if modifiers.platform || modifiers.control || modifiers.alt {
+                            // Modifier chords belong to the keymap (menu
+                            // shortcuts), never to the bare-key handling below.
+                        } else if ev.keystroke.key == "escape" {
+                            let cancelled_drag = this.cancel_move_drag(cx);
+                            match this.mode {
+                                // Escape backs out one step at a time: an
+                                // in-progress shape first, then the mode.
+                                EditMode::Add => {
+                                    if this.add_progress.take().is_none() {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
+                                EditMode::Building => {
+                                    if this.building_progress.take().is_none() {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
+                                EditMode::Extrude => {
+                                    if this.extrude_drag.take().is_none() {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
+                                EditMode::Select => {
+                                    if !cancelled_drag {
+                                        this.set_selection(Vec::new());
+                                    }
                                 }
                             }
+                            cx.notify();
                         } else if ev.keystroke.key == "enter" && this.mode == EditMode::Add {
                             if this.add_progress.take().is_some() {
                                 cx.notify();
@@ -2629,7 +2864,19 @@ impl Render for MapViewer {
                             // than as global key bindings so they only fire
                             // while the map area has focus (see the comment
                             // by `cx.bind_keys` in `main()`).
-                            if key == osm_gpui::keybindings::effective_spec(&settings, "mode_add") {
+                            if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_select")
+                            {
+                                this.on_set_mode(
+                                    &SetMode {
+                                        mode: EditModeAction::Select,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_add")
+                            {
                                 this.on_set_mode(
                                     &SetMode {
                                         mode: EditModeAction::Add,
@@ -2912,36 +3159,12 @@ impl Render for MapViewer {
                                 .text_color(cx.theme().popover_foreground)
                                 .opacity(0.9)
                                 .min_w_64()
-                                .child(format!("🔍 Zoom: {:.1}", zoom_level))
-                                .child(format!(
-                                    "🌍 Center: {:.4}°N, {:.4}°W",
-                                    center_lat,
-                                    center_lon.abs()
-                                ))
-                                .child(format!("📊 Objects: {}", osm_objects))
-                                .child(format!("🗺️ Tiles: {} visible", total_tiles))
-                                .child(format!("💾 Cache: {} files", cached_files))
-                                .child(format!("⚡ FPS: {:.0}", fps))
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }
-                    })
-                    .child({
-                        let status = self.status_message.clone();
-                        if let Some((msg, _)) = status {
-                            div()
-                                .absolute()
-                                .top_4()
-                                .right_4()
-                                .p_3()
-                                .bg(cx.theme().popover)
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_lg()
-                                .text_color(cx.theme().popover_foreground)
-                                .opacity(0.9)
-                                .child(msg)
+                                .child(format!("Zoom: {:.1}", zoom_level))
+                                .child(format!("Center: {:.4}, {:.4}", center_lat, center_lon))
+                                .child(format!("Objects: {}", osm_objects))
+                                .child(format!("Tiles: {} visible", total_tiles))
+                                .child(format!("Cache: {} files", cached_files))
+                                .child(format!("FPS: {:.0}", fps))
                                 .into_any_element()
                         } else {
                             div().into_any_element()
@@ -3025,7 +3248,26 @@ impl Render for MapViewer {
             .child(
                 // Right panel with layer controls
                 self.render_side_panel(window, cx),
-            )
+            );
+
+        div()
+            .size_full()
+            .key_context(MAP_VIEWER_KEY_CONTEXT)
+            .bg(cx.theme().background)
+            .text_size(osm_gpui::ui::style::current_text_scale().body)
+            .flex()
+            .flex_col()
+            .child(main_row)
+            .child(status_bar)
+            .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_deselect_all))
+            .on_action(cx.listener(Self::on_delete_selection))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
+            .on_action(cx.listener(Self::on_zoom_to_data))
+            .on_action(cx.listener(Self::on_zoom_to_selection))
+            .on_action(cx.listener(Self::on_minimize_window))
+            .on_action(cx.listener(Self::on_zoom_window))
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
@@ -3145,6 +3387,7 @@ fn main() {
             cx.on_action(open_settings);
             cx.on_action(upload_to_osm);
             cx.on_action(quit);
+            menu::register_app_actions(cx);
 
             // Load persisted custom imagery entries.
             let loaded = custom_imagery_store::load();
@@ -3219,7 +3462,7 @@ fn main() {
                             size: size(px(win_w as f32), px(win_h as f32)),
                         })),
                         titlebar: Some(gpui::TitlebarOptions {
-                            title: Some("OSM-GPUI Map Viewer".into()),
+                            title: Some(menu::APP_NAME.into()),
                             appears_transparent: false,
                             traffic_light_position: None,
                         }),

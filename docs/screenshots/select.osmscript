@@ -1,14 +1,14 @@
 # Load fixture data and exercise feature selection.
 #
-# Coordinate model: `click X Y` uses raw window coords. MapViewer subtracts
-# 48px (header) from y before hit-testing. With window 1200x800 and the
-# 280px right panel, macOS renders the window slightly taller than requested
-# (actual content height ~828px), so the map area is 920x780 and the
-# viewport center projects to map-area (460, 390) = window (460, 438).
+# Coordinate model: `click X Y` uses window content coords. In a 1200x800
+# window the map area is what's left after the 56px mode panel (left), the
+# 280px side panel (right) and the 24px status bar (bottom): 864x776 with
+# its origin at window (56, 0). The viewport center is therefore at window
+# (56 + 864/2, 776/2) = (488, 388).
 #
 # Fixture layout at zoom 18, centered on (40.7120, -74.0060):
-#   node 2001  (40.7120, -74.0060)  → window  (460, 438)   # tagged POI (center)
-#   way  3001  1001 → 1002          # diagonal line; click at (647, 438) —
+#   node 2001  (40.7120, -74.0060)  → window  (488, 388)   # tagged POI (center)
+#   way  3001  1001 → 1002          # diagonal line; click at (675, 388) —
 #                                   # clear of the POI's 8px node tolerance.
 
 window 1200 800
@@ -19,7 +19,7 @@ viewport 40.7120 -74.0060 18
 wait_idle 5s
 
 # Click the tagged POI node.
-click 460,438
+click 488,388
 wait_idle 2s
 capture out/select-node.png
 
@@ -29,6 +29,6 @@ wait_idle 2s
 capture out/select-empty.png
 
 # Click the way mid-segment (clear of POI and endpoint nodes).
-click 647,438
+click 675,388
 wait_idle 2s
 capture out/select-way.png

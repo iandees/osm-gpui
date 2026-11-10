@@ -146,10 +146,15 @@ pub(crate) struct UndoStack {
     /// Index of the next action that would be redone. Equals
     /// `actions.len()` when at the tip (nothing to redo).
     pub(crate) cursor: usize,
+    /// Bumped on every push/undo/redo. Lets callers cache values derived
+    /// from the edited data (e.g. the status bar's pending-edit count)
+    /// without `(cursor, len)` aliasing after an undo-then-push.
+    pub(crate) revision: u64,
 }
 
 impl UndoStack {
     pub(crate) fn push(&mut self, action: UndoableAction) {
+        self.revision += 1;
         self.actions.truncate(self.cursor);
         self.actions.push(action);
         self.cursor = self.actions.len();
@@ -162,6 +167,7 @@ impl UndoStack {
             return None;
         }
         self.cursor -= 1;
+        self.revision += 1;
         Some(self.actions[self.cursor].clone())
     }
 
@@ -173,6 +179,7 @@ impl UndoStack {
         }
         let action = self.actions[self.cursor].clone();
         self.cursor += 1;
+        self.revision += 1;
         Some(action)
     }
 }

@@ -11,9 +11,11 @@ use osm_gpui::osm::OsmParser;
 
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
-    AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, DownloadFromOsm, ImageryLoadState,
-    LayerRequest, OpenOsmFile, OpenSettings, Quit, Redo, ToggleDebugOverlay, Undo, UploadToOsm,
-    IMAGERY_INDEX,
+    AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
+    DeselectAll, DownloadFromOsm, EditModeAction, HideApp, HideOtherApps, ImageryLoadState,
+    LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo, SelectAll, SetMode,
+    ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData,
+    ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -328,15 +330,22 @@ pub(crate) fn rebuild_menus(
         }
     }
 
+    let mode_item =
+        |label: &'static str, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
+
     cx.set_menus(vec![
         Menu {
-            name: "OSM Viewer".into(),
+            name: APP_NAME.into(),
             items: vec![
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Quit", Quit),
+                MenuItem::action(format!("Hide {APP_NAME}"), HideApp),
+                MenuItem::action("Hide Others", HideOtherApps),
+                MenuItem::action("Show All", ShowAllApps),
+                MenuItem::separator(),
+                MenuItem::action(format!("Quit {APP_NAME}"), Quit),
             ],
             disabled: false,
         },
@@ -344,8 +353,8 @@ pub(crate) fn rebuild_menus(
             name: "File".into(),
             items: vec![
                 MenuItem::action("Open…", OpenOsmFile),
-                MenuItem::action("Download from OSM", DownloadFromOsm),
                 MenuItem::separator(),
+                MenuItem::action("Download from OSM", DownloadFromOsm),
                 MenuItem::action("Upload to OSM…", UploadToOsm),
             ],
             disabled: false,
@@ -356,7 +365,23 @@ pub(crate) fn rebuild_menus(
                 MenuItem::action("Undo", Undo),
                 MenuItem::action("Redo", Redo),
                 MenuItem::separator(),
+                MenuItem::action("Delete", DeleteSelection),
+                MenuItem::separator(),
+                MenuItem::action("Select All", SelectAll),
+                MenuItem::action("Deselect All", DeselectAll),
+                MenuItem::separator(),
+                MenuItem::action("Change Feature Type…", ChangeFeatureType),
                 MenuItem::action("Apply NSI Preset…", ApplyNsiPreset),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Mode".into(),
+            items: vec![
+                mode_item("Select", EditModeAction::Select),
+                mode_item("Add", EditModeAction::Add),
+                mode_item("Building", EditModeAction::Building),
+                mode_item("Extrude", EditModeAction::Extrude),
             ],
             disabled: false,
         },
@@ -367,10 +392,54 @@ pub(crate) fn rebuild_menus(
         },
         Menu {
             name: "View".into(),
-            items: vec![MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay)],
+            items: vec![
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::separator(),
+                MenuItem::action("Zoom to Data", ZoomToData),
+                MenuItem::action("Zoom to Selection", ZoomToSelection),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", MinimizeWindow),
+                MenuItem::action("Zoom", ZoomWindow),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![
+                MenuItem::action("OpenStreetMap Wiki: Map Features", OpenMapFeaturesWiki),
+                MenuItem::action(format!("{APP_NAME} on GitHub"), OpenProjectPage),
+            ],
             disabled: false,
         },
     ]);
+}
+
+/// The app's user-visible name: the app menu title, its Hide/Quit items,
+/// and the main window's title.
+pub(crate) const APP_NAME: &str = "osm-gpui";
+
+actions!(osm_gpui, [OpenMapFeaturesWiki, OpenProjectPage]);
+
+/// Register the app-level (window-independent) handlers for the standard
+/// macOS app-menu items and the Help menu links.
+pub(crate) fn register_app_actions(cx: &mut App) {
+    cx.on_action(|_: &HideApp, cx: &mut App| cx.hide());
+    cx.on_action(|_: &HideOtherApps, cx: &mut App| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAllApps, cx: &mut App| cx.unhide_other_apps());
+    cx.on_action(|_: &OpenMapFeaturesWiki, _: &mut App| {
+        let _ = open::that("https://wiki.openstreetmap.org/wiki/Map_features");
+    });
+    cx.on_action(|_: &OpenProjectPage, _: &mut App| {
+        let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
+    });
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.

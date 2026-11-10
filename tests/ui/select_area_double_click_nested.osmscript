@@ -14,7 +14,7 @@ assert_mode select
 
 # A double-click on the shared center selects the smaller, inner way, not
 # the larger outer one.
-click 460,438 count=2
+click 488,388 count=2
 wait_idle 2s
 assert_selected way 20
 

@@ -588,7 +588,7 @@ fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, Stri
 
     // Convert RGBA to BGRA format that GPUI expects
     // We need to swap the red and blue channels for each pixel
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2); // Swap R and B channels (RGBA -> BGRA)
     }
 
