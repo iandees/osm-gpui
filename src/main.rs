@@ -411,6 +411,7 @@ struct MapViewer {
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
+    sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
     /// The tag currently being edited in place in the Tags table, if any.
     tag_inline_edit: Option<InlineTagEdit>,
     /// A request to start an inline tag edit, recorded by a cell/button
@@ -604,6 +605,7 @@ impl MapViewer {
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             upload_dialog: None,
+            sign_in_dialog: None,
             tag_inline_edit: None,
             fields_more_open_for: None,
             // Scripted runs use the default width, not the user's saved one,
@@ -2819,7 +2821,7 @@ impl MapViewer {
     /// `SHOW_UPLOAD_DIALOG` queue, same as `show_quit_confirm_dialog`
     /// replaced `SHOW_QUIT_CONFIRM`.
     pub(crate) fn open_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.upload_dialog.is_some() {
+        if self.upload_dialog.is_some() || self.sign_in_dialog.is_some() {
             return;
         }
 
@@ -2845,6 +2847,15 @@ impl MapViewer {
             return;
         }
 
+        // Uploading needs an OSM account; send signed-out users to Settings
+        // instead of letting the upload fail later for lack of a token.
+        let signed_in_name =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if osm_gpui::ui::sign_in_dialog::needs_sign_in(signed_in_name.as_deref()) {
+            self.show_sign_in_dialog(window, cx);
+            return;
+        }
+
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         cx.subscribe(
@@ -2865,6 +2876,27 @@ impl MapViewer {
         )
         .detach();
         self.upload_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Show the "sign in to upload" prompt. "Open Settings" closes it and
+    /// opens the Settings window; Cancel/Esc just closes it.
+    fn show_sign_in_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::sign_in_dialog::DialogEvent;
+                this.sign_in_dialog = None;
+                if matches!(event, DialogEvent::OpenSettings) {
+                    // Deferred so the window is opened outside this entity update.
+                    cx.defer(|cx| crate::menu::open_settings(&OpenSettings, cx));
+                }
+                cx.notify();
+            },
+        )
+        .detach();
+        self.sign_in_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -3693,6 +3725,7 @@ impl Render for MapViewer {
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
             .children(self.upload_dialog.clone())
+            .children(self.sign_in_dialog.clone())
     }
 }
 
