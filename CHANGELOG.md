@@ -7,6 +7,36 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.4.0
+
+### Editing
+
+- Extrude now reshapes the way you drag: pull a wall out, add an L, or push in a notch. Option-drag makes a separate way as before, and Cmd-drag moves the segment. ([#133](https://github.com/iandees/osm-gpui/pull/133))
+- Closed ways are offered area presets such as Building, including freshly drawn untagged shapes, and `area=yes` is added or removed as the chosen preset needs. Presets with a wildcard value no longer write a literal `*`. ([#131](https://github.com/iandees/osm-gpui/pull/131))
+- Undo and redo select the features they changed, and never leave a deleted feature selected. ([#138](https://github.com/iandees/osm-gpui/pull/138))
+- Edits that would make a way or relation larger than the server allows are refused, and oversized ways and relations are caught before upload. ([#124](https://github.com/iandees/osm-gpui/pull/124))
+
+### Relations
+
+- Multipolygon and boundary relations are drawn as filled areas with holes, and a double-click inside one selects the relation. ([#139](https://github.com/iandees/osm-gpui/pull/139))
+
+### Upload
+
+- When the server refuses an upload because of a conflict, the dialog names the object and offers Keep mine, Use theirs, or Show; a failed upload no longer leaves its changeset open. ([#128](https://github.com/iandees/osm-gpui/pull/128))
+- The upload request is sent once and never retried, so a lost response cannot create objects twice; an uncertain result is reported with a link to the changeset. ([#132](https://github.com/iandees/osm-gpui/pull/132))
+- Edits larger than the server's changeset limit are uploaded as several changesets, each applied locally as it is accepted; editing and quitting are blocked while an upload runs. ([#136](https://github.com/iandees/osm-gpui/pull/136), [#140](https://github.com/iandees/osm-gpui/pull/140))
+
+### Interface
+
+- Preset icons from Temaki, iD, Röntgen and Font Awesome are bundled alongside Maki and are now compiled into the app; packaged builds previously showed no preset icons. ([#137](https://github.com/iandees/osm-gpui/pull/137))
+- Side panel: consistent Fields and Tags layout, History pinned to the bottom, and relation member buttons that appear on keyboard focus. ([#125](https://github.com/iandees/osm-gpui/pull/125), [#138](https://github.com/iandees/osm-gpui/pull/138))
+- View > Show Downloaded Area toggles the dimming outside downloaded data, and its edge is visible over aerial imagery. ([#126](https://github.com/iandees/osm-gpui/pull/126))
+
+### Files and packaging
+
+- `.osm` files can be opened from the command line, from Finder's Open With, by dropping on the Dock icon, and from Linux file managers. ([#134](https://github.com/iandees/osm-gpui/pull/134))
+- The project is licensed under MIT, with a LICENSE file. ([#127](https://github.com/iandees/osm-gpui/pull/127))
+
 ## 0.3.0
 
 ### Fixes
