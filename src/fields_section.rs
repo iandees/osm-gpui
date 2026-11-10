@@ -470,30 +470,61 @@ impl MapViewer {
             osm_gpui::fields::resolve_more_fields(field_index, &preset.more_fields, &already_shown);
 
         if !addable.is_empty() {
+            // One "Add field" control instead of a row per optional field
+            // (a cafe has fifteen), so the Tags and History sections below
+            // stay on screen. Its list opens on demand and closes again
+            // once a field is picked.
+            let more_open = self.fields_more_open_for == Some(feature);
             column = column.child(
-                gpui::div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .items_start()
-                    .children(addable.into_iter().map(|f| {
-                        let field_id = f.id.clone();
-                        Button::new(gpui::SharedString::from(format!(
-                            "field-add-more-{}",
-                            field_id
-                        )))
-                        .label(f.label.clone())
-                        .icon(IconName::Plus)
+                gpui::div().flex().flex_row().child(
+                    Button::new("field-add-more-toggle")
+                        .label(format!("Add field ({})", addable.len()))
+                        .icon(if more_open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::Plus
+                        })
                         .ghost()
-                        .xsmall()
-                        .on_click(cx.listener(
-                            move |this, _ev, _window, cx| {
-                                this.fields_promoted_more_fields.insert(field_id.clone());
-                                cx.notify();
-                            },
-                        ))
-                    })),
+                        .small()
+                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            this.fields_more_open_for =
+                                if more_open { None } else { Some(feature) };
+                            cx.notify();
+                        })),
+                ),
             );
+            if more_open {
+                column = column.child(
+                    gpui::div()
+                        .id("field-add-more-list")
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .max_h(gpui::px(200.0))
+                        .overflow_y_scroll()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded_md()
+                        .p_1()
+                        .children(addable.into_iter().map(|f| {
+                            let field_id = f.id.clone();
+                            Button::new(gpui::SharedString::from(format!(
+                                "field-add-more-{}",
+                                field_id
+                            )))
+                            .label(f.label.clone())
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(
+                                move |this, _ev, _window, cx| {
+                                    this.fields_promoted_more_fields.insert(field_id.clone());
+                                    this.fields_more_open_for = None;
+                                    cx.notify();
+                                },
+                            ))
+                        })),
+                );
+            }
         }
 
         column.into_any_element()

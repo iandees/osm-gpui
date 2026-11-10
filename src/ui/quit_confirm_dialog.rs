@@ -1,7 +1,6 @@
 //! Modal dialog warning the user about unsaved changes before quitting.
 //!
-//! Mirrors the scrim/dialog conventions in `tag_edit_dialog.rs` /
-//! `custom_imagery_dialog.rs`: an `.occlude()`'d full-window scrim behind a
+//! Mirrors the scrim/dialog conventions in `custom_imagery_dialog.rs`: an `.occlude()`'d full-window scrim behind a
 //! centered card, so clicks on the scrim don't pass through to whatever is
 //! underneath (see PR #50).
 

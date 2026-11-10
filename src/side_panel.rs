@@ -3,15 +3,15 @@
 use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     description_list::{DescriptionItem, DescriptionList},
+    input::Input,
     label::Label,
     menu::ContextMenuExt,
     ActiveTheme, Icon, IconName, Sizable,
 };
 
 use osm_gpui::layers::LayerId;
-use osm_gpui::ui::style::{interactive_row, panel_row, PANEL_ROW_HEIGHT, SIDE_PANEL_WIDTH};
+use osm_gpui::ui::style::{interactive_row, muted_text_size, panel_row, PANEL_ROW_HEIGHT};
 
 use crate::{
     DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
@@ -63,9 +63,32 @@ impl MapViewer {
             n => format!("Selection ({} items)", n),
         };
 
+        // A thin strip along the panel's left edge that drags its width.
+        // The drag itself is tracked on the window root (see `render`), so
+        // it keeps following the pointer once it leaves this strip.
+        let handle_hover = cx.theme().border;
+        let resize_handle = div()
+            .id("side-panel-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(5.0))
+            .cursor_col_resize()
+            .hover(move |this| this.bg(handle_hover))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    this.start_side_panel_resize(ev.position.x.as_f32(), cx);
+                    cx.stop_propagation();
+                }),
+            );
+
         div()
-            .w(px(SIDE_PANEL_WIDTH))
+            .w(px(self.side_panel_width))
+            .flex_shrink_0()
             .h_full()
+            .relative()
             .bg(cx.theme().sidebar)
             .border_l_1()
             .border_color(cx.theme().border)
@@ -97,6 +120,8 @@ impl MapViewer {
                         cx,
                     )),
             )
+            // Last, so it sits on top of the scrolling content.
+            .child(resize_handle)
     }
 
     /// The History accordion section: a passive list of every undoable
@@ -257,20 +282,18 @@ impl MapViewer {
             .into_any_element()
     }
 
-    /// The Layers accordion section: a Checkbox row per layer with a right-click
-    /// context menu offering Move up / Move down / Delete.
+    /// The Layers accordion section: one row per layer, with an eye toggle
+    /// for visibility on the left and, for OSM layers, click-to-activate on
+    /// the rest of the row. The active layer — the one the drawing modes
+    /// write into — is the highlighted row carrying the "editing" badge. A
+    /// right-click context menu offers the same actions plus reordering and
+    /// delete.
     ///
-    /// The toggle is driven by a plain `on_mouse_down` on a wrapping row
-    /// rather than `Checkbox::on_click` + `.context_menu(...)` on the
-    /// `Checkbox` itself: `Checkbox::on_click` relies on gpui's paired
-    /// mouse-down/mouse-up click detection on one hitbox, but
-    /// `.context_menu(...)` wraps that same element in an *extra* hitbox
-    /// layer (`ContextMenu::prepaint` inserts its own hitbox covering the
-    /// whole row). That combination is fragile — it manifested as the first
-    /// click on a layer checkbox doing nothing (only the second registered)
-    /// and the right-click menu dismissing itself when the cursor moved.
-    /// `Checkbox` is kept purely for its visual (box + check icon + label);
-    /// the wrapping row owns both the click-to-toggle and the context menu.
+    /// Both click targets are plain `on_mouse_down` listeners rather than
+    /// `Button`/`Checkbox::on_click`: `.context_menu(...)` wraps the row in
+    /// an extra hitbox layer, and gpui's paired mouse-down/mouse-up click
+    /// detection through it proved fragile (first click ignored, menu
+    /// dismissing itself on mouse move).
     fn render_layers_section(
         &self,
         layer_info: &[(LayerId, String, bool, bool, bool)],
@@ -282,6 +305,9 @@ impl MapViewer {
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
+
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
 
         div()
             .flex()
@@ -297,24 +323,72 @@ impl MapViewer {
                             let is_osm = *is_osm;
                             let is_active = self.active_layer == Some(layer_id);
                             let is_visible = *is_visible;
-                            let label = if *is_modified {
-                                format!("{} \u{2022}", name)
-                            } else {
-                                name.clone()
-                            };
-                            interactive_row(("layer-row", index), is_active, cx)
+
+                            let eye = div()
+                                .id(("layer-eye", index))
+                                .flex_shrink_0()
+                                .cursor_pointer()
                                 .child(
-                                    Checkbox::new(("layer", index))
-                                        .checked(is_visible)
-                                        .label(label),
+                                    Icon::new(if is_visible {
+                                        IconName::Eye
+                                    } else {
+                                        IconName::EyeOff
+                                    })
+                                    .small()
+                                    .text_color(if is_visible { foreground } else { muted }),
                                 )
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                         this.toggle_layer_visibility(layer_id);
+                                        // Don't also activate the layer.
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                );
+
+                            let name_label = div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(if is_visible { foreground } else { muted })
+                                .when(is_active, |this| {
+                                    this.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
+                                .child(if *is_modified {
+                                    format!("{} \u{2022}", name)
+                                } else {
+                                    name.clone()
+                                });
+
+                            // Only OSM layers can be activated, so only
+                            // their rows look and act clickable.
+                            let row = if is_osm {
+                                interactive_row(("layer-row", index), is_active, cx).on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                        this.active_layer = Some(layer_id);
                                         cx.notify();
                                     }),
                                 )
+                            } else {
+                                panel_row(("layer-row", index))
+                            };
+
+                            row.gap_2()
+                                .child(eye)
+                                .child(name_label)
+                                .when(is_active, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_size(muted_text_size())
+                                            .text_color(muted)
+                                            .child("editing"),
+                                    )
+                                })
                                 .context_menu(move |menu, _window, _cx| {
                                     let mut menu = menu;
                                     if is_osm && !is_active {
@@ -351,15 +425,82 @@ impl MapViewer {
             .into_any_element()
     }
 
+    /// One cell of the Tags table while it is being edited in place.
+    ///
+    /// The cell must not change size when it switches between showing text
+    /// and editing it, so the layout is still driven by text: `sizing_text`
+    /// (the cell's text as it was before the edit, or a placeholder for a
+    /// new row) is laid out invisibly, and the input is positioned on top
+    /// of it, filling exactly that box. The input is borderless, set in the
+    /// table's own text size, and shifted left by its built-in padding so
+    /// its text starts where the plain text did; a ring drawn as a shadow
+    /// (which takes no layout space) marks it as the field being edited.
+    ///
+    /// The wrapper also turns Escape into "abandon the edit". (Enter and
+    /// loss of focus commit; those arrive as `InputEvent`s — see
+    /// `MapViewer::on_tag_input_event`.)
+    fn tag_input_cell(
+        &self,
+        input: &gpui::Entity<gpui_component::input::InputState>,
+        sizing_text: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        use gpui_component::Size;
+
+        // `Size::Size(s)` renders input text at `s * 0.875` with 8px of
+        // horizontal padding; pick `s` so the text matches the body size.
+        let body = osm_gpui::ui::style::current_text_scale().body;
+        let input_padding = px(8.0);
+        let ring = gpui::BoxShadow {
+            color: cx.theme().ring,
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(1.5),
+            // Inset, so the table cell's clipping can't cut the ring off.
+            inset: true,
+        };
+
+        div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "escape" {
+                    this.cancel_tag_inline_edit(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(div().invisible().child(sizing_text.into()))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(-input_padding)
+                    .right_0()
+                    .rounded_sm()
+                    .bg(cx.theme().background)
+                    .shadow(vec![ring])
+                    .child(
+                        Input::new(input)
+                            .with_size(Size::Size(body / 0.875))
+                            .appearance(false)
+                            .h_full(),
+                    ),
+            )
+    }
+
     /// The Tags accordion section: tags aggregated across every selected
     /// feature. A key shows its value only if every selected feature has
     /// that exact same value (a feature missing the key counts as its own
-    /// distinct state); otherwise it shows "<N values>". Double-
-    /// clicking the key or value opens the tag-edit dialog with that field
-    /// pre-selected; the trailing "x" removes the tag immediately. An "Add
-    /// tag" button below the list opens the same dialog with empty fields.
+    /// distinct state); otherwise it shows "<N values>".
+    ///
+    /// Tags are edited in place: clicking a key or a value turns that cell
+    /// into a text input (Enter or clicking away commits, Escape abandons),
+    /// the trailing "x" removes the tag immediately, and "Add tag" appends
+    /// a row with empty key and value inputs.
     fn render_tags_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        use osm_gpui::ui::tag_edit_dialog::TagEditField;
+        use osm_gpui::ui::tag_edit::TagEditField;
 
         if self.selected.is_empty() {
             return Label::new("No selection.")
@@ -381,11 +522,22 @@ impl MapViewer {
         let aggregated = osm_gpui::selection::aggregate_tags(&per_feature);
         let selection = self.selected.clone();
 
+        // The row (by key) and cell being edited in place, if any; the add
+        // row is handled separately below.
+        let editing = self
+            .tag_inline_edit
+            .as_ref()
+            .filter(|edit| !edit.ctx.is_add);
+        let adding = self.tag_inline_edit.as_ref().filter(|edit| edit.ctx.is_add);
+
+        // Keys get about a third of the panel, within sensible bounds.
+        let key_width = px((self.side_panel_width * 0.34).clamp(90.0, 190.0));
+
         use gpui_component::Size;
 
         let mut list = div().flex().flex_col().gap_2();
 
-        if aggregated.is_empty() {
+        if aggregated.is_empty() && adding.is_none() {
             list = list.child(
                 div()
                     .px_2()
@@ -396,7 +548,7 @@ impl MapViewer {
         } else {
             let mut description_list = DescriptionList::new()
                 .columns(1)
-                .label_width(px(90.0))
+                .label_width(key_width)
                 .bordered(true)
                 .with_size(Size::Small);
 
@@ -405,38 +557,68 @@ impl MapViewer {
                     osm_gpui::selection::TagValue::Single(s) => s,
                     osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
                 };
+                let editing_field = editing
+                    .filter(|edit| edit.ctx.original_key == k)
+                    .map(|edit| (edit.field, edit));
 
-                let key_for_key_click = k.clone();
-                let value_for_key_click = value_text.clone();
-                let selection_for_key_click = selection.clone();
+                // Clicking a cell asks for it to become an input.
+                let open_edit = |select: TagEditField| {
+                    let features = selection.clone();
+                    let original_key = k.clone();
+                    let original_value = value_text.clone();
+                    move |this: &mut Self,
+                          _ev: &MouseDownEvent,
+                          _window: &mut gpui::Window,
+                          cx: &mut Context<Self>| {
+                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                            features: features.clone(),
+                            original_key: original_key.clone(),
+                            original_value: original_value.clone(),
+                            select,
+                            is_add: false,
+                        });
+                        cx.notify();
+                    }
+                };
 
-                let key_for_value_click = k.clone();
-                let value_for_value_click = value_text.clone();
-                let selection_for_value_click = selection.clone();
+                let key_element = match editing_field {
+                    Some((TagEditField::Key, edit)) => self
+                        .tag_input_cell(&edit.key, k.clone(), cx)
+                        .into_any_element(),
+                    _ => div()
+                        .id(SharedString::from(format!("tag-key-{k}")))
+                        .cursor_text()
+                        .child(k.clone())
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(open_edit(TagEditField::Key)),
+                        )
+                        .into_any_element(),
+                };
+
+                let value_cell = match editing_field {
+                    Some((TagEditField::Value, edit)) => self
+                        .tag_input_cell(&edit.value, value_text.clone(), cx)
+                        .into_any_element(),
+                    _ => div()
+                        .id(SharedString::from(format!("tag-value-{k}")))
+                        .flex_1()
+                        // Flex items default to a min-width equal to
+                        // their content's natural width, which blocks
+                        // wrapping for long unbroken values (e.g. a
+                        // URL) and forces them to overflow instead.
+                        // Zero it out so long values wrap.
+                        .min_w(px(0.))
+                        .cursor_text()
+                        .child(value_text.clone())
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(open_edit(TagEditField::Value)),
+                        )
+                        .into_any_element(),
+                };
 
                 let key_for_delete = k.clone();
-
-                let key_element = div()
-                    .id(SharedString::from(format!("tag-key-{k}")))
-                    .cursor_pointer()
-                    .child(k.clone())
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                            if ev.click_count == 2 {
-                                this.pending_tag_edit_open = Some(PendingTagEditOpen {
-                                    features: selection_for_key_click.clone(),
-                                    original_key: key_for_key_click.clone(),
-                                    original_value: value_for_key_click.clone(),
-                                    select: TagEditField::Key,
-                                    is_add: false,
-                                });
-                                cx.notify();
-                            }
-                        }),
-                    )
-                    .into_any_element();
-
                 let value_element = div()
                     .flex()
                     .flex_row()
@@ -444,34 +626,7 @@ impl MapViewer {
                     .justify_between()
                     .gap_1()
                     .w_full()
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("tag-value-{k}")))
-                            .flex_1()
-                            // Flex items default to a min-width equal to
-                            // their content's natural width, which blocks
-                            // wrapping for long unbroken values (e.g. a
-                            // URL) and forces them to overflow instead.
-                            // Zero it out so long values wrap.
-                            .min_w(px(0.))
-                            .cursor_pointer()
-                            .child(value_text.clone())
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-                                    if ev.click_count == 2 {
-                                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
-                                            features: selection_for_value_click.clone(),
-                                            original_key: key_for_value_click.clone(),
-                                            original_value: value_for_value_click.clone(),
-                                            select: TagEditField::Value,
-                                            is_add: false,
-                                        });
-                                        cx.notify();
-                                    }
-                                }),
-                            ),
-                    )
+                    .child(value_cell)
                     .child(
                         // Spec deviation: the design spec calls for a danger
                         // hover treatment on this delete icon, but
@@ -506,26 +661,52 @@ impl MapViewer {
                 );
             }
 
+            if let Some(edit) = adding {
+                // The add row is a real table row whose two cells are
+                // inputs, so it has exactly the size and position the new
+                // tag's row will have once committed.
+                description_list = description_list.child(
+                    DescriptionItem::new(
+                        self.tag_input_cell(&edit.key, "key", cx).into_any_element(),
+                    )
+                    .value(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .w_full()
+                            .child(self.tag_input_cell(&edit.value, "value", cx))
+                            .into_any_element(),
+                    )
+                    .span(1),
+                );
+            }
+
             list = list.child(description_list);
+        }
+
+        if adding.is_some() {
+            return list.into_any_element();
         }
 
         let add_selection = selection.clone();
         list.child(
-            Button::new("add-tag")
-                .label("Add tag")
-                .icon(IconName::Plus)
-                .primary()
-                .small()
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.pending_tag_edit_open = Some(PendingTagEditOpen {
-                        features: add_selection.clone(),
-                        original_key: String::new(),
-                        original_value: String::new(),
-                        select: TagEditField::None,
-                        is_add: true,
-                    });
-                    cx.notify();
-                })),
+            div().flex().flex_row().child(
+                Button::new("add-tag")
+                    .label("Add tag")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                            features: add_selection.clone(),
+                            original_key: String::new(),
+                            original_value: String::new(),
+                            select: TagEditField::None,
+                            is_add: true,
+                        });
+                        cx.notify();
+                    })),
+            ),
         )
         .into_any_element()
     }

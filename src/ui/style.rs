@@ -19,9 +19,27 @@ use crate::settings_store::{self, TextSizePreset};
 use gpui::{div, prelude::*, px, App, Div, ElementId, Pixels, Rgba, Stateful};
 use gpui_component::ActiveTheme as _;
 
-/// Width of the right-hand side panel, shared with the map-size math in
-/// `main.rs`.
+/// Default width of the right-hand side panel. The live width is
+/// `MapViewer::side_panel_width`, which the user can drag between
+/// [`SIDE_PANEL_MIN_WIDTH`] and [`SIDE_PANEL_MAX_WIDTH`].
 pub const SIDE_PANEL_WIDTH: f32 = 280.0;
+pub const SIDE_PANEL_MIN_WIDTH: f32 = 220.0;
+pub const SIDE_PANEL_MAX_WIDTH: f32 = 560.0;
+
+/// The side panel width for a resize drag that started at window x
+/// `start_x` with the panel `start_width` wide and is now at `x`. The
+/// panel's left edge follows the pointer, so moving left widens it.
+pub fn resized_side_panel_width(start_width: f32, start_x: f32, x: f32) -> f32 {
+    (start_width + (start_x - x)).clamp(SIDE_PANEL_MIN_WIDTH, SIDE_PANEL_MAX_WIDTH)
+}
+
+/// The side panel width to start with, given the persisted setting.
+pub fn initial_side_panel_width(saved: Option<f32>) -> f32 {
+    saved
+        .filter(|w| w.is_finite())
+        .map(|w| w.clamp(SIDE_PANEL_MIN_WIDTH, SIDE_PANEL_MAX_WIDTH))
+        .unwrap_or(SIDE_PANEL_WIDTH)
+}
 
 /// Fixed height of one list row in the side panel sections.
 pub const PANEL_ROW_HEIGHT: f32 = 24.0;
@@ -96,5 +114,32 @@ pub fn interactive_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> St
     } else {
         let hover_bg = cx.theme().list_hover;
         row.hover(move |this| this.bg(hover_bg))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_left_widens_the_side_panel_within_limits() {
+        assert_eq!(resized_side_panel_width(280.0, 900.0, 860.0), 320.0);
+        assert_eq!(resized_side_panel_width(280.0, 900.0, 930.0), 250.0);
+        assert_eq!(
+            resized_side_panel_width(280.0, 900.0, 0.0),
+            SIDE_PANEL_MAX_WIDTH
+        );
+        assert_eq!(
+            resized_side_panel_width(280.0, 900.0, 2000.0),
+            SIDE_PANEL_MIN_WIDTH
+        );
+    }
+
+    #[test]
+    fn initial_side_panel_width_defaults_and_clamps() {
+        assert_eq!(initial_side_panel_width(None), SIDE_PANEL_WIDTH);
+        assert_eq!(initial_side_panel_width(Some(340.0)), 340.0);
+        assert_eq!(initial_side_panel_width(Some(10.0)), SIDE_PANEL_MIN_WIDTH);
+        assert_eq!(initial_side_panel_width(Some(f32::NAN)), SIDE_PANEL_WIDTH);
     }
 }

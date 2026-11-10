@@ -76,6 +76,10 @@ pub struct AppSettings {
     /// this setting.
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+    /// Width of the main window's side panel in pixels, if the user has
+    /// resized it; `None` means the default width.
+    #[serde(default)]
+    pub side_panel_width: Option<f32>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -91,6 +95,7 @@ impl Default for AppSettings {
             text_size_preset: TextSizePreset::default(),
             cache_budget_mb: default_cache_budget_mb(),
             keybindings: HashMap::new(),
+            side_panel_width: None,
         }
     }
 }
@@ -187,6 +192,7 @@ mod tests {
             text_size_preset: TextSizePreset::Large,
             cache_budget_mb: 500,
             keybindings: HashMap::new(),
+            side_panel_width: Some(340.0),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -288,6 +294,7 @@ mod tests {
             text_size_preset: TextSizePreset::default(),
             cache_budget_mb: default_cache_budget_mb(),
             keybindings,
+            side_panel_width: None,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
