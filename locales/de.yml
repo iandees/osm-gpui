@@ -98,6 +98,16 @@ activity:
   uploading: "Änderungen werden hochgeladen …"
   downloading: "OSM-Daten werden heruntergeladen …"
 
+# Der Hinweiskasten über der Karte, solange keine OSM-Daten geladen sind.
+welcome:
+  title: "Willkommen bei osm-gpui"
+  body: "Verschiebe die Karte und zoome zu dem Gebiet, das du bearbeiten möchtest, und lade dann dessen OpenStreetMap-Daten herunter. Oder öffne eine .osm-Datei."
+  download: "OSM-Daten hier herunterladen"
+  downloading: "Wird heruntergeladen …"
+  # Ersetzt die Schaltfläche zum Herunterladen, solange der Ausschnitt zu groß ist.
+  zoom_in: "Zum Herunterladen näher heranzoomen"
+  open: "Datei öffnen …"
+
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
   hint:
@@ -128,6 +138,9 @@ status:
   deleted_features:
     one: "%{count} Objekt gelöscht"
     other: "%{count} Objekte gelöscht"
+  deleted_relations:
+    one: "%{count} Relation gelöscht"
+    other: "%{count} Relationen gelöscht"
   # `%{relations}` ist die Relationenzahl aus `action.relation_count`.
   deleted_features_in_relations:
     one: "%{count} Objekt gelöscht und aus %{relations} entfernt"
@@ -234,7 +247,6 @@ history:
   created_node: "1 Knoten erstellt"
   deleted_node: "1 Knoten gelöscht"
   deleted_way: "1 Weg gelöscht"
-  deleted_relation: "1 Relation gelöscht"
   created_way: "1 Weg erstellt"
   created_relation: "Relation erstellt"
   deleted_relation: "Relation gelöscht"
@@ -471,15 +483,20 @@ action:
     # `%{features}` ist die Zahl aus `action.feature_count`.
     done: "%{features} zur Relation %{relation} hinzugefügt"
     already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
+  new_relation:
+    label: "Neue Relation"
+    hint: "Knoten, Wege oder Relationen wählen, die in eine neue Relation kommen sollen"
+    # `%{members}` ist die Zahl aus `action.feature_count`.
+    done: "Relation mit %{members} erstellt. Tags und Rollen im Seitenbereich ergänzen"
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"
-    relation_hint: "Relationen können noch nicht gelöscht werden"
     # `%{what}` ist die Art unten, `%{id}` die OSM-ID.
     kind:
       node: "Knoten"
       way: "Weg"
     error:
+      relation_in_relation: "Relation %{relation} kann nicht gelöscht werden: Sie ist Mitglied der Relation %{parent}"
       relation_empty: "%{what} %{id} kann nicht gelöscht werden: Er ist das einzige Mitglied der Relation %{relation}"
       restriction_role: "%{what} %{id} kann nicht gelöscht werden: Der Abbiegebeschränkung %{relation} würde das Mitglied mit der Rolle „%{role}“ fehlen"
 

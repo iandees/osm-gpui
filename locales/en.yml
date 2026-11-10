@@ -98,6 +98,16 @@ activity:
   uploading: "Uploading changes…"
   downloading: "Downloading OSM data…"
 
+# The card over the map while no OSM data is loaded.
+welcome:
+  title: "Welcome to osm-gpui"
+  body: "Pan and zoom to the area you want to edit, then download its OpenStreetMap data. Or open an .osm file."
+  download: "Download OSM data here"
+  downloading: "Downloading…"
+  # Shown in place of the download button while the view covers too large an area.
+  zoom_in: "Zoom in to download"
+  open: "Open file…"
+
 status:
   # One-line hint for what the mouse and keyboard do in each mode.
   hint:
@@ -128,6 +138,9 @@ status:
   deleted_features:
     one: "Deleted %{count} feature"
     other: "Deleted %{count} features"
+  deleted_relations:
+    one: "Deleted %{count} relation"
+    other: "Deleted %{count} relations"
   # `%{relations}` is the relation count from `action.relation_count`.
   deleted_features_in_relations:
     one: "Deleted %{count} feature and removed it from %{relations}"
@@ -234,7 +247,6 @@ history:
   created_node: "Created 1 node"
   deleted_node: "Deleted 1 node"
   deleted_way: "Deleted 1 way"
-  deleted_relation: "Deleted 1 relation"
   created_way: "Created 1 way"
   created_relation: "Created a relation"
   deleted_relation: "Deleted a relation"
@@ -471,15 +483,20 @@ action:
     # `%{features}` is the count from `action.feature_count`.
     done: "Added %{features} to relation %{relation}"
     already: "The selected features are already members of %{relation}"
+  new_relation:
+    label: "New Relation"
+    hint: "Select nodes, ways or relations to put into a new relation"
+    # `%{members}` is the count from `action.feature_count`.
+    done: "Created a relation with %{members}. Add its tags and roles in the side panel"
   delete:
     label: "Delete"
     hint: "Select something to delete"
-    relation_hint: "Relations can't be deleted yet"
     # `%{what}` is the kind below, `%{id}` the OSM id.
     kind:
       node: "node"
       way: "way"
     error:
+      relation_in_relation: "Can't delete relation %{relation}: it is a member of relation %{parent}"
       relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
       restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
 

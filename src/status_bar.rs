@@ -141,7 +141,8 @@ impl MapViewer {
         // The OSM API refuses downloads above a maximum area; say so up
         // front rather than only after a Download attempt fails.
         let too_large_to_download =
-            osm_gpui::osm_api::check_area(&self.viewport.visible_bounds()).is_err();
+            crate::welcome::download_state(&self.viewport.visible_bounds(), false)
+                == crate::welcome::DownloadState::ZoomIn;
 
         let segment = || div().flex_shrink_0();
 
