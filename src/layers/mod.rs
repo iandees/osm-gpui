@@ -97,6 +97,13 @@ pub trait MapLayer: Send + Sync {
     /// no-op. Only `OsmLayer` overrides this.
     fn apply_upload_result(&mut self, _result: &crate::osm_upload::UploadResult) {}
 
+    /// This layer's data as a JOSM-style `.osm` document, including pending
+    /// local edits, or `None` if it has nothing to export. Default: `None`.
+    /// Only `OsmLayer` overrides this.
+    fn export_xml(&self) -> Option<String> {
+        None
+    }
+
     /// This layer's vector-editing surface, if it has one. Default: `None`.
     /// `OsmLayer` is the only implementation today; `TileLayer`/`GridLayer`
     /// have no features to hit-test, tag, move, or delete.

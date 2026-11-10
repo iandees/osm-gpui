@@ -210,7 +210,7 @@ pub fn close_changeset(base_url: &str, token: &str, changeset_id: u64) -> Result
 /// (the escaped set — `&` `<` `>` `"` `'` — is a safe superset for both
 /// contexts). `&` must be escaped first so we don't double-escape the
 /// entities it introduces.
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
