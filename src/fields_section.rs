@@ -170,7 +170,7 @@ impl MapViewer {
                     .as_ref()
                     .and_then(|v| field.options.iter().find(|o| &o.value == v))
                     .map(|o| field.display_option_label(o, tr).to_string())
-                    .unwrap_or_else(|| "(none)".to_string());
+                    .unwrap_or_else(|| tr!("panel.fields.none").to_string());
 
                 let field_id_for_toggle = field.id.clone();
                 let header = gpui::div()
