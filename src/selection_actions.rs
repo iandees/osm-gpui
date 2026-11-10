@@ -16,6 +16,7 @@ use gpui::SharedString;
 use osm_gpui::geometry::{self, LatLon};
 use osm_gpui::i18n::tr_dynamic;
 use osm_gpui::layers::{EditableLayer, LayerId, LayerManager};
+use osm_gpui::osm::MemberType;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
@@ -691,9 +692,11 @@ fn apply_reverse(
 }
 
 /// Join the selected ways into one (JOSM "Combine Way"). See
-/// `topology::plan_join` for the chaining, survivor and tag rules; ways that
-/// belong to a relation can't be removed, so the join is refused. One undo
-/// step: the survivor's new nodes and tags, then the deletion of the rest.
+/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
+/// way that is a relation member is folded into the survivor's membership (see
+/// `relations::join_members`; roles that differ, and turn restrictions, refuse
+/// the join). One undo step: the survivor's new nodes and tags, the relations'
+/// new member lists, then the deletion of the rest.
 fn apply_join(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -702,9 +705,24 @@ fn apply_join(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = join_ways_in(editable, layer_id, selection);
     let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
-    for id in &plan.remove {
-        if !editable.relations_containing_way(*id).is_empty() {
-            return Err(tr!("action.join.error.relation_member", id = id).to_string());
+    // Work out the relations' new member lists before changing anything, so
+    // a refusal leaves no trace.
+    let mut relation_ids: Vec<i64> = plan
+        .remove
+        .iter()
+        .flat_map(|&id| editable.relations_containing_way(id))
+        .collect();
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    let mut relation_edits = Vec::new();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        let after = osm_gpui::relations::join_members(&relation, plan.keep, &plan.remove)
+            .map_err(|e| e.message())?;
+        if let Some(after) = after {
+            relation_edits.push((relation_id, relation.members, after));
         }
     }
     let kept = ways
@@ -735,6 +753,15 @@ fn apply_join(
     if !tag_entries.is_empty() {
         actions.push(UndoableAction::SetTags {
             entries: tag_entries,
+        });
+    }
+    for (relation_id, before, after) in relation_edits {
+        editable.set_relation_members(relation_id, after.clone());
+        actions.push(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
         });
     }
     for id in &plan.remove {
@@ -962,9 +989,11 @@ fn split_plans(
 
 /// Split the ways at the selected node(s) (JOSM "Split Way"): the original
 /// keeps its id and the longer part, a new way gets the rest with a copy of
-/// the tags, and both share the split node. Relation members aren't split,
-/// because relation edits can't be recorded, undone or uploaded. One undo
-/// step: per way, the new way's creation, then the original's new nodes.
+/// the tags, and both share the split node. Relations that hold the way keep
+/// working: see `relations::split_members` for where the new way goes (and
+/// the turn restriction exception, which can refuse the split). One undo
+/// step: per way, the new way's creation, then the original's new nodes, and
+/// finally the relations' new member lists.
 fn apply_split(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -975,16 +1004,49 @@ fn apply_split(
     if plans.is_empty() {
         return Err(tr!("action.split.hint").to_string());
     }
-    // Splitting must keep every relation that holds the way intact, which
-    // would mean adding the new half as a member; that edit isn't supported.
-    if let Some(plan) = plans
-        .iter()
-        .find(|p| !editable.relations_containing_way(p.way_id).is_empty())
-    {
-        return Err(tr!("action.split.error.relation_member", id = plan.way_id).to_string());
+    // Work out every relation's new member list before changing anything, so
+    // a refusal leaves no trace. The new ways don't exist yet; each stands in
+    // under a placeholder id that is swapped for the real one below.
+    let placeholder = |k: usize| i64::MIN + k as i64;
+    let mut relations: Vec<osm_gpui::osm::OsmRelation> = Vec::new();
+    let mut way_nodes: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (k, plan) in plans.iter().enumerate() {
+        let step = osm_gpui::relations::SplitStep {
+            way_id: plan.way_id,
+            new_id: placeholder(k),
+            before: &plan.before,
+            keep: &plan.keep,
+            new: &plan.new,
+        };
+        for relation_id in editable.relations_containing_way(plan.way_id) {
+            let at = match relations.iter().position(|r| r.id == relation_id) {
+                Some(at) => at,
+                None => {
+                    let Some(relation) = editable.relation(relation_id) else {
+                        continue;
+                    };
+                    relations.push(relation);
+                    relations.len() - 1
+                }
+            };
+            let lookup = |id: i64| {
+                way_nodes
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| editable.way_node_ids(id))
+            };
+            let members = osm_gpui::relations::split_members(&relations[at], &step, &lookup)
+                .map_err(|e| e.message())?;
+            if let Some(members) = members {
+                relations[at].members = members;
+            }
+        }
+        way_nodes.insert(plan.way_id, plan.keep.clone());
+        way_nodes.insert(placeholder(k), plan.new.clone());
     }
 
     let mut actions = Vec::new();
+    let mut new_ids = Vec::new();
     for plan in plans.iter() {
         let way_ref = FeatureRef {
             layer_id,
@@ -993,6 +1055,7 @@ fn apply_split(
         };
         let tags = editable.feature_tags(&way_ref).unwrap_or_default();
         let new_id = editable.add_way(plan.new.clone(), tags.clone());
+        new_ids.push(new_id);
         actions.push(UndoableAction::CreateWay {
             layer: layer_id,
             snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
@@ -1010,6 +1073,26 @@ fn apply_split(
             before: plan.before.clone(),
             after: plan.keep.clone(),
         });
+    }
+    for relation in relations {
+        let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
+            continue;
+        };
+        let mut after = relation.members;
+        for member in &mut after {
+            if let Some(k) = (0..new_ids.len()).find(|&k| placeholder(k) == member.reference) {
+                member.reference = new_ids[k];
+            }
+        }
+        if after != before {
+            editable.set_relation_members(relation.id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id: relation.id,
+                before,
+                after,
+            });
+        }
     }
 
     let label = tr_count!("action.split.done", plans.len()).to_string();
@@ -1043,7 +1126,6 @@ fn merge_nodes_in(
         nodes.push(topology::MergeNode {
             id: f.id,
             tags: editable.feature_tags(f).unwrap_or_default(),
-            in_relation: !editable.relations_containing_node(f.id).is_empty(),
         });
     }
     nodes
@@ -1051,8 +1133,10 @@ fn merge_nodes_in(
 
 /// Merge the selected nodes into one (JOSM "Merge Nodes"). See
 /// `topology::plan_merge_nodes` for the survivor, tag, way-rewrite and refusal
-/// rules. One undo step: the survivor's added tags, the rewritten ways, then
-/// the deletion of the other nodes.
+/// rules. Relations that have a removed node as a member get the survivor
+/// instead (see `relations::merge_node_members`). One undo step: the
+/// survivor's added tags, the rewritten ways, the relations' new member lists,
+/// then the deletion of the other nodes.
 fn apply_merge(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -1100,6 +1184,29 @@ fn apply_merge(
             before: edit.before,
             after: edit.after,
         });
+    }
+    let mut relation_ids: Vec<i64> = plan
+        .remove
+        .iter()
+        .flat_map(|&id| editable.relations_containing_node(id))
+        .collect();
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        if let Some(after) =
+            osm_gpui::relations::merge_node_members(&relation.members, &plan.remove, plan.keep)
+        {
+            editable.set_relation_members(relation_id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id,
+                before: relation.members,
+                after,
+            });
+        }
     }
     for id in &plan.remove {
         if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, *id) {
@@ -1150,13 +1257,20 @@ fn apply_extend(
 
 /// Delete every selected feature. Node deletion is refused per feature if the
 /// node is still referenced by a way (see `OsmLayer::delete_feature`); refused
-/// features are skipped. The deletions are one undo step.
+/// features are skipped. A deleted node or way is also removed from the
+/// relations it is a member of (see `relations::delete_member`); a feature
+/// whose removal would empty a relation or break a turn restriction is refused
+/// instead, with the reason in the status. The deletions and membership
+/// changes are one undo step.
 fn apply_delete(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     _active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
     let mut actions = Vec::new();
+    let mut deleted = 0usize;
+    let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
+    let mut refusal: Option<String> = None;
     for feature in selection {
         let Some(editable) = layers
             .find_layer_mut(feature.layer_id)
@@ -1164,19 +1278,75 @@ fn apply_delete(
         else {
             continue;
         };
-        if let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) {
-            actions.push(UndoableAction::DeleteFeature {
+        let (member_type, relation_ids, what) = match feature.kind {
+            FeatureKind::Node => (
+                MemberType::Node,
+                editable.relations_containing_node(feature.id),
+                tr!("action.delete.kind.node"),
+            ),
+            FeatureKind::Way => (
+                MemberType::Way,
+                editable.relations_containing_way(feature.id),
+                tr!("action.delete.kind.way"),
+            ),
+        };
+        // The memberships to drop; a refusal skips the feature entirely.
+        let mut edits = Vec::new();
+        let mut refused = false;
+        for relation_id in relation_ids {
+            let Some(relation) = editable.relation(relation_id) else {
+                continue;
+            };
+            match osm_gpui::relations::delete_member(&relation, member_type, feature.id) {
+                Ok(Some(after)) => edits.push((relation_id, relation.members, after)),
+                Ok(None) => {}
+                Err(e) => {
+                    refusal.get_or_insert_with(|| e.message(&what, feature.id));
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        if refused {
+            continue;
+        }
+        // The layer may still refuse (a node used by a way); then nothing
+        // about the relations changes either.
+        let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) else {
+            continue;
+        };
+        deleted += 1;
+        actions.push(UndoableAction::DeleteFeature {
+            layer: feature.layer_id,
+            snapshot,
+        });
+        for (relation_id, before, after) in edits {
+            editable.set_relation_members(relation_id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
                 layer: feature.layer_id,
-                snapshot,
+                relation_id,
+                before,
+                after,
             });
+            if !changed_relations.contains(&(feature.layer_id, relation_id)) {
+                changed_relations.push((feature.layer_id, relation_id));
+            }
         }
     }
-    let deleted = actions.len();
     if deleted == 0 {
-        return Err(tr!("status.nothing_to_delete").to_string());
+        return Err(refusal.unwrap_or_else(|| tr!("status.nothing_to_delete").to_string()));
     }
-    let status = tr_count!("status.deleted_features", deleted).to_string();
-    let undo = if deleted == 1 {
+    let mut status = if changed_relations.is_empty() {
+        tr_count!("status.deleted_features", deleted).to_string()
+    } else {
+        tr_count!(
+            "status.deleted_features_in_relations",
+            deleted,
+            relations = tr_count!("action.relation_count", changed_relations.len())
+        )
+        .to_string()
+    };
+    let undo = if actions.len() == 1 {
         actions.remove(0)
     } else {
         UndoableAction::Batch {
@@ -1184,6 +1354,9 @@ fn apply_delete(
             actions,
         }
     };
+    if let Some(reason) = refusal {
+        status = tr!("status.delete_skipped", done = status, reason = reason).to_string();
+    }
     Ok(ActionOutcome {
         undo: Some(undo),
         status,
@@ -1279,6 +1452,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
+    use osm_gpui::osm::{OsmMember, OsmRelation};
 
     /// A layer holding one skewed closed rectangle ("way") and one open
     /// two-node way, plus the ids needed to select them.
@@ -1470,6 +1644,119 @@ mod tests {
             out.undo.as_ref().unwrap().description(),
             "Deleted 2 features"
         );
+    }
+
+    #[test]
+    fn delete_removes_the_feature_from_its_relations_in_the_same_step() {
+        use MemberType::{Node, Way};
+        // Way 102 and node 7 are members of relation 900.
+        let mut n = net();
+        let out = n.run("delete", &n.ways(&[102])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 1 relation"
+        );
+        assert_eq!(n.members(), members_of(&[(7, "stop")]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        let undo = out.undo.as_ref().unwrap();
+        assert_eq!(undo.description(), out.status);
+        let UndoableAction::Batch { actions, .. } = undo else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::DeleteFeature { .. },
+                UndoableAction::SetRelationMembers {
+                    relation_id: 900,
+                    ..
+                }
+            ]
+        ));
+
+        // A node that is on no way works the same.
+        let mut n = net();
+        let out = n.run("delete", &n.nodes(&[7])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 1 relation"
+        );
+        assert_eq!(n.members(), members_of(&[(102, "")]));
+
+        // Several features, several relations, properly pluralised.
+        let mut other = relation_900("route", &[(Way, 102, ""), (Way, 106, "")]);
+        other.id = 901;
+        let mut n = net_with_relations(vec![
+            relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
+            other,
+        ]);
+        let out = n.run("delete", &n.ways(&[102])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature and removed it from 2 relations"
+        );
+        assert_eq!(n.members(), members_of(&[(7, "stop")]));
+
+        // Two features in two relations: plural on both counts.
+        let mut second = relation_900("route", &[(Way, 106, ""), (Way, 107, "")]);
+        second.id = 901;
+        let mut n = net_with_relations(vec![
+            relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
+            second,
+        ]);
+        let out = n.run("delete", &n.ways(&[102, 106])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 2 features and removed them from 2 relations"
+        );
+        assert_eq!(n.layer().diff_for_upload().modified_relations.len(), 2);
+    }
+
+    #[test]
+    fn delete_refuses_to_empty_a_relation_or_break_a_restriction() {
+        use MemberType::{Node, Way};
+        // Way 102 is all of relation 900.
+        let mut n = net_with(relation_900("route", &[(Way, 102, "")]));
+        let Err(message) = n.run("delete", &n.ways(&[102])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't delete way 102: it is the only member of relation 900"
+        );
+        assert!(!n.layer().is_modified());
+        assert!(n.editable().way_node_ids(102).is_some());
+
+        // Node 7 is the restriction's via member.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 100, "from"), (Node, 7, "via"), (Way, 102, "to")],
+        ));
+        let Err(message) = n.run("delete", &n.nodes(&[7])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't delete node 7: turn restriction 900 would be left without a 'via' member"
+        );
+        assert!(!n.layer().is_modified());
+        assert!(n.editable().node_lat_lon(7).is_some());
+
+        // Part of a selection refused: the rest is still deleted, and the
+        // status says why the other wasn't.
+        let mut n = net_with(relation_900("route", &[(Way, 102, "")]));
+        let out = n.run("delete", &n.ways(&[102, 106])).unwrap();
+        assert_eq!(
+            out.status,
+            "Deleted 1 feature; Can't delete way 102: it is the only member of relation 900"
+        );
+        assert!(n.editable().way_node_ids(102).is_some());
+        assert!(n.editable().way_node_ids(106).is_none());
+        // The undo step is just the one deletion.
+        assert!(matches!(
+            out.undo.as_ref().unwrap(),
+            UndoableAction::DeleteFeature { .. }
+        ));
     }
 
     #[test]
@@ -1674,17 +1961,76 @@ mod tests {
     }
 
     #[test]
-    fn join_refuses_to_delete_a_relation_member() {
+    fn join_points_a_removed_members_relation_at_the_survivor() {
         let mut n = net();
-        // 102 would be deleted (101 is first, both are server ways).
-        let Err(message) = n.run("join", &n.ways(&[101, 102])) else {
-            panic!("expected a refusal");
+        // 102 (a member of relation 900) would be deleted: 101 is first and
+        // both are server ways. 101 isn't in the relation, so 102's
+        // membership is re-pointed at it.
+        let out = n.run("join", &n.ways(&[101, 102])).unwrap();
+        assert_eq!(n.members(), members_of(&[(101, ""), (7, "stop")]));
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5, 6]));
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 2, 1));
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
         };
-        assert!(message.contains("member of a relation"), "{message}");
-        assert!(!n.layer().is_modified());
-        // Selected first, the member way survives and the join works.
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetRelationMembers {
+                    relation_id: 900,
+                    ..
+                },
+                UndoableAction::DeleteFeature { .. }
+            ]
+        ));
+        // Selected the other way round, the member way survives untouched.
+        let mut n = net();
         assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
         assert_eq!(n.editable().way_node_ids(102), Some(vec![3, 4, 5, 6]));
+        assert_eq!(n.relation_edits(), 0);
+    }
+
+    #[test]
+    fn join_drops_the_removed_way_when_the_survivor_is_a_member_with_the_same_role() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, "forward"), (Way, 101, "forward"), (Way, 102, "")],
+        ));
+        n.run("join", &n.ways(&[100, 101])).unwrap();
+        assert_eq!(n.members(), members_of(&[(100, "forward"), (102, "")]));
+    }
+
+    #[test]
+    fn join_refuses_different_roles_and_restrictions_and_changes_nothing() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, "forward"), (Way, 101, "backward")],
+        ));
+        let Err(message) = n.run("join", &n.ways(&[100, 101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: way 101 has a different role in relation 900 than the way it would be joined into"
+        );
+        assert!(!n.layer().is_modified());
+        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 100, "from"), (Node, 3, "via"), (Way, 101, "to")],
+        ));
+        let Err(message) = n.run("join", &n.ways(&[100, 101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't join: way 101 is part of turn restriction 900"
+        );
+        assert!(!n.layer().is_modified());
     }
 
     #[test]
@@ -2096,21 +2442,236 @@ mod tests {
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
     }
 
+    /// A relation with id 900 and the given `type`, over the test network.
+    fn relation_900(kind: &str, members: &[(MemberType, i64, &str)]) -> OsmRelation {
+        OsmRelation {
+            id: 900,
+            version: 1,
+            tags: HashMap::from([("type".to_string(), kind.to_string())]),
+            members: members
+                .iter()
+                .map(|&(member_type, reference, role)| OsmMember {
+                    member_type,
+                    reference,
+                    role: role.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// The network with relation 900 replaced by `relation`.
+    fn net_with(relation: OsmRelation) -> Net {
+        net_with_relations(vec![relation])
+    }
+
+    fn net_with_relations(relations: Vec<OsmRelation>) -> Net {
+        let mut data = test_support::network_data();
+        data.relations = relations;
+        let layer_id = LayerId(1);
+        let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), std::sync::Arc::new(data));
+        let mut layers = LayerManager::new();
+        layers.add_layer(Box::new(layer));
+        Net { layers, layer_id }
+    }
+
+    impl Net {
+        /// Relation 900's members as `(ref, role)`.
+        fn members(&self) -> Vec<(i64, String)> {
+            self.editable()
+                .relation(900)
+                .unwrap()
+                .members
+                .iter()
+                .map(|m| (m.reference, m.role.clone()))
+                .collect()
+        }
+        /// Node 4 plus a way through it: split just that way there.
+        fn at_4_in(&self, way: i64) -> Vec<FeatureRef> {
+            vec![
+                self.feature(FeatureKind::Node, 4),
+                self.feature(FeatureKind::Way, way),
+            ]
+        }
+        fn relation_edits(&self) -> usize {
+            self.layer().diff_for_upload().modified_relations.len()
+        }
+    }
+
+    fn members_of(list: &[(i64, &str)]) -> Vec<(i64, String)> {
+        list.iter().map(|&(r, s)| (r, s.to_string())).collect()
+    }
+
+    /// The id of the one way created by a split (the only negative id).
+    fn the_new_way(n: &Net) -> i64 {
+        let ids: Vec<i64> = n
+            .layer()
+            .diff_for_upload()
+            .created_ways
+            .iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(ids.len(), 1, "{ids:?}");
+        ids[0]
+    }
+
     #[test]
-    fn split_refuses_a_relation_member_and_changes_nothing() {
-        let mut n = net();
-        // Way 102 is in relation 900; give it an interior node to split at.
-        n.editable_mut().set_way_nodes(102, vec![5, 6, 10]);
-        let before = n.layer().diff_for_upload().counts();
-        let Err(message) = n.run("split", &n.nodes(&[6])) else {
-            panic!("expected a refusal");
-        };
+    fn split_adds_the_new_way_to_the_relation_next_to_the_original() {
+        use MemberType::Way;
+        // Way 101 [3,4,5] splits at 4 into [3,4] (kept) and [4,5] (new). Way
+        // 100 ends at 3, way 102 starts at 5.
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 100, ""), (Way, 101, "forward"), (Way, 102, "")],
+        ));
+        let out = n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        // The new half follows the original: it is the one that meets 102.
         assert_eq!(
-            message,
-            "Can't split: way 102 is a member of a relation, and relation changes aren't supported yet"
+            n.members(),
+            members_of(&[(100, ""), (101, "forward"), (new, "forward"), (102, "")])
         );
-        assert_eq!(n.layer().diff_for_upload().counts(), before);
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6, 10]));
+        assert_eq!(n.relation_edits(), 1);
+
+        // One undo step, with the relation change last.
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateWay { .. },
+                UndoableAction::SetWayNodes { .. },
+                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. }
+            ] if before.len() == 3 && after.len() == 4
+        ));
+    }
+
+    #[test]
+    fn split_puts_the_new_way_before_the_original_when_the_route_runs_backwards() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900(
+            "route",
+            &[(Way, 102, ""), (Way, 101, ""), (Way, 100, "")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(102, ""), (new, ""), (101, ""), (100, "")])
+        );
+    }
+
+    #[test]
+    fn split_inserts_after_when_the_neighbours_do_not_say() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900("route", &[(Node, 7, "stop"), (Way, 101, "")]));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(7, "stop"), (101, ""), (new, "")])
+        );
+        // Neighbours that touch neither half count for nothing either.
+        let mut n = net_with(relation_900("route", &[(Way, 106, ""), (Way, 101, "")]));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(n.members(), members_of(&[(106, ""), (101, ""), (new, "")]));
+    }
+
+    #[test]
+    fn splitting_two_ways_of_one_relation_adds_both_halves() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900("route", &[(Way, 103, ""), (Way, 101, "")]));
+        // Node 4 is shared by ways 101 [3,4,5] and 103 [8,4,9].
+        n.run("split", &n.nodes(&[4])).unwrap();
+        let members = n.members();
+        assert_eq!(members.len(), 4);
+        assert_eq!(members[0].0, 103);
+        assert_eq!(members[2].0, 101);
+        assert!(members[1].0 < 0 && members[3].0 < 0 && members[1].0 != members[3].0);
+        assert_eq!(n.relation_edits(), 1);
+    }
+
+    #[test]
+    fn split_of_a_restriction_keeps_only_the_half_touching_the_via_node() {
+        use MemberType::{Node, Way};
+        // Way 101 [3,4,5]; the restriction's via node 5 is on the new half.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 101, "from"), (Node, 5, "via"), (Way, 102, "to")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(new, "from"), (5, "via"), (102, "to")])
+        );
+
+        // Via node 3 is on the original's half: the relation is untouched.
+        let mut n = net_with(relation_900(
+            "restriction",
+            &[(Way, 101, "to"), (Node, 3, "via"), (Way, 100, "from")],
+        ));
+        let out = n.run("split", &n.at_4_in(101)).unwrap();
+        assert_eq!(n.relation_edits(), 0);
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert_eq!(actions.len(), 2, "no relation step");
+    }
+
+    #[test]
+    fn split_of_a_restriction_finds_the_via_way_end() {
+        use MemberType::Way;
+        // Via way 102 [5,6] meets way 101 at node 5.
+        let mut n = net_with(relation_900(
+            "restriction:hgv",
+            &[(Way, 101, "from"), (Way, 102, "via"), (Way, 105, "to")],
+        ));
+        n.run("split", &n.at_4_in(101)).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(n.members()[0], (new, "from".to_string()));
+        assert_eq!(n.members().len(), 3);
+    }
+
+    #[test]
+    fn split_refuses_a_restriction_whose_via_is_unknown_and_changes_nothing() {
+        use MemberType::{Node, Way};
+        for members in [
+            // No via member.
+            vec![(Way, 101, "from"), (Way, 102, "to")],
+            // A via node that isn't on the way.
+            vec![(Way, 101, "from"), (Node, 7, "via"), (Way, 102, "to")],
+        ] {
+            let mut n = net_with(relation_900("restriction", &members));
+            let before = n.layer().diff_for_upload().counts();
+            let Err(message) = n.run("split", &n.at_4_in(101)) else {
+                panic!("expected a refusal");
+            };
+            assert_eq!(
+                message,
+                "Can't split: can't tell which part of way 101 belongs in turn restriction 900"
+            );
+            assert_eq!(n.layer().diff_for_upload().counts(), before);
+            assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+            assert!(!n.layer().is_modified());
+        }
+    }
+
+    #[test]
+    fn splitting_a_closed_multipolygon_member_keeps_both_halves_with_the_role() {
+        use MemberType::Way;
+        // Ring 108 [14,15,16,14] split at 16 and 14.
+        let mut n = net_with(relation_900(
+            "multipolygon",
+            &[(Way, 100, "inner"), (Way, 108, "outer")],
+        ));
+        n.run("split", &n.nodes(&[16, 14])).unwrap();
+        let new = the_new_way(&n);
+        assert_eq!(
+            n.members(),
+            members_of(&[(100, "inner"), (108, "outer"), (new, "outer")])
+        );
     }
 
     #[test]
@@ -2233,20 +2794,59 @@ mod tests {
     }
 
     #[test]
-    fn merge_refuses_to_delete_a_relation_member() {
+    fn merge_moves_a_relation_membership_to_the_survivor() {
         let mut n = net();
-        // Node 7 is in relation 900; with 6 selected first, 7 would go.
-        let Err(message) = n.run("merge", &n.nodes(&[6, 7])) else {
-            panic!("expected a refusal");
+        // Node 7 is a "stop" in relation 900 (with way 102); with 6 selected
+        // first, 7 is the one removed.
+        let out = n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        assert_eq!(n.members(), members_of(&[(102, ""), (6, "stop")]));
+        assert_eq!(n.editable().node_lat_lon(7), None);
+        // Relation 900, the way untouched, the node gone.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
         };
-        assert_eq!(
-            message,
-            "Can't merge: node 7 is a member of a relation and would be deleted"
-        );
-        assert!(!n.layer().is_modified());
-        // Selected first, the member survives and the merge works.
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. },
+                UndoableAction::DeleteFeature { .. }
+            ] if before.len() == 2 && after.len() == 2
+        ));
+        // Selected the other way round, the member survives unchanged.
+        let mut n = net();
         n.run("merge", &n.nodes(&[7, 6])).unwrap();
+        assert_eq!(n.members(), members_of(&[(102, ""), (7, "stop")]));
         assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 7]));
+    }
+
+    #[test]
+    fn merge_drops_an_adjacent_duplicate_membership_it_creates() {
+        use MemberType::{Node, Way};
+        let mut n = net_with(relation_900(
+            "route",
+            &[
+                (Node, 6, "stop"),
+                (Node, 7, "stop"),
+                (Way, 102, ""),
+                (Node, 7, "platform"),
+            ],
+        ));
+        n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        // 6/7 collapse where role and neighbours match; the platform keeps
+        // its own role.
+        assert_eq!(
+            n.members(),
+            members_of(&[(6, "stop"), (102, ""), (6, "platform")])
+        );
+    }
+
+    #[test]
+    fn merge_leaves_unrelated_relations_alone() {
+        use MemberType::Way;
+        let mut n = net_with(relation_900("route", &[(Way, 100, "")]));
+        n.run("merge", &n.nodes(&[6, 7])).unwrap();
+        assert_eq!(n.relation_edits(), 0);
     }
 
     #[test]

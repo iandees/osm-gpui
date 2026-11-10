@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::layers::diff::LayerDiff;
-use crate::osm::{OsmNode, OsmWay};
+use crate::osm::{OsmNode, OsmRelation, OsmWay};
 use crate::tr;
 
 #[derive(Debug)]
@@ -71,6 +71,9 @@ impl std::error::Error for UploadError {}
 pub struct UploadResult {
     pub node_id_remap: HashMap<i64, (i64, i32)>,
     pub way_id_remap: HashMap<i64, (i64, i32)>,
+    /// Same for relations. Only modifications exist today, so every entry
+    /// maps an id to itself with its new version.
+    pub relation_id_remap: HashMap<i64, (i64, i32)>,
 }
 
 /// Max attempts for a single create/upload/close request, including the
@@ -221,31 +224,51 @@ pub(crate) fn xml_escape(s: &str) -> String {
 /// document. Created nodes/ways use their local (possibly negative) id as
 /// the `id` attribute, per the OSM API's convention for referencing
 /// not-yet-created elements within the same changeset upload.
+///
+/// The API applies a changeset's elements in document order and checks
+/// references as it goes, so the order matters:
+///
+/// - `create`: nodes, then ways (a way's `nd` may name a node created here);
+/// - `modify`: nodes, then ways, then relations, so a relation member that
+///   names a created or modified way/node (by placeholder id when new) finds
+///   it already in place;
+/// - `delete`: ways, then nodes (a node still used by a way can't go first).
+///   Relations that lose a deleted element as a member are modified earlier.
 pub fn build_osm_change_xml(changeset_id: u64, layers: &[(&str, LayerDiff)]) -> String {
-    let mut create_body = String::new();
-    let mut modify_body = String::new();
-    let mut delete_body = String::new();
+    let mut create_nodes = String::new();
+    let mut create_ways = String::new();
+    let mut modify_nodes = String::new();
+    let mut modify_ways = String::new();
+    let mut modify_relations = String::new();
+    let mut delete_ways = String::new();
+    let mut delete_nodes = String::new();
 
     for (_name, diff) in layers {
         for n in &diff.created_nodes {
-            create_body.push_str(&node_xml(n, changeset_id));
+            create_nodes.push_str(&node_xml(n, changeset_id));
         }
         for w in &diff.created_ways {
-            create_body.push_str(&way_xml(w, changeset_id));
+            create_ways.push_str(&way_xml(w, changeset_id));
         }
         for n in &diff.modified_nodes {
-            modify_body.push_str(&node_xml(n, changeset_id));
+            modify_nodes.push_str(&node_xml(n, changeset_id));
         }
         for w in &diff.modified_ways {
-            modify_body.push_str(&way_xml(w, changeset_id));
+            modify_ways.push_str(&way_xml(w, changeset_id));
         }
-        for &(id, version) in &diff.deleted_node_ids {
-            delete_body.push_str(&delete_node_xml(id, version, changeset_id));
+        for r in &diff.modified_relations {
+            modify_relations.push_str(&relation_xml(r, changeset_id));
         }
         for &(id, version) in &diff.deleted_way_ids {
-            delete_body.push_str(&delete_way_xml(id, version, changeset_id));
+            delete_ways.push_str(&delete_way_xml(id, version, changeset_id));
+        }
+        for &(id, version) in &diff.deleted_node_ids {
+            delete_nodes.push_str(&delete_node_xml(id, version, changeset_id));
         }
     }
+    let create_body = format!("{create_nodes}{create_ways}");
+    let modify_body = format!("{modify_nodes}{modify_ways}{modify_relations}");
+    let delete_body = format!("{delete_ways}{delete_nodes}");
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -314,6 +337,33 @@ fn way_xml(w: &OsmWay, changeset_id: u64) -> String {
     s
 }
 
+/// A `<relation>` with its members in order (member order is significant)
+/// and tags. A member that refers to a not-yet-uploaded element keeps its
+/// negative placeholder id, which the API resolves within the changeset.
+fn relation_xml(r: &OsmRelation, changeset_id: u64) -> String {
+    let mut s = format!(
+        r#"<relation id="{}" version="{}" changeset="{}">"#,
+        r.id, r.version, changeset_id
+    );
+    for m in &r.members {
+        s.push_str(&format!(
+            r#"<member type="{}" ref="{}" role="{}"/>"#,
+            m.member_type,
+            m.reference,
+            xml_escape(&m.role)
+        ));
+    }
+    for (k, v) in sorted_tags(&r.tags) {
+        s.push_str(&format!(
+            r#"<tag k="{}" v="{}"/>"#,
+            xml_escape(k),
+            xml_escape(v)
+        ));
+    }
+    s.push_str("</relation>");
+    s
+}
+
 fn delete_node_xml(id: i64, version: i32, changeset_id: u64) -> String {
     format!(
         r#"<node id="{}" version="{}" changeset="{}"/>"#,
@@ -347,7 +397,8 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let is_node = e.name().as_ref() == b"node";
                 let is_way = e.name().as_ref() == b"way";
-                if !is_node && !is_way {
+                let is_relation = e.name().as_ref() == b"relation";
+                if !is_node && !is_way && !is_relation {
                     buf.clear();
                     continue;
                 }
@@ -372,11 +423,14 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
                 if let (Some(old_id), Some(new_id), Some(new_version)) =
                     (old_id, new_id, new_version)
                 {
-                    if is_node {
-                        result.node_id_remap.insert(old_id, (new_id, new_version));
+                    let remap = if is_node {
+                        &mut result.node_id_remap
+                    } else if is_way {
+                        &mut result.way_id_remap
                     } else {
-                        result.way_id_remap.insert(old_id, (new_id, new_version));
-                    }
+                        &mut result.relation_id_remap
+                    };
+                    remap.insert(old_id, (new_id, new_version));
                 }
             }
             Ok(Event::Eof) => break,
@@ -511,6 +565,84 @@ mod tests {
     }
 
     #[test]
+    fn modify_relation_xml_shape_and_order() {
+        use crate::osm::{MemberType, OsmMember};
+        let mut diff = LayerDiff::default();
+        diff.modified_relations.push(OsmRelation {
+            id: 500,
+            version: 7,
+            tags: tags(&[("name", "A & B"), ("type", "route")]),
+            members: vec![
+                OsmMember {
+                    member_type: MemberType::Way,
+                    reference: -3,
+                    role: "".into(),
+                },
+                OsmMember {
+                    member_type: MemberType::Node,
+                    reference: 12,
+                    role: "stop \"1\"".into(),
+                },
+                OsmMember {
+                    member_type: MemberType::Way,
+                    reference: 40,
+                    role: "forward".into(),
+                },
+            ],
+        });
+        diff.created_ways.push(OsmWay {
+            id: -3,
+            nodes: vec![12, 13],
+            version: 0,
+            tags: HashMap::new(),
+        });
+        diff.modified_ways.push(OsmWay {
+            id: 40,
+            nodes: vec![1, 2],
+            version: 2,
+            tags: HashMap::new(),
+        });
+        diff.modified_nodes.push(OsmNode {
+            id: 12,
+            lat: 0.0,
+            lon: 0.0,
+            version: 1,
+            tags: HashMap::new(),
+        });
+        // Deleted: a way and a node it used, plus nothing else.
+        diff.deleted_way_ids.push((77, 1));
+        diff.deleted_node_ids.push((78, 1));
+
+        let xml = build_osm_change_xml(9, &[("L", diff)]);
+
+        let expected_relation = concat!(
+            r#"<relation id="500" version="7" changeset="9">"#,
+            r#"<member type="way" ref="-3" role=""/>"#,
+            r#"<member type="node" ref="12" role="stop &quot;1&quot;"/>"#,
+            r#"<member type="way" ref="40" role="forward"/>"#,
+            r#"<tag k="name" v="A &amp; B"/>"#,
+            r#"<tag k="type" v="route"/>"#,
+            r#"</relation>"#,
+        );
+        assert!(xml.contains(expected_relation), "{xml}");
+
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        // Created way before any modify; modifies go nodes, ways, relations
+        // (inside the one <modify> section); deletes go ways before nodes.
+        assert!(at("<create>") < at(r#"<way id="-3""#));
+        assert!(at(r#"<way id="-3""#) < at("<modify>"));
+        assert!(at("<modify>") < at(r#"<node id="12""#));
+        assert!(at(r#"<node id="12""#) < at(r#"<way id="40""#));
+        assert!(at(r#"<way id="40""#) < at(r#"<relation id="500""#));
+        assert!(at("</modify>") < at("<delete>"));
+        assert!(at(r#"<way id="77""#) < at(r#"<node id="78""#));
+        assert_eq!(xml.matches("<modify>").count(), 1, "{xml}");
+    }
+
+    #[test]
     fn tag_values_are_xml_escaped() {
         let mut diff = LayerDiff::default();
         diff.modified_nodes.push(OsmNode {
@@ -574,6 +706,8 @@ mod tests {
   <node old_id="99"/>
   <way old_id="-2" new_id="678" new_version="1"/>
   <way old_id="10" version="2"/>
+  <relation old_id="500" new_id="500" new_version="8"/>
+  <relation old_id="501"/>
 </diffResult>"#;
 
         let result = parse_diff_result(xml).expect("should parse");
@@ -590,6 +724,8 @@ mod tests {
             None,
             "deleted way has no remap entry"
         );
+        assert_eq!(result.relation_id_remap.get(&500), Some(&(500, 8)));
+        assert_eq!(result.relation_id_remap.get(&501), None);
     }
 
     #[test]

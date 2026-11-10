@@ -284,6 +284,18 @@ pub trait EditableLayer {
 
     /// The ids of the relations that have `node_id` as a member.
     fn relations_containing_node(&self, node_id: i64) -> Vec<i64>;
+
+    /// A copy of the relation with this id (tags and members), if the layer
+    /// has it.
+    fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation>;
+
+    /// Replace a relation's whole member list and return the previous one
+    /// (`None`, changing nothing, if the layer has no such relation).
+    fn set_relation_members(
+        &mut self,
+        relation_id: i64,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<Vec<crate::osm::OsmMember>>;
 }
 
 /// Manager for all map layers

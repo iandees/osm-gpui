@@ -8,7 +8,8 @@
 //! `OsmLayer` gains `create_node`/`delete_feature` methods, with zero
 //! changes required here.
 
-use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
+use crate::osm::{FileEdits, OsmData, OsmNode, OsmRelation, OsmWay};
+use std::collections::HashMap;
 
 /// Tag placed on the *baseline* copy of an element that a loaded file marks
 /// as modified. Such a file records the element's edited state and base
@@ -45,6 +46,11 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
             way.tags.extend([marker()]);
         }
     }
+    for relation in &mut baseline.relations {
+        if edits.modified_relations.contains(&relation.id) {
+            relation.tags.extend([marker()]);
+        }
+    }
     for (id, node) in &edits.deleted_nodes {
         // A deleted element that was never uploaded has nothing to delete.
         if *id >= 0 {
@@ -75,6 +81,11 @@ pub struct LayerDiff {
     /// (id, version-as-of-original) for ways present in the original
     /// snapshot but no longer present in the current data.
     pub deleted_way_ids: Vec<(i64, i32)>,
+    /// Relations whose members or tags differ from the baseline. Creating
+    /// and deleting relations isn't supported yet; when it is, the sibling
+    /// `created_relations` / `deleted_relation_ids` fields belong here and
+    /// are filled in `diff_relations`.
+    pub modified_relations: Vec<OsmRelation>,
 }
 
 impl LayerDiff {
@@ -86,16 +97,35 @@ impl LayerDiff {
             && self.created_ways.is_empty()
             && self.modified_ways.is_empty()
             && self.deleted_way_ids.is_empty()
+            && self.modified_relations.is_empty()
     }
 
-    /// Total number of created/modified/deleted elements (nodes + ways),
-    /// for building a human-readable per-layer summary.
+    /// Total number of created/modified/deleted elements (nodes, ways and
+    /// relations), for building a human-readable per-layer summary.
     pub fn counts(&self) -> (usize, usize, usize) {
         let created = self.created_nodes.len() + self.created_ways.len();
-        let modified = self.modified_nodes.len() + self.modified_ways.len();
+        let modified =
+            self.modified_nodes.len() + self.modified_ways.len() + self.modified_relations.len();
         let deleted = self.deleted_node_ids.len() + self.deleted_way_ids.len();
         (created, modified, deleted)
     }
+}
+
+/// Classify relations (matched by id) against the baseline. Member order is
+/// part of a relation, so reordering counts as a modification.
+fn diff_relations(original: &OsmData, current: &OsmData, diff: &mut LayerDiff) {
+    let originals: HashMap<i64, &OsmRelation> =
+        original.relations.iter().map(|r| (r.id, r)).collect();
+    for relation in &current.relations {
+        // A relation absent from the baseline would be a creation; that is
+        // not supported yet, so it is not reported.
+        if let Some(orig) = originals.get(&relation.id) {
+            if orig.members != relation.members || orig.tags != relation.tags {
+                diff.modified_relations.push(relation.clone());
+            }
+        }
+    }
+    // Likewise a relation present only in the baseline would be a deletion.
 }
 
 /// Compare `original` against `current` by id and classify every node/way as
@@ -138,6 +168,7 @@ pub fn diff_osm_data(original: &OsmData, current: &OsmData) -> LayerDiff {
         }
     }
 
+    diff_relations(original, current, &mut diff);
     diff
 }
 
@@ -334,6 +365,67 @@ mod tests {
         assert_eq!(diff.modified_nodes.len(), 1);
         assert_eq!(diff.modified_nodes[0].id, 2);
         assert!(diff.modified_ways.is_empty());
+    }
+
+    fn member(kind: crate::osm::MemberType, reference: i64, role: &str) -> crate::osm::OsmMember {
+        crate::osm::OsmMember {
+            member_type: kind,
+            reference,
+            role: role.to_string(),
+        }
+    }
+
+    fn relation(id: i64, members: Vec<crate::osm::OsmMember>) -> OsmRelation {
+        OsmRelation {
+            id,
+            members,
+            version: 4,
+            tags: empty_tags(),
+        }
+    }
+
+    #[test]
+    fn relation_member_changes_are_reported_as_modified() {
+        use crate::osm::MemberType::Way;
+        let mut original = data(vec![], vec![]);
+        original
+            .relations
+            .push(relation(5, vec![member(Way, 10, ""), member(Way, 11, "")]));
+        original
+            .relations
+            .push(relation(6, vec![member(Way, 12, "")]));
+
+        let diff = diff_osm_data(&original, &original);
+        assert!(diff.is_empty());
+
+        // Adding, retargeting, re-roling and reordering all count.
+        for edit in [
+            |r: &mut OsmRelation| r.members.push(member(Way, 13, "")),
+            |r: &mut OsmRelation| r.members[0].reference = 99,
+            |r: &mut OsmRelation| r.members[0].role = "outer".into(),
+            |r: &mut OsmRelation| r.members.reverse(),
+        ] {
+            let mut current = original.clone();
+            edit(&mut current.relations[0]);
+            let diff = diff_osm_data(&original, &current);
+            assert_eq!(
+                diff.modified_relations
+                    .iter()
+                    .map(|r| r.id)
+                    .collect::<Vec<_>>(),
+                vec![5]
+            );
+            assert_eq!(diff.counts(), (0, 1, 0));
+            assert!(!diff.is_empty());
+        }
+
+        // A tag change counts too.
+        let mut current = original.clone();
+        current.relations[1]
+            .tags
+            .insert("type".into(), "route".into());
+        let diff = diff_osm_data(&original, &current);
+        assert_eq!(diff.modified_relations[0].id, 6);
     }
 
     #[test]

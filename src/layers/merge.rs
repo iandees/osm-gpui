@@ -100,14 +100,44 @@ fn merge_map<K, V>(
     }
 }
 
-/// Merge relations, which are read-only in this app (so there are never
-/// local edits to protect): add unknown ones and replace known ones.
-fn merge_relations(target: &mut Vec<OsmRelation>, incoming: &[OsmRelation]) {
-    let index: HashMap<i64, usize> = target.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
+/// Merge relations by id, like `merge_map`: unknown ones are added to both
+/// snapshots, untouched ones are replaced in both, and one whose members or
+/// tags were edited locally is left alone (so its edit stays pending and the
+/// upload is checked against the base version). Relations don't count
+/// towards `added`/`updated`, only towards `kept_local`.
+fn merge_relations(
+    original: &mut Vec<OsmRelation>,
+    current: &mut Vec<OsmRelation>,
+    incoming: &[OsmRelation],
+    stats: &mut MergeStats,
+) {
+    let index = |relations: &[OsmRelation]| -> HashMap<i64, usize> {
+        relations
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.id, i))
+            .collect()
+    };
+    let mut original_index = index(original);
+    let mut current_index = index(current);
     for relation in incoming {
-        match index.get(&relation.id) {
-            Some(&i) => target[i] = relation.clone(),
-            None => target.push(relation.clone()),
+        match (
+            original_index.get(&relation.id).copied(),
+            current_index.get(&relation.id).copied(),
+        ) {
+            (None, None) => {
+                original_index.insert(relation.id, original.len());
+                original.push(relation.clone());
+                current_index.insert(relation.id, current.len());
+                current.push(relation.clone());
+            }
+            (Some(o), Some(c)) if original[o] == current[c] => {
+                original[o] = relation.clone();
+                current[c] = relation.clone();
+            }
+            // Edited locally (or present on only one side): the local state
+            // stands.
+            _ => stats.kept_local += 1,
         }
     }
 }
@@ -132,8 +162,12 @@ pub fn merge_download(
         incoming.ways,
         &mut stats,
     );
-    merge_relations(&mut original.relations, &incoming.relations);
-    merge_relations(&mut current.relations, &incoming.relations);
+    merge_relations(
+        &mut original.relations,
+        &mut current.relations,
+        &incoming.relations,
+        &mut stats,
+    );
     stats
 }
 
@@ -292,6 +326,51 @@ mod tests {
             .collect();
         assert_eq!(versions, vec![(1, 2), (2, 1)]);
         assert_eq!(original.relations, current.relations);
+    }
+
+    #[test]
+    fn a_locally_edited_relation_is_kept_and_stays_pending() {
+        use crate::osm::{MemberType, OsmMember};
+        let member = |reference| OsmMember {
+            member_type: MemberType::Way,
+            reference,
+            role: String::new(),
+        };
+        let relation = |id, version, members: Vec<OsmMember>| OsmRelation {
+            id,
+            members,
+            version,
+            tags: HashMap::new(),
+        };
+        let mut original = data(vec![], vec![]);
+        original.relations = vec![
+            relation(1, 1, vec![member(10)]),
+            relation(2, 1, vec![member(20)]),
+        ];
+        let mut current = original.clone();
+        current.relations[0].members.push(member(11)); // local membership edit
+        let mut incoming = data(vec![], vec![]);
+        incoming.relations = vec![
+            relation(1, 2, vec![member(10), member(12)]),
+            relation(2, 2, vec![member(20), member(21)]),
+        ];
+
+        let stats = merge_download(&mut original, &mut current, incoming);
+
+        assert_eq!(stats.kept_local, 1);
+        // Relation 1 keeps the local edit on the old base version.
+        assert_eq!(current.relations[0].members, vec![member(10), member(11)]);
+        assert_eq!(original.relations[0].version, 1);
+        // Relation 2 was untouched, so it takes the server's copy.
+        assert_eq!(current.relations[1].version, 2);
+        let diff = diff_osm_data(&original, &current);
+        assert_eq!(
+            diff.modified_relations
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
     }
 
     #[test]

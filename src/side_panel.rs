@@ -51,6 +51,8 @@ impl MapViewer {
         let fields_section = self.render_fields_section(window, cx);
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
+        let relations_section = self.render_relations_section(cx);
+        let open_relations = self.side_panel_open[5];
 
         let open_layers = self.side_panel_open[0];
         let open_selection = self.side_panel_open[1];
@@ -130,6 +132,15 @@ impl MapViewer {
                         tags_section,
                         cx,
                     ))
+                    .children(relations_section.map(|section| {
+                        self.collapsible_section(
+                            tr!("panel.relations.title"),
+                            5,
+                            open_relations,
+                            section,
+                            cx,
+                        )
+                    }))
                     .child(self.collapsible_section(
                         tr!("panel.history.title"),
                         4,
@@ -140,6 +151,92 @@ impl MapViewer {
             )
             // Last, so it sits on top of the scrolling content.
             .child(resize_handle)
+    }
+
+    /// The relations the single selected feature belongs to, one entry per
+    /// membership: `(relation id, display name, role)`. Empty unless exactly
+    /// one feature is selected and a relation has it as a member.
+    pub(crate) fn selected_memberships(&self) -> Vec<(i64, String, String)> {
+        use osm_gpui::osm::MemberType;
+        use osm_gpui::selection::FeatureKind;
+
+        let [feature] = self.selected.as_slice() else {
+            return Vec::new();
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(feature.layer_id)
+            .and_then(|layer| layer.as_editable())
+        else {
+            return Vec::new();
+        };
+        let (member_type, relation_ids) = match feature.kind {
+            FeatureKind::Node => (
+                MemberType::Node,
+                editable.relations_containing_node(feature.id),
+            ),
+            FeatureKind::Way => (
+                MemberType::Way,
+                editable.relations_containing_way(feature.id),
+            ),
+        };
+        let mut memberships = Vec::new();
+        for relation_id in relation_ids {
+            let Some(relation) = editable.relation(relation_id) else {
+                continue;
+            };
+            let name = osm_gpui::relations::display_name(&relation);
+            for role in osm_gpui::relations::roles_of(&relation, member_type, feature.id) {
+                memberships.push((relation_id, name.clone(), role.to_string()));
+            }
+        }
+        memberships
+    }
+
+    /// The Relations accordion section: one read-only row per relation the
+    /// selected feature is a member of, with its role. `None` (no section at
+    /// all) when there is nothing to list.
+    fn render_relations_section(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let memberships = self.selected_memberships();
+        if memberships.is_empty() {
+            return None;
+        }
+        let muted = cx.theme().muted_foreground;
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .children(
+                    memberships
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (_, name, role))| {
+                            let role_text = if role.is_empty() {
+                                div().italic().child(tr!("panel.relations.no_role"))
+                            } else {
+                                div().child(role)
+                            };
+                            panel_row(("relation-row", i))
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(name),
+                                )
+                                .child(
+                                    role_text
+                                        .flex_shrink_0()
+                                        .text_size(muted_text_size())
+                                        .text_color(muted),
+                                )
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The History accordion section: a passive list of every undoable

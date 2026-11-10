@@ -109,6 +109,8 @@ pub struct FileEdits {
     pub modified_nodes: HashSet<i64>,
     /// Ids of ways marked `action="modify"`.
     pub modified_ways: HashSet<i64>,
+    /// Ids of relations marked `action="modify"`.
+    pub modified_relations: HashSet<i64>,
     /// Nodes marked `action="delete"`. These are not part of the parsed
     /// `OsmData`; they're kept here so the deletion can still be uploaded.
     pub deleted_nodes: HashMap<i64, OsmNode>,
@@ -120,6 +122,7 @@ impl FileEdits {
     pub fn is_empty(&self) -> bool {
         self.modified_nodes.is_empty()
             && self.modified_ways.is_empty()
+            && self.modified_relations.is_empty()
             && self.deleted_nodes.is_empty()
             && self.deleted_ways.is_empty()
     }
@@ -308,11 +311,22 @@ impl OsmParser {
                 }
             }
         }
-        // Relations aren't editable here, so their edits aren't tracked;
-        // a deleted one is simply dropped.
-        fn store_relation(relation: OsmRelation, action: ElementAction, data: &mut OsmData) {
-            if action != ElementAction::Delete {
-                data.relations.push(relation);
+        // Only membership/tag edits to existing relations are tracked; a
+        // deleted relation is simply dropped (relation deletion isn't
+        // supported).
+        fn store_relation(
+            relation: OsmRelation,
+            action: ElementAction,
+            data: &mut OsmData,
+            edits: &mut FileEdits,
+        ) {
+            match action {
+                ElementAction::Delete => {}
+                ElementAction::Modify => {
+                    edits.modified_relations.insert(relation.id);
+                    data.relations.push(relation);
+                }
+                ElementAction::None => data.relations.push(relation),
             }
         }
 
@@ -367,7 +381,7 @@ impl OsmParser {
                     }
                     b"relation" => {
                         let relation = self.parse_relation_start(e)?;
-                        store_relation(relation, self.parse_action(e)?, &mut osm_data);
+                        store_relation(relation, self.parse_action(e)?, &mut osm_data, &mut edits);
                     }
                     name => self.parse_child_element(
                         e,
@@ -393,7 +407,7 @@ impl OsmParser {
                     }
                     b"relation" => {
                         if let Some(relation) = current_relation.take() {
-                            store_relation(relation, current_action, &mut osm_data);
+                            store_relation(relation, current_action, &mut osm_data, &mut edits);
                         }
                         current_element = ElementType::None;
                     }

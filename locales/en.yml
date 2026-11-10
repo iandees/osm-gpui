@@ -123,6 +123,12 @@ status:
   deleted_features:
     one: "Deleted %{count} feature"
     other: "Deleted %{count} features"
+  # `%{relations}` is the relation count from `action.relation_count`.
+  deleted_features_in_relations:
+    one: "Deleted %{count} feature and removed it from %{relations}"
+    other: "Deleted %{count} features and removed them from %{relations}"
+  # A delete that skipped some features: what was done, then why the rest wasn't.
+  delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "No OSM data to zoom to"
   nothing_selected: "Nothing selected"
   no_data_to_export: "No OSM data to export"
@@ -190,6 +196,9 @@ panel:
     empty: "(no tags)"
     key_placeholder: "key"
     value_placeholder: "value"
+  relations:
+    title: "Relations"
+    no_role: "(no role)"
   history:
     title: "History"
     empty: "No actions yet."
@@ -212,6 +221,7 @@ history:
   inserted_node: "Inserted a node into a way"
   snapped_node: "Snapped a node onto a way"
   changed_way_nodes: "Changed the nodes of a way"
+  changed_relation_members: "Changed the members of a relation"
 
 # Generic feature names used when no preset matches.
 geometry:
@@ -373,7 +383,8 @@ action:
       not_chainable: "Can't join: the ways don't connect end to end in one chain"
       tag_conflict: "Can't join: the ways have different values for '%{key}'"
       needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
-      relation_member: "Can't join: way %{id} is a member of a relation and would be deleted"
+      restriction: "Can't join: way %{way} is part of turn restriction %{relation}"
+      role_mismatch: "Can't join: way %{way} has a different role in relation %{relation} than the way it would be joined into"
   separate:
     label: "Separate Node"
     hint: "Select a node shared by two or more ways to separate it"
@@ -392,6 +403,9 @@ action:
   feature_count:
     one: "%{count} feature"
     other: "%{count} features"
+  relation_count:
+    one: "%{count} relation"
+    other: "%{count} relations"
   copy_tags:
     label: "Copy Tags"
     hint: "Select one feature that has tags to copy them"
@@ -408,7 +422,7 @@ action:
       one: "Split %{count} way"
       other: "Split %{count} ways"
     error:
-      relation_member: "Can't split: way %{id} is a member of a relation, and relation changes aren't supported yet"
+      restriction_via: "Can't split: can't tell which part of way %{way} belongs in turn restriction %{relation}"
   merge:
     label: "Merge Nodes"
     hint: "Select two or more nodes to merge them into one"
@@ -417,7 +431,6 @@ action:
       other: "Merged %{count} nodes"
     error:
       tag_conflict: "Can't merge: the nodes have different values for '%{key}'"
-      relation_member: "Can't merge: node %{id} is a member of a relation and would be deleted"
       degenerate_way: "Can't merge: way %{id} would be left with fewer than two distinct nodes"
   straighten:
     label: "Straighten Way"
@@ -432,6 +445,13 @@ action:
   delete:
     label: "Delete"
     hint: "Select something to delete"
+    # `%{what}` is the kind below, `%{id}` the OSM id.
+    kind:
+      node: "node"
+      way: "way"
+    error:
+      relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
+      restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
 
 shortcut_category:
   general: "General"

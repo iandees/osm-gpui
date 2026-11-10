@@ -986,11 +986,33 @@ impl OsmLayer {
                     .map(|&(new_id, new_version)| (old_id, new_id, new_version))
             })
             .collect();
+        let mut way_id_map: HashMap<i64, i64> = HashMap::new();
         for (old_id, new_id, new_version) in way_updates {
             if let Some(mut way) = data.ways.remove(&old_id) {
                 way.id = new_id;
                 way.version = new_version;
                 data.ways.insert(new_id, way);
+                way_id_map.insert(old_id, new_id);
+            }
+        }
+
+        // Relations: member refs to created nodes/ways switch from their
+        // placeholder ids to the real ones, and a relation the server
+        // accepted gets its new version. (Relations themselves aren't
+        // created yet, so their ids never change.)
+        for relation in &mut data.relations {
+            for member in &mut relation.members {
+                let map = match member.member_type {
+                    crate::osm::MemberType::Node => &node_id_map,
+                    crate::osm::MemberType::Way => &way_id_map,
+                    crate::osm::MemberType::Relation => continue,
+                };
+                if let Some(&new_id) = map.get(&member.reference) {
+                    member.reference = new_id;
+                }
+            }
+            if let Some(&(_, new_version)) = result.relation_id_remap.get(&relation.id) {
+                relation.version = new_version;
             }
         }
 
@@ -1609,6 +1631,32 @@ impl OsmLayer {
     /// The ids of the relations that have `node_id` as a member.
     pub fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
         self.relations_containing(crate::osm::MemberType::Node, node_id)
+    }
+
+    /// A copy of the relation with this id, if the layer has it.
+    pub fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
+        self.osm_data
+            .as_ref()?
+            .relations
+            .iter()
+            .find(|r| r.id == relation_id)
+            .cloned()
+    }
+
+    /// Replace a relation's whole member list and return the previous one,
+    /// or `None` (changing nothing) if the layer has no such relation. Marks
+    /// the layer modified. Members don't feed any render cache, so nothing
+    /// else needs refreshing.
+    pub fn set_relation_members(
+        &mut self,
+        relation_id: i64,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<Vec<crate::osm::OsmMember>> {
+        let data = Arc::make_mut(self.osm_data.as_mut()?);
+        let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
+        let previous = std::mem::replace(&mut relation.members, members);
+        self.modified = true;
+        Some(previous)
     }
 
     fn relations_containing(&self, member_type: crate::osm::MemberType, id: i64) -> Vec<i64> {
@@ -2550,6 +2598,18 @@ impl EditableLayer for OsmLayer {
     }
     fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
         OsmLayer::relations_containing_node(self, node_id)
+    }
+
+    fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
+        OsmLayer::relation(self, relation_id)
+    }
+
+    fn set_relation_members(
+        &mut self,
+        relation_id: i64,
+        members: Vec<crate::osm::OsmMember>,
+    ) -> Option<Vec<crate::osm::OsmMember>> {
+        OsmLayer::set_relation_members(self, relation_id, members)
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -4867,6 +4927,138 @@ mod tests {
             way.nodes,
             vec![1, 999],
             "way must reference the node's NEW id, not the stale local one"
+        );
+        assert!(!layer.is_modified());
+        assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn set_relation_members_returns_the_previous_list_and_marks_the_layer_modified() {
+        use crate::osm::{MemberType, OsmMember, OsmRelation};
+        let member = |reference| OsmMember {
+            member_type: MemberType::Way,
+            reference,
+            role: "r".to_string(),
+        };
+        let mut base = (*data_with(vec![], vec![])).clone();
+        base.relations.push(OsmRelation {
+            id: 500,
+            version: 3,
+            tags: empty_tags(),
+            members: vec![member(10)],
+        });
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
+        assert!(!layer.is_modified());
+
+        assert_eq!(layer.set_relation_members(404, vec![]), None);
+        assert!(!layer.is_modified(), "unknown relation changes nothing");
+
+        let previous = layer.set_relation_members(500, vec![member(10), member(11)]);
+        assert_eq!(previous, Some(vec![member(10)]));
+        assert!(layer.is_modified());
+        assert_eq!(layer.relation(500).unwrap().members.len(), 2);
+        assert_eq!(layer.relations_containing_way(11), vec![500]);
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.modified_relations.len(), 1);
+        assert_eq!(diff.modified_relations[0].version, 3);
+
+        // Putting the old list back leaves nothing to upload.
+        layer.set_relation_members(500, vec![member(10)]);
+        assert!(layer.diff_for_upload().is_empty());
+    }
+
+    #[test]
+    fn modified_relation_uploads_with_placeholders_and_is_remapped_afterwards() {
+        use crate::osm::{MemberType, OsmMember, OsmRelation};
+        let member = |member_type, reference, role: &str| OsmMember {
+            member_type,
+            reference,
+            role: role.to_string(),
+        };
+        let mut base = (*data_with(
+            vec![OsmNode {
+                id: 1,
+                lat: 40.0,
+                lon: -74.0,
+                version: 1,
+                tags: empty_tags(),
+            }],
+            vec![OsmWay {
+                id: 10,
+                nodes: vec![1],
+                version: 2,
+                tags: empty_tags(),
+            }],
+        ))
+        .clone();
+        base.relations.push(OsmRelation {
+            id: 500,
+            version: 7,
+            tags: empty_tags(),
+            members: vec![member(MemberType::Way, 10, "route")],
+        });
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base.clone()));
+
+        // A new way -2 (with a new node -1) joins relation 500 as a member.
+        let mut edited = base.clone();
+        edited.nodes.insert(
+            -1,
+            OsmNode {
+                id: -1,
+                lat: 40.001,
+                lon: -74.001,
+                version: 0,
+                tags: empty_tags(),
+            },
+        );
+        edited.ways.insert(
+            -2,
+            OsmWay {
+                id: -2,
+                nodes: vec![1, -1],
+                version: 0,
+                tags: empty_tags(),
+            },
+        );
+        edited.relations[0]
+            .members
+            .push(member(MemberType::Way, -2, "route"));
+        edited.relations[0]
+            .members
+            .push(member(MemberType::Node, -1, "stop"));
+        layer.set_osm_data_for_test(Arc::new(edited));
+
+        let diff = layer.diff_for_upload();
+        assert_eq!(diff.counts(), (2, 1, 0));
+        let xml = crate::osm_upload::build_osm_change_xml(3, &[("L", diff)]);
+        let way_create = xml.find(r#"<way id="-2""#).unwrap();
+        let relation_modify = xml.find(r#"<relation id="500" version="7""#).unwrap();
+        assert!(way_create < relation_modify, "{xml}");
+        assert!(
+            xml.contains(r#"<member type="way" ref="-2" role="route"/>"#),
+            "{xml}"
+        );
+
+        let mut result = crate::osm_upload::UploadResult::default();
+        result.node_id_remap.insert(-1, (999, 1));
+        result.way_id_remap.insert(-2, (888, 1));
+        result.relation_id_remap.insert(500, (500, 8));
+        layer.apply_upload_result(&result);
+
+        let updated = layer.get_osm_data().unwrap();
+        let relation = &updated.relations[0];
+        assert_eq!(relation.version, 8);
+        assert_eq!(
+            relation
+                .members
+                .iter()
+                .map(|m| (m.member_type, m.reference))
+                .collect::<Vec<_>>(),
+            vec![
+                (MemberType::Way, 10),
+                (MemberType::Way, 888),
+                (MemberType::Node, 999)
+            ]
         );
         assert!(!layer.is_modified());
         assert!(layer.diff_for_upload().is_empty());

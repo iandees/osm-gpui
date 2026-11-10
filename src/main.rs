@@ -510,7 +510,7 @@ struct MapViewer {
         Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, in that order) is expanded.
-    side_panel_open: [bool; 5],
+    side_panel_open: [bool; 6],
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
@@ -717,7 +717,7 @@ impl MapViewer {
             pending_tag_edit_open: None,
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true, true, true, true, true],
+            side_panel_open: [true, true, true, true, true, true],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -1388,6 +1388,21 @@ impl MapViewer {
                 };
                 let nodes = if forward { after } else { before };
                 editable.set_way_nodes(*way_id, nodes.clone());
+            }
+            UndoableAction::SetRelationMembers {
+                layer,
+                relation_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let members = if forward { after } else { before };
+                editable.set_relation_members(*relation_id, members.clone());
             }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
@@ -4977,6 +4992,98 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/relations.osmscript` clicks fixed window positions;
+    /// check they pick what the script names, that the fixture's relations
+    /// show up as the script expects, and that the split it runs keeps the
+    /// route intact and moves the later clicks as the script assumes.
+    #[test]
+    fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        use osm_gpui::selection::{resolve_hits, FeatureRef};
+
+        let xml =
+            std::fs::read_to_string("docs/screenshots/fixtures/relations.osm").expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let mut layers = osm_gpui::layers::LayerManager::new();
+        layers.add_layer(Box::new(OsmLayer::new_with_data(
+            LayerId(1),
+            "L".to_string(),
+            Arc::new(data),
+        )));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
+            let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+            let hits = layers
+                .find_layer(LayerId(1))
+                .unwrap()
+                .as_editable()
+                .unwrap()
+                .hit_test(&viewport, at);
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        for (x, y, kind, id) in [
+            (520.0, 200.0, Way, 8202),
+            (560.0, 200.0, Node, 8104),
+            (340.0, 400.0, Way, 8301),
+            (640.0, 200.0, Node, 8105),
+            (760.0, 200.0, Way, 8202),
+        ] {
+            assert_eq!(
+                hit_at(&layers, x, y),
+                Some((kind, id)),
+                "click at ({x}, {y})"
+            );
+        }
+
+        // What the Relations section shows for the clicked features.
+        let relations_of = |layers: &osm_gpui::layers::LayerManager, kind, id| {
+            let editable = layers
+                .find_layer(LayerId(1))
+                .unwrap()
+                .as_editable()
+                .unwrap();
+            let ids = match kind {
+                Node => editable.relations_containing_node(id),
+                Way => editable.relations_containing_way(id),
+            };
+            ids.into_iter()
+                .map(|r| osm_gpui::relations::display_name(&editable.relation(r).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(relations_of(&layers, Way, 8202), ["Bus 7B"]);
+        assert_eq!(relations_of(&layers, Node, 8104), ["Bus 7B"]);
+        assert_eq!(relations_of(&layers, Way, 8301), ["restriction"]);
+
+        // Split at the middle node: the new way is -1, takes the right-hand
+        // part, and joins the route right after the original.
+        let action = selection_actions::find("split").unwrap();
+        let sel = [FeatureRef {
+            layer_id: LayerId(1),
+            kind: Node,
+            id: 8105,
+        }];
+        (action.apply)(&mut layers, &sel, Some(LayerId(1))).unwrap();
+        assert_eq!(hit_at(&layers, 760.0, 200.0), Some((Way, -1)));
+        assert_eq!(hit_at(&layers, 520.0, 200.0), Some((Way, 8202)));
+        let route = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .relation(9101)
+            .unwrap();
+        let refs: Vec<i64> = route.members.iter().map(|m| m.reference).collect();
+        assert_eq!(refs, [8104, 8201, 8202, -1, 8203]);
+        assert_eq!(relations_of(&layers, Way, -1), ["Bus 7B"]);
+        // Way -1, way 8202 and relation 9101.
+        let counts = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .diff_for_upload()
+            .counts();
+        assert_eq!(counts, (1, 2, 0));
+    }
+
     /// `docs/screenshots/more-selection-actions.osmscript` clicks and
     /// box-selects fixed window positions; check they pick what the script
     /// names, and that each action the script runs on them is accepted, with
@@ -5430,6 +5537,124 @@ mod tests {
     }
 
     #[gpui::test]
+    fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network_with(cx, |data| {
+            data.relations[0].tags.insert("ref".into(), "7B".into());
+        });
+        window
+            .update(cx, |view, _window, _cx| {
+                // Way 102 and node 7 are in relation 900, which has no name,
+                // so its ref stands in.
+                select(view, Way, &[102]);
+                assert_eq!(
+                    view.selected_memberships(),
+                    vec![(900, "7B".to_string(), String::new())]
+                );
+                select(view, Node, &[7]);
+                assert_eq!(
+                    view.selected_memberships(),
+                    vec![(900, "7B".to_string(), "stop".to_string())]
+                );
+                // In no relation, several features, or nothing selected: no
+                // section.
+                select(view, Way, &[100]);
+                assert!(view.selected_memberships().is_empty());
+                select(view, Way, &[102, 100]);
+                assert!(view.selected_memberships().is_empty());
+                select(view, Way, &[]);
+                assert!(view.selected_memberships().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_a_relation_member_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Way 102 is a member of relation 900.
+                let original = relation_members(view, 900);
+                select(view, Way, &[102]);
+                view.run_selection_action("delete", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Deleted 1 feature and removed it from 1 relation")
+                );
+                let remaining = relation_members(view, 900);
+                assert_eq!(remaining, vec![(7, "stop".to_string())]);
+                // The deleted way and the relation that lost it.
+                assert_eq!(pending(view), (0, 1, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), remaining);
+                assert_eq!(pending(view), (0, 1, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn joining_relation_member_ways_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network_with(cx, route_over(&[(100, "forward"), (101, "forward")]));
+        window
+            .update(cx, |view, _window, cx| {
+                let original = relation_members(view, 900);
+                select(view, Way, &[100, 101]);
+                view.run_selection_action("join", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let joined = relation_members(view, 900);
+                assert_eq!(joined, vec![(100, "forward".to_string())]);
+                // Joined way, relation, and the deleted way.
+                assert_eq!(pending(view), (0, 2, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), joined);
+                assert_eq!(pending(view), (0, 2, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn merging_relation_member_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Relation 900 holds way 102 and node 7 ("stop").
+                let original = relation_members(view, 900);
+                select(view, Node, &[6, 7]);
+                view.run_selection_action("merge", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let merged = relation_members(view, 900);
+                assert_eq!(merged[1], (6, "stop".to_string()));
+                assert_eq!(pending(view), (0, 1, 1));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), merged);
+                assert_eq!(pending(view), (0, 1, 1));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::Way;
         let window = setup_network(cx);
@@ -5537,6 +5762,17 @@ mod tests {
     /// A view whose active layer holds `selection_actions::test_support`'s
     /// road network, with a server baseline so the upload diff is meaningful.
     fn setup_network(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        setup_network_with(cx, |_| {})
+    }
+
+    /// `setup_network` with `edit` applied to the network data first (e.g. to
+    /// swap in different relations).
+    fn setup_network_with(
+        cx: &mut TestAppContext,
+        edit: impl FnOnce(&mut osm_gpui::osm::OsmData),
+    ) -> gpui::WindowHandle<MapViewer> {
+        let mut data = selection_actions::test_support::network_data();
+        edit(&mut data);
         cx.update(gpui_component::init);
         let window = cx.add_window(MapViewer::new);
         window
@@ -5544,17 +5780,87 @@ mod tests {
                 view.viewport =
                     Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
                 let layer_id = view.layer_manager.alloc_id();
-                let layer = OsmLayer::new_with_data(
-                    layer_id,
-                    "Net".to_string(),
-                    Arc::new(selection_actions::test_support::network_data()),
-                );
+                let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
                 view.layer_manager.add_layer(Box::new(layer));
                 view.active_layer = Some(layer_id);
                 view.mode = EditMode::Select;
             })
             .unwrap();
         window
+    }
+
+    /// Replace the network's relation 900 with a route over `members`
+    /// (`(way id, role)`).
+    fn route_over(
+        ways: &'static [(i64, &'static str)],
+    ) -> impl FnOnce(&mut osm_gpui::osm::OsmData) {
+        move |data| {
+            data.relations = vec![osm_gpui::osm::OsmRelation {
+                id: 900,
+                version: 4,
+                tags: [("type", "route"), ("name", "Test Route")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                members: ways
+                    .iter()
+                    .map(|&(reference, role)| osm_gpui::osm::OsmMember {
+                        member_type: osm_gpui::osm::MemberType::Way,
+                        reference,
+                        role: role.to_string(),
+                    })
+                    .collect(),
+            }];
+        }
+    }
+
+    #[gpui::test]
+    fn split_way_in_a_relation_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network_with(cx, route_over(&[(100, ""), (101, "forward"), (102, "")]));
+        window
+            .update(cx, |view, _window, cx| {
+                // Node 4 on way 101 only.
+                let layer_id = view.active_layer.unwrap();
+                view.set_selection(vec![
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Node,
+                        id: 4,
+                    },
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Way,
+                        id: 101,
+                    },
+                ]);
+                view.run_selection_action("split", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let after = relation_members(view, 900);
+                assert_eq!(after.len(), 4);
+                assert_eq!(after[1], (101, "forward".to_string()));
+                assert!(after[2].0 < 0 && after[2].1 == "forward");
+                // The new way, way 101, and the relation.
+                assert_eq!(pending(view), (1, 2, 0));
+
+                undo_step(view);
+                assert_eq!(
+                    relation_members(view, 900),
+                    vec![
+                        (100, String::new()),
+                        (101, "forward".to_string()),
+                        (102, String::new())
+                    ]
+                );
+                assert_eq!(pending(view), (0, 0, 0));
+
+                redo_step(view);
+                assert_eq!(relation_members(view, 900), after);
+                assert_eq!(pending(view), (1, 2, 0));
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
     }
 
     fn select(view: &mut MapViewer, kind: osm_gpui::selection::FeatureKind, ids: &[i64]) {
@@ -5645,6 +5951,72 @@ mod tests {
                 );
                 assert!(view.undo_stack.actions.is_empty());
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    fn relation_members(view: &MapViewer, relation_id: i64) -> Vec<(i64, String)> {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .relation(relation_id)
+            .unwrap()
+            .members
+            .iter()
+            .map(|m| (m.reference, m.role.clone()))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let before = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap()
+                    .relation(900)
+                    .unwrap()
+                    .members;
+                let mut after = before.clone();
+                after.push(osm_gpui::osm::OsmMember {
+                    member_type: osm_gpui::osm::MemberType::Way,
+                    reference: 101,
+                    role: "outer".to_string(),
+                });
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .unwrap()
+                    .as_editable_mut()
+                    .unwrap()
+                    .set_relation_members(900, after.clone());
+                let action = UndoableAction::SetRelationMembers {
+                    layer: layer_id,
+                    relation_id: 900,
+                    before,
+                    after,
+                };
+                assert_eq!(action.description(), "Changed the members of a relation");
+                view.undo_stack.push(action);
+                assert_eq!(relation_members(view, 900).len(), 3);
+                assert_eq!(pending(view), (0, 1, 0));
+
+                undo_step(view);
+                assert_eq!(relation_members(view, 900).len(), 2);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(
+                    relation_members(view, 900).last(),
+                    Some(&(101, "outer".to_string()))
+                );
+                assert_eq!(pending(view), (0, 1, 0));
             })
             .unwrap();
     }

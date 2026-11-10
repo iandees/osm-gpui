@@ -123,6 +123,12 @@ status:
   deleted_features:
     one: "%{count} Objekt gelöscht"
     other: "%{count} Objekte gelöscht"
+  # `%{relations}` ist die Relationenzahl aus `action.relation_count`.
+  deleted_features_in_relations:
+    one: "%{count} Objekt gelöscht und aus %{relations} entfernt"
+    other: "%{count} Objekte gelöscht und aus %{relations} entfernt"
+  # Löschen, bei dem einige Objekte übersprungen wurden: was getan wurde, dann warum der Rest nicht.
+  delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "Keine OSM-Daten zum Zoomen"
   nothing_selected: "Nichts ausgewählt"
   no_data_to_export: "Keine OSM-Daten zum Exportieren"
@@ -190,6 +196,9 @@ panel:
     empty: "(keine Tags)"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
+  relations:
+    title: "Relationen"
+    no_role: "(keine Rolle)"
   history:
     title: "Verlauf"
     empty: "Noch keine Aktionen."
@@ -212,6 +221,7 @@ history:
   inserted_node: "Knoten in Weg eingefügt"
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"
+  changed_relation_members: "Mitglieder einer Relation geändert"
 
 # Allgemeine Objektbezeichnungen, wenn keine Vorlage passt.
 geometry:
@@ -373,7 +383,8 @@ action:
       not_chainable: "Verbinden nicht möglich: Die Wege bilden keine zusammenhängende Kette"
       tag_conflict: "Verbinden nicht möglich: Die Wege haben verschiedene Werte für „%{key}“"
       needs_reversal: "Verbinden nicht möglich: Weg %{id} müsste umgekehrt werden, aber seine Tags hängen von der Richtung ab"
-      relation_member: "Verbinden nicht möglich: Weg %{id} ist Mitglied einer Relation und würde gelöscht"
+      restriction: "Verbinden nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}"
+      role_mismatch: "Verbinden nicht möglich: Weg %{way} hat in Relation %{relation} eine andere Rolle als der Weg, in den er verbunden würde"
   separate:
     label: "Knoten abtrennen"
     hint: "Einen Knoten wählen, der zu mehreren Wegen gehört, um ihn abzutrennen"
@@ -392,6 +403,9 @@ action:
   feature_count:
     one: "%{count} Objekt"
     other: "%{count} Objekte"
+  relation_count:
+    one: "%{count} Relation"
+    other: "%{count} Relationen"
   copy_tags:
     label: "Tags kopieren"
     hint: "Ein einzelnes Objekt mit Tags wählen, um sie zu kopieren"
@@ -408,7 +422,7 @@ action:
       one: "%{count} Weg geteilt"
       other: "%{count} Wege geteilt"
     error:
-      relation_member: "Teilen nicht möglich: Weg %{id} ist Mitglied einer Relation, und Relationen können noch nicht geändert werden"
+      restriction_via: "Teilen nicht möglich: Es lässt sich nicht bestimmen, welcher Teil von Weg %{way} zur Abbiegebeschränkung %{relation} gehört"
   merge:
     label: "Knoten vereinigen"
     hint: "Zwei oder mehr Knoten wählen, um sie zu einem zu vereinigen"
@@ -417,7 +431,6 @@ action:
       other: "%{count} Knoten vereinigt"
     error:
       tag_conflict: "Vereinigen nicht möglich: Die Knoten haben verschiedene Werte für „%{key}“"
-      relation_member: "Vereinigen nicht möglich: Knoten %{id} ist Mitglied einer Relation und würde gelöscht"
       degenerate_way: "Vereinigen nicht möglich: Weg %{id} hätte danach weniger als zwei verschiedene Knoten"
   straighten:
     label: "Weg begradigen"
@@ -432,6 +445,13 @@ action:
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"
+    # `%{what}` ist die Art unten, `%{id}` die OSM-ID.
+    kind:
+      node: "Knoten"
+      way: "Weg"
+    error:
+      relation_empty: "%{what} %{id} kann nicht gelöscht werden: Er ist das einzige Mitglied der Relation %{relation}"
+      restriction_role: "%{what} %{id} kann nicht gelöscht werden: Der Abbiegebeschränkung %{relation} würde das Mitglied mit der Rolle „%{role}“ fehlen"
 
 shortcut_category:
   general: "Allgemein"

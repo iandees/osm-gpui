@@ -322,8 +322,6 @@ fn union_tags<'a>(
 pub struct MergeNode {
     pub id: i64,
     pub tags: Vec<(String, String)>,
-    /// Whether a relation has this node as a member.
-    pub in_relation: bool,
 }
 
 /// Why a set of nodes can't be merged.
@@ -333,8 +331,6 @@ pub enum MergeError {
     NotEnoughNodes,
     /// Two nodes have different values for this key.
     TagConflict(String),
-    /// A node that would be removed is a member of a relation.
-    RelationMember(i64),
     /// The way would be left with fewer than two distinct nodes.
     DegenerateWay(i64),
 }
@@ -346,9 +342,6 @@ impl MergeError {
             MergeError::NotEnoughNodes => crate::tr!("action.merge.hint").to_string(),
             MergeError::TagConflict(key) => {
                 crate::tr!("action.merge.error.tag_conflict", key = key).to_string()
-            }
-            MergeError::RelationMember(id) => {
-                crate::tr!("action.merge.error.relation_member", id = id).to_string()
             }
             MergeError::DegenerateWay(id) => {
                 crate::tr!("action.merge.error.degenerate_way", id = id).to_string()
@@ -376,8 +369,9 @@ pub struct MergePlan {
 /// The node already on the server (positive id) survives if exactly one is;
 /// otherwise the first selected. Tags are unioned (a conflict names its key).
 /// Ways use the survivor in place of each removed node, and consecutive
-/// repeats that creates collapse into one. Refused if a removed node is in a
-/// relation, or a way would be left with fewer than two distinct nodes.
+/// repeats that creates collapse into one. Refused if a way would be left with
+/// fewer than two distinct nodes. (Relation memberships are the caller's
+/// business: see `relations::merge_node_members`.)
 pub fn plan_merge_nodes(
     nodes: &[MergeNode],
     ways: &[(i64, Vec<i64>)],
@@ -397,9 +391,6 @@ pub fn plan_merge_nodes(
     } else {
         unique[0].id
     };
-    if let Some(member) = unique.iter().find(|n| n.id != keep && n.in_relation) {
-        return Err(MergeError::RelationMember(member.id));
-    }
     let tags =
         union_tags(unique.iter().map(|n| n.tags.as_slice())).map_err(MergeError::TagConflict)?;
     let remove: Vec<i64> = unique
@@ -896,7 +887,6 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
-            in_relation: false,
         }
     }
 
@@ -996,20 +986,6 @@ mod tests {
             plan_merge_nodes(&[node(1, &[]), node(2, &[]), node(3, &[])], &ring),
             Err(MergeError::DegenerateWay(10))
         );
-    }
-
-    #[test]
-    fn merge_refuses_to_delete_a_relation_member_but_may_keep_one() {
-        let member = MergeNode {
-            in_relation: true,
-            ..node(5, &[])
-        };
-        // 5 is the only server node, so it survives: fine.
-        let plan = plan_merge_nodes(&[node(-1, &[]), member.clone()], &[]).unwrap();
-        assert_eq!(plan.keep, 5);
-        // Selected second, with another server node first, it would go.
-        let err = plan_merge_nodes(&[node(7, &[]), member], &[]).unwrap_err();
-        assert_eq!(err, MergeError::RelationMember(5));
     }
 
     fn tags(list: &[(&str, &str)]) -> Vec<(String, String)> {
