@@ -151,10 +151,37 @@ fn render_ways_cpu(
     // screen pixels of length (0.0 = current behavior, no decimation).
     min_seg_px: f32,
 ) -> u64 {
+    render_ways_cpu_inner(
+        ways_sorted,
+        way_vertices,
+        way_bboxes,
+        viewport,
+        stylesheet,
+        cached_styles,
+        min_seg_px,
+        false,
+    )
+}
+
+/// `render_ways_cpu`, optionally also emitting every segment a second time
+/// into one shared, slightly wider casing path — as the real loop does at
+/// zoom >= `CASING_MIN_ZOOM`.
+#[allow(clippy::too_many_arguments)]
+fn render_ways_cpu_inner(
+    ways_sorted: &[&OsmWay],
+    way_vertices: &[Vec<(i64, f64, f64)>],
+    way_bboxes: &[Option<(f64, f64, f64, f64)>],
+    viewport: &Viewport,
+    stylesheet: &Stylesheet,
+    cached_styles: Option<&[(u32, f32)]>,
+    min_seg_px: f32,
+    casing: bool,
+) -> u64 {
     let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
     struct Group {
         path: Option<Path<Pixels>>,
     }
+    let mut casing_path: Option<Path<Pixels>> = None;
     let mut groups: HashMap<(u32, u32), Group> = HashMap::new();
     let mut visible = 0u64;
     for (i, verts) in way_vertices.iter().enumerate() {
@@ -195,12 +222,15 @@ fn render_ways_cpu(
                         continue;
                     }
                 }
+                if casing {
+                    push_quad(&mut casing_path, p0, p, half_width + 1.0);
+                }
                 push_quad(&mut g.path, p0, p, half_width);
             }
             prev = Some(p);
         }
     }
-    let mut verts_total = 0u64;
+    let mut verts_total = casing_path.map_or(0, |p| p.vertices.len() as u64);
     for (_, g) in groups {
         if let Some(p) = g.path {
             verts_total += p.vertices.len() as u64;
@@ -383,6 +413,18 @@ fn main() {
             )
         },
     );
+    bench("ways z14: cached styles + decimation + casing", 30, || {
+        render_ways_cpu_inner(
+            &ways_sorted,
+            &way_vertices,
+            &way_bboxes,
+            &viewport,
+            &stylesheet,
+            Some(&cached_way_styles),
+            1.0,
+            true,
+        )
+    });
     bench("ways z17 (culling active): current", 30, || {
         render_ways_cpu(
             &ways_sorted,

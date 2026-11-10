@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{diff_osm_data, LayerDiff};
-use crate::layers::{EditableLayer, LayerId, MapLayer};
+use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
     nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot, FeatureKind,
     FeatureRef, HitCandidate,
 };
-use crate::style::{NodeStyle, Stylesheet, WayStyle};
+use crate::style::{Direction, NodeStyle, Stylesheet, WayStyle};
 use crate::viewport::Viewport;
 use rstar::{
     primitives::{GeomWithData, Rectangle},
@@ -19,6 +19,42 @@ use rstar::{
 };
 
 const SELECTION_ACCENT: u32 = 0xFF4081;
+
+/// Near-black used for the casing under ways, node marker outlines, and the
+/// outer ring of the hover highlight — whatever needs to read against light
+/// imagery.
+const CASING_COLOR: u32 = 0x1C1C1E;
+
+/// How far the casing extends beyond each side of a way's stroke, in pixels.
+const CASING_WIDTH: f32 = 1.0;
+
+/// Below this zoom the casing is skipped: ways are dense enough that it
+/// only adds clutter, and it doubles the way pass's vertex count exactly
+/// when the most ways are on screen (measured with `examples/perf_bench`:
+/// 2.8 ms -> 5.2 ms of CPU per frame for 8k ways all visible at z14).
+const CASING_MIN_ZOOM: f64 = 15.0;
+
+/// Below this zoom untagged nodes (plain way vertices) aren't drawn. They
+/// can't usefully be picked when ways are a few pixels apart, and they're
+/// the bulk of the node pass.
+const VERTEX_MIN_ZOOM: f64 = 16.0;
+
+/// Below this zoom direction arrows aren't drawn.
+const ARROW_MIN_ZOOM: f64 = 16.0;
+
+/// Path length between direction arrows along a way, in pixels.
+const ARROW_SPACING_PX: f32 = 96.0;
+
+/// A direction arrow is only placed on a segment at least this long, so it
+/// never overhangs the segment's ends.
+const ARROW_MIN_SEGMENT_PX: f32 = 12.0;
+
+/// Half the length of a direction arrow along the way, in pixels.
+const ARROW_HALF_LENGTH: f32 = 4.5;
+
+/// How far a direction arrow's base extends beyond each side of the way's
+/// stroke, in pixels.
+const ARROW_OVERHANG: f32 = 3.0;
 
 /// Minimum on-screen length (in pixels) a way segment must accumulate before
 /// it's emitted as its own quad. Segments shorter than this while zoomed out
@@ -574,18 +610,83 @@ fn push_triangle(
     }
 }
 
-/// Paint a single node marker quad at `screen_point` (already including the
-/// canvas origin offset) using `style`. Shared by the per-frame node-marker
-/// pass in `render_canvas` and by `render_highlight`'s `FeatureKind::Way` arm,
-/// which repaints a selected way's vertex markers on top of the highlight
-/// stroke so they aren't hidden underneath it.
+/// The triangle for a direction arrow centered on the segment `p0`-`p1`,
+/// pointing from `p0` to `p1` (or the other way if `reverse`): tip first,
+/// then the two base corners. `half_length` is measured along the segment
+/// and `half_base` across it. `None` for a degenerate segment.
+fn arrow_triangle(
+    p0: Point<Pixels>,
+    p1: Point<Pixels>,
+    reverse: bool,
+    half_length: f32,
+    half_base: f32,
+) -> Option<[Point<Pixels>; 3]> {
+    let (x0, y0) = (f32::from(p0.x), f32::from(p0.y));
+    let (x1, y1) = (f32::from(p1.x), f32::from(p1.y));
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < f32::EPSILON {
+        return None;
+    }
+    let sign = if reverse { -1.0 } else { 1.0 };
+    let (ux, uy) = (dx / len * sign, dy / len * sign);
+    let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let (bx, by) = (mx - ux * half_length, my - uy * half_length);
+    Some([
+        point(px(mx + ux * half_length), px(my + uy * half_length)),
+        point(px(bx - uy * half_base), px(by + ux * half_base)),
+        point(px(bx + uy * half_base), px(by - ux * half_base)),
+    ])
+}
+
+/// A circle of `diameter` centered on `center`, as quad bounds.
+fn circle_bounds(center: Point<Pixels>, diameter: f32) -> Bounds<Pixels> {
+    let half = px(diameter / 2.0);
+    Bounds {
+        origin: point(center.x - half, center.y - half),
+        size: size(px(diameter), px(diameter)),
+    }
+}
+
+/// Paint a single round node marker at `screen_point` (already including
+/// the canvas origin offset) using `style`: a dot of the style's color and
+/// size inside a 1px dark outline, so it reads against any imagery. Shared
+/// by the per-frame node-marker pass in `render_canvas` and by
+/// `render_highlight`'s `FeatureKind::Way` arm, which repaints a
+/// highlighted way's vertex markers on top of the highlight stroke so they
+/// aren't hidden underneath it.
 fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: NodeStyle) {
-    let half = px(style.size / 2.0);
-    let quad_bounds = Bounds {
-        origin: point(screen_point.x - half, screen_point.y - half),
-        size: size(px(style.size), px(style.size)),
-    };
-    window.paint_quad(fill(quad_bounds, rgb(style.color)));
+    let diameter = style.size + 2.0;
+    window.paint_quad(quad(
+        circle_bounds(screen_point, diameter),
+        px(diameter / 2.0),
+        rgb(style.color),
+        px(1.0),
+        rgb(CASING_COLOR),
+        BorderStyle::Solid,
+    ));
+}
+
+/// Paint a `width`-px ring of `diameter` centered on `center`.
+fn paint_ring(window: &mut Window, center: Point<Pixels>, diameter: f32, width: f32, color: u32) {
+    window.paint_quad(quad(
+        circle_bounds(center, diameter),
+        px(diameter / 2.0),
+        gpui::transparent_black(),
+        px(width),
+        rgb(color),
+        BorderStyle::Solid,
+    ));
+}
+
+/// The `(halo, core)` colors of a highlight: a wide outer stroke and a
+/// narrower inner one. The pairs are chosen so one of the two always
+/// contrasts with whatever is underneath.
+fn highlight_colors(kind: HighlightKind) -> (u32, u32) {
+    match kind {
+        HighlightKind::Selected => (0xFFFFFF, SELECTION_ACCENT),
+        HighlightKind::Hovered => (CASING_COLOR, 0xFFFFFF),
+    }
 }
 
 /// Bulk-build a point index over every node's mercator position.
@@ -1984,6 +2085,21 @@ impl MapLayer for OsmLayer {
         let mut way_group_index: HashMap<(u32, u32), usize> = HashMap::new();
         let mut way_groups: Vec<WayGroup> = Vec::new();
 
+        // The casing: one dark path under every way's stroke (and direction
+        // arrows), slightly wider than the stroke, so thin light lines stay
+        // readable over light imagery. Built in the same pass as the strokes
+        // from the same projected points, and painted before any of them.
+        let zoom = viewport.zoom_level();
+        let draw_casing = zoom >= CASING_MIN_ZOOM;
+        let draw_arrows = zoom >= ARROW_MIN_ZOOM;
+        let mut casing_path: Option<Path<Pixels>> = None;
+        let mut casing_bounds = (
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        );
+
         // Reused scratch buffer for each way's projected screen points, so
         // decimation (below) can look ahead/behind without per-way
         // allocation churn across the (potentially thousands of) visible
@@ -2047,15 +2163,67 @@ impl MapLayer for OsmLayer {
             // endpoints are never rounded away. This is purely a rendering
             // optimization — `way_vertices` (read by hit-testing and
             // selection highlight) is untouched.
+            let arrows = draw_arrows && style.direction != Direction::None;
+            let reverse = style.direction == Direction::Reverse;
+            // Start half a spacing in, so even a short way gets an arrow.
+            let mut since_arrow = ARROW_SPACING_PX / 2.0;
             for (a, b) in decimate_segments(&scratch_pts, MIN_SEGMENT_PX) {
+                let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
+                if draw_casing {
+                    push_segment_quad(
+                        &mut casing_path,
+                        &mut casing_bounds,
+                        p0,
+                        p1,
+                        group.half_width + CASING_WIDTH,
+                    );
+                }
                 push_segment_quad(
                     &mut group.path,
                     &mut group.bounds_min_max,
-                    scratch_pts[a],
-                    scratch_pts[b],
+                    p0,
+                    p1,
                     group.half_width,
                 );
+
+                if !arrows {
+                    continue;
+                }
+                let dx = f32::from(p1.x - p0.x);
+                let dy = f32::from(p1.y - p0.y);
+                let len = (dx * dx + dy * dy).sqrt();
+                since_arrow += len;
+                if since_arrow < ARROW_SPACING_PX || len < ARROW_MIN_SEGMENT_PX {
+                    continue;
+                }
+                since_arrow = 0.0;
+                let half_base = group.half_width + ARROW_OVERHANG;
+                if let Some([tip, left, right]) =
+                    arrow_triangle(p0, p1, reverse, ARROW_HALF_LENGTH, half_base)
+                {
+                    push_triangle(&mut group.path, &mut group.bounds_min_max, tip, left, right);
+                }
+                if draw_casing {
+                    if let Some([tip, left, right]) = arrow_triangle(
+                        p0,
+                        p1,
+                        reverse,
+                        ARROW_HALF_LENGTH + 2.0 * CASING_WIDTH,
+                        half_base + 1.5 * CASING_WIDTH,
+                    ) {
+                        push_triangle(&mut casing_path, &mut casing_bounds, tip, left, right);
+                    }
+                }
             }
+        }
+
+        if let Some(mut path) = casing_path {
+            let (min_x, max_x, min_y, max_y) = casing_bounds;
+            path.bounds = Bounds {
+                origin: point(px(min_x), px(min_y)),
+                size: size(px(max_x - min_x), px(max_y - min_y)),
+            };
+            window.paint_path(path, rgb(CASING_COLOR));
         }
 
         for g in way_groups {
@@ -2080,8 +2248,13 @@ impl MapLayer for OsmLayer {
         // `compute_node_cache`/`commit_node_moves`/`set_stylesheet`) and
         // just read here — no stylesheet call or tags HashMap lookup per
         // node per frame.
+        let show_vertices = zoom >= VERTEX_MIN_ZOOM;
         for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
+                continue;
+            }
+            let style = self.node_cache.styles[idx];
+            if !style.tagged && !show_vertices {
                 continue;
             }
             let mut sp = viewport.mercator_to_screen(mx, my);
@@ -2089,7 +2262,6 @@ impl MapLayer for OsmLayer {
                 continue;
             }
             sp += self.drag_preview_offset(id);
-            let style = self.node_cache.styles[idx];
             paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
         }
     }
@@ -2419,6 +2591,7 @@ impl EditableLayer for OsmLayer {
         bounds: Bounds<Pixels>,
         window: &mut Window,
         feature: &FeatureRef,
+        kind: HighlightKind,
     ) {
         if feature.layer_id != self.id {
             return;
@@ -2426,6 +2599,7 @@ impl EditableLayer for OsmLayer {
         let Some(ref osm_data) = self.osm_data else {
             return;
         };
+        let (halo, core) = highlight_colors(kind);
 
         match feature.kind {
             FeatureKind::Node => {
@@ -2441,17 +2615,12 @@ impl EditableLayer for OsmLayer {
                 }
                 sp += self.drag_preview_offset(feature.id);
                 let node_style = self.stylesheet.node_style(&n.tags);
-                let ring_size = node_style.size * 2.0;
-                let half = px(ring_size / 2.0);
-                let ring_bounds = Bounds {
-                    origin: point(sp.x + bounds.origin.x - half, sp.y + bounds.origin.y - half),
-                    size: size(px(ring_size), px(ring_size)),
-                };
-                window.paint_quad(outline(
-                    ring_bounds,
-                    rgb(SELECTION_ACCENT),
-                    BorderStyle::Solid,
-                ));
+                let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
+                // Two concentric rings around the marker: the core color
+                // inside, the halo color outside.
+                let core_diameter = node_style.size + 10.0;
+                paint_ring(window, center, core_diameter + 4.0, 2.0, halo);
+                paint_ring(window, center, core_diameter, 2.0, core);
             }
             FeatureKind::Way => {
                 let Some(way) = osm_data.ways.get(&feature.id) else {
@@ -2485,23 +2654,27 @@ impl EditableLayer for OsmLayer {
                     return;
                 }
 
+                // A wide halo stroke under a narrower core stroke.
                 let way_style = self.stylesheet.way_style(&way.tags, way.is_closed());
-                let mut builder = PathBuilder::stroke(px(way_style.width + 4.0));
-                for (i, p) in pts.iter().enumerate() {
-                    if i == 0 {
-                        builder.move_to(*p);
-                    } else {
-                        builder.line_to(*p);
+                for (extra_width, color) in [(7.0, halo), (3.0, core)] {
+                    let mut builder = PathBuilder::stroke(px(way_style.width + extra_width));
+                    for (i, p) in pts.iter().enumerate() {
+                        if i == 0 {
+                            builder.move_to(*p);
+                        } else {
+                            builder.line_to(*p);
+                        }
                     }
-                }
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, rgb(SELECTION_ACCENT));
+                    if let Ok(path) = builder.build() {
+                        window.paint_path(path, rgb(color));
+                    }
                 }
 
                 // Re-paint the way's vertex markers on top of the highlight
-                // stroke above — otherwise the (width + 4.0) highlight stroke
-                // fully covers the node-marker quads painted earlier in
-                // `render_canvas`, hiding the selected way's vertices.
+                // strokes above — otherwise they fully cover the node-marker
+                // quads painted earlier in `render_canvas`, hiding the way's
+                // vertices. This also shows a highlighted way's vertices at
+                // zooms where plain vertices are otherwise hidden.
                 for (p, style) in pts.iter().zip(node_styles.iter()) {
                     paint_node_marker(window, *p, *style);
                 }
@@ -3473,6 +3646,24 @@ mod tests {
     fn decimate_segments_empty_or_single_point_emits_nothing() {
         assert!(super::decimate_segments(&[], 1.0).is_empty());
         assert!(super::decimate_segments(&[point(px(0.0), px(0.0))], 1.0).is_empty());
+    }
+
+    #[test]
+    fn arrow_triangle_points_along_the_segment_from_its_midpoint() {
+        let p0 = point(px(0.0), px(0.0));
+        let p1 = point(px(100.0), px(0.0));
+        let xy = |p: gpui::Point<gpui::Pixels>| (f32::from(p.x), f32::from(p.y));
+
+        let [tip, left, right] = super::arrow_triangle(p0, p1, false, 5.0, 3.0).unwrap();
+        assert_eq!(xy(tip), (55.0, 0.0));
+        assert_eq!(xy(left), (45.0, 3.0));
+        assert_eq!(xy(right), (45.0, -3.0));
+
+        // Reversed: same midpoint, tip toward p0.
+        let [tip, ..] = super::arrow_triangle(p0, p1, true, 5.0, 3.0).unwrap();
+        assert_eq!(xy(tip), (45.0, 0.0));
+
+        assert!(super::arrow_triangle(p0, p0, false, 5.0, 3.0).is_none());
     }
 
     // -- Incremental `commit_node_moves` cache/index correctness --

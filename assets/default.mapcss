@@ -1,18 +1,47 @@
-/* osm-gpui default MapCSS stylesheet */
+/* osm-gpui default MapCSS stylesheet.
 
-way                  { color: #4169E1; width: 4; }
-way[highway]         { color: #ff8c00; width: 5; }
-way[highway=footway] { color: #8b4513; width: 2; }
-way[waterway]        { color: #1e90ff; width: 3; }
-way[building]        { color: #808080; width: 1; }
+   Editing data is drawn as thin lines so the imagery being traced stays
+   visible; the renderer adds a dark casing under every way for contrast.
+   Later rules override earlier ones, so each group goes from general to
+   specific. */
 
-/* Area fills — closed ways only. The generic landuse rule comes before the
-   more specific grass/forest/park rules so the specific ones win. */
-area[building]  { fill-color: #808080; fill-opacity: 0.4; }
-area[natural=water], area[waterway=riverbank] { fill-color: #1e90ff; fill-opacity: 0.4; }
-area[landuse]   { fill-color: #9acd32; fill-opacity: 0.25; }
-area[leisure=park], area[landuse=grass], area[landuse=forest] { fill-color: #228b22; fill-opacity: 0.35; }
+way                  { color: #d0d0d0; width: 1.5; }
 
-node           { color: #FFD700; symbol-size: 5; }
-node[amenity]  { color: #ff1493; symbol-size: 7; }
-node[shop]     { color: #32cd32; symbol-size: 7; }
+/* Roads, by importance. */
+way[highway]                 { color: #ffffff; width: 2; }
+way[highway=motorway], way[highway=motorway_link],
+way[highway=trunk], way[highway=trunk_link]         { color: #ff7a90; width: 3; }
+way[highway=primary], way[highway=primary_link]     { color: #ffb347; width: 3; }
+way[highway=secondary], way[highway=secondary_link] { color: #ffe566; width: 2.5; }
+way[highway=tertiary], way[highway=tertiary_link]   { color: #fff7b0; width: 2.5; }
+way[highway=track]           { color: #c8935a; width: 1.5; }
+way[highway=footway], way[highway=path], way[highway=pedestrian],
+way[highway=steps], way[highway=bridleway]          { color: #ff9a8a; width: 1.5; }
+way[highway=cycleway]        { color: #7fb2ff; width: 1.5; }
+
+way[railway]         { color: #b8b8c8; width: 2; }
+way[waterway]        { color: #4aa8ff; width: 2; }
+way[barrier]         { color: #d07070; width: 1; }
+way[power]           { color: #9a9a9a; width: 1; }
+
+/* Areas — closed ways only. The generic landuse rule comes before the more
+   specific grass/forest/park rules so the specific ones win. */
+way[landuse], way[leisure], way[natural] { color: #9fd46a; width: 1; }
+area[landuse]   { fill-color: #9fd46a; fill-opacity: 0.15; }
+area[leisure=park], area[landuse=grass], area[landuse=forest], area[natural=wood]
+                { fill-color: #3fae4a; fill-opacity: 0.25; }
+way[natural=water], way[waterway=riverbank] { color: #4aa8ff; width: 1; }
+area[natural=water], area[waterway=riverbank] { fill-color: #4aa8ff; fill-opacity: 0.3; }
+way[building]   { color: #e08fc0; width: 1; }
+area[building]  { fill-color: #e08fc0; fill-opacity: 0.25; }
+
+/* Nodes. Untagged nodes are way vertices: small, and hidden by the renderer
+   when zoomed out. */
+node            { color: #ffd60a; symbol-size: 5; }
+node[highway], node[barrier], node[railway], node[power], node[entrance]
+                { color: #ffd60a; symbol-size: 7; }
+node[natural], node[leisure], node[tourism], node[historic], node[man_made],
+node[place], node[office], node[craft], node[emergency], node[public_transport]
+                { color: #5ac8fa; symbol-size: 8; }
+node[amenity]   { color: #ff5fa2; symbol-size: 8; }
+node[shop]      { color: #4cd964; symbol-size: 8; }

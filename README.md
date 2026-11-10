@@ -7,7 +7,8 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 **Working**
 - Navigation, clamped to zoom 1–20: trackpad two-finger scroll pans and pinch zooms; a mouse wheel zooms at the cursor (as does ⌘- or Ctrl-scroll on a trackpad); right-drag, middle-drag, or Space + left-drag pans; arrow keys pan and `+`/`-` zoom.
 - Web Mercator projection (EPSG:3857) with lat clamped to ±85.051°.
-- OSM XML loading via **File > Open** (⌘O). Renders nodes as squares and ways as polylines. First loaded file auto-fits viewport.
+- OSM XML loading via **File > Open** (⌘O). First loaded file auto-fits viewport.
+- Data rendering tuned for tracing over imagery: thin colored ways with a dark casing (zoom ≥ 15), round outlined node markers (plain way vertices hidden below zoom 16), and direction arrows on one-way roads, roundabouts and flowing waterways (zoom ≥ 16). Hovering a feature in Select mode highlights what a click would select.
 - Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
 - Adaptive lat/lon grid overlay (configurable via settings).
 - Layer list in right panel with click-to-toggle visibility.
@@ -17,13 +18,13 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 - **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
 - **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit). Unsaved-changes warning on quit.
 - Settings window: choose OSM API server (prod/dev/custom), per-server OAuth client IDs, custom imagery sources.
-- **MapCSS-subset styling** (node/way selectors with `[k]`/`[k=v]`/`[k!=v]`, zoom-range `|z12-`, color, width, casing, dashes, fill-color).
+- **MapCSS-subset styling** (`node`/`way`/`area` selectors with `[k]`/`[k=v]`/`[k!=v]`; `color`, `width`, `symbol-size`, `fill-color`, `fill-opacity`). Zoom selectors, per-rule casing and dashes are not supported; the casing, vertex hiding and direction arrows above are fixed renderer behaviour.
 - **Scripted screenshot harness** for visual regression and automation. `.osmscript` DSL with viewport, click, drag, key, load_osm, capture, wait_idle ops.
 
 **Not implemented**
 - Relation rendering or editing (parsed, but unused in display/selection).
 - Upload to OSM (no changeset creation or upload path yet).
-- Text labels, POI icons, one-way arrows.
+- Text labels, POI icons.
 - Search, export, full MapCSS (e.g., text, z-index, pattern fills).
 
 ## Build & run
@@ -127,7 +128,7 @@ key cmd+o
 wait 250ms
 ```
 
-Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `key CHORD` (e.g. `cmd+shift+a`), `load_osm PATH`, `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
+Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `hover X,Y`, `key CHORD` (e.g. `cmd+shift+a`), `load_osm PATH`, `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
 
 `wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` renders the current frame straight to a Metal texture and reads the pixels back in-process (via gpui's `Window::render_to_image`, enabled by the `test-support` feature) — no OS screenshot permission needed, and the window doesn't need focus or even to be on-screen.
 

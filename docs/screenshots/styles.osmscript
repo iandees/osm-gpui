@@ -1,0 +1,45 @@
+# Default-stylesheet and highlight captures: way casing, direction arrows,
+# round node markers, hover and selection highlights, and the zoomed-out
+# view where plain way vertices are hidden.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/styles.osm is laid out in
+# pixel offsets from that center at zoom 18:
+#   way  3001 primary, oneway   through (513, 248)
+#   way  3002 residential       through (388, 538)
+#   node 2001 cafe              at      (448, 328)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/styles.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture docs/screenshots/styles-01-default.png
+
+# Hovering a way shows the hover highlight without selecting it.
+hover 388,538
+wait_idle 2s
+assert_selected none
+capture docs/screenshots/styles-02-hover.png
+
+# Selecting a way.
+click 513,248
+wait_idle 2s
+assert_selected way 3001
+capture docs/screenshots/styles-03-way-selected.png
+
+# Selecting a node, while hovering a different feature.
+click 448,328
+wait_idle 2s
+assert_selected node 2001
+hover 388,538
+wait_idle 2s
+capture docs/screenshots/styles-04-node-selected.png
+
+# Zoomed out: plain way vertices and direction arrows are hidden.
+key escape
+hover 100,700
+viewport 40.7120 -74.0060 15
+wait_idle 5s
+capture docs/screenshots/styles-05-zoomed-out.png
+
+log done

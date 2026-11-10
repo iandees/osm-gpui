@@ -34,7 +34,8 @@ use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
-    grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, LayerId, LayerManager,
+    grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
+    LayerManager,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
@@ -459,6 +460,9 @@ struct MapViewer {
     /// mouse-move; used to drive the live Building-mode preview (which
     /// needs a cursor position outside of a drag) during `render()`.
     last_mouse_pos: Option<gpui::Point<gpui::Pixels>>,
+    /// The feature under the cursor that a click would select, if any
+    /// (Select mode only). Drawn with the hover highlight.
+    hovered: Option<osm_gpui::selection::FeatureRef>,
     /// Extrude mode's in-progress drag, or `None` when not dragging (see
     /// `ExtrudeDrag`).
     extrude_drag: Option<ExtrudeDrag>,
@@ -487,6 +491,29 @@ struct PendingTagEditOpen {
     original_value: String,
     select: osm_gpui::ui::tag_edit_dialog::TagEditField,
     is_add: bool,
+}
+
+/// The mouse cursor to show over the map: a closed hand while pan-dragging,
+/// an open hand while Space arms a pan, a crosshair in the modes that place
+/// points, and a pointing hand over something a click would select.
+fn map_cursor(
+    mode: EditMode,
+    panning: bool,
+    space_held: bool,
+    hovering: bool,
+) -> gpui::CursorStyle {
+    use gpui::CursorStyle;
+    if panning {
+        CursorStyle::ClosedHand
+    } else if space_held {
+        CursorStyle::OpenHand
+    } else {
+        match mode {
+            EditMode::Add | EditMode::Building => CursorStyle::Crosshair,
+            EditMode::Select if hovering => CursorStyle::PointingHand,
+            EditMode::Select | EditMode::Extrude => CursorStyle::Arrow,
+        }
+    }
 }
 
 /// Convert a gpui screen point to the plain `(f32, f32)` pair the pure
@@ -571,6 +598,7 @@ impl MapViewer {
             add_progress: None,
             building_progress: None,
             last_mouse_pos: None,
+            hovered: None,
             extrude_drag: None,
         }
     }
@@ -773,6 +801,7 @@ impl MapViewer {
             return;
         }
         self.mode = mode;
+        self.hovered = None;
         self.add_progress = None;
         self.building_progress = None;
         self.extrude_drag = None;
@@ -1641,6 +1670,19 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
+        // What a click here would select — only meaningful in Select mode
+        // with no button down and no pan pending.
+        self.hovered = if self.mode == EditMode::Select
+            && event.pressed_button.is_none()
+            && !self.space_held
+        {
+            osm_gpui::selection::resolve_hits(
+                self.layer_manager
+                    .hit_test_all(&self.viewport, adjusted_position),
+            )
+        } else {
+            None
+        };
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
         cx.notify();
@@ -2835,13 +2877,26 @@ impl Render for MapViewer {
             .child(
                 // Map area
                 div()
+                    .id("map-area")
                     .flex_1()
                     .relative()
                     .track_focus(&self.focus_handle)
-                    .when(self.viewport.is_dragging, |area| area.cursor_grabbing())
-                    .when(self.space_held && !self.viewport.is_dragging, |area| {
-                        area.cursor_grab()
-                    })
+                    .cursor(map_cursor(
+                        self.mode,
+                        self.viewport.is_dragging,
+                        self.space_held,
+                        self.hovered.is_some(),
+                    ))
+                    // When the pointer leaves the map, drop everything that
+                    // tracks it: the hover highlight, the status bar's cursor
+                    // coordinates, and the drawing modes' rubber bands.
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !*hovered {
+                            this.hovered = None;
+                            this.last_mouse_pos = None;
+                            cx.notify();
+                        }
+                    }))
                     // The right and middle buttons pan the map.
                     .map(|mut area| {
                         for button in [gpui::MouseButton::Right, gpui::MouseButton::Middle] {
@@ -3028,6 +3083,10 @@ impl Render for MapViewer {
                                     // closure is exactly what `Entity::read` needs.
                                     let entity = cx.entity();
                                     let selected = self.selected.clone();
+                                    // An already-selected feature keeps its
+                                    // selection highlight under the cursor.
+                                    let hovered =
+                                        self.hovered.filter(|h| !self.selected.contains(h));
                                     move |bounds, _, window, cx| {
                                         let this = entity.read(cx);
                                         this.layer_manager.render_all_canvas(
@@ -3035,9 +3094,19 @@ impl Render for MapViewer {
                                             bounds,
                                             window,
                                         );
+                                        if let Some(hovered) = &hovered {
+                                            this.layer_manager.render_highlight(
+                                                hovered,
+                                                HighlightKind::Hovered,
+                                                &viewport_clone,
+                                                bounds,
+                                                window,
+                                            );
+                                        }
                                         for sel in &selected {
                                             this.layer_manager.render_highlight(
                                                 sel,
+                                                HighlightKind::Selected,
                                                 &viewport_clone,
                                                 bounds,
                                                 window,

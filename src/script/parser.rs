@@ -59,6 +59,12 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "drag" => parse_drag(line_no, &rest),
         "click" => parse_click(line_no, &rest),
         "scroll" => parse_scroll(line_no, &rest),
+        "hover" => match rest.as_slice() {
+            [at] => Ok(Op::Hover {
+                at: parse_point(line_no, at)?,
+            }),
+            _ => Err(err(line_no, "hover: want X,Y")),
+        },
         "key" => parse_key(line_no, &rest),
         "capture" => parse_capture(line_no, &rest),
         "log" => Ok(Op::Log {
@@ -516,6 +522,14 @@ mod tests {
     #[test]
     fn assert_selected_bad_kind_errors() {
         assert!(parse("assert_selected building 1").is_err());
+    }
+
+    #[test]
+    fn hover_parses_a_point_and_rejects_anything_else() {
+        let s = parse("hover 100,200").unwrap();
+        assert!(matches!(s[0].op, Op::Hover { at } if at.x == 100.0 && at.y == 200.0));
+        assert!(parse("hover").is_err());
+        assert!(parse("hover 1,2 3,4").is_err());
     }
 
     #[test]

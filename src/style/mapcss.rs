@@ -41,6 +41,11 @@ pub struct Fill {
 pub struct NodeStyle {
     pub color: u32,
     pub size: f32,
+    /// Whether the node has any tags. Untagged nodes are plain way
+    /// vertices, which the renderer hides when zoomed out. Not settable
+    /// from MapCSS; it rides along here so every code path that keeps the
+    /// per-node style cache fresh keeps this fresh too.
+    pub tagged: bool,
 }
 
 impl Default for NodeStyle {
@@ -48,6 +53,42 @@ impl Default for NodeStyle {
         Self {
             color: DEFAULT_NODE_COLOR,
             size: DEFAULT_NODE_SIZE,
+            tagged: false,
+        }
+    }
+}
+
+/// Which way direction arrows should point along a way, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    /// Direction carries no meaning; draw no arrows.
+    #[default]
+    None,
+    /// Arrows follow the way's node order.
+    Forward,
+    /// Arrows run against the way's node order (`oneway=-1`).
+    Reverse,
+}
+
+impl Direction {
+    /// The direction implied by a way's tags: an explicit `oneway`, a
+    /// roundabout, or a flowing waterway.
+    pub fn from_tags(tags: &HashMap<String, String>) -> Self {
+        match tags.get("oneway").map(String::as_str) {
+            Some("yes" | "1" | "true") => return Direction::Forward,
+            Some("-1" | "reverse") => return Direction::Reverse,
+            Some("no" | "0" | "false") => return Direction::None,
+            _ => {}
+        }
+        let roundabout = tags.get("junction").map(String::as_str) == Some("roundabout");
+        let flowing = matches!(
+            tags.get("waterway").map(String::as_str),
+            Some("river" | "stream" | "canal" | "drain" | "ditch")
+        );
+        if roundabout || flowing {
+            Direction::Forward
+        } else {
+            Direction::None
         }
     }
 }
@@ -59,6 +100,10 @@ pub struct WayStyle {
     pub width: f32,
     /// `Some` only when the way is closed and a `fill-color` applied.
     pub fill: Option<Fill>,
+    /// Direction arrows to draw along the way. Derived from tags rather
+    /// than MapCSS, for the same cache-freshness reason as
+    /// [`NodeStyle::tagged`].
+    pub direction: Direction,
 }
 
 impl Default for WayStyle {
@@ -67,6 +112,7 @@ impl Default for WayStyle {
             color: DEFAULT_WAY_COLOR,
             width: DEFAULT_WAY_WIDTH,
             fill: None,
+            direction: Direction::None,
         }
     }
 }
@@ -196,7 +242,10 @@ impl Stylesheet {
 
     /// Resolve a style for a node given its OSM tags.
     pub fn node_style(&self, tags: &HashMap<String, String>) -> NodeStyle {
-        let mut s = NodeStyle::default();
+        let mut s = NodeStyle {
+            tagged: !tags.is_empty(),
+            ..NodeStyle::default()
+        };
         for rule in &self.rules {
             if !rule
                 .selectors
@@ -230,7 +279,10 @@ impl Stylesheet {
     /// closed ring. `area` and `way:closed` rules only match when `closed`;
     /// fill declarations only take effect on closed ways (JOSM semantics).
     pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool) -> WayStyle {
-        let mut s = WayStyle::default();
+        let mut s = WayStyle {
+            direction: Direction::from_tags(tags),
+            ..WayStyle::default()
+        };
         let mut fill_color: Option<u32> = None;
         let mut fill_opacity: Option<f32> = None;
         for rule in &self.rules {
@@ -785,25 +837,60 @@ mod tests {
     fn default_stylesheet_parses() {
         let s = Stylesheet::load_default();
         // Spot-check a couple of rules from the embedded asset.
-        assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")]), false)
-                .color,
-            0xff8c00
-        );
+        let residential = s.way_style(&tags(&[("highway", "residential")]), false);
+        assert_eq!((residential.color, residential.width), (0xffffff, 2.0));
+        // A specific road class overrides the generic highway rule, including
+        // when it's the second selector of a multi-line selector list.
+        let trunk = s.way_style(&tags(&[("highway", "trunk_link")]), false);
+        assert_eq!((trunk.color, trunk.width), (0xff7a90, 3.0));
         assert_eq!(
             s.way_style(&tags(&[("highway", "footway")]), false).color,
-            0x8b4513
+            0xff9a8a
         );
-        assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff1493);
+        // Fractional widths parse.
+        assert_eq!(s.way_style(&tags(&[]), false).width, 1.5);
+        assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff5fa2);
+        // Untagged vertices are smaller than any tagged node.
+        assert!(s.node_style(&tags(&[])).size < s.node_style(&tags(&[("shop", "bakery")])).size);
         let building = s.way_style(&tags(&[("building", "yes")]), true);
         let fill = building
             .fill
             .expect("default stylesheet must fill closed buildings");
-        assert_eq!(fill.color, 0x808080);
+        assert_eq!(fill.color, 0xe08fc0);
         // Open way with the same tag gets no fill.
         assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
         let water = s.way_style(&tags(&[("natural", "water")]), true);
-        assert_eq!(water.fill.expect("water fill").color, 0x1e90ff);
+        assert_eq!(water.fill.expect("water fill").color, 0x4aa8ff);
+        assert_eq!(water.color, 0x4aa8ff);
+    }
+
+    #[test]
+    fn node_style_records_whether_the_node_is_tagged() {
+        let s = Stylesheet::parse("").unwrap();
+        assert!(!s.node_style(&tags(&[])).tagged);
+        assert!(s.node_style(&tags(&[("amenity", "cafe")])).tagged);
+    }
+
+    #[test]
+    fn direction_comes_from_oneway_roundabout_and_waterway_tags() {
+        let dir = |pairs: &[(&str, &str)]| Direction::from_tags(&tags(pairs));
+        assert_eq!(dir(&[("highway", "residential")]), Direction::None);
+        assert_eq!(dir(&[("oneway", "yes")]), Direction::Forward);
+        assert_eq!(dir(&[("oneway", "-1")]), Direction::Reverse);
+        assert_eq!(dir(&[("junction", "roundabout")]), Direction::Forward);
+        assert_eq!(dir(&[("waterway", "stream")]), Direction::Forward);
+        assert_eq!(dir(&[("waterway", "dam")]), Direction::None);
+        // An explicit oneway=no wins over an implied direction.
+        assert_eq!(
+            dir(&[("junction", "roundabout"), ("oneway", "no")]),
+            Direction::None
+        );
+        // way_style carries it through.
+        let s = Stylesheet::parse("").unwrap();
+        assert_eq!(
+            s.way_style(&tags(&[("oneway", "yes")]), false).direction,
+            Direction::Forward
+        );
     }
 
     #[test]
