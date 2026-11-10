@@ -5,6 +5,7 @@ Release notes for osm-gpui. The section whose heading matches the pushed tag
 
 ## Unreleased
 
+- The Linux build now includes the Wayland and X11 windowing backends and no longer panics at startup ("internal error: entered unreachable code").
 - Fixed File > Upload to OSM (and its shortcut) doing nothing: it now shows the sign-in prompt, a "Nothing to upload" message, or the changeset dialog. Add Custom Imagery… had the same defect and is fixed too.
 - Script harness: new `action <Name>` op dispatches an app action the way a menu item does.
 
