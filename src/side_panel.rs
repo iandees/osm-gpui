@@ -64,7 +64,7 @@ impl MapViewer {
         let history_section = self.render_history_section(cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
-        let members_section = self.render_members_section(cx);
+        let members_section = self.render_members_section(window, cx);
         let open_members = self.side_panel_open[6];
 
         let open_layers = self.side_panel_open[0];
@@ -113,30 +113,36 @@ impl MapViewer {
             .flex()
             .flex_col()
             .overflow_hidden()
+            // Three stacked zones. Layers (top) and History (bottom) keep
+            // their own height; the Selection zone between them takes the
+            // rest and scrolls on its own, so it is the one that gives up
+            // space in a short window and History stays on screen.
+            .child(
+                self.collapsible_section(
+                    tr!("panel.layers.title"),
+                    0,
+                    open_layers,
+                    layers_section,
+                    cx,
+                )
+                .flex_shrink_0(),
+            )
+            // The selection zone: a title strip like the other two zones,
+            // then a lighter surface holding everything about the selected
+            // feature(s).
+            .child(self.zone_strip(selection_title, cx))
             .child(
                 div()
                     .id("side-panel-scroll")
                     .flex_1()
+                    .min_h(px(0.))
                     .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .child(self.collapsible_section(
-                        tr!("panel.layers.title"),
-                        0,
-                        open_layers,
-                        layers_section,
-                        cx,
-                    ))
-                    // The selection zone: a title strip like the other two
-                    // zones, then a lighter surface holding everything about
-                    // the selected feature(s).
-                    .child(self.zone_strip(selection_title, cx))
+                    .bg(cx.theme().background)
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_shrink_0()
-                            .bg(cx.theme().background)
                             // Nothing selected: one friendly message instead
                             // of empty Fields and Tags sections.
                             .when(selected_count == 0, |group| {
@@ -204,14 +210,22 @@ impl MapViewer {
                                         )
                                     }))
                             }),
-                    )
-                    .child(self.collapsible_section(
-                        tr!("panel.history.title"),
-                        4,
-                        open_history,
-                        history_section,
-                        cx,
-                    )),
+                    ),
+            )
+            // Pinned to the bottom. It is the only zone besides the
+            // selection that may shrink (to its header) when the window is
+            // very short.
+            .child(
+                self.collapsible_section(
+                    tr!("panel.history.title"),
+                    4,
+                    open_history,
+                    history_section,
+                    cx,
+                )
+                .flex_shrink(1.)
+                .min_h(px(32.))
+                .overflow_hidden(),
             )
             // Last, so it sits on top of the scrolling content.
             .child(resize_handle)
@@ -275,7 +289,11 @@ impl MapViewer {
     /// its member count (for the title): the ordered member list, each with
     /// a name that selects it, an editable role, and move/remove buttons.
     /// `None` unless exactly one relation is selected.
-    fn render_members_section(&self, cx: &mut Context<Self>) -> Option<(usize, gpui::AnyElement)> {
+    fn render_members_section(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, gpui::AnyElement)> {
         use crate::MemberRef;
         use gpui_component::Disableable as _;
         use osm_gpui::osm::MemberType;
@@ -400,16 +418,23 @@ impl MapViewer {
                         .xsmall()
                         .tooltip(tip)
                 };
-                // Quiet until the row is hovered (still in the layout and
-                // clickable, so the row doesn't shift and the buttons stay
-                // reachable).
+                // Quiet until the row is hovered or one of the buttons has
+                // keyboard focus (still in the layout and clickable, so the
+                // row doesn't shift and the buttons stay reachable).
                 let group_name = SharedString::from(format!("member-row-{i}"));
+                let controls_focus = window
+                    .use_keyed_state(("member-controls-focus", i), cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone();
                 let controls = div()
+                    .id(("member-controls", i))
+                    .track_focus(&controls_focus)
                     .flex()
                     .flex_row()
                     .flex_shrink_0()
                     .opacity(0.)
                     .group_hover(group_name.clone(), |s| s.opacity(1.))
+                    .in_focus(|s| s.opacity(1.))
                     .child(
                         button("member-up", IconName::ArrowUp, tr!("panel.members.move_up"))
                             .disabled(i == 0)
@@ -492,7 +517,7 @@ impl MapViewer {
                             .items_center()
                             .gap_1()
                             .h(px(PANEL_ROW_HEIGHT))
-                            .px_1()
+                            .px_2()
                             .child(
                                 div()
                                     .w(px(14.))
@@ -511,8 +536,8 @@ impl MapViewer {
                         div()
                             .flex()
                             .flex_row()
-                            .pl(px(24.))
-                            .pr_1()
+                            .pl(px(26.))
+                            .pr_2()
                             .pb_1()
                             .child(role_line),
                     )
@@ -700,7 +725,7 @@ impl MapViewer {
         open: bool,
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::Div {
         // Layers (0) and History (4) are zones of their own, like the
         // selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
@@ -719,8 +744,9 @@ impl MapViewer {
             .flex_row()
             .items_center()
             .gap_1()
-            .px_2()
-            .py_1p5()
+            .when(document_level, |this| this.px_2())
+            .when(!document_level, |this| this.px_3())
+            .h(px(32.))
             .cursor_pointer()
             .when(document_level, |this| {
                 this.bg(cx.theme().secondary)
@@ -755,7 +781,17 @@ impl MapViewer {
             })
             .child(header)
             .when(open, |this| {
-                this.child(div().px_2().pt_0p5().pb_2().child(content))
+                // The zones' rows carry their own inset; the selection
+                // sections share one (12px) so Fields, Tags, Relations and
+                // Members line up.
+                this.child(
+                    div()
+                        .when(document_level, |this| this.px_2())
+                        .when(!document_level, |this| this.px_3())
+                        .pt_0p5()
+                        .pb_2()
+                        .child(content),
+                )
             })
     }
 
@@ -966,9 +1002,13 @@ impl MapViewer {
         let foreground = cx.theme().foreground;
 
         div()
+            .id("layers-list")
             .flex()
             .flex_col()
             .gap_1()
+            // Many layers scroll here rather than crowding out the selection.
+            .max_h(px(160.))
+            .overflow_y_scroll()
             .children(
                 layer_info
                     .iter()
@@ -1225,7 +1265,9 @@ impl MapViewer {
                 .columns(1)
                 .label_width(key_width)
                 .bordered(true)
-                .with_size(Size::Small);
+                // Medium cells (8px inset, ~28px rows) match the Fields
+                // controls' inset and height.
+                .with_size(Size::Medium);
 
             for (k, v) in aggregated.into_iter() {
                 let value_text = match v {
