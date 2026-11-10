@@ -604,8 +604,12 @@ impl MapViewer {
             upload_dialog: None,
             tag_inline_edit: None,
             fields_more_open_for: None,
+            // Scripted runs use the default width, not the user's saved one,
+            // so scripts' click coordinates hold on every machine.
             side_panel_width: osm_gpui::ui::style::initial_side_panel_width(
-                settings_store::snapshot().side_panel_width,
+                settings_store::snapshot()
+                    .side_panel_width
+                    .filter(|_| !script_harness::script_mode()),
             ),
             side_panel_resize: None,
             pending_tag_edit_open: None,
@@ -3707,6 +3711,7 @@ fn main() {
     // starts. The thread blocks until the window is visible, then drives the
     // live app via ScriptBus.
     if let Some(script_path) = args.script {
+        script_harness::SCRIPT_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         let keep_open = args.keep_open;
         let idle_for_runner = idle.clone();
         let bus_for_runner = bus.clone();
