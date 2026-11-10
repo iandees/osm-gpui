@@ -15,9 +15,9 @@
 //!
 //! This is a *behavior-preserving* port of the original branchy handlers —
 //! not a redesign — including quirks like the drag threshold being `>=` in
-//! some comparisons and `<` in others, and the fact that the "mouse down"
-//! position is shared between the left and right mouse buttons (see
-//! [`record_mouse_down`]).
+//! some comparisons and `<` in others. It tracks the left button only:
+//! pan-drags (right/middle button, or Space + left) go straight to the
+//! `Viewport` and never enter this state machine.
 
 use crate::layers::LayerId;
 
@@ -37,6 +37,26 @@ fn magnitude(a: Pt, b: Pt) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Fraction of the view an arrow key pans by.
+const ARROW_PAN_FRACTION: f32 = 0.25;
+
+/// The screen-pixel offset to move the view's center by for an arrow key
+/// (`"left"`/`"right"`/`"up"`/`"down"`), given the view's `(width, height)`:
+/// a quarter of the view in the arrow's direction. `None` for any other key.
+pub fn arrow_key_pan(key: &str, view_size: Pt) -> Option<Pt> {
+    let (dx, dy) = (
+        view_size.0 * ARROW_PAN_FRACTION,
+        view_size.1 * ARROW_PAN_FRACTION,
+    );
+    match key {
+        "left" => Some((-dx, 0.0)),
+        "right" => Some((dx, 0.0)),
+        "up" => Some((0.0, -dy)),
+        "down" => Some((0.0, dy)),
+        _ => None,
+    }
+}
+
 /// Per-layer node ids being dragged, each with its pre-drag `(lat, lon)` —
 /// the shape `resolve_move_targets` produces and a move-drag commit
 /// consumes.
@@ -47,11 +67,8 @@ pub type NodeMoveTargets = Vec<(LayerId, Vec<(i64, f64, f64)>)>;
 pub enum Interaction {
     /// No button is down, or its up event was already fully handled.
     Idle,
-    /// A button went down at `down`. Not yet classified as a click or the
-    /// start of a box-select drag. This is also the state a right-button
-    /// press leaves behind (the right button never progresses past it —
-    /// see `handle_mouse_down` in `main.rs`, which only records the
-    /// position for the viewport's own pan tracking).
+    /// The left button went down at `down`. Not yet classified as a click
+    /// or the start of a box-select drag.
     Pending { down: Pt },
     /// An in-progress left-drag box-select: `down` is the original
     /// mouse-down point, `current` the latest position. Rendered as the
@@ -82,32 +99,6 @@ impl Interaction {
             Interaction::BoxSelect { down, current } => Some((*down, *current)),
             _ => None,
         }
-    }
-}
-
-/// Record a mouse-down point, mirroring the old unconditional
-/// `self.mouse_down_pos = Some(position)` write that both the right-button
-/// pan handler and the left-button handler performed *before* any
-/// hit-testing. It overwrites only the "down" component of whatever state
-/// is active, leaving an in-progress box-select's `current` or a
-/// move-drag's `targets` untouched — exactly as the original's standalone
-/// `mouse_down_pos` field was independent of `box_select`/`move_drag`.
-///
-/// This is also what lets a right-button press stomp the "start" point of
-/// an unrelated, still-active left-button drag, which the original code
-/// did too (whether intentionally or not) since `mouse_down_pos` was one
-/// shared field written by both buttons' down handlers.
-pub fn record_mouse_down(interaction: &Interaction, pos: Pt) -> Interaction {
-    match interaction {
-        Interaction::BoxSelect { current, .. } => Interaction::BoxSelect {
-            down: pos,
-            current: *current,
-        },
-        Interaction::MoveDrag { targets, .. } => Interaction::MoveDrag {
-            down: pos,
-            targets: targets.clone(),
-        },
-        Interaction::Idle | Interaction::Pending { .. } => Interaction::Pending { down: pos },
     }
 }
 
@@ -265,6 +256,16 @@ pub fn dedupe_attributions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrow_keys_pan_a_quarter_of_the_view() {
+        let view = (800.0, 600.0);
+        assert_eq!(arrow_key_pan("left", view), Some((-200.0, 0.0)));
+        assert_eq!(arrow_key_pan("right", view), Some((200.0, 0.0)));
+        assert_eq!(arrow_key_pan("up", view), Some((0.0, -150.0)));
+        assert_eq!(arrow_key_pan("down", view), Some((0.0, 150.0)));
+        assert_eq!(arrow_key_pan("a", view), None);
+    }
 
     fn targets(layer: u64, ids: &[i64]) -> NodeMoveTargets {
         vec![(
@@ -470,47 +471,6 @@ mod tests {
         assert_eq!(cancel_move_drag(&mut interaction), None);
         // Unaffected: cancel only acts on MoveDrag.
         assert!(matches!(interaction, Interaction::BoxSelect { .. }));
-    }
-
-    // -- shared mouse-down position (right + left buttons) ---------------
-
-    #[test]
-    fn record_mouse_down_from_idle_becomes_pending() {
-        let interaction = record_mouse_down(&Interaction::Idle, (3.0, 4.0));
-        assert_eq!(interaction, Interaction::Pending { down: (3.0, 4.0) });
-    }
-
-    #[test]
-    fn record_mouse_down_overwrites_down_but_preserves_box_select_current() {
-        let interaction = Interaction::BoxSelect {
-            down: (1.0, 1.0),
-            current: (9.0, 9.0),
-        };
-        let updated = record_mouse_down(&interaction, (2.0, 2.0));
-        assert_eq!(
-            updated,
-            Interaction::BoxSelect {
-                down: (2.0, 2.0),
-                current: (9.0, 9.0)
-            }
-        );
-    }
-
-    #[test]
-    fn record_mouse_down_overwrites_down_but_preserves_move_drag_targets() {
-        let t = targets(1, &[1]);
-        let interaction = Interaction::MoveDrag {
-            down: (1.0, 1.0),
-            targets: t.clone(),
-        };
-        let updated = record_mouse_down(&interaction, (2.0, 2.0));
-        assert_eq!(
-            updated,
-            Interaction::MoveDrag {
-                down: (2.0, 2.0),
-                targets: t
-            }
-        );
     }
 
     // -- normalize_rect ---------------------------------------------------

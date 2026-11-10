@@ -377,6 +377,9 @@ struct MapViewer {
     /// upload) shown with a spinner in the status bar until it completes.
     /// Unlike `status_message` it never expires on its own.
     activity: Option<String>,
+    /// Whether Space is currently held with the map focused; a left-drag
+    /// then pans instead of selecting.
+    space_held: bool,
     /// Bumped whenever layer data changes outside the undo stack (upload
     /// reconciliation, layer add/delete); part of `pending_edits`' cache key.
     data_generation: u64,
@@ -513,7 +516,17 @@ fn normalize_rect(
 }
 
 impl MapViewer {
-    fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        // If the map loses focus while Space is held, its key-up goes
+        // elsewhere; don't leave the map stuck in pan-drag mode.
+        cx.on_blur(&focus_handle, window, |this, _, cx| {
+            if this.space_held {
+                this.space_held = false;
+                cx.notify();
+            }
+        })
+        .detach();
         let viewport = Viewport::new(40.7128, -74.0060, 11.0, gpui::size(px(800.0), px(600.0)));
         let executor = cx.background_executor().clone();
         // Use the global idle tracker (set before Application::new().run(...))
@@ -530,6 +543,7 @@ impl MapViewer {
             first_dataset_fitted: false,
             status_message: None,
             activity: None,
+            space_held: false,
             data_generation: 0,
             pending_edits: None,
             selected: Vec::new(),
@@ -550,7 +564,7 @@ impl MapViewer {
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
             fields_promoted_more_fields: std::collections::HashSet::new(),
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             undo_stack: UndoStack::default(),
             mode: EditMode::Select,
             active_layer: None,
@@ -778,14 +792,6 @@ impl MapViewer {
     /// that.
     fn window_to_map(&self, position: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
         gpui::point(position.x - px(Self::MODE_PANEL_WIDTH), position.y)
-    }
-
-    fn handle_mouse_down(&mut self, event: &MouseDownEvent) {
-        let adjusted_position = self.window_to_map(event.position);
-
-        self.viewport.handle_mouse_down(adjusted_position);
-        self.interaction =
-            interaction::record_mouse_down(&self.interaction, to_pt(adjusted_position));
     }
 
     /// Left-button mouse-down: if the point hits a currently-selected
@@ -1659,6 +1665,11 @@ impl MapViewer {
             return;
         }
 
+        // A pan-drag whose button was released outside the map never saw its
+        // mouse-up; end it here rather than panning with no button held.
+        if self.viewport.is_dragging && event.pressed_button.is_none() {
+            self.viewport.handle_mouse_up();
+        }
         if self.viewport.handle_mouse_move(adjusted_position) {
             cx.notify();
         }
@@ -2252,23 +2263,62 @@ impl MapViewer {
         }
     }
 
+    /// A notched mouse wheel (line deltas) zooms at the cursor. A trackpad or
+    /// other precise-scrolling device (pixel deltas) pans, as in native Mac
+    /// apps — unless Cmd or Ctrl is held, which makes it zoom instead.
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let scroll_delta = match event.delta {
-            gpui::ScrollDelta::Lines(delta) => gpui::Point {
-                x: px(delta.x),
-                y: px(delta.y),
-            },
-            gpui::ScrollDelta::Pixels(delta) => gpui::Point {
-                x: delta.x * 0.1,
-                y: delta.y * 0.1,
-            },
+        let position = self.window_to_map(event.position);
+        let zoom_modifier = event.modifiers.platform || event.modifiers.control;
+        let changed = match event.delta {
+            gpui::ScrollDelta::Lines(delta) => self.viewport.zoom_by_wheel(position, delta.y),
+            gpui::ScrollDelta::Pixels(delta) if zoom_modifier => {
+                self.viewport.zoom_by_scroll_pixels(position, delta.y)
+            }
+            gpui::ScrollDelta::Pixels(delta) => self.viewport.pan_by_scroll(delta),
         };
-
-        let adjusted_position = self.window_to_map(event.position);
-
-        if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
+        if changed {
             cx.notify();
         }
+    }
+
+    /// Trackpad pinch: zoom around the point under the fingers.
+    fn handle_pinch(&mut self, event: &gpui::PinchEvent, cx: &mut Context<Self>) {
+        let position = self.window_to_map(event.position);
+        if self.viewport.zoom_by_pinch(position, event.delta) {
+            cx.notify();
+        }
+    }
+
+    /// Start a pan-drag of the map (right or middle button, or the left
+    /// button while Space is held). Deliberately leaves `self.interaction`
+    /// alone so the drag can never turn into a click or a box-select.
+    fn start_pan_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        self.viewport.handle_mouse_down(position);
+        cx.notify();
+    }
+
+    fn end_pan_drag(&mut self, cx: &mut Context<Self>) {
+        self.viewport.handle_mouse_up();
+        cx.notify();
+    }
+
+    /// Bare-key map navigation: arrows pan a quarter of the view, `+`/`=`
+    /// and `-` zoom a level. Returns whether `key` was one of those.
+    fn handle_navigation_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let size = self.viewport.transform.screen_size;
+        if let Some((dx, dy)) =
+            interaction::arrow_key_pan(key, (size.width.as_f32(), size.height.as_f32()))
+        {
+            self.viewport.transform.pan_by_pixels(px(dx), px(dy));
+            cx.notify();
+            return true;
+        }
+        match key {
+            "=" | "+" => self.zoom_by(1.0, cx),
+            "-" => self.zoom_by(-1.0, cx),
+            _ => return false,
+        }
+        true
     }
 
     /// Add a newly-loaded OSM dataset as a new layer. Called directly by
@@ -2788,42 +2838,81 @@ impl Render for MapViewer {
                     .flex_1()
                     .relative()
                     .track_focus(&self.focus_handle)
-                    // Right button drives panning.
-                    .on_mouse_down(
-                        gpui::MouseButton::Right,
-                        cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                            this.handle_mouse_down(ev);
-                        }),
-                    )
-                    .on_mouse_up(
-                        gpui::MouseButton::Right,
-                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
-                            this.viewport.handle_mouse_up();
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_up_out(
-                        gpui::MouseButton::Right,
-                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
-                            this.viewport.handle_mouse_up();
-                            cx.notify();
-                        }),
-                    )
+                    .when(self.viewport.is_dragging, |area| area.cursor_grabbing())
+                    .when(self.space_held && !self.viewport.is_dragging, |area| {
+                        area.cursor_grab()
+                    })
+                    // The right and middle buttons pan the map.
+                    .map(|mut area| {
+                        for button in [gpui::MouseButton::Right, gpui::MouseButton::Middle] {
+                            area = area
+                                .on_mouse_down(
+                                    button,
+                                    cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                        let position = this.window_to_map(ev.position);
+                                        this.start_pan_drag(position, cx);
+                                    }),
+                                )
+                                .on_mouse_up(
+                                    button,
+                                    cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                                        this.end_pan_drag(cx);
+                                    }),
+                                )
+                                .on_mouse_up_out(
+                                    button,
+                                    cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                                        this.end_pan_drag(cx);
+                                    }),
+                                );
+                        }
+                        area
+                    })
                     // Left button: selection, box-select, or move-drag if the
-                    // press lands on an already-selected feature.
+                    // press lands on an already-selected feature — or a pan,
+                    // while Space is held.
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             window.focus(&this.focus_handle, cx);
                             let position = this.window_to_map(ev.position);
-                            this.handle_map_mouse_down(position);
+                            if this.space_held {
+                                this.start_pan_drag(position, cx);
+                            } else {
+                                this.handle_map_mouse_down(position);
+                            }
                         }),
                     )
+                    .on_mouse_up_out(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                            if this.viewport.is_dragging {
+                                this.end_pan_drag(cx);
+                            }
+                        }),
+                    )
+                    .on_key_up(cx.listener(|this, ev: &gpui::KeyUpEvent, _, cx| {
+                        if ev.keystroke.key == "space" && this.space_held {
+                            this.space_held = false;
+                            cx.notify();
+                        }
+                    }))
+                    .on_pinch(cx.listener(|this, ev: &gpui::PinchEvent, _, cx| {
+                        this.handle_pinch(ev, cx);
+                    }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         let modifiers = ev.keystroke.modifiers;
                         if modifiers.platform || modifiers.control || modifiers.alt {
                             // Modifier chords belong to the keymap (menu
                             // shortcuts), never to the bare-key handling below.
+                        } else if ev.keystroke.key == "space" {
+                            // Held Space turns a left-drag into a pan.
+                            if !this.space_held {
+                                this.space_held = true;
+                                cx.notify();
+                            }
+                        } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
+                            // Arrow keys pan; +/- zoom.
                         } else if ev.keystroke.key == "escape" {
                             let cancelled_drag = this.cancel_move_drag(cx);
                             match this.mode {

@@ -5,7 +5,7 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 ## Status (honest)
 
 **Working**
-- Pan (left-drag) and zoom (scroll wheel, zoom-at-cursor), clamped to zoom 1–20.
+- Navigation, clamped to zoom 1–20: trackpad two-finger scroll pans and pinch zooms; a mouse wheel zooms at the cursor (as does ⌘- or Ctrl-scroll on a trackpad); right-drag, middle-drag, or Space + left-drag pans; arrow keys pan and `+`/`-` zoom.
 - Web Mercator projection (EPSG:3857) with lat clamped to ±85.051°.
 - OSM XML loading via **File > Open** (⌘O). Renders nodes as squares and ways as polylines. First loaded file auto-fits viewport.
 - Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
@@ -90,6 +90,7 @@ Defaults; all but the fixed window/app ones can be changed in **Settings > Keybo
 - ⌘Z undo · ⌘⇧Z redo · ⌘A select all · Delete removes the selection · Esc cancels/deselects
 - ⌘= / ⌘- zoom in/out · ⌘0 zoom to data · ⌘J zoom to selection
 - `S` / `A` / `B` / `X` — Select / Add / Building / Extrude mode (map focused)
+- Arrow keys pan a quarter of the view · `+` / `-` zoom a level · hold Space to pan with a left-drag (map focused; not customizable)
 - ⌘M minimize · ⌘H hide · ⌥⌘H hide others
 
 The status bar at the bottom of the window shows a hint for the current mode (or the latest status message / running operation), the unsaved-edit count, the signed-in account, the cursor's coordinates, and the zoom level.

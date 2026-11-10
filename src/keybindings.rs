@@ -171,11 +171,19 @@ pub fn effective_bindings(settings: &AppSettings) -> Vec<(&'static str, String)>
 /// delete-selection) — see the design doc's "Out of scope" section.
 const RESERVED_KEYS: &[&str] = &["escape", "enter", "return", "delete", "backspace"];
 
+/// Keys that are reserved only when unmodified: the map's hardcoded
+/// navigation keys (hold Space to pan-drag, arrows pan, `+`/`=`/`-` zoom).
+/// With a modifier they're fair game — `cmd-=` is Zoom In's default.
+const RESERVED_BARE_KEYS: &[&str] = &["space", "left", "right", "up", "down", "=", "+", "-"];
+
 /// True if `spec`'s key portion (ignoring any modifier prefix) is reserved
 /// and can't be assigned to a customizable shortcut.
 pub fn is_reserved(spec: &str) -> bool {
     let key = spec.rsplit('-').next().unwrap_or(spec);
     RESERVED_KEYS.iter().any(|r| r.eq_ignore_ascii_case(key))
+        || RESERVED_BARE_KEYS
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(spec))
 }
 
 /// True if `spec` has no modifier prefix (e.g. `"a"`, not `"cmd-a"`).
@@ -251,6 +259,24 @@ mod tests {
         assert!(is_reserved("cmd-delete"));
         assert!(is_reserved("backspace"));
         assert!(!is_reserved("cmd-o"));
+    }
+
+    #[test]
+    fn navigation_keys_are_reserved_only_when_bare() {
+        assert!(is_reserved("space"));
+        assert!(is_reserved("left"));
+        assert!(is_reserved("="));
+        assert!(is_reserved("-"));
+        assert!(!is_reserved("cmd-="));
+        assert!(!is_reserved("cmd--"));
+        assert!(!is_reserved("cmd-left"));
+    }
+
+    #[test]
+    fn no_default_is_reserved() {
+        for d in SHORTCUTS {
+            assert!(!is_reserved(d.default_spec), "{} is reserved", d.id);
+        }
     }
 
     #[test]
