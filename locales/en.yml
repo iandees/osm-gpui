@@ -1,0 +1,9 @@
+_version: 1
+
+# English message catalog (the source language and the fallback for every
+# other catalog). Keys are grouped by area; `%{name}` marks a placeholder.
+# Plural messages have one key per plural category (`one`, `other`, ...).
+
+meta:
+  # Shown in the Settings language dropdown, in the language itself.
+  language_name: "English"

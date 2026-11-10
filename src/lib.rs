@@ -9,6 +9,7 @@ pub mod custom_imagery_store;
 pub mod fields;
 pub mod geometry;
 pub mod http;
+pub mod i18n;
 pub mod idle_tracker;
 pub mod imagery;
 pub mod interaction;
@@ -29,6 +30,9 @@ pub mod tile_cache;
 pub mod tiles;
 pub mod ui;
 pub mod viewport;
+
+// Message catalogs: every `locales/*.yml`, compiled in. See `i18n`.
+rust_i18n::i18n!("locales", fallback = "en", backend = i18n::extra_backend());
 
 pub use gpui;
 pub use osm::{MemberType, OsmBounds, OsmData, OsmMember, OsmNode, OsmParser, OsmRelation, OsmWay};

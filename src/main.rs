@@ -4275,6 +4275,8 @@ fn main() {
             // before the cache does any work.
             let app_settings = settings_store::load();
             osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
+            // Pick the UI language before any menu or window text is built.
+            osm_gpui::i18n::init(app_settings.language.as_deref());
             settings_store::init_store(app_settings);
             auth::init_store(auth::load());
 

@@ -80,6 +80,10 @@ pub struct AppSettings {
     /// resized it; `None` means the default width.
     #[serde(default)]
     pub side_panel_width: Option<f32>,
+    /// UI language as a locale tag (e.g. `"en"`). `None` follows the system
+    /// locale. Read once at startup, so a change applies after a restart.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -96,6 +100,7 @@ impl Default for AppSettings {
             cache_budget_mb: default_cache_budget_mb(),
             keybindings: HashMap::new(),
             side_panel_width: None,
+            language: None,
         }
     }
 }
@@ -193,6 +198,7 @@ mod tests {
             cache_budget_mb: 500,
             keybindings: HashMap::new(),
             side_panel_width: Some(340.0),
+            language: Some("en".into()),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -214,6 +220,14 @@ mod tests {
         fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.text_size_preset, TextSizePreset::Medium);
+    }
+
+    #[test]
+    fn missing_language_defaults_to_system() {
+        let dir = tmp_dir("legacy-no-language");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(load_from(&path).language, None);
     }
 
     #[test]
@@ -295,6 +309,7 @@ mod tests {
             cache_budget_mb: default_cache_budget_mb(),
             keybindings,
             side_panel_width: None,
+            language: None,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
