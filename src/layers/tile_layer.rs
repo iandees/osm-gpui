@@ -148,6 +148,26 @@ fn compute_effective_tile_zoom(
 /// survive whatever sub-pixel rounding happens downstream in rendering.
 const TILE_OVERLAP_PX: f32 = 0.5;
 
+/// Source tile size in texels (standard XYZ raster tiles).
+const TILE_TEXELS: f32 = 256.0;
+
+/// How far (in screen pixels) to extend a tile's image past the tile's own
+/// box on every side, so the box's clip removes the image's outermost
+/// half-texel.
+///
+/// The GPU samples tile images from a texture atlas with bilinear
+/// filtering. Within half a texel of the image edge a sample blends the
+/// edge texel with the atlas padding (transparent black), giving a dark,
+/// semi-transparent edge row. That row is half a texel thick, i.e.
+/// `0.5 * tile_width / 256` screen pixels, so it is negligible at 1x but
+/// grows when tiles are magnified (overzoomed) and shows as a dark seam
+/// along every tile boundary. Extending the image by that much and clipping
+/// it back to the tile box discards the blended row at the cost of
+/// stretching the content by at most half a source texel at the edges.
+fn edge_bleed_margin(tile_width_px: f32) -> f32 {
+    (0.5 * tile_width_px / TILE_TEXELS).clamp(0.0, 16.0)
+}
+
 /// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
 /// directly from its XYZ grid index (no trig — the XYZ scheme is a
 /// uniform grid in this projected space, so every tile at a given zoom is
@@ -284,6 +304,7 @@ impl MapLayer for TileLayer {
             // Pick a character budget for the fallback message based on
             // the on-screen tile width: roughly one char per 6 px, clamped
             // to a sensible range so very small tiles still get something.
+            let bleed = px(edge_bleed_margin(f32::from(tile_width)));
             let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
             let fallback_url = tile_url.clone();
             let asset_key = crate::tile_cache::TileAssetKey {
@@ -293,12 +314,18 @@ impl MapLayer for TileLayer {
 
             let tile_element = tile_element
                 .child(
-                    // Use GPUI's img with asset loading system
+                    // Use GPUI's img with asset loading system. Extended past
+                    // the tile box by `edge_bleed_margin` (see its docs) and
+                    // clipped by the box's overflow_hidden.
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                         window.use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                     })
-                    .size_full()
-                    .object_fit(gpui::ObjectFit::Cover)
+                    .absolute()
+                    .left(-bleed)
+                    .top(-bleed)
+                    .w(tile_width + bleed * 2.0)
+                    .h(tile_height + bleed * 2.0)
+                    .object_fit(gpui::ObjectFit::Fill)
                     .with_fallback(move || {
                         let reason = crate::tile_cache::last_error(&fallback_url)
                             .unwrap_or_else(|| "Failed".to_string());
@@ -401,7 +428,8 @@ impl MapLayer for TileLayer {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_effective_tile_zoom, tile_mercator_bounds, tile_screen_rect, TILE_OVERLAP_PX,
+        compute_effective_tile_zoom, edge_bleed_margin, tile_mercator_bounds, tile_screen_rect,
+        TILE_OVERLAP_PX,
     };
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
@@ -560,6 +588,14 @@ mod tests {
             );
             prev_x = cur_x;
         }
+    }
+
+    #[test]
+    fn edge_bleed_margin_is_half_a_texel_and_bounded() {
+        assert_eq!(edge_bleed_margin(256.0), 0.5);
+        assert_eq!(edge_bleed_margin(1024.0), 2.0);
+        assert_eq!(edge_bleed_margin(0.0), 0.0);
+        assert_eq!(edge_bleed_margin(1.0e6), 16.0);
     }
 
     #[test]
