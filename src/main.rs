@@ -4871,6 +4871,43 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/topology-actions.osmscript` clicks and box-selects
+    /// fixed window positions; check they pick what the script names.
+    #[test]
+    fn topology_script_targets_hit_their_features() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/topology-actions.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+        for (x, y, kind, id) in [
+            (640.0, 200.0, Node, 6302),
+            (600.0, 430.0, Way, 4107),
+            (560.0, 420.0, Node, 6401),
+        ] {
+            let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, local(x, y));
+            let hit = osm_gpui::selection::resolve_hits(vec![hits]).expect("a hit");
+            assert_eq!((hit.kind, hit.id), (kind, id), "click at ({x}, {y})");
+        }
+        // Box selects: both ways of a pair, and nothing from the others.
+        for (from, to, want) in [
+            ((70.0, 80.0), (450.0, 170.0), [-4102, 4101]),
+            ((70.0, 225.0), (450.0, 310.0), [4103, 4104]),
+        ] {
+            let rect = gpui::Bounds::from_corners(local(from.0, from.1), local(to.0, to.1));
+            let mut ways: Vec<i64> =
+                osm_gpui::layers::EditableLayer::hit_test_rect(&layer, &viewport, rect)
+                    .into_iter()
+                    .filter(|f| f.kind == Way)
+                    .map(|f| f.id)
+                    .collect();
+            ways.sort_unstable();
+            assert_eq!(ways, want, "box {from:?} to {to:?}");
+        }
+    }
+
     /// The same click, but delivered as real mouse events through the
     /// window's event dispatch, to cover the listeners in `render`.
     #[gpui::test]

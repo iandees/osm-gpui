@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="topology-actions fixture">
+  <node id="6101" version="1" lat="40.7130897" lon="-74.0080814"/>
+  <node id="6102" version="1" lat="40.7130084" lon="-74.0076522"/>
+  <node id="6103" version="1" lat="40.7130897" lon="-74.0072231"/>
+  <node id="6104" version="1" lat="40.7130084" lon="-74.0067939"/>
+  <node id="6105" version="1" lat="40.7130897" lon="-74.0063648"/>
+  <node id="6201" version="1" lat="40.7125205" lon="-74.0080814"/>
+  <node id="6202" version="1" lat="40.7124391" lon="-74.0076522"/>
+  <node id="6203" version="1" lat="40.7125205" lon="-74.0072231"/>
+  <node id="6204" version="1" lat="40.7124391" lon="-74.0067939"/>
+  <node id="6205" version="1" lat="40.7125205" lon="-74.0063648"/>
+  <node id="6301" version="1" lat="40.7130897" lon="-74.0056138"/>
+  <node id="6302" version="1" lat="40.7127644" lon="-74.0051846">
+    <tag k="highway" v="crossing"/>
+  </node>
+  <node id="6303" version="1" lat="40.7124391" lon="-74.0047555"/>
+  <node id="6304" version="1" lat="40.7130897" lon="-74.0047555"/>
+  <node id="6305" version="1" lat="40.7124391" lon="-74.0056138"/>
+  <node id="6401" version="1" lat="40.7118699" lon="-74.0056138"/>
+  <node id="6402" version="1" lat="40.7117886" lon="-74.0051846"/>
+  <node id="6403" version="1" lat="40.7118699" lon="-74.0047555"/>
+  <way id="4101" version="1">
+    <nd ref="6101"/>
+    <nd ref="6102"/>
+    <nd ref="6103"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Elm Street"/>
+  </way>
+  <way id="-4102" version="1">
+    <nd ref="6103"/>
+    <nd ref="6104"/>
+    <nd ref="6105"/>
+    <tag k="highway" v="residential"/>
+    <tag k="surface" v="asphalt"/>
+  </way>
+  <way id="4103" version="1">
+    <nd ref="6201"/>
+    <nd ref="6202"/>
+    <nd ref="6203"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Oak Avenue"/>
+  </way>
+  <way id="4104" version="1">
+    <nd ref="6203"/>
+    <nd ref="6204"/>
+    <nd ref="6205"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Pine Avenue"/>
+  </way>
+  <way id="4105" version="1">
+    <nd ref="6301"/>
+    <nd ref="6302"/>
+    <nd ref="6303"/>
+    <tag k="highway" v="footway"/>
+  </way>
+  <way id="4106" version="1">
+    <nd ref="6304"/>
+    <nd ref="6302"/>
+    <nd ref="6305"/>
+    <tag k="highway" v="cycleway"/>
+  </way>
+  <way id="4107" version="1">
+    <nd ref="6401"/>
+    <nd ref="6402"/>
+    <nd ref="6403"/>
+    <tag k="highway" v="path"/>
+  </way>
+</osm>

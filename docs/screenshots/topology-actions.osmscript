@@ -1,0 +1,97 @@
+# Topology selection actions: Join Ways (C), Separate Node (G), Extend Way (E).
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/topology-actions.osm is laid
+# out in window coordinates at zoom 18, centered on (40.7120, -74.0060):
+#   A  ways 4101 + -4102 two roads meeting end to end at (260, 120); the second
+#                        is a new local way, so the server's 4101 is the survivor
+#   B  ways 4103 + 4104  the same, but with different names
+#   C  ways 4105 + 4106  cross at the shared node 6302 at (640, 200)
+#   D  way 4107          open path, first node (560, 420), last (720, 420)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/topology-actions.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/topology-01-start.png
+
+# Join: box-select both roads of A, press C. One way remains, selected, with
+# the union of the tags (name from one, surface from the other).
+drag 70,80 450,170 button=left
+wait_idle 2s
+capture out/topology-02-join-selected.png
+key c
+wait_idle 2s
+assert_selected way 4101
+capture out/topology-03-joined.png
+key cmd+z
+wait_idle 2s
+capture out/topology-04-join-undone.png
+
+# Join refuses when the names differ, and says which key.
+drag 70,225 450,310 button=left
+wait_idle 2s
+key c
+wait_idle 2s
+capture out/topology-05-join-conflict.png
+
+# Separate: select the shared node and press G. The footway keeps the node
+# (lower id); the cycleway gets its own copy. Dragging the selected node
+# drags only the footway's end of the crossing; undo puts it all back.
+click 640,200
+wait_idle 2s
+assert_selected node 6302
+capture out/topology-06-node-selected.png
+key g
+wait_idle 2s
+assert_selected node 6302
+capture out/topology-07-separated.png
+drag 640,200 640,240 button=left
+wait_idle 2s
+capture out/topology-08-separated-moved.png
+key cmd+z
+wait_idle 2s
+key cmd+z
+wait_idle 2s
+capture out/topology-09-separate-undone.png
+
+# Extend: select the open path, press E, then click to add nodes onto its
+# last end. Enter finishes.
+click 600,430
+wait_idle 2s
+assert_selected way 4107
+key e
+wait_idle 2s
+assert_mode add
+capture out/topology-10-extend-started.png
+click 790,440
+wait_idle 2s
+click 850,415
+wait_idle 2s
+key enter
+wait_idle 2s
+capture out/topology-11-extended-end.png
+
+# Extend from the first node instead: new nodes are prepended.
+key s
+wait_idle 2s
+click 560,420
+wait_idle 2s
+assert_selected node 6401
+key e
+wait_idle 2s
+assert_mode add
+click 500,395
+wait_idle 2s
+click 440,420
+wait_idle 2s
+key enter
+wait_idle 2s
+capture out/topology-12-extended-start.png
+
+# Each click is its own undo step.
+key cmd+z
+wait_idle 2s
+capture out/topology-13-one-click-undone.png
+
+log done
