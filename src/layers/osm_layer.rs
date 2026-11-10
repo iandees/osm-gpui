@@ -6089,7 +6089,7 @@ mod tests {
         tags.insert("building".to_string(), "yes".to_string());
         let way = OsmWay {
             id: 10,
-            nodes: vec![1, 2, 1],
+            nodes: vec![1, 2, 2, 1],
             version: 1,
             tags,
         };
