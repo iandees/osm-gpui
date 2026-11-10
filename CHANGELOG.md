@@ -3,6 +3,10 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+- The Linux build now includes the Wayland and X11 windowing backends and no longer panics at startup ("internal error: entered unreachable code").
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of
