@@ -36,11 +36,13 @@ cargo run
 cargo test
 
 # Check formatting
-cargo fmt --check
+cargo fmt --all -- --check
 
 # Lint with strict warnings
 cargo clippy --all-targets -- -D warnings
 ```
+
+CI runs exactly these four checks, and a PR needs all of them green: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`. Run them all locally before pushing.
 
 Release builds for performance testing:
 ```bash
@@ -102,24 +104,19 @@ Use `?` operator and `.map_err()` to propagate. Avoid generic `String` errors an
 - If you add a new testable module or function (e.g., a new undo variant, a new style rule matcher), include unit tests.
 - GUI/rendering changes: no test needed; verify with the running app or scripted screenshots.
 
+### Localization
+
+Every user-visible string goes through the catalog: add it to both `locales/en.yml` and `locales/de.yml` (a test enforces that the two have the same keys). Machine-drafted German is fine; say so in the PR.
+
+### Changelog
+
+Do not edit `CHANGELOG.md` in a feature PR. It is written at release time, one line per change with a link to its PR.
+
 ### Commit messages
 
-- Single-line messages in imperative present tense (e.g., "Add tag-edit dialog" not "Added tag-edit dialog").
-- If the commit needs elaboration, add a blank line and paragraphs, but keep the first line ≤70 characters.
-
-Example:
-```
-Fix click hit-test performance via R-tree indexing
-
-geo_to_screen was re-projecting the viewport center on every call.
-Use the cached mercator_center_x/y fields; convert click point to
-mercator envelope; query R-trees for candidates.
-
-Measured: 1.9 ms → 0.012 ms per click on 106k-node dataset.
-```
+Single-line messages in imperative present tense, e.g. "Add tag-edit dialog" rather than "Added tag-edit dialog".
 
 ### Design and architecture
 
 - If your change alters app state flow, module boundaries, or the renderer hot path, open an issue or discussion first.
-- For large features (e.g., upload, relation rendering), refer to the [improvement-suggestions.md](docs/improvement-suggestions.md) roadmap and suggested sequencing.
-- Check the "Dead code" section of [README.md](README.md) before wiring up old modules — some are candidates for deletion.
+- For large features, see the [improvement-suggestions.md](docs/improvement-suggestions.md) roadmap.

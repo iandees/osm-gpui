@@ -163,4 +163,6 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 ## License
 
-`Cargo.toml` declares the license as MIT OR Apache-2.0. The repository does not yet contain the license files. The bundled iD tagging schema data under `assets/presets/` is ISC licensed; see `assets/presets/LICENSE`.
+Licensed under the [MIT license](LICENSE).
+
+The bundled iD tagging schema data under `assets/presets/` is ISC licensed (the icons there are CC0); see `assets/presets/LICENSE`.
