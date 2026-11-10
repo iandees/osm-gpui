@@ -640,6 +640,26 @@ fn arrow_triangle(
     ])
 }
 
+/// Which segments of the polyline `pts` get a direction arrow: the index
+/// `i` of each chosen segment `pts[i]`-`pts[i + 1]`. One arrow per
+/// `ARROW_SPACING_PX` of path length, starting half a spacing in so even a
+/// short way gets one, and never on a segment too short to hold it.
+fn arrow_segments(pts: &[Point<Pixels>]) -> Vec<usize> {
+    let mut chosen = Vec::new();
+    let mut since_arrow = ARROW_SPACING_PX / 2.0;
+    for (i, pair) in pts.windows(2).enumerate() {
+        let dx = f32::from(pair[1].x - pair[0].x);
+        let dy = f32::from(pair[1].y - pair[0].y);
+        let len = (dx * dx + dy * dy).sqrt();
+        since_arrow += len;
+        if since_arrow >= ARROW_SPACING_PX && len >= ARROW_MIN_SEGMENT_PX {
+            since_arrow = 0.0;
+            chosen.push(i);
+        }
+    }
+    chosen
+}
+
 /// A circle of `diameter` centered on `center`, as quad bounds.
 fn circle_bounds(center: Point<Pixels>, diameter: f32) -> Bounds<Pixels> {
     let half = px(diameter / 2.0);
@@ -2737,6 +2757,43 @@ impl EditableLayer for OsmLayer {
                     }
                 }
 
+                // The strokes above cover the way's own direction arrows, so
+                // draw them again on top: core-colored, each outlined in the
+                // halo color.
+                if way_style.direction != Direction::None && viewport.zoom_level() >= ARROW_MIN_ZOOM
+                {
+                    let reverse = way_style.direction == Direction::Reverse;
+                    let half_base = (way_style.width + 3.0) / 2.0 + ARROW_OVERHANG;
+                    for (grow, color) in [(1.5, halo), (0.0, core)] {
+                        let mut path: Option<Path<Pixels>> = None;
+                        let mut bounds_min_max = (
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                        );
+                        for i in arrow_segments(&pts) {
+                            if let Some([tip, left, right]) = arrow_triangle(
+                                pts[i],
+                                pts[i + 1],
+                                reverse,
+                                ARROW_HALF_LENGTH + 1.0 + 1.5 * grow,
+                                half_base + grow,
+                            ) {
+                                push_triangle(&mut path, &mut bounds_min_max, tip, left, right);
+                            }
+                        }
+                        if let Some(mut path) = path {
+                            let (min_x, max_x, min_y, max_y) = bounds_min_max;
+                            path.bounds = Bounds {
+                                origin: point(px(min_x), px(min_y)),
+                                size: size(px(max_x - min_x), px(max_y - min_y)),
+                            };
+                            window.paint_path(path, rgb(color));
+                        }
+                    }
+                }
+
                 // Re-paint the way's vertex markers on top of the highlight
                 // strokes above — otherwise they fully cover the node-marker
                 // quads painted earlier in `render_canvas`, hiding the way's
@@ -3713,6 +3770,24 @@ mod tests {
     fn decimate_segments_empty_or_single_point_emits_nothing() {
         assert!(super::decimate_segments(&[], 1.0).is_empty());
         assert!(super::decimate_segments(&[point(px(0.0), px(0.0))], 1.0).is_empty());
+    }
+
+    #[test]
+    fn arrow_segments_space_arrows_along_the_path_and_skip_short_segments() {
+        let at = |x: f32| point(px(x), px(0.0));
+        // A short way still gets one arrow, on its only segment.
+        assert_eq!(super::arrow_segments(&[at(0.0), at(60.0)]), vec![0]);
+        // Too short to hold an arrow at all.
+        assert!(super::arrow_segments(&[at(0.0), at(5.0)]).is_empty());
+        // 100px segments: an arrow on each (spacing is under 100px).
+        assert_eq!(
+            super::arrow_segments(&[at(0.0), at(100.0), at(200.0), at(300.0)]),
+            vec![0, 1, 2]
+        );
+        // 30px segments: one arrow, then roughly every fourth segment.
+        let dense: Vec<_> = (0..12).map(|i| at(i as f32 * 30.0)).collect();
+        assert_eq!(super::arrow_segments(&dense), vec![1, 5, 9]);
+        assert!(super::arrow_segments(&[]).is_empty());
     }
 
     #[test]
