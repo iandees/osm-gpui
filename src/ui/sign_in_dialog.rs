@@ -2,7 +2,9 @@
 //! `upload_dialog.rs`'s scrim/card/focus/Escape conventions. The primary
 //! button asks the host to open Settings (where sign-in lives).
 
-use gpui::{div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window};
+use gpui::{
+    div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window,
+};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     label::Label,
@@ -30,7 +32,7 @@ impl EventEmitter<DialogEvent> for SignInDialog {}
 impl SignInDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        focus_handle.focus(window);
+        focus_handle.focus(window, cx);
         Self { focus_handle }
     }
 
