@@ -68,7 +68,6 @@ impl MapViewer {
         let open_members = self.side_panel_open[6];
 
         let open_layers = self.side_panel_open[0];
-        let open_selection = self.side_panel_open[1];
         let open_fields = self.side_panel_open[2];
         let open_tags = self.side_panel_open[3];
         let open_history = self.side_panel_open[4];
@@ -78,7 +77,7 @@ impl MapViewer {
         let selection_header = self.render_selection_header(cx);
 
         let selection_title = match self.selected.len() {
-            0 => tr!("panel.selection.title"),
+            0 | 1 => tr!("panel.selection.title"),
             n => tr_count!("panel.selection.title_count", n),
         };
 
@@ -128,84 +127,84 @@ impl MapViewer {
                         layers_section,
                         cx,
                     ))
-                    // Nothing selected: one friendly message instead of
-                    // empty Selection, Fields and Tags sections.
-                    .when(selected_count == 0, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap_1()
-                                .px_4()
-                                .py_6()
-                                .child(Label::new(tr!("panel.selection.nothing")).text_color(muted))
-                                .child(
+                    // The selection zone: a title strip like the other two
+                    // zones, then a lighter surface holding everything about
+                    // the selected feature(s).
+                    .child(self.zone_strip(selection_title, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_shrink_0()
+                            .bg(cx.theme().background)
+                            // Nothing selected: one friendly message instead
+                            // of empty Fields and Tags sections.
+                            .when(selected_count == 0, |group| {
+                                group.child(
                                     div()
-                                        .text_size(muted_text_size())
-                                        .text_color(muted)
-                                        .text_center()
-                                        .child(tr!("panel.selection.nothing_hint")),
-                                ),
-                        )
-                    })
-                    // Everything about the selected feature(s) sits in one
-                    // raised group, apart from the document-level sections.
-                    .when(selected_count > 0, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .my_2()
-                                .bg(cx.theme().background)
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .when(selected_count == 1, |group| group.child(selection_header))
-                                .when(selected_count > 1, |group| {
-                                    group.child(self.collapsible_section(
-                                        selection_title,
-                                        1,
-                                        open_selection,
-                                        selection_section,
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap_1()
+                                        .px_4()
+                                        .py_6()
+                                        .child(
+                                            Label::new(tr!("panel.selection.nothing"))
+                                                .text_color(muted),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(muted_text_size())
+                                                .text_color(muted)
+                                                .text_center()
+                                                .child(tr!("panel.selection.nothing_hint")),
+                                        ),
+                                )
+                            })
+                            .when(selected_count > 0, |group| {
+                                group
+                                    .when(selected_count == 1, |group| {
+                                        group.child(selection_header)
+                                    })
+                                    .when(selected_count > 1, |group| {
+                                        group.child(div().px_2().py_1().child(selection_section))
+                                    })
+                                    .when(selected_count == 1, |group| {
+                                        group.child(self.collapsible_section(
+                                            tr!("panel.fields.title"),
+                                            2,
+                                            open_fields,
+                                            fields_section,
+                                            cx,
+                                        ))
+                                    })
+                                    .child(self.collapsible_section(
+                                        tr!("panel.tags.title"),
+                                        3,
+                                        open_tags,
+                                        tags_section,
                                         cx,
                                     ))
-                                })
-                                .when(selected_count == 1, |group| {
-                                    group.child(self.collapsible_section(
-                                        tr!("panel.fields.title"),
-                                        2,
-                                        open_fields,
-                                        fields_section,
-                                        cx,
-                                    ))
-                                })
-                                .child(self.collapsible_section(
-                                    tr!("panel.tags.title"),
-                                    3,
-                                    open_tags,
-                                    tags_section,
-                                    cx,
-                                ))
-                                .children(members_section.map(|(count, section)| {
-                                    self.collapsible_section(
-                                        tr_count!("panel.members.title_count", count),
-                                        6,
-                                        open_members,
-                                        section,
-                                        cx,
-                                    )
-                                }))
-                                .children(relations_section.map(|section| {
-                                    self.collapsible_section(
-                                        tr!("panel.relations.title"),
-                                        5,
-                                        open_relations,
-                                        section,
-                                        cx,
-                                    )
-                                })),
-                        )
-                    })
+                                    .children(members_section.map(|(count, section)| {
+                                        self.collapsible_section(
+                                            tr_count!("panel.members.title_count", count),
+                                            6,
+                                            open_members,
+                                            section,
+                                            cx,
+                                        )
+                                    }))
+                                    .children(relations_section.map(|section| {
+                                        self.collapsible_section(
+                                            tr!("panel.relations.title"),
+                                            5,
+                                            open_relations,
+                                            section,
+                                            cx,
+                                        )
+                                    }))
+                            }),
+                    )
                     .child(self.collapsible_section(
                         tr!("panel.history.title"),
                         4,
@@ -652,6 +651,27 @@ impl MapViewer {
             .into_any_element()
     }
 
+    /// The title strip of a zone that does not collapse (the selection): the
+    /// same tinted full-width bar as the Layers and History headers, with
+    /// its text lined up with theirs.
+    fn zone_strip(&self, title: impl Into<SharedString>, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_shrink_0()
+            .h(px(32.))
+            .pl(px(24.))
+            .pr_2()
+            .bg(cx.theme().secondary)
+            .child(
+                Label::new(title)
+                    .text_size(muted_text_size())
+                    .text_color(cx.theme().foreground)
+                    .font_weight(gpui::FontWeight::SEMIBOLD),
+            )
+    }
+
     /// A single collapsible section: a clickable header (chevron + title) that
     /// toggles `side_panel_open[index]`, with its content rendered below when
     /// open. Sizes to content so sections stack instead of splitting the height.
@@ -663,13 +683,15 @@ impl MapViewer {
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Layers (0) and History (4) belong to the document, not to the
-        // selection: their headers are quieter, small and muted.
+        // Layers (0) and History (4) are zones of their own, like the
+        // selection: their headers are full-width tinted strips (see
+        // `zone_strip`). Sections inside the selection zone keep the plain
+        // header and a hairline.
         let document_level = index == 0 || index == 4;
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())
-                .text_color(cx.theme().muted_foreground)
+                .text_color(cx.theme().foreground)
         } else {
             Label::new(title)
         };
@@ -682,7 +704,13 @@ impl MapViewer {
             .px_2()
             .py_1p5()
             .cursor_pointer()
-            .hover(|this| this.bg(cx.theme().accent))
+            .when(document_level, |this| {
+                this.bg(cx.theme().secondary)
+                    .hover(|this| this.bg(cx.theme().secondary_hover))
+            })
+            .when(!document_level, |this| {
+                this.hover(|this| this.bg(cx.theme().accent))
+            })
             .child(
                 Icon::new(if open {
                     IconName::ChevronDown
@@ -702,6 +730,7 @@ impl MapViewer {
         div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             // Selection-level sections are divided by a hairline.
             .when(!document_level, |this| {
                 this.border_t_1().border_color(border)
@@ -794,8 +823,6 @@ impl MapViewer {
             .gap_2()
             .px_3()
             .py_2p5()
-            .border_t_1()
-            .border_color(cx.theme().border)
             .children(icon_path.map(|path| {
                 gpui::svg()
                     .external_path(path.to_string_lossy().to_string())

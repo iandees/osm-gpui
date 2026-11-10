@@ -7,7 +7,8 @@
 # it): node 8104 (bus stop) at (560, 200), way 8202 at (520, 200), way 8301
 # (heavily tagged) at (340, 400), cafe node 8120 at (674, 683). The click on
 # the Relations row selects relation 9101; its y depends on the panel layout
-# (y=583 with the grouped layout; the pre-change panel had it at y=595).
+# (y=607 with the zone strips; 583 with only the grouped layout; the original
+# panel had it at y=595).
 
 window 1200 800
 load_osm docs/screenshots/fixtures/side-panel-clarity.osm
@@ -36,13 +37,13 @@ wait_idle 2s
 assert_selected way 8202
 capture out/side-panel-clarity-05-member-way.png
 
-click 1000,583
+click 1000,607
 wait_idle 2s
 assert_selected relation 9101
 capture out/side-panel-clarity-06-relation-members.png
 
 # Hovering a member row (the "after" panel reveals its reorder/remove buttons).
-hover 1000,540
+hover 1000,564
 wait_idle 1s
 capture out/side-panel-clarity-06b-member-hover.png
 
