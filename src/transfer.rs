@@ -30,6 +30,10 @@ pub enum TransferKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferPhase {
+    /// Upload: blocked reading the saved login from the system keychain, which may be
+    /// showing an access prompt (possibly behind other windows). Not cancellable: a
+    /// blocked platform read cannot be interrupted from here.
+    WaitingForKeychain,
     /// Download: request sent, waiting for the first bytes.
     Requesting,
     /// Download: the response body is arriving.
@@ -147,6 +151,7 @@ impl TransferProgress {
             }
         }
         match self.phase {
+            TransferPhase::WaitingForKeychain => tr!("transfer.waiting_keychain"),
             TransferPhase::Requesting => tr!("transfer.download.requesting"),
             TransferPhase::Downloading if self.bytes == 0 => {
                 tr!("transfer.download.downloading")
@@ -516,6 +521,21 @@ mod tests {
         ] {
             assert!(!TransferProgress::new(TransferKind::Upload, phase, now).is_cancellable());
         }
+    }
+
+    #[test]
+    fn waiting_for_keychain_is_labelled_and_not_cancellable() {
+        let now = Instant::now();
+        let mut p =
+            TransferProgress::new(TransferKind::Upload, TransferPhase::WaitingForKeychain, now);
+        assert!(!p.is_cancellable());
+        assert!(p.label().contains("saved login"), "{}", p.label());
+        // A later part of a multi-changeset upload still shows the wait.
+        p.part = Some((2, 3));
+        assert!(p.label().contains("saved login"), "{}", p.label());
+        // Moving on switches to the normal phase label.
+        p.phase = TransferPhase::OpeningChangeset;
+        assert!(!p.label().contains("saved login"));
     }
 
     #[test]

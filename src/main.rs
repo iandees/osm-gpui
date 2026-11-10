@@ -4553,8 +4553,14 @@ impl MapViewer {
                 let sent = cx
                     .background_executor()
                     .spawn(async move {
-                        let token = auth::ensure_fresh_token(&oauth_base)
-                            .map_err(|e| UploadStop::Failed(e.to_string()))?;
+                        // May block on the system keychain's access prompt the
+                        // first time; say so while it does (and only then).
+                        // A refusal stops the upload with the edits and the
+                        // saved login untouched.
+                        let token = auth::ensure_fresh_token_notify(&oauth_base, &mut || {
+                            progress.set_upload_phase(None, TransferPhase::WaitingForKeychain)
+                        })
+                        .map_err(|e| UploadStop::Failed(e.to_string()))?;
                         osm_gpui::upload_chunks::upload_chunk(
                             &osm_gpui::http::UreqClient::new(),
                             &base_url,
@@ -5114,12 +5120,12 @@ impl MapViewer {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    // ensure_fresh_token does a network refresh if the stored token is
-                    // expired, so run it here on the background thread rather than the
-                    // UI thread. Any error (not logged in, refresh failed) falls back
-                    // to an anonymous request, same as when there's no stored login.
-                    let token = auth::ensure_fresh_token(&auth::oauth_base_for(&base_url))
-                        .ok()
+                    // A map download works anonymously, so it never waits on the
+                    // system keychain: `fresh_token_if_loaded` uses the token only
+                    // if it is already in memory (it may refresh over the network
+                    // if expired, hence this background thread) and otherwise, or
+                    // on any error, the request goes out anonymously.
+                    let token = auth::fresh_token_if_loaded(&auth::oauth_base_for(&base_url))
                         .map(|t| t.access_token);
                     osm_api::fetch_bbox_tracked(bounds, &base_url, token.as_deref(), &progress)
                 })
