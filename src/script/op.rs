@@ -84,6 +84,11 @@ pub enum Op {
     Key {
         chord: Chord,
     },
+    /// Dispatch a named action (e.g. `UploadToOsm`) to the window the way a
+    /// native menu item does, which the harness cannot click.
+    Action {
+        name: String,
+    },
     Capture {
         path: String,
     },
