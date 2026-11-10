@@ -88,8 +88,254 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "load_osm" => parse_load_osm(line_no, &rest),
         "assert_mode" => parse_assert_mode(line_no, &rest),
         "assert_selected" => parse_assert_selected(line_no, &rest),
+        "type" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() {
+                return Err(err(line_no, "type: want TEXT"));
+            }
+            Ok(Op::Type {
+                text: text.to_string(),
+            })
+        }
+        "set_tag" => {
+            let key = rest.first().copied().unwrap_or("");
+            let value = text_after(line, head, 1);
+            if key.is_empty() || value.is_empty() {
+                return Err(err(line_no, "set_tag: want KEY VALUE"));
+            }
+            Ok(Op::SetTag {
+                key: key.to_string(),
+                value: value.to_string(),
+            })
+        }
+        "remove_tag" => match rest.as_slice() {
+            [key] => Ok(Op::RemoveTag {
+                key: key.to_string(),
+            }),
+            _ => Err(err(line_no, "remove_tag: want KEY")),
+        },
+        "upload_confirm" => no_args(line_no, "upload_confirm", &rest, Op::UploadConfirm),
+        "upload_cancel" => no_args(line_no, "upload_cancel", &rest, Op::UploadCancel),
+        "set_comment" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() {
+                return Err(err(line_no, "set_comment: want TEXT"));
+            }
+            Ok(Op::SetComment {
+                text: text.to_string(),
+            })
+        }
+        "resolve_conflict" => parse_resolve_conflict(line_no, &rest),
+        "wait_transfer" => Ok(Op::WaitTransfer {
+            timeout: optional_duration(line_no, "wait_transfer", &rest, Duration::from_secs(120))?,
+        }),
+        "capture_while_transferring" => parse_capture_while_transferring(line_no, &rest),
+        "assert_pending" => match rest.as_slice() {
+            [n] => Ok(Op::AssertPending {
+                count: n.parse::<usize>().map_err(|e| {
+                    err(line_no, format!("assert_pending: bad count '{}': {}", n, e))
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_pending: want COUNT")),
+        },
+        "assert_status_contains" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() {
+                return Err(err(line_no, "assert_status_contains: want TEXT"));
+            }
+            Ok(Op::AssertStatusContains {
+                text: text.to_string(),
+            })
+        }
+        "assert_dialog" => parse_assert_dialog(line_no, &rest),
+        "assert_selection" => parse_assert_selection(line_no, &rest),
+        "export_layer" => match rest.as_slice() {
+            [path] => Ok(Op::ExportLayer {
+                path: path.to_string(),
+            }),
+            _ => Err(err(line_no, "export_layer: want PATH")),
+        },
+        "sign_in" => no_args(line_no, "sign_in", &rest, Op::SignIn),
+        "wait_signed_in" => Ok(Op::WaitSignedIn {
+            timeout: optional_duration(line_no, "wait_signed_in", &rest, Duration::from_secs(200))?,
+        }),
+        "assert_signed_in" => no_args(line_no, "assert_signed_in", &rest, Op::AssertSignedIn),
+        "assert_server" => match rest.as_slice() {
+            ["dev"] => Ok(Op::AssertServerDev),
+            _ => Err(err(line_no, "assert_server: want dev")),
+        },
+        "pause" => {
+            // `pause [DURATION] MESSAGE`: a leading `2s` / `500ms` is the wait.
+            let mut duration = Duration::from_secs(2);
+            let mut skip = 0;
+            if let Some(first) = rest.first() {
+                if let Ok(d) = parse_duration(line_no, first) {
+                    duration = d;
+                    skip = 1;
+                }
+            }
+            let message = text_after(line, head, skip);
+            if message.is_empty() {
+                return Err(err(line_no, "pause: want [DURATION] MESSAGE"));
+            }
+            Ok(Op::Pause {
+                duration,
+                message: message.to_string(),
+            })
+        }
         other => Err(err(line_no, format!("unknown op '{}'", other))),
     }
+}
+
+/// The rest of `line` after its first token and `skip` more whitespace-separated
+/// tokens, with inner spacing kept as written. Empty if there is nothing left.
+fn text_after<'a>(line: &'a str, head: &str, skip: usize) -> &'a str {
+    let mut rest = line[head.len()..].trim_start();
+    for _ in 0..skip {
+        rest = match rest.split_once(char::is_whitespace) {
+            Some((_, tail)) => tail.trim_start(),
+            None => "",
+        };
+    }
+    rest.trim_end()
+}
+
+fn no_args(line_no: usize, name: &str, rest: &[&str], op: Op) -> Result<Op, ParseError> {
+    if rest.is_empty() {
+        Ok(op)
+    } else {
+        Err(err(line_no, format!("{}: takes no arguments", name)))
+    }
+}
+
+fn optional_duration(
+    line_no: usize,
+    name: &str,
+    rest: &[&str],
+    default: Duration,
+) -> Result<Duration, ParseError> {
+    match rest {
+        [] => Ok(default),
+        [d] => parse_duration(line_no, d),
+        _ => Err(err(line_no, format!("{}: at most one TIMEOUT arg", name))),
+    }
+}
+
+fn parse_resolve_conflict(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let choice = match rest {
+        ["keep_mine"] => ConflictChoice::KeepMine,
+        ["use_theirs"] => ConflictChoice::UseTheirs,
+        ["drop_mine"] => ConflictChoice::DropMine,
+        ["show"] => ConflictChoice::Show,
+        _ => {
+            return Err(err(
+                line_no,
+                "resolve_conflict: want keep_mine|use_theirs|drop_mine|show",
+            ))
+        }
+    };
+    Ok(Op::ResolveConflict { choice })
+}
+
+fn parse_capture_while_transferring(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let Some((prefix, opts)) = rest.split_first() else {
+        return Err(err(
+            line_no,
+            "capture_while_transferring: want PREFIX [every=DUR] [timeout=DUR]",
+        ));
+    };
+    let mut every = Duration::from_millis(700);
+    let mut timeout = Duration::from_secs(120);
+    for kv in opts {
+        let (k, v) = kv.split_once('=').ok_or_else(|| {
+            err(
+                line_no,
+                format!("capture_while_transferring: bad kv '{}'", kv),
+            )
+        })?;
+        match k {
+            "every" => every = parse_duration(line_no, v)?,
+            "timeout" => timeout = parse_duration(line_no, v)?,
+            _ => {
+                return Err(err(
+                    line_no,
+                    format!("capture_while_transferring: unknown key '{}'", k),
+                ))
+            }
+        }
+    }
+    Ok(Op::CaptureWhileTransferring {
+        prefix: prefix.to_string(),
+        every,
+        timeout,
+    })
+}
+
+fn parse_feature_kind_word(word: &str) -> Option<FeatureKind> {
+    match word {
+        "node" => Some(FeatureKind::Node),
+        "way" => Some(FeatureKind::Way),
+        "relation" => Some(FeatureKind::Relation),
+        _ => None,
+    }
+}
+
+fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|conflict [KIND] [node|way|relation]";
+    let Some((head, tail)) = rest.split_first() else {
+        return Err(err(line_no, usage));
+    };
+    let expect = match (*head, tail) {
+        ("none", []) => DialogExpect::None,
+        ("editing", []) => DialogExpect::Editing,
+        ("in_flight", []) => DialogExpect::InFlight,
+        ("failed", []) => DialogExpect::Failed,
+        ("sign_in", []) => DialogExpect::SignIn,
+        ("notice", []) => DialogExpect::Notice,
+        ("conflict", words) => {
+            let mut kind = None;
+            let mut object = None;
+            for word in words {
+                if let Some(k) = parse_feature_kind_word(word) {
+                    object = Some(k);
+                    continue;
+                }
+                kind = Some(match *word {
+                    "version_mismatch" => ConflictKindName::VersionMismatch,
+                    "already_deleted" => ConflictKindName::AlreadyDeleted,
+                    "still_in_use" => ConflictKindName::StillInUse,
+                    "missing_dependency" => ConflictKindName::MissingDependency,
+                    "other" => ConflictKindName::Other,
+                    _ => {
+                        return Err(err(
+                            line_no,
+                            format!("assert_dialog: unknown conflict word '{}'", word),
+                        ))
+                    }
+                });
+            }
+            DialogExpect::Conflict { kind, object }
+        }
+        _ => return Err(err(line_no, usage)),
+    };
+    Ok(Op::AssertDialog { expect })
+}
+
+fn parse_assert_selection(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let kind = match rest {
+        ["none"] => SelectionKind::None,
+        ["node"] => SelectionKind::Node,
+        ["way"] => SelectionKind::Way,
+        ["relation"] => SelectionKind::Relation,
+        ["multiple"] => SelectionKind::Multiple,
+        _ => {
+            return Err(err(
+                line_no,
+                "assert_selection: want none|node|way|relation|multiple",
+            ))
+        }
+    };
+    Ok(Op::AssertSelection { kind })
 }
 
 fn parse_u32(line_no: usize, s: &str, field: &str) -> Result<u32, ParseError> {

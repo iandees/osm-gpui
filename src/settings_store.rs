@@ -149,9 +149,76 @@ pub fn snapshot() -> AppSettings {
     APP_SETTINGS.snapshot("settings_store")
 }
 
-/// The OSM API base URL implied by the current settings.
+/// API server chosen on the command line (`--api-server`) for this run only. Kept
+/// apart from `APP_SETTINGS` on purpose: the store is what gets saved to
+/// `settings.json`, so an override living there could leak to disk.
+static RUN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Override the API server base URL for this run only. Never written to
+/// `settings.json`.
+pub fn set_run_override(base_url: Option<String>) {
+    *RUN_OVERRIDE.lock().unwrap() = base_url;
+}
+
+/// The command-line API server override for this run, if any.
+pub fn run_override() -> Option<String> {
+    RUN_OVERRIDE.lock().unwrap().clone()
+}
+
+/// The base URL for `settings` with an optional per-run override applied.
+pub fn effective_base_url(settings: &AppSettings, over: Option<&str>) -> String {
+    match over {
+        Some(url) => url.trim_end_matches('/').to_string(),
+        None => settings.api_base_url(),
+    }
+}
+
+/// Parse the value of `--api-server`: `primary`, `dev`, or an `http(s)://` base
+/// URL. `None` for anything else.
+pub fn parse_api_server_arg(value: &str) -> Option<String> {
+    match value {
+        "primary" => Some(PRIMARY_API_URL.to_string()),
+        "dev" => Some(DEV_API_URL.to_string()),
+        url if url.starts_with("https://") || url.starts_with("http://") => {
+            Some(url.trim_end_matches('/').to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The OSM API base URL in effect: the saved settings, unless `--api-server`
+/// overrides them for this run.
 pub fn api_base_url() -> String {
-    snapshot().api_base_url()
+    effective_base_url(&snapshot(), run_override().as_deref())
+}
+
+/// The host part of an API base URL, lowercased, without port or path.
+fn url_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    authority
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Whether `url` is the OSM development server (exact host match, so look-alikes
+/// such as `master.apis.dev.openstreetmap.org.evil.example` do not count).
+pub fn is_dev_server(url: &str) -> bool {
+    url_host(url) == url_host(DEV_API_URL)
+}
+
+/// Whether `url` is the production OSM API.
+pub fn is_primary_server(url: &str) -> bool {
+    url_host(url) == url_host(PRIMARY_API_URL)
+}
+
+/// The host to show in the status bar and window title when the active server is
+/// not the production one; `None` for the production server.
+pub fn non_primary_host_label(url: &str) -> Option<String> {
+    (!is_primary_server(url)).then(|| url_host(url))
 }
 
 pub fn load_from(path: &Path) -> AppSettings {
@@ -218,6 +285,66 @@ mod tests {
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn run_override_changes_the_url_but_not_the_settings() {
+        let saved = AppSettings::default();
+        assert_eq!(effective_base_url(&saved, None), PRIMARY_API_URL);
+        assert_eq!(effective_base_url(&saved, Some(DEV_API_URL)), DEV_API_URL);
+        assert_eq!(
+            effective_base_url(&saved, Some("http://127.0.0.1:9/")),
+            "http://127.0.0.1:9"
+        );
+        // The settings value itself (what `update_store` would write) is untouched.
+        assert_eq!(saved.api_server, ApiServerChoice::Primary);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(json.contains("\"Primary\"") && !json.contains("Dev"));
+    }
+
+    #[test]
+    fn api_server_argument_values() {
+        assert_eq!(parse_api_server_arg("dev").as_deref(), Some(DEV_API_URL));
+        assert_eq!(
+            parse_api_server_arg("primary").as_deref(),
+            Some(PRIMARY_API_URL)
+        );
+        assert_eq!(
+            parse_api_server_arg("https://example.com/").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(parse_api_server_arg("prod"), None);
+        assert_eq!(parse_api_server_arg(""), None);
+        assert_eq!(parse_api_server_arg("ftp://x"), None);
+    }
+
+    #[test]
+    fn dev_server_match_is_exact_on_the_host() {
+        assert!(is_dev_server("https://master.apis.dev.openstreetmap.org"));
+        assert!(is_dev_server("https://master.apis.dev.openstreetmap.org/"));
+        assert!(is_dev_server(
+            "https://MASTER.apis.dev.openstreetmap.org:443/api"
+        ));
+        assert!(!is_dev_server("https://api.openstreetmap.org"));
+        assert!(!is_dev_server(
+            "https://master.apis.dev.openstreetmap.org.evil.example"
+        ));
+        assert!(!is_dev_server(
+            "https://evil.example/master.apis.dev.openstreetmap.org"
+        ));
+        assert!(!is_dev_server(
+            "https://master.apis.dev.openstreetmap.org@evil.example"
+        ));
+        assert!(!is_dev_server("https://xmaster.apis.dev.openstreetmap.org"));
+    }
+
+    #[test]
+    fn host_label_only_for_non_primary_servers() {
+        assert_eq!(non_primary_host_label(PRIMARY_API_URL), None);
+        assert_eq!(
+            non_primary_host_label(DEV_API_URL).as_deref(),
+            Some("master.apis.dev.openstreetmap.org")
+        );
     }
 
     #[test]

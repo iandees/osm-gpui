@@ -12,6 +12,8 @@ use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::layers::tile_layer::TileLayer;
 use osm_gpui::osm::{OsmData, OsmParser};
 use osm_gpui::script::{self, runner::AppHandle};
+use osm_gpui::settings_store;
+use osm_gpui::ui::upload_dialog::Phase;
 
 use crate::MapViewer;
 
@@ -89,6 +91,24 @@ pub(crate) enum ScriptCommand {
     AssertMode(crate::EditMode),
     /// Compare `MapViewer.selected` against `want`.
     AssertSelected(Option<(osm_gpui::script::FeatureKind, i64)>),
+    /// Set a tag on the selection (the side panel's Add tag path).
+    SetTag { key: String, value: String },
+    /// Remove a tag from the selection.
+    RemoveTag { key: String },
+    /// Press the upload dialog's Upload / Try again button.
+    UploadConfirm,
+    /// Replace the upload dialog's changeset comment.
+    SetComment(String),
+    /// Press the upload dialog's Cancel button.
+    UploadCancel,
+    /// Press one of the conflict dialog's buttons.
+    Resolve(script::ConflictChoice),
+    /// Write the active layer to this `.osm` path.
+    Export { path: std::path::PathBuf },
+    /// Evaluate a read-only condition.
+    Check(script::Check),
+    /// Show a message in the status bar.
+    Note(String),
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -374,7 +394,23 @@ impl MapViewer {
                             // the macOS menu bar makes: it dispatches to the
                             // active window's focused element (and on to the
                             // global handlers).
-                            cx.defer(move |cx| cx.dispatch_action(action.as_ref()));
+                            //
+                            // That needs an active window. A scripted run
+                            // can lose it (a Keychain prompt or another
+                            // app comes to the front), and then
+                            // window-scoped handlers such as Select All
+                            // would never see the action, so in that case
+                            // it is sent to this window directly.
+                            let handle = window.window_handle();
+                            cx.defer(move |cx| {
+                                if cx.active_window() == Some(handle) {
+                                    cx.dispatch_action(action.as_ref());
+                                } else {
+                                    let _ = handle.update(cx, |_, window, cx| {
+                                        window.dispatch_action(action, cx);
+                                    });
+                                }
+                            });
                             Ok(())
                         }
                         Err(e) => Err(format!("unknown action '{name}': {e}")),
@@ -415,9 +451,300 @@ impl MapViewer {
                     };
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::SetTag { key, value } => {
+                    let result = self.script_set_tag(&key, &value, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::RemoveTag { key } => {
+                    let result = self.script_remove_tag(&key, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::UploadConfirm => {
+                    let result = self.script_upload_confirm(window, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::SetComment(text) => {
+                    let result = match self.upload_dialog.clone() {
+                        Some(dialog) => {
+                            dialog.update(cx, |dialog, cx| {
+                                dialog.set_draft_comment(text, window, cx)
+                            });
+                            Ok(())
+                        }
+                        None => Err("the upload dialog is not open".to_string()),
+                    };
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::UploadCancel => {
+                    let result = match self.upload_dialog.clone() {
+                        Some(dialog) if matches!(dialog.read(cx).phase(), Phase::Busy) => {
+                            Err("the upload dialog cannot be cancelled while busy".to_string())
+                        }
+                        Some(dialog) => {
+                            window.defer(cx, move |_window, cx| {
+                                dialog.update(cx, |dialog, cx| dialog.press_cancel(cx));
+                            });
+                            Ok(())
+                        }
+                        None => Err("the upload dialog is not open".to_string()),
+                    };
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::Resolve(choice) => {
+                    let result = self.script_resolve_conflict(choice, window, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::Export { path } => {
+                    let result = self.script_export_layer(&path);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::Check(check) => {
+                    let result = self.script_check(&check, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::Note(message) => {
+                    self.set_status(message);
+                    cx.notify();
+                }
             }
         }
 
+        self.drain_keystrokes_and_animate(window, cx);
+    }
+
+    /// Set a tag on every selected feature through the same code the side
+    /// panel's "Add tag" row ends in (one undo step; an existing value is
+    /// replaced).
+    pub(crate) fn script_set_tag(
+        &mut self,
+        key: &str,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self.selected.is_empty() {
+            return Err("nothing is selected".into());
+        }
+        if osm_gpui::transfer::blocks_edits(self.transfer.as_ref()) {
+            return Err("an upload is running; edits are refused until it finishes".into());
+        }
+        let ctx = crate::TagEditContext {
+            features: self.selected.clone(),
+            original_key: String::new(),
+            original_value: String::new(),
+            is_add: true,
+        };
+        self.apply_tag_edit(&ctx, key, value);
+        cx.notify();
+        let missing = self
+            .selected_feature_tag_snapshots()
+            .iter()
+            .any(|(_, tags)| !tags.iter().any(|(k, v)| k == key && v == value));
+        if missing {
+            return Err(format!(
+                "the selected feature did not take {key}={value} (is the layer editable?)"
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn script_remove_tag(
+        &mut self,
+        key: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if osm_gpui::transfer::blocks_edits(self.transfer.as_ref()) {
+            return Err("an upload is running; edits are refused until it finishes".into());
+        }
+        let has = self
+            .selected_feature_tag_snapshots()
+            .iter()
+            .any(|(_, tags)| tags.iter().any(|(k, _)| k == key));
+        if !has {
+            return Err(format!("no selected feature has a '{key}' tag"));
+        }
+        self.delete_tag(key, cx);
+        Ok(())
+    }
+
+    /// Press the upload dialog's Upload / Try again button. Refuses (as the
+    /// button would) with an empty comment, and, in a scripted run, anywhere
+    /// but the development server.
+    fn script_upload_confirm(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(dialog) = self.upload_dialog.clone() else {
+            return Err("the upload dialog is not open (run `action UploadToOsm` first)".into());
+        };
+        if let Some(refusal) = scripted_upload_refusal(&settings_store::api_base_url()) {
+            return Err(refusal);
+        }
+        if let Some(why) = dialog.read(cx).confirm_blocker(cx) {
+            return Err(format!("the Upload button would do nothing: {why}"));
+        }
+        // Deferred: the dialog's event is handled by this view, which is being
+        // rendered right now (see the note on `Click` above).
+        window.defer(cx, move |_window, cx| {
+            dialog.update(cx, |dialog, cx| dialog.press_confirm(cx));
+        });
+        Ok(())
+    }
+
+    fn script_resolve_conflict(
+        &mut self,
+        choice: script::ConflictChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let action = match choice {
+            script::ConflictChoice::KeepMine => ConflictAction::KeepMine,
+            script::ConflictChoice::UseTheirs => ConflictAction::UseTheirs,
+            script::ConflictChoice::DropMine => ConflictAction::DropMyChange,
+            script::ConflictChoice::Show => ConflictAction::Show,
+        };
+        let Some(dialog) = self.upload_dialog.clone() else {
+            return Err("the upload dialog is not open".into());
+        };
+        if let Some(refusal) = scripted_upload_refusal(&settings_store::api_base_url()) {
+            return Err(refusal);
+        }
+        if !dialog.read(cx).offers(action) {
+            return Err(format!(
+                "the dialog does not offer {action:?} right now (is a conflict showing?)"
+            ));
+        }
+        window.defer(cx, move |_window, cx| {
+            dialog.update(cx, |dialog, cx| dialog.press_conflict(action, cx));
+        });
+        Ok(())
+    }
+
+    /// File > Export without the save dialog: the active layer, with its
+    /// pending edits, to `path`.
+    pub(crate) fn script_export_layer(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let (_, xml) = self
+            .exportable_layer()
+            .ok_or_else(|| "there is no OSM layer to export".to_string())?;
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+        }
+        std::fs::write(path, xml).map_err(|e| e.to_string())
+    }
+
+    /// Pending (created + modified + deleted) edits in the active layer.
+    pub(crate) fn active_layer_pending(&self) -> Option<usize> {
+        let layer = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))?;
+        let (created, modified, deleted) = layer.diff_for_upload().counts();
+        Some(created + modified + deleted)
+    }
+
+    /// Evaluate a read-only condition for `assert_*` and the transfer waits.
+    pub(crate) fn script_check(
+        &self,
+        check: &script::Check,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use osm_gpui::ui::upload_dialog::Phase;
+        use script::{Check, DialogExpect, SelectionKind};
+
+        let phase = self.upload_dialog.as_ref().map(|d| d.read(cx).phase());
+        match check {
+            Check::Pending(want) => match self.active_layer_pending() {
+                Some(got) if got == *want => Ok(()),
+                Some(got) => Err(format!("expected {want} pending edits, found {got}")),
+                None => Err("there is no active OSM layer".into()),
+            },
+            Check::StatusContains(text) => {
+                let shown = self
+                    .status_message
+                    .as_ref()
+                    .map(|(m, _)| m.to_string())
+                    .unwrap_or_default();
+                if shown.contains(text.as_str()) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "status bar says {shown:?}, expected it to contain {text:?}"
+                    ))
+                }
+            }
+            Check::TransferIdle => {
+                if self.transfer.is_some() || matches!(phase, Some(Phase::Busy)) {
+                    Err("a transfer is still running".into())
+                } else {
+                    Ok(())
+                }
+            }
+            Check::Selection(want) => {
+                let got = match self.selected.as_slice() {
+                    [] => SelectionKind::None,
+                    [only] => match only.kind {
+                        osm_gpui::selection::FeatureKind::Node => SelectionKind::Node,
+                        osm_gpui::selection::FeatureKind::Way => SelectionKind::Way,
+                        osm_gpui::selection::FeatureKind::Relation => SelectionKind::Relation,
+                    },
+                    _ => SelectionKind::Multiple,
+                };
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!("expected selection {want:?}, found {got:?}"))
+                }
+            }
+            Check::Dialog(want) => {
+                let found = self.describe_dialog(&phase);
+                let ok = match (want, &phase) {
+                    (DialogExpect::None, _) => found == "no dialog",
+                    (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
+                    (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
+                    (DialogExpect::Editing, Some(Phase::Editing)) => true,
+                    (DialogExpect::InFlight, Some(Phase::Busy)) => true,
+                    (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
+                    (DialogExpect::Conflict { kind, object }, Some(Phase::Failed(Some(view)))) => {
+                        kind.is_none_or(|k| conflict_kind_name(&view.conflict.kind) == k)
+                            && object.is_none_or(|o| {
+                                view.conflict
+                                    .object
+                                    .is_some_and(|(found, _)| script_kind(found) == o)
+                            })
+                    }
+                    _ => false,
+                };
+                if ok {
+                    Ok(())
+                } else {
+                    Err(format!("expected {want:?}, found {found}"))
+                }
+            }
+        }
+    }
+
+    fn describe_dialog(&self, phase: &Option<osm_gpui::ui::upload_dialog::Phase>) -> String {
+        use osm_gpui::ui::upload_dialog::Phase;
+        match phase {
+            Some(Phase::Editing) => "the upload dialog, ready for a comment".into(),
+            Some(Phase::Busy) => "the upload dialog, busy (uploading or resolving)".into(),
+            Some(Phase::Failed(None)) => "the upload dialog showing an error".into(),
+            Some(Phase::Failed(Some(view))) => format!(
+                "the upload dialog showing a conflict: {} ({:?})",
+                view.conflict.describe(),
+                conflict_kind_name(&view.conflict.kind)
+            ),
+            None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
+            None if self.notice_dialog.is_some() => "a notice dialog".into(),
+            None => "no dialog".into(),
+        }
+    }
+
+    /// Drain the keystroke queue and keep the render loop going while a
+    /// script runs.
+    fn drain_keystrokes_and_animate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Also drain keystroke queue (processed via Window so needs to be here).
         // Dispatched via `window.defer` for the same reason `Click` is (see
         // above): `dispatch_keystroke` can invoke a `cx.listener()` callback
@@ -449,6 +776,56 @@ impl MapViewer {
 // ---------------------------------------------------------------------------
 // LiveApp: AppHandle impl backed by ScriptBus (background-thread safe)
 // ---------------------------------------------------------------------------
+
+/// Why a scripted run may not upload to `server`, if it may not (the same
+/// rule as `script::runner::upload_guard`, applied where the upload starts).
+pub(crate) fn scripted_upload_refusal(server: &str) -> Option<String> {
+    if !script_mode() {
+        return None;
+    }
+    script::runner::upload_guard(&script::Op::UploadConfirm, server).err()
+}
+
+/// The keystroke that types `ch`. A printable ASCII character is its own key
+/// (space is "space"); anything else has no key of its own and goes in as
+/// text alone. Either way the text is carried explicitly, so it is inserted
+/// as written whatever the keyboard layout.
+pub(crate) fn keystroke_for_char(ch: char) -> Keystroke {
+    let key = match ch {
+        ' ' => "space".to_string(),
+        c if c.is_ascii_graphic() => c.to_ascii_lowercase().to_string(),
+        _ => String::new(),
+    };
+    Keystroke {
+        modifiers: gpui::Modifiers::none(),
+        key,
+        key_char: Some(ch.to_string()),
+    }
+}
+
+fn script_kind(kind: osm_gpui::selection::FeatureKind) -> script::FeatureKind {
+    match kind {
+        osm_gpui::selection::FeatureKind::Node => script::FeatureKind::Node,
+        osm_gpui::selection::FeatureKind::Way => script::FeatureKind::Way,
+        osm_gpui::selection::FeatureKind::Relation => script::FeatureKind::Relation,
+    }
+}
+
+fn conflict_kind_name(kind: &osm_gpui::osm_upload::ConflictKind) -> script::ConflictKindName {
+    use osm_gpui::osm_upload::ConflictKind;
+    match kind {
+        ConflictKind::VersionMismatch { .. } => script::ConflictKindName::VersionMismatch,
+        ConflictKind::AlreadyDeleted => script::ConflictKindName::AlreadyDeleted,
+        ConflictKind::StillInUse { .. } => script::ConflictKindName::StillInUse,
+        ConflictKind::MissingDependency => script::ConflictKindName::MissingDependency,
+        ConflictKind::Other => script::ConflictKindName::Other,
+    }
+}
+
+/// The error from the last sign-in the harness started, if it failed.
+static SIGN_IN_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+/// A sign-in the harness started is still waiting for the browser.
+static SIGN_IN_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) struct LiveApp {
     pub(crate) _idle: Arc<IdleTracker>,
@@ -541,8 +918,12 @@ impl AppHandle for LiveApp {
                 guard.push(ks);
             }
         }
-        // Wait for next frame so gpui processes the keystroke.
-        self.bus.wait_frame();
+        // The keystroke is queued from this thread, so the frame in flight
+        // may already be past the point where the queue is drained: it goes
+        // out on the next frame, and its effects show on the one after.
+        for _ in 0..3 {
+            self.bus.wait_frame();
+        }
     }
 
     fn dispatch_action(&mut self, name: &str) -> Result<(), String> {
@@ -601,5 +982,125 @@ impl AppHandle for LiveApp {
     fn assert_selected(&mut self, want: Option<(script::FeatureKind, i64)>) -> Result<(), String> {
         self.bus.submit(ScriptCommand::AssertSelected(want));
         self.bus.take_assert_result()
+    }
+
+    fn api_server(&mut self) -> String {
+        settings_store::api_base_url()
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), String> {
+        for ch in text.chars() {
+            if ch.is_control() {
+                return Err(format!("cannot type the control character {ch:?}"));
+            }
+            let ks = keystroke_for_char(ch);
+            if let Some(q) = KEYSTROKE_QUEUE.get() {
+                if let Ok(mut guard) = q.lock() {
+                    guard.push(ks);
+                }
+            }
+            // One character per frame, like a person typing, so each lands
+            // before the next and the input can be watched filling in.
+            self.bus.wait_frame();
+        }
+        // The last character goes out on the next frame and shows on the one
+        // after.
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        Ok(())
+    }
+
+    fn set_tag(&mut self, key: &str, value: &str) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::SetTag {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn remove_tag(&mut self, key: &str) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::RemoveTag {
+            key: key.to_string(),
+        });
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn upload_confirm(&mut self) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::UploadConfirm);
+        let result = self.bus.take_assert_result();
+        // Let the press (deferred) happen and the dialog show its new stage.
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn set_comment(&mut self, text: &str) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::SetComment(text.to_string()));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn upload_cancel(&mut self) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::UploadCancel);
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn resolve_conflict(&mut self, choice: script::ConflictChoice) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::Resolve(choice));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::Export {
+            path: path.to_path_buf(),
+        });
+        self.bus.take_assert_result()
+    }
+
+    fn check(&mut self, check: &script::Check) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::Check(check.clone()));
+        self.bus.take_assert_result()
+    }
+
+    fn note(&mut self, message: &str) {
+        self.bus.submit(ScriptCommand::Note(message.to_string()));
+    }
+
+    fn sign_in(&mut self) -> Result<(), String> {
+        if SIGN_IN_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err("a sign-in is already waiting for the browser".into());
+        }
+        *SIGN_IN_FAILURE.lock().unwrap() = None;
+        let base_url = settings_store::api_base_url();
+        // `auth::login` opens the browser and blocks until the approval comes
+        // back (or three minutes pass), so it runs on its own thread.
+        std::thread::spawn(move || {
+            if let Err(e) = osm_gpui::auth::login(&base_url) {
+                eprintln!("sign_in: {e}");
+                *SIGN_IN_FAILURE.lock().unwrap() = Some(e.to_string());
+            }
+            SIGN_IN_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        Ok(())
+    }
+
+    fn signed_in(&mut self) -> bool {
+        let base = settings_store::api_base_url();
+        osm_gpui::auth::stored_display_name(&osm_gpui::auth::oauth_base_for(&base)).is_some()
+    }
+
+    fn sign_in_failure(&mut self) -> Option<String> {
+        SIGN_IN_FAILURE.lock().unwrap().clone()
     }
 }

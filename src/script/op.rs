@@ -38,11 +38,77 @@ pub enum EditMode {
     Extrude,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureKind {
     Node,
     Way,
     Relation,
+}
+
+/// How a refused upload is named in `assert_dialog conflict KIND`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKindName {
+    VersionMismatch,
+    AlreadyDeleted,
+    StillInUse,
+    MissingDependency,
+    Other,
+}
+
+/// The way forward to press on a conflict dialog (`resolve_conflict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    KeepMine,
+    UseTheirs,
+    DropMine,
+    Show,
+}
+
+/// What `assert_dialog` expects to be on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogExpect {
+    /// No dialog at all.
+    None,
+    /// The upload dialog, ready for a comment and the Upload button.
+    Editing,
+    /// The upload dialog while an upload is running.
+    InFlight,
+    /// The upload dialog showing an error (any kind).
+    Failed,
+    /// The upload dialog showing a refused upload: optionally of this kind
+    /// and naming this kind of object.
+    Conflict {
+        kind: Option<ConflictKindName>,
+        object: Option<FeatureKind>,
+    },
+    /// The "sign in to upload" prompt.
+    SignIn,
+    /// The "can't do that" notice (e.g. an upload refused for a size limit).
+    Notice,
+}
+
+/// What `assert_selection` expects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionKind {
+    None,
+    Node,
+    Way,
+    Relation,
+    /// More than one feature.
+    Multiple,
+}
+
+/// A read-only condition about the running app, evaluated on its main thread.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Check {
+    /// Pending (created + modified + deleted) edits in the active layer.
+    Pending(usize),
+    /// The status bar's message contains the text.
+    StatusContains(String),
+    Dialog(DialogExpect),
+    Selection(SelectionKind),
+    /// No download or upload is running and the upload dialog is not busy.
+    TransferIdle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +180,77 @@ pub enum Op {
     /// single feature selected, `None` for an empty selection.
     AssertSelected {
         feature: Option<(FeatureKind, i64)>,
+    },
+    /// Type text into the focused input, one character at a time.
+    Type {
+        text: String,
+    },
+    /// Set a tag on the selected feature(s) the way the side panel's Add tag
+    /// row does (one undo step; replaces an existing value).
+    SetTag {
+        key: String,
+        value: String,
+    },
+    /// Remove a tag from the selected feature(s) (the side panel's delete).
+    RemoveTag {
+        key: String,
+    },
+    /// Press the upload dialog's Upload (or Try again) button. Only runs
+    /// against the OSM development server.
+    UploadConfirm,
+    /// Replace the upload dialog's changeset comment with `text` (unlike
+    /// `type`, which appends to whatever is in the field).
+    SetComment {
+        text: String,
+    },
+    /// Press the upload dialog's Cancel button.
+    UploadCancel,
+    /// Press one of the conflict dialog's buttons.
+    ResolveConflict {
+        choice: ConflictChoice,
+    },
+    /// Wait until no transfer is running (success or failure).
+    WaitTransfer {
+        timeout: Duration,
+    },
+    /// While a transfer runs, capture `PREFIX-NN.png` every `every`.
+    CaptureWhileTransferring {
+        prefix: String,
+        every: Duration,
+        timeout: Duration,
+    },
+    AssertPending {
+        count: usize,
+    },
+    AssertStatusContains {
+        text: String,
+    },
+    AssertDialog {
+        expect: DialogExpect,
+    },
+    AssertSelection {
+        kind: SelectionKind,
+    },
+    /// Write the active layer (with its pending edits) to a `.osm` file, as
+    /// File > Export does, without the native save dialog.
+    ExportLayer {
+        path: String,
+    },
+    /// Start the browser sign-in for the active API server.
+    SignIn,
+    /// Wait for the sign-in to finish (someone approves it in the browser).
+    WaitSignedIn {
+        timeout: Duration,
+    },
+    AssertSignedIn,
+    /// Assert the active API server is the OSM development server (exact
+    /// host match). Scripts start with this so a forgotten `--api-server dev`
+    /// stops them before they draw anything.
+    AssertServerDev,
+    /// Show `message` in the status bar and wait, so a person can follow.
+    Pause {
+        duration: Duration,
+        message: String,
     },
 }
 

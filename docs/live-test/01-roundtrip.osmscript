@@ -1,0 +1,148 @@
+# Live test 1: a create / download / modify / delete round trip against the OSM
+# development server, using the app's own Add mode, side panel, upload dialog
+# and upload loop. Open ocean near lat -48.0, lon -123.0.
+#
+#   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/01-roundtrip.osmscript
+#
+# Sign in first with 00-sign-in.osmscript. Captures go to out/live-01-*.png.
+# Changeset comments are "osm-gpui live test: roundtrip ...".
+#
+# Window 1200x800; the viewport centre is window (488, 388). The nodes are
+# drawn at A (380,330) and B (560,330); the way's middle is (470,330).
+
+assert_server dev
+assert_signed_in
+window 1200 800
+load_osm docs/live-test/empty.osm
+viewport -48.0000 -123.0000 18
+wait_idle 10s
+assert_dialog none
+
+# --- 1. Draw two nodes and a way between them (Add mode) ---------------------
+pause 1s Drawing two nodes and a way
+key a
+assert_mode add
+click 380,330
+click 560,330
+key enter
+key escape
+assert_mode select
+assert_pending 3
+capture out/live-01-01-drawn.png
+
+# --- 2. Tag the way, a node and a relation with awkward text -----------------
+# Ampersands, angle brackets, quotes, an XML entity written out as text, and
+# non-ASCII. A client that escapes twice (or not at all) shows up below.
+pause 1s Tagging the way
+click 470,330
+wait_idle 2s
+assert_selection way
+set_tag highway service
+set_tag name Roundtrip & <Test> "quoted" café 日本語
+set_tag note 5 &amp; 6 &lt; 7 and Tom & Jerry's <b>bold</b>
+wait_idle 2s
+capture out/live-01-02-way-tagged.png
+
+pause 1s Tagging a node
+click 380,330
+wait_idle 2s
+assert_selection node
+set_tag fixme check <this> & "that"
+
+# A relation with the way as a member: select the way, make a relation.
+pause 1s Making a relation with the way as a member
+click 470,330
+wait_idle 2s
+assert_selection way
+action selection::RunSelectionAction {"id":"new_relation"}
+wait_idle 2s
+assert_selection relation
+set_tag type route
+set_tag route road
+set_tag name Relation & <1>
+capture out/live-01-03-relation.png
+assert_pending 4
+
+# --- 3. Upload ---------------------------------------------------------------
+pause 1s Uploading
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: roundtrip
+capture out/live-01-04-upload-dialog.png
+upload_confirm
+capture_while_transferring out/live-01-05-progress every=500ms timeout=120s
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-01-06-uploaded.png
+
+# --- 4. Download the same area again into a fresh layer ----------------------
+# The edited layer is dropped first, so what appears is what the server
+# stored, not the local copy. Layer 0 is the map tiles, 1 the data layer.
+pause 1s Dropping the local layer and downloading the area again
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+action DownloadFromOsm
+wait_transfer 60s
+wait_idle 5s
+assert_pending 0
+capture out/live-01-07-downloaded.png
+
+click 470,330
+wait_idle 2s
+assert_selection way
+# The side panel's Tags table: every character should read as typed, with no
+# "&amp;amp;" and no missing quotes.
+capture out/live-01-08-way-tags-after-download.png
+click 380,330
+wait_idle 2s
+assert_selection node
+capture out/live-01-09-node-tags-after-download.png
+
+# --- 5. Modify a tag and move a node, upload ---------------------------------
+pause 1s Changing a tag and moving a node
+click 470,330
+wait_idle 2s
+assert_selection way
+set_tag highway track
+click 560,330
+wait_idle 2s
+assert_selection node
+drag 560,330 600,380 button=left
+wait_idle 2s
+assert_pending 2
+capture out/live-01-10-modified.png
+
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: roundtrip (modify)
+upload_confirm
+capture_while_transferring out/live-01-11-progress every=500ms timeout=120s
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-01-12-modified-uploaded.png
+
+# --- 6. Delete everything, upload --------------------------------------------
+pause 1s Deleting everything and uploading
+action SelectAll
+action DeleteSelection
+wait_idle 2s
+assert_pending 4
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: roundtrip (cleanup)
+upload_confirm
+capture_while_transferring out/live-01-13-progress every=500ms timeout=120s
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-01-14-cleaned-up.png
+pause 2s Round trip finished: the server is clean
+log done
