@@ -52,6 +52,8 @@ pub(crate) enum ScriptCommand {
     },
     /// Synthesize a scroll event
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
+    /// Synthesize a mouse move with no button held
+    Hover { x: f32, y: f32 },
     /// Render the current frame in-process and save it as a PNG at `path`
     Capture { path: std::path::PathBuf },
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
@@ -265,6 +267,14 @@ impl MapViewer {
                     };
                     self.handle_scroll(&ev, cx);
                 }
+                ScriptCommand::Hover { x, y } => {
+                    let ev = MouseMoveEvent {
+                        position: point(px(x), px(y)),
+                        pressed_button: None,
+                        modifiers: gpui::Modifiers::none(),
+                    };
+                    self.handle_mouse_move(&ev, cx);
+                }
                 ScriptCommand::Capture { path } => {
                     let result = (|| -> Result<(), String> {
                         let image = window.render_to_image().map_err(|e| e.to_string())?;
@@ -393,6 +403,10 @@ impl AppHandle for LiveApp {
             dx,
             dy,
         });
+    }
+
+    fn dispatch_hover(&mut self, at: (f32, f32)) {
+        self.bus.submit(ScriptCommand::Hover { x: at.0, y: at.1 });
     }
 
     fn dispatch_key(&mut self, chord: &script::Chord) {

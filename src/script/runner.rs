@@ -22,6 +22,8 @@ pub trait AppHandle {
         ctrl: bool,
     );
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32);
+    /// Move the mouse to `at` with no button held.
+    fn dispatch_hover(&mut self, at: (f32, f32));
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
     /// Yield until the next frame has been rendered.
     fn wait_frame(&mut self);
@@ -99,6 +101,10 @@ impl Runner {
             }
             Op::Scroll { at, dx, dy } => {
                 app.dispatch_scroll((at.x, at.y), *dx, *dy);
+                Ok(())
+            }
+            Op::Hover { at } => {
+                app.dispatch_hover((at.x, at.y));
                 Ok(())
             }
             Op::Key { chord } => {
@@ -196,6 +202,7 @@ fn describe(op: &Op) -> String {
             ctrl,
         } => format!("click {:?} {:?} count={} ctrl={}", at, button, count, ctrl),
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
+        Op::Hover { at } => format!("hover {:?}", at),
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Capture { path } => format!("capture {}", path),
         Op::Log { message } => format!("log {}", message),
@@ -224,6 +231,7 @@ mod tests {
         fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration) {}
         fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8, _: bool) {}
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
+        fn dispatch_hover(&mut self, _: (f32, f32)) {}
         fn dispatch_key(&mut self, _: &Chord) {}
         fn wait_frame(&mut self) {
             self.frames_waited += 1;

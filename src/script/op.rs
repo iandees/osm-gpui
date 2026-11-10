@@ -73,6 +73,10 @@ pub enum Op {
         dx: f32,
         dy: f32,
     },
+    /// Move the mouse to `at` with no button held.
+    Hover {
+        at: Point2,
+    },
     Key {
         chord: Chord,
     },
