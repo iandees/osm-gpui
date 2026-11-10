@@ -28,17 +28,20 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - A node's or way's relation memberships are listed in the side panel. Selecting a relation highlights its members on the map and lets you edit its tags, member roles and order, and remove members.
 - New Relation creates a relation from the selection, Add to Relation appends the selection to a relation chosen from a search dialog, and Delete removes a selected relation without touching its members.
 - Split, Merge, Join, and Delete keep relation memberships consistent. Modified relations are included in uploads and exports.
+- Multipolygon and boundary relations are drawn as filled areas with holes. Double-click inside one to select the relation.
 
 **Data**
 - On first launch the map opens on OpenStreetMap Carto with a welcome card offering Download and Open.
 - Open `.osm` XML files, and download the current view from the OSM API, up to the area the server allows (0.25 square degrees on openstreetmap.org). Downloads show progress, can be cancelled, merge into the active layer and keep local edits.
 - The area outside the downloaded data is dimmed, so it is clear where the map is empty and where it simply has not been downloaded.
-- Sign in with OpenStreetMap OAuth (tokens go in the platform keychain) and upload your edits as a changeset after a review step, with progress shown while it uploads.
+- Sign in with OpenStreetMap OAuth (tokens go in the platform keychain) and upload your edits as a changeset after a review step, with progress shown while it uploads. Edits larger than the server's changeset limit are sent as several changesets.
+- If the server refuses an upload because someone else changed an object, the dialog names the object and offers to keep your version or take the server's.
+- Ways and relations larger than the server allows are refused before upload, and edits that would exceed those limits are refused as you make them.
 - Export a layer to a JOSM-style `.osm` file that keeps pending edits, so you can reopen it here or in JOSM.
 - A warning on quit when there are unsaved changes.
 
 **Undo and history**
-- Undo and redo for every edit, with a History list in the side panel.
+- Undo and redo for every edit, with a History list in the side panel. Undo and redo select the features they changed.
 
 **Localization**
 - The interface is available in English and German, and preset names and field labels follow the language. Choose it in Settings > Language, or for one run with `--language <tag>` (for example `--language de`).
@@ -169,9 +172,9 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 
 ## Known limitations
 
-- Relations are not drawn on the map beyond highlighting the members of the selected relation, and a relation can only be selected through one of its members.
-- Uploads of created, modified or deleted relations have not been tested against a live OSM server.
-- Upload conflicts are reported (the server's 409 shows as an error) but not resolved: if someone else changed the same objects after you downloaded them, you have to reconcile manually, for example by downloading again.
+- Only multipolygon and boundary relations are drawn. Routes, turn restrictions and other relations show only as highlighted members when selected, and can only be selected through one of their members.
+- Upload conflict handling, multi-changeset uploads, and uploads of created, modified or deleted relations have been tested against a simulated server only, not a live OSM server.
+- Upload conflicts are resolved one object at a time, and taking the server's version of an object clears the undo history.
 - Export always asks where to write; there is no save back to the opened file.
 - The German text is machine-drafted and has not been reviewed by a native speaker. Tag keys and values, layer names, the debug overlay, and Name Suggestion Index brand names are not translated.
 - No text labels or POI icons on the map, no search, and no user-defined map styles.
