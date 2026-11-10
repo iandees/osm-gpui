@@ -1,6 +1,10 @@
 use crate::coordinates::CoordinateTransform;
 use gpui::{Pixels, Point, Size};
 
+/// Wheel lines per pixel of precise scroll, for scaling a trackpad scroll
+/// into the same zoom units as a notched wheel.
+const PIXEL_SCROLL_ZOOM_SCALE: f64 = 0.1;
+
 /// Viewport state for handling map navigation
 #[derive(Debug, Clone)]
 pub struct Viewport {
@@ -62,17 +66,51 @@ impl Viewport {
         false
     }
 
-    /// Handle scroll wheel event for zooming
-    pub fn handle_scroll(&mut self, position: Point<Pixels>, delta: Point<Pixels>) -> bool {
-        // Use vertical scroll for zooming
-        let zoom_delta = -delta.y.to_f64() * self.zoom_sensitivity;
-
-        if zoom_delta.abs() > 0.0 {
-            self.transform.zoom_at_point(position, zoom_delta);
-            return true; // Indicate that the view should be redrawn
+    /// Zoom around `position` by `zoom_delta` levels. Returns whether the
+    /// view changed (and so needs a redraw).
+    fn zoom_at(&mut self, position: Point<Pixels>, zoom_delta: f64) -> bool {
+        if !zoom_delta.is_finite() || zoom_delta == 0.0 {
+            return false;
         }
+        let before = self.transform.zoom_level;
+        self.transform.zoom_at_point(position, zoom_delta);
+        self.transform.zoom_level != before
+    }
 
-        false
+    /// Zoom from a notched mouse wheel: `lines` is the vertical scroll
+    /// amount in lines (`ScrollDelta::Lines`).
+    pub fn zoom_by_wheel(&mut self, position: Point<Pixels>, lines: f32) -> bool {
+        self.zoom_at(position, -(lines as f64) * self.zoom_sensitivity)
+    }
+
+    /// Zoom from a precise (trackpad) vertical scroll of `pixels`, used
+    /// when a modifier turns the two-finger scroll from a pan into a zoom.
+    pub fn zoom_by_scroll_pixels(&mut self, position: Point<Pixels>, pixels: Pixels) -> bool {
+        self.zoom_at(
+            position,
+            -pixels.to_f64() * PIXEL_SCROLL_ZOOM_SCALE * self.zoom_sensitivity,
+        )
+    }
+
+    /// Zoom from a trackpad pinch. `magnification` is the fractional scale
+    /// change for this event (0.1 = 10% larger), as macOS reports it; a
+    /// doubling of scale is one zoom level.
+    pub fn zoom_by_pinch(&mut self, position: Point<Pixels>, magnification: f32) -> bool {
+        let scale = 1.0 + magnification as f64;
+        if scale <= 0.0 {
+            return false;
+        }
+        self.zoom_at(position, scale.log2())
+    }
+
+    /// Pan from a precise (trackpad) two-finger scroll. `delta` is how far
+    /// the content should move on screen, so the map follows the fingers.
+    pub fn pan_by_scroll(&mut self, delta: Point<Pixels>) -> bool {
+        if delta.x == Pixels::ZERO && delta.y == Pixels::ZERO {
+            return false;
+        }
+        self.transform.pan_by_pixels(-delta.x, -delta.y);
+        true
     }
 
     /// Update viewport size when window is resized
@@ -218,7 +256,7 @@ pub trait ViewportInteraction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{px, size};
+    use gpui::{point, px, size};
 
     #[test]
     fn test_viewport_creation() {
@@ -249,6 +287,72 @@ mod tests {
         viewport.pan_to(new_lat, new_lon);
 
         assert_eq!(viewport.center(), (new_lat, new_lon));
+    }
+
+    fn test_viewport() -> Viewport {
+        Viewport::new(40.7128, -74.0060, 10.0, size(px(800.0), px(600.0)))
+    }
+
+    #[test]
+    fn scroll_pan_moves_the_map_with_the_fingers() {
+        let mut viewport = test_viewport();
+        let anchor = viewport.screen_to_geo(point(px(400.0), px(300.0)));
+
+        // Content should move 50px right and 30px down.
+        assert!(viewport.pan_by_scroll(point(px(50.0), px(30.0))));
+
+        let moved = viewport.geo_to_screen(anchor.0, anchor.1);
+        assert!((moved.x.as_f32() - 450.0).abs() < 0.5);
+        assert!((moved.y.as_f32() - 330.0).abs() < 0.5);
+        assert_eq!(viewport.zoom_level(), 10.0);
+    }
+
+    #[test]
+    fn zero_scroll_is_not_a_change() {
+        let mut viewport = test_viewport();
+        assert!(!viewport.pan_by_scroll(point(px(0.0), px(0.0))));
+        assert!(!viewport.zoom_by_wheel(point(px(400.0), px(300.0)), 0.0));
+        assert!(!viewport.zoom_by_pinch(point(px(400.0), px(300.0)), 0.0));
+    }
+
+    #[test]
+    fn pinch_doubling_is_one_zoom_level_and_keeps_the_point_under_the_fingers() {
+        let mut viewport = test_viewport();
+        let fingers = point(px(600.0), px(200.0));
+        let anchor = viewport.screen_to_geo(fingers);
+
+        assert!(viewport.zoom_by_pinch(fingers, 1.0));
+
+        assert!((viewport.zoom_level() - 11.0).abs() < 1e-9);
+        let after = viewport.geo_to_screen(anchor.0, anchor.1);
+        assert!((after.x.as_f32() - 600.0).abs() < 0.5);
+        assert!((after.y.as_f32() - 200.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn pinch_ignores_a_collapse_to_zero_scale() {
+        let mut viewport = test_viewport();
+        assert!(!viewport.zoom_by_pinch(point(px(400.0), px(300.0)), -1.0));
+        assert_eq!(viewport.zoom_level(), 10.0);
+    }
+
+    #[test]
+    fn wheel_and_pixel_scroll_zoom_in_the_same_direction() {
+        let mut wheel = test_viewport();
+        let mut trackpad = test_viewport();
+        let at = point(px(400.0), px(300.0));
+
+        assert!(wheel.zoom_by_wheel(at, -2.0));
+        assert!(trackpad.zoom_by_scroll_pixels(at, px(-20.0)));
+
+        assert!(wheel.zoom_level() > 10.0);
+        assert!((wheel.zoom_level() - trackpad.zoom_level()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_at_the_limit_is_not_a_change() {
+        let mut viewport = Viewport::new(40.7128, -74.0060, 20.0, size(px(800.0), px(600.0)));
+        assert!(!viewport.zoom_by_pinch(point(px(400.0), px(300.0)), 0.5));
     }
 
     #[test]

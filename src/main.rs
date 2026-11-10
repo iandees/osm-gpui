@@ -2252,21 +2252,28 @@ impl MapViewer {
         }
     }
 
+    /// A notched mouse wheel (line deltas) zooms at the cursor. A trackpad or
+    /// other precise-scrolling device (pixel deltas) pans, as in native Mac
+    /// apps — unless Cmd or Ctrl is held, which makes it zoom instead.
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let scroll_delta = match event.delta {
-            gpui::ScrollDelta::Lines(delta) => gpui::Point {
-                x: px(delta.x),
-                y: px(delta.y),
-            },
-            gpui::ScrollDelta::Pixels(delta) => gpui::Point {
-                x: delta.x * 0.1,
-                y: delta.y * 0.1,
-            },
+        let position = self.window_to_map(event.position);
+        let zoom_modifier = event.modifiers.platform || event.modifiers.control;
+        let changed = match event.delta {
+            gpui::ScrollDelta::Lines(delta) => self.viewport.zoom_by_wheel(position, delta.y),
+            gpui::ScrollDelta::Pixels(delta) if zoom_modifier => {
+                self.viewport.zoom_by_scroll_pixels(position, delta.y)
+            }
+            gpui::ScrollDelta::Pixels(delta) => self.viewport.pan_by_scroll(delta),
         };
+        if changed {
+            cx.notify();
+        }
+    }
 
-        let adjusted_position = self.window_to_map(event.position);
-
-        if self.viewport.handle_scroll(adjusted_position, scroll_delta) {
+    /// Trackpad pinch: zoom around the point under the fingers.
+    fn handle_pinch(&mut self, event: &gpui::PinchEvent, cx: &mut Context<Self>) {
+        let position = self.window_to_map(event.position);
+        if self.viewport.zoom_by_pinch(position, event.delta) {
             cx.notify();
         }
     }
@@ -2819,6 +2826,9 @@ impl Render for MapViewer {
                             this.handle_map_mouse_down(position);
                         }),
                     )
+                    .on_pinch(cx.listener(|this, ev: &gpui::PinchEvent, _, cx| {
+                        this.handle_pinch(ev, cx);
+                    }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         let modifiers = ev.keystroke.modifiers;
                         if modifiers.platform || modifiers.control || modifiers.alt {

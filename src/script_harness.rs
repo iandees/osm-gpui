@@ -269,12 +269,10 @@ impl MapViewer {
                     });
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
+                    // Line deltas, i.e. a notched mouse wheel: zooms.
                     let ev = ScrollWheelEvent {
                         position: point(px(x), px(y)),
-                        delta: ScrollDelta::Pixels(gpui::Point {
-                            x: px(dx),
-                            y: px(dy),
-                        }),
+                        delta: ScrollDelta::Lines(gpui::Point { x: dx, y: dy }),
                         modifiers: gpui::Modifiers::none(),
                         touch_phase: gpui::TouchPhase::Moved,
                     };
