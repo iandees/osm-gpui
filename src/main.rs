@@ -405,6 +405,7 @@ struct CliArgs {
     script: Option<PathBuf>,
     window_size: Option<(u32, u32)>,
     keep_open: bool,
+    /// UI language for this run, overriding the saved setting.
     language: Option<String>,
 }
 
@@ -422,7 +423,9 @@ fn parse_cli_args() -> CliArgs {
                 out.window_size = Some((w.parse().expect("W"), h.parse().expect("H")));
             }
             "--keep-open" => out.keep_open = true,
-            "--language" => out.language = Some(args.next().expect("--language needs a tag")),
+            "--language" => {
+                out.language = Some(args.next().expect("--language needs a locale tag"))
+            }
             other => eprintln!("ignoring unknown arg: {}", other),
         }
     }
@@ -4359,6 +4362,7 @@ fn main() {
             let app_settings = settings_store::load();
             osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
             // Pick the UI language before any menu or window text is built.
+            // `--language` overrides the saved setting for this run only.
             osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
             settings_store::init_store(app_settings);
             auth::init_store(auth::load());

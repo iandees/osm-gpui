@@ -44,6 +44,35 @@ cargo run
 - **Out-of-tree target dir.** `.cargo/config.toml` points `target-dir` to `~/.rust/osm-gpui/target` so build artifacts (~1 GB) stay out of the Dropbox/Synology-synced project folder. The `.cargo/` directory is gitignored because the path is user-specific. If cloning fresh on another machine, recreate it.
 - `gpui` is pulled from the `zed-industries/zed` git repo, so the first build takes several minutes.
 
+## Releases
+
+The version lives in one place: `version` in `Cargo.toml`. The app reads it with `env!("CARGO_PKG_VERSION")` (`src/version.rs`) for the HTTP `User-Agent` (`osm-gpui/<version> (+https://github.com/iandees/osm-gpui)`) and the changeset `created_by` tag (`osm-gpui <version>`).
+
+**Cutting a release**
+
+1. Bump `version` in `Cargo.toml` (and let `Cargo.lock` update), commit, and merge to `main`.
+2. Tag the commit and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
+
+`.github/workflows/release.yml` fails if the tag (without the `v`) differs from the `Cargo.toml` version. Otherwise it builds and attaches these files to a new GitHub Release with generated notes:
+
+- `osm-gpui-X.Y.Z-macos-universal.zip` — `osm-gpui.app` (Apple Silicon + Intel)
+- `osm-gpui-X.Y.Z-windows-x86_64.zip` — `osm-gpui.exe`
+- `osm-gpui-X.Y.Z-linux-x86_64.tar.gz` — binary and a `.desktop` file
+- `SHA256SUMS`
+
+The same build jobs run (without publishing) on pull requests that touch the workflow, `scripts/`, `packaging/` or `Cargo.toml`, and on manual `workflow_dispatch` runs; the packages are uploaded as workflow artifacts.
+
+**The macOS app is not notarized.** It is only ad-hoc signed (there is no Developer ID certificate), so Gatekeeper blocks the first launch of a downloaded copy. Right-click the app and choose Open, or run `xattr -dr com.apple.quarantine osm-gpui.app`.
+
+**Building the `.app` locally**
+
+```bash
+cargo build --release
+scripts/bundle-macos.sh        # writes dist/osm-gpui.app
+```
+
+Use `--binary PATH` to package a different executable (for example a `lipo`'d universal one) and `--out DIR` to change the output directory. If you use a custom target dir, set `CARGO_TARGET_DIR` so the script finds `release/osm-gpui`. There is no app icon in the repository yet, so the bundle has none.
+
 ## Architecture map
 
 Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but the real UI lives in `main.rs`.
@@ -104,13 +133,15 @@ The status bar at the bottom of the window shows a hint for the current mode (or
 
 ## Localization
 
+**Available languages:** English and German (Deutsch). The German catalog (`locales/de.yml`) is machine-drafted and has not yet been reviewed by a native speaker; corrections are welcome as pull requests or issues.
+
 The app's own interface text (menus, toolbar, status bar, side panel, dialogs, Settings, shortcut names, error messages) lives in message catalogs under `locales/`, one YAML file per language named by its locale tag (`locales/en.yml`). They are compiled into the binary by [`rust-i18n`](https://crates.io/crates/rust-i18n), so there is nothing to install. English is the source language and the fallback: a key missing from another catalog shows its English text.
 
 In code, use `tr!("menu.file.open")`, `tr!("status.exported", path = path.display())` for `%{path}` placeholders, and `tr_count!("status.pending_edits", n)` for plurals (the catalog has a `.one` / `.other` key per plural form; `i18n::plural_category` picks the form for a language). Keys are grouped by area (`menu.*`, `mode.*`, `status.*`, `panel.*`, `dialog.*`, `settings.*`, `shortcut.*`, `error.*`). Give translators whole sentences with named placeholders rather than gluing fragments together.
 
 **Adding a language:** copy `locales/en.yml` to `locales/<tag>.yml` (for example `fr.yml` or `pt-BR.yml`), translate the values (keep the keys, the `%{placeholders}`, and the literal `{z}`/`{x}`/`{y}` in the custom-imagery messages), and set `meta.language_name` to the language's own name; that is what the Settings dropdown shows. Rebuild. If a language needs plural forms beyond `one`/`other`, add the category to `i18n::plural_category` and the matching keys to its catalog. `cargo test` checks that every key used in the source exists in `en.yml`.
 
-**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart.
+**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart. `--language <tag>` (for example `cargo run -- --language de`) overrides the stored setting for that run only and never writes to `settings.json`, which makes it handy for trying a language and for scripted screenshots.
 
 **Preset and field labels:** the side panel's preset names ("Park", "Building"), field labels, field placeholders and option labels come from the bundled iD tagging schema ([`@openstreetmap/id-tagging-schema`](https://github.com/openstreetmap/id-tagging-schema), ISC licence) and follow the same language choice. Their translations are separate from the UI catalogs because upstream covers many more languages. They are `assets/presets/translations/<locale>.json` (about 270 KB each, embedded in the binary); only German (`de`) is bundled so far. The preset locale is resolved from the requested language on its own (`de-AT` falls back to `de`, then to English), and any string a translation lacks shows the schema's English text. The preset picker finds a preset by its translated name or search terms as well as its English name. **Adding a preset language:** run `cargo run --example update_preset_translations -- 6.19.2 <locale>` (use the schema version recorded in `assets/presets/LICENSE`; it trims upstream's `dist/translations/<locale>.min.json` to what the app uses), check the new file in, and rebuild; `build.rs` embeds every `*.json` in that directory. When the vendored schema is updated, regenerate the translations for the same version.
 
@@ -129,7 +160,7 @@ Flags:
 - `--script <path>` — run a `.osmscript` file. Without this flag, the app launches normally.
 - `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
 - `--keep-open` — don't exit after the last step, so you can poke at the final state.
-- `--language <tag>` — use this UI language for the run (for example `--language de`), overriding the saved setting without changing it.
+- `--language <tag>` — use this UI language for the run instead of the saved setting (see Localization).
 
 Script format is line-oriented with `#` comments:
 

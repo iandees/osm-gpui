@@ -173,7 +173,7 @@ pub fn create_changeset(base_url: &str, token: &str, comment: &str) -> Result<u6
 fn build_changeset_create_xml(comment: &str) -> String {
     format!(
         r#"<osm><changeset><tag k="created_by" v="{}"/><tag k="comment" v="{}"/></changeset></osm>"#,
-        xml_escape(crate::USER_AGENT),
+        xml_escape(crate::CREATED_BY),
         xml_escape(comment),
     )
 }
@@ -250,7 +250,7 @@ pub fn build_osm_change_xml(changeset_id: u64, layers: &[(&str, LayerDiff)]) -> 
     let mut out = String::new();
     out.push_str(&format!(
         r#"<osmChange version="0.6" generator="{}">"#,
-        xml_escape(crate::USER_AGENT)
+        xml_escape(crate::CREATED_BY)
     ));
     if !create_body.is_empty() {
         out.push_str("<create>");
@@ -402,12 +402,25 @@ mod tests {
     }
 
     #[test]
+    fn changeset_create_xml_has_created_by_and_comment() {
+        let xml = build_changeset_create_xml("fix <stuff>");
+        assert!(xml.contains(&format!(
+            r#"<tag k="created_by" v="osm-gpui {}"/>"#,
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(xml.contains(r#"<tag k="comment" v="fix &lt;stuff&gt;"/>"#));
+    }
+
+    #[test]
     fn empty_diff_produces_no_sections() {
         let diff = LayerDiff::default();
         let xml = build_osm_change_xml(1, &[("L", diff)]);
         assert_eq!(
             xml,
-            r#"<osmChange version="0.6" generator="osm-gpui/0.1.0"></osmChange>"#
+            format!(
+                r#"<osmChange version="0.6" generator="osm-gpui {}"></osmChange>"#,
+                env!("CARGO_PKG_VERSION")
+            )
         );
         assert!(!xml.contains("<create>"));
         assert!(!xml.contains("<modify>"));
