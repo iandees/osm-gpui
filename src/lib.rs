@@ -30,6 +30,7 @@ pub mod tile_cache;
 pub mod tiles;
 pub mod topology;
 pub mod ui;
+pub mod version;
 pub mod viewport;
 
 // Message catalogs: every `locales/*.yml`, compiled in. See `i18n`.
@@ -38,12 +39,7 @@ rust_i18n::i18n!("locales", fallback = "en", backend = i18n::extra_backend());
 pub use gpui;
 pub use osm::{MemberType, OsmBounds, OsmData, OsmMember, OsmNode, OsmParser, OsmRelation, OsmWay};
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Shared User-Agent string sent on all outgoing HTTP requests, so the OSM API,
-/// tile servers, and other services see a single consistent identifier for
-/// this app regardless of which module made the request.
-pub const USER_AGENT: &str = concat!("osm-gpui/", env!("CARGO_PKG_VERSION"));
+pub use version::{CREATED_BY, USER_AGENT, VERSION};
 
 /// Predicate for whether an HTTP status code from an idempotent GET is worth
 /// retrying: 429 (rate limited), 509 (bandwidth limit exceeded, used by the
@@ -57,12 +53,6 @@ pub fn is_retryable_status(status: u16) -> bool {
 #[cfg(test)]
 mod lib_tests {
     use super::*;
-
-    #[test]
-    fn user_agent_matches_expected_format() {
-        assert_eq!(USER_AGENT, concat!("osm-gpui/", env!("CARGO_PKG_VERSION")));
-        assert!(USER_AGENT.starts_with("osm-gpui/"));
-    }
 
     #[test]
     fn retryable_status_covers_429_509_and_5xx() {
