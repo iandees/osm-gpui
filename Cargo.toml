@@ -43,6 +43,9 @@ sys-locale = "0.3.2"
 
 [dev-dependencies]
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [[bin]]
 name = "osm-gpui"
 path = "src/main.rs"

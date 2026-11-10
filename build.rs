@@ -10,6 +10,15 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=locales");
 
+    // Embed the app icon (and the version info) in the Windows executable.
+    #[cfg(windows)]
+    {
+        println!("cargo:rerun-if-changed=assets/AppIcon.ico");
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/AppIcon.ico");
+        res.compile().expect("failed to embed the Windows icon");
+    }
+
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("assets/presets/translations");
     println!("cargo:rerun-if-changed={}", dir.display());

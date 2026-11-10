@@ -163,6 +163,7 @@ jobs:
           mkdir -p "stage/$name" out
           cp target/x86_64-unknown-linux-gnu/release/osm-gpui "stage/$name/"
           cp packaging/linux/osm-gpui.desktop README.md "stage/$name/"
+          cp assets/AppIcon.png "stage/$name/osm-gpui.png"
           tar -C stage -czf "out/$name.tar.gz" "$name"
 
       - uses: actions/upload-artifact@v4

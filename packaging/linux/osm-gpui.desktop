@@ -3,5 +3,6 @@ Type=Application
 Name=osm-gpui
 Comment=Experimental OpenStreetMap editor
 Exec=osm-gpui
+Icon=osm-gpui
 Terminal=false
 Categories=Utility;Geography;Maps;
