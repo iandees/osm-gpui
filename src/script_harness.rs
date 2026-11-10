@@ -19,6 +19,19 @@ use crate::MapViewer;
 pub(crate) static SCRIPT_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// True for the whole process when it was launched with `--script`. Set in
+/// `main` before the window exists (unlike `SCRIPT_ACTIVE`, which the
+/// runner thread flips on a little later and off again when it finishes),
+/// so window setup can ask it. Scripted runs lay the window out from
+/// defaults rather than the user's saved preferences, so that click
+/// coordinates and captures are the same on every machine.
+pub(crate) static SCRIPT_MODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn script_mode() -> bool {
+    SCRIPT_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // ---------------------------------------------------------------------------
 // Script command channel (background thread → gpui main thread)
 // ---------------------------------------------------------------------------

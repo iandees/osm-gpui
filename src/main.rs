@@ -81,7 +81,9 @@ actions!(
 /// Key context set on `MapViewer`'s root element. Bindings scoped to it lose
 /// to bindings scoped to a deeper context, which is what lets `cmd-a` mean
 /// "select all text" inside a focused text input and "select all features"
-/// everywhere else in the window.
+/// everywhere else in the window — and likewise `cmd-z` undo typing in an
+/// input rather than the last map edit. (A binding with no context at all
+/// would outrank the input's own.)
 const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
 
 /// Build the live `gpui::KeyBinding` list for the modifier-key actions from
@@ -114,8 +116,8 @@ pub(crate) fn key_bindings_from_settings(
             "download_osm" => Some(KeyBinding::new(&spec, DownloadFromOsm, None)),
             "upload_osm" => Some(KeyBinding::new(&spec, UploadToOsm, None)),
             "export_osm_file" => Some(KeyBinding::new(&spec, ExportOsmFile, None)),
-            "undo" => Some(KeyBinding::new(&spec, Undo, None)),
-            "redo" => Some(KeyBinding::new(&spec, Redo, None)),
+            "undo" => Some(KeyBinding::new(&spec, Undo, Some(MAP_VIEWER_KEY_CONTEXT))),
+            "redo" => Some(KeyBinding::new(&spec, Redo, Some(MAP_VIEWER_KEY_CONTEXT))),
             _ => None,
         })
         .chain(fixed)
@@ -604,8 +606,12 @@ impl MapViewer {
             upload_dialog: None,
             tag_inline_edit: None,
             fields_more_open_for: None,
+            // Scripted runs use the default width, not the user's saved one,
+            // so scripts' click coordinates hold on every machine.
             side_panel_width: osm_gpui::ui::style::initial_side_panel_width(
-                settings_store::snapshot().side_panel_width,
+                settings_store::snapshot()
+                    .side_panel_width
+                    .filter(|_| !script_harness::script_mode()),
             ),
             side_panel_resize: None,
             pending_tag_edit_open: None,
@@ -3080,6 +3086,14 @@ impl Render for MapViewer {
 
         self.expire_status();
 
+        // Keyboard shortcuts scoped to this view only match while focus is
+        // somewhere inside it. With nothing focused at all — at launch, or
+        // after a focused text input was removed — give focus to the map so
+        // they (and the map's bare-key shortcuts) keep working.
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
+
         // Update all layers
         self.layer_manager.update_all();
         self.sync_selection_to_layers();
@@ -3707,6 +3721,7 @@ fn main() {
     // starts. The thread blocks until the window is visible, then drives the
     // live app via ScriptBus.
     if let Some(script_path) = args.script {
+        script_harness::SCRIPT_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         let keep_open = args.keep_open;
         let idle_for_runner = idle.clone();
         let bus_for_runner = bus.clone();
