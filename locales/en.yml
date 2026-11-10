@@ -374,6 +374,8 @@ action:
       tag_conflict: "Can't join: the ways have different values for '%{key}'"
       needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
       relation_member: "Can't join: way %{id} is a member of a relation and would be deleted"
+      restriction: "Can't join: way %{way} is part of turn restriction %{relation}"
+      role_mismatch: "Can't join: way %{way} has a different role in relation %{relation} than the way it would be joined into"
   separate:
     label: "Separate Node"
     hint: "Select a node shared by two or more ways to separate it"
@@ -409,6 +411,7 @@ action:
       other: "Split %{count} ways"
     error:
       relation_member: "Can't split: way %{id} is a member of a relation, and relation changes aren't supported yet"
+      restriction_via: "Can't split: can't tell which part of way %{way} belongs in turn restriction %{relation}"
   merge:
     label: "Merge Nodes"
     hint: "Select two or more nodes to merge them into one"
@@ -432,6 +435,13 @@ action:
   delete:
     label: "Delete"
     hint: "Select something to delete"
+    # `%{what}` is the kind below, `%{id}` the OSM id.
+    kind:
+      node: "node"
+      way: "way"
+    error:
+      relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
+      restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
 
 shortcut_category:
   general: "General"

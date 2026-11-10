@@ -23,6 +23,7 @@ pub mod osm_upload;
 pub mod persist;
 pub mod preset_translations;
 pub mod presets;
+pub mod relations;
 pub mod script;
 pub mod selection;
 pub mod settings_store;
