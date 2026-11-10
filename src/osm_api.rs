@@ -261,7 +261,7 @@ pub fn fetch_element(
     fetch_element_with(&UreqClient::new(), base_url, token, kind, id, full)
 }
 
-pub(crate) fn fetch_element_with(
+pub fn fetch_element_with(
     client: &dyn HttpClient,
     base_url: &str,
     token: Option<&str>,

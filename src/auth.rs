@@ -45,7 +45,10 @@ const SCOPES: &str = "read_prefs write_api";
 /// OSM's primary and dev instances have separate app registrations, so a client_id valid
 /// on one is unknown to the other ("invalid_client") and each server needs its own.
 pub fn client_id_for(oauth_base_url: &str) -> String {
-    client_id_with_overrides(oauth_base_url, &crate::settings_store::snapshot().client_ids)
+    client_id_with_overrides(
+        oauth_base_url,
+        &crate::settings_store::snapshot().client_ids,
+    )
 }
 
 /// `client_id_for`, with the user's per-server overrides passed in.

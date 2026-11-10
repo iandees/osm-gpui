@@ -8,6 +8,7 @@ pub mod building;
 pub mod capabilities;
 pub mod coordinates;
 pub mod custom_imagery_store;
+pub mod dev_live;
 pub mod download_bounds;
 pub mod extrude;
 pub mod fields;
