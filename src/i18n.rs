@@ -350,6 +350,6 @@ mod tests {
                 }
             }
         }
-        let _ = checked;
+        assert!(checked > 0, "found no tr! calls to check");
     }
 }

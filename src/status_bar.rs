@@ -5,11 +5,13 @@
 //! else a hint for the current edit mode. Right side: pending-edit count,
 //! signed-in account, cursor coordinates, and zoom level.
 
-use gpui::{div, prelude::*, px, AnyElement, Context};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString};
 use gpui_component::{spinner::Spinner, ActiveTheme, Sizable};
 
 use osm_gpui::auth;
 use osm_gpui::settings_store;
+use osm_gpui::tr;
+use osm_gpui::tr_count;
 use osm_gpui::ui::style::muted_text_size;
 
 use crate::{EditMode, MapViewer};
@@ -35,45 +37,28 @@ pub(crate) fn mode_hint(
     progress: ModeProgress,
     has_selection: bool,
     oriented: bool,
-) -> &'static str {
+) -> SharedString {
     match (mode, progress) {
         (EditMode::Building, ModeProgress::Idle) if oriented => {
-            "Click or drag to draw a building aligned to the selected way · Esc to exit"
+            tr!("status.hint.building_oriented_idle")
         }
-        (EditMode::Building, _) if oriented => {
-            "Click or release at the opposite corner to finish the building · Esc to cancel"
-        }
-        (EditMode::Select, _) if has_selection => {
-            "Drag the selection to move it · Delete to remove · Esc to deselect"
-        }
-        (EditMode::Select, _) => {
-            "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
-        }
-        (EditMode::Add, ModeProgress::Idle) => {
-            "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
-        }
-        (EditMode::Add, _) => "Click to continue the way · Enter or Esc to finish",
-        (EditMode::Building, ModeProgress::Idle) => {
-            "Click to place the building's first corner · Esc to exit"
-        }
-        (EditMode::Building, ModeProgress::Started) => {
-            "Click to place the second corner · Esc to cancel"
-        }
-        (EditMode::Building, ModeProgress::EdgePlaced) => {
-            "Move to set the depth, then click to finish · Esc to cancel"
-        }
-        (EditMode::Extrude, _) => {
-            "Drag a way segment to extrude it · double-click a segment to add a node · Esc to exit"
-        }
+        (EditMode::Building, _) if oriented => tr!("status.hint.building_oriented_started"),
+        (EditMode::Select, _) if has_selection => tr!("status.hint.select_selection"),
+        (EditMode::Select, _) => tr!("status.hint.select_empty"),
+        (EditMode::Add, ModeProgress::Idle) => tr!("status.hint.add_idle"),
+        (EditMode::Add, _) => tr!("status.hint.add_started"),
+        (EditMode::Building, ModeProgress::Idle) => tr!("status.hint.building_idle"),
+        (EditMode::Building, ModeProgress::Started) => tr!("status.hint.building_started"),
+        (EditMode::Building, ModeProgress::EdgePlaced) => tr!("status.hint.building_edge_placed"),
+        (EditMode::Extrude, _) => tr!("status.hint.extrude"),
     }
 }
 
 /// "N unsaved edit(s)", or `None` when there's nothing to upload.
-pub(crate) fn pending_edits_label(count: usize) -> Option<String> {
+pub(crate) fn pending_edits_label(count: usize) -> Option<SharedString> {
     match count {
         0 => None,
-        1 => Some("1 unsaved edit".to_string()),
-        n => Some(format!("{n} unsaved edits")),
+        n => Some(tr_count!("status.pending_edits", n)),
     }
 }
 
@@ -174,12 +159,12 @@ impl MapViewer {
                     .text_ellipsis(),
             )
             .when(too_large_to_download, |bar| {
-                bar.child(segment().child("Zoom in to download"))
+                bar.child(segment().child(tr!("status.zoom_in_to_download")))
             })
             .children(pending.map(|label| segment().text_color(foreground).child(label)))
             .child(segment().child(match account {
-                Some(name) => name,
-                None => "Not signed in".to_string(),
+                Some(name) => name.into(),
+                None => tr!("status.not_signed_in"),
             }))
             .children(cursor.map(|(lat, lon)| {
                 // Fixed width so the segments to its left don't jitter as
@@ -235,6 +220,31 @@ mod tests {
             mode_hint(EditMode::Select, ModeProgress::Idle, true, true),
             mode_hint(EditMode::Select, ModeProgress::Idle, true, false)
         );
+    }
+
+    #[test]
+    fn every_hint_resolves_to_a_message() {
+        for mode in [
+            EditMode::Select,
+            EditMode::Add,
+            EditMode::Building,
+            EditMode::Extrude,
+        ] {
+            for progress in [
+                ModeProgress::Idle,
+                ModeProgress::Started,
+                ModeProgress::EdgePlaced,
+            ] {
+                for (has_selection, oriented) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let hint = mode_hint(mode, progress, has_selection, oriented);
+                    // A missing key renders as "<locale>.<key>".
+                    assert!(!hint.starts_with("en.status."), "{hint}");
+                    assert!(hint.contains(' '), "{hint}");
+                }
+            }
+        }
     }
 
     #[test]

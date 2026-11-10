@@ -62,20 +62,89 @@ menu:
     title: "Select OSM file to open"
     osm_files: "OSM files"
     all_files: "All files"
+  export_dialog:
+    title: "Export OSM data"
 
-# Edit modes (menu items, toolbar buttons, tooltips).
+# Edit modes. `name` is the menu item, `label` the short text under the
+# toolbar icon (the toolbar is narrow), `tooltip` the hover description.
 mode:
   select:
     name: "Select"
+    label: "Select"
+    tooltip: "Select and move features"
   add:
     name: "Add"
+    label: "Add"
+    tooltip: "Add nodes and ways"
   building:
     name: "Building"
+    label: "Bldg"
+    tooltip: "Draw a rectangular building"
   extrude:
     name: "Extrude"
+    label: "Extr"
+    tooltip: "Extrude a way segment"
+  # `%{shortcut}` is the key that activates the mode, e.g. "A".
+  tooltip: "%{name} (%{shortcut})"
+  tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
+
+# Long-running background operations, shown with a spinner in the status bar.
+activity:
+  uploading: "Uploading changes…"
+  downloading: "Downloading OSM data…"
 
 status:
+  # One-line hint for what the mouse and keyboard do in each mode.
+  hint:
+    select_empty: "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
+    select_selection: "Drag the selection to move it · Delete to remove · Esc to deselect"
+    add_idle: "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
+    add_started: "Click to continue the way · Enter or Esc to finish"
+    building_idle: "Click to place the building's first corner · Esc to exit"
+    building_started: "Click to place the second corner · Esc to cancel"
+    building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
+    building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
+    building_oriented_started: "Click or release at the opposite corner to finish the building · Esc to cancel"
+    extrude: "Drag a way segment to extrude it · double-click a segment to add a node · Esc to exit"
+  pending_edits:
+    one: "%{count} unsaved edit"
+    other: "%{count} unsaved edits"
+  not_signed_in: "Not signed in"
+  zoom_in_to_download: "Zoom in to download"
   open_failed: "Could not open %{path}: %{error}"
+  open_data_first: "Open or download OSM data before drawing"
+  tag_needs_key: "A tag needs a key; the edit was discarded"
+  nothing_to_delete: "Nothing to delete"
+  deleted_features:
+    one: "Deleted %{count} feature"
+    other: "Deleted %{count} features"
+  no_data_to_zoom: "No OSM data to zoom to"
+  nothing_selected: "Nothing selected"
+  no_data_to_export: "No OSM data to export"
+  exported: "Exported to %{path}"
+  export_failed: "Export failed: %{error}"
+  nothing_to_upload: "Nothing to upload"
+  uploaded: "Uploaded changes (changeset %{changeset})"
+  upload_failed_changeset_open: "%{error} (changeset %{changeset} was opened but not uploaded — you may want to close it manually)"
+  downloaded: "Downloaded OSM data: %{summary}"
+  # The parts of the download summary above, joined with `separator`.
+  merge:
+    nothing_new: "nothing new"
+    added:
+      one: "%{count} new"
+      other: "%{count} new"
+    updated:
+      one: "%{count} updated"
+      other: "%{count} updated"
+    kept_local:
+      one: "%{count} local edit kept"
+      other: "%{count} local edits kept"
+    separator: ", "
+
+panel:
+  tags:
+    key_placeholder: "key"
+    value_placeholder: "value"
 
 settings:
   window_title: "Settings"
