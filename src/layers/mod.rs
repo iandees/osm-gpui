@@ -10,17 +10,23 @@ pub mod osm_layer;
 pub mod resolve;
 pub mod tile_layer;
 
-/// Wash laid over the part of the map that was not downloaded (RGBA): a cool
-/// slate at low opacity, which dims both the light Carto basemap and darker
-/// aerial imagery without hiding either.
-const DOWNLOAD_WASH_RGBA: u32 = 0x1e293b52;
+/// Wash laid over the part of the map that was not downloaded (RGBA): a deep
+/// slate at moderate opacity. Dimming alone barely shows on dark aerial
+/// imagery, so the hatch below carries the "not downloaded" signal there.
+const DOWNLOAD_WASH_RGBA: u32 = 0x0f172a70;
+/// Light diagonal hatch drawn over the wash (RGBA), its line width and its
+/// spacing along the x axis, in pixels. Visible on dark imagery, and on
+/// light imagery because the wash underneath darkens it.
+const DOWNLOAD_HATCH_RGBA: u32 = 0xffffff40;
+const DOWNLOAD_HATCH_WIDTH: f32 = 1.0;
+const DOWNLOAD_HATCH_SPACING: f32 = 9.0;
 /// Colour of the line along the edge of the downloaded area (RGBA).
 const DOWNLOAD_EDGE_RGBA: u32 = 0x1e3a8acc;
 /// Width of that line, in pixels.
 const DOWNLOAD_EDGE_WIDTH: f32 = 2.0;
 /// Pale halo drawn under the edge line (RGBA) and its total width, so the
 /// edge reads on dark aerial imagery as well as on light Carto.
-const DOWNLOAD_HALO_RGBA: u32 = 0xdbeafecc;
+const DOWNLOAD_HALO_RGBA: u32 = 0xf1f5f9f2;
 const DOWNLOAD_HALO_WIDTH: f32 = 5.0;
 
 /// Stable identity for a layer, independent of its (user-visible, possibly
@@ -565,6 +571,8 @@ impl LayerManager {
             )
         };
         let wash = rgba(DOWNLOAD_WASH_RGBA);
+        let mut hatch = PathBuilder::stroke(px(DOWNLOAD_HATCH_WIDTH));
+        let mut any_hatch = false;
         for r in &region.dim {
             let (x0, y0) = to_screen(r.min_x, r.max_y);
             let (x1, y1) = to_screen(r.max_x, r.min_y);
@@ -578,8 +586,32 @@ impl LayerManager {
                 },
                 wash,
             ));
+            // Hatch: 45-degree lines x + y = c, clipped to the rectangle,
+            // all in one path so it is a single draw call.
+            let mut c = ((x0 + y0) / DOWNLOAD_HATCH_SPACING).floor() * DOWNLOAD_HATCH_SPACING;
+            let c_end = x1 + y1;
+            // Bound the line count so a huge rectangle at an extreme zoom
+            // cannot stall painting.
+            if (c_end - c) / DOWNLOAD_HATCH_SPACING > 4000.0 {
+                continue;
+            }
+            while c <= c_end {
+                let xa = x0.max(c - y1);
+                let xb = x1.min(c - y0);
+                if xa < xb {
+                    hatch.move_to(point(px(xa), px(c - xa)));
+                    hatch.line_to(point(px(xb), px(c - xb)));
+                    any_hatch = true;
+                }
+                c += DOWNLOAD_HATCH_SPACING;
+            }
         }
-        // A pale halo under the blue line keeps the edge visible over dark
+        if any_hatch {
+            if let Ok(path) = hatch.build() {
+                window.paint_path(path, rgba(DOWNLOAD_HATCH_RGBA));
+            }
+        }
+        // A near-white halo under the dark blue line (a two-tone edge) keeps the edge visible over dark
         // imagery, where blue alone vanishes.
         for (width, color) in [
             (DOWNLOAD_HALO_WIDTH, DOWNLOAD_HALO_RGBA),

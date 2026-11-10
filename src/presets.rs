@@ -290,6 +290,40 @@ pub fn icon_path(icon_name: &str) -> Option<gpui::SharedString> {
     Some(format!("{ICON_ASSET_DIR}{icon_name}.svg").into())
 }
 
+/// Whether the icon behind this asset path is a multi-colour illustration
+/// (every iD icon: road and water pictograms with several fills, grey
+/// shading and `currentColor` parts). GPUI's `svg()` paints an SVG as a
+/// single-colour alpha mask, which turns those into solid blobs, so they are
+/// drawn through `img()` instead, which rasterises the SVG in full colour.
+pub fn is_colour_icon(asset_path: &str) -> bool {
+    asset_path
+        .strip_prefix(ICON_ASSET_DIR)
+        .is_some_and(|name| name.starts_with("iD-"))
+}
+
+/// A square preset icon of `size` pixels for an asset path from
+/// [`icon_path`]. Single-colour icons are masks tinted with `color`;
+/// multi-colour ones ([`is_colour_icon`]) keep their own colours.
+pub fn icon_element(
+    path: gpui::SharedString,
+    size: f32,
+    color: gpui::Hsla,
+) -> gpui::AnyElement {
+    use gpui::{IntoElement, ObjectFit, Styled, StyledImage};
+    if is_colour_icon(&path) {
+        gpui::img(path)
+            .size(gpui::px(size))
+            .object_fit(ObjectFit::Contain)
+            .into_any_element()
+    } else {
+        gpui::svg()
+            .path(path)
+            .size(gpui::px(size))
+            .text_color(color)
+            .into_any_element()
+    }
+}
+
 /// The embedded SVG bytes behind an asset path produced by [`icon_path`].
 pub fn icon_asset(asset_path: &str) -> Option<&'static [u8]> {
     let name = asset_path
