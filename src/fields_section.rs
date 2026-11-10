@@ -16,6 +16,18 @@ use crate::MapViewer;
 use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 
+/// Height of every Fields control (text input, select box, checkbox row), so
+/// the column reads as one rhythm; the Tags table rows are about the same.
+const FIELD_CONTROL_HEIGHT: f32 = 28.0;
+
+/// A field's name: small muted text above its control.
+fn field_label(text: impl Into<gpui::SharedString>, cx: &gpui::App) -> gpui::Div {
+    gpui::div()
+        .text_size(muted_text_size())
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+}
+
 impl MapViewer {
     /// Get or create the `InputState` entity for a text field, seeded from
     /// `current_value` only on creation (an existing entity keeps whatever
@@ -83,6 +95,7 @@ impl MapViewer {
         // Labels, placeholders and option labels follow the UI language;
         // tag keys and values never do.
         let tr = osm_gpui::preset_translations::active();
+        let body = osm_gpui::ui::style::current_text_scale().body;
         match field.field_type {
             osm_gpui::fields::FieldType::Text => {
                 let current = tags.get(&field.key).cloned().unwrap_or_default();
@@ -99,8 +112,12 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.display_label(tr).to_string()))
-                    .child(Input::new(&input))
+                    .child(field_label(field.display_label(tr).to_string(), cx))
+                    .child(
+                        Input::new(&input)
+                            .with_size(gpui_component::Size::Size(body / 0.875))
+                            .h(gpui::px(FIELD_CONTROL_HEIGHT)),
+                    )
                     .into_any_element()
             }
             osm_gpui::fields::FieldType::Check => {
@@ -108,20 +125,30 @@ impl MapViewer {
                 let field_key = field.key.clone();
                 let element_id: gpui::ElementId =
                     gpui::SharedString::from(format!("field-check-{}", field.id)).into();
-                gpui_component::checkbox::Checkbox::new(element_id)
-                    .checked(current)
-                    .label(field.display_label(tr).to_string())
-                    .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
-                        let value = if *checked { "yes" } else { "no" };
-                        this.apply_nsi_preset(
-                            &feature,
-                            std::collections::HashMap::from([(
-                                field_key.clone(),
-                                value.to_string(),
-                            )]),
-                        );
-                        cx.notify();
-                    }))
+                // Same row height as the other controls; the label is body
+                // text like a value (it is the control's own text).
+                gpui::div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h(gpui::px(FIELD_CONTROL_HEIGHT))
+                    .child(
+                        gpui_component::checkbox::Checkbox::new(element_id)
+                            .checked(current)
+                            .label(field.display_label(tr).to_string())
+                            .text_size(body)
+                            .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
+                                let value = if *checked { "yes" } else { "no" };
+                                this.apply_nsi_preset(
+                                    &feature,
+                                    std::collections::HashMap::from([(
+                                        field_key.clone(),
+                                        value.to_string(),
+                                    )]),
+                                );
+                                cx.notify();
+                            })),
+                    )
                     .into_any_element()
             }
             osm_gpui::fields::FieldType::Radio => {
@@ -159,7 +186,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.display_label(tr).to_string()))
+                    .child(field_label(field.display_label(tr).to_string(), cx))
                     .child(group)
                     .into_any_element()
             }
@@ -179,8 +206,38 @@ impl MapViewer {
                     .flex_row()
                     .items_center()
                     .justify_between()
+                    .gap_1()
+                    .h(gpui::px(FIELD_CONTROL_HEIGHT))
+                    .px_2()
+                    // A select box: bordered like the text inputs, with a
+                    // chevron, so a read-only-looking value reads as a control.
+                    .border_1()
+                    .border_color(cx.theme().input)
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    .hover(|el| el.bg(cx.theme().accent))
                     .cursor_pointer()
-                    .child(Label::new(current_label))
+                    .child(
+                        gpui::div()
+                            .flex_1()
+                            .min_w(gpui::px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .when(current_value.is_none(), |this| {
+                                this.text_color(cx.theme().muted_foreground)
+                            })
+                            .child(current_label),
+                    )
+                    .child(
+                        gpui_component::Icon::new(if is_open {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                    )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _ev, _window, cx| {
@@ -199,7 +256,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.display_label(tr).to_string()))
+                    .child(field_label(field.display_label(tr).to_string(), cx))
                     .child(header);
 
                 if is_open {
@@ -262,7 +319,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(Label::new(field.display_label(tr).to_string()));
+                    .child(field_label(field.display_label(tr).to_string(), cx));
 
                 // Chips for already-selected values, each removable.
                 let chips = gpui::div().flex().flex_row().flex_wrap().gap_1().children(
@@ -403,8 +460,8 @@ impl MapViewer {
 
         let change_type_button = Button::new("change-feature-type")
             .label(tr!("panel.fields.change_type"))
-            .ghost()
-            .xsmall()
+            .outline()
+            .small()
             .on_click(cx.listener(move |_this, _ev, window, cx| {
                 window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
             }));
@@ -454,7 +511,7 @@ impl MapViewer {
             field_elements.push(self.render_one_field(&field, &tags, feature, window, cx));
         }
 
-        let mut column = gpui::div().flex().flex_col().gap_2();
+        let mut column = gpui::div().flex().flex_col().gap_3();
         column = column.child(change_type_button).children(field_elements);
 
         // "Add field" control: list `preset.more_fields` not already shown
@@ -513,7 +570,7 @@ impl MapViewer {
                             )))
                             .label(f.display_label(tr).to_string())
                             .ghost()
-                            .xsmall()
+                            .small()
                             .on_click(cx.listener(
                                 move |this, _ev, _window, cx| {
                                     this.fields_promoted_more_fields.insert(field_id.clone());
