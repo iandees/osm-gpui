@@ -36,6 +36,7 @@ pub mod tiles;
 pub mod topology;
 pub mod transfer;
 pub mod ui;
+pub mod upload_chunks;
 pub mod version;
 pub mod viewport;
 
