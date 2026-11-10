@@ -104,6 +104,8 @@ The status bar at the bottom of the window shows a hint for the current mode (or
 
 ## Localization
 
+**Available languages:** English and German (Deutsch). The German catalog (`locales/de.yml`) is machine-drafted and has not yet been reviewed by a native speaker; corrections are welcome as pull requests or issues.
+
 The app's own interface text (menus, toolbar, status bar, side panel, dialogs, Settings, shortcut names, error messages) lives in message catalogs under `locales/`, one YAML file per language named by its locale tag (`locales/en.yml`). They are compiled into the binary by [`rust-i18n`](https://crates.io/crates/rust-i18n), so there is nothing to install. English is the source language and the fallback: a key missing from another catalog shows its English text.
 
 In code, use `tr!("menu.file.open")`, `tr!("status.exported", path = path.display())` for `%{path}` placeholders, and `tr_count!("status.pending_edits", n)` for plurals (the catalog has a `.one` / `.other` key per plural form; `i18n::plural_category` picks the form for a language). Keys are grouped by area (`menu.*`, `mode.*`, `status.*`, `panel.*`, `dialog.*`, `settings.*`, `shortcut.*`, `error.*`). Give translators whole sentences with named placeholders rather than gluing fragments together.
