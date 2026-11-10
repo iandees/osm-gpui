@@ -20,6 +20,16 @@ use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
 const PREVIEW_TAG_COUNT: usize = 3;
+const ROW_ICON_SIZE: f32 = 20.0;
+
+/// The icon file for a result row: the preset's own icon, else the generic
+/// icon for the geometry being edited.
+fn icon_for_preset(preset_id: &str, geometry: Geometry) -> Option<std::path::PathBuf> {
+    let icon = crate::presets::preset_index()
+        .get(preset_id)
+        .and_then(|p| p.icon.as_deref());
+    crate::presets::icon_path_or_fallback(icon, geometry)
+}
 
 /// Build the compact tag preview shown in a result row, e.g.
 /// "amenity=cafe, cuisine=coffee_shop" — up to `PREVIEW_TAG_COUNT` tags,
@@ -143,23 +153,46 @@ impl Render for PresetPickerDialog {
                 .flex_col()
                 .h(gpui::px(240.0))
                 .overflow_y_scroll()
-                .children(results.iter().enumerate().map(|(i, (name, _id, tags))| {
+                .children(results.iter().enumerate().map(|(i, (name, id, tags))| {
                     let tags = tags.clone();
                     let is_selected = i == selected_index;
+                    let icon = icon_for_preset(id, self.geometry);
                     div()
                         .id(("preset-picker-result", i))
                         .flex()
-                        .flex_col()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
                         .px_2()
                         .py_1()
                         .cursor_pointer()
                         .when(is_selected, |el| el.bg(cx.theme().accent))
                         .hover(|el| el.bg(cx.theme().accent))
-                        .child(Label::new(name.clone()))
+                        // The icon slot is reserved even without an icon so
+                        // names line up down the list.
                         .child(
-                            Label::new(format_tag_preview(&tags))
-                                .text_size(muted_text_size())
-                                .text_color(muted),
+                            div()
+                                .size(gpui::px(ROW_ICON_SIZE))
+                                .flex_shrink_0()
+                                .children(icon.map(|path| {
+                                    gpui::svg()
+                                        .external_path(path.to_string_lossy().to_string())
+                                        .size(gpui::px(ROW_ICON_SIZE))
+                                        .text_color(cx.theme().foreground)
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w(gpui::px(0.))
+                                .child(Label::new(name.clone()))
+                                .child(
+                                    Label::new(format_tag_preview(&tags))
+                                        .text_size(muted_text_size())
+                                        .text_color(muted),
+                                ),
                         )
                         .on_mouse_down(
                             gpui::MouseButton::Left,
