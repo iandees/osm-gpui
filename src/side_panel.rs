@@ -73,6 +73,10 @@ impl MapViewer {
         let open_tags = self.side_panel_open[3];
         let open_history = self.side_panel_open[4];
 
+        let selected_count = self.selected.len();
+        let muted = cx.theme().muted_foreground;
+        let selection_header = self.render_selection_header(cx);
+
         let selection_title = match self.selected.len() {
             0 => tr!("panel.selection.title"),
             n => tr_count!("panel.selection.title_count", n),
@@ -124,45 +128,84 @@ impl MapViewer {
                         layers_section,
                         cx,
                     ))
-                    .child(self.collapsible_section(
-                        selection_title,
-                        1,
-                        open_selection,
-                        selection_section,
-                        cx,
-                    ))
-                    .child(self.collapsible_section(
-                        tr!("panel.fields.title"),
-                        2,
-                        open_fields,
-                        fields_section,
-                        cx,
-                    ))
-                    .child(self.collapsible_section(
-                        tr!("panel.tags.title"),
-                        3,
-                        open_tags,
-                        tags_section,
-                        cx,
-                    ))
-                    .children(members_section.map(|(count, section)| {
-                        self.collapsible_section(
-                            tr_count!("panel.members.title_count", count),
-                            6,
-                            open_members,
-                            section,
-                            cx,
+                    // Nothing selected: one friendly message instead of
+                    // empty Selection, Fields and Tags sections.
+                    .when(selected_count == 0, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_1()
+                                .px_4()
+                                .py_6()
+                                .child(Label::new(tr!("panel.selection.nothing")).text_color(muted))
+                                .child(
+                                    div()
+                                        .text_size(muted_text_size())
+                                        .text_color(muted)
+                                        .text_center()
+                                        .child(tr!("panel.selection.nothing_hint")),
+                                ),
                         )
-                    }))
-                    .children(relations_section.map(|section| {
-                        self.collapsible_section(
-                            tr!("panel.relations.title"),
-                            5,
-                            open_relations,
-                            section,
-                            cx,
+                    })
+                    // Everything about the selected feature(s) sits in one
+                    // raised group, apart from the document-level sections.
+                    .when(selected_count > 0, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .my_2()
+                                .bg(cx.theme().background)
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .when(selected_count == 1, |group| group.child(selection_header))
+                                .when(selected_count > 1, |group| {
+                                    group.child(self.collapsible_section(
+                                        selection_title,
+                                        1,
+                                        open_selection,
+                                        selection_section,
+                                        cx,
+                                    ))
+                                })
+                                .when(selected_count == 1, |group| {
+                                    group.child(self.collapsible_section(
+                                        tr!("panel.fields.title"),
+                                        2,
+                                        open_fields,
+                                        fields_section,
+                                        cx,
+                                    ))
+                                })
+                                .child(self.collapsible_section(
+                                    tr!("panel.tags.title"),
+                                    3,
+                                    open_tags,
+                                    tags_section,
+                                    cx,
+                                ))
+                                .children(members_section.map(|(count, section)| {
+                                    self.collapsible_section(
+                                        tr_count!("panel.members.title_count", count),
+                                        6,
+                                        open_members,
+                                        section,
+                                        cx,
+                                    )
+                                }))
+                                .children(relations_section.map(|section| {
+                                    self.collapsible_section(
+                                        tr!("panel.relations.title"),
+                                        5,
+                                        open_relations,
+                                        section,
+                                        cx,
+                                    )
+                                })),
                         )
-                    }))
+                    })
                     .child(self.collapsible_section(
                         tr!("panel.history.title"),
                         4,
@@ -340,10 +383,16 @@ impl MapViewer {
                         .xsmall()
                         .tooltip(tip)
                 };
+                // Quiet until the row is hovered (still in the layout and
+                // clickable, so the row doesn't shift and the buttons stay
+                // reachable).
+                let group_name = SharedString::from(format!("member-row-{i}"));
                 let controls = div()
                     .flex()
                     .flex_row()
                     .flex_shrink_0()
+                    .opacity(0.)
+                    .group_hover(group_name.clone(), |s| s.opacity(1.))
                     .child(
                         button("member-up", IconName::ArrowUp, tr!("panel.members.move_up"))
                             .disabled(i == 0)
@@ -415,6 +464,7 @@ impl MapViewer {
 
                 div()
                     .id(("member-row", i))
+                    .group(group_name)
                     .flex()
                     .flex_col()
                     .flex_shrink_0()
@@ -569,8 +619,13 @@ impl MapViewer {
 
         let cursor = self.undo_stack.cursor;
         div()
+            .id("history-list")
             .flex()
             .flex_col()
+            // A long history scrolls here rather than pushing everything
+            // else off screen.
+            .max_h(px(200.))
+            .overflow_y_scroll()
             .children(
                 self.undo_stack
                     .actions
@@ -579,7 +634,13 @@ impl MapViewer {
                     .map(|(i, action)| {
                         let is_current = i + 1 == cursor;
                         let is_future = i >= cursor;
-                        let mut row = panel_row(("history-row", i)).child(action.description());
+                        // Long descriptions wrap onto a second line instead
+                        // of running off the panel.
+                        let mut row = panel_row(("history-row", i))
+                            .h_auto()
+                            .min_h(px(PANEL_ROW_HEIGHT))
+                            .py_0p5()
+                            .child(div().flex_1().min_w(px(0.)).child(action.description()));
                         if is_current {
                             row = row.bg(cx.theme().list_active);
                         } else if is_future {
@@ -602,6 +663,16 @@ impl MapViewer {
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Layers (0) and History (4) belong to the document, not to the
+        // selection: their headers are quieter, small and muted.
+        let document_level = index == 0 || index == 4;
+        let title_label = if document_level {
+            Label::new(title)
+                .text_size(muted_text_size())
+                .text_color(cx.theme().muted_foreground)
+        } else {
+            Label::new(title)
+        };
         let header = div()
             .id(("section-header", index))
             .flex()
@@ -609,10 +680,8 @@ impl MapViewer {
             .items_center()
             .gap_1()
             .px_2()
-            .py_1()
+            .py_1p5()
             .cursor_pointer()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .hover(|this| this.bg(cx.theme().accent))
             .child(
                 Icon::new(if open {
@@ -623,15 +692,24 @@ impl MapViewer {
                 .xsmall()
                 .text_color(cx.theme().muted_foreground),
             )
-            .child(Label::new(title).font_weight(gpui::FontWeight::SEMIBOLD))
+            .child(title_label.font_weight(gpui::FontWeight::SEMIBOLD))
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
             }));
 
-        div().flex().flex_col().child(header).when(open, |this| {
-            this.child(div().px_2().py_1p5().child(content))
-        })
+        let border = cx.theme().border;
+        div()
+            .flex()
+            .flex_col()
+            // Selection-level sections are divided by a hairline.
+            .when(!document_level, |this| {
+                this.border_t_1().border_color(border)
+            })
+            .child(header)
+            .when(open, |this| {
+                this.child(div().px_2().pt_0p5().pb_2().child(content))
+            })
     }
 
     /// Resolve the friendly `(name, icon_svg_path)` for a selected feature,
@@ -663,16 +741,101 @@ impl MapViewer {
         Some((name, icon_path))
     }
 
-    /// The Selection accordion section: a scrollable list of the selected
-    /// features (max ~10 rows visible, then scrolls). Clicking a row narrows
-    /// the selection to just that feature.
+    /// The anchor of the panel when exactly one feature is selected: its
+    /// preset icon and name in large type, with its kind and id as secondary
+    /// text. An empty element otherwise.
+    fn render_selection_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use osm_gpui::selection::FeatureKind;
+
+        let [feat] = self.selected.as_slice() else {
+            return div().into_any_element();
+        };
+        let kind_label = match feat.kind {
+            FeatureKind::Node => tr!("panel.selection.node"),
+            FeatureKind::Way => tr!("panel.selection.way"),
+            FeatureKind::Relation => tr!("panel.selection.relation"),
+        };
+        let described = self.describe_selected_feature(feat);
+        // The feature's own name (if it has one) leads; the preset name moves
+        // down beside the kind and id.
+        let own_name = self
+            .layer_manager
+            .find_layer(feat.layer_id)
+            .and_then(|layer| layer.as_editable())
+            .and_then(|editable| editable.feature_tags(feat))
+            .and_then(|tags| {
+                tags.into_iter()
+                    .find(|(k, v)| k == "name" && !v.trim().is_empty())
+                    .map(|(_, v)| v)
+            });
+        let plain = tr!("panel.selection.row", kind = kind_label, id = feat.id);
+        let (title, detail, icon_path) = match (described, own_name) {
+            (Some((preset, path)), Some(name)) => (
+                name,
+                tr!(
+                    "panel.selection.row_named",
+                    name = preset,
+                    kind = kind_label,
+                    id = feat.id
+                ),
+                path,
+            ),
+            (Some((preset, path)), None) => (preset, plain, path),
+            (None, Some(name)) => (name, plain, None),
+            (None, None) => (plain.to_string(), SharedString::default(), None),
+        };
+        let muted = cx.theme().muted_foreground;
+        let body = osm_gpui::ui::style::current_text_scale().body;
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2p5()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .children(icon_path.map(|path| {
+                gpui::svg()
+                    .external_path(path.to_string_lossy().to_string())
+                    .size(px(24.0))
+                    .flex_shrink_0()
+                    .text_color(cx.theme().foreground)
+            }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(body + px(3.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .child(detail),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The Selection accordion section for a multi-selection: a scrollable
+    /// list of the selected features (max ~10 rows visible, then scrolls).
+    /// Clicking a row narrows the selection to just that feature.
     fn render_selection_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use osm_gpui::selection::FeatureKind;
 
         if self.selected.is_empty() {
-            return Label::new(tr!("panel.selection.empty"))
-                .text_color(cx.theme().muted_foreground)
-                .into_any_element();
+            return div().into_any_element();
         }
 
         let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
@@ -971,9 +1134,8 @@ impl MapViewer {
         use osm_gpui::ui::tag_edit::TagEditField;
 
         if self.selected.is_empty() {
-            return Label::new(tr!("panel.tags.no_selection"))
-                .text_color(cx.theme().muted_foreground)
-                .into_any_element();
+            // Not shown at all when nothing is selected.
+            return div().into_any_element();
         }
 
         let per_feature: Vec<Vec<(String, String)>> = self

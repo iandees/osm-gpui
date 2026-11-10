@@ -3,6 +3,10 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+- Side panel: the selected feature gets a header (icon, name, preset and id) with its Fields, Tags, Relations and Members grouped under it; Layers and History have quieter headers; with nothing selected one message replaces three empty sections; long History entries wrap and the list scrolls; member reorder/remove buttons appear on hover.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of

@@ -176,7 +176,8 @@ panel:
     title_count:
       one: "Selection (%{count} item)"
       other: "Selection (%{count} items)"
-    empty: "Click or drag to select."
+    nothing: "Nothing selected"
+    nothing_hint: "Click a feature, or drag a box to select several."
     node: "Node"
     way: "Way"
     relation: "Relation"
@@ -185,8 +186,6 @@ panel:
     row_named: "%{name} · %{kind} %{id}"
   fields:
     title: "Fields"
-    no_selection: "No selection."
-    select_single: "Select a single feature to edit fields."
     change_type: "Change feature type…"
     no_preset: "No matched preset."
     no_fields: "This feature type has no editable fields."
@@ -197,7 +196,6 @@ panel:
     none: "(none)"
   tags:
     title: "Tags"
-    no_selection: "No selection."
     add: "Add tag"
     empty: "(no tags)"
     key_placeholder: "key"
