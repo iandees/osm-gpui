@@ -183,6 +183,12 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         label: "Separate Node",
         category: ShortcutCategory::Actions,
     },
+    ShortcutDef {
+        id: "action_extend",
+        default_spec: "e",
+        label: "Extend Way",
+        category: ShortcutCategory::Actions,
+    },
 ];
 
 /// Look up a shortcut's definition by id. Panics if `id` isn't in

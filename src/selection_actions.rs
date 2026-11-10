@@ -54,6 +54,13 @@ impl<'a> ActionEnv<'a> {
     /// Whether the selection is a node that can be separated: one node of
     /// the active layer (plus optionally one way, to detach just that way)
     /// used in more than one place.
+    /// Where Extend Way would continue from, for the selection: a single
+    /// open way, or a single node that ends exactly one open way.
+    fn extend_target(&self) -> Option<topology::Continuation> {
+        let (layer_id, editable) = (self.active_layer?, self.active_editable()?);
+        extend_target(editable, layer_id, self.selection)
+    }
+
     fn can_separate_selection(&self) -> bool {
         let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
             return false;
@@ -142,6 +149,26 @@ fn separate_target(layer_id: LayerId, selection: &[FeatureRef]) -> Option<(i64, 
     Some((node, way))
 }
 
+fn extend_target(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<topology::Continuation> {
+    let [feature] = selection else {
+        return None;
+    };
+    if feature.layer_id != layer_id {
+        return None;
+    }
+    match feature.kind {
+        FeatureKind::Way => topology::continue_way(feature.id, &editable.way_node_ids(feature.id)?),
+        FeatureKind::Node => {
+            editable.node_lat_lon(feature.id)?;
+            topology::continue_from_node(feature.id, &ways_using(editable, feature.id))
+        }
+    }
+}
+
 /// `(way id, node ids)` for every way that uses `node`.
 fn ways_using(editable: &dyn EditableLayer, node: i64) -> Vec<(i64, Vec<i64>)> {
     editable
@@ -153,7 +180,9 @@ fn ways_using(editable: &dyn EditableLayer, node: i64) -> Vec<(i64, Vec<i64>)> {
 
 /// What running an action produced; the caller records `undo` as one step.
 pub(crate) struct ActionOutcome {
-    pub undo: UndoableAction,
+    /// The undo step to record; `None` if the action changed no data (Extend
+    /// Way only switches mode).
+    pub undo: Option<UndoableAction>,
     /// Short status-bar message, e.g. "Squared 1 way".
     pub status: String,
     /// Whether the selection no longer makes sense (e.g. after a delete).
@@ -161,6 +190,9 @@ pub(crate) struct ActionOutcome {
     /// Replace the selection with these features (e.g. the surviving way
     /// after a join). Takes effect after `clear_selection`.
     pub select: Option<Vec<FeatureRef>>,
+    /// Hand the user a way to keep drawing: switch to Add mode, continuing
+    /// this way from this end.
+    pub continue_way: Option<topology::Continuation>,
 }
 
 pub(crate) struct SelectionAction {
@@ -248,6 +280,17 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         hint: "Select a node shared by two or more ways to separate it",
         is_applicable: |env| env.can_separate_selection(),
         apply: apply_separate,
+    },
+    SelectionAction {
+        id: "extend",
+        label: "Extend Way",
+        shortcut_id: Some("action_extend"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        hint: "Select an open way, or the end node of one, to continue drawing it",
+        is_applicable: |env| env.extend_target().is_some(),
+        apply: apply_extend,
     },
     SelectionAction {
         id: "delete",
@@ -399,12 +442,13 @@ fn reshape_ways(
     editable.commit_node_moves(&moves);
 
     Ok(ActionOutcome {
-        undo: UndoableAction::MoveNodes {
+        undo: Some(UndoableAction::MoveNodes {
             per_layer: vec![(layer_id, entries)],
-        },
+        }),
         status: format!("{verb} {}", plural(changed_ways, "way", "ways")),
         clear_selection: false,
         select: None,
+        continue_way: None,
     })
 }
 
@@ -456,13 +500,14 @@ fn apply_reverse(
     }
     let status = format!("Reversed {}", plural(reversed.len(), "way", "ways"));
     Ok(ActionOutcome {
-        undo: UndoableAction::ReverseWays {
+        undo: Some(UndoableAction::ReverseWays {
             layer: layer_id,
             way_ids: reversed,
-        },
+        }),
         status,
         clear_selection: false,
         select: None,
+        continue_way: None,
     })
 }
 
@@ -526,13 +571,14 @@ fn apply_join(
 
     let label = format!("Joined {}", plural(ways.len(), "way", "ways"));
     Ok(ActionOutcome {
-        undo: UndoableAction::Batch {
+        undo: Some(UndoableAction::Batch {
             label: label.clone(),
             actions,
-        },
+        }),
         status: label,
         clear_selection: false,
         select: Some(vec![way_ref(plan.keep)]),
+        continue_way: None,
     })
 }
 
@@ -587,13 +633,39 @@ fn apply_separate(
         plural(created.len() + 1, "copy", "copies")
     );
     Ok(ActionOutcome {
-        undo: UndoableAction::Batch {
+        undo: Some(UndoableAction::Batch {
             label: label.clone(),
             actions,
-        },
+        }),
         status: label,
         clear_selection: false,
         select: None,
+        continue_way: None,
+    })
+}
+
+/// Continue drawing the selected open way (iD "Continue this line"): from
+/// its last node, or from the selected end node. Changes no data itself; it
+/// puts Add mode into the state of having just placed that end node, so each
+/// following click is its own undo step and Enter / Esc finish as usual.
+fn apply_extend(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let from = extend_target(editable, layer_id, selection)
+        .ok_or("Select an open way, or the end node of one, to continue drawing it")?;
+    Ok(ActionOutcome {
+        undo: None,
+        status: "Click to add nodes to the way; Enter or Esc to finish".to_string(),
+        clear_selection: false,
+        select: Some(vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: from.way_id,
+        }]),
+        continue_way: Some(from),
     })
 }
 
@@ -635,10 +707,11 @@ fn apply_delete(
         }
     };
     Ok(ActionOutcome {
-        undo,
+        undo: Some(undo),
         status,
         clear_selection: true,
         select: None,
+        continue_way: None,
     })
 }
 
@@ -802,7 +875,7 @@ mod tests {
         // An open two-node way can only be reversed (or deleted).
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.line)]),
-            ["reverse", "delete"]
+            ["reverse", "extend", "delete"]
         );
     }
 
@@ -839,7 +912,7 @@ mod tests {
         let out = (find("square").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Squared 1 way");
         assert!(!out.clear_selection);
-        let UndoableAction::MoveNodes { per_layer } = &out.undo else {
+        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
             panic!("expected one MoveNodes step");
         };
         assert_eq!(per_layer.len(), 1);
@@ -859,7 +932,7 @@ mod tests {
         let sel = [way_ref(&f, f.rect)];
         let out =
             (find("circularize").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
-        let UndoableAction::MoveNodes { per_layer } = &out.undo else {
+        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
             panic!("expected MoveNodes");
         };
         // Each entry's `before` is the original position.
@@ -876,7 +949,7 @@ mod tests {
         let sel = [way_ref(&f, f.rect), way_ref(&f, f.line)];
         let out = (find("reverse").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Reversed 2 ways");
-        let UndoableAction::ReverseWays { way_ids, .. } = &out.undo else {
+        let UndoableAction::ReverseWays { way_ids, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected ReverseWays");
         };
         assert_eq!(way_ids.len(), 2);
@@ -893,8 +966,13 @@ mod tests {
         let out = (find("delete").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert!(out.clear_selection);
         assert_eq!(out.status, "Deleted 2 features");
-        assert!(matches!(&out.undo, UndoableAction::Batch { actions, .. } if actions.len() == 2));
-        assert_eq!(out.undo.description(), "Deleted 2 features");
+        assert!(
+            matches!(out.undo.as_ref().unwrap(), UndoableAction::Batch { actions, .. } if actions.len() == 2)
+        );
+        assert_eq!(
+            out.undo.as_ref().unwrap().description(),
+            "Deleted 2 features"
+        );
     }
 
     #[test]
@@ -908,6 +986,7 @@ mod tests {
         assert_eq!(find_by_key(&settings, "r").map(|a| a.id), Some("reverse"));
         assert_eq!(find_by_key(&settings, "c").map(|a| a.id), Some("join"));
         assert_eq!(find_by_key(&settings, "g").map(|a| a.id), Some("separate"));
+        assert_eq!(find_by_key(&settings, "e").map(|a| a.id), Some("extend"));
         assert!(find_by_key(&settings, "z").is_none());
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),
@@ -1029,7 +1108,7 @@ mod tests {
         // and the other way as deleted (nodes are untouched).
         assert!(n.layer().is_modified());
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
-        let UndoableAction::Batch { label, actions } = &out.undo else {
+        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
             panic!("expected one Batch step");
         };
         assert_eq!(label, "Joined 2 ways");
@@ -1120,7 +1199,7 @@ mod tests {
         // One new node and one changed way show up in the upload diff.
         assert!(n.layer().is_modified());
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
-        let UndoableAction::Batch { actions, .. } = &out.undo else {
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected one Batch step");
         };
         assert!(matches!(
@@ -1175,5 +1254,63 @@ mod tests {
             find("join").unwrap().why_not(&no_layer),
             "Open or download OSM data first"
         );
+    }
+
+    #[test]
+    fn extend_is_offered_for_one_open_way_or_one_open_end() {
+        let n = net();
+        let node = |id| n.feature(FeatureKind::Node, id);
+        assert!(n.applicable(&n.ways(&[100])).contains(&"extend"));
+        // A ring has no end; two ways are ambiguous.
+        assert!(!n.applicable(&n.ways(&[108])).contains(&"extend"));
+        assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"extend"));
+        // Node 1 starts way 100 and node 6 ends way 102.
+        assert!(n.applicable(&[node(1)]).contains(&"extend"));
+        assert!(n.applicable(&[node(6)]).contains(&"extend"));
+        // Middle nodes, nodes that end two ways, and ring nodes: no.
+        assert!(!n.applicable(&[node(2)]).contains(&"extend"));
+        assert!(!n.applicable(&[node(3)]).contains(&"extend"));
+        assert!(!n.applicable(&[node(5)]).contains(&"extend"));
+        assert!(!n.applicable(&[node(14)]).contains(&"extend"));
+        assert!(!n.applicable(&[]).contains(&"extend"));
+    }
+
+    #[test]
+    fn extend_changes_no_data_and_points_add_mode_at_the_right_end() {
+        let mut n = net();
+        let out = n.run("extend", &n.ways(&[100])).unwrap();
+        assert!(out.undo.is_none());
+        assert_eq!(
+            out.continue_way,
+            Some(topology::Continuation {
+                way_id: 100,
+                from_node: 3,
+                at_start: false
+            })
+        );
+        assert_eq!(out.select, Some(n.ways(&[100])));
+
+        let first = n.feature(FeatureKind::Node, 1);
+        let out = n.run("extend", &[first]).unwrap();
+        assert_eq!(
+            out.continue_way,
+            Some(topology::Continuation {
+                way_id: 100,
+                from_node: 1,
+                at_start: true
+            })
+        );
+        assert!(!n.layer().is_modified());
+
+        let none = ActionEnv {
+            selection: &n.ways(&[108]),
+            active_layer: Some(n.layer_id),
+            layers: &n.layers,
+        };
+        assert_eq!(
+            find("extend").unwrap().why_not(&none),
+            "Select an open way, or the end node of one, to continue drawing it"
+        );
+        assert!(n.run("extend", &n.ways(&[108])).is_err());
     }
 }

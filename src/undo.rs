@@ -62,6 +62,9 @@ pub(crate) enum UndoableAction {
         node_id: i64,
         way_created: bool,
         node_created: bool,
+        /// True if the node was prepended (continuing a way from its first
+        /// node) rather than appended.
+        at_start: bool,
     },
     /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
     /// way, committed atomically. Undo deletes the way then all 4 nodes.
@@ -102,6 +105,8 @@ pub(crate) enum UndoableAction {
         snap_way_id: i64,
         snap_index: usize,
         node_id: i64,
+        /// True if the node was prepended to the drawn way, not appended.
+        at_start: bool,
     },
     /// Selection action "Reverse": the listed ways had their node order
     /// reversed. Reversing is its own inverse, so undo and redo both just
@@ -441,6 +446,7 @@ mod undo_stack_tests {
             node_id,
             way_created,
             node_created,
+            at_start: false,
         }
     }
 
