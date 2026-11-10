@@ -170,7 +170,6 @@ status:
   export_failed: "Export failed: %{error}"
   nothing_to_upload: "Nothing to upload"
   uploaded: "Uploaded changes (changeset %{changeset})"
-  upload_failed_changeset_open: "%{error} (changeset %{changeset} was opened but not uploaded — you may want to close it manually)"
   downloaded: "Downloaded OSM data: %{summary}"
   # The parts of the download summary above, joined with `separator`.
   merge:
@@ -535,6 +534,18 @@ dialog:
     comment_placeholder: "Describe your changes (required)"
     failed: "Upload failed"
     retry: "Try again"
+    # Ways forward when the server refuses the upload (see `upload_conflict`).
+    conflict:
+      keep_mine: "Keep mine"
+      use_theirs: "Use theirs"
+      drop_mine: "Drop my change"
+      show: "Show"
+      checking: "Checking the server…"
+      fetching: "Fetching the server's version…"
+      hint_version: "Keep mine overwrites their change with yours. Use theirs drops your change to it."
+      hint_deleted: "Someone deleted it on the server. Show it, then remove your edits to it or redo them elsewhere."
+      hint_deleted_both: "You deleted it too, so there is nothing left to upload for it. Drop my change forgets your delete."
+      hint_related: "Fix the objects involved (Show finds them), then try again."
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
@@ -585,6 +596,27 @@ dialog:
 # Errors from the OSM API and OAuth code, shown in the status bar and the
 # Settings window. `%{detail}` is the server's or network layer's own
 # message, which is not translated.
+# What the server's refusal of an upload means, in plain words, and what
+# resolving it does. `%{object}` is "Node 12345" / "Way 5" / "Relation 7" (or
+# `something` when the server names none).
+upload_conflict:
+  node: "Node %{id}"
+  way: "Way %{id}"
+  relation: "Relation %{id}"
+  something: "An object you edited"
+  version_mismatch: "%{object} was changed on the server since you downloaded it (your version %{provided}, server version %{server})"
+  already_deleted: "%{object} has already been deleted on the server"
+  still_in_use: "%{object} can't be deleted because it is still used by %{by}"
+  still_in_use_unknown: "%{object} can't be deleted because something still uses it"
+  missing_dependency: "%{object} refers to something that doesn't exist on the server or has been deleted there"
+  other: "The server refused the upload (%{status}): %{detail}"
+  not_found: "%{object} is no longer in the loaded data"
+  keep_gone: "%{object} was deleted on the server, so your version can't replace it. Use theirs removes it here."
+  kept_mine: "Kept your version of %{object}. Press Upload to send it."
+  used_theirs: "Replaced %{object} with the server's version; your change to it is gone. Press Upload to continue."
+  dropped: "Forgot your delete of %{object}, which the server had already done. Press Upload to continue."
+  undo_cleared: "The undo history was cleared."
+
 error:
   network: "Network error: %{detail}"
   api:
@@ -593,9 +625,6 @@ error:
     rate_limited: "OSM API rate-limited (509) — try again later"
     http: "OSM API error %{status}: %{detail}"
     parse: "Failed to parse OSM response: %{detail}"
-  upload:
-    conflict: "Upload conflict (409): another edit changed this data first. Re-download and reconcile before retrying. %{detail}"
-    precondition_failed: "Upload failed (412): something your edit refers to was changed or deleted first. Re-download and reconcile before retrying. %{detail}"
   auth:
     http: "OSM OAuth error %{status}: %{detail}"
     no_redirect: "Login timed out waiting for browser redirect"

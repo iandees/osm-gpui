@@ -449,6 +449,15 @@ fn parse_cli_args() -> CliArgs {
     out
 }
 
+/// How a background upload ended.
+enum UploadOutcome {
+    Done(u64, osm_upload::UploadResult),
+    /// The server refused the diff (409/410/412); the changeset is closed.
+    Refused(osm_upload::UploadConflict),
+    /// Any other failure, as a message.
+    Failed(String),
+}
+
 struct MapViewer {
     viewport: Viewport,
     layer_manager: LayerManager,
@@ -3726,6 +3735,9 @@ impl MapViewer {
                         // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
                     }
+                    DialogEvent::Conflict { action, conflict } => {
+                        this.handle_conflict_action(*action, conflict.clone(), cx);
+                    }
                 }
             },
         )
@@ -3760,11 +3772,11 @@ impl MapViewer {
     /// background executor, mirroring `request_download`'s `cx.spawn`/
     /// `background_executor().spawn` structure.
     ///
-    /// Known v1 limitation: if the changeset is created but the upload
-    /// itself fails, we do NOT attempt automatic rollback/retry — the
-    /// changeset is left open on the server (harmless; it auto-closes after
-    /// a period of inactivity, or the user can close it manually) and the
-    /// status message includes its id so it isn't silently lost track of.
+    /// If the changeset is created but the upload itself fails, the changeset
+    /// is closed again before the failure is reported (see
+    /// `osm_upload::run_upload`). A refusal by the server (409/410/412) is
+    /// handed to the dialog as a conflict the user can act on; see
+    /// `handle_conflict_action`.
     fn start_upload(&mut self, comment: String, cx: &mut Context<Self>) {
         // Layers are looked up by `LayerId`, not name (names aren't unique
         // identity — see `LayerId`'s doc comment), so both the id and the
@@ -3798,13 +3810,6 @@ impl MapViewer {
             return;
         }
 
-        let change_count: usize = diffs
-            .iter()
-            .map(|d| {
-                let (created, modified, deleted) = d.counts();
-                created + modified + deleted
-            })
-            .sum();
         let progress = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
         self.status_message = None;
         self.transfer = Some(progress.clone());
@@ -3820,47 +3825,29 @@ impl MapViewer {
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
 
         cx.spawn(async move |this, cx| {
-            let result: Result<(u64, osm_upload::UploadResult), String> = cx
+            let outcome: UploadOutcome = cx
                 .background_executor()
                 .spawn(async move {
-                    let token = auth::ensure_fresh_token(&oauth_base).map_err(|e| e.to_string())?;
-                    let changeset_id =
-                        osm_upload::create_changeset(&base_url, &token.access_token, &comment)
-                            .map_err(|e| e.to_string())?;
-
+                    let token = match auth::ensure_fresh_token(&oauth_base) {
+                        Ok(token) => token,
+                        Err(e) => return UploadOutcome::Failed(e.to_string()),
+                    };
                     let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> =
                         names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
-                    let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
-
-                    progress.set_phase(TransferPhase::UploadingChanges {
-                        count: change_count,
-                    });
-                    match osm_upload::upload_changes(
+                    match osm_upload::run_upload(
+                        &osm_gpui::http::UreqClient::new(),
                         &base_url,
                         &token.access_token,
-                        changeset_id,
-                        &xml,
+                        &comment,
+                        &layers_for_xml,
+                        &mut |phase| progress.set_phase(phase),
                     ) {
-                        Ok(upload_result) => {
-                            // Best-effort close: a failure here doesn't
-                            // undo the (already-applied) upload, so it
-                            // isn't treated as a fatal error — the
-                            // changeset just stays open, which OSM handles
-                            // fine (manual or automatic close later).
-                            progress.set_phase(TransferPhase::ClosingChangeset);
-                            let _ = osm_upload::close_changeset(
-                                &base_url,
-                                &token.access_token,
-                                changeset_id,
-                            );
-                            Ok((changeset_id, upload_result))
-                        }
-                        Err(e) => Err(tr!(
-                            "status.upload_failed_changeset_open",
-                            error = e,
-                            changeset = changeset_id
-                        )
-                        .to_string()),
+                        Ok((changeset_id, result)) => UploadOutcome::Done(changeset_id, result),
+                        Err(osm_upload::UploadFailure {
+                            error: osm_upload::UploadError::Conflict(conflict),
+                            ..
+                        }) => UploadOutcome::Refused(conflict),
+                        Err(failure) => UploadOutcome::Failed(failure.error.to_string()),
                     }
                 })
                 .await;
@@ -3868,8 +3855,8 @@ impl MapViewer {
             let _ = this.update(cx, |this, cx| {
                 this.transfer = None;
                 this.data_generation += 1;
-                match result {
-                    Ok((changeset_id, upload_result)) => {
+                match outcome {
+                    UploadOutcome::Done(changeset_id, upload_result) => {
                         for id in &layer_ids {
                             if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
                                 layer.apply_upload_result(&upload_result);
@@ -3878,7 +3865,17 @@ impl MapViewer {
                         this.upload_dialog = None;
                         this.set_status(tr!("status.uploaded", changeset = changeset_id));
                     }
-                    Err(e) => {
+                    UploadOutcome::Refused(conflict) => {
+                        // Keep the dialog open: it names the object and
+                        // offers the ways forward.
+                        let message = conflict.describe();
+                        let view = this.conflict_view(conflict);
+                        if let Some(dialog) = &this.upload_dialog {
+                            dialog.update(cx, |dialog, cx| dialog.fail_with_conflict(view, cx));
+                        }
+                        this.set_status(message);
+                    }
+                    UploadOutcome::Failed(e) => {
                         // Keep the dialog open on the error so it can be
                         // read and the upload retried; the status bar gets
                         // the message too.
@@ -3892,6 +3889,231 @@ impl MapViewer {
             });
         })
         .detach();
+    }
+
+    /// The layer that holds `(kind, id)` or has it as a local deletion.
+    fn conflict_layer(&self, kind: osm_gpui::selection::FeatureKind, id: i64) -> Option<LayerId> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .find(|l| {
+                l.as_editable()
+                    .is_some_and(|e| e.has_feature(kind, id) || e.is_locally_deleted(kind, id))
+            })
+            .map(|l| l.id())
+    }
+
+    /// A refused upload plus what the loaded data says about its object:
+    /// whether it can be shown, and whether the user deleted it.
+    fn conflict_view(
+        &self,
+        conflict: osm_upload::UploadConflict,
+    ) -> osm_gpui::ui::upload_dialog::ConflictView {
+        let editables = || {
+            self.layer_manager
+                .layers()
+                .iter()
+                .filter_map(|l| l.as_editable())
+        };
+        let (located, deleted_locally) = match conflict.object {
+            Some((kind, id)) => (
+                editables().any(|e| e.has_feature(kind, id)),
+                editables().any(|e| e.is_locally_deleted(kind, id)),
+            ),
+            None => (false, false),
+        };
+        osm_gpui::ui::upload_dialog::ConflictView {
+            conflict,
+            located,
+            deleted_locally,
+        }
+    }
+
+    /// Carry out the way forward the user picked for a refused upload.
+    ///
+    /// - Show: select the object and zoom to it. The dialog is closed so the
+    ///   map is visible (File > Upload reopens it; the comment is not kept).
+    /// - Keep mine / Use theirs: ask the server for the object's current
+    ///   state on a worker thread (reading is public: no sign-in needed),
+    ///   then `apply_resolution`; the dialog returns to its ready state.
+    /// - Drop my change: forget the local delete, no network needed.
+    fn handle_conflict_action(
+        &mut self,
+        action: osm_gpui::ui::upload_dialog::ConflictAction,
+        conflict: osm_upload::UploadConflict,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::osm_api::ServerElement;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+
+        let Some((kind, id)) = conflict.object else {
+            return;
+        };
+        match action {
+            ConflictAction::Show => {
+                if let Some(layer_id) = self.conflict_layer(kind, id) {
+                    let feature = osm_gpui::selection::FeatureRef { layer_id, kind, id };
+                    self.set_selection(vec![feature]);
+                    self.fit_to_features(&[feature]);
+                }
+                self.upload_dialog = None;
+                self.set_status(conflict.describe());
+                cx.notify();
+            }
+            ConflictAction::DropMyChange => {
+                let result = self.apply_resolution(action, kind, id, ServerElement::Gone);
+                self.finish_resolution(conflict, result, cx);
+            }
+            ConflictAction::KeepMine | ConflictAction::UseTheirs => {
+                let label = if action == ConflictAction::KeepMine {
+                    tr!("dialog.upload.conflict.checking")
+                } else {
+                    tr!("dialog.upload.conflict.fetching")
+                };
+                if let Some(dialog) = &self.upload_dialog {
+                    dialog.update(cx, |dialog, cx| dialog.begin_resolving(label, cx));
+                }
+                cx.notify();
+                let base_url = settings_store::api_base_url();
+                let full = action == ConflictAction::UseTheirs;
+                cx.spawn(async move |this, cx| {
+                    let fetched = cx
+                        .background_executor()
+                        .spawn(async move {
+                            osm_gpui::osm_api::fetch_element(&base_url, None, kind, id, full)
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        let result = match fetched {
+                            Ok(server) => this.apply_resolution(action, kind, id, server),
+                            Err(e) => Err(e.to_string().into()),
+                        };
+                        this.finish_resolution(conflict, result, cx);
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Show how resolving went: back to the ready dialog with a note, or the
+    /// conflict again with the reason it didn't work.
+    fn finish_resolution(
+        &mut self,
+        conflict: osm_upload::UploadConflict,
+        result: Result<SharedString, SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(notice) => {
+                if let Some(dialog) = &self.upload_dialog {
+                    dialog.update(cx, |dialog, cx| dialog.resolved(notice.clone(), cx));
+                }
+                self.set_status(notice);
+            }
+            Err(error) => {
+                let view = self.conflict_view(conflict);
+                if let Some(dialog) = &self.upload_dialog {
+                    dialog.update(cx, |dialog, cx| {
+                        dialog.resolve_failed(view, error.clone(), cx)
+                    });
+                }
+                self.set_status(error);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Change the loaded data to resolve a conflict on `(kind, id)`, given
+    /// what the server has (`server`; ignored by "drop my change").
+    ///
+    /// - Keep mine moves the object's base version to the server's current
+    ///   one; the local edit stays and so does the undo history (a version
+    ///   isn't part of any history entry's effect, except that undoing a
+    ///   delete restores the version it had then).
+    /// - Use theirs replaces the object (and, for a way, its nodes) with the
+    ///   server's copy, or removes it if the server deleted it. This rewrites
+    ///   data that history entries refer to by id and content (a move of
+    ///   nodes the way now has different, a delete snapshot of an object that
+    ///   is back), and entries can depend on each other in a batch, so
+    ///   dropping only the entries that touch the object could leave later
+    ///   ones inapplicable. The whole undo history is cleared instead, and
+    ///   the note says so.
+    /// - Drop my change forgets a local delete the server already did; it
+    ///   clears the history the same way (undoing the delete would bring
+    ///   back an object the server no longer has).
+    fn apply_resolution(
+        &mut self,
+        action: osm_gpui::ui::upload_dialog::ConflictAction,
+        kind: osm_gpui::selection::FeatureKind,
+        id: i64,
+        server: osm_gpui::osm_api::ServerElement,
+    ) -> Result<SharedString, SharedString> {
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+
+        let name = osm_upload::describe_object(kind, id);
+        let not_found = || tr!("upload_conflict.not_found", object = name);
+        let layer_id = self.conflict_layer(kind, id).ok_or_else(not_found)?;
+
+        let changed = match action {
+            ConflictAction::KeepMine => {
+                let Some(version) = server.version(kind, id) else {
+                    return Err(tr!("upload_conflict.keep_gone", object = name));
+                };
+                let layer = self.layer_manager.find_layer_mut(layer_id);
+                let known = layer
+                    .and_then(|l| l.as_editable_mut())
+                    .is_some_and(|e| e.set_base_version(kind, id, version));
+                if !known {
+                    return Err(not_found());
+                }
+                return Ok(tr!("upload_conflict.kept_mine", object = name));
+            }
+            ConflictAction::UseTheirs => self
+                .layer_manager
+                .find_layer_mut(layer_id)
+                .and_then(|l| l.as_editable_mut())
+                .is_some_and(|e| e.adopt_server_element(kind, id, server)),
+            ConflictAction::DropMyChange => self
+                .layer_manager
+                .find_layer_mut(layer_id)
+                .and_then(|l| l.as_editable_mut())
+                .is_some_and(|e| e.forget_local_delete(kind, id)),
+            ConflictAction::Show => return Err(not_found()),
+        };
+        if !changed {
+            return Err(not_found());
+        }
+
+        let cleared = self.undo_stack.clear();
+        self.data_generation += 1;
+        self.hovered = None;
+        // Drop anything selected that is no longer in the data.
+        let still_there: Vec<osm_gpui::selection::FeatureRef> = self
+            .selected
+            .iter()
+            .copied()
+            .filter(|f| {
+                self.layer_manager
+                    .find_layer(f.layer_id)
+                    .and_then(|l| l.as_editable())
+                    .is_some_and(|e| e.has_feature(f.kind, f.id))
+            })
+            .collect();
+        if still_there.len() != self.selected.len() {
+            self.set_selection(still_there);
+        }
+
+        let mut note = match action {
+            ConflictAction::DropMyChange => tr!("upload_conflict.dropped", object = name),
+            _ => tr!("upload_conflict.used_theirs", object = name),
+        }
+        .to_string();
+        if cleared > 0 {
+            note.push(' ');
+            note.push_str(&tr!("upload_conflict.undo_cleared"));
+        }
+        Ok(note.into())
     }
 
     /// Debug builds only, and only when `OSM_GPUI_DEBUG_TRANSFER` is set:
@@ -3923,6 +4145,27 @@ impl MapViewer {
                 dialog.update(cx, |dialog, cx| dialog.begin_transfer(handle.clone(), cx));
                 self.upload_dialog = Some(dialog);
                 self.transfer = Some(handle);
+            }
+            "conflict" => {
+                let summaries = vec![osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: "OSM data".to_string(),
+                    created: 3,
+                    modified: 8,
+                    deleted: 1,
+                }];
+                let view = osm_gpui::ui::upload_dialog::ConflictView {
+                    conflict: osm_upload::UploadConflict::parse(
+                        409,
+                        "Version mismatch: Provided 3, server had: 4 of Node 12345",
+                    ),
+                    located: true,
+                    deleted_locally: false,
+                };
+                let dialog = cx.new(|cx| {
+                    osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
+                });
+                dialog.update(cx, |dialog, cx| dialog.fail_with_conflict(view, cx));
+                self.upload_dialog = Some(dialog);
             }
             "download" | "download-total" => {
                 let handle =
@@ -7364,6 +7607,219 @@ mod tests {
         window
             .update(cx, |view, _window, _cx| {
                 assert!(view.exportable_layer().is_none());
+            })
+            .unwrap();
+    }
+
+    // --- Resolving an upload conflict -------------------------------------
+
+    /// `setup`'s layer with node 1 tagged locally (and that edit on the undo
+    /// stack), as it would be when the server then refuses the upload.
+    fn tag_node_one(view: &mut MapViewer) {
+        let layer_id = view.active_layer.unwrap();
+        editable(view).set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe");
+        view.undo_stack.push(UndoableAction::SetTags {
+            entries: vec![(
+                osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Node,
+                    id: 1,
+                },
+                "amenity".to_string(),
+                None,
+                Some("cafe".to_string()),
+            )],
+        });
+    }
+
+    fn server_node(version: i32, lat: f64) -> osm_gpui::osm_api::ServerElement {
+        let mut data = way_fixture(CENTER_LAT, CENTER_LON);
+        data.ways.clear();
+        data.nodes.retain(|id, _| *id == 1);
+        let node = data.nodes.get_mut(&1).unwrap();
+        node.version = version;
+        node.lat = lat;
+        node.tags.insert("shop".to_string(), "bakery".to_string());
+        osm_gpui::osm_api::ServerElement::Present(data)
+    }
+
+    #[gpui::test]
+    fn keep_mine_moves_the_version_and_keeps_edit_and_undo(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                tag_node_one(view);
+                let note = view
+                    .apply_resolution(ConflictAction::KeepMine, Node, 1, server_node(5, 40.0))
+                    .unwrap();
+                assert!(note.contains("Node 1"), "{note}");
+                let layer_id = view.active_layer.unwrap();
+                let diff = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .diff_for_upload();
+                assert_eq!(diff.modified_nodes.len(), 1);
+                assert_eq!(diff.modified_nodes[0].version, 5);
+                assert_eq!(
+                    diff.modified_nodes[0]
+                        .tags
+                        .get("amenity")
+                        .map(String::as_str),
+                    Some("cafe")
+                );
+                assert_eq!(view.undo_stack.actions.len(), 1, "history untouched");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn keep_mine_refuses_an_object_the_server_deleted(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                tag_node_one(view);
+                let err = view
+                    .apply_resolution(
+                        ConflictAction::KeepMine,
+                        Node,
+                        1,
+                        osm_gpui::osm_api::ServerElement::Gone,
+                    )
+                    .unwrap_err();
+                assert!(err.contains("deleted on the server"), "{err}");
+                assert_eq!(pending(view), (0, 1, 0), "nothing changed");
+                assert_eq!(view.undo_stack.actions.len(), 1);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn use_theirs_replaces_the_object_and_clears_the_undo_history(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                tag_node_one(view);
+                // An unrelated earlier edit is on the stack too: all of it goes,
+                // and the note says so.
+                view.undo_stack.push(UndoableAction::ReverseWays {
+                    layer: view.active_layer.unwrap(),
+                    way_ids: vec![],
+                });
+                let note = view
+                    .apply_resolution(ConflictAction::UseTheirs, Node, 1, server_node(5, 40.0))
+                    .unwrap();
+                assert!(note.contains("Replaced Node 1"), "{note}");
+                assert!(note.contains("undo history was cleared"), "{note}");
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(view.undo_stack.cursor, 0);
+                assert_eq!(pending(view), (0, 0, 0), "the change to it is gone");
+                let layer_id = view.active_layer.unwrap();
+                let tags = editable(view)
+                    .feature_tags(&osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Node,
+                        id: 1,
+                    })
+                    .unwrap();
+                assert_eq!(tags, vec![("shop".to_string(), "bakery".to_string())]);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn use_theirs_for_a_deleted_object_removes_it_and_its_selection(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                editable(view).set_tag(Way, 10, "highway", "path");
+                select(view, Way, &[10]);
+                assert_eq!(view.selected.len(), 1);
+                let note = view
+                    .apply_resolution(
+                        ConflictAction::UseTheirs,
+                        Way,
+                        10,
+                        osm_gpui::osm_api::ServerElement::Gone,
+                    )
+                    .unwrap();
+                assert!(note.contains("Way 10"), "{note}");
+                assert!(editable(view).way_node_ids(10).is_none());
+                assert!(view.selected.is_empty(), "no dangling selection");
+                let _ = layer_id;
+                assert_eq!(pending(view), (0, 0, 0));
+                // Asking again: the object is gone, so there is nothing to do.
+                let err = view
+                    .apply_resolution(
+                        ConflictAction::UseTheirs,
+                        Way,
+                        10,
+                        osm_gpui::osm_api::ServerElement::Gone,
+                    )
+                    .unwrap_err();
+                assert!(err.contains("no longer in the loaded data"), "{err}");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn drop_my_change_forgets_the_local_delete(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let snapshot = editable(view).delete_feature(Way, 10).unwrap();
+                view.undo_stack.push(UndoableAction::DeleteFeature {
+                    layer: layer_id,
+                    snapshot,
+                });
+                assert_eq!(pending(view), (0, 0, 1));
+                let note = view
+                    .apply_resolution(
+                        ConflictAction::DropMyChange,
+                        Way,
+                        10,
+                        osm_gpui::osm_api::ServerElement::Gone,
+                    )
+                    .unwrap();
+                assert!(note.contains("Forgot your delete of Way 10"), "{note}");
+                assert_eq!(pending(view), (0, 0, 0));
+                assert!(view.undo_stack.actions.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn show_selects_the_object_and_closes_the_dialog(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        use osm_gpui::ui::upload_dialog::ConflictAction;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let conflict = osm_upload::UploadConflict::parse(
+                    409,
+                    "Version mismatch: Provided 1, server had: 2 of Node 2",
+                );
+                view.viewport = Viewport::new(10.0, 10.0, 5.0, size(px(800.0), px(600.0)));
+                view.handle_conflict_action(ConflictAction::Show, conflict, cx);
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!((view.selected[0].kind, view.selected[0].id), (Node, 2));
+                // Zoomed in on node 2.
+                let p = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON + 0.001);
+                assert!(p.x > px(0.0) && p.x < px(800.0) && p.y > px(0.0) && p.y < px(600.0));
+                assert!(view.upload_dialog.is_none());
+                assert!(status_text(view).unwrap().contains("Node 2"));
             })
             .unwrap();
     }

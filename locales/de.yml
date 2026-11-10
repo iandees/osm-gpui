@@ -170,7 +170,6 @@ status:
   export_failed: "Export fehlgeschlagen: %{error}"
   nothing_to_upload: "Nichts hochzuladen"
   uploaded: "Änderungen hochgeladen (Änderungssatz %{changeset})"
-  upload_failed_changeset_open: "%{error} (Änderungssatz %{changeset} wurde geöffnet, aber nicht hochgeladen — ggf. manuell schließen)"
   downloaded: "OSM-Daten heruntergeladen: %{summary}"
   # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
   merge:
@@ -535,6 +534,18 @@ dialog:
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
     failed: "Hochladen fehlgeschlagen"
     retry: "Erneut versuchen"
+    # Wege weiter, wenn der Server das Hochladen ablehnt (siehe `upload_conflict`).
+    conflict:
+      keep_mine: "Meine behalten"
+      use_theirs: "Deren übernehmen"
+      drop_mine: "Meine Änderung verwerfen"
+      show: "Anzeigen"
+      checking: "Server wird geprüft…"
+      fetching: "Version vom Server wird geladen…"
+      hint_version: "„Meine behalten“ überschreibt die andere Änderung mit deiner. „Deren übernehmen“ verwirft deine Änderung daran."
+      hint_deleted: "Jemand hat das Objekt auf dem Server gelöscht. Zeige es an und entferne deine Änderungen daran oder mache sie an anderer Stelle neu."
+      hint_deleted_both: "Du hast es auch gelöscht, daher gibt es dafür nichts mehr hochzuladen. „Meine Änderung verwerfen“ vergisst dein Löschen."
+      hint_related: "Korrigiere die beteiligten Objekte („Anzeigen“ findet sie) und versuche es erneut."
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
@@ -585,6 +596,27 @@ dialog:
 # Fehler der OSM-API und des OAuth-Codes, in Statusleiste und Einstellungen.
 # `%{detail}` ist die Meldung des Servers bzw. der Netzwerkschicht und wird
 # nicht übersetzt.
+# Was die Ablehnung eines Uploads durch den Server bedeutet und was das
+# Auflösen bewirkt (maschinell vorübersetzt). `%{object}` ist „Knoten 12345“ /
+# „Weg 5“ / „Relation 7“ (oder `something`, wenn der Server nichts nennt).
+upload_conflict:
+  node: "Knoten %{id}"
+  way: "Weg %{id}"
+  relation: "Relation %{id}"
+  something: "Ein von dir bearbeitetes Objekt"
+  version_mismatch: "%{object} wurde auf dem Server geändert, seit du es heruntergeladen hast (deine Version %{provided}, Server-Version %{server})"
+  already_deleted: "%{object} wurde auf dem Server bereits gelöscht"
+  still_in_use: "%{object} kann nicht gelöscht werden, weil es noch verwendet wird von %{by}"
+  still_in_use_unknown: "%{object} kann nicht gelöscht werden, weil es noch verwendet wird"
+  missing_dependency: "%{object} verweist auf etwas, das auf dem Server nicht existiert oder dort gelöscht wurde"
+  other: "Der Server hat das Hochladen abgelehnt (%{status}): %{detail}"
+  not_found: "%{object} ist nicht mehr in den geladenen Daten"
+  keep_gone: "%{object} wurde auf dem Server gelöscht, daher kann deine Version es nicht ersetzen. „Deren übernehmen“ entfernt es hier."
+  kept_mine: "Deine Version von %{object} wird beibehalten. Auf „Hochladen“ klicken, um sie zu senden."
+  used_theirs: "%{object} wurde durch die Server-Version ersetzt; deine Änderung daran ist verworfen. Auf „Hochladen“ klicken, um fortzufahren."
+  dropped: "Dein Löschen von %{object} wurde vergessen, der Server hatte es bereits gelöscht. Auf „Hochladen“ klicken, um fortzufahren."
+  undo_cleared: "Der Rückgängig-Verlauf wurde geleert."
+
 error:
   network: "Netzwerkfehler: %{detail}"
   api:
@@ -593,9 +625,6 @@ error:
     rate_limited: "OSM-API begrenzt die Anfragen (509) — später erneut versuchen"
     http: "OSM-API-Fehler %{status}: %{detail}"
     parse: "OSM-Antwort konnte nicht gelesen werden: %{detail}"
-  upload:
-    conflict: "Hochladekonflikt (409): Eine andere Änderung hat diese Daten zuvor geändert. Vor einem neuen Versuch neu herunterladen und abgleichen. %{detail}"
-    precondition_failed: "Hochladen fehlgeschlagen (412): Etwas, worauf sich die Änderung bezieht, wurde zuvor geändert oder gelöscht. Vor einem neuen Versuch neu herunterladen und abgleichen. %{detail}"
   auth:
     http: "OSM-OAuth-Fehler %{status}: %{detail}"
     no_redirect: "Anmeldung abgelaufen: keine Weiterleitung vom Browser erhalten"
