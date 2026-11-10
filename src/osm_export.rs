@@ -139,7 +139,12 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
         .map(|w| w.id)
         .collect();
 
-    let changed_relations: HashSet<i64> = diff.modified_relations.iter().map(|r| r.id).collect();
+    let changed_relations: HashSet<i64> = diff
+        .created_relations
+        .iter()
+        .chain(&diff.modified_relations)
+        .map(|r| r.id)
+        .collect();
 
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -203,14 +208,26 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
         write_way(&mut out, way, action);
     }
 
-    let mut relations: Vec<&OsmRelation> = current.relations.iter().collect();
-    relations.sort_by_key(|relation| relation.id);
-    for relation in relations {
-        let action = if changed_relations.contains(&relation.id) {
-            Action::Modify
-        } else {
-            Action::None
-        };
+    let mut relations: Vec<(&OsmRelation, Action)> = current
+        .relations
+        .iter()
+        .map(|relation| {
+            let action = if changed_relations.contains(&relation.id) {
+                Action::Modify
+            } else {
+                Action::None
+            };
+            (relation, action)
+        })
+        .chain(
+            diff.deleted_relation_ids
+                .iter()
+                .filter_map(|(id, _)| original.relations.iter().find(|r| r.id == *id))
+                .map(|relation| (relation, Action::Delete)),
+        )
+        .collect();
+    relations.sort_by_key(|(relation, _)| relation.id);
+    for (relation, action) in relations {
         write_relation(&mut out, relation, action);
     }
 
@@ -406,6 +423,74 @@ mod tests {
             plain.contains("<relation id=\"5\" version=\"2\""),
             "{plain}"
         );
+    }
+
+    #[test]
+    fn created_and_deleted_relations_round_trip_through_a_file() {
+        let relation = |id: i64, version: i32, members: &[(MemberType, i64)]| OsmRelation {
+            id,
+            version,
+            tags: tags(&[("type", "route")]),
+            members: members
+                .iter()
+                .map(|&(member_type, reference)| OsmMember {
+                    member_type,
+                    reference,
+                    role: "r".to_string(),
+                })
+                .collect(),
+        };
+        let mut original = data(vec![node(1, 1.0, 1.0, 1, &[])], vec![]);
+        original
+            .relations
+            .push(relation(5, 2, &[(MemberType::Node, 1)]));
+        original
+            .relations
+            .push(relation(6, 3, &[(MemberType::Node, 1)]));
+        let mut current = original.clone();
+        current.relations.remove(1); // delete 6
+        current
+            .relations
+            .push(relation(-1, 0, &[(MemberType::Relation, 5)]));
+        current.relations.push(relation(
+            -2,
+            0,
+            &[(MemberType::Relation, -1), (MemberType::Node, 1)],
+        ));
+
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains("  <relation id=\"-1\" action=\"modify\" visible=\"true\">\n"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("  <relation id=\"-2\" action=\"modify\" visible=\"true\">\n"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                "  <relation id=\"6\" action=\"delete\" version=\"3\" visible=\"true\">\n"
+            ),
+            "{xml}"
+        );
+        assert!(xml.contains("<relation id=\"5\" version=\"2\""), "{xml}");
+
+        let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        assert_eq!(
+            edits.deleted_relations.keys().copied().collect::<Vec<_>>(),
+            [6]
+        );
+        assert!(reloaded.relations.iter().all(|r| r.id != 6));
+
+        let baseline = baseline_for_loaded_file(&reloaded, &edits);
+        let diff = diff_osm_data(&baseline, &reloaded);
+        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id).collect();
+        created.sort_unstable();
+        assert_eq!(created, vec![-2, -1]);
+        assert_eq!(diff.deleted_relation_ids, vec![(6, 3)]);
+        assert!(diff.modified_relations.is_empty());
+        assert_eq!(diff.counts(), (2, 0, 1));
+        assert_eq!(to_osm_xml(&baseline, &reloaded), xml);
     }
 
     #[test]

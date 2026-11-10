@@ -116,6 +116,8 @@ pub struct FileEdits {
     pub deleted_nodes: HashMap<i64, OsmNode>,
     /// Ways marked `action="delete"`; see `deleted_nodes`.
     pub deleted_ways: HashMap<i64, OsmWay>,
+    /// Relations marked `action="delete"`; see `deleted_nodes`.
+    pub deleted_relations: HashMap<i64, OsmRelation>,
 }
 
 impl FileEdits {
@@ -125,6 +127,7 @@ impl FileEdits {
             && self.modified_relations.is_empty()
             && self.deleted_nodes.is_empty()
             && self.deleted_ways.is_empty()
+            && self.deleted_relations.is_empty()
     }
 }
 
@@ -311,9 +314,6 @@ impl OsmParser {
                 }
             }
         }
-        // Only membership/tag edits to existing relations are tracked; a
-        // deleted relation is simply dropped (relation deletion isn't
-        // supported).
         fn store_relation(
             relation: OsmRelation,
             action: ElementAction,
@@ -321,7 +321,9 @@ impl OsmParser {
             edits: &mut FileEdits,
         ) {
             match action {
-                ElementAction::Delete => {}
+                ElementAction::Delete => {
+                    edits.deleted_relations.insert(relation.id, relation);
+                }
                 ElementAction::Modify => {
                     edits.modified_relations.insert(relation.id);
                     data.relations.push(relation);
@@ -1033,6 +1035,7 @@ mod tests {
         assert_eq!(edits.deleted_ways[&11].nodes, vec![1]);
         assert_eq!(data.relations.len(), 1);
         assert_eq!(data.relations[0].id, 21);
+        assert_eq!(edits.deleted_relations[&20].version, 1);
 
         // The plain entry point agrees on the data and just drops the edits.
         assert_eq!(OsmParser::new().parse_str(xml).unwrap(), data);

@@ -71,8 +71,8 @@ impl std::error::Error for UploadError {}
 pub struct UploadResult {
     pub node_id_remap: HashMap<i64, (i64, i32)>,
     pub way_id_remap: HashMap<i64, (i64, i32)>,
-    /// Same for relations. Only modifications exist today, so every entry
-    /// maps an id to itself with its new version.
+    /// Same for relations: a modify maps an id to itself with its new
+    /// version, a create maps the placeholder to the server-assigned id.
     pub relation_id_remap: HashMap<i64, (i64, i32)>,
 }
 
@@ -228,22 +228,33 @@ pub(crate) fn xml_escape(s: &str) -> String {
 /// The API applies a changeset's elements in document order and checks
 /// references as it goes, so the order matters:
 ///
-/// - `create`: nodes, then ways (a way's `nd` may name a node created here);
+/// - `create`: nodes, ways, then relations (a way's `nd` may name a node
+///   created here; a relation member may name any of them). Created relations
+///   are in dependency order: a relation that is a member of another created
+///   relation comes first (a cycle falls back to id order and is left for the
+///   API to reject);
 /// - `modify`: nodes, then ways, then relations, so a relation member that
 ///   names a created or modified way/node (by placeholder id when new) finds
 ///   it already in place;
-/// - `delete`: ways, then nodes (a node still used by a way can't go first).
-///   Relations that lose a deleted element as a member are modified earlier.
+/// - `delete`: relations, then ways, then nodes (a way still in a relation, or
+///   a node still used by a way, can't go first). Relations that lose a
+///   deleted element as a member are modified earlier.
 pub fn build_osm_change_xml(changeset_id: u64, layers: &[(&str, LayerDiff)]) -> String {
     let mut create_nodes = String::new();
     let mut create_ways = String::new();
     let mut modify_nodes = String::new();
     let mut modify_ways = String::new();
     let mut modify_relations = String::new();
+    let mut delete_relations = String::new();
     let mut delete_ways = String::new();
     let mut delete_nodes = String::new();
+    let mut created_relations: Vec<&OsmRelation> = Vec::new();
 
     for (_name, diff) in layers {
+        created_relations.extend(&diff.created_relations);
+        for &(id, version) in &diff.deleted_relation_ids {
+            delete_relations.push_str(&delete_relation_xml(id, version, changeset_id));
+        }
         for n in &diff.created_nodes {
             create_nodes.push_str(&node_xml(n, changeset_id));
         }
@@ -266,9 +277,13 @@ pub fn build_osm_change_xml(changeset_id: u64, layers: &[(&str, LayerDiff)]) -> 
             delete_nodes.push_str(&delete_node_xml(id, version, changeset_id));
         }
     }
-    let create_body = format!("{create_nodes}{create_ways}");
+    let create_relations: String = order_created_relations(created_relations)
+        .into_iter()
+        .map(|r| relation_xml(r, changeset_id))
+        .collect();
+    let create_body = format!("{create_nodes}{create_ways}{create_relations}");
     let modify_body = format!("{modify_nodes}{modify_ways}{modify_relations}");
-    let delete_body = format!("{delete_ways}{delete_nodes}");
+    let delete_body = format!("{delete_relations}{delete_ways}{delete_nodes}");
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -292,6 +307,41 @@ pub fn build_osm_change_xml(changeset_id: u64, layers: &[(&str, LayerDiff)]) -> 
     }
     out.push_str("</osmChange>");
     out
+}
+
+/// Order created relations so that a relation comes after every created
+/// relation it has as a member (Kahn's algorithm, ties and any leftover cycle
+/// in id order). Relations in a cycle can't be satisfied; they are appended in
+/// id order and the API reports the problem.
+fn order_created_relations(mut relations: Vec<&OsmRelation>) -> Vec<&OsmRelation> {
+    use crate::osm::MemberType;
+    use std::collections::HashSet;
+
+    relations.sort_by_key(|r| r.id);
+    let ids: HashSet<i64> = relations.iter().map(|r| r.id).collect();
+    let mut placed: HashSet<i64> = HashSet::new();
+    let mut ordered: Vec<&OsmRelation> = Vec::with_capacity(relations.len());
+    let mut remaining = relations;
+    loop {
+        let (ready, blocked): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|r| {
+            r.members.iter().all(|m| {
+                m.member_type != MemberType::Relation
+                    || m.reference == r.id
+                    || !ids.contains(&m.reference)
+                    || placed.contains(&m.reference)
+            })
+        });
+        if ready.is_empty() {
+            ordered.extend(blocked);
+            return ordered;
+        }
+        placed.extend(ready.iter().map(|r| r.id));
+        ordered.extend(ready);
+        if blocked.is_empty() {
+            return ordered;
+        }
+        remaining = blocked;
+    }
 }
 
 /// Sorted `(k, v)` pairs for deterministic XML output (tags are stored in a
@@ -367,6 +417,13 @@ fn relation_xml(r: &OsmRelation, changeset_id: u64) -> String {
 fn delete_node_xml(id: i64, version: i32, changeset_id: u64) -> String {
     format!(
         r#"<node id="{}" version="{}" changeset="{}"/>"#,
+        id, version, changeset_id
+    )
+}
+
+fn delete_relation_xml(id: i64, version: i32, changeset_id: u64) -> String {
+    format!(
+        r#"<relation id="{}" version="{}" changeset="{}"/>"#,
         id, version, changeset_id
     )
 }
@@ -640,6 +697,102 @@ mod tests {
         assert!(at("</modify>") < at("<delete>"));
         assert!(at(r#"<way id="77""#) < at(r#"<node id="78""#));
         assert_eq!(xml.matches("<modify>").count(), 1, "{xml}");
+    }
+
+    fn rel(id: i64, members: &[(crate::osm::MemberType, i64)]) -> OsmRelation {
+        OsmRelation {
+            id,
+            version: 0,
+            tags: tags(&[("type", "route")]),
+            members: members
+                .iter()
+                .map(|&(member_type, reference)| crate::osm::OsmMember {
+                    member_type,
+                    reference,
+                    role: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn created_relations_follow_their_members_and_deletes_start_with_relations() {
+        use crate::osm::MemberType::{Node, Relation, Way};
+        let mut diff = LayerDiff::default();
+        // -10 contains created way -2 and created relation -11; -11 contains
+        // created node -1. Listed with the container first on purpose.
+        diff.created_relations
+            .push(rel(-10, &[(Way, -2), (Relation, -11), (Way, 40)]));
+        diff.created_relations.push(rel(-11, &[(Node, -1)]));
+        diff.created_ways.push(OsmWay {
+            id: -2,
+            nodes: vec![-1, 5],
+            version: 0,
+            tags: HashMap::new(),
+        });
+        diff.created_nodes.push(OsmNode {
+            id: -1,
+            lat: 1.0,
+            lon: 2.0,
+            version: 0,
+            tags: HashMap::new(),
+        });
+        diff.modified_relations.push(rel(500, &[(Way, 40)]));
+        diff.deleted_relation_ids.push((600, 3));
+        diff.deleted_way_ids.push((77, 1));
+        diff.deleted_node_ids.push((78, 1));
+
+        let xml = build_osm_change_xml(9, &[("L", diff)]);
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        assert!(at(r#"<node id="-1""#) < at(r#"<way id="-2""#));
+        assert!(at(r#"<way id="-2""#) < at(r#"<relation id="-11""#));
+        assert!(at(r#"<relation id="-11""#) < at(r#"<relation id="-10""#));
+        assert!(at(r#"<relation id="-10""#) < at("</create>"));
+        assert!(
+            xml.contains(concat!(
+                r#"<relation id="-10" version="0" changeset="9">"#,
+                r#"<member type="way" ref="-2" role=""/>"#,
+                r#"<member type="relation" ref="-11" role=""/>"#,
+                r#"<member type="way" ref="40" role=""/>"#,
+                r#"<tag k="type" v="route"/></relation>"#,
+            )),
+            "{xml}"
+        );
+        assert!(at("</create>") < at("<modify>"));
+        assert!(at("</modify>") < at("<delete>"));
+        assert!(at(r#"<relation id="600" version="3" changeset="9"/>"#) > at("<delete>"));
+        assert!(at(r#"<relation id="600""#) < at(r#"<way id="77""#));
+        assert!(at(r#"<way id="77""#) < at(r#"<node id="78""#));
+    }
+
+    #[test]
+    fn created_relation_cycle_falls_back_to_id_order() {
+        use crate::osm::MemberType::Relation;
+        let a = rel(-20, &[(Relation, -21)]);
+        let b = rel(-21, &[(Relation, -20)]);
+        let c = rel(-22, &[]);
+        let ordered: Vec<i64> = order_created_relations(vec![&a, &b, &c])
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        // The independent relation goes first; the cycle follows in id order.
+        assert_eq!(ordered, vec![-22, -21, -20]);
+    }
+
+    #[test]
+    fn parse_diff_result_maps_created_relations() {
+        let xml = r#"<diffResult version="0.6">
+  <relation old_id="-10" new_id="77" new_version="1"/>
+  <relation old_id="-11" new_id="76" new_version="1"/>
+  <relation old_id="600"/>
+</diffResult>"#;
+        let result = parse_diff_result(xml).unwrap();
+        assert_eq!(result.relation_id_remap.get(&-10), Some(&(77, 1)));
+        assert_eq!(result.relation_id_remap.get(&-11), Some(&(76, 1)));
+        assert_eq!(result.relation_id_remap.get(&600), None);
     }
 
     #[test]

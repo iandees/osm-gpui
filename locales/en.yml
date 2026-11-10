@@ -215,6 +215,8 @@ history:
   deleted_node: "Deleted 1 node"
   deleted_way: "Deleted 1 way"
   created_way: "Created 1 way"
+  created_relation: "Created a relation"
+  deleted_relation: "Deleted a relation"
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"

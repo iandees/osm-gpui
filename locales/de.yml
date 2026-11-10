@@ -215,6 +215,8 @@ history:
   deleted_node: "1 Knoten gelöscht"
   deleted_way: "1 Weg gelöscht"
   created_way: "1 Weg erstellt"
+  created_relation: "Relation erstellt"
+  deleted_relation: "Relation gelöscht"
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
