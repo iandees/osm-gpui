@@ -6,6 +6,7 @@ use crate::http::{
     fetch_with_retries_progress, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
 };
 use crate::osm::{OsmData, OsmParseError, OsmParser};
+use crate::selection::FeatureKind;
 use crate::tr;
 use crate::transfer::{Throttle, TransferHandle, TransferPhase, REPORT_INTERVAL};
 
@@ -200,6 +201,85 @@ fn fetch_map_body(
         .map_err(|e| OsmApiError::Network(e.to_string()))
 }
 
+/// One object as the server has it right now.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerElement {
+    /// The object (for a way fetched in full, with its nodes).
+    Present(OsmData),
+    /// The server answered 410: the object has been deleted.
+    Gone,
+}
+
+impl ServerElement {
+    /// The current server version of `(kind, id)`; `None` for a deleted or
+    /// absent object.
+    pub fn version(&self, kind: FeatureKind, id: i64) -> Option<i32> {
+        let ServerElement::Present(data) = self else {
+            return None;
+        };
+        match kind {
+            FeatureKind::Node => data.nodes.get(&id).map(|n| n.version),
+            FeatureKind::Way => data.ways.get(&id).map(|w| w.version),
+            FeatureKind::Relation => data
+                .relations
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.version),
+        }
+    }
+}
+
+pub(crate) fn element_url(base_url: &str, kind: FeatureKind, id: i64, full: bool) -> String {
+    let noun = match kind {
+        FeatureKind::Node => "node",
+        FeatureKind::Way => "way",
+        FeatureKind::Relation => "relation",
+    };
+    format!(
+        "{}/api/0.6/{}/{}{}",
+        base_url.trim_end_matches('/'),
+        noun,
+        id,
+        // A way's nodes come along with `/full`; a relation is wanted alone.
+        if full && kind == FeatureKind::Way {
+            "/full"
+        } else {
+            ""
+        }
+    )
+}
+
+/// `GET /api/0.6/[node|way|relation]/#id` (a way with `/full` when `full`),
+/// for resolving an upload conflict. Synchronous — call from a worker thread.
+pub fn fetch_element(
+    base_url: &str,
+    token: Option<&str>,
+    kind: FeatureKind,
+    id: i64,
+    full: bool,
+) -> Result<ServerElement, OsmApiError> {
+    fetch_element_with(&UreqClient::new(), base_url, token, kind, id, full)
+}
+
+pub(crate) fn fetch_element_with(
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: Option<&str>,
+    kind: FeatureKind,
+    id: i64,
+    full: bool,
+) -> Result<ServerElement, OsmApiError> {
+    let url = element_url(base_url, kind, id, full);
+    match fetch_map_body(client, &url, token, None) {
+        Ok(body) => OsmParser::new()
+            .parse_str(&body)
+            .map(ServerElement::Present)
+            .map_err(OsmApiError::Parse),
+        Err(OsmApiError::Http { status: 410, .. }) => Ok(ServerElement::Gone),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +324,74 @@ mod tests {
             url,
             "https://api.openstreetmap.org/api/0.6/map?bbox=-74.0200000,40.7000000,-73.9800000,40.7500000"
         );
+    }
+
+    #[test]
+    fn element_urls_ask_for_a_ways_nodes_only_when_wanted() {
+        let base = "https://osm.test/";
+        assert_eq!(
+            element_url(base, FeatureKind::Node, 1, true),
+            "https://osm.test/api/0.6/node/1"
+        );
+        assert_eq!(
+            element_url(base, FeatureKind::Way, 2, false),
+            "https://osm.test/api/0.6/way/2"
+        );
+        assert_eq!(
+            element_url(base, FeatureKind::Way, 2, true),
+            "https://osm.test/api/0.6/way/2/full"
+        );
+        assert_eq!(
+            element_url(base, FeatureKind::Relation, 3, true),
+            "https://osm.test/api/0.6/relation/3"
+        );
+    }
+
+    #[test]
+    fn fetch_element_reads_the_current_version() {
+        let body = r#"<osm version="0.6"><node id="12345" visible="true" version="4" lat="1.5" lon="2.5"><tag k="a" v="b"/></node></osm>"#;
+        let client = FakeClient::new(vec![ok(200, body)]);
+        let server = fetch_element_with(
+            &client,
+            "https://osm.test",
+            None,
+            FeatureKind::Node,
+            12345,
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.version(FeatureKind::Node, 12345), Some(4));
+        assert_eq!(server.version(FeatureKind::Node, 1), None);
+        assert_eq!(
+            client.requests.lock().unwrap()[0].url,
+            "https://osm.test/api/0.6/node/12345"
+        );
+    }
+
+    #[test]
+    fn fetch_element_reports_a_deleted_object_as_gone() {
+        let client = FakeClient::new(vec![status_err(410, "")]);
+        let server =
+            fetch_element_with(&client, "https://osm.test", None, FeatureKind::Way, 5, true)
+                .unwrap();
+        assert_eq!(server, ServerElement::Gone);
+        assert_eq!(server.version(FeatureKind::Way, 5), None);
+        assert_eq!(client.request_count(), 1, "410 is not retried");
+    }
+
+    #[test]
+    fn fetch_element_passes_other_errors_through() {
+        let client = FakeClient::new(vec![status_err(404, "")]);
+        let err = fetch_element_with(
+            &client,
+            "https://osm.test",
+            None,
+            FeatureKind::Node,
+            5,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, OsmApiError::Http { status: 404, .. }));
     }
 
     #[test]
