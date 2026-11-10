@@ -15,6 +15,7 @@ use gpui_component::{
 use std::collections::HashMap;
 
 use crate::presets::Geometry;
+use crate::tr;
 use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
@@ -51,7 +52,9 @@ impl EventEmitter<DialogEvent> for PresetPickerDialog {}
 
 impl PresetPickerDialog {
     pub fn new(geometry: Geometry, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search feature types…"));
+        let query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("dialog.preset_picker.search_placeholder"))
+        });
         let focus_handle = cx.focus_handle();
         query.update(cx, |state, cx| state.focus(window, cx));
         Self {
@@ -122,7 +125,7 @@ impl Render for PresetPickerDialog {
         };
 
         let list: gpui::AnyElement = if results.is_empty() {
-            Label::new("No matches.")
+            Label::new(tr!("dialog.no_matches"))
                 .text_color(muted)
                 .into_any_element()
         } else {
@@ -179,7 +182,7 @@ impl Render for PresetPickerDialog {
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Change Feature Type"),
+                    .child(tr!("dialog.preset_picker.title")),
             )
             .child(div().p_4().child(body));
 

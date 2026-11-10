@@ -28,15 +28,13 @@ impl JoinError {
     /// A short status-bar message.
     pub fn message(&self) -> String {
         match self {
-            JoinError::NotChainable => {
-                "Can't join: the ways don't connect end to end in one chain".to_string()
-            }
+            JoinError::NotChainable => crate::tr!("action.join.error.not_chainable").to_string(),
             JoinError::TagConflict(key) => {
-                format!("Can't join: the ways have different values for '{key}'")
+                crate::tr!("action.join.error.tag_conflict", key = key).to_string()
             }
-            JoinError::NeedsReversal(id) => format!(
-                "Can't join: way {id} would have to be reversed but its tags depend on its direction"
-            ),
+            JoinError::NeedsReversal(id) => {
+                crate::tr!("action.join.error.needs_reversal", id = id).to_string()
+            }
         }
     }
 }

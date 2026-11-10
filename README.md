@@ -76,6 +76,7 @@ Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but 
 | `src/script_harness.rs` | Runner bridge from `script/` to the live `App` via the `AppHandle` trait. |
 | `src/menu.rs` | Menu bar structure and action handlers (Open, Download, Settings, Help, About). |
 | `src/ui/` | GPUI components for side panels (layers, tags, history), dialogs (tag-edit, quit-confirm, custom-imagery, settings), settings window. |
+| `src/i18n.rs`, `locales/` | Localization: the `tr!` / `tr_count!` macros, locale selection, and the message catalogs (see Localization below). |
 
 ### Runtime flow
 
@@ -100,6 +101,18 @@ Defaults; all but the fixed window/app ones can be changed in **Settings > Keybo
 - ⌘M minimize · ⌘H hide · ⌥⌘H hide others
 
 The status bar at the bottom of the window shows a hint for the current mode (or the latest status message / running operation), the unsaved-edit count, the signed-in account, the cursor's coordinates, and the zoom level.
+
+## Localization
+
+The app's own interface text (menus, toolbar, status bar, side panel, dialogs, Settings, shortcut names, error messages) lives in message catalogs under `locales/`, one YAML file per language named by its locale tag (`locales/en.yml`). They are compiled into the binary by [`rust-i18n`](https://crates.io/crates/rust-i18n), so there is nothing to install. English is the source language and the fallback: a key missing from another catalog shows its English text.
+
+In code, use `tr!("menu.file.open")`, `tr!("status.exported", path = path.display())` for `%{path}` placeholders, and `tr_count!("status.pending_edits", n)` for plurals (the catalog has a `.one` / `.other` key per plural form; `i18n::plural_category` picks the form for a language). Keys are grouped by area (`menu.*`, `mode.*`, `status.*`, `panel.*`, `dialog.*`, `settings.*`, `shortcut.*`, `error.*`). Give translators whole sentences with named placeholders rather than gluing fragments together.
+
+**Adding a language:** copy `locales/en.yml` to `locales/<tag>.yml` (for example `fr.yml` or `pt-BR.yml`), translate the values (keep the keys, the `%{placeholders}`, and the literal `{z}`/`{x}`/`{y}` in the custom-imagery messages), and set `meta.language_name` to the language's own name; that is what the Settings dropdown shows. Rebuild. If a language needs plural forms beyond `one`/`other`, add the category to `i18n::plural_category` and the matching keys to its catalog. `cargo test` checks that every key used in the source exists in `en.yml`.
+
+**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart.
+
+**Not translated yet:** preset and field labels from the bundled iD tagging schema and the Name Suggestion Index data (these have their own upstream translations; loading them is future work); OSM tag keys and values; the debug overlay; layer names such as "OpenStreetMap Carto" and "Coordinate Grid"; log output and the script harness. Nothing sent to the OSM API or written to files (for example changeset tags) is localized.
 
 ## Scripted screenshots
 

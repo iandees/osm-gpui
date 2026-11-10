@@ -1,0 +1,455 @@
+_version: 1
+
+# English message catalog (the source language and the fallback for every
+# other catalog). Keys are grouped by area; `%{name}` marks a placeholder.
+# Plural messages have one key per plural category (`one`, `other`, ...).
+
+meta:
+  # Shown in the Settings language dropdown, in the language itself.
+  language_name: "English"
+
+menu:
+  app:
+    settings: "Settings…"
+    services: "Services"
+    hide: "Hide %{app}"
+    hide_others: "Hide Others"
+    show_all: "Show All"
+    quit: "Quit %{app}"
+  file:
+    title: "File"
+    open: "Open…"
+    export: "Export…"
+    download: "Download from OSM"
+    upload: "Upload to OSM…"
+  edit:
+    title: "Edit"
+    undo: "Undo"
+    redo: "Redo"
+    delete: "Delete"
+    select_all: "Select All"
+    deselect_all: "Deselect All"
+    change_feature_type: "Change Feature Type…"
+    apply_nsi_preset: "Apply NSI Preset…"
+  tools:
+    title: "Tools"
+  mode:
+    title: "Mode"
+  imagery:
+    title: "Imagery"
+    custom: "Custom Imagery"
+    custom_add: "Add…"
+    osm_carto: "OpenStreetMap Carto"
+    coordinate_grid: "Coordinate Grid"
+    loading: "(Loading imagery index…)"
+    unavailable: "(Imagery index unavailable)"
+    # A recommended imagery source in the menu.
+    best_entry: "★ %{name}"
+  view:
+    title: "View"
+    zoom_in: "Zoom In"
+    zoom_out: "Zoom Out"
+    zoom_to_data: "Zoom to Data"
+    zoom_to_selection: "Zoom to Selection"
+    toggle_debug_overlay: "Toggle Debug Overlay"
+  window:
+    title: "Window"
+    minimize: "Minimize"
+    zoom: "Zoom"
+  help:
+    title: "Help"
+    map_features_wiki: "OpenStreetMap Wiki: Map Features"
+    project_page: "%{app} on GitHub"
+  open_dialog:
+    title: "Select OSM file to open"
+    osm_files: "OSM files"
+    all_files: "All files"
+  export_dialog:
+    title: "Export OSM data"
+
+# Edit modes. `name` is the menu item, `label` the short text under the
+# toolbar icon (the toolbar is narrow), `tooltip` the hover description.
+mode:
+  select:
+    name: "Select"
+    label: "Select"
+    tooltip: "Select and move features"
+  add:
+    name: "Add"
+    label: "Add"
+    tooltip: "Add nodes and ways"
+  building:
+    name: "Building"
+    label: "Bldg"
+    tooltip: "Draw a rectangular building"
+  extrude:
+    name: "Extrude"
+    label: "Extr"
+    tooltip: "Extrude a way segment"
+  # `%{shortcut}` is the key that activates the mode, e.g. "A".
+  tooltip: "%{name} (%{shortcut})"
+  tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
+
+# Long-running background operations, shown with a spinner in the status bar.
+activity:
+  uploading: "Uploading changes…"
+  downloading: "Downloading OSM data…"
+
+status:
+  # One-line hint for what the mouse and keyboard do in each mode.
+  hint:
+    select_empty: "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
+    select_selection: "Drag the selection to move it · Delete to remove · Esc to deselect"
+    add_idle: "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
+    add_started: "Click to continue the way · Enter or Esc to finish"
+    building_idle: "Click to place the building's first corner · Esc to exit"
+    building_started: "Click to place the second corner · Esc to cancel"
+    building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
+    building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
+    building_oriented_started: "Click or release at the opposite corner to finish the building · Esc to cancel"
+    extrude: "Drag a way segment to extrude it · double-click a segment to add a node · Esc to exit"
+  pending_edits:
+    one: "%{count} unsaved edit"
+    other: "%{count} unsaved edits"
+  not_signed_in: "Not signed in"
+  zoom_in_to_download: "Zoom in to download"
+  open_failed: "Could not open %{path}: %{error}"
+  open_data_first: "Open or download OSM data before drawing"
+  tag_needs_key: "A tag needs a key; the edit was discarded"
+  nothing_to_delete: "Nothing to delete"
+  deleted_features:
+    one: "Deleted %{count} feature"
+    other: "Deleted %{count} features"
+  no_data_to_zoom: "No OSM data to zoom to"
+  nothing_selected: "Nothing selected"
+  no_data_to_export: "No OSM data to export"
+  exported: "Exported to %{path}"
+  export_failed: "Export failed: %{error}"
+  nothing_to_upload: "Nothing to upload"
+  uploaded: "Uploaded changes (changeset %{changeset})"
+  upload_failed_changeset_open: "%{error} (changeset %{changeset} was opened but not uploaded — you may want to close it manually)"
+  downloaded: "Downloaded OSM data: %{summary}"
+  # The parts of the download summary above, joined with `separator`.
+  merge:
+    nothing_new: "nothing new"
+    added:
+      one: "%{count} new"
+      other: "%{count} new"
+    updated:
+      one: "%{count} updated"
+      other: "%{count} updated"
+    kept_local:
+      one: "%{count} local edit kept"
+      other: "%{count} local edits kept"
+    separator: ", "
+
+# Side panel sections. Preset and field labels shown inside them come from
+# the bundled iD tagging schema and are not translated here.
+panel:
+  layers:
+    title: "Layers"
+    empty: "No layers yet"
+    # Badge on the layer that drawing modes write into.
+    editing: "editing"
+    set_active: "Set as active layer"
+    move_up: "Move up"
+    move_down: "Move down"
+    hide: "Hide"
+    show: "Show"
+    delete: "Delete"
+  selection:
+    title: "Selection"
+    title_count:
+      one: "Selection (%{count} item)"
+      other: "Selection (%{count} items)"
+    empty: "Click or drag to select."
+    node: "Node"
+    way: "Way"
+    # `%{kind}` is the Node/Way label above, `%{id}` the OSM id.
+    row: "%{kind} %{id}"
+    row_named: "%{name} · %{kind} %{id}"
+  fields:
+    title: "Fields"
+    no_selection: "No selection."
+    select_single: "Select a single feature to edit fields."
+    change_type: "Change feature type…"
+    no_preset: "No matched preset."
+    no_fields: "This feature type has no editable fields."
+    add_field: "Add field (%{count})"
+    # Opens the value list of a multi-select field.
+    multi_add: "+ Add"
+  tags:
+    title: "Tags"
+    no_selection: "No selection."
+    add: "Add tag"
+    empty: "(no tags)"
+    key_placeholder: "key"
+    value_placeholder: "value"
+  history:
+    title: "History"
+    empty: "No actions yet."
+
+# Undo history entries.
+history:
+  moved_nodes:
+    one: "Moved %{count} node"
+    other: "Moved %{count} nodes"
+  changed_tags:
+    one: "Changed %{count} tag"
+    other: "Changed %{count} tags"
+  created_node: "Created 1 node"
+  deleted_node: "Deleted 1 node"
+  deleted_way: "Deleted 1 way"
+  extended_way: "Extended a way"
+  created_building: "Created a building"
+  extruded_way: "Extruded a way"
+  inserted_node: "Inserted a node into a way"
+  snapped_node: "Snapped a node onto a way"
+  changed_way_nodes: "Changed the nodes of a way"
+
+# Generic feature names used when no preset matches.
+geometry:
+  point: "Point"
+  vertex: "Vertex"
+  line: "Line"
+  area: "Area"
+  relation: "Relation"
+
+settings:
+  window_title: "Settings"
+  save: "Save"
+  language:
+    group: "Language"
+    title: "Language"
+    system_default: "System default"
+    description: "Takes effect after restarting the app."
+  appearance:
+    title: "Appearance"
+    text_group: "Text"
+    text_size: "Text Size"
+    text_size_description: "Size of text throughout the app."
+    size_small: "Small"
+    size_medium: "Medium"
+    size_large: "Large"
+  account:
+    title: "Account"
+    api_server_group: "API Server"
+    osm_account_group: "OpenStreetMap Account"
+    server: "Server"
+    server_description: "Choose which OpenStreetMap API server to use."
+    server_primary: "Primary (api.openstreetmap.org)"
+    server_dev: "Dev / testing (master.apis.dev.openstreetmap.org)"
+    server_custom: "Custom"
+    custom_url: "Custom API URL"
+    custom_url_description: "The base URL of a self-hosted or alternate OSM API server."
+    url: "URL"
+    client_id: "OAuth Client ID"
+    client_id_description: "Override the OAuth client_id used for this server (leave blank for default)."
+    client_id_field: "Client ID"
+    client_id_placeholder: "Default"
+    account: "Account"
+    account_description: "Sign in with your OpenStreetMap account to edit data."
+    sign_in: "Sign in with OpenStreetMap"
+    signing_in: "Signing in… complete login in your browser."
+    logged_in: "✅ Logged in as %{name}"
+    sign_out: "Sign out"
+    try_again: "Try again"
+    error:
+      invalid_url: "Enter a valid http(s) URL"
+  imagery:
+    title: "Imagery"
+    custom_sources: "Custom Sources"
+    empty: "No custom imagery sources configured."
+    new_source: "New Source"
+    # `%{url}` is the tile URL template; zoom levels are numbers.
+    entry_summary: "%{url} · zoom %{min}–%{max}"
+    add_source: "Add Source"
+    edit: "Edit"
+    delete: "Delete"
+    confirm_delete: "Delete %{name}?"
+  cache:
+    group: "Tile Cache"
+    # `%{tiles}` and `%{sources}` are filled from the plural messages below.
+    summary: "%{size} across %{tiles} in %{sources}"
+    tiles:
+      one: "%{count} tile"
+      other: "%{count} tiles"
+    sources:
+      one: "%{count} source"
+      other: "%{count} sources"
+    source_size: "%{size} · %{tiles}"
+    budget: "Cache budget (MB)"
+    budget_description: "Maximum on-disk tile cache size. Lowering this doesn't delete anything immediately — the cache shrinks to the new limit the next time it's written to."
+    megabytes: "Megabytes"
+    empty: "No cached tiles yet."
+    clear_all: "Clear All"
+    clear_source: "Clear"
+    error:
+      too_small: "Budget must be at least 10 MB"
+      not_a_number: "Enter a whole number of megabytes"
+      clear_source: "Failed to clear %{source}: %{error}"
+      clear_all: "Failed to clear cache: %{error}"
+  shortcuts:
+    title: "Keyboard Shortcuts"
+    reset_all: "Reset All to Defaults"
+    recording: "Press keys… (Esc to cancel)"
+    record: "Record"
+    reset: "Reset"
+    error:
+      in_use: "Already used by %{other}."
+      reserved: "That key is reserved."
+      mode_modifier: "This shortcut can't use modifier keys."
+
+# Keyboard shortcut display names, one per shortcut id in
+# `keybindings::SHORTCUTS`. The ids themselves are stable and not translated.
+shortcut:
+  open_settings: "Settings…"
+  quit: "Quit"
+  open_osm_file: "Open…"
+  download_osm: "Download from OSM"
+  upload_osm: "Upload to OSM…"
+  export_osm_file: "Export…"
+  undo: "Undo"
+  redo: "Redo"
+  select_all: "Select All"
+  zoom_in: "Zoom In"
+  zoom_out: "Zoom Out"
+  zoom_to_data: "Zoom to Data"
+  zoom_to_selection: "Zoom to Selection"
+  mode_select: "Switch to Select mode"
+  mode_add: "Switch to Add mode"
+  mode_building: "Switch to Building mode"
+  mode_extrude: "Switch to Extrude mode"
+  action_square: "Square"
+  action_circularize: "Circularize"
+  action_reverse: "Reverse Way"
+  action_join: "Join Ways"
+  action_separate: "Separate Node"
+  action_extend: "Extend Way"
+
+# Selection actions (`selection_actions::ACTIONS`): the right-click context
+# menu, the Tools menu, and their status-bar messages. Each action id has a
+# `label` (menu item) and a `hint` (shown when the selection doesn't fit).
+action:
+  no_data: "Open or download OSM data first"
+  not_editable: "The active layer is not editable"
+  square:
+    label: "Square"
+    hint: "Select a closed way (or a way with 3+ nodes) to square it"
+    none: "No corners are close enough to 90° to square"
+    done:
+      one: "Squared %{count} way"
+      other: "Squared %{count} ways"
+  circularize:
+    label: "Circularize"
+    hint: "Select a closed way to circularize it"
+    done:
+      one: "Circularized %{count} way"
+      other: "Circularized %{count} ways"
+  reverse:
+    label: "Reverse Way"
+    hint: "Select a way to reverse it"
+    done:
+      one: "Reversed %{count} way"
+      other: "Reversed %{count} ways"
+  join:
+    label: "Join Ways"
+    hint: "Select two or more ways that connect end to end to join them"
+    done:
+      one: "Joined %{count} way"
+      other: "Joined %{count} ways"
+    error:
+      not_chainable: "Can't join: the ways don't connect end to end in one chain"
+      tag_conflict: "Can't join: the ways have different values for '%{key}'"
+      needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
+      relation_member: "Can't join: way %{id} is a member of a relation and would be deleted"
+  separate:
+    label: "Separate Node"
+    hint: "Select a node shared by two or more ways to separate it"
+    node_missing: "The selected node is not in the active layer"
+    done:
+      one: "Separated a node into %{count} copy"
+      other: "Separated a node into %{count} copies"
+  extend:
+    label: "Extend Way"
+    hint: "Select an open way, or the end node of one, to continue drawing it"
+    started: "Click to add nodes to the way; Enter or Esc to finish"
+  delete:
+    label: "Delete"
+    hint: "Select something to delete"
+
+shortcut_category:
+  general: "General"
+  file: "File"
+  edit: "Edit"
+  view: "View"
+  modes: "Modes"
+  actions: "Selection Actions"
+
+dialog:
+  cancel: "Cancel"
+  no_matches: "No matches."
+  upload:
+    title: "Upload to OpenStreetMap"
+    confirm: "Upload"
+    pending_changes: "Pending changes"
+    no_changes: "No pending changes."
+    layer_summary: "%{layer}: %{created} created, %{modified} modified, %{deleted} deleted"
+    comment_label: "Changeset comment"
+    comment_placeholder: "Describe your changes (required)"
+  sign_in:
+    title: "Sign in to upload"
+    body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
+    open_settings: "Open Settings"
+  quit:
+    title: "Unsaved Changes"
+    body: "You have unsaved changes. Quit anyway?"
+    confirm: "Quit"
+  custom_imagery:
+    title: "Custom Imagery"
+    name: "Name"
+    name_placeholder: "My imagery"
+    url_template: "URL template"
+    min_zoom: "Min zoom"
+    max_zoom: "Max zoom"
+    confirm: "Add"
+    # `{z}`, `{x}`, `{y}` and `{-y}` are literal tile-URL placeholders and
+    # must be kept exactly as written.
+    error:
+      name_empty: "Name is required."
+      template_empty: "URL template is required."
+      template_missing_placeholder: "URL template must contain {z}, {x}, and {y} (or {-y})."
+      template_y_and_minus_y: "URL template must use {y} or {-y}, not both."
+      min_zoom_invalid: "Min zoom must be a whole number from 0 to 24."
+      max_zoom_invalid: "Max zoom must be a whole number from 0 to 24."
+      min_zoom_above_max: "Min zoom must be ≤ max zoom."
+  preset_picker:
+    title: "Change Feature Type"
+    search_placeholder: "Search feature types…"
+  nsi:
+    title: "Apply NSI Preset"
+    search_placeholder: "Search brands…"
+    downloading: "Downloading NSI data…"
+
+# Errors from the OSM API and OAuth code, shown in the status bar and the
+# Settings window. `%{detail}` is the server's or network layer's own
+# message, which is not translated.
+error:
+  network: "Network error: %{detail}"
+  api:
+    area_too_large: "Area too large for OSM API (zoom in and try again)"
+    rejected: "OSM API rejected request (400) — try a smaller area"
+    rate_limited: "OSM API rate-limited (509) — try again later"
+    http: "OSM API error %{status}: %{detail}"
+    parse: "Failed to parse OSM response: %{detail}"
+  upload:
+    conflict: "Upload conflict (409): another edit changed this data first. Re-download and reconcile before retrying. %{detail}"
+    precondition_failed: "Upload failed (412): something your edit refers to was changed or deleted first. Re-download and reconcile before retrying. %{detail}"
+  auth:
+    http: "OSM OAuth error %{status}: %{detail}"
+    no_redirect: "Login timed out waiting for browser redirect"
+    state_mismatch: "Login failed (state mismatch)"
+    no_config_dir: "No config directory available to store login"
+    denied: "Sign in was not completed: %{reason}"
+    not_logged_in: "Not logged in"
+    expired: "Login expired and can't be refreshed; please sign in again"

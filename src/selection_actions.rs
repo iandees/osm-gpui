@@ -11,10 +11,13 @@
 
 use std::collections::HashMap;
 
+use gpui::SharedString;
 use osm_gpui::geometry::{self, LatLon};
+use osm_gpui::i18n::tr_dynamic;
 use osm_gpui::layers::{EditableLayer, LayerId, LayerManager};
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::topology::{self, JoinWay};
+use osm_gpui::{tr, tr_count};
 
 use crate::undo::{NodeMoveUndoEntry, UndoableAction};
 
@@ -196,8 +199,9 @@ pub(crate) struct ActionOutcome {
 }
 
 pub(crate) struct SelectionAction {
+    /// Stable id; also the catalog key of its texts (`action.<id>.label`,
+    /// `action.<id>.hint`).
     pub id: &'static str,
-    pub label: &'static str,
     /// Id of this action's customizable shortcut in `keybindings::SHORTCUTS`.
     pub shortcut_id: Option<&'static str>,
     /// Display text of a fixed (non-customizable) shortcut, if any.
@@ -206,8 +210,6 @@ pub(crate) struct SelectionAction {
     pub needs_active_layer: bool,
     /// Whether the Tools menu lists it (Delete lives in Edit instead).
     pub in_tools_menu: bool,
-    /// Status-bar message when run with an unsuitable selection.
-    pub hint: &'static str,
     pub is_applicable: fn(&ActionEnv) -> bool,
     pub apply: ApplyFn,
 }
@@ -220,12 +222,10 @@ pub(crate) type ApplyFn =
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
         id: "square",
-        label: "Square",
         shortcut_id: Some("action_square"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select a closed way (or a way with 3+ nodes) to square it",
         is_applicable: |env| {
             env.selected_ways()
                 .iter()
@@ -235,12 +235,10 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
     },
     SelectionAction {
         id: "circularize",
-        label: "Circularize",
         shortcut_id: Some("action_circularize"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select a closed way to circularize it",
         is_applicable: |env| {
             env.selected_ways()
                 .iter()
@@ -250,56 +248,46 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
     },
     SelectionAction {
         id: "reverse",
-        label: "Reverse Way",
         shortcut_id: Some("action_reverse"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select a way to reverse it",
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 2),
         apply: apply_reverse,
     },
     SelectionAction {
         id: "join",
-        label: "Join Ways",
         shortcut_id: Some("action_join"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select two or more ways that connect end to end to join them",
         is_applicable: |env| topology::can_chain(&env.selected_join_ways()),
         apply: apply_join,
     },
     SelectionAction {
         id: "separate",
-        label: "Separate Node",
         shortcut_id: Some("action_separate"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select a node shared by two or more ways to separate it",
         is_applicable: |env| env.can_separate_selection(),
         apply: apply_separate,
     },
     SelectionAction {
         id: "extend",
-        label: "Extend Way",
         shortcut_id: Some("action_extend"),
         fixed_shortcut: None,
         needs_active_layer: true,
         in_tools_menu: true,
-        hint: "Select an open way, or the end node of one, to continue drawing it",
         is_applicable: |env| env.extend_target().is_some(),
         apply: apply_extend,
     },
     SelectionAction {
         id: "delete",
-        label: "Delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
         needs_active_layer: false,
         in_tools_menu: false,
-        hint: "Select something to delete",
         is_applicable: |env| {
             env.selection.iter().any(|f| {
                 env.layers
@@ -335,12 +323,22 @@ impl SelectionAction {
         ACTIONS.iter().filter(|a| (a.is_applicable)(env))
     }
 
+    /// Localized menu label, e.g. "Square".
+    pub(crate) fn label(&self) -> SharedString {
+        tr_dynamic(&format!("action.{}.label", self.id))
+    }
+
+    /// Localized status-bar message when run with an unsuitable selection.
+    pub(crate) fn hint(&self) -> SharedString {
+        tr_dynamic(&format!("action.{}.hint", self.id))
+    }
+
     /// Why this action can't run with `env`, for the status bar.
-    pub(crate) fn why_not(&self, env: &ActionEnv) -> &'static str {
+    pub(crate) fn why_not(&self, env: &ActionEnv) -> SharedString {
         if self.needs_active_layer && env.active_editable().is_none() {
-            "Open or download OSM data first"
+            tr!("action.no_data")
         } else {
-            self.hint
+            self.hint()
         }
     }
 
@@ -368,23 +366,15 @@ pub(crate) fn display_shortcut(spec: &str) -> String {
     }
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {many}")
-    }
-}
-
 fn active_editable_mut(
     layers: &mut LayerManager,
     active: Option<LayerId>,
 ) -> Result<(LayerId, &mut dyn EditableLayer), String> {
-    let id = active.ok_or("Open or download OSM data first")?;
+    let id = active.ok_or_else(|| tr!("action.no_data").to_string())?;
     let editable = layers
         .find_layer_mut(id)
         .and_then(|l| l.as_editable_mut())
-        .ok_or("The active layer is not editable")?;
+        .ok_or_else(|| tr!("action.not_editable").to_string())?;
     Ok((id, editable))
 }
 
@@ -397,8 +387,8 @@ fn reshape_ways(
     selection: &[FeatureRef],
     active: Option<LayerId>,
     reshape: fn(&[LatLon]) -> Option<Vec<LatLon>>,
-    none_changed: &str,
-    verb: &str,
+    none_changed: fn() -> SharedString,
+    done: fn(usize) -> SharedString,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = selected_ways_in(editable, layer_id, selection);
@@ -423,7 +413,7 @@ fn reshape_ways(
         changed_ways += 1;
     }
     if changed_ways == 0 {
-        return Err(none_changed.to_string());
+        return Err(none_changed().to_string());
     }
 
     let mut entries: Vec<NodeMoveUndoEntry> = current
@@ -433,7 +423,7 @@ fn reshape_ways(
         .collect();
     entries.sort_by_key(|e| e.0);
     if entries.is_empty() {
-        return Err(none_changed.to_string());
+        return Err(none_changed().to_string());
     }
     let moves: Vec<(i64, f64, f64)> = entries
         .iter()
@@ -445,7 +435,7 @@ fn reshape_ways(
         undo: Some(UndoableAction::MoveNodes {
             per_layer: vec![(layer_id, entries)],
         }),
-        status: format!("{verb} {}", plural(changed_ways, "way", "ways")),
+        status: done(changed_ways).to_string(),
         clear_selection: false,
         select: None,
         continue_way: None,
@@ -462,8 +452,8 @@ fn apply_square(
         selection,
         active,
         geometry::orthogonalize,
-        "No corners are close enough to 90° to square",
-        "Squared",
+        || tr!("action.square.none"),
+        |n| tr_count!("action.square.done", n),
     )
 }
 
@@ -477,8 +467,8 @@ fn apply_circularize(
         selection,
         active,
         geometry::circularize,
-        "Select a closed way to circularize it",
-        "Circularized",
+        || tr!("action.circularize.hint"),
+        |n| tr_count!("action.circularize.done", n),
     )
 }
 
@@ -496,9 +486,9 @@ fn apply_reverse(
         }
     }
     if reversed.is_empty() {
-        return Err("Select a way to reverse it".to_string());
+        return Err(tr!("action.reverse.hint").to_string());
     }
-    let status = format!("Reversed {}", plural(reversed.len(), "way", "ways"));
+    let status = tr_count!("action.reverse.done", reversed.len()).to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::ReverseWays {
             layer: layer_id,
@@ -525,9 +515,7 @@ fn apply_join(
     let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
     for id in &plan.remove {
         if !editable.relations_containing_way(*id).is_empty() {
-            return Err(format!(
-                "Can't join: way {id} is a member of a relation and would be deleted"
-            ));
+            return Err(tr!("action.join.error.relation_member", id = id).to_string());
         }
     }
     let kept = ways
@@ -569,7 +557,7 @@ fn apply_join(
         }
     }
 
-    let label = format!("Joined {}", plural(ways.len(), "way", "ways"));
+    let label = tr_count!("action.join.done", ways.len()).to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::Batch {
             label: label.clone(),
@@ -591,12 +579,12 @@ fn apply_separate(
     selection: &[FeatureRef],
     active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
-    const HINT: &str = "Select a node shared by two or more ways to separate it";
+    let hint = || tr!("action.separate.hint").to_string();
     let (layer_id, editable) = active_editable_mut(layers, active)?;
-    let (node, detach) = separate_target(layer_id, selection).ok_or(HINT)?;
+    let (node, detach) = separate_target(layer_id, selection).ok_or_else(hint)?;
     let (lat, lon) = editable
         .node_lat_lon(node)
-        .ok_or("The selected node is not in the active layer")?;
+        .ok_or_else(|| tr!("action.separate.node_missing").to_string())?;
     let ways = ways_using(editable, node);
 
     let mut created = Vec::new();
@@ -607,7 +595,7 @@ fn apply_separate(
         created.push(id);
         id
     })
-    .ok_or(HINT)?;
+    .ok_or_else(hint)?;
 
     let mut actions: Vec<UndoableAction> = created
         .iter()
@@ -628,10 +616,7 @@ fn apply_separate(
         });
     }
 
-    let label = format!(
-        "Separated a node into {}",
-        plural(created.len() + 1, "copy", "copies")
-    );
+    let label = tr_count!("action.separate.done", created.len() + 1).to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::Batch {
             label: label.clone(),
@@ -655,10 +640,10 @@ fn apply_extend(
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let from = extend_target(editable, layer_id, selection)
-        .ok_or("Select an open way, or the end node of one, to continue drawing it")?;
+        .ok_or_else(|| tr!("action.extend.hint").to_string())?;
     Ok(ActionOutcome {
         undo: None,
-        status: "Click to add nodes to the way; Enter or Esc to finish".to_string(),
+        status: tr!("action.extend.started").to_string(),
         clear_selection: false,
         select: Some(vec![FeatureRef {
             layer_id,
@@ -693,16 +678,15 @@ fn apply_delete(
         }
     }
     let deleted = actions.len();
-    let status = match deleted {
-        0 => return Err("Nothing to delete".to_string()),
-        1 => "Deleted 1 feature".to_string(),
-        n => format!("Deleted {n} features"),
-    };
+    if deleted == 0 {
+        return Err(tr!("status.nothing_to_delete").to_string());
+    }
+    let status = tr_count!("status.deleted_features", deleted).to_string();
     let undo = if deleted == 1 {
         actions.remove(0)
     } else {
         UndoableAction::Batch {
-            label: format!("Deleted {deleted} features"),
+            label: status.clone(),
             actions,
         }
     };
@@ -996,6 +980,15 @@ mod tests {
             find("delete").unwrap().shortcut_label(&settings).unwrap(),
             "⌫"
         );
+    }
+
+    #[test]
+    fn every_action_has_a_label_and_a_hint_in_the_catalog() {
+        // A missing key renders as "<locale>.<key>".
+        for a in ACTIONS {
+            assert!(!a.label().starts_with("en."), "{}: {}", a.id, a.label());
+            assert!(!a.hint().starts_with("en."), "{}: {}", a.id, a.hint());
+        }
     }
 
     #[test]

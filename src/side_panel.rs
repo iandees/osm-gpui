@@ -12,6 +12,7 @@ use gpui_component::{
 
 use osm_gpui::layers::LayerId;
 use osm_gpui::ui::style::{interactive_row, muted_text_size, panel_row, PANEL_ROW_HEIGHT};
+use osm_gpui::{tr, tr_count};
 
 use crate::{
     DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
@@ -58,9 +59,8 @@ impl MapViewer {
         let open_history = self.side_panel_open[4];
 
         let selection_title = match self.selected.len() {
-            0 => "Selection".to_string(),
-            1 => "Selection (1 item)".to_string(),
-            n => format!("Selection ({} items)", n),
+            0 => tr!("panel.selection.title"),
+            n => tr_count!("panel.selection.title_count", n),
         };
 
         // A thin strip along the panel's left edge that drags its width.
@@ -102,7 +102,13 @@ impl MapViewer {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .child(self.collapsible_section("Layers", 0, open_layers, layers_section, cx))
+                    .child(self.collapsible_section(
+                        tr!("panel.layers.title"),
+                        0,
+                        open_layers,
+                        layers_section,
+                        cx,
+                    ))
                     .child(self.collapsible_section(
                         selection_title,
                         1,
@@ -110,10 +116,22 @@ impl MapViewer {
                         selection_section,
                         cx,
                     ))
-                    .child(self.collapsible_section("Fields", 2, open_fields, fields_section, cx))
-                    .child(self.collapsible_section("Tags", 3, open_tags, tags_section, cx))
                     .child(self.collapsible_section(
-                        "History",
+                        tr!("panel.fields.title"),
+                        2,
+                        open_fields,
+                        fields_section,
+                        cx,
+                    ))
+                    .child(self.collapsible_section(
+                        tr!("panel.tags.title"),
+                        3,
+                        open_tags,
+                        tags_section,
+                        cx,
+                    ))
+                    .child(self.collapsible_section(
+                        tr!("panel.history.title"),
                         4,
                         open_history,
                         history_section,
@@ -130,7 +148,7 @@ impl MapViewer {
     /// redo but not currently applied, and renders dimmed.
     fn render_history_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         if self.undo_stack.actions.is_empty() {
-            return Label::new("No actions yet.")
+            return Label::new(tr!("panel.history.empty"))
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
@@ -228,7 +246,7 @@ impl MapViewer {
         use osm_gpui::selection::FeatureKind;
 
         if self.selected.is_empty() {
-            return Label::new("Click or drag to select.")
+            return Label::new(tr!("panel.selection.empty"))
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
@@ -244,14 +262,19 @@ impl MapViewer {
             .overflow_y_scroll()
             .children(self.selected.iter().enumerate().map(|(i, feat)| {
                 let kind_label = match feat.kind {
-                    FeatureKind::Node => "Node",
-                    FeatureKind::Way => "Way",
+                    FeatureKind::Node => tr!("panel.selection.node"),
+                    FeatureKind::Way => tr!("panel.selection.way"),
                 };
                 let row_feat = *feat;
                 let described = self.describe_selected_feature(feat);
                 let row_text = match &described {
-                    Some((name, _)) => format!("{} · {} {}", name, kind_label, feat.id),
-                    None => format!("{} {}", kind_label, feat.id),
+                    Some((name, _)) => tr!(
+                        "panel.selection.row_named",
+                        name = name,
+                        kind = kind_label,
+                        id = feat.id
+                    ),
+                    None => tr!("panel.selection.row", kind = kind_label, id = feat.id),
                 };
                 let icon_path = described.and_then(|(_, path)| path);
 
@@ -301,7 +324,7 @@ impl MapViewer {
     ) -> gpui::AnyElement {
         let total = layer_info.len();
         if total == 0 {
-            return Label::new("No layers yet")
+            return Label::new(tr!("panel.layers.empty"))
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
@@ -386,36 +409,43 @@ impl MapViewer {
                                             .flex_shrink_0()
                                             .text_size(muted_text_size())
                                             .text_color(muted)
-                                            .child("editing"),
+                                            .child(tr!("panel.layers.editing")),
                                     )
                                 })
                                 .context_menu(move |menu, _window, _cx| {
                                     let mut menu = menu;
                                     if is_osm && !is_active {
                                         menu = menu.menu(
-                                            "Set as active layer",
+                                            tr!("panel.layers.set_active"),
                                             Box::new(SetActiveLayer { index }),
                                         );
                                     }
                                     if index > 0 {
                                         menu = menu.menu(
-                                            "Move up",
+                                            tr!("panel.layers.move_up"),
                                             Box::new(MoveLayer { index, delta: -1 }),
                                         );
                                     }
                                     if index + 1 < total {
                                         menu = menu.menu(
-                                            "Move down",
+                                            tr!("panel.layers.move_down"),
                                             Box::new(MoveLayer { index, delta: 1 }),
                                         );
                                     }
                                     menu.separator()
                                         .menu(
-                                            if is_visible { "Hide" } else { "Show" },
+                                            if is_visible {
+                                                tr!("panel.layers.hide")
+                                            } else {
+                                                tr!("panel.layers.show")
+                                            },
                                             Box::new(ToggleLayerVisibilityAction { index }),
                                         )
                                         .separator()
-                                        .menu("Delete", Box::new(DeleteLayer { index }))
+                                        .menu(
+                                            tr!("panel.layers.delete"),
+                                            Box::new(DeleteLayer { index }),
+                                        )
                                 })
                                 .into_any_element()
                         },
@@ -503,7 +533,7 @@ impl MapViewer {
         use osm_gpui::ui::tag_edit::TagEditField;
 
         if self.selected.is_empty() {
-            return Label::new("No selection.")
+            return Label::new(tr!("panel.tags.no_selection"))
                 .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
@@ -543,7 +573,7 @@ impl MapViewer {
                     .px_2()
                     .py_1()
                     .text_color(cx.theme().muted_foreground)
-                    .child("(no tags)"),
+                    .child(tr!("panel.tags.empty")),
             );
         } else {
             let mut description_list = DescriptionList::new()
@@ -667,14 +697,19 @@ impl MapViewer {
                 // tag's row will have once committed.
                 description_list = description_list.child(
                     DescriptionItem::new(
-                        self.tag_input_cell(&edit.key, "key", cx).into_any_element(),
+                        self.tag_input_cell(&edit.key, tr!("panel.tags.key_placeholder"), cx)
+                            .into_any_element(),
                     )
                     .value(
                         div()
                             .flex()
                             .flex_row()
                             .w_full()
-                            .child(self.tag_input_cell(&edit.value, "value", cx))
+                            .child(self.tag_input_cell(
+                                &edit.value,
+                                tr!("panel.tags.value_placeholder"),
+                                cx,
+                            ))
                             .into_any_element(),
                     )
                     .span(1),
@@ -692,7 +727,7 @@ impl MapViewer {
         list.child(
             div().flex().flex_row().child(
                 Button::new("add-tag")
-                    .label("Add tag")
+                    .label(tr!("panel.tags.add"))
                     .icon(IconName::Plus)
                     .ghost()
                     .small()

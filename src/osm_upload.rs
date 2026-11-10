@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::layers::diff::LayerDiff;
 use crate::osm::{OsmNode, OsmWay};
+use crate::tr;
 
 #[derive(Debug)]
 pub enum UploadError {
@@ -31,30 +32,28 @@ pub enum UploadError {
 impl std::fmt::Display for UploadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UploadError::Network(msg) => write!(f, "Network error: {}", msg),
+            UploadError::Network(msg) => write!(f, "{}", tr!("error.network", detail = msg)),
             UploadError::Http { status, body } => {
-                let first_line = body.lines().next().unwrap_or("");
-                write!(f, "OSM API error {}: {}", status, first_line)
-            }
-            UploadError::Conflict { body } => {
                 let first_line = body.lines().next().unwrap_or("");
                 write!(
                     f,
-                    "Upload conflict (409): another edit changed this data first. \
-                     Re-download and reconcile before retrying. {}",
-                    first_line
+                    "{}",
+                    tr!("error.api.http", status = status, detail = first_line)
                 )
+            }
+            UploadError::Conflict { body } => {
+                let first_line = body.lines().next().unwrap_or("");
+                write!(f, "{}", tr!("error.upload.conflict", detail = first_line))
             }
             UploadError::PreconditionFailed { body } => {
                 let first_line = body.lines().next().unwrap_or("");
                 write!(
                     f,
-                    "Upload failed (412): something your edit refers to was changed or \
-                     deleted first. Re-download and reconcile before retrying. {}",
-                    first_line
+                    "{}",
+                    tr!("error.upload.precondition_failed", detail = first_line)
                 )
             }
-            UploadError::Parse(msg) => write!(f, "Failed to parse OSM API response: {}", msg),
+            UploadError::Parse(msg) => write!(f, "{}", tr!("error.api.parse", detail = msg)),
         }
     }
 }

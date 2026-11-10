@@ -1,10 +1,11 @@
 //! The left-hand mode-selector toolbar: Select / Add / Building / Extrude.
 
-use gpui::{div, prelude::*, px, Context};
+use gpui::{div, prelude::*, px, Context, SharedString};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable,
 };
+use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 
 use crate::{EditMode, EditModeAction, MapViewer, SetMode};
@@ -80,12 +81,12 @@ impl MapViewer {
     }
 }
 
-fn mode_label(mode: EditMode) -> &'static str {
+fn mode_label(mode: EditMode) -> SharedString {
     match mode {
-        EditMode::Select => "Select",
-        EditMode::Add => "Add",
-        EditMode::Building => "Bldg",
-        EditMode::Extrude => "Extr",
+        EditMode::Select => tr!("mode.select.label"),
+        EditMode::Add => tr!("mode.add.label"),
+        EditMode::Building => tr!("mode.building.label"),
+        EditMode::Extrude => tr!("mode.extrude.label"),
     }
 }
 
@@ -101,18 +102,18 @@ fn mode_shortcut_id(mode: EditMode) -> &'static str {
 
 /// Hover text for a mode button: the unabbreviated name, its shortcut key,
 /// and — for a disabled button — why it's disabled.
-fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> String {
+fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> SharedString {
     let name = match mode {
-        EditMode::Select => "Select and move features",
-        EditMode::Add => "Add nodes and ways",
-        EditMode::Building => "Draw a rectangular building",
-        EditMode::Extrude => "Extrude a way segment",
+        EditMode::Select => tr!("mode.select.tooltip"),
+        EditMode::Add => tr!("mode.add.tooltip"),
+        EditMode::Building => tr!("mode.building.tooltip"),
+        EditMode::Extrude => tr!("mode.extrude.tooltip"),
     };
-    let base = format!("{name} ({})", shortcut.to_uppercase());
+    let shortcut = shortcut.to_uppercase();
     if enabled {
-        base
+        tr!("mode.tooltip", name = name, shortcut = shortcut)
     } else {
-        format!("{base} — open or download OSM data first")
+        tr!("mode.tooltip_disabled", name = name, shortcut = shortcut)
     }
 }
 

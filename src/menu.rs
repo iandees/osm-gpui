@@ -1,13 +1,14 @@
 //! Menu bar construction and the free-function menu action handlers.
 
 use gpui::{
-    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType,
-    WindowOptions,
+    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SharedString,
+    SystemMenuType, WindowOptions,
 };
 
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
+use osm_gpui::tr;
 
 use crate::selection_actions;
 use crate::{
@@ -35,9 +36,9 @@ pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
 pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
     cx.spawn(async move |cx| {
         let Some(file_path) = rfd::AsyncFileDialog::new()
-            .add_filter("OSM files", &["osm", "xml"])
-            .add_filter("All files", &["*"])
-            .set_title("Select OSM file to open")
+            .add_filter(tr!("menu.open_dialog.osm_files").as_ref(), &["osm", "xml"])
+            .add_filter(tr!("menu.open_dialog.all_files").as_ref(), &["*"])
+            .set_title(tr!("menu.open_dialog.title").as_ref())
             .pick_file()
             .await
         else {
@@ -66,7 +67,7 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
             with_map_viewer(cx, |v, cx| match result {
                 Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
                 Err(e) => {
-                    v.set_status(format!("Could not open {}: {e}", path.display()));
+                    v.set_status(tr!("status.open_failed", path = path.display(), error = e));
                     cx.notify();
                 }
             });
@@ -89,7 +90,7 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                     size: size(px(600.0), px(500.0)),
                 })),
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Settings".into()),
+                    title: Some(tr!("settings.window_title")),
                     appears_transparent: false,
                     traffic_light_position: None,
                 }),
@@ -269,7 +270,10 @@ pub(crate) fn rebuild_menus(
     state: ImageryLoadState,
 ) {
     let custom = custom_imagery_snapshot();
-    let mut custom_items: Vec<MenuItem> = vec![MenuItem::action("Add…", AddCustomImagery)];
+    let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
+        tr!("menu.imagery.custom_add"),
+        AddCustomImagery,
+    )];
     if !custom.is_empty() {
         custom_items.push(MenuItem::separator());
         for (idx, entry) in custom.iter().enumerate() {
@@ -282,28 +286,28 @@ pub(crate) fn rebuild_menus(
 
     let mut imagery_items: Vec<MenuItem> = vec![
         MenuItem::submenu(Menu {
-            name: "Custom Imagery".into(),
+            name: tr!("menu.imagery.custom"),
             items: custom_items,
             disabled: false,
         }),
         MenuItem::separator(),
-        MenuItem::action("OpenStreetMap Carto", AddOsmCarto),
+        MenuItem::action(tr!("menu.imagery.osm_carto"), AddOsmCarto),
         MenuItem::separator(),
-        MenuItem::action("Coordinate Grid", AddCoordinateGrid),
+        MenuItem::action(tr!("menu.imagery.coordinate_grid"), AddCoordinateGrid),
     ];
 
     match state {
         ImageryLoadState::Loading => {
             imagery_items.push(MenuItem::separator());
             imagery_items.push(MenuItem::action(
-                "(Loading imagery index…)",
+                tr!("menu.imagery.loading"),
                 NoOpImageryInfo,
             ));
         }
         ImageryLoadState::Failed => {
             imagery_items.push(MenuItem::separator());
             imagery_items.push(MenuItem::action(
-                "(Imagery index unavailable)",
+                tr!("menu.imagery.unavailable"),
                 NoOpImageryInfo,
             ));
         }
@@ -317,9 +321,9 @@ pub(crate) fn rebuild_menus(
                 imagery_items.push(MenuItem::separator());
                 for entry in shown {
                     let label = if entry.best {
-                        format!("★ {}", entry.name)
+                        tr!("menu.imagery.best_entry", name = entry.name)
                     } else {
-                        entry.name.clone()
+                        entry.name.clone().into()
                     };
                     imagery_items.push(MenuItem::action(
                         label,
@@ -333,103 +337,106 @@ pub(crate) fn rebuild_menus(
     }
 
     let mode_item =
-        |label: &'static str, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
+        |label: SharedString, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
 
     cx.set_menus(vec![
         Menu {
             name: APP_NAME.into(),
             items: vec![
-                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action(tr!("menu.app.settings"), OpenSettings),
                 MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::os_submenu(tr!("menu.app.services"), SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action(format!("Hide {APP_NAME}"), HideApp),
-                MenuItem::action("Hide Others", HideOtherApps),
-                MenuItem::action("Show All", ShowAllApps),
+                MenuItem::action(tr!("menu.app.hide", app = APP_NAME), HideApp),
+                MenuItem::action(tr!("menu.app.hide_others"), HideOtherApps),
+                MenuItem::action(tr!("menu.app.show_all"), ShowAllApps),
                 MenuItem::separator(),
-                MenuItem::action(format!("Quit {APP_NAME}"), Quit),
+                MenuItem::action(tr!("menu.app.quit", app = APP_NAME), Quit),
             ],
             disabled: false,
         },
         Menu {
-            name: "File".into(),
+            name: tr!("menu.file.title"),
             items: vec![
-                MenuItem::action("Open…", OpenOsmFile),
-                MenuItem::action("Export…", ExportOsmFile),
+                MenuItem::action(tr!("menu.file.open"), OpenOsmFile),
+                MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
                 MenuItem::separator(),
-                MenuItem::action("Download from OSM", DownloadFromOsm),
-                MenuItem::action("Upload to OSM…", UploadToOsm),
+                MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
+                MenuItem::action(tr!("menu.file.upload"), UploadToOsm),
             ],
             disabled: false,
         },
         Menu {
-            name: "Edit".into(),
+            name: tr!("menu.edit.title"),
             items: vec![
-                MenuItem::action("Undo", Undo),
-                MenuItem::action("Redo", Redo),
+                MenuItem::action(tr!("menu.edit.undo"), Undo),
+                MenuItem::action(tr!("menu.edit.redo"), Redo),
                 MenuItem::separator(),
-                MenuItem::action("Delete", DeleteSelection),
+                MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
                 MenuItem::separator(),
-                MenuItem::action("Select All", SelectAll),
-                MenuItem::action("Deselect All", DeselectAll),
+                MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
+                MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
                 MenuItem::separator(),
-                MenuItem::action("Change Feature Type…", ChangeFeatureType),
-                MenuItem::action("Apply NSI Preset…", ApplyNsiPreset),
+                MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
+                MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),
             ],
             disabled: false,
         },
         Menu {
-            name: "Tools".into(),
+            name: tr!("menu.tools.title"),
             // Every selection action, applicable or not: running one that
             // doesn't fit the selection explains why in the status bar.
             items: selection_actions::ACTIONS
                 .iter()
                 .filter(|a| a.in_tools_menu)
-                .map(|a| MenuItem::action(a.label, RunSelectionAction { id: a.id.into() }))
+                .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
                 .collect(),
             disabled: false,
         },
         Menu {
-            name: "Mode".into(),
+            name: tr!("menu.mode.title"),
             items: vec![
-                mode_item("Select", EditModeAction::Select),
-                mode_item("Add", EditModeAction::Add),
-                mode_item("Building", EditModeAction::Building),
-                mode_item("Extrude", EditModeAction::Extrude),
+                mode_item(tr!("mode.select.name"), EditModeAction::Select),
+                mode_item(tr!("mode.add.name"), EditModeAction::Add),
+                mode_item(tr!("mode.building.name"), EditModeAction::Building),
+                mode_item(tr!("mode.extrude.name"), EditModeAction::Extrude),
             ],
             disabled: false,
         },
         Menu {
-            name: "Imagery".into(),
+            name: tr!("menu.imagery.title"),
             items: imagery_items,
             disabled: false,
         },
         Menu {
-            name: "View".into(),
+            name: tr!("menu.view.title"),
             items: vec![
-                MenuItem::action("Zoom In", ZoomIn),
-                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::action(tr!("menu.view.zoom_in"), ZoomIn),
+                MenuItem::action(tr!("menu.view.zoom_out"), ZoomOut),
                 MenuItem::separator(),
-                MenuItem::action("Zoom to Data", ZoomToData),
-                MenuItem::action("Zoom to Selection", ZoomToSelection),
+                MenuItem::action(tr!("menu.view.zoom_to_data"), ZoomToData),
+                MenuItem::action(tr!("menu.view.zoom_to_selection"), ZoomToSelection),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Debug Overlay", ToggleDebugOverlay),
+                MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
             ],
             disabled: false,
         },
         Menu {
-            name: "Window".into(),
+            name: tr!("menu.window.title"),
             items: vec![
-                MenuItem::action("Minimize", MinimizeWindow),
-                MenuItem::action("Zoom", ZoomWindow),
+                MenuItem::action(tr!("menu.window.minimize"), MinimizeWindow),
+                MenuItem::action(tr!("menu.window.zoom"), ZoomWindow),
             ],
             disabled: false,
         },
         Menu {
-            name: "Help".into(),
+            name: tr!("menu.help.title"),
             items: vec![
-                MenuItem::action("OpenStreetMap Wiki: Map Features", OpenMapFeaturesWiki),
-                MenuItem::action(format!("{APP_NAME} on GitHub"), OpenProjectPage),
+                MenuItem::action(tr!("menu.help.map_features_wiki"), OpenMapFeaturesWiki),
+                MenuItem::action(
+                    tr!("menu.help.project_page", app = APP_NAME),
+                    OpenProjectPage,
+                ),
             ],
             disabled: false,
         },

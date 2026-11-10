@@ -45,6 +45,7 @@ use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
+use osm_gpui::tr;
 use osm_gpui::viewport::Viewport;
 
 actions!(
@@ -431,11 +432,11 @@ struct MapViewer {
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
-    status_message: Option<(String, Instant)>,
+    status_message: Option<(SharedString, Instant)>,
     /// Description of a long-running background operation (download,
     /// upload) shown with a spinner in the status bar until it completes.
     /// Unlike `status_message` it never expires on its own.
-    activity: Option<String>,
+    activity: Option<SharedString>,
     /// Whether Space is currently held with the map focused; a left-drag
     /// then pans instead of selecting.
     space_held: bool,
@@ -908,7 +909,7 @@ impl MapViewer {
         // The drawing modes need a layer to write into. The toolbar buttons
         // are disabled in that state; this covers the keyboard and menu paths.
         if mode != EditMode::Select && self.active_layer.is_none() {
-            self.set_status("Open or download OSM data before drawing");
+            self.set_status(tr!("status.open_data_first"));
             cx.notify();
             return;
         }
@@ -1419,15 +1420,15 @@ impl MapViewer {
             is_add,
         } = pending;
 
-        let mut new_input = |placeholder: &'static str, text: String| {
+        let mut new_input = |placeholder: SharedString, text: String| {
             cx.new(|cx| {
                 let mut state = InputState::new(window, cx).placeholder(placeholder);
                 state.set_value(text, window, cx);
                 state
             })
         };
-        let key = new_input("key", original_key.clone());
-        let value = new_input("value", original_value.clone());
+        let key = new_input(tr!("panel.tags.key_placeholder"), original_key.clone());
+        let value = new_input(tr!("panel.tags.value_placeholder"), original_value.clone());
         cx.subscribe_in(&key, window, |this, input, event, window, cx| {
             this.on_tag_input_event(TagEditField::Key, input, event, window, cx);
         })
@@ -1527,7 +1528,7 @@ impl MapViewer {
         let value = edit.value.read(cx).value().to_string();
         if key.is_empty() {
             if !edit.ctx.is_add {
-                self.set_status("A tag needs a key; the edit was discarded");
+                self.set_status(tr!("status.tag_needs_key"));
             }
             return;
         }
@@ -1803,7 +1804,7 @@ impl MapViewer {
             .filter(|feature| feature.kind == FeatureKind::Node)
             .collect();
         if !self.fit_to_features(&nodes) {
-            self.set_status("No OSM data to zoom to");
+            self.set_status(tr!("status.no_data_to_zoom"));
         }
         cx.notify();
     }
@@ -1816,7 +1817,7 @@ impl MapViewer {
     ) {
         let selected = self.selected.clone();
         if !self.fit_to_features(&selected) {
-            self.set_status("Nothing selected");
+            self.set_status(tr!("status.nothing_selected"));
         }
         cx.notify();
     }
@@ -2796,7 +2797,7 @@ impl MapViewer {
                 if i > 0 && action.id == "delete" {
                     menu = menu.separator();
                 }
-                let label = action.label;
+                let label = action.label();
                 let shortcut = action.shortcut_label(&settings);
                 menu =
                     menu.item(
@@ -2805,7 +2806,7 @@ impl MapViewer {
                                 .w_full()
                                 .gap_6()
                                 .justify_between()
-                                .child(label)
+                                .child(label.clone())
                                 .children(shortcut.clone().map(|s| {
                                     div().text_color(cx.theme().muted_foreground).child(s)
                                 }))
@@ -2966,15 +2967,15 @@ impl MapViewer {
     /// later.
     fn on_export_osm_file(&mut self, _: &ExportOsmFile, _: &mut Window, cx: &mut Context<Self>) {
         let Some((layer_name, xml)) = self.exportable_layer() else {
-            self.set_status("No OSM data to export");
+            self.set_status(tr!("status.no_data_to_export"));
             cx.notify();
             return;
         };
 
         cx.spawn(async move |this, cx| {
             let Some(file) = rfd::AsyncFileDialog::new()
-                .add_filter("OSM files", &["osm"])
-                .set_title("Export OSM data")
+                .add_filter(tr!("menu.open_dialog.osm_files").as_ref(), &["osm"])
+                .set_title(tr!("menu.export_dialog.title").as_ref())
                 .set_file_name(format!("{layer_name}.osm"))
                 .save_file()
                 .await
@@ -2989,8 +2990,8 @@ impl MapViewer {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(()) => this.set_status(format!("Exported to {}", path.display())),
-                    Err(e) => this.set_status(format!("Export failed: {e}")),
+                    Ok(()) => this.set_status(tr!("status.exported", path = path.display())),
+                    Err(e) => this.set_status(tr!("status.export_failed", error = e)),
                 }
                 cx.notify();
             });
@@ -3116,7 +3117,7 @@ impl MapViewer {
         cx.notify();
     }
 
-    fn set_status(&mut self, message: impl Into<String>) {
+    fn set_status(&mut self, message: impl Into<SharedString>) {
         self.status_message = Some((message.into(), Instant::now()));
     }
 
@@ -3270,7 +3271,7 @@ impl MapViewer {
             .collect();
 
         if summaries.is_empty() || summaries.iter().all(|s| s.is_empty()) {
-            self.set_status("Nothing to upload");
+            self.set_status(tr!("status.nothing_to_upload"));
             cx.notify();
             return;
         }
@@ -3360,13 +3361,13 @@ impl MapViewer {
             .collect();
 
         if diffs.iter().all(|d| d.is_empty()) {
-            self.set_status("Nothing to upload");
+            self.set_status(tr!("status.nothing_to_upload"));
             cx.notify();
             return;
         }
 
         self.status_message = None;
-        self.activity = Some("Uploading changes…".to_string());
+        self.activity = Some(tr!("activity.uploading"));
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3383,27 +3384,35 @@ impl MapViewer {
                         osm_upload::create_changeset(&base_url, &token.access_token, &comment)
                             .map_err(|e| e.to_string())?;
 
-                    let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> = names_for_bg
-                        .iter()
-                        .map(|s| s.as_str())
-                        .zip(diffs)
-                        .collect();
+                    let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> =
+                        names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
                     let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
 
-                    match osm_upload::upload_changes(&base_url, &token.access_token, changeset_id, &xml) {
+                    match osm_upload::upload_changes(
+                        &base_url,
+                        &token.access_token,
+                        changeset_id,
+                        &xml,
+                    ) {
                         Ok(upload_result) => {
                             // Best-effort close: a failure here doesn't
                             // undo the (already-applied) upload, so it
                             // isn't treated as a fatal error — the
                             // changeset just stays open, which OSM handles
                             // fine (manual or automatic close later).
-                            let _ = osm_upload::close_changeset(&base_url, &token.access_token, changeset_id);
+                            let _ = osm_upload::close_changeset(
+                                &base_url,
+                                &token.access_token,
+                                changeset_id,
+                            );
                             Ok((changeset_id, upload_result))
                         }
-                        Err(e) => Err(format!(
-                            "{} (changeset {} was opened but not uploaded — you may want to close it manually)",
-                            e, changeset_id
-                        )),
+                        Err(e) => Err(tr!(
+                            "status.upload_failed_changeset_open",
+                            error = e,
+                            changeset = changeset_id
+                        )
+                        .to_string()),
                     }
                 })
                 .await;
@@ -3418,7 +3427,7 @@ impl MapViewer {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
-                        this.set_status(format!("Uploaded changes (changeset {})", changeset_id));
+                        this.set_status(tr!("status.uploaded", changeset = changeset_id));
                     }
                     Err(e) => {
                         this.set_status(e);
@@ -3446,7 +3455,7 @@ impl MapViewer {
         }
 
         self.status_message = None;
-        self.activity = Some("Downloading OSM data…".to_string());
+        self.activity = Some(tr!("activity.downloading"));
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3493,7 +3502,7 @@ impl MapViewer {
         match target {
             Some(editable) => {
                 let stats = editable.merge_download(data);
-                self.set_status(format!("Downloaded OSM data: {}", stats.summary()));
+                self.set_status(tr!("status.downloaded", summary = stats.summary()));
             }
             None => {
                 let name = self.layer_manager.unique_name(DOWNLOAD_LAYER_NAME);
@@ -4346,6 +4355,8 @@ fn main() {
             // before the cache does any work.
             let app_settings = settings_store::load();
             osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
+            // Pick the UI language before any menu or window text is built.
+            osm_gpui::i18n::init(app_settings.language.as_deref());
             settings_store::init_store(app_settings);
             auth::init_store(auth::load());
 

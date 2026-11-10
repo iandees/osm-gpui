@@ -14,6 +14,7 @@
 //!   a text input elsewhere in the app has focus).
 
 use crate::settings_store::AppSettings;
+use gpui::SharedString;
 
 /// Grouping used to organize the Settings > Keyboard Shortcuts page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,15 +38,38 @@ impl ShortcutCategory {
 }
 
 /// One customizable shortcut: a stable id (used as the
-/// `AppSettings.keybindings` key), its built-in default keystroke spec, a
-/// human-readable label, and which category it's grouped under in the
-/// Settings UI.
+/// `AppSettings.keybindings` key), its built-in default keystroke spec, and
+/// which category it's grouped under in the Settings UI. Its display name is
+/// looked up by id in the message catalog (`shortcut.<id>`, see [`label`]);
+/// the id itself never changes with the language.
+///
+/// [`label`]: ShortcutDef::label
 #[derive(Clone, Copy, Debug)]
 pub struct ShortcutDef {
     pub id: &'static str,
     pub default_spec: &'static str,
-    pub label: &'static str,
     pub category: ShortcutCategory,
+}
+
+impl ShortcutDef {
+    /// Localized display name, e.g. "Switch to Select mode".
+    pub fn label(&self) -> SharedString {
+        crate::i18n::tr_dynamic(&format!("shortcut.{}", self.id))
+    }
+}
+
+impl ShortcutCategory {
+    /// Localized heading of the Settings group for this category.
+    pub fn title(self) -> SharedString {
+        match self {
+            Self::General => crate::tr!("shortcut_category.general"),
+            Self::File => crate::tr!("shortcut_category.file"),
+            Self::Edit => crate::tr!("shortcut_category.edit"),
+            Self::View => crate::tr!("shortcut_category.view"),
+            Self::Modes => crate::tr!("shortcut_category.modes"),
+            Self::Actions => crate::tr!("shortcut_category.actions"),
+        }
+    }
 }
 
 /// The full set of customizable shortcuts, in the order they should be
@@ -54,139 +78,116 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "open_settings",
         default_spec: "cmd-,",
-        label: "Settings…",
         category: ShortcutCategory::General,
     },
     ShortcutDef {
         id: "quit",
         default_spec: "cmd-q",
-        label: "Quit",
         category: ShortcutCategory::General,
     },
     ShortcutDef {
         id: "open_osm_file",
         default_spec: "cmd-o",
-        label: "Open…",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "download_osm",
         default_spec: "cmd-shift-d",
-        label: "Download from OSM",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "upload_osm",
         default_spec: "cmd-shift-u",
-        label: "Upload to OSM…",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "export_osm_file",
         default_spec: "cmd-e",
-        label: "Export…",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "undo",
         default_spec: "cmd-z",
-        label: "Undo",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "redo",
         default_spec: "cmd-shift-z",
-        label: "Redo",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "select_all",
         default_spec: "cmd-a",
-        label: "Select All",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "zoom_in",
         default_spec: "cmd-=",
-        label: "Zoom In",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_out",
         default_spec: "cmd--",
-        label: "Zoom Out",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_to_data",
         default_spec: "cmd-0",
-        label: "Zoom to Data",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_to_selection",
         default_spec: "cmd-j",
-        label: "Zoom to Selection",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "mode_select",
         default_spec: "s",
-        label: "Switch to Select mode",
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
         id: "mode_add",
         default_spec: "a",
-        label: "Switch to Add mode",
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
         id: "mode_building",
         default_spec: "b",
-        label: "Switch to Building mode",
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
         id: "mode_extrude",
         default_spec: "x",
-        label: "Switch to Extrude mode",
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
         id: "action_square",
         default_spec: "q",
-        label: "Square",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
         id: "action_circularize",
         default_spec: "o",
-        label: "Circularize",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
         id: "action_reverse",
         default_spec: "r",
-        label: "Reverse Way",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
         id: "action_join",
         default_spec: "c",
-        label: "Join Ways",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
         id: "action_separate",
         default_spec: "g",
-        label: "Separate Node",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {
         id: "action_extend",
         default_spec: "e",
-        label: "Extend Way",
         category: ShortcutCategory::Actions,
     },
 ];
@@ -249,11 +250,11 @@ pub fn is_bare_key(spec: &str) -> bool {
 /// If `spec` is already used by a *different* shortcut's effective
 /// binding, return that shortcut's label. Used to block duplicate
 /// assignments when recording a new shortcut.
-pub fn conflict(settings: &AppSettings, id: &str, spec: &str) -> Option<&'static str> {
+pub fn conflict(settings: &AppSettings, id: &str, spec: &str) -> Option<SharedString> {
     effective_bindings(settings)
         .into_iter()
         .find(|(other_id, other_spec)| *other_id != id && other_spec == spec)
-        .map(|(other_id, _)| def(other_id).label)
+        .map(|(other_id, _)| def(other_id).label())
 }
 
 #[cfg(test)]
@@ -268,6 +269,27 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn every_shortcut_and_category_has_a_display_name() {
+        // A missing key renders as "<locale>.<key>".
+        for d in SHORTCUTS {
+            let label = d.label();
+            assert!(!label.starts_with("en."), "{}: {label}", d.id);
+        }
+        for category in [
+            ShortcutCategory::General,
+            ShortcutCategory::File,
+            ShortcutCategory::Edit,
+            ShortcutCategory::View,
+            ShortcutCategory::Modes,
+            ShortcutCategory::Actions,
+        ] {
+            assert!(!category.title().starts_with("en."));
+        }
+        assert_eq!(def("undo").label(), "Undo");
+        assert_eq!(ShortcutCategory::Modes.title(), "Modes");
     }
 
     #[test]
@@ -343,7 +365,7 @@ mod tests {
     fn conflict_detects_duplicate_and_ignores_self() {
         let s = AppSettings::default();
         // "cmd-z" is undo's default spec; assigning it to redo conflicts.
-        assert_eq!(conflict(&s, "redo", "cmd-z"), Some("Undo"));
+        assert_eq!(conflict(&s, "redo", "cmd-z").as_deref(), Some("Undo"));
         // Assigning undo's own current spec to undo itself is not a conflict.
         assert_eq!(conflict(&s, "undo", "cmd-z"), None);
     }
@@ -369,7 +391,7 @@ mod tests {
 
         // The guard must detect that "a" is already mode_building's spec.
         assert_eq!(
-            conflict(&s, "mode_add", candidate),
+            conflict(&s, "mode_add", candidate).as_deref(),
             Some("Switch to Building mode")
         );
     }

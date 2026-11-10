@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::http::{HttpClient, HttpError, HttpRequest, HttpResponse, RetryPolicy, UreqClient};
 use crate::settings_store::PRIMARY_API_URL;
+use crate::tr;
 
 /// Client ID used when no per-server override is configured in settings (see
 /// `client_id_for`). Registered on the primary OSM instance; the dev instance has its
@@ -82,23 +83,24 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuthError::Network(msg) => write!(f, "Network error: {}", msg),
+            AuthError::Network(msg) => write!(f, "{}", tr!("error.network", detail = msg)),
             AuthError::Http { status, body } => {
                 let first_line = body.lines().next().unwrap_or("");
-                write!(f, "OSM OAuth error {}: {}", status, first_line)
-            }
-            AuthError::Parse(msg) => write!(f, "Failed to parse OSM response: {}", msg),
-            AuthError::NoRedirect => write!(f, "Login timed out waiting for browser redirect"),
-            AuthError::StateMismatch => write!(f, "Login failed (state mismatch)"),
-            AuthError::NoConfigDir => write!(f, "No config directory available to store login"),
-            AuthError::Denied { reason } => write!(f, "Sign in was not completed: {}", reason),
-            AuthError::NotLoggedIn => write!(f, "Not logged in"),
-            AuthError::NoRefreshToken => {
                 write!(
                     f,
-                    "Login expired and can't be refreshed; please sign in again"
+                    "{}",
+                    tr!("error.auth.http", status = status, detail = first_line)
                 )
             }
+            AuthError::Parse(msg) => write!(f, "{}", tr!("error.api.parse", detail = msg)),
+            AuthError::NoRedirect => write!(f, "{}", tr!("error.auth.no_redirect")),
+            AuthError::StateMismatch => write!(f, "{}", tr!("error.auth.state_mismatch")),
+            AuthError::NoConfigDir => write!(f, "{}", tr!("error.auth.no_config_dir")),
+            AuthError::Denied { reason } => {
+                write!(f, "{}", tr!("error.auth.denied", reason = reason))
+            }
+            AuthError::NotLoggedIn => write!(f, "{}", tr!("error.auth.not_logged_in")),
+            AuthError::NoRefreshToken => write!(f, "{}", tr!("error.auth.expired")),
         }
     }
 }

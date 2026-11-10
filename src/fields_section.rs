@@ -13,6 +13,7 @@ use gpui_component::{
 };
 
 use crate::MapViewer;
+use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 
 impl MapViewer {
@@ -301,7 +302,7 @@ impl MapViewer {
                         .id(format!("field-multicombo-add-{}", field.id))
                         .cursor_pointer()
                         .child(
-                            Label::new("+ Add")
+                            Label::new(tr!("panel.fields.multi_add"))
                                 .text_size(muted_text_size())
                                 .text_color(cx.theme().muted_foreground),
                         )
@@ -383,9 +384,9 @@ impl MapViewer {
     ) -> gpui::AnyElement {
         if self.selected.len() != 1 {
             let message = if self.selected.is_empty() {
-                "No selection."
+                tr!("panel.fields.no_selection")
             } else {
-                "Select a single feature to edit fields."
+                tr!("panel.fields.select_single")
             };
             return Label::new(message)
                 .text_color(cx.theme().muted_foreground)
@@ -395,7 +396,7 @@ impl MapViewer {
         let feature = self.selected[0];
 
         let change_type_button = Button::new("change-feature-type")
-            .label("Change feature type…")
+            .label(tr!("panel.fields.change_type"))
             .ghost()
             .xsmall()
             .on_click(cx.listener(move |_this, _ev, window, cx| {
@@ -415,7 +416,10 @@ impl MapViewer {
             }
             return column
                 .child(change_type_button)
-                .child(Label::new("No matched preset.").text_color(cx.theme().muted_foreground))
+                .child(
+                    Label::new(tr!("panel.fields.no_preset"))
+                        .text_color(cx.theme().muted_foreground),
+                )
                 .into_any_element();
         };
 
@@ -427,7 +431,7 @@ impl MapViewer {
             return column
                 .child(change_type_button)
                 .child(
-                    Label::new("This feature type has no editable fields.")
+                    Label::new(tr!("panel.fields.no_fields"))
                         .text_color(cx.theme().muted_foreground),
                 )
                 .into_any_element();
@@ -478,7 +482,7 @@ impl MapViewer {
             column = column.child(
                 gpui::div().flex().flex_row().child(
                     Button::new("field-add-more-toggle")
-                        .label(format!("Add field ({})", addable.len()))
+                        .label(tr!("panel.fields.add_field", count = addable.len()))
                         .icon(if more_open {
                             IconName::ChevronDown
                         } else {

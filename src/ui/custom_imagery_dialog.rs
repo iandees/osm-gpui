@@ -2,6 +2,7 @@
 //! helpers the dialog and its tests share.
 
 use crate::custom_imagery_store::CustomImageryEntry;
+use crate::tr;
 use crate::ui::modal;
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
@@ -92,7 +93,9 @@ impl EventEmitter<DialogEvent> for CustomImageryDialog {}
 
 impl CustomImageryDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("My imagery"));
+        let name = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("dialog.custom_imagery.name_placeholder"))
+        });
         let url_template =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://…/{z}/{x}/{y}.png"));
         let min_zoom = cx.new(|cx| InputState::new(window, cx).placeholder("0"));
@@ -121,7 +124,7 @@ impl CustomImageryDialog {
                 cx.emit(DialogEvent::Submitted(entry));
             }
             Err(e) => {
-                self.error = Some(error_message(&e).into());
+                self.error = Some(error_message(&e));
                 cx.notify();
             }
         }
@@ -140,17 +143,19 @@ impl CustomImageryDialog {
     }
 }
 
-pub fn error_message(e: &ValidationError) -> &'static str {
+pub fn error_message(e: &ValidationError) -> SharedString {
     match e {
-        ValidationError::NameEmpty => "Name is required.",
-        ValidationError::TemplateEmpty => "URL template is required.",
+        ValidationError::NameEmpty => tr!("dialog.custom_imagery.error.name_empty"),
+        ValidationError::TemplateEmpty => tr!("dialog.custom_imagery.error.template_empty"),
         ValidationError::TemplateMissingPlaceholder => {
-            "URL template must contain {z}, {x}, and {y} (or {-y})."
+            tr!("dialog.custom_imagery.error.template_missing_placeholder")
         }
-        ValidationError::TemplateYAndMinusY => "URL template must use {y} or {-y}, not both.",
-        ValidationError::MinZoomInvalid => "Min zoom must be a whole number from 0 to 24.",
-        ValidationError::MaxZoomInvalid => "Max zoom must be a whole number from 0 to 24.",
-        ValidationError::MinZoomAboveMax => "Min zoom must be ≤ max zoom.",
+        ValidationError::TemplateYAndMinusY => {
+            tr!("dialog.custom_imagery.error.template_y_and_minus_y")
+        }
+        ValidationError::MinZoomInvalid => tr!("dialog.custom_imagery.error.min_zoom_invalid"),
+        ValidationError::MaxZoomInvalid => tr!("dialog.custom_imagery.error.max_zoom_invalid"),
+        ValidationError::MinZoomAboveMax => tr!("dialog.custom_imagery.error.min_zoom_above_max"),
     }
 }
 
@@ -166,20 +171,28 @@ impl Render for CustomImageryDialog {
 
         let mut body = v_flex()
             .gap_3()
-            .child(modal::field_row("Name", &self.name, muted))
-            .child(modal::field_row("URL template", &self.url_template, muted))
+            .child(modal::field_row(
+                tr!("dialog.custom_imagery.name"),
+                &self.name,
+                muted,
+            ))
+            .child(modal::field_row(
+                tr!("dialog.custom_imagery.url_template"),
+                &self.url_template,
+                muted,
+            ))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_3()
                     .child(div().flex_1().child(modal::field_row(
-                        "Min zoom",
+                        tr!("dialog.custom_imagery.min_zoom"),
                         &self.min_zoom,
                         muted,
                     )))
                     .child(div().flex_1().child(modal::field_row(
-                        "Max zoom",
+                        tr!("dialog.custom_imagery.max_zoom"),
                         &self.max_zoom,
                         muted,
                     ))),
@@ -191,14 +204,20 @@ impl Render for CustomImageryDialog {
 
         let footer = modal::footer_row(
             "cancel",
-            "Cancel",
+            tr!("dialog.cancel"),
             cx.listener(|this, _, _w, cx| this.cancel(cx)),
             "add",
-            "Add",
+            tr!("dialog.custom_imagery.confirm"),
             cx.listener(|this, _, _w, cx| this.submit(cx)),
         );
 
-        let frame = modal::dialog_frame(cx, gpui::px(420.0), "Custom Imagery", body, footer);
+        let frame = modal::dialog_frame(
+            cx,
+            gpui::px(420.0),
+            tr!("dialog.custom_imagery.title"),
+            body,
+            footer,
+        );
 
         modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }

@@ -39,21 +39,19 @@ impl MergeStats {
     /// A one-line summary, e.g. `"412 new, 3 updated, 1 local edit kept"`.
     pub fn summary(&self) -> String {
         if self.added == 0 && self.updated == 0 && self.kept_local == 0 {
-            return "nothing new".to_string();
+            return crate::tr!("status.merge.nothing_new").to_string();
         }
         let mut parts = Vec::new();
         if self.added > 0 {
-            parts.push(format!("{} new", self.added));
+            parts.push(crate::tr_count!("status.merge.added", self.added));
         }
         if self.updated > 0 {
-            parts.push(format!("{} updated", self.updated));
+            parts.push(crate::tr_count!("status.merge.updated", self.updated));
         }
-        match self.kept_local {
-            0 => {}
-            1 => parts.push("1 local edit kept".to_string()),
-            n => parts.push(format!("{n} local edits kept")),
+        if self.kept_local > 0 {
+            parts.push(crate::tr_count!("status.merge.kept_local", self.kept_local));
         }
-        parts.join(", ")
+        parts.join(&crate::tr!("status.merge.separator"))
     }
 }
 
