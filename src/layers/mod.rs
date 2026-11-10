@@ -117,6 +117,16 @@ pub trait MapLayer: Send + Sync {
     /// no-op. Only `OsmLayer` overrides this.
     fn apply_upload_result(&mut self, _result: &crate::osm_upload::UploadResult) {}
 
+    /// Apply one accepted chunk of a multi-changeset upload (see
+    /// `OsmLayer::apply_chunk_result`): the layer keeps whatever has not been
+    /// uploaded yet as pending. Default: no-op.
+    fn apply_chunk_result(
+        &mut self,
+        _result: &crate::osm_upload::UploadResult,
+        _chunk: &crate::layers::diff::LayerDiff,
+    ) {
+    }
+
     /// This layer's data as a JOSM-style `.osm` document, including pending
     /// local edits, or `None` if it has nothing to export. Default: `None`.
     /// Only `OsmLayer` overrides this.
