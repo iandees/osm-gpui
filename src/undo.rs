@@ -147,16 +147,12 @@ pub(crate) enum UndoableAction {
     /// refuses while another relation still has it as a member, so callers
     /// order the surrounding `Batch` entries accordingly); redo restores it
     /// from the snapshot under the same id.
-    // Only tests construct these until the relation editor UI (a follow-up)
-    // records them.
-    #[allow(dead_code)]
     CreateRelation {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedRelationSnapshot,
     },
     /// A relation deleted from `layer`. Undo restores it (same id, version
     /// and position); redo deletes it again.
-    #[allow(dead_code)]
     DeleteRelation {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedRelationSnapshot,
