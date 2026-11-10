@@ -6,7 +6,12 @@
 //! signed-in account, cursor coordinates, and zoom level.
 
 use gpui::{div, prelude::*, px, AnyElement, Context, SharedString};
-use gpui_component::{spinner::Spinner, ActiveTheme, Sizable};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    progress::Progress,
+    spinner::Spinner,
+    ActiveTheme, Sizable,
+};
 
 use osm_gpui::auth;
 use osm_gpui::settings_store;
@@ -103,7 +108,8 @@ impl MapViewer {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
 
-        let left = if let Some(activity) = self.activity.clone() {
+        let left = if let Some(progress) = self.transfer.as_ref().map(|t| t.snapshot()) {
+            let cancellable = progress.is_cancellable();
             div()
                 .flex()
                 .flex_row()
@@ -111,7 +117,24 @@ impl MapViewer {
                 .gap_1p5()
                 .text_color(foreground)
                 .child(Spinner::new().xsmall())
-                .child(activity)
+                .child(progress.label())
+                // A known total (the server sent Content-Length) gets a
+                // determinate bar; otherwise the spinner and byte count do.
+                .children(progress.fraction().map(|fraction| {
+                    Progress::new("transfer-progress")
+                        .w(px(80.0))
+                        .h(px(4.0))
+                        .value(fraction * 100.0)
+                }))
+                .when(cancellable, |row| {
+                    row.child(
+                        Button::new("transfer-cancel")
+                            .ghost()
+                            .xsmall()
+                            .label(tr!("transfer.download.cancel"))
+                            .on_click(cx.listener(|this, _, _window, cx| this.cancel_transfer(cx))),
+                    )
+                })
         } else if let Some((message, _)) = self.status_message.clone() {
             div().text_color(foreground).child(message)
         } else if self.mode == EditMode::Select
@@ -141,7 +164,8 @@ impl MapViewer {
         // The OSM API refuses downloads above a maximum area; say so up
         // front rather than only after a Download attempt fails.
         let too_large_to_download =
-            osm_gpui::osm_api::check_area(&self.viewport.visible_bounds()).is_err();
+            crate::welcome::download_state(&self.viewport.visible_bounds(), false)
+                == crate::welcome::DownloadState::ZoomIn;
 
         let segment = || div().flex_shrink_0();
 

@@ -26,6 +26,7 @@ mod selection_actions;
 mod side_panel;
 mod status_bar;
 mod undo;
+mod welcome;
 
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
@@ -53,6 +54,7 @@ use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
 use osm_gpui::tr;
+use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 use osm_gpui::viewport::Viewport;
 
 actions!(
@@ -453,10 +455,11 @@ struct MapViewer {
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
     status_message: Option<(SharedString, Instant)>,
-    /// Description of a long-running background operation (download,
-    /// upload) shown with a spinner in the status bar until it completes.
-    /// Unlike `status_message` it never expires on its own.
-    activity: Option<SharedString>,
+    /// The running download or upload, shown with a spinner in the status
+    /// bar until it completes. The worker thread updates the shared state;
+    /// a poll task re-renders. Unlike `status_message` it never expires on
+    /// its own, and at most one transfer runs at a time.
+    transfer: Option<TransferHandle>,
     /// Whether Space is currently held with the map focused; a left-drag
     /// then pans instead of selecting.
     space_held: bool,
@@ -711,16 +714,16 @@ impl MapViewer {
         let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let layer_manager = LayerManager::new();
-        // No default layers; tile and grid layers are added via the menu.
-
-        // No default OSM layer; loaded files add their own
+        // No layers here; the window setup adds OSM Carto (see
+        // `add_default_layers`), other imagery and the grid come from the
+        // menu, and loaded files add their own OSM layer.
         Self {
             viewport,
             layer_manager,
             tile_cache,
             first_dataset_fitted: false,
             status_message: None,
-            activity: None,
+            transfer: None,
             space_held: false,
             data_generation: 0,
             pending_edits: None,
@@ -3719,7 +3722,8 @@ impl MapViewer {
                         cx.notify();
                     }
                     DialogEvent::Upload { comment } => {
-                        this.upload_dialog = None;
+                        // The dialog stays open to show the upload's stage;
+                        // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
                     }
                 }
@@ -3788,8 +3792,26 @@ impl MapViewer {
             return;
         }
 
+        if self.transfer.is_some() {
+            self.set_status(tr!("transfer.busy"));
+            cx.notify();
+            return;
+        }
+
+        let change_count: usize = diffs
+            .iter()
+            .map(|d| {
+                let (created, modified, deleted) = d.counts();
+                created + modified + deleted
+            })
+            .sum();
+        let progress = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
         self.status_message = None;
-        self.activity = Some(tr!("activity.uploading"));
+        self.transfer = Some(progress.clone());
+        if let Some(dialog) = &self.upload_dialog {
+            dialog.update(cx, |dialog, cx| dialog.begin_transfer(progress.clone(), cx));
+        }
+        self.poll_transfer(progress.clone(), cx);
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3810,6 +3832,9 @@ impl MapViewer {
                         names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
                     let xml = osm_upload::build_osm_change_xml(changeset_id, &layers_for_xml);
 
+                    progress.set_phase(TransferPhase::UploadingChanges {
+                        count: change_count,
+                    });
                     match osm_upload::upload_changes(
                         &base_url,
                         &token.access_token,
@@ -3822,6 +3847,7 @@ impl MapViewer {
                             // isn't treated as a fatal error — the
                             // changeset just stays open, which OSM handles
                             // fine (manual or automatic close later).
+                            progress.set_phase(TransferPhase::ClosingChangeset);
                             let _ = osm_upload::close_changeset(
                                 &base_url,
                                 &token.access_token,
@@ -3840,7 +3866,7 @@ impl MapViewer {
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                this.activity = None;
+                this.transfer = None;
                 this.data_generation += 1;
                 match result {
                     Ok((changeset_id, upload_result)) => {
@@ -3849,9 +3875,16 @@ impl MapViewer {
                                 layer.apply_upload_result(&upload_result);
                             }
                         }
+                        this.upload_dialog = None;
                         this.set_status(tr!("status.uploaded", changeset = changeset_id));
                     }
                     Err(e) => {
+                        // Keep the dialog open on the error so it can be
+                        // read and the upload retried; the status bar gets
+                        // the message too.
+                        if let Some(dialog) = &this.upload_dialog {
+                            dialog.update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
+                        }
                         this.set_status(e);
                     }
                 }
@@ -3859,6 +3892,88 @@ impl MapViewer {
             });
         })
         .detach();
+    }
+
+    /// Debug builds only, and only when `OSM_GPUI_DEBUG_TRANSFER` is set:
+    /// freeze the UI in a transfer state so progress rendering can be
+    /// screenshotted without a network. `upload` opens the upload dialog
+    /// mid-upload; `download` / `download-total` show a running download
+    /// (without / with a known size). Nothing is ever sent: the handles
+    /// have no worker, and the dialog has no event subscription.
+    #[cfg(debug_assertions)]
+    fn debug_show_transfer_demo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(demo) = std::env::var("OSM_GPUI_DEBUG_TRANSFER") else {
+            return;
+        };
+        match demo.as_str() {
+            "upload" => {
+                let handle = TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::UploadingChanges { count: 12 },
+                );
+                let summaries = vec![osm_gpui::ui::upload_dialog::LayerSummary {
+                    layer_name: "OSM data".to_string(),
+                    created: 3,
+                    modified: 8,
+                    deleted: 1,
+                }];
+                let dialog = cx.new(|cx| {
+                    osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
+                });
+                dialog.update(cx, |dialog, cx| dialog.begin_transfer(handle.clone(), cx));
+                self.upload_dialog = Some(dialog);
+                self.transfer = Some(handle);
+            }
+            "download" | "download-total" => {
+                let handle =
+                    TransferHandle::new(TransferKind::Download, TransferPhase::Downloading);
+                let total = (demo == "download-total").then_some(2_800_000);
+                handle.set_bytes(1_400_000, total);
+                self.transfer = Some(handle);
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-render about every `POLL_INTERVAL` (the status bar and, for an
+    /// upload, its dialog) for as long as `progress` is the running
+    /// transfer. The worker writes into the shared handle; this is the only
+    /// thing that turns those writes into frames.
+    fn poll_transfer(&mut self, progress: TransferHandle, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(osm_gpui::transfer::POLL_INTERVAL)
+                .await;
+            let still_running = this.update(cx, |this, cx| {
+                let running = this
+                    .transfer
+                    .as_ref()
+                    .is_some_and(|current| current.is_same(&progress));
+                if running {
+                    if let Some(dialog) = &this.upload_dialog {
+                        dialog.update(cx, |_, cx| cx.notify());
+                    }
+                    cx.notify();
+                }
+                running
+            });
+            if !still_running.unwrap_or(false) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Abandon the running download (the status bar's Cancel button). The
+    /// worker notices between chunks and drops the connection. Uploads are
+    /// never cancellable (see `TransferProgress::is_cancellable`).
+    pub(crate) fn cancel_transfer(&mut self, cx: &mut Context<Self>) {
+        if let Some(transfer) = &self.transfer {
+            if transfer.snapshot().is_cancellable() {
+                transfer.cancel();
+                cx.notify();
+            }
+        }
     }
 
     /// Kick off a background fetch of the OSM data within the current
@@ -3876,8 +3991,16 @@ impl MapViewer {
             return;
         }
 
+        if self.transfer.is_some() {
+            self.set_status(tr!("transfer.busy"));
+            cx.notify();
+            return;
+        }
+
+        let progress = TransferHandle::new(TransferKind::Download, TransferPhase::Requesting);
         self.status_message = None;
-        self.activity = Some(tr!("activity.downloading"));
+        self.transfer = Some(progress.clone());
+        self.poll_transfer(progress.clone(), cx);
         cx.notify();
 
         let base_url = settings_store::api_base_url();
@@ -3893,12 +4016,12 @@ impl MapViewer {
                     let token = auth::ensure_fresh_token(&auth::oauth_base_for(&base_url))
                         .ok()
                         .map(|t| t.access_token);
-                    osm_api::fetch_bbox(bounds, &base_url, token.as_deref())
+                    osm_api::fetch_bbox_tracked(bounds, &base_url, token.as_deref(), &progress)
                 })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
-                this.activity = None;
+                this.transfer = None;
                 this.data_generation += 1;
                 match result {
                     Ok(data) => this.apply_download(data),
@@ -4561,6 +4684,7 @@ impl Render for MapViewer {
                             div().into_any_element()
                         }
                     })
+                    .children(self.render_welcome(cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -4885,7 +5009,14 @@ fn main() {
                         cx.bind_keys(key_bindings_from_settings(
                             &osm_gpui::settings_store::snapshot(),
                         ));
-                        let view = cx.new(|cx| MapViewer::new(window, cx));
+                        let view = cx.new(|cx| {
+                            let mut viewer = MapViewer::new(window, cx);
+                            // Start on the standard map, not a blank canvas.
+                            viewer.add_default_layers();
+                            viewer
+                        });
+                        #[cfg(debug_assertions)]
+                        view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
 
                         // Publish a weak handle to the live view so the
                         // `on_window_should_close` closure below (which only has
@@ -6001,19 +6132,12 @@ mod tests {
                 redo_step(view);
                 assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
 
-                // Copy Tags works; Delete is not applicable.
+                // Copy Tags works.
                 view.run_selection_action("copy_tags", cx);
                 assert!(view
                     .status_message
                     .as_ref()
                     .is_some_and(|(m, _)| m.starts_with("Copied")));
-                let actions = view.undo_stack.actions.len();
-                view.run_selection_action("delete", cx);
-                assert_eq!(view.undo_stack.actions.len(), actions);
-                assert_eq!(
-                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
-                    Some("Relations can't be deleted yet")
-                );
                 assert_eq!(relation_members(view, 900).len(), 2);
                 // Nothing to drag.
                 assert!(view.resolve_move_targets().is_empty());
@@ -6734,14 +6858,6 @@ mod tests {
     fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
         use osm_gpui::osm::{MemberType, OsmMember};
         use osm_gpui::selection::DeletedRelationSnapshot;
-        fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
-            let layer_id = view.active_layer.unwrap();
-            view.layer_manager
-                .find_layer_mut(layer_id)
-                .unwrap()
-                .as_editable_mut()
-                .unwrap()
-        }
         let window = setup_network(cx);
         window
             .update(cx, |view, _window, _cx| {
@@ -6829,6 +6945,180 @@ mod tests {
                 assert!(editable(view).relation(900).is_none());
                 assert!(editable(view).relation(new_id).is_none());
                 assert_eq!(pending(view), (0, 0, 1));
+            })
+            .unwrap();
+    }
+
+    fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer_mut(layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+    }
+
+    fn status_text(view: &MapViewer) -> Option<&str> {
+        view.status_message.as_ref().map(|(m, _)| m.as_str())
+    }
+
+    #[gpui::test]
+    fn new_relation_collects_the_selection_and_is_one_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[101, 100]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Node,
+                    id: 7,
+                });
+                view.run_selection_action("new_relation", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.undo_stack.actions[0].description(),
+                    "Created a relation"
+                );
+                assert_eq!(pending(view), (1, 0, 0));
+
+                // The new relation is selected, with the members in
+                // selection order and empty roles, and no tags.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].kind, Relation);
+                let new_id = view.selected[0].id;
+                assert!(new_id < 0);
+                let relation = editable(view).relation(new_id).unwrap();
+                assert!(relation.tags.is_empty());
+                let members: Vec<_> = relation
+                    .members
+                    .iter()
+                    .map(|m| (m.reference, m.role.as_str()))
+                    .collect();
+                assert_eq!(members, [(101, ""), (100, ""), (7, "")]);
+                assert_eq!(
+                    status_text(view),
+                    Some("Created a relation with 3 features. Add its tags and roles in the side panel")
+                );
+
+                undo_step(view);
+                assert!(editable(view).relation(new_id).is_none());
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert_eq!(editable(view).relation(new_id).unwrap(), relation);
+                assert_eq!(pending(view), (1, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn new_relation_needs_a_selection_and_accepts_relations(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.set_selection(Vec::new());
+                view.run_selection_action("new_relation", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(status_text(view).is_some_and(|m| m.starts_with("Select nodes, ways")));
+
+                // A selected relation can be a member of the new one.
+                view.select_relation(view.active_layer.unwrap(), 900);
+                select(view, Way, &[100]);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id: view.active_layer.unwrap(),
+                    kind: osm_gpui::selection::FeatureKind::Relation,
+                    id: 900,
+                });
+                view.run_selection_action("new_relation", cx);
+                let new_id = view.selected[0].id;
+                let relation = editable(view).relation(new_id).unwrap();
+                assert_eq!(relation.members.len(), 2);
+                assert_eq!(relation.members[1].reference, 900);
+                assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_a_selected_relation_keeps_its_members_and_undoes(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let original = editable(view).relation(900).unwrap();
+                view.select_relation(layer_id, 900);
+                view.delete_selected_features(cx);
+
+                assert!(editable(view).relation(900).is_none());
+                // Its member way and node survive.
+                assert!(editable(view).way_node_ids(102).is_some());
+                assert!(editable(view).node_lat_lon(7).is_some());
+                assert!(view.selected.is_empty());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.undo_stack.actions[0].description(),
+                    "Deleted a relation"
+                );
+                assert_eq!(status_text(view), Some("Deleted 1 relation"));
+                assert_eq!(pending(view), (0, 0, 1));
+
+                undo_step(view);
+                assert_eq!(editable(view).relation(900).unwrap(), original);
+                assert_eq!(pending(view), (0, 0, 0));
+                redo_step(view);
+                assert!(editable(view).relation(900).is_none());
+                assert_eq!(pending(view), (0, 0, 1));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_a_relation_that_is_a_member_is_refused_until_its_parent_goes(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::osm::{MemberType, OsmMember};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let parent = editable(view)
+                    .create_relation(
+                        vec![],
+                        vec![OsmMember {
+                            member_type: MemberType::Relation,
+                            reference: 900,
+                            role: String::new(),
+                        }],
+                    )
+                    .unwrap();
+
+                // Alone, 900 can't go: the parent would be left dangling.
+                view.select_relation(layer_id, 900);
+                view.delete_selected_features(cx);
+                assert!(editable(view).relation(900).is_some());
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(status_text(view)
+                    .is_some_and(|m| m.starts_with("Can't delete relation 900")
+                        && m.contains(&parent.to_string())));
+
+                // Selected together with its parent, both go as one step.
+                view.select_relation(layer_id, 900);
+                view.selected.push(osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Relation,
+                    id: parent,
+                });
+                view.delete_selected_features(cx);
+                assert!(editable(view).relation(900).is_none());
+                assert!(editable(view).relation(parent).is_none());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(status_text(view), Some("Deleted 2 relations"));
+
+                undo_step(view);
+                assert!(editable(view).relation(900).is_some());
+                assert!(editable(view).relation(parent).is_some());
             })
             .unwrap();
     }

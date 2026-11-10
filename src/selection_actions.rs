@@ -399,19 +399,30 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: |_, _, _| Err(tr!("action.add_to_relation.hint").to_string()),
     },
     SelectionAction {
+        id: "new_relation",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !relation_member_candidates(editable, layer_id, env.selection).is_empty()
+        },
+        apply: apply_new_relation,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
         needs_active_layer: false,
         in_tools_menu: false,
-        // Relations can't be deleted yet, so they don't count.
         is_applicable: |env| {
             env.selection.iter().any(|f| {
-                f.kind != FeatureKind::Relation
-                    && env
-                        .layers
-                        .find_layer(f.layer_id)
-                        .is_some_and(|l| l.as_editable().is_some())
+                env.layers
+                    .find_layer(f.layer_id)
+                    .is_some_and(|l| l.as_editable().is_some())
             })
         },
         apply: apply_delete,
@@ -461,13 +472,6 @@ impl SelectionAction {
     pub(crate) fn why_not(&self, env: &ActionEnv) -> SharedString {
         if self.needs_active_layer && env.active_editable().is_none() {
             tr!("action.no_data")
-        } else if self.id == "delete"
-            && env
-                .selection
-                .iter()
-                .any(|f| f.kind == FeatureKind::Relation)
-        {
-            tr!("action.delete.relation_hint")
         } else {
             self.hint()
         }
@@ -1310,6 +1314,77 @@ fn member_candidates(
     out
 }
 
+/// The selected nodes, ways and relations of `layer_id` that exist in it,
+/// each once, in selection order: what New Relation makes the members of the
+/// relation it creates.
+fn relation_member_candidates(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<(MemberType, i64)> {
+    let mut out = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        let (member_type, exists) = match f.kind {
+            FeatureKind::Node => (MemberType::Node, editable.node_lat_lon(f.id).is_some()),
+            FeatureKind::Way => (MemberType::Way, editable.way_node_ids(f.id).is_some()),
+            FeatureKind::Relation => (MemberType::Relation, editable.relation(f.id).is_some()),
+        };
+        if exists && !out.contains(&(member_type, f.id)) {
+            out.push((member_type, f.id));
+        }
+    }
+    out
+}
+
+/// Create a tagless relation whose members are the selected objects of the
+/// active layer, in selection order with empty roles, and select it so the
+/// side panel offers its tags and members. One undo step.
+fn apply_new_relation(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let members: Vec<osm_gpui::osm::OsmMember> =
+        relation_member_candidates(editable, layer_id, selection)
+            .into_iter()
+            .map(|(member_type, reference)| osm_gpui::osm::OsmMember {
+                member_type,
+                reference,
+                role: String::new(),
+            })
+            .collect();
+    if members.is_empty() {
+        return Err(tr!("action.new_relation.hint").to_string());
+    }
+    let count = members.len();
+    let id = editable
+        .create_relation(Vec::new(), members)
+        .ok_or_else(|| tr!("action.no_data").to_string())?;
+    let relation = editable
+        .relation(id)
+        .ok_or_else(|| tr!("action.new_relation.hint").to_string())?;
+    let index = editable.relation_ids().len().saturating_sub(1);
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::CreateRelation {
+            layer: layer_id,
+            snapshot: osm_gpui::selection::DeletedRelationSnapshot { relation, index },
+        }),
+        status: tr!(
+            "action.new_relation.done",
+            members = tr_count!("action.feature_count", count)
+        )
+        .to_string(),
+        clear_selection: false,
+        select: Some(vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Relation,
+            id,
+        }]),
+        continue_way: None,
+    })
+}
+
 /// Append the selected nodes and ways of the active layer to relation
 /// `relation_id` (the picker's choice), each with an empty role; those that
 /// are already members are skipped. One undo step.
@@ -1366,11 +1441,68 @@ fn apply_delete(
     let mut deleted = 0usize;
     let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
     let mut refusal: Option<String> = None;
-    let mut skipped_relation = false;
+    // Relations go first, so a node or way that is a member of a relation
+    // being deleted along with it needs no membership edit.
+    let mut deleted_relations = 0usize;
+    let mut pending: Vec<&FeatureRef> = selection
+        .iter()
+        .filter(|f| f.kind == FeatureKind::Relation)
+        .collect();
+    // A relation that is a member of another selected relation is refused
+    // until that parent is gone, so retry while anything still goes through.
+    loop {
+        let before = pending.len();
+        pending.retain(|feature| {
+            let Some(editable) = layers
+                .find_layer_mut(feature.layer_id)
+                .and_then(|l| l.as_editable_mut())
+            else {
+                return false;
+            };
+            match editable.delete_relation(feature.id) {
+                Some(snapshot) => {
+                    deleted_relations += 1;
+                    actions.push(UndoableAction::DeleteRelation {
+                        layer: feature.layer_id,
+                        snapshot,
+                    });
+                    false
+                }
+                // Gone already: nothing to do. Otherwise another relation
+                // still has it as a member.
+                None => editable.relation(feature.id).is_some(),
+            }
+        });
+        if pending.len() == before {
+            break;
+        }
+    }
+    for feature in pending {
+        let Some(editable) = layers
+            .find_layer(feature.layer_id)
+            .and_then(|l| l.as_editable())
+        else {
+            continue;
+        };
+        let parent = editable
+            .relations_containing_relation(feature.id)
+            .first()
+            .and_then(|&id| editable.relation(id));
+        let relation = editable.relation(feature.id);
+        if let (Some(parent), Some(relation)) = (parent, relation) {
+            refusal.get_or_insert_with(|| {
+                tr!(
+                    "action.delete.error.relation_in_relation",
+                    relation = osm_gpui::relations::display_name(&relation),
+                    parent = osm_gpui::relations::display_name(&parent)
+                )
+                .to_string()
+            });
+        }
+    }
+    deleted += deleted_relations;
     for feature in selection {
-        // Relations can't be deleted yet; the rest of the selection still can.
         if feature.kind == FeatureKind::Relation {
-            skipped_relation = true;
             continue;
         }
         let Some(editable) = layers
@@ -1436,15 +1568,11 @@ fn apply_delete(
         }
     }
     if deleted == 0 {
-        return Err(refusal.unwrap_or_else(|| {
-            if skipped_relation {
-                tr!("action.delete.relation_hint").to_string()
-            } else {
-                tr!("status.nothing_to_delete").to_string()
-            }
-        }));
+        return Err(refusal.unwrap_or_else(|| tr!("status.nothing_to_delete").to_string()));
     }
-    let mut status = if changed_relations.is_empty() {
+    let mut status = if deleted == deleted_relations && changed_relations.is_empty() {
+        tr_count!("status.deleted_relations", deleted).to_string()
+    } else if changed_relations.is_empty() {
         tr_count!("status.deleted_features", deleted).to_string()
     } else {
         tr_count!(
@@ -1638,13 +1766,91 @@ mod tests {
         assert!(applicable_ids(&f, &[]).is_empty());
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.rect)]),
-            ["square", "circularize", "reverse", "copy_tags", "delete"]
+            [
+                "square",
+                "circularize",
+                "reverse",
+                "copy_tags",
+                "new_relation",
+                "delete"
+            ]
         );
-        // An open two-node way can only be reversed (or deleted).
+        // An open two-node way can only be reversed (or put in a relation,
+        // or deleted).
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.line)]),
-            ["reverse", "extend", "delete"]
+            ["reverse", "extend", "new_relation", "delete"]
         );
+    }
+
+    #[test]
+    fn new_relation_collects_the_selection_and_undoes_via_its_snapshot() {
+        let mut f = fixture();
+        let sel = [
+            way_ref(&f, f.line),
+            way_ref(&f, f.rect),
+            way_ref(&f, f.line),
+        ];
+        let out =
+            (find("new_relation").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        let Some(UndoableAction::CreateRelation { layer, snapshot }) = out.undo else {
+            panic!("expected CreateRelation");
+        };
+        assert_eq!(layer, f.layer_id);
+        assert!(snapshot.relation.id < 0);
+        assert!(snapshot.relation.tags.is_empty());
+        // Selection order, once each, empty roles.
+        let members: Vec<(MemberType, i64, &str)> = snapshot
+            .relation
+            .members
+            .iter()
+            .map(|m| (m.member_type, m.reference, m.role.as_str()))
+            .collect();
+        assert_eq!(
+            members,
+            [(MemberType::Way, f.line, ""), (MemberType::Way, f.rect, "")]
+        );
+        assert_eq!(
+            out.status.as_str(),
+            "Created a relation with 2 features. Add its tags and roles in the side panel"
+        );
+        assert_eq!(
+            out.select,
+            Some(vec![FeatureRef {
+                layer_id: f.layer_id,
+                kind: FeatureKind::Relation,
+                id: snapshot.relation.id
+            }])
+        );
+
+        let editable = f
+            .layers
+            .find_layer_mut(f.layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap();
+        assert_eq!(
+            editable.relation(snapshot.relation.id),
+            Some(snapshot.relation.clone())
+        );
+        // Undo removes it, redo puts the same relation back.
+        assert!(editable.delete_relation(snapshot.relation.id).is_some());
+        assert!(editable.relation(snapshot.relation.id).is_none());
+        assert!(editable.restore_relation(snapshot.clone()));
+        assert_eq!(
+            editable.relation(snapshot.relation.id),
+            Some(snapshot.relation)
+        );
+    }
+
+    #[test]
+    fn new_relation_needs_something_to_put_in_it() {
+        let mut f = fixture();
+        assert!(!applicable_ids(&f, &[]).contains(&"new_relation"));
+        let err = (find("new_relation").unwrap().apply)(&mut f.layers, &[], Some(f.layer_id))
+            .err()
+            .unwrap();
+        assert!(err.starts_with("Select nodes, ways"));
     }
 
     #[test]

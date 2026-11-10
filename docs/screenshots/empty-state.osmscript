@@ -1,0 +1,35 @@
+# The first-launch empty state: OSM Carto is already on the map and a welcome
+# card says what to do. No `viewport` op is used before the first capture of
+# the default view, so this shows the real startup state.
+#
+# The map area is 864x776 with its origin at window (56, 0), so its centre is
+# window (488, 388). The card sits near the bottom centre of the map.
+
+window 1200 800
+wait 3s
+wait_idle 5s
+# Default viewport: too large an area for the OSM API, so the card shows
+# "Zoom in to download" instead of a button.
+capture out/empty-default.png
+
+# Zoomed out further: still "Zoom in to download".
+viewport 40.7128 -74.0060 8
+wait_idle 5s
+capture out/empty-zoomed-out.png
+
+# Zoomed in far enough to download: the button is enabled.
+viewport 40.7128 -74.0060 16
+wait_idle 5s
+capture out/empty-zoomed-in.png
+
+# The card does not block the map: a pan-drag across the map (and over the
+# card) still moves it.
+drag 700,200 500,350
+wait_idle 5s
+capture out/empty-panned.png
+
+# Once data is loaded the card goes away.
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/empty-data-loaded.png

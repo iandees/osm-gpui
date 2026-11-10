@@ -298,12 +298,32 @@ impl MapViewer {
                     .then(|| self.describe_selected_feature(&target))
                     .flatten()
                     .map(|(name, _)| name);
-                let label = osm_gpui::relations::member_label(
+                // The preset name may be cut short, but the id never is, so
+                // rows of one kind stay distinguishable at the narrowest
+                // panel width.
+                let (title, ident) = osm_gpui::relations::member_label_parts(
                     member.member_type,
                     member.reference,
                     loaded,
                     described.as_deref(),
                 );
+                let label = div()
+                    .flex()
+                    .flex_row()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .when_some(title, |this, title| {
+                        this.child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(title),
+                        )
+                        .child(div().flex_shrink_0().whitespace_nowrap().child(" · "))
+                    })
+                    .child(div().flex_shrink_0().whitespace_nowrap().child(ident));
                 let letter: String = osm_gpui::relations::kind_label(member.member_type)
                     .chars()
                     .take(1)
@@ -314,8 +334,6 @@ impl MapViewer {
                     .flex_1()
                     .min_w(px(0.))
                     .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
                     .child(label);
                 let name = if loaded {
                     let hover_bg = cx.theme().list_hover;

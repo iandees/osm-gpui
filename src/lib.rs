@@ -32,6 +32,7 @@ pub mod style;
 pub mod tile_cache;
 pub mod tiles;
 pub mod topology;
+pub mod transfer;
 pub mod ui;
 pub mod version;
 pub mod viewport;
