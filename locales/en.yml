@@ -326,6 +326,7 @@ shortcut:
   action_join: "Join Ways"
   action_separate: "Separate Node"
   action_extend: "Extend Way"
+  action_straighten: "Straighten Way"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
 # menu, the Tools menu, and their status-bar messages. Each action id has a
@@ -374,6 +375,16 @@ action:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
     started: "Click to add nodes to the way; Enter or Esc to finish"
+  straighten:
+    label: "Straighten Way"
+    hint: "Select an open way with 3 or more nodes to straighten it"
+    none: "The selected ways are already straight"
+    done:
+      one: "Straightened %{count} way"
+      other: "Straightened %{count} ways"
+    error:
+      too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
+      no_line: "Can't straighten: the way's first and last node are in the same place"
   delete:
     label: "Delete"
     hint: "Select something to delete"

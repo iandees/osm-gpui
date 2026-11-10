@@ -242,6 +242,82 @@ fn polygon_centroid(xy: &[(f64, f64)]) -> (f64, f64) {
     (cx / (3.0 * a2), cy / (3.0 * a2))
 }
 
+/// The most an interior node may move when straightening, as a fraction of
+/// the way's length (the sum of its segment lengths). A way that bends more
+/// than this is a genuine curve, not a wobbly straight line, and is refused.
+/// A quarter-circle arc deviates by about 19% of its length and a 20 degree
+/// bend in the middle of a line by about 9%, so this keeps the second and
+/// rejects the first.
+pub const STRAIGHTEN_MAX_DEVIATION: f64 = 0.10;
+
+/// Why [`straighten`] refused a way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StraightenError {
+    /// Not an open way with at least three nodes; nothing to straighten.
+    NotApplicable,
+    /// The first and last node are in the same place, so there is no line.
+    NoLine,
+    /// An interior node is further from the line than
+    /// [`STRAIGHTEN_MAX_DEVIATION`] allows.
+    TooCurved,
+}
+
+/// Whether [`straighten`] applies to a way of this shape: open, with at least
+/// three nodes.
+pub fn can_straighten(points: &[LatLon]) -> bool {
+    points.len() >= 3 && points.first() != points.last()
+}
+
+/// Straighten an open way like iD: project every interior node onto the line
+/// from the first to the last node, in the local metric plane. The end nodes
+/// stay put and the interior nodes keep their order along the line (a node
+/// that would land before its predecessor, or past the end, is clamped there).
+///
+/// Returns the new position of every input point (same length and order).
+/// Refuses ways that are not open with 3+ nodes, whose ends coincide, or
+/// where any interior node would move more than [`STRAIGHTEN_MAX_DEVIATION`]
+/// of the way's length.
+pub fn straighten(points: &[LatLon]) -> Result<Vec<LatLon>, StraightenError> {
+    if !can_straighten(points) {
+        return Err(StraightenError::NotApplicable);
+    }
+    let proj = LocalProjection::new(mean_point(points));
+    let xy: Vec<(f64, f64)> = points.iter().map(|&p| proj.project(p)).collect();
+    let (start, end) = (xy[0], xy[xy.len() - 1]);
+    let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+    let chord_sq = dx * dx + dy * dy;
+    if chord_sq < 1e-12 {
+        return Err(StraightenError::NoLine);
+    }
+
+    let length: f64 = xy
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    let chord = chord_sq.sqrt();
+    let mut out = vec![points[0]];
+    let mut previous_t = 0.0_f64;
+    for (&p, &original) in xy[1..xy.len() - 1].iter().zip(&points[1..]) {
+        let t = ((p.0 - start.0) * dx + (p.1 - start.1) * dy) / chord_sq;
+        let deviation = ((p.0 - start.0) * dy - (p.1 - start.1) * dx).abs() / chord;
+        if deviation > STRAIGHTEN_MAX_DEVIATION * length {
+            return Err(StraightenError::TooCurved);
+        }
+        let t = t.clamp(previous_t, 1.0);
+        previous_t = t;
+        let target = (start.0 + t * dx, start.1 + t * dy);
+        // A node already on the line (within 0.1 mm) keeps its exact
+        // coordinates, so straightening a straight way changes nothing.
+        out.push(if (target.0 - p.0).hypot(target.1 - p.1) < 1e-4 {
+            original
+        } else {
+            proj.unproject(target)
+        });
+    }
+    out.push(points[points.len() - 1]);
+    Ok(out)
+}
+
 /// A copy of `items` in reverse order.
 pub fn reversed<T: Clone>(items: &[T]) -> Vec<T> {
     items.iter().rev().cloned().collect()
@@ -429,6 +505,112 @@ mod tests {
         ring.pop();
         assert!(circularize(&ring).is_none());
         assert!(!can_circularize(&ring));
+    }
+
+    /// A line from the origin going east for `length` metres, with the
+    /// interior nodes at `(along, across)` metres (across = north of the line).
+    fn line_with(length: f64, interior: &[(f64, f64)]) -> Vec<LatLon> {
+        let proj = LocalProjection::new((42.36, -71.06));
+        let mut xy = vec![(0.0, 0.0)];
+        xy.extend_from_slice(interior);
+        xy.push((length, 0.0));
+        xy.iter().map(|&v| proj.unproject(v)).collect()
+    }
+
+    fn across(points: &[LatLon], i: usize) -> f64 {
+        let proj = LocalProjection::new(points[0]);
+        proj.project(points[i]).1
+    }
+
+    #[test]
+    fn straightening_projects_interior_nodes_onto_the_end_to_end_line() {
+        let wobbly = line_with(100.0, &[(25.0, 3.0), (50.0, -4.0), (75.0, 2.0)]);
+        let out = straighten(&wobbly).unwrap();
+        assert_eq!(out.len(), wobbly.len());
+        // Ends stay exactly where they were.
+        assert_eq!(out[0], wobbly[0]);
+        assert_eq!(out[4], wobbly[4]);
+        let proj = LocalProjection::new(wobbly[0]);
+        for (i, along) in [(1, 25.0), (2, 50.0), (3, 75.0)] {
+            assert!(across(&out, i).abs() < 1e-4, "node {i} off the line");
+            let x = proj.project(out[i]).0;
+            assert!((x - along).abs() < 1e-3, "node {i} moved along the line");
+        }
+    }
+
+    #[test]
+    fn straightening_works_on_a_diagonal_line() {
+        let proj = LocalProjection::new((42.36, -71.06));
+        let pts: Vec<LatLon> = [(0.0, 0.0), (30.0, 40.0), (100.0, 100.0), (120.0, 160.0)]
+            .iter()
+            .map(|&v| proj.unproject(v))
+            .collect();
+        let out = straighten(&pts).unwrap();
+        // Both interior nodes end up on the line (0,0)-(120,160).
+        for p in &out[1..3] {
+            let (x, y) = proj.project(*p);
+            assert!((x * 160.0 - y * 120.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn straightening_a_straight_way_changes_nothing() {
+        let pts = line_with(90.0, &[(30.0, 0.0), (60.0, 0.0)]);
+        assert_eq!(straighten(&pts).unwrap(), pts);
+    }
+
+    #[test]
+    fn straightening_refuses_a_curved_way_but_accepts_a_slight_bend() {
+        // A quarter circle of radius 100 m: deviation ~19% of its length.
+        let arc: Vec<(f64, f64)> = (1..8)
+            .map(|i| {
+                let a = std::f64::consts::FRAC_PI_2 * f64::from(i) / 8.0;
+                (100.0 * a.sin(), 100.0 * (1.0 - a.cos()))
+            })
+            .collect();
+        let quarter = {
+            let proj = LocalProjection::new((42.36, -71.06));
+            let mut v = vec![proj.unproject((0.0, 0.0))];
+            v.extend(arc.iter().map(|&p| proj.unproject(p)));
+            v.push(proj.unproject((100.0, 100.0)));
+            v
+        };
+        assert_eq!(straighten(&quarter), Err(StraightenError::TooCurved));
+
+        // A 15 m kink in the middle of a 100 m line is under 10% of the length.
+        let kinked = line_with(100.0, &[(50.0, 8.0)]);
+        assert!(straighten(&kinked).is_ok());
+        // 25 m is not.
+        let bent = line_with(100.0, &[(50.0, 25.0)]);
+        assert_eq!(straighten(&bent), Err(StraightenError::TooCurved));
+    }
+
+    #[test]
+    fn straightening_keeps_nodes_in_order_and_inside_the_ends() {
+        // The third node sits behind the second and the last interior node
+        // is beyond the end: both get clamped, never reordered.
+        let pts = line_with(100.0, &[(60.0, 2.0), (40.0, -2.0), (110.0, 1.0)]);
+        let out = straighten(&pts).unwrap();
+        let proj = LocalProjection::new(out[0]);
+        let xs: Vec<f64> = out.iter().map(|&p| proj.project(p).0).collect();
+        assert!(xs.windows(2).all(|w| w[0] <= w[1] + 1e-9), "{xs:?}");
+        assert!(xs[3] <= 100.0 + 1e-6 && xs[3] >= 99.0);
+    }
+
+    #[test]
+    fn straightening_rejects_closed_short_and_degenerate_ways() {
+        let ring = polygon(5, 0.0);
+        assert!(!can_straighten(&ring));
+        assert_eq!(straighten(&ring), Err(StraightenError::NotApplicable));
+        let two = line_with(50.0, &[]);
+        assert_eq!(straighten(&two), Err(StraightenError::NotApplicable));
+        // Same exact spot at both ends is a ring, in effect.
+        let p = (42.36, -71.06);
+        let q = (42.3601, -71.0601);
+        assert_eq!(straighten(&[p, q, p]), Err(StraightenError::NotApplicable));
+        // Different nodes a hair apart: no line to project onto.
+        let p2 = (42.36 + 1e-12, -71.06);
+        assert_eq!(straighten(&[p, q, p2]), Err(StraightenError::NoLine));
     }
 
     #[test]

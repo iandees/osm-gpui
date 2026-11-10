@@ -5095,6 +5095,57 @@ mod tests {
             .unwrap();
     }
 
+    fn node_position(view: &MapViewer, id: i64) -> (f64, f64) {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .node_lat_lon(id)
+            .unwrap()
+    }
+
+    #[gpui::test]
+    fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                let on_line = node_position(view, 2);
+                let off_line = (on_line.0 + 0.00005, on_line.1);
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .unwrap()
+                    .as_editable_mut()
+                    .unwrap()
+                    .commit_node_moves(&[(2, off_line.0, off_line.1)]);
+                select(view, Way, &[100]);
+                view.run_selection_action("straighten", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let straightened = node_position(view, 2);
+                // Moved back to the line through nodes 1 and 3 (which also
+                // slides it a little along it, since the line is diagonal).
+                assert_ne!(straightened, off_line);
+                assert!((straightened.0 - on_line.0).abs() < 1e-4);
+
+                undo_step(view);
+                assert_eq!(node_position(view, 2), off_line);
+                redo_step(view);
+                assert_eq!(node_position(view, 2), straightened);
+                // A curved way is refused with the reason and no undo step.
+                select(view, Way, &[101]);
+                view.run_selection_action("straighten", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Can't straighten: the way bends more than 10% of its length")
+                );
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn inapplicable_action_explains_itself_and_changes_nothing(cx: &mut TestAppContext) {
         let window = setup(cx);

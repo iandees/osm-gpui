@@ -283,6 +283,19 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_extend,
     },
     SelectionAction {
+        id: "straighten",
+        shortcut_id: Some("action_straighten"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            env.selected_ways()
+                .iter()
+                .any(|w| geometry::can_straighten(&w.points))
+        },
+        apply: apply_straighten,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
@@ -378,15 +391,19 @@ fn active_editable_mut(
     Ok((id, editable))
 }
 
+/// Computes new positions for a way's points; see `reshape_ways`.
+type ReshapeFn = fn(&[LatLon]) -> Result<Option<Vec<LatLon>>, String>;
+
 /// Move nodes by running `reshape` over each selected way's positions.
-/// `reshape` returns new positions for every point of the way, or `None` to
-/// leave the way alone. Nodes shared between selected ways see each other's
-/// moves, and the whole thing is recorded as one `MoveNodes` step.
+/// `reshape` returns new positions for every point of the way, `Ok(None)` to
+/// leave the way alone, or `Err` with a message to refuse the whole action.
+/// Nodes shared between selected ways see each other's moves, and the whole
+/// thing is recorded as one `MoveNodes` step.
 fn reshape_ways(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
-    reshape: fn(&[LatLon]) -> Option<Vec<LatLon>>,
+    reshape: ReshapeFn,
     none_changed: fn() -> SharedString,
     done: fn(usize) -> SharedString,
 ) -> Result<ActionOutcome, String> {
@@ -403,7 +420,7 @@ fn reshape_ways(
             .zip(&way.points)
             .map(|(id, p)| *current.get(id).unwrap_or(p))
             .collect();
-        let Some(new_points) = reshape(&points) else {
+        let Some(new_points) = reshape(&points)? else {
             continue;
         };
         for ((&id, &old), new) in way.node_ids.iter().zip(&way.points).zip(new_points) {
@@ -451,9 +468,39 @@ fn apply_square(
         layers,
         selection,
         active,
-        geometry::orthogonalize,
+        |points| Ok(geometry::orthogonalize(points)),
         || tr!("action.square.none"),
         |n| tr_count!("action.square.done", n),
+    )
+}
+
+/// Straighten the selected open ways (iD "Straighten"): see
+/// `geometry::straighten`. A way that bends more than
+/// `geometry::STRAIGHTEN_MAX_DEVIATION` of its length refuses the whole
+/// action, so a curved road is never flattened by accident.
+fn apply_straighten(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    reshape_ways(
+        layers,
+        selection,
+        active,
+        |points| match geometry::straighten(points) {
+            Ok(straight) => Ok(Some(straight)),
+            Err(geometry::StraightenError::NotApplicable) => Ok(None),
+            Err(geometry::StraightenError::NoLine) => {
+                Err(tr!("action.straighten.error.no_line").to_string())
+            }
+            Err(geometry::StraightenError::TooCurved) => Err(tr!(
+                "action.straighten.error.too_curved",
+                percent = (geometry::STRAIGHTEN_MAX_DEVIATION * 100.0).round()
+            )
+            .to_string()),
+        },
+        || tr!("action.straighten.none"),
+        |n| tr_count!("action.straighten.done", n),
     )
 }
 
@@ -466,7 +513,7 @@ fn apply_circularize(
         layers,
         selection,
         active,
-        geometry::circularize,
+        |points| Ok(geometry::circularize(points)),
         || tr!("action.circularize.hint"),
         |n| tr_count!("action.circularize.done", n),
     )
@@ -1013,6 +1060,10 @@ mod tests {
         assert_eq!(find_by_key(&settings, "c").map(|a| a.id), Some("join"));
         assert_eq!(find_by_key(&settings, "g").map(|a| a.id), Some("separate"));
         assert_eq!(find_by_key(&settings, "e").map(|a| a.id), Some("extend"));
+        assert_eq!(
+            find_by_key(&settings, "t").map(|a| a.id),
+            Some("straighten")
+        );
         assert!(find_by_key(&settings, "z").is_none());
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),
@@ -1317,6 +1368,83 @@ mod tests {
             ] if entries.len() == 3
         ));
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 0));
+    }
+
+    impl Net {
+        fn nudge(&mut self, node: i64, lat: f64, lon: f64) {
+            self.layers
+                .find_layer_mut(self.layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .commit_node_moves(&[(node, lat, lon)]);
+        }
+    }
+
+    #[test]
+    fn straighten_is_offered_for_open_ways_with_three_nodes() {
+        let n = net();
+        assert!(n.applicable(&n.ways(&[100])).contains(&"straighten"));
+        assert!(n.applicable(&n.ways(&[100, 102])).contains(&"straighten"));
+        // Two nodes, a ring, or no way at all: nothing to straighten.
+        assert!(!n.applicable(&n.ways(&[102])).contains(&"straighten"));
+        assert!(!n.applicable(&n.ways(&[108])).contains(&"straighten"));
+        assert!(!n.applicable(&[]).contains(&"straighten"));
+        assert!(!n
+            .applicable(&[n.feature(FeatureKind::Node, 2)])
+            .contains(&"straighten"));
+    }
+
+    #[test]
+    fn straighten_puts_the_wobbly_node_back_on_the_line_in_one_move_step() {
+        let mut n = net();
+        // Way 100 is a straight line; push its middle node ~5 m off it.
+        let straight = n.editable().node_lat_lon(2).unwrap();
+        n.nudge(2, straight.0 + 0.00005, straight.1);
+        let out = n.run("straighten", &n.ways(&[100])).unwrap();
+        assert_eq!(out.status, "Straightened 1 way");
+        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
+            panic!("expected one MoveNodes step");
+        };
+        // Only the interior node moved: from the nudge back onto the line.
+        assert_eq!(per_layer[0].1.len(), 1);
+        let (id, before, after) = per_layer[0].1[0];
+        assert_eq!(id, 2);
+        assert_eq!(before, (straight.0 + 0.00005, straight.1));
+        // Projected onto the line through nodes 1 and 3 (the nudge was
+        // sideways to a diagonal line, so it also slides along it a little).
+        let (a, c) = (
+            n.editable().node_lat_lon(1).unwrap(),
+            n.editable().node_lat_lon(3).unwrap(),
+        );
+        let k = ((a.0 + c.0) / 2.0).to_radians().cos();
+        let cross = (after.1 - a.1) * k * (c.0 - a.0) - (after.0 - a.0) * (c.1 - a.1) * k;
+        assert!(cross.abs() < 1e-11, "not on the line: {cross}");
+        assert!((after.0 - straight.0).abs() < 1e-4);
+        assert_eq!(n.editable().node_lat_lon(2), Some(after));
+        // The way itself is untouched.
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3]));
+        // Straight now: running again has nothing to do.
+        assert_eq!(
+            n.run("straighten", &n.ways(&[100])).err().as_deref(),
+            Some("The selected ways are already straight")
+        );
+    }
+
+    #[test]
+    fn straighten_refuses_a_zigzag_and_changes_nothing() {
+        let mut n = net();
+        let Err(message) = n.run("straighten", &n.ways(&[101])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(
+            message,
+            "Can't straighten: the way bends more than 10% of its length"
+        );
+        assert!(!n.layer().is_modified());
+        // One curved way among several refuses all of them.
+        assert!(n.run("straighten", &n.ways(&[100, 101])).is_err());
+        assert!(!n.layer().is_modified());
     }
 
     #[test]
