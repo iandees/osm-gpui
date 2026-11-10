@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::merge::{self, MergeStats};
+use crate::layers::node_markers;
 use crate::layers::resolve;
 use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
@@ -39,9 +40,8 @@ const CASING_WIDTH: f32 = 1.0;
 /// 2.8 ms -> 5.2 ms of CPU per frame for 8k ways all visible at z14).
 const CASING_MIN_ZOOM: f64 = 15.0;
 
-/// Below this zoom untagged nodes (plain way vertices) aren't drawn. They
-/// can't usefully be picked when ways are a few pixels apart, and they're
-/// the bulk of the node pass.
+/// Below this zoom turn-restriction markers aren't drawn or clickable.
+/// (Which node markers are shown is decided by `node_markers`.)
 const VERTEX_MIN_ZOOM: f64 = 16.0;
 
 /// Below this zoom direction arrows aren't drawn.
@@ -125,6 +125,30 @@ struct NodeCache {
     flat: Vec<(i64, f64, f64)>,
     /// Resolved style per node, aligned with `flat` by index.
     styles: Vec<NodeStyle>,
+    /// Zoom from which each node's marker is shown, aligned with `flat`;
+    /// see `node_markers`.
+    reveal: Vec<f32>,
+}
+
+/// Nodes shown whatever the zoom because they are selected; see
+/// `OsmLayer::pins`.
+#[derive(Default)]
+struct Pins {
+    nodes: HashSet<i64>,
+    /// Indices into `way_vertices`.
+    ways: HashSet<usize>,
+}
+
+impl NodeCache {
+    /// Store a node's re-resolved style. If it gained or lost its tags its
+    /// marker priority changed, so it falls back to the unthinned reveal
+    /// zoom of its new kind (the density pass only runs on a full load).
+    fn refresh_style(&mut self, idx: usize, style: NodeStyle) {
+        if self.styles[idx].tagged != style.tagged {
+            self.reveal[idx] = node_markers::unthinned_reveal(style.tagged);
+        }
+        self.styles[idx] = style;
+    }
 }
 
 /// Layer for rendering OSM vector data (nodes and ways)
@@ -243,10 +267,41 @@ fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> NodeCache {
             styles.push(stylesheet.node_style(&node.tags));
         }
     }
+    // Junctions: nodes shared by two ways, and the ends of open ways.
+    let mut way_refs: HashMap<i64, u8> = HashMap::new();
+    for way in data.ways.values() {
+        let closed = way.nodes.len() > 1 && way.nodes.first() == way.nodes.last();
+        let n = way.nodes.len() - usize::from(closed);
+        for &id in &way.nodes[..n] {
+            let c = way_refs.entry(id).or_insert(0);
+            *c = c.saturating_add(1);
+        }
+        if !closed {
+            for id in [way.nodes.first(), way.nodes.last()].into_iter().flatten() {
+                way_refs.insert(*id, 2);
+            }
+        }
+    }
+    let placement: Vec<(i64, f64, f64, node_markers::Tier)> = flat
+        .iter()
+        .zip(&styles)
+        .map(|(&(id, x, y), st)| {
+            let tier = if st.tagged {
+                node_markers::Tier::Tagged
+            } else if way_refs.get(&id).copied().unwrap_or(0) >= 2 {
+                node_markers::Tier::Junction
+            } else {
+                node_markers::Tier::Plain
+            };
+            (id, x, y, tier)
+        })
+        .collect();
+    let reveal = node_markers::assign_reveal_zooms(&placement);
     NodeCache {
         index_by_id,
         flat,
         styles,
+        reveal,
     }
 }
 
@@ -754,7 +809,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = node_cache.index_by_id.get(&id) {
-                node_cache.styles[idx] = stylesheet.node_style(&node.tags);
+                node_cache.refresh_style(idx, stylesheet.node_style(&node.tags));
             }
         }
         FeatureKind::Way => {
@@ -1035,7 +1090,21 @@ fn circle_bounds(center: Point<Pixels>, diameter: f32) -> Bounds<Pixels> {
 /// highlighted way's vertex markers on top of the highlight stroke so they
 /// aren't hidden underneath it.
 fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: NodeStyle) {
-    let diameter = style.size + 2.0;
+    paint_node_marker_scaled(window, screen_point, style, 1.0);
+}
+
+/// `paint_node_marker` at `scale` of its full size (a marker growing in).
+fn paint_node_marker_scaled(
+    window: &mut Window,
+    screen_point: Point<Pixels>,
+    style: NodeStyle,
+    scale: f32,
+) {
+    let diameter = if scale >= 1.0 {
+        style.size + 2.0
+    } else {
+        ((style.size + 2.0) * scale).max(2.0)
+    };
     window.paint_quad(quad(
         circle_bounds(screen_point, diameter),
         px(diameter / 2.0),
@@ -1157,6 +1226,7 @@ impl OsmLayer {
                 index_by_id: HashMap::new(),
                 flat: Vec::new(),
                 styles: Vec::new(),
+                reveal: Vec::new(),
             },
             stylesheet: Arc::new(Stylesheet::load_default()),
             highlight: Vec::new(),
@@ -1673,11 +1743,14 @@ impl OsmLayer {
                     let style = self.stylesheet.node_style(&node.tags);
                     if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                         self.node_cache.flat[idx] = (id, mx, my);
-                        self.node_cache.styles[idx] = style;
+                        self.node_cache.refresh_style(idx, style);
                     } else {
                         let idx = self.node_cache.flat.len();
                         self.node_cache.flat.push((id, mx, my));
                         self.node_cache.styles.push(style);
+                        self.node_cache
+                            .reveal
+                            .push(node_markers::unthinned_reveal(style.tagged));
                         self.node_cache.index_by_id.insert(id, idx);
                     }
                     self.node_index.insert(GeomWithData::new([mx, my], id));
@@ -1705,6 +1778,7 @@ impl OsmLayer {
                     if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
                         self.node_cache.flat.remove(idx);
                         self.node_cache.styles.remove(idx);
+                        self.node_cache.reveal.remove(idx);
                         // Removing from the middle of `flat` shifts every
                         // later index by one; fix up index_by_id.
                         for v in self.node_cache.index_by_id.values_mut() {
@@ -1887,6 +1961,7 @@ impl OsmLayer {
                 .remove(&GeomWithData::new([mx, my], node_id));
             self.node_cache.flat.remove(idx);
             self.node_cache.styles.remove(idx);
+            self.node_cache.reveal.remove(idx);
             for v in self.node_cache.index_by_id.values_mut() {
                 if *v > idx {
                     *v -= 1;
@@ -2536,11 +2611,14 @@ impl OsmLayer {
             let style = self.stylesheet.node_style(&node.tags);
             if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                 self.node_cache.flat[idx] = (id, mx, my);
-                self.node_cache.styles[idx] = style;
+                self.node_cache.refresh_style(idx, style);
             } else {
                 let idx = self.node_cache.flat.len();
                 self.node_cache.flat.push((id, mx, my));
                 self.node_cache.styles.push(style);
+                self.node_cache
+                    .reveal
+                    .push(node_markers::unthinned_reveal(style.tagged));
                 self.node_cache.index_by_id.insert(id, idx);
             }
             self.node_index.insert(GeomWithData::new([mx, my], id));
@@ -2606,6 +2684,7 @@ impl OsmLayer {
             self.node_index.remove(&GeomWithData::new([mx, my], id));
             self.node_cache.flat.remove(idx);
             self.node_cache.styles.remove(idx);
+            self.node_cache.reveal.remove(idx);
             for v in self.node_cache.index_by_id.values_mut() {
                 if *v > idx {
                     *v -= 1;
@@ -2808,6 +2887,7 @@ impl OsmLayer {
         self.node_cache.index_by_id.clear();
         self.node_cache.flat.clear();
         self.node_cache.styles.clear();
+        self.node_cache.reveal.clear();
         self.node_index = RTree::new();
         self.way_index = RTree::new();
         self.way_id_to_index.clear();
@@ -3022,6 +3102,39 @@ impl OsmLayer {
             }
             push_triangle(path, bounds_min_max, tri[0], tri[1], tri[2]);
         }
+    }
+
+    /// The always-shown nodes: selected nodes and the nodes of selected ways.
+    fn pins(&self) -> Pins {
+        let mut pins = Pins::default();
+        for f in &self.highlight {
+            match f.kind {
+                FeatureKind::Node => {
+                    pins.nodes.insert(f.id);
+                }
+                FeatureKind::Way => {
+                    if let Some(&i) = self.way_id_to_index.get(&f.id) {
+                        pins.ways.insert(i);
+                    }
+                }
+                FeatureKind::Relation => {}
+            }
+        }
+        pins
+    }
+
+    /// Whether node `id` (at `idx` in the node cache) has a marker at
+    /// `zoom` that can be hovered, clicked and box-selected. The one
+    /// predicate behind hit testing and box select; drawing uses the same
+    /// `node_markers` rule plus the selection highlight.
+    fn node_marker_shown(&self, pins: &Pins, idx: usize, id: i64, zoom: f64) -> bool {
+        node_markers::marker_interactive(self.node_cache.reveal[idx], zoom)
+            || pins.nodes.contains(&id)
+            || (!pins.ways.is_empty()
+                && self
+                    .node_to_ways
+                    .get(&id)
+                    .is_some_and(|ws| ws.iter().any(|w| pins.ways.contains(w))))
     }
 
     /// Find the way segment nearest `screen_pt`, within `tol_px`, returning
@@ -3621,17 +3734,25 @@ impl MapLayer for OsmLayer {
                 continue;
             }
             nodes_in_view += 1;
-            let style = self.node_cache.styles[idx];
-            if !style.tagged && !show_vertices {
+            // Density rule: see `node_markers`. Hidden markers cost only
+            // this comparison.
+            let scale = node_markers::marker_scale(self.node_cache.reveal[idx], zoom);
+            if scale <= 0.0 {
                 continue;
             }
+            let style = self.node_cache.styles[idx];
             let mut sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) {
                 continue;
             }
             sp += self.drag_preview_offset(id);
             markers_drawn += 1;
-            paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
+            paint_node_marker_scaled(
+                window,
+                point(sp.x + origin_x, sp.y + origin_y),
+                style,
+                scale,
+            );
         }
         crate::frame_stats::count("count.nodes_in_view", nodes_in_view);
         crate::frame_stats::count("count.markers_drawn", markers_drawn);
@@ -3877,11 +3998,18 @@ impl EditableLayer for OsmLayer {
         // cached mercator position and projects with `mercator_to_screen`
         // (no trig) instead of `geo_to_screen`.
         let mut node_hits: Vec<HitCandidate> = Vec::new();
+        let zoom = viewport.zoom_level();
+        let pins = self.pins();
         for item in self.node_index.locate_in_envelope(envelope) {
             let id = item.data;
             let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
                 continue;
             };
+            // A node whose marker is hidden is not a target: the click goes
+            // to the way underneath.
+            if !self.node_marker_shown(&pins, idx, id, zoom) {
+                continue;
+            }
             let (_, mx, my) = self.node_cache.flat[idx];
             let sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) {
@@ -4051,12 +4179,24 @@ impl EditableLayer for OsmLayer {
         let envelope = AABB::from_corners([min_x, min_y], [max_x, max_y]);
 
         let mut out = Vec::new();
+        // Only nodes whose marker is shown: a box at low zoom selects the
+        // ways it encloses, not the hidden vertices.
+        let zoom = viewport.zoom_level();
+        let pins = self.pins();
         for item in self.node_index.locate_in_envelope(envelope) {
-            out.push(FeatureRef {
-                layer_id: self.id,
-                kind: FeatureKind::Node,
-                id: item.data,
-            });
+            let id = item.data;
+            let shown = self
+                .node_cache
+                .index_by_id
+                .get(&id)
+                .is_some_and(|&idx| self.node_marker_shown(&pins, idx, id, zoom));
+            if shown {
+                out.push(FeatureRef {
+                    layer_id: self.id,
+                    kind: FeatureKind::Node,
+                    id,
+                });
+            }
         }
         for item in self.way_index.locate_in_envelope(envelope) {
             out.push(FeatureRef {
@@ -4241,6 +4381,8 @@ impl EditableLayer for OsmLayer {
                 sp += self.drag_preview_offset(feature.id);
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
+                // The marker itself, which the density rule may have hidden.
+                paint_node_marker(window, center, node_style);
                 // Two concentric rings around the marker: the core color
                 // inside, the halo color outside.
                 let core_diameter = node_style.size + 10.0;
@@ -4263,6 +4405,7 @@ impl EditableLayer for OsmLayer {
                 // vertex-marker repaint below can reuse the same projected
                 // screen point without redoing coordinate validation/lookup.
                 let mut node_styles: Vec<NodeStyle> = Vec::with_capacity(way.nodes.len());
+                let mut marker_on: Vec<bool> = Vec::with_capacity(way.nodes.len());
                 for node_id in &way.nodes {
                     if let Some(n) = osm_data.nodes.get(node_id) {
                         if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
@@ -4271,6 +4414,21 @@ impl EditableLayer for OsmLayer {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
                                 node_styles.push(self.stylesheet.node_style(&n.tags));
+                                // A selected way shows all its vertices;
+                                // hover and relation members only those the
+                                // density rule shows (they are the ones that
+                                // can be targeted).
+                                marker_on.push(
+                                    kind == HighlightKind::Selected
+                                        || self.node_cache.index_by_id.get(node_id).is_none_or(
+                                            |&i| {
+                                                node_markers::marker_interactive(
+                                                    self.node_cache.reveal[i],
+                                                    viewport.zoom_level(),
+                                                )
+                                            },
+                                        ),
+                                );
                             }
                         }
                     }
@@ -4353,8 +4511,10 @@ impl EditableLayer for OsmLayer {
                 // quads painted earlier in `render_canvas`, hiding the way's
                 // vertices. This also shows a highlighted way's vertices at
                 // zooms where plain vertices are otherwise hidden.
-                for (p, style) in pts.iter().zip(node_styles.iter()) {
-                    paint_node_marker(window, *p, *style);
+                for ((p, style), on) in pts.iter().zip(node_styles.iter()).zip(marker_on.iter()) {
+                    if *on {
+                        paint_node_marker(window, *p, *style);
+                    }
                 }
             }
             FeatureKind::Relation => {
@@ -4972,7 +5132,9 @@ mod tests {
             tags: empty_tags(),
         };
         let data = data_with(vec![n1, n2, n3], vec![way_in, way_partial]);
-        let viewport = viewport_centered_on(center_lat, center_lon);
+        // n1 and n2 coincide, so only at full detail (zoom 18.5) are both
+        // markers shown and therefore both selectable.
+        let viewport = Viewport::new(center_lat, center_lon, 18.5, size(px(800.0), px(600.0)));
         let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
         // A screen-space box symmetric around the viewport's center screen
@@ -7685,6 +7847,178 @@ mod tests {
             assert_eq!(rest.counts(), (0, 0, 1));
             assert_eq!(rest.deleted_node_ids, vec![(3, 1)]);
             assert!(layer.is_modified());
+        }
+    }
+
+    // ---- node marker density rule ----
+
+    /// One untagged way of `n` nodes 0.0001 degrees (about 8 m) apart along
+    /// latitude 40, plus nothing else: far denser than a marker per cell at
+    /// low zoom.
+    fn dense_way_layer(n: i64) -> OsmLayer {
+        let nodes: Vec<OsmNode> = (1..=n)
+            .map(|i| OsmNode {
+                id: i,
+                lat: 40.0,
+                lon: -74.0 + i as f64 * 0.0001,
+                version: 1,
+                tags: empty_tags(),
+            })
+            .collect();
+        let way = OsmWay {
+            id: 100,
+            nodes: (1..=n).collect(),
+            version: 1,
+            tags: HashMap::new(),
+        };
+        OsmLayer::new_with_data(LayerId(1), "L", data_with(nodes, vec![way]))
+    }
+
+    fn view_at(zoom: f64, lon: f64) -> Viewport {
+        Viewport::new(40.0, lon, zoom, size(px(800.0), px(600.0)))
+    }
+
+    /// Screen point of node `id` in `vp`.
+    fn node_point(layer: &OsmLayer, vp: &Viewport, id: i64) -> gpui::Point<gpui::Pixels> {
+        let idx = layer.node_cache.index_by_id[&id];
+        let (_, mx, my) = layer.node_cache.flat[idx];
+        vp.mercator_to_screen(mx, my)
+    }
+
+    #[test]
+    fn hidden_vertex_is_not_a_target_and_the_way_is_hit() {
+        let layer = dense_way_layer(60);
+        let vp = view_at(16.0, -74.0 + 30.0 * 0.0001);
+        let zoom = vp.zoom_level();
+        let hidden: Vec<i64> = (1..=60)
+            .filter(|id| {
+                let i = layer.node_cache.index_by_id[id];
+                !crate::layers::node_markers::marker_interactive(layer.node_cache.reveal[i], zoom)
+            })
+            .collect();
+        assert!(hidden.len() > 40, "{} hidden", hidden.len());
+        let id = hidden[hidden.len() / 2];
+        let hits = layer.hit_test(&vp, node_point(&layer, &vp, id));
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|h| h.kind == FeatureKind::Way), "{hits:?}");
+    }
+
+    #[test]
+    fn shown_vertex_is_still_a_target() {
+        let layer = dense_way_layer(60);
+        let vp = view_at(16.0, -74.0 + 30.0 * 0.0001);
+        let zoom = vp.zoom_level();
+        let shown = (1..=60)
+            .find(|id| {
+                let i = layer.node_cache.index_by_id[id];
+                crate::layers::node_markers::marker_interactive(layer.node_cache.reveal[i], zoom)
+            })
+            .expect("some node is shown");
+        let hits = layer.hit_test(&vp, node_point(&layer, &vp, shown));
+        assert_eq!(hits[0].kind, FeatureKind::Node);
+        assert_eq!(hits[0].feature.id, shown);
+    }
+
+    #[test]
+    fn every_vertex_is_a_target_at_full_detail() {
+        let layer = dense_way_layer(60);
+        let vp = view_at(18.0, -74.0 + 30.0 * 0.0001);
+        for id in 25..35 {
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, id));
+            assert!(hits
+                .iter()
+                .any(|h| h.feature.id == id && h.kind == FeatureKind::Node));
+        }
+    }
+
+    #[test]
+    fn nodes_of_a_selected_way_are_targets_at_low_zoom() {
+        let mut layer = dense_way_layer(60);
+        let vp = view_at(16.0, -74.0 + 30.0 * 0.0001);
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 100,
+        }]);
+        let zoom = vp.zoom_level();
+        let id = (1..=60)
+            .find(|id| {
+                let i = layer.node_cache.index_by_id[id];
+                !crate::layers::node_markers::marker_interactive(layer.node_cache.reveal[i], zoom)
+            })
+            .unwrap();
+        let hits = layer.hit_test(&vp, node_point(&layer, &vp, id));
+        assert_eq!(hits[0].kind, FeatureKind::Node);
+        assert_eq!(hits[0].feature.id, id);
+    }
+
+    #[test]
+    fn box_select_at_low_zoom_skips_hidden_vertices() {
+        let layer = dense_way_layer(60);
+        let vp = view_at(16.0, -74.0 + 30.0 * 0.0001);
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let nodes = layer
+            .hit_test_rect(&vp, rect)
+            .into_iter()
+            .filter(|f| f.kind == FeatureKind::Node)
+            .count();
+        assert!(nodes < 30, "{nodes}");
+        let full = view_at(18.0, -74.0 + 30.0 * 0.0001);
+        let nodes = layer
+            .hit_test_rect(&full, rect)
+            .into_iter()
+            .filter(|f| f.kind == FeatureKind::Node)
+            .count();
+        assert!(nodes > 5);
+    }
+
+    #[test]
+    fn tagged_nodes_use_the_same_rule_and_isolated_ones_show_early() {
+        let mut tags = HashMap::new();
+        tags.insert("amenity".to_string(), "cafe".to_string());
+        let n = OsmNode {
+            id: 1,
+            lat: 40.0,
+            lon: -74.0,
+            version: 1,
+            tags,
+        };
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", data_with(vec![n], vec![]));
+        assert!(layer.node_cache.reveal[0] <= 10.0);
+        let vp = view_at(12.0, -74.0);
+        let hits = layer.hit_test(&vp, node_point(&layer, &vp, 1));
+        assert_eq!(hits[0].kind, FeatureKind::Node);
+    }
+
+    /// Developer tool: how many markers the rule draws on a real download.
+    /// `cargo test --release -- --ignored marker_counts --nocapture`
+    #[test]
+    #[ignore]
+    fn marker_counts_on_real_data() {
+        let path = std::env::var("OSM_COUNT_FILE").unwrap_or("perf-data/paris_a.osm".into());
+        let Ok(data) = crate::osm::OsmParser::new().parse_file(&path) else {
+            return;
+        };
+        let t = std::time::Instant::now();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data));
+        println!("layer built in {:?}", t.elapsed());
+        for z in [14.0, 15.5, 16.0, 16.5, 17.0, 17.5, 18.0, 18.25, 18.5, 19.5] {
+            let vp = Viewport::new(48.863, 2.340, z, size(px(1064.0), px(876.0)));
+            let (x0, x1, y0, y1) = vp.mercator_view_bounds();
+            let (mut inview, mut drawn) = (0, 0);
+            for (i, &(_, x, y)) in layer.node_cache.flat.iter().enumerate() {
+                if x < x0 || x > x1 || y < y0 || y > y1 {
+                    continue;
+                }
+                inview += 1;
+                if crate::layers::node_markers::marker_drawn(layer.node_cache.reveal[i], z) {
+                    drawn += 1;
+                }
+            }
+            println!("z{z}: {drawn} of {inview} in view");
         }
     }
 }

@@ -6,9 +6,13 @@ usage: gen_culling_script.py A.osm B.osm TAG MODE > script.osmscript
 MODE is one of
   z17    only the long zoom-17 view of dataset A (200+ frames, twice), for the
          v0.3.0 versus main comparison;
-  full   the z17 view first (so one launch also covers it), then a static sweep
-         over zooms 14 to 19.5 on A and B, pans, hover grids, and the
-         screenshots (captures go to target/perf/TAG-*.png).
+  A      the z17 view first (so one launch also covers it), then a static sweep
+         over zooms 14 to 19.5 on A, pans, hover grids, and the screenshots
+         (captures go to target/perf/TAG-*.png);
+  full   A, then the same sweep on B.
+
+Run the app WITHOUT the .osm file on its command line: the script loads A
+itself, and loading it twice renders it twice.
 
 A.osm and B.osm are the datasets described in 2026-11-render-measurement.md.
 The way used for the "selected way at low zoom" screenshots is picked from A:
@@ -135,7 +139,7 @@ w("frame_stats A_load")
 # The v0.3.0 comparison view, twice (>= 200 frames each when frames fit 60 Hz).
 long_view("A_z17_rep1", LAT0, LON0, 17, 10)
 long_view("A_z17_rep2", LAT0, LON0, 17, 10)
-if MODE == "full":
+if MODE in ("full", "A"):
     section("A", LAT0, LON0, 4, True)
     # Selected way at low zoom: its own nodes are drawn, the rest are not.
     pick = pick_way(A, 15.5)
@@ -153,6 +157,7 @@ if MODE == "full":
     w(f"viewport {LAT0} {LON0} 19")
     w("wait 1s")
     w(f"capture target/perf/{TAG}-A-z19.png")
+if MODE == "full":
     w(f"load_osm {B}")
     w("wait 5s")
     w("frame_stats B_load")
