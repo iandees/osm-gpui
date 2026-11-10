@@ -84,6 +84,10 @@ pub struct AppSettings {
     /// locale. Read once at startup, so a change applies after a restart.
     #[serde(default)]
     pub language: Option<String>,
+    /// Ids of the presets most recently applied in the preset picker, most
+    /// recent first (see `crate::preset_recents`).
+    #[serde(default)]
+    pub recent_presets: Vec<String>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -101,6 +105,7 @@ impl Default for AppSettings {
             keybindings: HashMap::new(),
             side_panel_width: None,
             language: None,
+            recent_presets: Vec::new(),
         }
     }
 }
@@ -208,6 +213,7 @@ mod tests {
             keybindings: HashMap::new(),
             side_panel_width: Some(340.0),
             language: Some("en".into()),
+            recent_presets: vec!["building".into(), "natural/tree".into()],
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -319,6 +325,7 @@ mod tests {
             keybindings,
             side_panel_width: None,
             language: None,
+            recent_presets: Vec::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);

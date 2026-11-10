@@ -614,6 +614,9 @@ dialog:
   preset_picker:
     title: "Change Feature Type"
     search_placeholder: "Search feature types…"
+    # Group headings in the list shown before typing a search.
+    recent: "Recent"
+    common: "Common"
   relation_picker:
     title: "Add to Relation"
     search_placeholder: "Search relations…"
