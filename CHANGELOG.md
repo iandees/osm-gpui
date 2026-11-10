@@ -3,6 +3,19 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+### Editing
+
+- New Relation (`N`; context and Tools menus) creates a relation from the selected
+  nodes, ways and relations and selects it, so its tags and member roles can be
+  filled in the side panel. One undo step.
+- Delete now works on a selected relation (its members are kept) and can be
+  undone. A relation that is a member of another relation is refused unless
+  the parent is deleted with it.
+- Member rows in a relation's Members list keep the object id visible when the
+  name is truncated.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of
