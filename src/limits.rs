@@ -25,8 +25,34 @@ impl Limits {
         Self {
             way_nodes: capabilities::max_way_nodes(base_url),
             relation_members: capabilities::max_relation_members(base_url),
-            changeset_elements: capabilities::max_changeset_elements(base_url),
+            changeset_elements: capped_changeset_elements(
+                capabilities::max_changeset_elements(base_url),
+                debug_chunk_limit_env().as_deref(),
+            ),
         }
+    }
+}
+
+/// Debug builds only: the value of `OSM_GPUI_DEBUG_CHUNK_LIMIT`, a cap on how
+/// many changes one changeset carries, so a small edit can be sent as several
+/// changesets when testing against a real server. Release builds never read it.
+fn debug_chunk_limit_env() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("OSM_GPUI_DEBUG_CHUNK_LIMIT").ok()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+/// The server's changeset size limit, lowered to `cap` when that parses as a
+/// positive number. Never raises the limit; anything else leaves it alone.
+fn capped_changeset_elements(server: usize, cap: Option<&str>) -> usize {
+    match cap.and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(cap) if cap > 0 => server.min(cap),
+        _ => server,
     }
 }
 
@@ -211,6 +237,25 @@ mod tests {
     use super::*;
     use crate::osm::{MemberType, OsmMember, OsmRelation, OsmWay};
     use std::collections::HashMap;
+
+    #[test]
+    fn chunk_cap_lowers_the_changeset_limit_only() {
+        assert_eq!(capped_changeset_elements(10_000, None), 10_000);
+        assert_eq!(capped_changeset_elements(10_000, Some("25")), 25);
+        assert_eq!(capped_changeset_elements(10_000, Some(" 25 ")), 25);
+        // Never raises the server's limit.
+        assert_eq!(capped_changeset_elements(100, Some("5000")), 100);
+        // Junk and zero are ignored.
+        assert_eq!(capped_changeset_elements(10_000, Some("abc")), 10_000);
+        assert_eq!(capped_changeset_elements(10_000, Some("0")), 10_000);
+        assert_eq!(capped_changeset_elements(10_000, Some("-3")), 10_000);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_builds_ignore_the_chunk_limit_variable() {
+        assert_eq!(debug_chunk_limit_env(), None);
+    }
 
     fn way(id: i64, len: usize) -> OsmWay {
         OsmWay {
