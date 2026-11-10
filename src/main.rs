@@ -2347,10 +2347,20 @@ impl MapViewer {
         } else {
             action.affected_features()
         };
-        let next: Vec<_> = next
+        let mut next: Vec<_> = next
             .into_iter()
             .filter(|feature| self.feature_exists(feature))
             .collect();
+        // A relation is only ever selected on its own (the side panel shows
+        // one relation's Members, not a mix). When a step touched a relation
+        // only as a side effect (a deleted way leaving or rejoining its
+        // members), the nodes and ways win.
+        if next
+            .iter()
+            .any(|f| f.kind != osm_gpui::selection::FeatureKind::Relation)
+        {
+            next.retain(|f| f.kind != osm_gpui::selection::FeatureKind::Relation);
+        }
         if next != self.selected {
             self.set_selection(next);
         }
@@ -8110,6 +8120,28 @@ mod tests {
         window
             .update(vcx, |view, _, _| {
                 assert!(editable(view).way_node_ids(102).is_some());
+                // Exactly the way: way 102 is a member of relation 900, which
+                // the step also touched, but relations are never mixed in.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(selected_ids(view, Way), vec![102]);
+            })
+            .unwrap();
+
+        // The menu path: the Undo action dispatched on the window (what the
+        // harness's `action Undo` and the Edit menu do), then redo, then
+        // undo again.
+        vcx.dispatch_action(Redo);
+        window
+            .update(vcx, |view, _, _| {
+                assert!(editable(view).way_node_ids(102).is_none());
+                // Only the relation that lost the way is left to select.
+                assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+        vcx.dispatch_action(Undo);
+        window
+            .update(vcx, |view, _, _| {
+                assert_eq!(view.selected.len(), 1);
                 assert_eq!(selected_ids(view, Way), vec![102]);
             })
             .unwrap();

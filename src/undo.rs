@@ -796,6 +796,34 @@ mod undo_stack_tests {
     }
 
     #[test]
+    fn extrude_segment_batch_affects_the_way_and_its_nodes() {
+        use FeatureKind::{Node, Way};
+        let layer = LayerId(1);
+        let batch = UndoableAction::Batch {
+            label: "Extruded a segment".into(),
+            actions: vec![
+                UndoableAction::CreateNode {
+                    layer,
+                    id: -1,
+                    lat: 0.0,
+                    lon: 0.0,
+                },
+                UndoableAction::SetWayNodes {
+                    layer,
+                    way_id: 4,
+                    before: vec![1, 2],
+                    after: vec![1, -1, 2],
+                },
+                move_one(2, (0.0, 0.0), (1.0, 1.0)),
+            ],
+        };
+        assert_eq!(
+            batch.affected_features(),
+            vec![fref(Node, -1), fref(Way, 4), fref(Node, 2)]
+        );
+    }
+
+    #[test]
     fn batch_affected_features_is_the_deduplicated_union() {
         use FeatureKind::{Node, Way};
         let batch = UndoableAction::Batch {
