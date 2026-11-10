@@ -17,7 +17,7 @@
 
 use crate::osm::{MemberType, OsmMember, OsmRelation};
 use crate::tr;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The roles every turn restriction needs.
 const RESTRICTION_ROLES: [&str; 3] = ["from", "via", "to"];
@@ -72,16 +72,21 @@ pub fn flatten_members(
     relation: &OsmRelation,
     find: &dyn Fn(i64) -> Option<OsmRelation>,
 ) -> Vec<(MemberType, i64)> {
-    fn push(out: &mut Vec<(MemberType, i64)>, member: &OsmMember) {
+    fn push(
+        out: &mut Vec<(MemberType, i64)>,
+        seen: &mut HashSet<(MemberType, i64)>,
+        member: &OsmMember,
+    ) {
         let key = (member.member_type, member.reference);
-        if !out.contains(&key) {
+        if seen.insert(key) {
             out.push(key);
         }
     }
     let mut out: Vec<(MemberType, i64)> = Vec::new();
+    let mut seen = HashSet::new();
     for member in &relation.members {
         match member.member_type {
-            MemberType::Node | MemberType::Way => push(&mut out, member),
+            MemberType::Node | MemberType::Way => push(&mut out, &mut seen, member),
             MemberType::Relation => {
                 if member.reference == relation.id {
                     continue;
@@ -89,7 +94,7 @@ pub fn flatten_members(
                 if let Some(nested) = find(member.reference) {
                     for inner in &nested.members {
                         if inner.member_type != MemberType::Relation {
-                            push(&mut out, inner);
+                            push(&mut out, &mut seen, inner);
                         }
                     }
                 }

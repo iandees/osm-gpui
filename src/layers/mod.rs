@@ -124,6 +124,9 @@ pub enum HighlightKind {
     Selected,
     /// Under the cursor: what a click would select.
     Hovered,
+    /// A member of the selected relation: drawn like a selection but in a
+    /// different color, so it reads as "belongs to the selected thing".
+    Member,
 }
 
 /// The vector-editing surface a layer may support: hit-testing, selection
