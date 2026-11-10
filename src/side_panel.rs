@@ -418,23 +418,30 @@ impl MapViewer {
                         .xsmall()
                         .tooltip(tip)
                 };
-                // Quiet until the row is hovered or one of the buttons has
-                // keyboard focus (still in the layout and clickable, so the
-                // row doesn't shift and the buttons stay reachable).
+                // Quiet until the row is hovered or focus is on one of its
+                // buttons (still in the layout and clickable, so the row
+                // doesn't shift and the buttons stay reachable). The three
+                // buttons are ordinary tab stops; this container's handle is
+                // not one, it only groups them so `contains_focused` can say
+                // whether focus is inside the row. (gpui's `in_focus` style
+                // means the opposite: "inside a focused element".)
                 let group_name = SharedString::from(format!("member-row-{i}"));
-                let controls_focus = window
-                    .use_keyed_state(("member-controls-focus", i), cx, |_, cx| cx.focus_handle())
-                    .read(cx)
-                    .clone();
+                let controls_focus = {
+                    let mut handles = self.member_controls_focus.borrow_mut();
+                    while handles.len() <= i {
+                        handles.push(cx.focus_handle());
+                    }
+                    handles[i].clone()
+                };
+                let focus_in_row = controls_focus.contains_focused(window, cx);
                 let controls = div()
                     .id(("member-controls", i))
                     .track_focus(&controls_focus)
                     .flex()
                     .flex_row()
                     .flex_shrink_0()
-                    .opacity(0.)
+                    .opacity(if focus_in_row { 1. } else { 0. })
                     .group_hover(group_name.clone(), |s| s.opacity(1.))
-                    .in_focus(|s| s.opacity(1.))
                     .child(
                         button("member-up", IconName::ArrowUp, tr!("panel.members.move_up"))
                             .disabled(i == 0)

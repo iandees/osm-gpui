@@ -587,6 +587,9 @@ struct MapViewer {
     /// Whether the Members list shows every member of a long relation
     /// instead of the first few.
     members_show_all: bool,
+    /// One focus handle per Members row, grouping that row's buttons so the
+    /// row can tell whether focus is inside it (grown lazily while rendering).
+    member_controls_focus: std::cell::RefCell<Vec<gpui::FocusHandle>>,
     /// Set by "Add to Relation…"; `render` opens the picker (it needs the
     /// window) and clears it.
     pending_relation_picker: bool,
@@ -836,6 +839,7 @@ impl MapViewer {
             relation_picker_dialog: None,
             pending_role_edit_open: None,
             members_show_all: false,
+            member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
             side_panel_open: [true; 7],
@@ -2322,6 +2326,7 @@ impl MapViewer {
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = self.undo_stack.undo() {
             self.apply_undo_action(&action, false);
+            self.select_after_history_step(&action);
             cx.notify();
         }
     }
@@ -2329,7 +2334,57 @@ impl MapViewer {
     fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = self.undo_stack.redo() {
             self.apply_undo_action(&action, true);
+            self.select_after_history_step(&action);
             cx.notify();
+        }
+    }
+
+    /// Whether `feature` currently exists in its layer.
+    fn feature_exists(&self, feature: &osm_gpui::selection::FeatureRef) -> bool {
+        use osm_gpui::selection::FeatureKind;
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(feature.layer_id)
+            .and_then(|layer| layer.as_editable())
+        else {
+            return false;
+        };
+        match feature.kind {
+            FeatureKind::Node => editable.node_lat_lon(feature.id).is_some(),
+            FeatureKind::Way => editable.way_node_ids(feature.id).is_some(),
+            FeatureKind::Relation => editable.relation(feature.id).is_some(),
+        }
+    }
+
+    /// After an undo/redo step, select the features it affected that still
+    /// exist (a restored delete, a redone create, a moved/retagged feature).
+    /// The selection never keeps ids that no longer exist. While Add or
+    /// Building mode is mid-way through placing points the selection is left
+    /// alone (apart from that pruning), so the drawing session isn't disturbed.
+    /// Never moves the viewport.
+    fn select_after_history_step(&mut self, action: &UndoableAction) {
+        let drawing = self.add_progress.is_some() || self.building_progress.is_some();
+        let next: Vec<osm_gpui::selection::FeatureRef> = if drawing {
+            self.selected.clone()
+        } else {
+            action.affected_features()
+        };
+        let mut next: Vec<_> = next
+            .into_iter()
+            .filter(|feature| self.feature_exists(feature))
+            .collect();
+        // A relation is only ever selected on its own (the side panel shows
+        // one relation's Members, not a mix). When a step touched a relation
+        // only as a side effect (a deleted way leaving or rejoining its
+        // members), the nodes and ways win.
+        if next
+            .iter()
+            .any(|f| f.kind != osm_gpui::selection::FeatureKind::Relation)
+        {
+            next.retain(|f| f.kind != osm_gpui::selection::FeatureKind::Relation);
+        }
+        if next != self.selected {
+            self.set_selection(next);
         }
     }
 
@@ -8121,52 +8176,308 @@ mod tests {
             .unwrap();
     }
 
-    /// Undo and redo never touch the selection, for any kind of feature:
-    /// undoing a delete does not re-select the restored node, way or relation,
-    /// and redoing a relation creation does not select the recreated relation
-    /// (the original action does, via `ActionOutcome::select`). Relations are
-    /// kept consistent with nodes and ways, so this pins all three.
+    fn selected_ids(view: &MapViewer, kind: osm_gpui::selection::FeatureKind) -> Vec<i64> {
+        let mut ids: Vec<i64> = view
+            .selected
+            .iter()
+            .filter(|f| f.kind == kind)
+            .map(|f| f.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Undo and redo select the features the step affected that still exist,
+    /// for nodes, ways and relations alike: undoing a delete selects the
+    /// restored feature, redoing the delete leaves nothing selected (it is
+    /// gone), and a created relation is selected again by redo but dropped
+    /// from the selection by undo.
     #[gpui::test]
-    fn undo_and_redo_leave_the_selection_alone_for_every_feature_kind(cx: &mut TestAppContext) {
+    fn undo_and_redo_select_the_affected_features_for_every_feature_kind(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
         let window = setup_network(cx);
         window
-            .update(cx, |view, _window, cx| {
+            .update(cx, |view, window, cx| {
                 let layer_id = view.active_layer.unwrap();
 
                 select(view, Way, &[102]);
                 view.delete_selected_features(cx);
                 assert!(view.selected.is_empty());
-                undo_step(view);
+                view.on_undo(&Undo, window, cx);
                 assert!(editable(view).way_node_ids(102).is_some());
-                assert!(view.selected.is_empty());
+                assert_eq!(selected_ids(view, Way), vec![102]);
+                view.on_redo(&Redo, window, cx);
+                // The way is gone, so it can't stay selected (the relation
+                // that lost it as a member is also part of the step).
+                assert!(editable(view).way_node_ids(102).is_none());
+                assert!(selected_ids(view, Way).is_empty());
+                view.on_undo(&Undo, window, cx);
 
                 select(view, Node, &[7]);
                 view.delete_selected_features(cx);
                 assert!(view.selected.is_empty());
-                undo_step(view);
+                view.on_undo(&Undo, window, cx);
                 assert!(editable(view).node_lat_lon(7).is_some());
-                assert!(view.selected.is_empty());
+                assert_eq!(selected_ids(view, Node), vec![7]);
+                view.on_redo(&Redo, window, cx);
+                assert!(editable(view).node_lat_lon(7).is_none());
+                assert!(selected_ids(view, Node).is_empty());
+                view.on_undo(&Undo, window, cx);
 
                 view.select_relation(layer_id, 900);
                 view.delete_selected_features(cx);
-                undo_step(view);
+                view.on_undo(&Undo, window, cx);
                 assert!(editable(view).relation(900).is_some());
+                assert_eq!(selected_ids(view, Relation), vec![900]);
+                view.on_redo(&Redo, window, cx);
                 assert!(view.selected.is_empty());
+                view.on_undo(&Undo, window, cx);
 
-                // Creating a relation selects it; undo then redo does not.
+                // Creating a relation selects it. Undoing removes it, so the
+                // selection must not keep pointing at it (stale selection);
+                // redoing selects it again.
                 select(view, Way, &[101]);
                 view.run_selection_action("new_relation", cx);
                 assert_eq!(view.selected.len(), 1);
                 assert_eq!(view.selected[0].kind, Relation);
-                undo_step(view);
-                view.set_selection(Vec::new());
-                redo_step(view);
                 let created = view_relation_id(view);
-                assert!(editable(view).relation(created).is_some());
+                view.on_undo(&Undo, window, cx);
+                assert!(editable(view).relation(created).is_none());
                 assert!(view.selected.is_empty());
+                view.on_redo(&Redo, window, cx);
+                assert!(editable(view).relation(created).is_some());
+                assert_eq!(selected_ids(view, Relation), vec![created]);
             })
             .unwrap();
+    }
+
+    /// A batch selects the union of what its steps affected (a multi-feature
+    /// delete is restored as a multi-feature selection), and a reshape
+    /// selects the reshaped way even when something else was selected.
+    #[gpui::test]
+    fn undo_selects_batch_and_reshape_targets(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                select(view, Way, &[101, 102]);
+                view.delete_selected_features(cx);
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101, 102]);
+
+                select(view, Way, &[101]);
+                view.run_selection_action("reverse", cx);
+                select(view, Node, &[7]);
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101]);
+                assert!(selected_ids(view, Node).is_empty());
+                select(view, Node, &[7]);
+                view.on_redo(&Redo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101]);
+            })
+            .unwrap();
+    }
+
+    /// Tag edits and moves select what they changed, and ids that no longer
+    /// exist are always pruned from the selection.
+    #[gpui::test]
+    fn undo_selects_tagged_and_moved_features_and_prunes_stale_ids(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                tag_node_one(view);
+                select(view, Way, &[101]);
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Node), vec![1]);
+                assert!(selected_ids(view, Way).is_empty());
+
+                let layer_id = view.active_layer.unwrap();
+                let (lat, lon) = editable(view).node_lat_lon(1).unwrap();
+                editable(view).commit_node_moves(&[(1, lat + 0.001, lon)]);
+                view.undo_stack.push(UndoableAction::MoveNodes {
+                    per_layer: vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
+                });
+                // A selection holding a feature that doesn't exist is pruned
+                // even though the step didn't name it.
+                view.set_selection(vec![osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: Way,
+                    id: 424242,
+                }]);
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Node), vec![1]);
+                assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+    }
+
+    /// The same through the real key binding: Delete a way with the map
+    /// focused, then cmd-z restores and selects it.
+    #[gpui::test]
+    fn cmd_z_after_delete_selects_the_restored_way(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        cx.update(|cx| {
+            cx.bind_keys(key_bindings_from_settings(
+                &osm_gpui::settings_store::snapshot(),
+            ))
+        });
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        vcx.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                gpui::AvailableSpace::Definite(px(1200.0)),
+                gpui::AvailableSpace::Definite(px(800.0)),
+            ),
+            |_, _| gpui::AnyView::from(root),
+        );
+        window
+            .update(vcx, |view, _, cx| {
+                select(view, Way, &[102]);
+                view.delete_selected_features(cx);
+                assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+        vcx.simulate_keystrokes("cmd-z");
+        window
+            .update(vcx, |view, _, _| {
+                assert!(editable(view).way_node_ids(102).is_some());
+                // Exactly the way: way 102 is a member of relation 900, which
+                // the step also touched, but relations are never mixed in.
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(selected_ids(view, Way), vec![102]);
+            })
+            .unwrap();
+
+        // The menu path: the Undo action dispatched on the window (what the
+        // harness's `action Undo` and the Edit menu do), then redo, then
+        // undo again.
+        vcx.dispatch_action(Redo);
+        window
+            .update(vcx, |view, _, _| {
+                assert!(editable(view).way_node_ids(102).is_none());
+                // Only the relation that lost the way is left to select.
+                assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+        vcx.dispatch_action(Undo);
+        window
+            .update(vcx, |view, _, _| {
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(selected_ids(view, Way), vec![102]);
+            })
+            .unwrap();
+    }
+
+    /// Mid-way through drawing in Add mode the selection is left alone apart
+    /// from pruning, so undo can't disturb the drawing session.
+    #[gpui::test]
+    fn undo_while_drawing_leaves_the_selection_alone(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                tag_node_one(view);
+                select(view, Way, &[101]);
+                view.add_progress = Some(AddProgress {
+                    way_id: None,
+                    last_node_id: 1,
+                    at_start: false,
+                });
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101]);
+                assert!(selected_ids(view, Node).is_empty());
+            })
+            .unwrap();
+    }
+
+    /// Tab walks the enabled up/down/remove buttons of the Members rows in
+    /// row order, and a row counts as focused (so its buttons are shown)
+    /// whenever focus is on any of its buttons.
+    #[gpui::test]
+    fn tab_reaches_member_buttons_in_row_order_and_reveals_the_row(cx: &mut TestAppContext) {
+        let mut data = selection_actions::test_support::network_data();
+        route_over(&[(100, ""), (101, ""), (102, "")])(&mut data);
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update(vcx, |view, _| {
+            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+            view.mode = EditMode::Select;
+            view.set_selection(vec![osm_gpui::selection::FeatureRef {
+                layer_id,
+                kind: osm_gpui::selection::FeatureKind::Relation,
+                id: 900,
+            }]);
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            let root = root.clone();
+            vcx.draw(
+                point(px(0.0), px(0.0)),
+                size(
+                    gpui::AvailableSpace::Definite(px(1200.0)),
+                    gpui::AvailableSpace::Definite(px(800.0)),
+                ),
+                |_, _| gpui::AnyView::from(root),
+            );
+        };
+        draw(vcx);
+
+        // Which row (if any) holds focus now.
+        let focused_row = |vcx: &mut gpui::VisualTestContext| -> Option<usize> {
+            view.update_in(vcx, |view, window, cx| {
+                view.member_controls_focus
+                    .borrow()
+                    .iter()
+                    .position(|handle| handle.contains_focused(window, cx))
+            })
+        };
+        // Real key presses: the window's `Root` turns Tab into `focus_next`.
+        let tab = |vcx: &mut gpui::VisualTestContext, forward: bool| {
+            vcx.simulate_keystrokes(if forward { "tab" } else { "shift-tab" });
+            draw(vcx);
+        };
+
+        let mut stops: Vec<usize> = Vec::new();
+        for _ in 0..80 {
+            tab(vcx, true);
+            if let Some(row) = focused_row(vcx) {
+                stops.push(row);
+            }
+        }
+        // Row 0 has down+remove, row 1 up+down+remove, row 2 up+remove, and
+        // the cycle repeats once Tab wraps around.
+        let one_pass = [0, 0, 1, 1, 1, 2, 2];
+        assert!(
+            stops.starts_with(&one_pass),
+            "unexpected tab order {stops:?}"
+        );
+        assert!(stops.len() >= one_pass.len() * 2, "Tab never wrapped");
+
+        // Shift-Tab walks back the other way: from row 1's first button
+        // (reached by Tab until the row changes) it returns to row 0.
+        while focused_row(vcx) != Some(0) {
+            tab(vcx, true);
+        }
+        while focused_row(vcx) != Some(1) {
+            tab(vcx, true);
+        }
+        tab(vcx, false);
+        assert_eq!(focused_row(vcx), Some(0));
     }
 
     /// The id of the relation `new_relation` created (the only negative one).
