@@ -1,0 +1,41 @@
+# Closed ways and presets (issue #129): an untagged closed way, as left by
+# drawing a closed shape, must be offered area presets (Building, Park, ...)
+# in Change Feature Type, not only line presets.
+#
+# fixtures/closed-way-presets.osm: one untagged closed way 3001, a square
+# centered on the viewport (40.7120, -74.0060). Its bottom edge is at about
+# window (488, 461).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/closed-way-presets.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 488,461
+wait_idle 2s
+assert_selected way 3001
+capture out/closed-way-presets-01-selected.png
+
+# The picker's default list.
+action ChangeFeatureType
+wait_idle 2s
+capture out/closed-way-presets-02-picker-default.png
+
+# Searching for "building".
+key b
+key u
+key i
+key l
+key d
+key i
+key n
+key g
+wait_idle 2s
+capture out/closed-way-presets-03-picker-building.png
+
+# Choose it: the way becomes a building (and shows as one in the panel).
+key enter
+wait_idle 2s
+capture out/closed-way-presets-04-applied.png
+
+log done
