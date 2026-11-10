@@ -13,7 +13,7 @@ use crate::script::{Op, Step};
 pub trait AppHandle {
     fn set_window_size(&mut self, w: u32, h: u32);
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32);
-    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), duration: Duration);
+    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), duration: Duration, left: bool);
     fn dispatch_click(
         &mut self,
         at: (f32, f32),
@@ -86,8 +86,13 @@ impl Runner {
                 Ok(())
             }
             Op::WaitIdle { timeout } => self.wait_idle(app, *timeout, step.line_no),
-            Op::Drag { from, to, duration } => {
-                app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration);
+            Op::Drag {
+                from,
+                to,
+                duration,
+                left,
+            } => {
+                app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration, *left);
                 Ok(())
             }
             Op::Click {
@@ -194,7 +199,9 @@ fn describe(op: &Op) -> String {
         Op::Viewport { lat, lon, zoom } => format!("viewport {} {} {}", lat, lon, zoom),
         Op::WaitIdle { timeout } => format!("wait_idle {:?}", timeout),
         Op::Wait { duration } => format!("wait {:?}", duration),
-        Op::Drag { from, to, duration } => format!("drag {:?} -> {:?} ({:?})", from, to, duration),
+        Op::Drag {
+            from, to, duration, ..
+        } => format!("drag {:?} -> {:?} ({:?})", from, to, duration),
         Op::Click {
             at,
             button,
@@ -228,7 +235,7 @@ mod tests {
     impl AppHandle for Fake {
         fn set_window_size(&mut self, _w: u32, _h: u32) {}
         fn set_viewport(&mut self, _lat: f64, _lon: f64, _zoom: f32) {}
-        fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration) {}
+        fn dispatch_drag(&mut self, _: (f32, f32), _: (f32, f32), _: Duration, _: bool) {}
         fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8, _: bool) {}
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
         fn dispatch_hover(&mut self, _: (f32, f32)) {}

@@ -41,7 +41,11 @@ pub(crate) enum ScriptCommand {
     /// Resize the window
     SetWindowSize { w: u32, h: u32 },
     /// Synthesize a pan-drag of the map (from → to)
-    Drag { from: (f32, f32), to: (f32, f32) },
+    Drag {
+        from: (f32, f32),
+        to: (f32, f32),
+        left: bool,
+    },
     /// Synthesize a mouse click
     Click {
         x: f32,
@@ -206,7 +210,41 @@ impl MapViewer {
                     window.resize(gpui::size(px(w as f32), px(h as f32)));
                     cx.notify();
                 }
-                ScriptCommand::Drag { from, to } => {
+                ScriptCommand::Drag {
+                    from,
+                    to,
+                    left: true,
+                } => {
+                    // A left-button press-drag-release, dispatched as real
+                    // events so the current edit mode's handlers see it.
+                    window.defer(cx, move |window, cx| {
+                        let (from, to) = (point(px(from.0), px(from.1)), point(px(to.0), px(to.1)));
+                        let modifiers = gpui::Modifiers::none();
+                        let button = gpui::MouseButton::Left;
+                        let down = MouseDownEvent {
+                            button,
+                            position: from,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
+                        let mv = MouseMoveEvent {
+                            position: to,
+                            pressed_button: Some(button),
+                            modifiers,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseMove(mv), cx);
+                        let up = MouseUpEvent {
+                            button,
+                            position: to,
+                            modifiers,
+                            click_count: 1,
+                        };
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    });
+                }
+                ScriptCommand::Drag { from, to, .. } => {
                     // A pan-drag (as with the right mouse button): down +
                     // single move + up, all in this one frame.
                     let start = self.window_to_map(point(px(from.0), px(from.1)));
@@ -380,9 +418,9 @@ impl AppHandle for LiveApp {
         });
     }
 
-    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration) {
+    fn dispatch_drag(&mut self, from: (f32, f32), to: (f32, f32), _duration: Duration, left: bool) {
         // Submit as a single command; the render fn handles the full down/move/up.
-        self.bus.submit(ScriptCommand::Drag { from, to });
+        self.bus.submit(ScriptCommand::Drag { from, to, left });
     }
 
     fn dispatch_click(
