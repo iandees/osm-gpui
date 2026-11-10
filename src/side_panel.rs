@@ -1210,7 +1210,7 @@ mod preset_label_tests {
             nodes: HashMap::from([(1, node)]),
             ways: HashMap::new(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         });
         let layer = OsmLayer::new_with_data(layer_id, "L", data);
         manager.add_layer(Box::new(layer));

@@ -153,7 +153,9 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
         "<osm version=\"0.6\" generator=\"{}\">",
         xml_escape(crate::CREATED_BY)
     );
-    if let Some(bounds) = &current.bounds {
+    // One `<bounds>` per downloaded rectangle, so the known area survives a
+    // save and reload. (Uploads use osmChange, which has none.)
+    for bounds in &current.bounds {
         let _ = writeln!(
             out,
             "  <bounds minlat=\"{}\" minlon=\"{}\" maxlat=\"{}\" maxlon=\"{}\"/>",
@@ -272,7 +274,7 @@ mod tests {
             nodes: nodes.into_iter().map(|n| (n.id, n)).collect(),
             ways: ways.into_iter().map(|w| (w.id, w)).collect(),
             relations: Vec::new(),
-            bounds: None,
+            bounds: Vec::new(),
         }
     }
 
@@ -494,14 +496,43 @@ mod tests {
     }
 
     #[test]
+    fn several_bounds_round_trip_in_order() {
+        let mut current = data(vec![node(1, 1.0, 2.0, 1, &[])], vec![]);
+        current.bounds = vec![
+            crate::osm::OsmBounds {
+                min_lat: 1.0,
+                max_lat: 2.0,
+                min_lon: 3.0,
+                max_lon: 4.0,
+            },
+            crate::osm::OsmBounds {
+                min_lat: 2.0,
+                max_lat: 3.0,
+                min_lon: 3.5,
+                max_lon: 5.0,
+            },
+        ];
+        let xml = to_osm_xml(&current, &current);
+        assert_eq!(xml.matches("<bounds ").count(), 2);
+        let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        assert_eq!(reloaded.bounds, current.bounds);
+    }
+
+    #[test]
+    fn no_bounds_are_written_when_none_are_known() {
+        let current = data(vec![node(1, 1.0, 2.0, 1, &[])], vec![]);
+        assert!(!to_osm_xml(&current, &current).contains("<bounds"));
+    }
+
+    #[test]
     fn relations_and_bounds_are_carried_through() {
         let mut current = data(vec![node(1, 1.0, 2.0, 1, &[])], vec![]);
-        current.bounds = Some(crate::osm::OsmBounds {
+        current.bounds = vec![crate::osm::OsmBounds {
             min_lat: 1.0,
             max_lat: 2.0,
             min_lon: 3.0,
             max_lon: 4.0,
-        });
+        }];
         current.relations.push(OsmRelation {
             id: 7,
             members: vec![OsmMember {

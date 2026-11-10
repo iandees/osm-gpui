@@ -83,9 +83,20 @@ pub(crate) fn fetch_bbox_with(
     let url = build_url(base_url, &bounds);
     let body = fetch_map_body(client, &url, token)?;
 
-    OsmParser::new()
+    let mut data = OsmParser::new()
         .parse_str(&body)
-        .map_err(OsmApiError::Parse)
+        .map_err(OsmApiError::Parse)?;
+    // The API's response carries a `<bounds>` element; if one is missing, the
+    // area we asked for is what was downloaded.
+    if data.bounds.is_empty() {
+        data.bounds.push(crate::osm::OsmBounds {
+            min_lat: bounds.min_lat,
+            max_lat: bounds.max_lat,
+            min_lon: bounds.min_lon,
+            max_lon: bounds.max_lon,
+        });
+    }
+    Ok(data)
 }
 
 /// `GET url` with a small bounded retry on transport errors and retryable HTTP
@@ -212,6 +223,32 @@ mod tests {
         let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
         let data = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap();
         assert!(data.nodes.contains_key(&1));
+    }
+
+    #[test]
+    fn fetch_bbox_with_falls_back_to_the_requested_bbox() {
+        let client = FakeClient::new(vec![ok(200, MINIMAL_OSM_XML)]);
+        let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
+        let data = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap();
+        assert_eq!(data.bounds.len(), 1);
+        assert_eq!(data.bounds[0].min_lat, 40.70);
+        assert_eq!(data.bounds[0].max_lat, 40.75);
+        assert_eq!(data.bounds[0].min_lon, -74.02);
+        assert_eq!(data.bounds[0].max_lon, -73.98);
+    }
+
+    #[test]
+    fn fetch_bbox_with_prefers_the_response_bounds() {
+        let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+  <bounds minlat="40.71" minlon="-74.01" maxlat="40.74" maxlon="-73.99"/>
+  <node id="1" lat="40.72" lon="-74.0"/>
+</osm>"#;
+        let client = FakeClient::new(vec![ok(200, body)]);
+        let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
+        let data = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap();
+        assert_eq!(data.bounds.len(), 1);
+        assert_eq!(data.bounds[0].min_lat, 40.71);
     }
 
     #[test]

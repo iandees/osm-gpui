@@ -1551,7 +1551,7 @@ pub(crate) mod test_support {
                 version: 1,
                 tags: HashMap::new(),
             }],
-            bounds: None,
+            bounds: Vec::new(),
         }
     }
 }
