@@ -194,6 +194,30 @@ pub fn delete_token_at(path: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// Whether the `<changeset>` in a `GET /api/0.6/changeset/#id` answer is open
+/// (its `open` attribute); `None` if the document has no such element or flag.
+pub fn changeset_is_open(xml: &str) -> Option<bool> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"changeset" => {
+                return e
+                    .attributes()
+                    .flatten()
+                    .find(|a| a.key.as_ref() == b"open")
+                    .and_then(|a| match a.value.as_ref() {
+                        b"true" => Some(true),
+                        b"false" => Some(false),
+                        _ => None,
+                    });
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
+}
+
 /// Run the app's PKCE browser login against the dev server with the built-in
 /// dev client id and save the result to `path`. Returns the saved token.
 pub fn login(client: &dyn HttpClient, path: &Path) -> Result<DevToken, String> {
@@ -390,6 +414,17 @@ mod tests {
         // No temp file left behind.
         let leftovers = std::fs::read_dir(&dir).unwrap().count();
         assert_eq!(leftovers, 1);
+    }
+
+    #[test]
+    fn changeset_open_flag_is_read_from_the_answer() {
+        let closed = r#"<?xml version="1.0"?><osm version="0.6"><changeset id="5" user="u" open="false" created_at="x"><tag k="open" v="true"/></changeset></osm>"#;
+        let open = r#"<osm><changeset id="5" open="true"/></osm>"#;
+        assert_eq!(changeset_is_open(closed), Some(false));
+        assert_eq!(changeset_is_open(open), Some(true));
+        assert_eq!(changeset_is_open("<osm></osm>"), None);
+        assert_eq!(changeset_is_open(r#"<osm><changeset id="5"/></osm>"#), None);
+        assert_eq!(changeset_is_open("not xml <"), None);
     }
 
     #[test]
