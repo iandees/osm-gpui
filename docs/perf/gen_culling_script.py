@@ -18,7 +18,7 @@ A.osm and B.osm are the datasets described in 2026-11-render-measurement.md.
 The way used for the "selected way at low zoom" screenshots is picked from A:
 the longest highway whose longest segment is near the view centre at zoom 15.5.
 Because the click offset in the harness was about 24 px off in the earlier
-measurement, the click is tried twice (y as computed, and 24 px higher), with
+measurement, the click is tried three times (y as computed, 24 px higher, 24 px lower), with
 a capture after each; the first one that shows a selected way is used.
 """
 import math
@@ -148,7 +148,7 @@ if MODE in ("full", "A"):
         w(f"# way of {n} nodes, {total:.0f}px long at z15.5, click at {mx:.0f},{my:.0f}")
         w(f"viewport {LAT0} {LON0} 15.5")
         w("wait 1s")
-        for k, dy in enumerate((0, -24)):
+        for k, dy in enumerate((0, -24, 24)):
             w(f"click {mx:.0f},{my + dy:.0f}")
             w("wait 800ms")
             w(f"capture target/perf/{TAG}-A-z15.5-selected-try{k}.png")

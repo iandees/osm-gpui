@@ -75,7 +75,10 @@ pub fn record(name: &'static str, d: Duration) {
 /// the min / med / p95 / max / mean columns.
 pub fn count(name: &'static str, n: usize) {
     if enabled() {
-        record(name, Duration::from_millis(n.min(u32::MAX as usize / 1000) as u64));
+        record(
+            name,
+            Duration::from_millis(n.min(u32::MAX as usize / 1000) as u64),
+        );
     }
 }
 
