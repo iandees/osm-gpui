@@ -1027,19 +1027,81 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
-        if let Some(id) = self
-            .layer_manager
-            .layers()
-            .get(action.index)
-            .map(|l| l.id())
-        {
-            if self.active_layer == Some(id) {
-                self.active_layer = None;
-            }
+        // Deleting is not undoable: the layer (and its unsaved edits, with
+        // no confirmation) is gone for good, so its history goes with it.
+        if let Some(removed) = self.layer_manager.remove_at(action.index) {
+            self.forget_layer(removed.id());
         }
-        let _ = self.layer_manager.remove_at(action.index);
         self.data_generation += 1;
         cx.notify();
+    }
+
+    /// Drop everything that refers to the just-removed layer `id`: its undo
+    /// and redo steps (all of them, see `UndoStack::remove_layer`), the
+    /// selection, hover and in-progress gestures, and the active-layer
+    /// designation. Returns how many history steps went.
+    fn forget_layer(&mut self, id: LayerId) -> usize {
+        let removed = self.undo_stack.remove_layer(id);
+        let was_active = self.active_layer == Some(id);
+        if was_active {
+            self.active_layer = None;
+            // Add/Building progress is relative to the active layer.
+            self.add_progress = None;
+            self.building_progress = None;
+            self.building_press = None;
+        }
+        if self.building_reference.is_some_and(|r| r.layer_id == id) {
+            self.building_reference = None;
+        }
+        if self.extrude_drag.as_ref().is_some_and(|d| d.layer == id) {
+            self.extrude_drag = None;
+        }
+        self.interaction = Interaction::Idle;
+        if self.hovered.is_some_and(|h| h.layer_id == id) {
+            self.hovered = None;
+        }
+        if self.selected.iter().any(|f| f.layer_id == id) {
+            let kept = self
+                .selected
+                .iter()
+                .copied()
+                .filter(|f| f.layer_id != id)
+                .collect();
+            self.set_selection(kept);
+        }
+        if self.fields_more_open_for.is_some_and(|f| f.layer_id == id) {
+            self.fields_more_open_for = None;
+        }
+        // Inline editors aimed at the deleted layer would commit nowhere.
+        if self
+            .tag_inline_edit
+            .as_ref()
+            .is_some_and(|e| e.ctx.features.iter().any(|f| f.layer_id == id))
+        {
+            self.tag_inline_edit = None;
+        }
+        if self
+            .pending_tag_edit_open
+            .as_ref()
+            .is_some_and(|p| p.features.iter().any(|f| f.layer_id == id))
+        {
+            self.pending_tag_edit_open = None;
+        }
+        if self
+            .role_edit
+            .as_ref()
+            .is_some_and(|e| e.member.layer_id == id)
+        {
+            self.role_edit = None;
+        }
+        if self
+            .pending_role_edit_open
+            .as_ref()
+            .is_some_and(|(m, _)| m.layer_id == id)
+        {
+            self.pending_role_edit_open = None;
+        }
+        removed
     }
 
     /// Handle the `SetActiveLayer` context-menu action: makes the OSM layer
@@ -2406,10 +2468,32 @@ impl MapViewer {
             return;
         }
         if let Some(action) = self.undo_stack.undo() {
-            self.apply_undo_action(&action, false);
-            self.select_after_history_step(&action);
+            self.run_history_step(&action, false);
             cx.notify();
         }
+    }
+
+    /// Whether every layer `action` touches still exists and is editable.
+    /// `forget_layer` prunes the history when a layer is deleted, so this
+    /// should always hold; it is checked anyway so a step can never be
+    /// half-applied (a `Batch` with one part in a missing layer).
+    fn history_step_applicable(&self, action: &UndoableAction) -> bool {
+        action.layers().iter().all(|id| {
+            self.layer_manager
+                .find_layer(*id)
+                .is_some_and(|l| l.as_editable().is_some())
+        })
+    }
+
+    /// Apply one undo (`forward = false`) or redo step and select what it
+    /// touched; a step whose layer is gone is skipped with a status message.
+    fn run_history_step(&mut self, action: &UndoableAction, forward: bool) {
+        if !self.history_step_applicable(action) {
+            self.set_status(tr!("status.history_step_skipped"));
+            return;
+        }
+        self.apply_undo_action(action, forward);
+        self.select_after_history_step(action);
     }
 
     fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
@@ -2417,8 +2501,7 @@ impl MapViewer {
             return;
         }
         if let Some(action) = self.undo_stack.redo() {
-            self.apply_undo_action(&action, true);
-            self.select_after_history_step(&action);
+            self.run_history_step(&action, true);
             cx.notify();
         }
     }
@@ -6750,26 +6833,117 @@ mod tests {
     }
 
     #[gpui::test]
-    fn deleting_a_layer_leaves_its_undo_steps_behind_today(cx: &mut TestAppContext) {
+    fn deleting_a_layer_removes_its_undo_and_redo_steps(cx: &mut TestAppContext) {
         let window = setup(cx);
         window
             .update(cx, |view, window, cx| {
-                let (a, _b) = mixed_layer_history(view);
-                let before = view.undo_stack.actions.len();
-                assert!(before >= 4);
-                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
-                assert!(view.layer_manager.find_layer(a).is_none());
-                // Current behaviour: nothing is pruned.
-                assert_eq!(view.undo_stack.actions.len(), before);
-                // Undoing a step of the deleted layer is a silent no-op that
-                // still moves the cursor.
-                view.undo_stack.undo(); // B's last step
-                let cursor = view.undo_stack.cursor;
+                let (a, b) = mixed_layer_history(view);
+                let b_steps = view
+                    .undo_stack
+                    .actions
+                    .iter()
+                    .filter(|s| s.layers() == vec![b])
+                    .count();
+                assert_eq!(b_steps, 2);
+                assert!(view.undo_stack.actions.len() > b_steps);
+                // Make B's last step redoable, and select/hover in A.
                 view.on_undo(&Undo, window, cx);
-                assert_eq!(view.undo_stack.cursor, cursor - 1);
+                view.selected = vec![osm_gpui::selection::FeatureRef {
+                    layer_id: a,
+                    kind: osm_gpui::selection::FeatureKind::Node,
+                    id: 1,
+                }];
+                view.hovered = view.selected.first().copied();
+                view.active_layer = Some(a);
+                let revision = view.undo_stack.revision;
+
+                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
+
+                assert!(view.layer_manager.find_layer(a).is_none());
+                assert!(view.undo_stack.revision > revision);
+                assert_eq!(view.undo_stack.actions.len(), b_steps);
+                assert!(view
+                    .undo_stack
+                    .actions
+                    .iter()
+                    .all(|s| s.layers() == vec![b]));
+                // B's first step is undoable, its undone last step redoable.
+                assert_eq!(view.undo_stack.cursor, 1);
+                assert!(view.selected.is_empty());
+                assert!(view.hovered.is_none());
+                assert_eq!(view.active_layer, None);
+
+                let b_created = |view: &MapViewer| {
+                    view.layer_manager
+                        .find_layer(b)
+                        .unwrap()
+                        .diff_for_upload()
+                        .counts()
+                        .0
+                };
+                assert_eq!(b_created(view), 1);
+                view.on_redo(&Redo, window, cx);
+                assert_eq!(b_created(view), 2);
+                view.on_undo(&Undo, window, cx);
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(b_created(view), 0);
                 assert!(view.status_message.is_none());
+                // Nothing left to undo: a further undo is a quiet no-op.
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(view.undo_stack.cursor, 0);
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_step_whose_layer_is_gone_is_skipped_with_a_message(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let a = view.active_layer.unwrap();
+                let b = add_second_layer(view);
+                // A batch with a part in each layer, then drop B behind the
+                // history's back (as no current path does).
+                let create = |layer, id| UndoableAction::CreateNode {
+                    layer,
+                    id,
+                    lat: CENTER_LAT,
+                    lon: CENTER_LON,
+                };
+                view.undo_stack.push(UndoableAction::Batch {
+                    label: "stale".into(),
+                    actions: vec![create(a, -100), create(b, -101)],
+                });
+                let index = view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .position(|l| l.id() == b)
+                    .unwrap();
+                view.layer_manager.remove_at(index);
+
+                view.on_undo(&Undo, window, cx);
+                let (message, _) = view.status_message.clone().expect("a status message");
+                assert_eq!(
+                    message,
+                    "That step belongs to a layer that no longer exists, so it was skipped."
+                );
+                // Nothing was half-applied: layer A never had node -100.
+                let layer = view.layer_manager.find_layer(a).unwrap();
+                assert!(layer.as_editable().unwrap().node_lat_lon(-100).is_none());
+                view.status_message = None;
+                view.on_redo(&Redo, window, cx);
+                assert!(view.status_message.is_some());
+                assert!(layer_has_no_node(view, a, -100));
+            })
+            .unwrap();
+    }
+
+    fn layer_has_no_node(view: &MapViewer, layer: LayerId, id: i64) -> bool {
+        view.layer_manager
+            .find_layer(layer)
+            .and_then(|l| l.as_editable())
+            .is_some_and(|e| e.node_lat_lon(id).is_none())
     }
 
     #[gpui::test]

@@ -898,6 +898,17 @@ mod tests {
     }
 
     #[test]
+    fn alloc_id_never_reuses_the_id_of_a_removed_layer() {
+        let mut manager = manager_with(&["a", "b"]);
+        let removed = manager.layers()[1].id();
+        manager.remove_at(1);
+        manager.remove_at(0);
+        let next = manager.alloc_id();
+        assert_ne!(next, removed);
+        assert!(next.0 > removed.0);
+    }
+
+    #[test]
     fn unique_name_returns_base_when_untaken() {
         let m = manager_with(&["a", "b"]);
         assert_eq!(m.unique_name("c"), "c");
