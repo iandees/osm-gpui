@@ -85,7 +85,6 @@ pub(crate) struct SelectionAction {
     /// Id of this action's customizable shortcut in `keybindings::SHORTCUTS`.
     pub shortcut_id: Option<&'static str>,
     /// Display text of a fixed (non-customizable) shortcut, if any.
-    #[allow(dead_code)] // TEMP: read by the context menu (next commit)
     pub fixed_shortcut: Option<&'static str>,
     /// Whether the action needs an active editable layer to do anything.
     pub needs_active_layer: bool,
@@ -181,7 +180,6 @@ pub(crate) fn find_by_key(
 
 impl SelectionAction {
     /// The actions applicable to `env`, in table order.
-    #[allow(dead_code)] // TEMP: used by the context menu (next commit)
     pub(crate) fn applicable<'a>(
         env: &'a ActionEnv<'a>,
     ) -> impl Iterator<Item = &'static Self> + 'a {
@@ -198,7 +196,6 @@ impl SelectionAction {
     }
 
     /// The shortcut to show next to this action, under the user's settings.
-    #[allow(dead_code)] // TEMP: used by the context menu (next commit)
     pub(crate) fn shortcut_label(
         &self,
         settings: &osm_gpui::settings_store::AppSettings,
@@ -214,7 +211,6 @@ impl SelectionAction {
 
 /// Human-readable form of a keystroke spec: a bare letter shows uppercase,
 /// as in menus ("q" -> "Q").
-#[allow(dead_code)] // TEMP: used by the context menu (next commit)
 pub(crate) fn display_shortcut(spec: &str) -> String {
     match spec {
         "backspace" | "delete" => "⌫".to_string(),

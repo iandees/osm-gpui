@@ -515,6 +515,21 @@ struct MapViewer {
     /// Extrude mode's in-progress drag, or `None` when not dragging (see
     /// `ExtrudeDrag`).
     extrude_drag: Option<ExtrudeDrag>,
+    /// Window position of the last right-button press on the map, kept until
+    /// the button is released: a release within `CLICK_SLOP` of it is a click
+    /// (opens the context menu), anything further was a pan.
+    right_press: Option<gpui::Point<gpui::Pixels>>,
+    /// The open right-click context menu, if any.
+    context_menu: Option<ContextMenuState>,
+}
+
+/// An open selection-actions context menu: the `PopupMenu` entity, where it
+/// was opened (window coordinates), and the subscription that clears this
+/// state when the menu dismisses itself (Esc, an item chosen, a click out).
+struct ContextMenuState {
+    menu: gpui::Entity<gpui_component::menu::PopupMenu>,
+    position: gpui::Point<gpui::Pixels>,
+    _dismiss: gpui::Subscription,
 }
 
 /// Which features an inline tag edit targets and the row's original text
@@ -673,6 +688,8 @@ impl MapViewer {
             last_mouse_pos: None,
             hovered: None,
             extrude_drag: None,
+            right_press: None,
+            context_menu: None,
         }
     }
 
@@ -2639,6 +2656,168 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Pointer travel (in px) below which a right-button press/release pair
+    /// counts as a click rather than a pan.
+    const CLICK_SLOP: f64 = 4.0;
+
+    /// Right-button release on the map. Panning has already been ended by the
+    /// caller; if the pointer barely moved since the press this was a click,
+    /// so open the context menu at the cursor.
+    fn finish_right_press(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(down) = self.right_press.take() else {
+            return;
+        };
+        if (position - down).magnitude() < Self::CLICK_SLOP {
+            self.open_context_menu(position, window, cx);
+        }
+    }
+
+    /// Open the selection-actions context menu at `position` (window
+    /// coordinates). A right-click on a feature outside the selection first
+    /// selects that feature, replacing the selection (as in Finder and iD);
+    /// on empty map with nothing selected no menu opens. Only the actions
+    /// applicable to the selection are listed.
+    fn open_context_menu(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::menu::{PopupMenu, PopupMenuItem};
+
+        if self.mode != EditMode::Select {
+            return;
+        }
+        let map_pos = self.window_to_map(position);
+        let per_layer = self.layer_manager.hit_test_all(&self.viewport, map_pos);
+        if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
+            if !self.selected.contains(&hit) {
+                self.set_selection(vec![hit]);
+                cx.notify();
+            }
+        }
+        if self.selected.is_empty() {
+            return;
+        }
+
+        let env = selection_actions::ActionEnv {
+            selection: &self.selected,
+            active_layer: self.active_layer,
+            layers: &self.layer_manager,
+        };
+        let actions: Vec<&'static selection_actions::SelectionAction> =
+            selection_actions::SelectionAction::applicable(&env).collect();
+        if actions.is_empty() {
+            return;
+        }
+
+        let settings = settings_store::snapshot();
+        let focus = self.focus_handle.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
+            menu = menu.action_context(focus).min_w(px(190.0));
+            for (i, action) in actions.iter().enumerate() {
+                // Keep the destructive action apart from the edits.
+                if i > 0 && action.id == "delete" {
+                    menu = menu.separator();
+                }
+                let label = action.label;
+                let shortcut = action.shortcut_label(&settings);
+                menu =
+                    menu.item(
+                        PopupMenuItem::element(move |_, cx| {
+                            gpui_component::h_flex()
+                                .w_full()
+                                .gap_6()
+                                .justify_between()
+                                .child(label)
+                                .children(shortcut.clone().map(|s| {
+                                    div().text_color(cx.theme().muted_foreground).child(s)
+                                }))
+                        })
+                        .action(Box::new(RunSelectionAction {
+                            id: action.id.into(),
+                        })),
+                    );
+            }
+            menu
+        });
+        let dismiss = cx.subscribe(&menu, |this, _menu, _: &gpui::DismissEvent, cx| {
+            // The menu has already handed focus back to the map.
+            this.context_menu = None;
+            cx.notify();
+        });
+        self.context_menu = Some(ContextMenuState {
+            menu,
+            position,
+            _dismiss: dismiss,
+        });
+        cx.notify();
+    }
+
+    /// A click outside the open context menu closes it.
+    fn dismiss_context_menu(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    /// The open context menu as an element: a window-sized transparent
+    /// backdrop that swallows the click that dismisses the menu (so it
+    /// doesn't also change the selection underneath), with the menu itself
+    /// anchored at the click point and nudged to stay inside the window.
+    fn render_context_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use gpui::Focusable as _;
+
+        let state = self.context_menu.as_ref()?;
+        let menu = state.menu.clone();
+        // The menu takes Esc and arrow keys through its own focus.
+        if !menu.focus_handle(cx).contains_focused(window, cx) {
+            menu.focus_handle(cx).focus(window, cx);
+        }
+        let size = window.viewport_size();
+        Some(
+            gpui::deferred(
+                gpui::anchored().child(
+                    div()
+                        .w(size.width)
+                        .h(size.height)
+                        .occlude()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(Self::dismiss_context_menu),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(Self::dismiss_context_menu),
+                        )
+                        .child(
+                            gpui::anchored()
+                                .position(state.position)
+                                .snap_to_window_with_margin(px(8.0))
+                                .anchor(gpui::Anchor::TopLeft)
+                                .child(menu),
+                        ),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     /// Bare-key map navigation: arrows pan a quarter of the view, `+`/`=`
     /// and `-` zoom a level. Returns whether `key` was one of those.
     fn handle_navigation_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
@@ -3343,26 +3522,38 @@ impl Render for MapViewer {
                             cx.notify();
                         }
                     }))
-                    // The right and middle buttons pan the map.
+                    // The right and middle buttons pan the map. A right press
+                    // released without moving is a click instead: it opens
+                    // the selection-actions context menu.
                     .map(|mut area| {
                         for button in [gpui::MouseButton::Right, gpui::MouseButton::Middle] {
+                            let is_right = button == gpui::MouseButton::Right;
                             area = area
                                 .on_mouse_down(
                                     button,
-                                    cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                                    cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                        if is_right {
+                                            this.right_press = Some(ev.position);
+                                        }
                                         let position = this.window_to_map(ev.position);
                                         this.start_pan_drag(position, cx);
                                     }),
                                 )
                                 .on_mouse_up(
                                     button,
-                                    cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                                    cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
                                         this.end_pan_drag(cx);
+                                        if is_right {
+                                            this.finish_right_press(ev.position, window, cx);
+                                        }
                                     }),
                                 )
                                 .on_mouse_up_out(
                                     button,
-                                    cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                                    cx.listener(move |this, _ev: &MouseUpEvent, _, cx| {
+                                        if is_right {
+                                            this.right_press = None;
+                                        }
                                         this.end_pan_drag(cx);
                                     }),
                                 );
@@ -3972,6 +4163,7 @@ impl Render for MapViewer {
             .children(self.preset_picker_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
+            .children(self.render_context_menu(window, cx))
     }
 }
 
@@ -4562,6 +4754,228 @@ mod tests {
                 let reopened = view.layer_manager.layer_named("reopened").unwrap();
                 assert_eq!(reopened.diff_for_upload().counts(), pending);
                 assert!(reopened.is_modified());
+            })
+            .unwrap();
+    }
+
+    /// Window position of the fixture way's centre (map-local `(400, 300)`).
+    fn on_the_way() -> gpui::Point<gpui::Pixels> {
+        point(px(400.0 + MapViewer::MODE_PANEL_WIDTH), px(300.0))
+    }
+
+    #[gpui::test]
+    fn right_click_selects_the_feature_and_opens_the_menu(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.mode = EditMode::Select;
+                view.right_press = Some(on_the_way());
+                view.finish_right_press(on_the_way(), window, cx);
+                assert_eq!(view.selected.len(), 1);
+                assert_eq!(view.selected[0].id, 10);
+                assert!(view.context_menu.is_some());
+            })
+            .unwrap();
+    }
+
+    /// `docs/screenshots/selection-actions.osmscript` clicks fixed window
+    /// positions; check they land on the features the script names.
+    #[test]
+    fn screenshot_script_click_targets_hit_their_features() {
+        let xml = std::fs::read_to_string("docs/screenshots/fixtures/selection-actions.osm")
+            .expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        // The map area of a 1200x800 window, centred as the script does.
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        for (x, y, way) in [
+            (370.0, 470.0, 3001),
+            (710.0, 300.0, 3002),
+            (640.0, 640.0, 3003),
+        ] {
+            let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+            let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, at);
+            let hit = osm_gpui::selection::resolve_hits(vec![hits]);
+            assert_eq!(hit.map(|h| h.id), Some(way), "click at ({x}, {y})");
+        }
+    }
+
+    /// The same click, but delivered as real mouse events through the
+    /// window's event dispatch, to cover the listeners in `render`.
+    #[gpui::test]
+    fn right_click_events_open_the_menu(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _, _| view.mode = EditMode::Select)
+            .unwrap();
+        let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        // Events are only routed through a rendered frame.
+        let root = window.root(vcx).unwrap();
+        vcx.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                gpui::AvailableSpace::Definite(px(1200.0)),
+                gpui::AvailableSpace::Definite(px(800.0)),
+            ),
+            |_, _| gpui::AnyView::from(root),
+        );
+        let pos = window
+            .update(vcx, |view, _, _| {
+                let p = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON);
+                point(p.x + px(MapViewer::MODE_PANEL_WIDTH), p.y)
+            })
+            .unwrap();
+        vcx.simulate_mouse_down(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
+        vcx.simulate_mouse_up(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
+        window
+            .update(vcx, |view, _, _| {
+                assert_eq!(view.selected.len(), 1);
+                assert!(view.context_menu.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn right_drag_pans_without_opening_the_menu(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.mode = EditMode::Select;
+                view.right_press = Some(on_the_way());
+                let released = on_the_way() + point(px(30.0), px(0.0));
+                view.finish_right_press(released, window, cx);
+                assert!(view.selected.is_empty());
+                assert!(view.context_menu.is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn right_click_on_empty_map_opens_nothing(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.mode = EditMode::Select;
+                let empty = point(px(100.0), px(500.0));
+                view.right_press = Some(empty);
+                view.finish_right_press(empty, window, cx);
+                assert!(view.context_menu.is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn right_click_inside_the_selection_keeps_it(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.mode = EditMode::Select;
+                let layer_id = view.active_layer.unwrap();
+                let way = osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: 10,
+                };
+                let node = osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Node,
+                    id: 1,
+                };
+                view.set_selection(vec![way, node]);
+                view.right_press = Some(on_the_way());
+                view.finish_right_press(on_the_way(), window, cx);
+                assert_eq!(view.selected, vec![way, node]);
+                assert!(view.context_menu.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn reverse_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                view.set_selection(vec![osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: 10,
+                }]);
+                view.run_selection_action("reverse", cx);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![2, 1]);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+
+                let action = view.undo_stack.undo().unwrap();
+                view.apply_undo_action(&action, false);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+                let action = view.undo_stack.redo().unwrap();
+                view.apply_undo_action(&action, true);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![2, 1]);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn inapplicable_action_explains_itself_and_changes_nothing(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                view.set_selection(vec![osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: 10,
+                }]);
+                view.run_selection_action("circularize", cx);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Select a closed way to circularize it")
+                );
+                assert!(view.undo_stack.actions.is_empty());
+                assert!(!view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .is_modified());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_several_features_is_one_undo_step(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                // Way first (nodes are still referenced until it goes).
+                view.set_selection(vec![
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: osm_gpui::selection::FeatureKind::Way,
+                        id: 10,
+                    },
+                    osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: osm_gpui::selection::FeatureKind::Node,
+                        id: 1,
+                    },
+                ]);
+                view.run_selection_action("delete", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert!(view.selected.is_empty());
+                assert!(way_nodes(view, layer_id, 10).is_empty());
+
+                let action = view.undo_stack.undo().unwrap();
+                view.apply_undo_action(&action, false);
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+                let node = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap()
+                    .node_lat_lon(1);
+                assert!(node.is_some());
             })
             .unwrap();
     }
