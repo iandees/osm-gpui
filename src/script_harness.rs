@@ -231,11 +231,14 @@ impl MapViewer {
                 ScriptCommand::SetViewport { lat, lon, zoom } => {
                     self.viewport.pan_to(lat, lon);
                     self.viewport.set_zoom(zoom);
-                    // Ensure tile layer exists
-                    if self
-                        .layer_manager
-                        .layer_named("OpenStreetMap Carto")
-                        .is_none()
+                    // Ensure tile layer exists (benchmarks set
+                    // OSM_GPUI_FRAME_STATS_NO_TILES to measure vector drawing
+                    // alone and keep the tile servers out of it).
+                    if std::env::var_os("OSM_GPUI_FRAME_STATS_NO_TILES").is_none()
+                        && self
+                            .layer_manager
+                            .layer_named("OpenStreetMap Carto")
+                            .is_none()
                     {
                         let layer_id = self.layer_manager.alloc_id();
                         let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());

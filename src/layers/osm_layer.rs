@@ -1172,12 +1172,19 @@ impl OsmLayer {
     }
 
     pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
+        let fs_load = crate::frame_stats::start();
         let stylesheet = Arc::new(Stylesheet::load_default());
+        let fs_phase = crate::frame_stats::start();
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
+        crate::frame_stats::lap("load.node_cache", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         let (way_ids, way_bboxes, way_vertices, way_styles, way_fill_tris) =
             compute_way_tables(&osm_data, &node_cache, &stylesheet);
+        crate::frame_stats::lap("load.way_tables_and_fill_tris", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         let mut mp = MpCache::default();
         mp.rebuild_all(&osm_data, &node_cache, &stylesheet);
+        crate::frame_stats::lap("cache.mp_rebuild_all", fs_phase);
         let layer_bbox = compute_layer_bbox(&node_cache);
         let node_index = build_node_index(&node_cache);
         let ways_sorted = sorted_ways(&osm_data);
@@ -1186,6 +1193,7 @@ impl OsmLayer {
         let node_to_ways = build_node_to_ways(&ways_sorted);
         let next_new_id = compute_next_new_id(&osm_data);
         let osm_data_bounds = osm_data.bounds.clone();
+        crate::frame_stats::lap("load.new_with_data_total", fs_load);
         Self {
             id,
             name: name.into(),
@@ -2203,8 +2211,12 @@ impl OsmLayer {
         let Some(data) = self.osm_data.clone() else {
             return;
         };
+        let fs_phase = crate::frame_stats::start();
         self.mp
             .refresh(relation_ids, &data, &self.node_cache, &self.stylesheet);
+        if !relation_ids.is_empty() {
+            crate::frame_stats::lap("cache.mp_refresh", fs_phase);
+        }
     }
 
     /// Refresh the multipolygon relations that list any of these ways. Cheap
@@ -3184,6 +3196,7 @@ impl MapLayer for OsmLayer {
             return;
         }
 
+        let fs_total = crate::frame_stats::start();
         let origin_x = bounds.origin.x;
         let origin_y = bounds.origin.y;
         // Mercator-space view AABB. Culling and projection both happen in
@@ -3225,6 +3238,7 @@ impl MapLayer for OsmLayer {
             f32::from(origin_x + bounds.size.width),
             f32::from(origin_y + bounds.size.height),
         );
+        let fs_phase = crate::frame_stats::start();
         for entry in self.mp.entries.values() {
             let Some(fill) = entry.style.fill else {
                 continue;
@@ -3267,6 +3281,9 @@ impl MapLayer for OsmLayer {
             }
         }
 
+        crate::frame_stats::lap("osm.mp_fill_build", fs_phase);
+
+        let fs_phase = crate::frame_stats::start();
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
             let Some(fill) = self.way_styles[i].fill else {
@@ -3328,6 +3345,9 @@ impl MapLayer for OsmLayer {
             }
         }
 
+        crate::frame_stats::lap("osm.way_fill_build", fs_phase);
+
+        let fs_phase = crate::frame_stats::start();
         for g in fill_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
@@ -3404,6 +3424,8 @@ impl MapLayer for OsmLayer {
         // ways in a frame.
         let mut scratch_pts: Vec<Point<Pixels>> = Vec::new();
 
+        crate::frame_stats::lap("osm.fill_paint", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         for (i, verts) in self.way_vertices.iter().enumerate() {
             if verts.len() < 2 {
                 continue;
@@ -3545,6 +3567,8 @@ impl MapLayer for OsmLayer {
             }
         }
 
+        crate::frame_stats::lap("osm.ways_build", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         for g in overlay_groups {
             if let Some(mut path) = g.path {
                 let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
@@ -3587,6 +3611,8 @@ impl MapLayer for OsmLayer {
         // `compute_node_cache`/`commit_node_moves`/`set_stylesheet`) and
         // just read here — no stylesheet call or tags HashMap lookup per
         // node per frame.
+        crate::frame_stats::lap("osm.ways_paint", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         let show_vertices = zoom >= VERTEX_MIN_ZOOM;
         for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
@@ -3604,6 +3630,8 @@ impl MapLayer for OsmLayer {
             paint_node_marker(window, point(sp.x + origin_x, sp.y + origin_y), style);
         }
 
+        crate::frame_stats::lap("osm.nodes", fs_phase);
+        let fs_phase = crate::frame_stats::start();
         // Turn restrictions: a sign-like marker beside the via position.
         if show_vertices {
             for r in self.mp.restrictions.values() {
@@ -3624,6 +3652,8 @@ impl MapLayer for OsmLayer {
                 );
             }
         }
+        crate::frame_stats::lap("osm.restrictions", fs_phase);
+        crate::frame_stats::lap("osm.total", fs_total);
     }
 
     fn stats(&self) -> Vec<(String, String)> {
@@ -3664,7 +3694,9 @@ impl EditableLayer for OsmLayer {
     }
 
     fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
+        let fs_phase = crate::frame_stats::start();
         OsmLayer::commit_node_moves(self, moves);
+        crate::frame_stats::lap("edit.commit_node_moves_total", fs_phase);
     }
 
     fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {

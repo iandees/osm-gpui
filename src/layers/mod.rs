@@ -547,6 +547,7 @@ impl LayerManager {
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) {
+        let fs_wash = crate::frame_stats::start();
         let rects: Vec<crate::download_bounds::MercRect> = self
             .layers
             .iter()
@@ -561,6 +562,7 @@ impl LayerManager {
             crate::download_bounds::MercRect::new(min_x, max_x, min_y, max_y),
             &rects,
         );
+        crate::frame_stats::lap("wash.region", fs_wash);
 
         // Mercator y grows northwards, screen y southwards.
         let to_screen = |mx: f64, my: f64| {
@@ -635,6 +637,7 @@ impl LayerManager {
                 ));
             }
         }
+        crate::frame_stats::lap("wash.total", fs_wash);
     }
 
     /// Render all visible layers using canvas drawing
@@ -672,7 +675,9 @@ impl LayerManager {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
     ) -> Vec<Vec<crate::selection::HitCandidate>> {
-        self.layers
+        let fs_phase = crate::frame_stats::start();
+        let hits = self
+            .layers
             .iter()
             .filter(|layer| layer.is_visible())
             .map(|layer| {
@@ -681,7 +686,9 @@ impl LayerManager {
                     .map(|e| e.hit_test(viewport, screen_pt))
                     .unwrap_or_default()
             })
-            .collect()
+            .collect();
+        crate::frame_stats::lap("hit_test", fs_phase);
+        hits
     }
 
     /// Run hit_test_interior against every visible layer, returning results in draw order.
@@ -761,10 +768,18 @@ impl LayerManager {
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) {
+        let fs_phase = crate::frame_stats::start();
         if let Some(layer) = self.find_layer(feature.layer_id) {
             if layer.is_visible() {
                 if let Some(editable) = layer.as_editable() {
                     editable.render_highlight(viewport, bounds, window, feature, kind);
+                    crate::frame_stats::lap(
+                        match kind {
+                            HighlightKind::Hovered => "highlight.hovered",
+                            _ => "highlight.selected",
+                        },
+                        fs_phase,
+                    );
                 }
             }
         }
