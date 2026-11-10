@@ -2,6 +2,7 @@
 //! `upload_dialog.rs`'s scrim/card/focus/Escape conventions. The primary
 //! button asks the host to open Settings (where sign-in lives).
 
+use crate::tr;
 use gpui::{
     div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window,
 };
@@ -61,13 +62,8 @@ impl Focusable for SignInDialog {
 
 impl Render for SignInDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = v_flex().child(
-            Label::new(
-                "You need to sign in to an OpenStreetMap account to upload changes. \
-                 Open Settings to sign in.",
-            )
-            .text_color(cx.theme().foreground),
-        );
+        let body = v_flex()
+            .child(Label::new(tr!("dialog.sign_in.body")).text_color(cx.theme().foreground));
 
         let footer = div()
             .flex()
@@ -76,13 +72,13 @@ impl Render for SignInDialog {
             .gap_2()
             .child(
                 Button::new("sign-in-cancel")
-                    .label("Cancel")
+                    .label(tr!("dialog.cancel"))
                     .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
             )
             .child(
                 Button::new("sign-in-open-settings")
                     .primary()
-                    .label("Open Settings")
+                    .label(tr!("dialog.sign_in.open_settings"))
                     .on_click(cx.listener(|this, _, _w, cx| this.open_settings(cx))),
             );
 
@@ -101,7 +97,7 @@ impl Render for SignInDialog {
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Sign in to upload"),
+                    .child(tr!("dialog.sign_in.title")),
             )
             .child(div().p_4().child(body))
             .child(

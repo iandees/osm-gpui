@@ -13,6 +13,7 @@ use gpui_component::{
 use std::collections::HashMap;
 
 use crate::nsi::NsiEntry;
+use crate::tr;
 use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
@@ -46,7 +47,9 @@ impl EventEmitter<DialogEvent> for NsiPresetDialog {}
 
 impl NsiPresetDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search brands…"));
+        let query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("dialog.nsi.search_placeholder"))
+        });
         let focus_handle = cx.focus_handle();
         query.update(cx, |state, cx| state.focus(window, cx));
         Self {
@@ -119,11 +122,11 @@ impl Render for NsiPresetDialog {
         };
 
         let list: gpui::AnyElement = if crate::nsi::current().is_none() {
-            Label::new("Downloading NSI data…")
+            Label::new(tr!("dialog.nsi.downloading"))
                 .text_color(muted)
                 .into_any_element()
         } else if results.is_empty() {
-            Label::new("No matches.")
+            Label::new(tr!("dialog.no_matches"))
                 .text_color(muted)
                 .into_any_element()
         } else {
@@ -180,7 +183,7 @@ impl Render for NsiPresetDialog {
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Apply NSI Preset"),
+                    .child(tr!("dialog.nsi.title")),
             )
             .child(div().p_4().child(body));
 

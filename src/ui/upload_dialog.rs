@@ -14,6 +14,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _,
 };
 
+use crate::tr;
 use crate::ui::style::muted_text_size;
 
 /// One row of the pending-changes summary: a layer name plus its
@@ -32,10 +33,14 @@ impl LayerSummary {
     }
 
     pub fn describe(&self) -> String {
-        format!(
-            "{}: {} created, {} modified, {} deleted",
-            self.layer_name, self.created, self.modified, self.deleted
+        tr!(
+            "dialog.upload.layer_summary",
+            layer = self.layer_name,
+            created = self.created,
+            modified = self.modified,
+            deleted = self.deleted
         )
+        .to_string()
     }
 }
 
@@ -57,8 +62,9 @@ impl EventEmitter<DialogEvent> for UploadDialog {}
 
 impl UploadDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, summaries: Vec<LayerSummary>) -> Self {
-        let comment = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Describe your changes (required)"));
+        let comment = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("dialog.upload.comment_placeholder"))
+        });
         let focus_handle = cx.focus_handle();
         comment.update(cx, |state, cx| state.focus(window, cx));
         Self {
@@ -106,7 +112,8 @@ impl Render for UploadDialog {
 
         let mut summary_list = v_flex().gap_1();
         if self.summaries.is_empty() {
-            summary_list = summary_list.child(Label::new("No pending changes.").text_color(muted));
+            summary_list =
+                summary_list.child(Label::new(tr!("dialog.upload.no_changes")).text_color(muted));
         } else {
             for s in &self.summaries {
                 summary_list =
@@ -120,7 +127,7 @@ impl Render for UploadDialog {
                 v_flex()
                     .gap_1()
                     .child(
-                        Label::new("Pending changes")
+                        Label::new(tr!("dialog.upload.pending_changes"))
                             .text_size(muted_text_size())
                             .text_color(muted),
                     )
@@ -130,7 +137,7 @@ impl Render for UploadDialog {
                 v_flex()
                     .gap_1()
                     .child(
-                        Label::new("Changeset comment")
+                        Label::new(tr!("dialog.upload.comment_label"))
                             .text_size(muted_text_size())
                             .text_color(muted),
                     )
@@ -144,13 +151,13 @@ impl Render for UploadDialog {
             .gap_2()
             .child(
                 Button::new("upload-cancel")
-                    .label("Cancel")
+                    .label(tr!("dialog.cancel"))
                     .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
             )
             .child(
                 Button::new("upload-confirm")
                     .primary()
-                    .label("Upload")
+                    .label(tr!("dialog.upload.confirm"))
                     .disabled(comment_empty)
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             );
@@ -170,7 +177,7 @@ impl Render for UploadDialog {
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Upload to OpenStreetMap"),
+                    .child(tr!("dialog.upload.title")),
             )
             .child(div().p_4().child(body))
             .child(

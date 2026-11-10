@@ -211,3 +211,48 @@ geometry:
 
 settings:
   window_title: "Settings"
+
+dialog:
+  cancel: "Cancel"
+  no_matches: "No matches."
+  upload:
+    title: "Upload to OpenStreetMap"
+    confirm: "Upload"
+    pending_changes: "Pending changes"
+    no_changes: "No pending changes."
+    layer_summary: "%{layer}: %{created} created, %{modified} modified, %{deleted} deleted"
+    comment_label: "Changeset comment"
+    comment_placeholder: "Describe your changes (required)"
+  sign_in:
+    title: "Sign in to upload"
+    body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
+    open_settings: "Open Settings"
+  quit:
+    title: "Unsaved Changes"
+    body: "You have unsaved changes. Quit anyway?"
+    confirm: "Quit"
+  custom_imagery:
+    title: "Custom Imagery"
+    name: "Name"
+    name_placeholder: "My imagery"
+    url_template: "URL template"
+    min_zoom: "Min zoom"
+    max_zoom: "Max zoom"
+    confirm: "Add"
+    # `{z}`, `{x}`, `{y}` and `{-y}` are literal tile-URL placeholders and
+    # must be kept exactly as written.
+    error:
+      name_empty: "Name is required."
+      template_empty: "URL template is required."
+      template_missing_placeholder: "URL template must contain {z}, {x}, and {y} (or {-y})."
+      template_y_and_minus_y: "URL template must use {y} or {-y}, not both."
+      min_zoom_invalid: "Min zoom must be a whole number from 0 to 24."
+      max_zoom_invalid: "Max zoom must be a whole number from 0 to 24."
+      min_zoom_above_max: "Min zoom must be ≤ max zoom."
+  preset_picker:
+    title: "Change Feature Type"
+    search_placeholder: "Search feature types…"
+  nsi:
+    title: "Apply NSI Preset"
+    search_placeholder: "Search brands…"
+    downloading: "Downloading NSI data…"

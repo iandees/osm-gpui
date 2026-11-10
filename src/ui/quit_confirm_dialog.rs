@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 
+use crate::tr;
 use crate::ui::modal;
 
 pub enum DialogEvent {
@@ -58,18 +59,19 @@ impl Render for QuitConfirmDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let footer = modal::footer_row(
             "quit-cancel",
-            "Cancel",
+            tr!("dialog.cancel"),
             cx.listener(|this, _, _w, cx| this.cancel(cx)),
             "quit-confirm",
-            "Quit",
+            tr!("dialog.quit.confirm"),
             cx.listener(|this, _, _w, cx| this.confirm(cx)),
         );
 
         let body = div()
             .text_color(cx.theme().foreground)
-            .child("You have unsaved changes. Quit anyway?");
+            .child(tr!("dialog.quit.body"));
 
-        let frame = modal::dialog_frame(cx, gpui::px(360.0), "Unsaved Changes", body, footer);
+        let frame =
+            modal::dialog_frame(cx, gpui::px(360.0), tr!("dialog.quit.title"), body, footer);
 
         modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }

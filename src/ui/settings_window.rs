@@ -395,7 +395,7 @@ impl SettingsWindow {
                 cx.notify();
             }
             Err(e) => {
-                self.edit_error = Some(crate::ui::custom_imagery_dialog::error_message(&e).into());
+                self.edit_error = Some(crate::ui::custom_imagery_dialog::error_message(&e));
                 cx.notify();
             }
         }
