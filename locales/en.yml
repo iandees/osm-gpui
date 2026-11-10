@@ -639,6 +639,8 @@ error:
     rate_limited: "OSM API rate-limited (509) — try again later"
     http: "OSM API error %{status}: %{detail}"
     parse: "Failed to parse OSM response: %{detail}"
+    # The diff upload got no usable answer, so the server may have applied it.
+    outcome_unknown: "The upload may or may not have gone through (%{detail}). Before uploading again, check whether your changes are on the server: %{url}. Uploading again could add new objects a second time."
   auth:
     http: "OSM OAuth error %{status}: %{detail}"
     no_redirect: "Login timed out waiting for browser redirect"
