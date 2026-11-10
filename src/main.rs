@@ -4962,6 +4962,98 @@ mod tests {
         }
     }
 
+    /// `docs/screenshots/relations.osmscript` clicks fixed window positions;
+    /// check they pick what the script names, that the fixture's relations
+    /// show up as the script expects, and that the split it runs keeps the
+    /// route intact and moves the later clicks as the script assumes.
+    #[test]
+    fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        use osm_gpui::selection::{resolve_hits, FeatureRef};
+
+        let xml =
+            std::fs::read_to_string("docs/screenshots/fixtures/relations.osm").expect("fixture");
+        let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let mut layers = osm_gpui::layers::LayerManager::new();
+        layers.add_layer(Box::new(OsmLayer::new_with_data(
+            LayerId(1),
+            "L".to_string(),
+            Arc::new(data),
+        )));
+        let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+        let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
+            let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
+            let hits = layers
+                .find_layer(LayerId(1))
+                .unwrap()
+                .as_editable()
+                .unwrap()
+                .hit_test(&viewport, at);
+            resolve_hits(vec![hits]).map(|h| (h.kind, h.id))
+        };
+        for (x, y, kind, id) in [
+            (520.0, 200.0, Way, 8202),
+            (560.0, 200.0, Node, 8104),
+            (340.0, 400.0, Way, 8301),
+            (640.0, 200.0, Node, 8105),
+            (760.0, 200.0, Way, 8202),
+        ] {
+            assert_eq!(
+                hit_at(&layers, x, y),
+                Some((kind, id)),
+                "click at ({x}, {y})"
+            );
+        }
+
+        // What the Relations section shows for the clicked features.
+        let relations_of = |layers: &osm_gpui::layers::LayerManager, kind, id| {
+            let editable = layers
+                .find_layer(LayerId(1))
+                .unwrap()
+                .as_editable()
+                .unwrap();
+            let ids = match kind {
+                Node => editable.relations_containing_node(id),
+                Way => editable.relations_containing_way(id),
+            };
+            ids.into_iter()
+                .map(|r| osm_gpui::relations::display_name(&editable.relation(r).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(relations_of(&layers, Way, 8202), ["Bus 7B"]);
+        assert_eq!(relations_of(&layers, Node, 8104), ["Bus 7B"]);
+        assert_eq!(relations_of(&layers, Way, 8301), ["restriction"]);
+
+        // Split at the middle node: the new way is -1, takes the right-hand
+        // part, and joins the route right after the original.
+        let action = selection_actions::find("split").unwrap();
+        let sel = [FeatureRef {
+            layer_id: LayerId(1),
+            kind: Node,
+            id: 8105,
+        }];
+        (action.apply)(&mut layers, &sel, Some(LayerId(1))).unwrap();
+        assert_eq!(hit_at(&layers, 760.0, 200.0), Some((Way, -1)));
+        assert_eq!(hit_at(&layers, 520.0, 200.0), Some((Way, 8202)));
+        let route = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .relation(9101)
+            .unwrap();
+        let refs: Vec<i64> = route.members.iter().map(|m| m.reference).collect();
+        assert_eq!(refs, [8104, 8201, 8202, -1, 8203]);
+        assert_eq!(relations_of(&layers, Way, -1), ["Bus 7B"]);
+        // Way -1, way 8202 and relation 9101.
+        let counts = layers
+            .find_layer(LayerId(1))
+            .unwrap()
+            .diff_for_upload()
+            .counts();
+        assert_eq!(counts, (1, 2, 0));
+    }
+
     /// `docs/screenshots/more-selection-actions.osmscript` clicks and
     /// box-selects fixed window positions; check they pick what the script
     /// names, and that each action the script runs on them is accepted, with

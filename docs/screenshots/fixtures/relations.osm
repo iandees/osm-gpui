@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="relations fixture">
+  <!-- A: bus route 7B over three ways that meet end to end along y=200.
+       Nodes sit at x = 300, 390, 480 (way 8201), 480 .. 800 every 80
+       (way 8202, five nodes), 800, 860 (way 8203). Node 8104 is the route's
+       stop, a node member. Split way 8202 at node 8105 (x=640). -->
+  <node id="8101" version="1" lat="40.7127644" lon="-74.0070086"/>
+  <node id="8102" version="1" lat="40.7127644" lon="-74.0065258"/>
+  <node id="8103" version="1" lat="40.7127644" lon="-74.0060429"/>
+  <node id="8104" version="1" lat="40.7127644" lon="-74.0056137">
+    <tag k="highway" v="bus_stop"/>
+    <tag k="name" v="Market Square"/>
+  </node>
+  <node id="8105" version="1" lat="40.7127644" lon="-74.0051845"/>
+  <node id="8106" version="1" lat="40.7127644" lon="-74.0047553"/>
+  <node id="8107" version="1" lat="40.7127644" lon="-74.0043261"/>
+  <node id="8108" version="1" lat="40.7127644" lon="-74.0040042"/>
+  <!-- B: a turn restriction. Way 8301 (from) runs along y=400 to the via node
+       8113 at x=450; way 8302 (to) leaves it downwards. -->
+  <node id="8111" version="1" lat="40.7119512" lon="-74.0070086"/>
+  <node id="8112" version="1" lat="40.7119512" lon="-74.0065794"/>
+  <node id="8113" version="1" lat="40.7119512" lon="-74.0062039"/>
+  <node id="8114" version="1" lat="40.7115446" lon="-74.0062039"/>
+  <way id="8201" version="1">
+    <nd ref="8101"/>
+    <nd ref="8102"/>
+    <nd ref="8103"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Route Street"/>
+  </way>
+  <way id="8202" version="1">
+    <nd ref="8103"/>
+    <nd ref="8104"/>
+    <nd ref="8105"/>
+    <nd ref="8106"/>
+    <nd ref="8107"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Route Street"/>
+  </way>
+  <way id="8203" version="1">
+    <nd ref="8107"/>
+    <nd ref="8108"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Route Street"/>
+  </way>
+  <way id="8301" version="1">
+    <nd ref="8111"/>
+    <nd ref="8112"/>
+    <nd ref="8113"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Approach Road"/>
+  </way>
+  <way id="8302" version="1">
+    <nd ref="8113"/>
+    <nd ref="8114"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Exit Road"/>
+  </way>
+  <relation id="9101" version="3">
+    <member type="node" ref="8104" role="stop"/>
+    <member type="way" ref="8201" role=""/>
+    <member type="way" ref="8202" role=""/>
+    <member type="way" ref="8203" role=""/>
+    <tag k="type" v="route"/>
+    <tag k="route" v="bus"/>
+    <tag k="ref" v="7B"/>
+    <tag k="name" v="Bus 7B"/>
+  </relation>
+  <relation id="9102" version="1">
+    <member type="way" ref="8301" role="from"/>
+    <member type="node" ref="8113" role="via"/>
+    <member type="way" ref="8302" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_left_turn"/>
+  </relation>
+</osm>

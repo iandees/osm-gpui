@@ -1,0 +1,72 @@
+# Relation membership: the side panel's Relations section, and Split Way
+# keeping a route relation intact (with undo).
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/relations.osm is laid out in
+# window coordinates at zoom 18, centered on (40.7120, -74.0060):
+#   A  bus route relation 9101 over ways 8201 / 8202 / 8203 along y=200, plus
+#      the stop node 8104 at (560, 200) as a node member. Way 8202 has nodes
+#      at x = 480, 560, 640, 720, 800; its middle node 8105 is at (640, 200).
+#   B  turn restriction 9102: from way 8301 along y=400 to the via node 8113 at
+#      (450, 400), to way 8302 going down from it.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/relations.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/relations-01-start.png
+
+# A way that is a route member: the Relations section lists the route.
+click 520,200
+wait_idle 2s
+assert_selected way 8202
+capture out/relations-02-route-way.png
+
+# The stop is a node member with the role "stop".
+click 560,200
+wait_idle 2s
+assert_selected node 8104
+capture out/relations-03-stop-node.png
+
+# The restriction's "from" way lists the restriction and its role.
+click 340,400
+wait_idle 2s
+assert_selected way 8301
+capture out/relations-04-restriction-way.png
+
+# Split the middle route way at its middle node (P). The new way (id -1) joins
+# the route right after the original, and the relation is one more pending edit.
+click 640,200
+wait_idle 2s
+assert_selected node 8105
+key p
+wait_idle 2s
+assert_selected node 8105
+capture out/relations-05-split-done.png
+click 760,200
+wait_idle 2s
+assert_selected way -1
+capture out/relations-06-new-half-in-route.png
+click 520,200
+wait_idle 2s
+assert_selected way 8202
+capture out/relations-07-original-half-in-route.png
+
+# One undo step puts the way and the relation back: the right-hand part is
+# way 8202 again, and nothing is pending.
+key cmd+z
+wait_idle 2s
+click 760,200
+wait_idle 2s
+assert_selected way 8202
+capture out/relations-08-split-undone.png
+
+# Redo splits it again.
+key cmd+shift+z
+wait_idle 2s
+click 760,200
+wait_idle 2s
+assert_selected way -1
+capture out/relations-09-split-redone.png
+
+log done
