@@ -495,19 +495,7 @@ fn parse_cli_args() -> CliArgs {
     out
 }
 
-/// How a background upload ended.
-enum UploadOutcome {
-    /// Every changeset was accepted.
-    Done(Vec<osm_gpui::upload_chunks::CompletedChunk>),
-    /// The sequence stopped: the changesets accepted before that (in order),
-    /// how many were planned, and why it stopped.
-    Stopped {
-        completed: Vec<osm_gpui::upload_chunks::CompletedChunk>,
-        total: usize,
-        why: UploadStop,
-    },
-}
-
+/// Why a chunked upload stopped before the end.
 enum UploadStop {
     /// The server refused the diff (409/410/412); the changeset is closed.
     Refused(osm_upload::UploadConflict),
@@ -981,6 +969,9 @@ impl MapViewer {
     /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
     /// than going through `LayerRequest`.
     fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         if let Some(id) = self
             .layer_manager
             .layers()
@@ -2098,6 +2089,9 @@ impl MapViewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         self.run_selection_action(&action.id, cx);
     }
 
@@ -2163,6 +2157,9 @@ impl MapViewer {
     }
 
     fn on_delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         self.delete_selected_features(cx);
     }
 
@@ -2308,7 +2305,21 @@ impl MapViewer {
         window.zoom_window();
     }
 
+    /// Whether an upload is running, which freezes the layers (see
+    /// `transfer::blocks_edits`). When it is, say so in the status bar.
+    fn edits_blocked(&mut self, cx: &mut Context<Self>) -> bool {
+        if !osm_gpui::transfer::blocks_edits(self.transfer.as_ref()) {
+            return false;
+        }
+        self.set_status(tr!("status.upload_blocks_edits"));
+        cx.notify();
+        true
+    }
+
     fn on_undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         if let Some(action) = self.undo_stack.undo() {
             self.apply_undo_action(&action, false);
             cx.notify();
@@ -2316,6 +2327,9 @@ impl MapViewer {
     }
 
     fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         if let Some(action) = self.undo_stack.redo() {
             self.apply_undo_action(&action, true);
             cx.notify();
@@ -2332,6 +2346,9 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         if self.selected.len() != 1 || self.nsi_dialog.is_some() {
             return;
         }
@@ -2372,6 +2389,9 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.edits_blocked(cx) {
+            return;
+        }
         if self.selected.len() != 1 || self.preset_picker_dialog.is_some() {
             return;
         }
@@ -3974,11 +3994,24 @@ impl MapViewer {
     /// gets `&mut Window` handed to it by the in-progress dispatch, so no
     /// re-acquisition is needed.
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.layer_manager.layers().iter().any(|l| l.is_modified()) {
-            self.show_quit_confirm_dialog(window, cx);
-        } else {
-            cx.quit();
+        use osm_gpui::transfer::{quit_decision, QuitDecision};
+        let unsaved = self.layer_manager.layers().iter().any(|l| l.is_modified());
+        match quit_decision(
+            osm_gpui::transfer::blocks_edits(self.transfer.as_ref()),
+            unsaved,
+        ) {
+            QuitDecision::Quit => cx.quit(),
+            QuitDecision::ConfirmUnsaved => self.show_quit_confirm_dialog(window, cx),
+            QuitDecision::UploadInProgress => self.refuse_quit_during_upload(cx),
         }
+    }
+
+    /// Quitting mid-upload is refused: between two changesets the layer and
+    /// the server would disagree, and the next upload would send the first
+    /// changeset's objects again.
+    pub(crate) fn refuse_quit_during_upload(&mut self, cx: &mut Context<Self>) {
+        self.set_status(tr!("status.upload_blocks_quit"));
+        cx.notify();
     }
 
     /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
@@ -4261,101 +4294,118 @@ impl MapViewer {
 
         let base_url = settings_store::api_base_url();
         let oauth_base = auth::oauth_base_for(&base_url);
-        let names_for_bg: Vec<String> = modified.iter().map(|(_, name)| name.clone()).collect();
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
         let max_elements = osm_gpui::limits::Limits::for_server(&base_url).changeset_elements;
-
-        cx.spawn(async move |this, cx| {
-            let outcome: UploadOutcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let stopped = |why: UploadStop| UploadOutcome::Stopped {
-                        completed: Vec::new(),
-                        total: 0,
-                        why,
-                    };
-                    let token = match auth::ensure_fresh_token(&oauth_base) {
-                        Ok(token) => token,
-                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
-                    };
-                    let layers_for_xml: Vec<(&str, osm_gpui::layers::diff::LayerDiff)> =
-                        names_for_bg.iter().map(|s| s.as_str()).zip(diffs).collect();
-                    let run = osm_gpui::upload_chunks::run_chunked_upload(
-                        &osm_gpui::http::UreqClient::new(),
-                        &base_url,
-                        &token.access_token,
-                        &comment,
-                        &layers_for_xml,
-                        max_elements,
-                        &mut |part, phase| progress.set_upload_phase(part, phase),
-                    );
-                    let run = match run {
-                        Ok(run) => run,
-                        Err(e) => return stopped(UploadStop::Failed(e.to_string())),
-                    };
-                    match run.failure {
-                        None => UploadOutcome::Done(run.completed),
-                        Some(osm_upload::UploadFailure {
-                            error: osm_upload::UploadError::Conflict(conflict),
-                            ..
-                        }) => UploadOutcome::Stopped {
-                            completed: run.completed,
-                            total: run.total,
-                            why: UploadStop::Refused(conflict),
-                        },
-                        Some(failure) => UploadOutcome::Stopped {
-                            completed: run.completed,
-                            total: run.total,
-                            why: UploadStop::Failed(failure.error.to_string()),
-                        },
+        let mut queue = {
+            let refs: Vec<&osm_gpui::layers::diff::LayerDiff> = diffs.iter().collect();
+            match osm_gpui::upload_chunks::ChunkQueue::plan(&refs, max_elements) {
+                Ok(queue) => queue,
+                Err(e) => {
+                    self.transfer = None;
+                    if let Some(dialog) = &self.upload_dialog {
+                        let message = e.to_string();
+                        dialog.update(cx, |dialog, cx| dialog.fail(message.into(), cx));
                     }
-                })
-                .await;
+                    self.set_status(e.to_string());
+                    cx.notify();
+                    return;
+                }
+            }
+        };
+        drop(diffs);
+
+        // The chunks go one at a time: each is sent on the background
+        // executor, and when it is accepted the layers are updated HERE, on
+        // the foreground, before the next chunk is handed out. So the id map
+        // in `queue` and the layers never disagree, and if the app is lost
+        // between two chunks, what the layers still hold as pending is
+        // exactly what the server has not got.
+        cx.spawn(async move |this, cx| {
+            let total = queue.total();
+            let mut accepted = 0usize;
+            let mut last_changeset = 0u64;
+            let stop: Option<UploadStop> = loop {
+                let Some((part, chunk)) = queue.next_chunk() else {
+                    break None;
+                };
+                let (oauth_base, base_url, comment, progress) = (
+                    oauth_base.clone(),
+                    base_url.clone(),
+                    comment.clone(),
+                    progress.clone(),
+                );
+                let sent = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let token = auth::ensure_fresh_token(&oauth_base)
+                            .map_err(|e| UploadStop::Failed(e.to_string()))?;
+                        osm_gpui::upload_chunks::upload_chunk(
+                            &osm_gpui::http::UreqClient::new(),
+                            &base_url,
+                            &token.access_token,
+                            &comment,
+                            part,
+                            chunk,
+                            &mut |part, phase| progress.set_upload_phase(part, phase),
+                        )
+                        .map_err(|failure| match failure.error {
+                            osm_upload::UploadError::Conflict(conflict) => {
+                                UploadStop::Refused(conflict)
+                            }
+                            other => UploadStop::Failed(other.to_string()),
+                        })
+                    })
+                    .await;
+                match sent {
+                    Ok(mut done) => {
+                        done.last = queue.remaining() == 0;
+                        queue.accept(&done.result);
+                        accepted += 1;
+                        last_changeset = done.changeset_id;
+                        let layer_ids = layer_ids.clone();
+                        let applied = this.update(cx, |this, cx| {
+                            for id in &layer_ids {
+                                if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
+                                    osm_gpui::upload_chunks::apply_to_layer(layer, &done);
+                                }
+                            }
+                            this.data_generation += 1;
+                            cx.notify();
+                        });
+                        if applied.is_err() {
+                            // The view is gone; nothing more to update.
+                            return;
+                        }
+                    }
+                    Err(why) => break Some(why),
+                }
+            };
 
             let _ = this.update(cx, |this, cx| {
                 this.transfer = None;
                 this.data_generation += 1;
-                match outcome {
-                    UploadOutcome::Done(completed) => {
-                        let upload_result = osm_gpui::upload_chunks::merge_results(&completed);
-                        for id in &layer_ids {
-                            if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
-                                layer.apply_upload_result(&upload_result);
-                            }
-                        }
+                match stop {
+                    None => {
                         this.upload_dialog = None;
-                        let last = completed.last().map(|c| c.changeset_id).unwrap_or(0);
-                        if completed.len() > 1 {
+                        if accepted > 1 {
                             this.set_status(tr_count!(
                                 "status.uploaded_many",
-                                completed.len(),
-                                changeset = last
+                                accepted,
+                                changeset = last_changeset
                             ));
                         } else {
-                            this.set_status(tr!("status.uploaded", changeset = last));
+                            this.set_status(tr!("status.uploaded", changeset = last_changeset));
                         }
                     }
-                    UploadOutcome::Stopped {
-                        completed,
-                        total,
-                        why,
-                    } => {
-                        // The changesets the server accepted are on the
-                        // server for good: reflect each in the layers, in
-                        // order, so what is still pending is exactly what
-                        // was not sent.
-                        for chunk in &completed {
-                            for id in &layer_ids {
-                                if let Some(layer) = this.layer_manager.find_layer_mut(*id) {
-                                    layer.apply_chunk_result(&chunk.result, &chunk.chunk);
-                                }
-                            }
-                        }
+                    Some(why) => {
+                        // Every changeset accepted so far is already in the
+                        // layers (applied as it landed), so what is pending
+                        // is exactly what was not sent.
                         if let Some(dialog) = this.upload_dialog.clone() {
-                            if !completed.is_empty() {
+                            if accepted > 0 {
                                 this.refresh_upload_dialog(&dialog, cx);
                             }
-                            let partial = (total > 1).then_some((completed.len(), total));
+                            let partial = (total > 1).then_some((accepted, total));
                             dialog.update(cx, |dialog, _| dialog.set_partial(partial));
                         }
                         match why {
@@ -5868,6 +5918,13 @@ fn main() {
                         // otherwise we let the close proceed, which triggers
                         // `on_window_closed` -> `cx.quit()` as before.
                         window.on_window_should_close(cx, |window, cx| {
+                            if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                                if osm_gpui::transfer::blocks_edits(view.read(cx).transfer.as_ref())
+                                {
+                                    view.update(cx, |v, cx| v.refuse_quit_during_upload(cx));
+                                    return false;
+                                }
+                            }
                             if has_unsaved_changes(cx) {
                                 if let Some(view) =
                                     MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade())
@@ -8412,6 +8469,57 @@ mod tests {
                 assert_eq!(
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("Nothing to upload")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn edits_and_undo_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                make_pending_change(view);
+                // Not uploading: nothing is refused.
+                assert!(!view.edits_blocked(cx));
+                assert!(view.status_message.is_none());
+
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::OpeningChangeset,
+                ));
+                for handler in [
+                    |v: &mut MapViewer, w: &mut Window, cx: &mut Context<MapViewer>| {
+                        v.on_undo(&Undo, w, cx)
+                    },
+                    |v: &mut MapViewer, w: &mut Window, cx: &mut Context<MapViewer>| {
+                        v.on_redo(&Redo, w, cx)
+                    },
+                    |v: &mut MapViewer, w: &mut Window, cx: &mut Context<MapViewer>| {
+                        v.on_delete_selection(&DeleteSelection, w, cx)
+                    },
+                ] {
+                    view.status_message = None;
+                    handler(view, window, cx);
+                    assert_eq!(
+                        view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                        Some("An upload is in progress. Wait for it to finish before editing.")
+                    );
+                }
+
+                // A download does not freeze editing.
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Download,
+                    TransferPhase::Downloading,
+                ));
+                assert!(!view.edits_blocked(cx));
+
+                // Quitting during an upload is refused with a message.
+                view.status_message = None;
+                view.refuse_quit_during_upload(cx);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("An upload is in progress. Wait for it to finish before quitting.")
                 );
             })
             .unwrap();

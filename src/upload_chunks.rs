@@ -434,6 +434,22 @@ pub struct CompletedChunk {
     /// (the keys of `result`).
     pub chunk: LayerDiff,
     pub result: UploadResult,
+    /// Set by the driver: this was the last chunk, so after it nothing is
+    /// pending any more.
+    pub last: bool,
+}
+
+/// Reflect an accepted chunk in `layer`, right away. The last chunk goes
+/// through the layer's ordinary post-upload reconciliation (so a
+/// single-changeset upload behaves exactly as it always did); an earlier one
+/// advances the layer's baseline by just its own objects and leaves the rest
+/// pending.
+pub fn apply_to_layer(layer: &mut dyn crate::layers::MapLayer, done: &CompletedChunk) {
+    if done.last {
+        layer.apply_upload_result(&done.result);
+    } else {
+        layer.apply_chunk_result(&done.result, &done.chunk);
+    }
 }
 
 /// How far a chunked upload got.
@@ -452,11 +468,86 @@ pub struct ChunkedUpload {
 /// for an upload that is a single changeset.
 pub type Part = Option<(usize, usize)>;
 
+/// The planned chunks still to send, and the ids learned from the ones
+/// already accepted. The caller drives it one chunk at a time, so it can do
+/// something between chunks (the app applies each accepted chunk to the
+/// layers before the next is sent).
+pub struct ChunkQueue {
+    pending: std::collections::VecDeque<LayerDiff>,
+    ids: IdMap,
+    total: usize,
+    sent: usize,
+}
+
+impl ChunkQueue {
+    pub fn plan(diffs: &[&LayerDiff], max: usize) -> Result<Self, PlanError> {
+        let chunks = plan_chunks(diffs, max)?;
+        Ok(ChunkQueue {
+            total: chunks.len(),
+            pending: chunks.into(),
+            ids: IdMap::default(),
+            sent: 0,
+        })
+    }
+
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Chunks not yet handed out.
+    pub fn remaining(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The next chunk with the server ids learned so far already swapped in,
+    /// and which changeset it is. `None` when all have been handed out.
+    pub fn next_chunk(&mut self) -> Option<(Part, LayerDiff)> {
+        let mut chunk = self.pending.pop_front()?;
+        self.sent += 1;
+        self.ids.rewrite(&mut chunk);
+        let part = (self.total > 1).then_some((self.sent, self.total));
+        Some((part, chunk))
+    }
+
+    /// Record the answer for the chunk last handed out.
+    pub fn accept(&mut self, result: &UploadResult) {
+        self.ids.absorb(result);
+    }
+}
+
+/// Send one chunk in a changeset of its own: open, upload, close (closed even
+/// when the upload fails, by `run_upload`). Never retries the diff.
+pub fn upload_chunk(
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: &str,
+    comment: &str,
+    part: Part,
+    chunk: LayerDiff,
+    on_phase: &mut dyn FnMut(Part, TransferPhase),
+) -> Result<CompletedChunk, UploadFailure> {
+    on_phase(part, TransferPhase::OpeningChangeset);
+    let sent = [("upload", chunk)];
+    let (changeset_id, result) =
+        run_upload(client, base_url, token, comment, &sent, &mut |phase| {
+            on_phase(part, phase)
+        })?;
+    let [(_, chunk)] = sent;
+    Ok(CompletedChunk {
+        changeset_id,
+        chunk,
+        result,
+        last: false,
+    })
+}
+
 /// Upload `layers` in changesets of at most `max` elements, one after the
-/// other, each opened, filled and closed by `run_upload` (so each is closed
-/// even when its upload fails). Any error stops the sequence and is reported
-/// in the result along with the chunks already accepted; a diff is never
-/// re-sent here, so a lost response can't turn into duplicate creates.
+/// other. Any error stops the sequence and is reported in the result along
+/// with the chunks already accepted; a diff is never re-sent here, so a lost
+/// response can't turn into duplicate creates. `on_chunk` is called with each
+/// accepted chunk before the next one is sent (the app applies it to the
+/// layers there).
+#[allow(clippy::too_many_arguments)]
 pub fn run_chunked_upload(
     client: &dyn HttpClient,
     base_url: &str,
@@ -465,32 +556,22 @@ pub fn run_chunked_upload(
     layers: &[(&str, LayerDiff)],
     max: usize,
     on_phase: &mut dyn FnMut(Part, TransferPhase),
+    on_chunk: &mut dyn FnMut(&CompletedChunk),
 ) -> Result<ChunkedUpload, PlanError> {
     let diffs: Vec<&LayerDiff> = layers.iter().map(|(_, d)| d).collect();
-    let chunks = plan_chunks(&diffs, max)?;
-    let total = chunks.len();
+    let mut queue = ChunkQueue::plan(&diffs, max)?;
     let mut out = ChunkedUpload {
-        total,
+        total: queue.total(),
         completed: Vec::new(),
         failure: None,
     };
-    let mut ids = IdMap::default();
-    for (i, mut chunk) in chunks.into_iter().enumerate() {
-        let part: Part = (total > 1).then_some((i + 1, total));
-        ids.rewrite(&mut chunk);
-        on_phase(part, TransferPhase::OpeningChangeset);
-        let sent = [("upload", chunk)];
-        match run_upload(client, base_url, token, comment, &sent, &mut |phase| {
-            on_phase(part, phase)
-        }) {
-            Ok((changeset_id, result)) => {
-                ids.absorb(&result);
-                let [(_, chunk)] = sent;
-                out.completed.push(CompletedChunk {
-                    changeset_id,
-                    chunk,
-                    result,
-                });
+    while let Some((part, chunk)) = queue.next_chunk() {
+        match upload_chunk(client, base_url, token, comment, part, chunk, on_phase) {
+            Ok(mut done) => {
+                done.last = queue.remaining() == 0;
+                queue.accept(&done.result);
+                on_chunk(&done);
+                out.completed.push(done);
             }
             Err(failure) => {
                 out.failure = Some(failure);
@@ -925,9 +1006,16 @@ mod tests {
         ]);
         let layers = [("L", node_way_diff())];
         let mut seen = Vec::new();
-        let out = run_chunked_upload(&client, BASE, "tok", "c", &layers, 2, &mut |part, p| {
-            seen.push((part, p))
-        })
+        let out = run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            "c",
+            &layers,
+            2,
+            &mut |part, p| seen.push((part, p)),
+            &mut |_| {},
+        )
         .unwrap();
         assert!(out.failure.is_none());
         assert_eq!(out.total, 2);
@@ -972,6 +1060,7 @@ mod tests {
             &layers,
             10_000,
             &mut |part, _| parts.push(part),
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(out.total, 1);
@@ -994,8 +1083,17 @@ mod tests {
             ok(200, ""),
         ]);
         let layers = [("L", node_way_diff())];
-        let out =
-            run_chunked_upload(&client, BASE, "tok", "c", &layers, 2, &mut |_, _| {}).unwrap();
+        let out = run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            "c",
+            &layers,
+            2,
+            &mut |_, _| {},
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(out.completed.len(), 1);
         assert_eq!(out.completed[0].changeset_id, 101);
         let failure = out.failure.unwrap();
@@ -1015,10 +1113,114 @@ mod tests {
     fn a_transport_failure_is_not_retried_into_another_chunk() {
         let client = FakeClient::new(vec![ok(200, "101"), status_err(400, "bad"), ok(200, "")]);
         let layers = [("L", node_way_diff())];
-        let out =
-            run_chunked_upload(&client, BASE, "tok", "c", &layers, 2, &mut |_, _| {}).unwrap();
+        let out = run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            "c",
+            &layers,
+            2,
+            &mut |_, _| {},
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(out.completed.is_empty());
         assert!(out.failure.is_some());
         assert_eq!(upload_bodies(&client).len(), 1);
+    }
+
+    /// Logs the start of each changeset, to compare with when chunks are
+    /// handed to the caller.
+    struct Logging {
+        inner: FakeClient,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl HttpClient for Logging {
+        fn request(
+            &self,
+            req: crate::http::HttpRequest,
+        ) -> Result<crate::http::HttpResponse, crate::http::HttpError> {
+            if req.url.ends_with("/create") {
+                self.log.lock().unwrap().push("create".to_string());
+            }
+            self.inner.request(req)
+        }
+    }
+
+    #[test]
+    fn each_accepted_chunk_is_handed_over_before_the_next_changeset_is_opened() {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let client = Logging {
+            inner: FakeClient::new(vec![
+                ok(200, "101"),
+                ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+                ok(200, ""),
+                ok(200, "102"),
+                ok(200, diff_result(&[(-3, 5003)], &[(-1, 6001)])),
+                ok(200, ""),
+            ]),
+            log: log.clone(),
+        };
+        let layers = [("L", node_way_diff())];
+        let handed = log.clone();
+        run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            "c",
+            &layers,
+            2,
+            &mut |_, _| {},
+            &mut |done| {
+                handed
+                    .lock()
+                    .unwrap()
+                    .push(format!("applied {}", done.changeset_id))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["create", "applied 101", "create", "applied 102"]
+        );
+    }
+
+    #[test]
+    fn an_unknown_outcome_on_a_later_chunk_stops_with_the_finished_ones_kept() {
+        let client = FakeClient::new(vec![
+            ok(200, "101"),
+            ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+            ok(200, ""),
+            ok(200, "102"),
+            status_err(503, "busy"),
+            ok(200, ""),
+        ]);
+        let layers = [("L", node_way_diff())];
+        let mut applied = 0;
+        let out = run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            "c",
+            &layers,
+            2,
+            &mut |_, _| {},
+            &mut |_| applied += 1,
+        )
+        .unwrap();
+        assert_eq!(applied, 1);
+        assert_eq!(out.completed.len(), 1);
+        let failure = out.failure.unwrap();
+        assert!(matches!(
+            failure.error,
+            UploadError::OutcomeUnknown {
+                changeset_id: 102,
+                ..
+            }
+        ));
+        // The diff was sent once, never retried.
+        assert_eq!(upload_bodies(&client).len(), 2);
+        assert_eq!(client.request_count(), 6);
     }
 }

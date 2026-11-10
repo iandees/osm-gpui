@@ -176,6 +176,8 @@ status:
   export_failed: "Export fehlgeschlagen: %{error}"
   nothing_to_upload: "Nichts hochzuladen"
   uploaded: "Änderungen hochgeladen (Änderungssatz %{changeset})"
+  upload_blocks_edits: "Ein Upload läuft. Warte, bis er abgeschlossen ist, bevor du weiter bearbeitest."
+  upload_blocks_quit: "Ein Upload läuft. Warte, bis er abgeschlossen ist, bevor du das Programm beendest."
   uploaded_many:
     one: "Änderungen in %{count} Änderungssatz hochgeladen (zuletzt: Änderungssatz %{changeset})"
     other: "Änderungen in %{count} Änderungssätzen hochgeladen (zuletzt: Änderungssatz %{changeset})"
