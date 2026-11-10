@@ -394,7 +394,23 @@ impl MapViewer {
                             // the macOS menu bar makes: it dispatches to the
                             // active window's focused element (and on to the
                             // global handlers).
-                            cx.defer(move |cx| cx.dispatch_action(action.as_ref()));
+                            //
+                            // That needs an active window. A scripted run
+                            // can lose it (a Keychain prompt or another
+                            // app comes to the front), and then
+                            // window-scoped handlers such as Select All
+                            // would never see the action, so in that case
+                            // it is sent to this window directly.
+                            let handle = window.window_handle();
+                            cx.defer(move |cx| {
+                                if cx.active_window() == Some(handle) {
+                                    cx.dispatch_action(action.as_ref());
+                                } else {
+                                    let _ = handle.update(cx, |_, window, cx| {
+                                        window.dispatch_action(action, cx);
+                                    });
+                                }
+                            });
                             Ok(())
                         }
                         Err(e) => Err(format!("unknown action '{name}': {e}")),
