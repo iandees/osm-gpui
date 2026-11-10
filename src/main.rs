@@ -2918,11 +2918,6 @@ impl MapViewer {
         self.activity = Some("Downloading OSM data…".to_string());
         cx.notify();
 
-        let label = format!(
-            "OSM API ({:.4},{:.4},{:.4},{:.4})",
-            bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
-        );
-
         let base_url = settings_store::api_base_url();
 
         cx.spawn(async move |this, cx| {
@@ -2944,27 +2939,45 @@ impl MapViewer {
                 this.activity = None;
                 this.data_generation += 1;
                 match result {
-                    Ok(data) => {
-                        let data_arc = Arc::new(data);
-                        let candidate = this.layer_manager.unique_name(&label);
-                        let layer_id = this.layer_manager.alloc_id();
-                        let layer = OsmLayer::new_with_data(layer_id, candidate, data_arc);
-                        this.layer_manager.add_layer(Box::new(layer));
-                        if this.active_layer.is_none() {
-                            this.active_layer = Some(layer_id);
-                        }
-                        this.status_message = None;
-                    }
-                    Err(e) => {
-                        this.set_status(e.to_string());
-                    }
+                    Ok(data) => this.apply_download(data),
+                    Err(e) => this.set_status(e.to_string()),
                 }
                 cx.notify();
             });
         })
         .detach();
     }
+
+    /// Put downloaded OSM data on the map. It is merged, by object id, into
+    /// the active layer when there is one — so downloading again after a
+    /// pan extends the same editable dataset instead of stacking a second
+    /// copy of every object in a new layer — keeping any local edits (see
+    /// `osm_gpui::layers::merge`). With no active layer, the download
+    /// becomes a new layer and is made active.
+    fn apply_download(&mut self, data: OsmData) {
+        let target = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer_mut(id))
+            .and_then(|layer| layer.as_editable_mut());
+        match target {
+            Some(editable) => {
+                let stats = editable.merge_download(data);
+                self.set_status(format!("Downloaded OSM data: {}", stats.summary()));
+            }
+            None => {
+                let name = self.layer_manager.unique_name(DOWNLOAD_LAYER_NAME);
+                let layer_id = self.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data(layer_id, name, Arc::new(data));
+                self.layer_manager.add_layer(Box::new(layer));
+                self.active_layer = Some(layer_id);
+                self.status_message = None;
+            }
+        }
+    }
 }
+
+/// Name of the layer created by the first download.
+const DOWNLOAD_LAYER_NAME: &str = "OSM data";
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4083,6 +4096,75 @@ mod tests {
                 let new_id = view.add_progress.as_ref().unwrap().last_node_id;
                 let layer = view.layer_manager.find_layer(layer_id).unwrap();
                 assert!(layer.as_editable().unwrap().node_lat_lon(new_id).is_some());
+            })
+            .unwrap();
+    }
+
+    /// The way fixture's data plus one extra node (id 50), as a second
+    /// download overlapping the first would return.
+    fn overlapping_download() -> OsmData {
+        let mut data = way_fixture(CENTER_LAT, CENTER_LON);
+        data.nodes.insert(
+            50,
+            OsmNode {
+                id: 50,
+                lat: CENTER_LAT + 0.001,
+                lon: CENTER_LON,
+                version: 1,
+                tags: empty_tags(),
+            },
+        );
+        data
+    }
+
+    #[gpui::test]
+    fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                // A local edit to node 1 before the second download arrives.
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+
+                view.apply_download(overlapping_download());
+
+                assert_eq!(view.layer_manager.layers().len(), 1, "no second layer");
+                let layer = view.layer_manager.find_layer(layer_id).unwrap();
+                let editable = layer.as_editable().unwrap();
+                assert!(editable.node_lat_lon(50).is_some(), "new node merged in");
+                assert_eq!(
+                    editable.node_lat_lon(1),
+                    Some((CENTER_LAT + 0.0005, CENTER_LON - 0.001)),
+                    "local move kept"
+                );
+                // Still exactly one pending edit: the move.
+                assert_eq!(layer.diff_for_upload().counts(), (0, 1, 0));
+                assert!(layer.is_modified());
+                let (message, _) = view.status_message.clone().unwrap();
+                assert_eq!(message, "Downloaded OSM data: 1 new, 1 local edit kept");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn download_with_no_active_layer_creates_one(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.active_layer.is_none());
+
+                view.apply_download(overlapping_download());
+
+                let layers = view.layer_manager.layers();
+                assert_eq!(layers.len(), 1);
+                assert_eq!(layers[0].name(), DOWNLOAD_LAYER_NAME);
+                assert_eq!(view.active_layer, Some(layers[0].id()));
+                assert!(!layers[0].is_modified());
             })
             .unwrap();
     }
