@@ -177,13 +177,14 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.len() < 2 {
         return Err(err(
             line_no,
-            "drag: want X1,Y1 X2,Y2 [duration=Nms] [button=left|pan]",
+            "drag: want X1,Y1 X2,Y2 [duration=Nms] [button=left|pan] [alt=true] [cmd=true]",
         ));
     }
     let from = parse_point(line_no, rest[0])?;
     let to = parse_point(line_no, rest[1])?;
     let mut duration = Duration::from_millis(200);
     let mut left = false;
+    let mut mods = DragMods::default();
     for kv in &rest[2..] {
         let (k, v) = kv
             .split_once('=')
@@ -195,6 +196,18 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
                 "pan" => left = false,
                 _ => return Err(err(line_no, format!("drag: bad button '{}'", v))),
             },
+            "alt" | "cmd" => {
+                let on = match v {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(err(line_no, format!("drag: bad {} '{}'", k, v))),
+                };
+                if k == "alt" {
+                    mods.alt = on;
+                } else {
+                    mods.cmd = on;
+                }
+            }
             _ => return Err(err(line_no, format!("drag: unknown key '{}'", k))),
         }
     }
@@ -203,6 +216,7 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         to,
         duration,
         left,
+        mods,
     })
 }
 
@@ -444,8 +458,25 @@ mod tests {
                 to: Point2 { x: 30.0, y: 40.0 },
                 duration: Duration::from_millis(200),
                 left: false,
+                mods: DragMods::default(),
             }
         );
+    }
+
+    #[test]
+    fn drag_modifiers_parse() {
+        let s = parse("drag 1,2 3,4 button=left alt=true cmd=true").unwrap();
+        assert!(matches!(
+            s[0].op,
+            Op::Drag {
+                mods: DragMods {
+                    alt: true,
+                    cmd: true
+                },
+                ..
+            }
+        ));
+        assert!(parse("drag 1,2 3,4 alt=yes").is_err());
     }
 
     #[test]

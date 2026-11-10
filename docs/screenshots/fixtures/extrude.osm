@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7100" minlon="-74.0100" maxlat="40.7140" maxlon="-74.0020"/>
+
+  <!-- Building 5001: a plain 4-node rectangle (nodes 1-4). -->
+  <node id="1" lat="40.7123578" lon="-74.0079742"/>
+  <node id="2" lat="40.7123578" lon="-74.0071158"/>
+  <node id="3" lat="40.7127645" lon="-74.0071158"/>
+  <node id="4" lat="40.7127645" lon="-74.0079742"/>
+
+  <way id="5001">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <nd ref="1"/>
+    <tag k="building" v="yes"/>
+  </way>
+
+  <!-- Building 5002: the same shape, but its east wall carries two extra
+       collinear nodes (13, 14), giving a short middle segment to pull out. -->
+  <node id="11" lat="40.7123578" lon="-74.0060429"/>
+  <node id="12" lat="40.7123578" lon="-74.0051846"/>
+  <node id="13" lat="40.7125205" lon="-74.0051846"/>
+  <node id="14" lat="40.7126018" lon="-74.0051846"/>
+  <node id="15" lat="40.7127645" lon="-74.0051846"/>
+  <node id="16" lat="40.7127645" lon="-74.0060429"/>
+
+  <way id="5002">
+    <nd ref="11"/>
+    <nd ref="12"/>
+    <nd ref="13"/>
+    <nd ref="14"/>
+    <nd ref="15"/>
+    <nd ref="16"/>
+    <nd ref="11"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>

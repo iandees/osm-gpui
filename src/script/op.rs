@@ -14,6 +14,13 @@ pub enum MouseButton {
     Right,
 }
 
+/// Modifier keys held during a left-button `drag`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DragMods {
+    pub alt: bool,
+    pub cmd: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chord {
     pub cmd: bool,
@@ -62,6 +69,8 @@ pub enum Op {
         /// Drag with the left button (a press-drag-release gesture handled by
         /// the current edit mode) instead of the default map pan.
         left: bool,
+        /// Modifier keys held for the whole left-button drag.
+        mods: DragMods,
     },
     Click {
         at: Point2,

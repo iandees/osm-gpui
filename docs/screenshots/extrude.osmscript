@@ -1,0 +1,66 @@
+# Extrude mode reshapes the dragged way (issue #130).
+#
+# Coordinate model: see select.osmscript — viewport center is window (488, 388).
+#
+# Fixture layout at zoom 18, centered on (40.7120, -74.0060):
+#   way 5001  a 4-node rectangle, window x 120..280, y 200..300.
+#   way 5002  a rectangle at x 480..640, y 200..300 whose east wall has two
+#             extra collinear nodes, so its middle segment is (640,240)-(640,260).
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/extrude.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+capture out/00-loaded.png
+
+key x
+wait_idle 1s
+assert_mode extrude
+
+# Pull a whole wall of the rectangle east: it stays a 4-node rectangle.
+drag 280,250 350,250 button=left
+wait_idle 1s
+capture out/01-wall-pulled.png
+
+action Undo
+wait_idle 1s
+capture out/02-wall-undone.png
+
+# Pull the short middle segment of the other wall: an L/T bump (+2 nodes).
+drag 640,250 700,250 button=left
+wait_idle 1s
+capture out/03-bump.png
+
+action Undo
+wait_idle 1s
+capture out/04-bump-undone.png
+
+# Push the middle segment inward: a notch.
+drag 640,250 590,250 button=left
+wait_idle 1s
+capture out/05-notch.png
+
+action Undo
+wait_idle 1s
+
+# Alt-drag keeps the old behaviour: a new separate way.
+drag 280,250 350,250 button=left alt=true
+wait_idle 1s
+capture out/06-alt-new-way.png
+
+action Undo
+wait_idle 1s
+
+# Cmd-drag moves the segment without adding nodes.
+drag 640,250 700,250 button=left cmd=true
+wait_idle 1s
+capture out/07-cmd-moved.png
+
+action Undo
+wait_idle 1s
+capture out/08-final.png
+
+log done
