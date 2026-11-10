@@ -67,6 +67,12 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         },
         "key" => parse_key(line_no, &rest),
         "capture" => parse_capture(line_no, &rest),
+        "action" => match rest.as_slice() {
+            [name] => Ok(Op::Action {
+                name: name.to_string(),
+            }),
+            _ => Err(err(line_no, "action: want ACTION_NAME like UploadToOsm")),
+        },
         "log" => Ok(Op::Log {
             message: rest.join(" "),
         }),
@@ -587,6 +593,19 @@ mod tests {
         } else {
             panic!("expected Key");
         }
+    }
+
+    #[test]
+    fn action_parses_a_name() {
+        let s = parse("action UploadToOsm").unwrap();
+        assert_eq!(
+            s[0].op,
+            Op::Action {
+                name: "UploadToOsm".to_string()
+            }
+        );
+        assert!(parse("action").is_err());
+        assert!(parse("action A B").is_err());
     }
 
     #[test]

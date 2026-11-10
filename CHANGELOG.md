@@ -6,6 +6,8 @@ Release notes for osm-gpui. The section whose heading matches the pushed tag
 ## Unreleased
 
 - The map dims everything outside the area your data was downloaded for, with a thin outline along its edge, so empty-looking ground that was never downloaded is not mistaken for ground with nothing on it. Opened `.osm` files with `<bounds>` show it too, and exported files keep every `<bounds>` element.
+- Fixed File > Upload to OSM (and its shortcut) doing nothing: it now shows the sign-in prompt, a "Nothing to upload" message, or the changeset dialog. Add Custom Imagery… had the same defect and is fixed too.
+- Script harness: new `action <Name>` op dispatches an app action the way a menu item does.
 
 ## 0.2.0
 

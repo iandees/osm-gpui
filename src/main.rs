@@ -3505,6 +3505,17 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Window-scoped handler for the `AddCustomImagery` action; see
+    /// `on_upload_to_osm` for why the global handler alone is not enough.
+    fn on_open_custom_imagery_dialog(
+        &mut self,
+        _: &AddCustomImagery,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_custom_imagery_dialog(window, cx);
+    }
+
     /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
     /// Called directly from the menu handler (via `with_map_viewer_in`) —
     /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike an inline
@@ -3636,6 +3647,29 @@ impl MapViewer {
     /// `SHOW_UPLOAD_DIALOG` queue, same as `show_quit_confirm_dialog`
     /// replaced `SHOW_QUIT_CONFIRM`.
     pub(crate) fn open_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let signed_in_name =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        self.open_upload_dialog_as(signed_in_name.as_deref(), window, cx);
+    }
+
+    /// Window-scoped handler for the `UploadToOsm` action (File > Upload to
+    /// OSM and its shortcut). Registered on the render tree like `on_quit`:
+    /// the global `menu::upload_to_osm` handler runs while this window is
+    /// checked out for the dispatch, so its window lookup used to fail
+    /// silently and the action never did anything.
+    fn on_upload_to_osm(&mut self, _: &UploadToOsm, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_upload_dialog(window, cx);
+    }
+
+    /// `open_upload_dialog` with the signed-in account passed in (so tests
+    /// don't depend on the on-disk token store). Always gives visible
+    /// feedback: see `upload_dialog::plan_upload`.
+    fn open_upload_dialog_as(
+        &mut self,
+        signed_in_name: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.upload_dialog.is_some() || self.sign_in_dialog.is_some() {
             return;
         }
@@ -3656,19 +3690,21 @@ impl MapViewer {
             })
             .collect();
 
-        if summaries.is_empty() || summaries.iter().all(|s| s.is_empty()) {
-            self.set_status(tr!("status.nothing_to_upload"));
-            cx.notify();
-            return;
-        }
-
-        // Uploading needs an OSM account; send signed-out users to Settings
-        // instead of letting the upload fail later for lack of a token.
-        let signed_in_name =
-            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
-        if osm_gpui::ui::sign_in_dialog::needs_sign_in(signed_in_name.as_deref()) {
-            self.show_sign_in_dialog(window, cx);
-            return;
+        use osm_gpui::ui::upload_dialog::{plan_upload, UploadPlan};
+        match plan_upload(signed_in_name, &summaries) {
+            UploadPlan::SignIn => {
+                // Uploading needs an OSM account; send signed-out users to
+                // Settings instead of letting the upload fail for lack of a
+                // token.
+                self.show_sign_in_dialog(window, cx);
+                return;
+            }
+            UploadPlan::NothingToUpload => {
+                self.set_status(tr!("status.nothing_to_upload"));
+                cx.notify();
+                return;
+            }
+            UploadPlan::ShowDialog => {}
         }
 
         let dialog =
@@ -4632,6 +4668,8 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_apply_nsi_preset))
             .on_action(cx.listener(Self::on_change_feature_type))
             .on_action(cx.listener(Self::on_quit))
+            .on_action(cx.listener(Self::on_upload_to_osm))
+            .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.custom_imagery_dialog.clone())
             .children(self.quit_confirm_dialog.clone())
@@ -6922,6 +6960,97 @@ mod tests {
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("Select an open way, or the end node of one, to continue drawing it")
                 );
+            })
+            .unwrap();
+    }
+
+    /// Give the test view's layer a pending change (one new node).
+    fn make_pending_change(view: &mut MapViewer) {
+        let id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer_mut(id)
+            .and_then(|l| l.as_editable_mut())
+            .unwrap()
+            .create_node(CENTER_LAT, CENTER_LON, None)
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn upload_without_changes_shows_a_status_message(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.open_upload_dialog_as(Some("me"), window, cx);
+                assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("Nothing to upload")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn upload_without_any_layer_shows_a_status_message(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, window, cx| {
+                view.open_upload_dialog_as(Some("me"), window, cx);
+                assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn upload_signed_out_shows_the_sign_in_dialog(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                make_pending_change(view);
+                view.open_upload_dialog_as(None, window, cx);
+                assert!(view.sign_in_dialog.is_some());
+                assert!(view.upload_dialog.is_none());
+            })
+            .unwrap();
+    }
+
+    /// Regression: dispatching `UploadToOsm` through the window (as the
+    /// native menu and the shortcut do) used to do nothing, because the only
+    /// handler was a global one that re-looked-up the checked-out window.
+    #[gpui::test]
+    fn upload_action_dispatched_through_the_window_opens_a_dialog(cx: &mut TestAppContext) {
+        use gpui::Action as _;
+        // Signed out -> the sign-in prompt. (A signed-in upload dialog needs
+        // gpui-component's `Root`, which this test window lacks, so skip on a
+        // machine with a stored login.)
+        let stored =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if !osm_gpui::ui::sign_in_dialog::needs_sign_in(stored.as_deref()) {
+            return;
+        }
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                make_pending_change(view);
+                window.focus(&view.focus_handle, cx);
+            })
+            .unwrap();
+        // Draw so the dispatch tree (with the root's action listeners) exists.
+        cx.update(|cx| {
+            window.update(cx, |_, window, _| window.refresh()).unwrap();
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(UploadToOsm.boxed_clone(), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.sign_in_dialog.is_some());
             })
             .unwrap();
     }
