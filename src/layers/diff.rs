@@ -46,6 +46,11 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
             way.tags.extend([marker()]);
         }
     }
+    for relation in &mut baseline.relations {
+        if edits.modified_relations.contains(&relation.id) {
+            relation.tags.extend([marker()]);
+        }
+    }
     for (id, node) in &edits.deleted_nodes {
         // A deleted element that was never uploaded has nothing to delete.
         if *id >= 0 {

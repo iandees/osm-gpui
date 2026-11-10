@@ -99,11 +99,12 @@ fn write_way(out: &mut String, way: &OsmWay, action: Action) {
     out.push_str("  </way>\n");
 }
 
-fn write_relation(out: &mut String, relation: &OsmRelation) {
+fn write_relation(out: &mut String, relation: &OsmRelation, action: Action) {
     let _ = writeln!(
         out,
-        "  <relation id=\"{}\"{} visible=\"true\">",
+        "  <relation id=\"{}\"{}{} visible=\"true\">",
         relation.id,
+        action.attr(),
         version_attr(relation.id, relation.version)
     );
     for member in &relation.members {
@@ -137,6 +138,8 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
         .chain(&diff.modified_ways)
         .map(|w| w.id)
         .collect();
+
+    let changed_relations: HashSet<i64> = diff.modified_relations.iter().map(|r| r.id).collect();
 
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -203,7 +206,12 @@ pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
     let mut relations: Vec<&OsmRelation> = current.relations.iter().collect();
     relations.sort_by_key(|relation| relation.id);
     for relation in relations {
-        write_relation(&mut out, relation);
+        let action = if changed_relations.contains(&relation.id) {
+            Action::Modify
+        } else {
+            Action::None
+        };
+        write_relation(&mut out, relation, action);
     }
 
     out.push_str("</osm>\n");
@@ -339,6 +347,65 @@ mod tests {
 
         // Exporting the reloaded layer again is byte-for-byte stable.
         assert_eq!(to_osm_xml(&baseline, &reloaded), xml);
+    }
+
+    #[test]
+    fn a_membership_edit_is_exported_as_modify_and_restored_on_reopen() {
+        let relation = |members: &[(i64, &str)]| OsmRelation {
+            id: 5,
+            members: members
+                .iter()
+                .map(|&(reference, role)| OsmMember {
+                    member_type: MemberType::Way,
+                    reference,
+                    role: role.to_string(),
+                })
+                .collect(),
+            version: 2,
+            tags: tags(&[("type", "route")]),
+        };
+        let mut original = data(
+            vec![node(1, 1.0, 1.0, 1, &[]), node(2, 2.0, 2.0, 1, &[])],
+            vec![way(10, vec![1, 2], 1, &[]), way(-1, vec![1, 2], 1, &[])],
+        );
+        original.ways.remove(&-1);
+        original.relations.push(relation(&[(10, "forward")]));
+        let mut current = original.clone();
+        current
+            .ways
+            .insert(-1, way(-1, vec![2, 1], 1, &[("name", "new half")]));
+        current.relations[0] = relation(&[(10, "forward"), (-1, "forward")]);
+
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains(concat!(
+                "  <relation id=\"5\" action=\"modify\" version=\"2\" visible=\"true\">\n",
+                "    <member type=\"way\" ref=\"10\" role=\"forward\"/>\n",
+                "    <member type=\"way\" ref=\"-1\" role=\"forward\"/>\n",
+                "    <tag k=\"type\" v=\"route\"/>\n",
+                "  </relation>\n",
+            )),
+            "{xml}"
+        );
+
+        let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        assert_eq!(edits.modified_relations, HashSet::from([5]));
+        assert_eq!(reloaded.relations, current.relations);
+
+        // The reopened layer still has the relation edit pending, with the
+        // same base version, and re-exports byte for byte.
+        let baseline = baseline_for_loaded_file(&reloaded, &edits);
+        let diff = diff_osm_data(&baseline, &reloaded);
+        assert_eq!(diff.modified_relations, current.relations);
+        assert_eq!(diff.modified_relations[0].version, 2);
+        assert_eq!(to_osm_xml(&baseline, &reloaded), xml);
+
+        // An untouched relation carries no action.
+        let plain = to_osm_xml(&original, &original);
+        assert!(
+            plain.contains("<relation id=\"5\" version=\"2\""),
+            "{plain}"
+        );
     }
 
     #[test]
