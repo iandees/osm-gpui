@@ -1,245 +1,137 @@
 # osm-gpui
 
-Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industries/zed) (the framework behind Zed). The long-term goal is a JOSM-class editor that feels smoother and more native.
+An experimental OpenStreetMap editor written in Rust on [GPUI](https://github.com/zed-industries/zed), the UI framework behind Zed. The goal is a JOSM-like editor with more efficient rendering and a native feel, especially on macOS.
 
-## Status (honest)
+This is early software. It can upload edits to the live OpenStreetMap database, so review your changes carefully before uploading, and consider trying it against the OSM dev server first (Settings > Account).
 
-**Working**
-- Navigation, clamped to zoom 1–20: trackpad two-finger scroll pans and pinch zooms; a mouse wheel zooms at the cursor (as does ⌘- or Ctrl-scroll on a trackpad); right-drag, middle-drag, or Space + left-drag pans; arrow keys pan and `+`/`-` zoom.
-- Web Mercator projection (EPSG:3857) with lat clamped to ±85.051°.
-- First launch: the app opens on the OpenStreetMap Carto layer, with a welcome card over the map while no OSM data is loaded. It offers "Download OSM data here" (or "Zoom in to download" when the view is too large for the API) and "Open file…", and goes away once a data layer exists. The map stays pannable and zoomable underneath.
-- OSM XML loading via **File > Open** (⌘O). First loaded file auto-fits viewport.
-- Data rendering tuned for tracing over imagery: thin colored ways with a dark casing (zoom ≥ 15), round outlined node markers (plain way vertices hidden below zoom 16), and direction arrows on one-way roads, roundabouts and flowing waterways (zoom ≥ 16). Hovering a feature in Select mode highlights what a click would select.
-- Raster tiles via **Imagery** menu. Supports built-in OpenStreetMap Carto, plus custom imagery from the Editor Layer Index (ELI). Async download with `ureq`, PNG cached with size bounds and oldest-mtime eviction, loaded through GPUI's asset system. Tile attribution rendered on-screen.
-- Adaptive lat/lon grid overlay (configurable via settings).
-- Resizable right panel (drag its left edge; the width is remembered). Its layer list has an eye toggle per layer for visibility; clicking an OSM layer's row makes it the active layer that the drawing modes write into.
-- Debug overlay: zoom, center coords, object/tile counts, cache stats.
-- Feature selection: click a node or way to select it; Shift-click to toggle; rectangular box-select. Right panel shows feature type, OSM link, and all tags.
-- **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tags are edited in place in the side panel's Tags table: click a key or value to edit it (Enter or clicking away commits, Esc abandons), "Add tag" appends a row. Create nodes (negative ID for new). Delete features (also removing them from their relations; refused if that would empty a relation or leave a turn restriction without `from`/`via`/`to`). Edit multi-select to batch-apply tag changes.
-- **Selection actions** (`src/selection_actions.rs`): right-click (a click, not a drag, which still pans) opens a context menu of the actions that apply to the selection; right-clicking an unselected feature selects it first. Square (iD-style orthogonalize), Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy/Paste Tags and Delete, each one undo step (Copy Tags only remembers tags).
-- **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
-- **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit); a download is merged by object id into the active layer, keeping local edits, so downloading again after a pan extends one dataset rather than stacking duplicate layers. Unsaved-changes warning on quit.
-- **Upload to OSM** as a changeset (**File > Upload to OSM…**, ⌘⇧U), and **export to a file** (**File > Export…**, ⌘E): a JOSM-style `.osm` holding the whole layer with pending edits marked by `action` attributes and negative ids, so it can be reopened here or in JOSM with those edits still pending.
-- Settings window: choose OSM API server (prod/dev/custom), per-server OAuth client IDs, custom imagery sources.
-- **MapCSS-subset styling** (`node`/`way`/`area` selectors with `[k]`/`[k=v]`/`[k!=v]`; `color`, `width`, `symbol-size`, `fill-color`, `fill-opacity`). Zoom selectors, per-rule casing and dashes are not supported; the casing, vertex hiding and direction arrows above are fixed renderer behaviour.
-- **Scripted screenshot harness** for visual regression and automation. `.osmscript` DSL with viewport, click, drag, key, load_osm, capture, wait_idle ops.
+## Features
 
-**Not implemented**
-- Relation rendering (beyond highlighting the members of the selected relation), and hit-testing relations on the map. Relations are parsed, edited, created and deleted. A node or way's relations are listed in the side panel's Relations section; clicking a row selects that relation, and its member nodes and ways (and those of relations inside it, one level) are highlighted on the map in purple. With one relation selected the side panel shows its Tags (edited like any feature's, with Fields from the matching preset when it has any) and a Members list: click a name to select that member (members not in the loaded data read "not downloaded"), click a role to edit it (Enter commits, Esc cancels, empty is allowed), and use the arrows and x to move or remove a member; each change is one undo step, and removing the last member (or a restriction's `from`/`via`/`to`) is refused. Long relations show their first 100 members until "Show all". Each Relations row has an x to take the feature out of that relation, and "Add to Relation…" (context and Tools menus) appends the selected nodes and ways to a relation chosen in a search dialog. "New Relation" (context and Tools menus) makes a tagless relation out of the selected nodes, ways and relations, in selection order with empty roles, and selects it so its tags and roles can be filled in the side panel. Delete removes a selected relation (not its members) as one undo step; a relation that is a member of another relation is refused unless that parent is deleted with it. Zoom to Selection fits its loaded members, and copy/paste tags work. Memberships are also kept consistent by Split, Merge, Join and Delete (below), and edited relations upload as modified relations (untested against a real OSM server).
-- Text labels, POI icons.
-- Search, full MapCSS (e.g., text, z-index, pattern fills).
-- Resolving upload conflicts; saving back to the opened file (Export always asks where to write).
+**Viewing and imagery**
+- Pan and zoom with trackpad scroll and pinch, mouse wheel, drags, and the keyboard.
+- Raster imagery from OpenStreetMap Carto, the [Editor Layer Index](https://github.com/osmlab/editor-layer-index) (filtered to the current view), and custom tile URL templates you add yourself. Attribution is shown on the map, and tiles are cached on disk within a size limit you can set and clear in Settings > Imagery.
+- A lat/lon grid layer, and a layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
+- OSM data is drawn for tracing over imagery: thin cased ways, round node markers, direction arrows, area fills, and hover highlighting. Styling is a built-in subset of MapCSS; it is not user-configurable.
 
-## Build & run
+**Editing modes** (Mode menu, toolbar, or the shortcut keys below)
+- Select: click, Shift-click, box-select, and double-click inside a closed way. Drag selected nodes to move them.
+- Add: draw nodes and ways, snapping new nodes onto existing ways.
+- Building: draw a rectangular building (three clicks), or align one to a selected squared way.
+- Extrude: pull a way segment outward.
 
-```bash
-cargo run
-```
+**Selection actions** (Tools menu, right-click context menu, and shortcuts)
+- Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete. Each is one undo step.
 
-### Prerequisites / gotchas
+**Tags and presets**
+- Tags are edited in place in the side panel. Fields come from the bundled [iD tagging schema](https://github.com/openstreetmap/id-tagging-schema) preset that matches the feature. Edit > Change Feature Type picks a preset, and Edit > Apply NSI Preset applies a Name Suggestion Index brand.
 
-- **Metal Toolchain required.** GPUI compiles Metal shaders at build time. If you see `cannot execute tool 'metal' due to missing Metal Toolchain`, run:
-  ```bash
-  xcodebuild -downloadComponent MetalToolchain
-  ```
-- **Out-of-tree target dir.** `.cargo/config.toml` points `target-dir` to `~/.rust/osm-gpui/target` so build artifacts (~1 GB) stay out of the Dropbox/Synology-synced project folder. The `.cargo/` directory is gitignored because the path is user-specific. If cloning fresh on another machine, recreate it.
-- `gpui` is pulled from the `zed-industries/zed` git repo, so the first build takes several minutes.
+**Relations**
+- A node's or way's relation memberships are listed in the side panel. Selecting a relation highlights its members on the map and lets you edit its tags, member roles and order, and remove members.
+- Add to Relation appends the selection to a relation chosen from a search dialog.
+- Split, Merge, Join, and Delete keep relation memberships consistent. Modified relations are included in uploads and exports.
 
-## Releases
+**Data**
+- Open `.osm` XML files, and download the current view from the OSM API (areas up to 0.25 square degrees). Downloads merge into the active layer and keep local edits.
+- Sign in with OpenStreetMap OAuth (tokens go in the platform keychain) and upload your edits as a changeset after a review step.
+- Export a layer to a JOSM-style `.osm` file that keeps pending edits, so you can reopen it here or in JOSM.
+- A warning on quit when there are unsaved changes.
 
-The version lives in one place: `version` in `Cargo.toml`. The app reads it with `env!("CARGO_PKG_VERSION")` (`src/version.rs`) for the HTTP `User-Agent` (`osm-gpui/<version> (+https://github.com/iandees/osm-gpui)`) and the changeset `created_by` tag (`osm-gpui <version>`).
+**Undo and history**
+- Undo and redo for every edit, with a History list in the side panel.
 
-**Cutting a release**
+**Localization**
+- The interface is available in English and German, and preset names and field labels follow the language. Choose it in Settings > Language, or for one run with `--language <tag>` (for example `--language de`).
 
-1. Bump `version` in `Cargo.toml` (and let `Cargo.lock` update) and add a `## X.Y.Z` section to `CHANGELOG.md`. Commit and merge to `main`.
-2. Tag the merge commit and push the tag: `git tag vX.Y.Z` then `git push origin vX.Y.Z`.
+## Install
 
-`.github/workflows/release.yml` fails if the tag (without the `v`) differs from the `Cargo.toml` version. Otherwise it builds and attaches these files to a new GitHub Release. The release body is the matching `## X.Y.Z` section of `CHANGELOG.md`; if there is none, GitHub's generated notes are used instead.
+Download a build for your platform from the [releases page](https://github.com/iandees/osm-gpui/releases):
 
-- `osm-gpui-X.Y.Z-macos-universal.zip` — `osm-gpui.app` (Apple Silicon + Intel)
-- `osm-gpui-X.Y.Z-windows-x86_64.zip` — `osm-gpui.exe`
-- `osm-gpui-X.Y.Z-linux-x86_64.tar.gz` — binary, a `.desktop` file and the icon (`osm-gpui.png`; copy it into your icon theme, e.g. `~/.local/share/icons/hicolor/512x512/apps/`, for the `Icon=osm-gpui` entry to resolve)
-- `SHA256SUMS`
+- macOS: a universal `.app` in a `.zip` (Apple Silicon and Intel). It is only ad-hoc signed, not notarized, so Gatekeeper blocks the first launch of a downloaded copy. Right-click the app and choose Open, or run `xattr -dr com.apple.quarantine osm-gpui.app`.
+- Windows: a `.zip` containing `osm-gpui.exe`.
+- Linux: a `.tar.gz` containing the binary, a `.desktop` file, and an icon.
 
-Release builds on Windows use the GUI subsystem so no console window opens; as a side effect `--script` output on stdout does not show there. Run the harness from a debug build (`cargo run -- --script ...`) to see it.
+macOS is the primary and best-tested platform. The Windows and Linux builds are provided, but expect rough edges there.
 
-The same build jobs run (without publishing) on pull requests that touch the workflow, `scripts/`, `packaging/` or `Cargo.toml`, and on manual `workflow_dispatch` runs; the packages are uploaded as workflow artifacts.
+### Build from source
 
-**The macOS app is not notarized.** It is only ad-hoc signed (there is no Developer ID certificate), so Gatekeeper blocks the first launch of a downloaded copy. Right-click the app and choose Open, or run `xattr -dr com.apple.quarantine osm-gpui.app`.
+You need a stable Rust toolchain ([rustup](https://rustup.rs/)). GPUI is pulled from the Zed git repository, so the first build takes several minutes.
 
-**Building the `.app` locally**
+- macOS: Xcode and its Metal Toolchain, which GPUI needs to compile shaders. If the build fails with `cannot execute tool 'metal' due to missing Metal Toolchain`, run `xcodebuild -downloadComponent MetalToolchain`.
+- Windows: the MSVC toolchain (`x86_64-pc-windows-msvc`).
+- Linux: the release workflow installs these packages on Ubuntu 22.04: `build-essential clang cmake pkg-config libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev`.
 
 ```bash
-cargo build --release
-scripts/bundle-macos.sh        # writes dist/osm-gpui.app
+cargo run --release
 ```
 
-Use `--binary PATH` to package a different executable (for example a `lipo`'d universal one) and `--out DIR` to change the output directory. If you use a custom target dir, set `CARGO_TARGET_DIR` so the script finds `release/osm-gpui`.
+Release builds are much faster than debug builds for panning and zooming large datasets; measure performance with `--release`.
 
-**App icon.** The icon is a placeholder. `scripts/make-icon.py` (Python with Pillow) draws it and writes `assets/AppIcon.png`, `assets/AppIcon.ico` and, on macOS, `assets/AppIcon.icns` (via `iconutil`); all three are checked in, so only run it after changing the artwork. `scripts/bundle-macos.sh` copies `AppIcon.icns` into the bundle and sets `CFBundleIconFile`; `build.rs` embeds `AppIcon.ico` in the Windows executable (via `winresource`); the Linux archive ships the PNG.
+## Getting started
 
-## Architecture map
+1. Open an `.osm` file (File > Open) or zoom in on the map and choose File > Download from OSM. Zoom in further if it reports the area is too large.
+2. Optionally add imagery from the Imagery menu to trace over.
+3. Edit. Press `S`, `A`, `B`, or `X` to switch modes, select features to edit their tags in the side panel, and use the Tools menu or right-click menu for actions. The status bar shows a hint for the current mode and the number of unsaved edits.
+4. To upload, sign in under Settings > Account (Settings is in the app menu), then choose File > Upload to OSM, enter a changeset comment, and confirm. Settings > Account also selects the API server (primary, dev, or custom) and optional per-server OAuth client IDs.
+5. Or choose File > Export to save your work, with pending edits, as an `.osm` file.
 
-Entry point is `src/main.rs` — `src/lib.rs` re-exports a small public API but the real UI lives in `main.rs`.
+## Keyboard shortcuts
 
-### Live modules
+These are the defaults, written with macOS modifier symbols. Everything in the table can be changed in Settings > Keyboard Shortcuts. The single-letter shortcuts only work while the map has focus.
 
-| Module | Purpose |
-|---|---|
-| `src/main.rs` | GPUI app entry. `MapViewer` component, menus, key bindings, event wiring, layer & tag-edit & quit-confirm dialogs. Undo/redo queue, selection state, edit-context tracking. |
-| `src/undo.rs` | `UndoStack`, `UndoableAction` enum (`MoveNodes`, `SetTags`, `CreateNode`, `DeleteFeature`, `SetRelationMembers`, ...), `NodeMoveTargets`, `MoveDrag` state machine for drag-to-completion. |
-| `src/viewport.rs` | `Viewport` — pan/zoom state, mouse & scroll handling. Wraps `CoordinateTransform`. |
-| `src/coordinates.rs` | `CoordinateTransform` (Web Mercator), `GeoBounds`, and `validate_coords` / `safe_point` helpers used to keep NaN out of Lyon paths. |
-| `src/selection.rs` | `FeatureRef`, `Selection` (individual or multi-select across layers), hit-test logic, selection-update rules. |
-| `src/relations.rs` | Pure relation rules: membership upkeep for split, merge, join and delete; member list edits (role, reorder, remove, add) with their refusals; member labels, bounding box and picker choices. |
-| `src/ui/relation_picker_dialog.rs` | "Add to Relation…" picker modal. |
-| `src/osm.rs` | OSM XML parser (`quick-xml`). Types: `OsmData`, `OsmNode`, `OsmWay`, `OsmRelation`, `OsmParser`, `OsmParseError`. |
-| `src/tiles.rs` | Tile math only — `TileCoord`, `lat_lon_to_tile`, `get_tiles_for_bounds`. |
-| `src/tile_cache.rs` | `TileAsset` implementing GPUI's `Asset` trait. Downloads PNGs with `ureq`, validates magic bytes, caches with bounded eviction (oldest-mtime), converts RGBA→BGRA for GPUI. Concurrent fetches capped at 4 by a counting semaphore. |
-| `src/osm_api.rs` | OSM API client: `/capabilities`, `/bbox/...` download, 30-second request timeout. |
-| `src/auth.rs` | OAuth loopback browser flow (PKCE), bearer-token refresh logic, keyring + fallback-file storage with file permissions and atomic writes. |
-| `src/imagery/mod.rs` | Editor Layer Index (ELI) fetch, parse, and cache. Per-imagery `ImageryEntry` with attribution. |
-| `src/layers/mod.rs` | `MapLayer` trait (render, update, stats, modified-flag) and `LayerManager`. |
-| `src/layers/tile_layer.rs` | Raster tile layer — calculates visible tiles, emits `img()` elements. |
-| `src/layers/osm_layer.rs` | Vector OSM layer. Caches mercator coords, way vertices, style (color/width per feature). Hit-test via R-tree. Node/way paint using `paint_quad` + `paint_path` batching. |
-| `src/layers/grid_layer.rs` | Lat/lon grid with zoom-adaptive spacing. |
-| `src/style/mapcss.rs` | MapCSS-subset parser and matcher (node/way selectors, `[k]`/`[k=v]`, zoom ranges `|z12-`, color, width, casing, dashes, fill). |
-| `src/nsi.rs` | NSI (Name Suggestion Index) integration (name/brand autocomplete — not yet wired to UI). |
-| `src/custom_imagery_store.rs` | Persistent store for user-added imagery sources. |
-| `src/settings_store.rs` | Persistent user settings (OSM API server choice, per-server OAuth client IDs). |
-| `src/idle_tracker.rs` | `IdleTracker` — counts in-flight tile fetches. Powers `wait_idle` in the script harness. |
-| `src/script/` | Line-DSL `.osmscript` parser and runner for scripted session capture. Ops: viewport, click, drag, key, load_osm, capture, wait_idle, etc. |
-| `src/script_harness.rs` | Runner bridge from `script/` to the live `App` via the `AppHandle` trait. |
-| `src/menu.rs` | Menu bar structure and action handlers (Open, Download, Settings, Help, About). |
-| `src/ui/about_dialog.rs` | In-window About modal (name, version, description, project link); opened by the app menu's About item. |
-| `src/ui/` | GPUI components for side panels (layers, tags, history), dialogs (tag-edit, quit-confirm, custom-imagery, settings), settings window. |
-| `src/i18n.rs`, `locales/` | Localization: the `tr!` / `tr_count!` macros, locale selection, and the message catalogs (see Localization below). |
+| Area | Shortcut | Action |
+|---|---|---|
+| General | `⌘,` / `⌘Q` | Settings / Quit |
+| File | `⌘O` / `⌘E` | Open / Export |
+| File | `⇧⌘D` / `⇧⌘U` | Download from OSM / Upload to OSM |
+| Edit | `⌘Z` / `⇧⌘Z` | Undo / Redo |
+| Edit | `⌘A` | Select All |
+| Edit | `⇧⌘C` / `⇧⌘V` | Copy Tags / Paste Tags |
+| View | `⌘=` / `⌘-` | Zoom In / Zoom Out |
+| View | `⌘0` / `⌘J` | Zoom to Data / Zoom to Selection |
+| Modes | `S` `A` `B` `X` | Select / Add / Building / Extrude |
+| Selection actions | `Q` `O` | Square / Circularize |
+| Selection actions | `R` `C` | Reverse Way / Join Ways |
+| Selection actions | `G` `E` | Separate Node / Extend Way |
+| Selection actions | `P` `M` `T` | Split Way / Merge Nodes / Straighten Way |
 
-### Runtime flow
+Fixed keys: Delete or Backspace removes the selection, Esc cancels or deselects, Enter finishes a way in Add mode, arrow keys pan, `+` and `-` zoom, and holding Space turns a left-drag into a pan. Right-drag and middle-drag also pan, and a right-click (without dragging) opens the context menu. `⌘M`, `⌘H`, and `⌥⌘H` are the standard macOS minimize and hide keys.
 
-1. `main()` initializes `App`, registers `OpenOsmFile` / `Quit` actions, builds the menu bar.
-2. `MapViewer::new` creates viewport (NYC, zoom 11), `LayerManager`, `TileCache`, and adds a `GridLayer` as the only default layer.
-3. Each frame, `render` calls `check_for_new_osm_data()` / `check_for_layer_requests()` to drain the cross-thread queues, then `update_all()` on layers, then `render_all_elements()` (raster) followed by `render_all_canvas()` (vector) inside a GPUI canvas element.
-4. **File > Open (⌘O)** → `rfd` dialog on a worker thread → parses XML → pushes `OsmData` into `SHARED_OSM_DATA` → next frame creates a new `OsmLayer`.
-5. **Imagery > OpenStreetMap Carto** → pushes layer name into `LAYER_REQUESTS` → next frame constructs `TileLayer`.
+## Development
 
-### Key bindings
+CI (`.github/workflows/ci.yml`) runs four checks; run all of them before opening a pull request:
 
-Defaults; all but the fixed window/app ones can be changed in **Settings > Keyboard Shortcuts** (the table lives in `src/keybindings.rs`).
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo build
+cargo test
+```
 
-- ⌘O open · ⌘⇧D download · ⌘⇧U upload · ⌘, settings · ⌘Q quit
-- ⌘Z undo · ⌘⇧Z redo · ⌘A select all · Delete removes the selection · Esc cancels/deselects
-- ⌘⇧C copy tags · ⌘⇧V paste tags (map focused, so they leave text fields alone; also in the **Edit** menu and the context menu). Copy remembers the tags of the one selected feature in an in-app tag clipboard (not the system pasteboard); Paste sets them on every selected feature of the active layer, overwriting values for the same keys and leaving other tags alone
-- ⌘= / ⌘- zoom in/out · ⌘0 zoom to data · ⌘J zoom to selection
-- `S` / `A` / `B` / `X` — Select / Add / Building / Extrude mode (map focused)
-- Building mode: click three times (corner, corner, depth). With one squared closed way (e.g. a rectangular building) selected when you press `B`, new buildings align to it instead: click or drag from one corner to the opposite corner; Esc exits the mode
-- `Q` square · `O` circularize · `R` reverse way · `C` join ways · `G` separate node · `E` extend way · `P` split way · `M` merge nodes · `T` straighten way — selection actions (map focused); also in the **Tools** menu and the right-click context menu
-- Split (`P`): with one node selected that is inside a way (not its first or last node), or two nodes of a closed way, the way is cut there. The original keeps its id and the longer part; a new way gets the rest and a copy of all tags, and both share the split node. A node shared by several ways splits all of them, unless one way is selected too (then only that one). In every relation holding the way, the new way is added with the same role next to the original, on the side that keeps neighbouring ways connected (after it when that can't be told); in a turn restriction (`type=restriction`/`restriction:*`) a `from`/`to` way follows only the half touching the `via` member, and the split is refused if that can't be determined. Merge (`M`): two or more nodes become one: the server's node survives if exactly one is, else the first selected, at its own position; tags are unioned (differing values for a key refuse), ways use the survivor, repeats collapse, and the others are deleted (refused if that would leave a way with fewer than two distinct nodes); relation memberships of the removed nodes move to the survivor, dropping an adjacent exact duplicate. Straighten (`T`): interior nodes of the selected open ways (3+ nodes) are projected onto the line between the first and last node; refused if any node would move more than 10% of the way's length. Reverse (`R`) also flips `:forward`/`:backward` and `:left`/`:right` in keys, `forward`/`backward`, `left`/`right`, `up`/`down` in `direction`/`incline`/`side` values, and the sign of a numeric `incline`; `oneway` is left alone
-- Join (`C`): two or more ways that chain end to end become one (the server's way survives if exactly one is, else the first selected; tags are merged, and differing values for a key, a needed reversal of a `oneway` way refuse the join). a removed way's relation membership is dropped when the survivor is a member with the same role, or re-pointed at the survivor when it isn't a member; different roles, or a turn restriction, refuse. Separate (`G`): with one node selected that several ways share, every way but the first gets its own copy; select a way as well to detach only that way. Extend (`E`): with an open way, or its first/last node, selected, switches to Add mode continuing that way from that end (Enter/Esc finish)
-- Arrow keys pan a quarter of the view · `+` / `-` zoom a level · hold Space to pan with a left-drag (map focused; not customizable)
-- ⌘M minimize · ⌘H hide · ⌥⌘H hide others
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and pull request guidance.
 
-The status bar at the bottom of the window shows a hint for the current mode (or the latest status message / running operation), the unsaved-edit count, the signed-in account, the cursor's coordinates, and the zoom level.
-
-## Localization
-
-**Available languages:** English and German (Deutsch). The German catalog (`locales/de.yml`) is machine-drafted and has not yet been reviewed by a native speaker; corrections are welcome as pull requests or issues.
-
-The app's own interface text (menus, toolbar, status bar, side panel, dialogs, Settings, shortcut names, error messages) lives in message catalogs under `locales/`, one YAML file per language named by its locale tag (`locales/en.yml`). They are compiled into the binary by [`rust-i18n`](https://crates.io/crates/rust-i18n), so there is nothing to install. English is the source language and the fallback: a key missing from another catalog shows its English text.
-
-In code, use `tr!("menu.file.open")`, `tr!("status.exported", path = path.display())` for `%{path}` placeholders, and `tr_count!("status.pending_edits", n)` for plurals (the catalog has a `.one` / `.other` key per plural form; `i18n::plural_category` picks the form for a language). Keys are grouped by area (`menu.*`, `mode.*`, `status.*`, `panel.*`, `dialog.*`, `settings.*`, `shortcut.*`, `error.*`). Give translators whole sentences with named placeholders rather than gluing fragments together.
-
-**Adding a language:** copy `locales/en.yml` to `locales/<tag>.yml` (for example `fr.yml` or `pt-BR.yml`), translate the values (keep the keys, the `%{placeholders}`, and the literal `{z}`/`{x}`/`{y}` in the custom-imagery messages), and set `meta.language_name` to the language's own name; that is what the Settings dropdown shows. Rebuild. If a language needs plural forms beyond `one`/`other`, add the category to `i18n::plural_category` and the matching keys to its catalog. `cargo test` checks that every key used in the source exists in `en.yml`.
-
-**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart. `--language <tag>` (for example `cargo run -- --language de`) overrides the stored setting for that run only and never writes to `settings.json`, which makes it handy for trying a language and for scripted screenshots.
-
-**Preset and field labels:** the side panel's preset names ("Park", "Building"), field labels, field placeholders and option labels come from the bundled iD tagging schema ([`@openstreetmap/id-tagging-schema`](https://github.com/openstreetmap/id-tagging-schema), ISC licence) and follow the same language choice. Their translations are separate from the UI catalogs because upstream covers many more languages. They are `assets/presets/translations/<locale>.json` (about 270 KB each, embedded in the binary); only German (`de`) is bundled so far. The preset locale is resolved from the requested language on its own (`de-AT` falls back to `de`, then to English), and any string a translation lacks shows the schema's English text. The preset picker finds a preset by its translated name or search terms as well as its English name. **Adding a preset language:** run `cargo run --example update_preset_translations -- 6.19.2 <locale>` (use the schema version recorded in `assets/presets/LICENSE`; it trims upstream's `dist/translations/<locale>.min.json` to what the app uses), check the new file in, and rebuild; `build.rs` embeds every `*.json` in that directory. When the vendored schema is updated, regenerate the translations for the same version.
-
-**Not translated yet:** the Name Suggestion Index data (brand names are proper names and stay as they are); tag keys and values (the Tags table shows the raw OSM tags); the debug overlay; layer names such as "OpenStreetMap Carto" and "Coordinate Grid"; log output and the script harness. Nothing sent to the OSM API or written to files (for example changeset tags) is localized.
-
-## Scripted screenshots
-
-Run a script of viewport/input/capture operations against the live app and produce PNGs. Useful for visual regression checks and LLM-driven testing where a headed browser test isn't available.
+**Scripted screenshots.** `--script <file>` runs a line-oriented `.osmscript` file (viewport, click, drag, scroll, key, load_osm, wait_idle, capture, and so on) against the live app and writes PNGs, which is useful for checking UI changes without driving the app by hand. Examples are in `docs/screenshots/`; `docs/screenshots/smoke.osmscript` exercises every operation and the scripts under `tests/ui/` run as tests.
 
 ```bash
 cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
-Flags:
+Other flags are `--window-size WxH`, `--keep-open` (stay open after the last step), and `--language <tag>`. Windows release builds have no console, so run the harness from a debug build there to see its output.
 
-- `--script <path>` — run a `.osmscript` file. Without this flag, the app launches normally.
-- `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
-- `--keep-open` — don't exit after the last step, so you can poke at the final state.
-- `--language <tag>` — use this UI language for the run instead of the saved setting (see Localization).
+**Localization.** Interface text lives in `locales/<tag>.yml` (English is the source and fallback). To add a language, copy `locales/en.yml`, translate the values, and set `meta.language_name`. Preset translations are `assets/presets/translations/<locale>.json`; add one with `cargo run --example update_preset_translations -- <schema-version> <locale>`, using the version in `assets/presets/LICENSE`.
 
-On Windows, release builds are GUI-subsystem executables, so the harness's stdout/stderr output is not shown (captures are still written). Use a debug build (`cargo run`) to see it.
+**Presets.** The iD tagging schema data in `assets/presets/` is refreshed with `cargo run --example update_presets`. It is not part of CI; review the resulting diff by hand.
 
-Script format is line-oriented with `#` comments:
+**Releases.** The version is `version` in `Cargo.toml`; it is also used in the HTTP User-Agent and the changeset `created_by` tag. To release, bump it, add a `## X.Y.Z` section to `CHANGELOG.md`, merge to `main`, then push a matching tag (`git tag vX.Y.Z`, `git push origin vX.Y.Z`). `.github/workflows/release.yml` builds the macOS, Windows, and Linux packages and publishes a GitHub Release with checksums, using the changelog section as the release notes. To build the macOS app locally, run `cargo build --release` then `scripts/bundle-macos.sh`, which writes `dist/osm-gpui.app`.
 
-```
-window 1200 800
-viewport 47.6062 -122.3321 12
-wait_idle 10s
-capture out/seattle.png
+## Known limitations
 
-drag 600,400 300,400
-wait_idle
-capture out/panned.png
+- Relations can be selected and edited (tags, members, roles) but not created or deleted from the UI, and they are not drawn on the map beyond highlighting the members of the selected relation.
+- Uploads of modified relations have not been tested against a live OSM server.
+- Upload conflicts are reported (the server's 409 shows as an error) but not resolved: if someone else changed the same objects after you downloaded them, you have to reconcile manually, for example by downloading again.
+- Export always asks where to write; there is no save back to the opened file.
+- The German text is machine-drafted and has not been reviewed by a native speaker. Tag keys and values, layer names, the debug overlay, and Name Suggestion Index brand names are not translated.
+- No text labels or POI icons on the map, no search, and no user-defined map styles.
+- Keyboard shortcuts use the `cmd` modifier, which has only been checked on macOS.
 
-scroll 600,400 dy=-5
-click 600,400
-key cmd+o
-wait 250ms
-```
+## License
 
-Ops: `window W H`, `viewport LAT LON ZOOM`, `wait_idle [TIMEOUT]`, `wait DURATION`, `drag X1,Y1 X2,Y2 [duration=Nms]`, `click X,Y [button=left|right]`, `scroll X,Y [dx=N] [dy=N]`, `hover X,Y`, `key CHORD` (e.g. `cmd+shift+a`), `load_osm PATH`, `capture PATH`, `log MSG`. Durations accept `Nms` or `Ns`.
-
-`wait_idle` blocks until in-flight tile fetches drain (two consecutive idle frames), so captures don't show half-loaded maps. `capture` renders the current frame straight to a Metal texture and reads the pixels back in-process (via gpui's `Window::render_to_image`, enabled by the `test-support` feature) — no OS screenshot permission needed, and the window doesn't need focus or even to be on-screen.
-
-`load_osm PATH` parses an OSM XML file and pushes it onto the dataset queue, the same pipeline used by **File > Open**. Follow it with `wait_idle` so the next frame creates the layer before subsequent clicks run.
-
-Example script: `docs/screenshots/smoke.osmscript` exercises every op.
-
-## Performance notes
-
-Pan/zoom smoothness is sensitive to both build profile and render-path hygiene. A few things worth knowing before tuning:
-
-### Always measure in `--release`
-
-Debug builds are **~4× slower** on this workload. A representative Manhattan dataset (~3k objects) measured ~32 fps in `cargo run` and ~120 fps in `cargo run --release`. Never chase a perf problem in a debug build — reproduce it under `--release` first, or you'll optimize ghosts.
-
-If debug feels too slow for day-to-day hacking, add a `[profile.dev]` `opt-level = 1` (or `2`) to `Cargo.toml` — it keeps debuginfo but turns on basic optimization.
-
-### What the OSM layer does (and why)
-
-`OsmLayer::render_canvas` is the hot path for large datasets. In rough order of impact, these are the tricks it uses — don't undo them without measuring:
-
-1. **Per-node mercator cache** (`node_cache`). At `set_osm_data` time every node is projected once to Web Mercator meters. Per-frame projection to screen is then `(m - center) * pixels_per_meter` — two subs and a multiply, no trig. The hot loop never calls `lat_lon_to_mercator` (which is `tan`+`ln`).
-2. **Per-way vertex lists** (`way_vertices`). Ways store `Vec<i64>` node refs; resolving those through `HashMap::get` per vertex, per frame, is cache-unfriendly. `way_vertices[i]` is a contiguous `Vec<(f64, f64)>` of mercator coords ready to iterate.
-3. **Mercator-space bbox culling**. Every way has a cached mercator AABB; `viewport.mercator_view_bounds()` exposes the view AABB. An offscreen way is rejected with four `f64` compares before its vertex list is touched. There's also a layer-level AABB (`layer_bbox`) that short-circuits the whole `render_canvas` when the dataset is fully off-screen.
-4. **One `paint_path` for all ways**. A single `PathBuilder::stroke` accumulates every visible way as subpaths (`move_to` starts a new one, `line_to` extends it). One build + one draw call per frame instead of N. When per-rule / MapCSS-style styling arrives, the same trick extends to one `paint_path` per `(stroke_width, color)` group.
-
-### Gotchas we hit (and you might)
-
-- **`paint_quad` vs `paint_path` for nodes.** Nodes render as individual `paint_quad` calls. Batching them into a single filled `PathBuilder` was tried and turned out *much* slower — Lyon's fill tessellator isn't built for thousands of tiny rectangles, and open sub-rect paths don't fill correctly without explicit closing. `paint_quad` is a direct GPU-quad primitive; prefer it for many uniform rects. `paint_path` is the right answer for strokes and complex fills (ways, polygons).
-- **`CoordinateTransform::geo_to_screen` calls `lat_lon_to_mercator` twice per call** (once for the point, once for the center). The hot path uses `mercator_to_screen` instead, which is trig-free. Don't "simplify" by switching hot-loop calls back to `geo_to_screen`.
-- **`Viewport`, `visible_bounds`, and `is_visible` operate in lat/lon.** They're fine for low-volume callers (hit-test, one-off queries). In per-vertex loops use `mercator_view_bounds` + explicit AABB compares instead.
-- **Don't add per-frame allocations inside loops.** Builders and scratch vecs are allocated once per `render_canvas` call; keep it that way.
-
-### If you need more performance
-
-Levers we haven't pulled yet, in rough order of expected payoff:
-
-- **Pixel-dedupe node dots at low zoom.** At z13 over Manhattan, thousands of nodes collide into the same pixels. A viewport-sized bitmap (or coarse grid) keyed by `(screen_x >> k, screen_y >> k)` would let you emit at most one `paint_quad` per small block with no visible change until zoomed in.
-- **Sub-pixel way cull.** Skip ways whose mercator bbox projects to < 2 px. Lots of tiny buildings at low zoom contribute a single pixel but still walk the vertex list.
-- **Persistent / reusable `PathBuilder` scratch buffers.** Minor; only if the allocator shows up in a profile.
-- **Per-rule style batching.** When MapCSS-style rendering lands, group features by `(stroke_width, color)` / `(fill_color)` and keep the "one path per group" structure. Don't regress to one path per feature.
-
-## Roadmap (realistic)
-
-- Delete dead modules once confirmed unneeded.
-- Feature picking / tag inspection panel.
-- Render relations (multipolygons first).
-- Begin editing primitives: select, move node, add node to way.
-- Overpass API fetch for the current viewport.
-- Persistent tile cache location (not `/tmp`).
+`Cargo.toml` declares the license as MIT OR Apache-2.0. The repository does not yet contain the license files. The bundled iD tagging schema data under `assets/presets/` is ISC licensed; see `assets/presets/LICENSE`.
