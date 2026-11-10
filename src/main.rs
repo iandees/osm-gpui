@@ -470,6 +470,9 @@ struct CliArgs {
     keep_open: bool,
     /// UI language for this run, overriding the saved setting.
     language: Option<String>,
+    /// Colour theme for this run (`--theme light|dark`); the app otherwise
+    /// starts light and does not follow the system appearance.
+    theme: Option<gpui_component::ThemeMode>,
     /// `.osm` files to open as layers at startup (positional arguments).
     files: Vec<PathBuf>,
 }
@@ -496,6 +499,13 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
             "--keep-open" => out.keep_open = true,
             "--language" => {
                 out.language = Some(args.next().expect("--language needs a locale tag"))
+            }
+            "--theme" => {
+                out.theme = match args.next().as_deref() {
+                    Some("light") => Some(gpui_component::ThemeMode::Light),
+                    Some("dark") => Some(gpui_component::ThemeMode::Dark),
+                    _ => panic!("--theme needs light or dark"),
+                }
             }
             other if other.starts_with('-') && other.len() > 1 => {
                 eprintln!("ignoring unknown arg: {}", other)
@@ -5764,6 +5774,7 @@ fn main() {
     let args = parse_cli_args();
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
+    let cli_theme = args.theme;
 
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.
@@ -5858,6 +5869,9 @@ fn main() {
     }
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        if let Some(mode) = cli_theme {
+            menu::set_theme_mode(mode, cx);
+        }
 
         // Bring the menu bar to the foreground
         cx.activate(true);

@@ -5,6 +5,7 @@ use gpui::{
     SystemMenuType, WindowOptions,
 };
 
+use gpui_component::{Theme, ThemeMode};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
@@ -496,6 +497,20 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
+    cx.on_action(|_: &SetThemeLight, cx: &mut App| set_theme_mode(ThemeMode::Light, cx));
+    cx.on_action(|_: &SetThemeDark, cx: &mut App| set_theme_mode(ThemeMode::Dark, cx));
+}
+
+// Debug-friendly theme switches with no menu item: reachable from the script
+// harness (`action SetThemeDark`) and mirrored by the `--theme` flag. The app
+// does not follow the system appearance; it starts in the light theme.
+actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
+
+/// Switch the gpui-component theme and repaint every window.
+pub(crate) fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
+    Theme::change(mode, None, cx);
+    Theme::sync_scrollbar_appearance(cx);
+    cx.refresh_windows();
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.

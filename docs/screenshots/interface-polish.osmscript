@@ -1,0 +1,122 @@
+# Interface polish: mode hints that fit the status bar, the downloaded-area
+# wash and edge, coloured iD preset icons, and the dark theme.
+#
+# Captures the welcome card, a selection with the side panel, the selection
+# list, the preset picker, the Extrude/Add/Building hints and the downloaded
+# area, first in the light theme and then in the dark one (`action
+# SetThemeDark` / `SetThemeLight`; `--theme dark` does the same at startup).
+# Coordinates follow preset-icons.osmscript (window 1200x800).
+
+window 1200 800
+wait 3s
+wait_idle 5s
+capture out/interface-polish-light-01-welcome.png
+
+action SetThemeDark
+wait_idle 2s
+capture out/interface-polish-dark-01-welcome.png
+
+# ---- dark: icons, side panel, hints, picker, downloaded area ----
+load_osm docs/screenshots/fixtures/preset-icons.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# A selected iD road: coloured icon in the header, Fields/Tags/History visible.
+click 200,400
+wait_idle 2s
+assert_selected way 9201
+capture out/interface-polish-dark-02-selected.png
+
+# Box-select the iD ways: the selection list with 14px icons.
+drag 60,380 880,740 button=left
+wait_idle 2s
+capture out/interface-polish-dark-03-selection-list.png
+
+# Change Feature Type: the preset picker with iD road icons.
+click 200,400
+wait_idle 2s
+action ChangeFeatureType
+wait_idle 2s
+capture out/interface-polish-dark-04-picker.png
+key escape
+wait_idle 1s
+
+# Status-bar hints for each mode.
+key x
+wait_idle 1s
+assert_mode extrude
+capture out/interface-polish-dark-05-hint-extrude.png
+key escape
+wait_idle 1s
+key a
+wait_idle 1s
+assert_mode add
+capture out/interface-polish-dark-06-hint-add.png
+key escape
+wait_idle 1s
+key b
+wait_idle 1s
+assert_mode building
+capture out/interface-polish-dark-07-hint-building.png
+key escape
+wait_idle 1s
+
+
+action SetThemeLight
+wait_idle 2s
+
+# ---- light: icons, side panel, hints, picker, downloaded area ----
+viewport 40.7120 -74.0060 18
+wait_idle 3s
+
+# A selected iD road: coloured icon in the header, Fields/Tags/History visible.
+click 200,400
+wait_idle 2s
+assert_selected way 9201
+capture out/interface-polish-light-02-selected.png
+
+# Box-select the iD ways: the selection list with 14px icons.
+drag 60,380 880,740 button=left
+wait_idle 2s
+capture out/interface-polish-light-03-selection-list.png
+
+# Change Feature Type: the preset picker with iD road icons.
+click 200,400
+wait_idle 2s
+action ChangeFeatureType
+wait_idle 2s
+capture out/interface-polish-light-04-picker.png
+key escape
+wait_idle 1s
+
+# Status-bar hints for each mode.
+key x
+wait_idle 1s
+assert_mode extrude
+capture out/interface-polish-light-05-hint-extrude.png
+key escape
+wait_idle 1s
+key a
+wait_idle 1s
+assert_mode add
+capture out/interface-polish-light-06-hint-add.png
+key escape
+wait_idle 1s
+key b
+wait_idle 1s
+assert_mode building
+capture out/interface-polish-light-07-hint-building.png
+key escape
+wait_idle 1s
+
+
+# ---- downloaded area, light then dark ----
+load_osm docs/screenshots/fixtures/downloaded-area-a.osm
+viewport 40.7150 -73.9990 17
+wait_idle 5s
+capture out/interface-polish-light-08-downloaded-area.png
+action SetThemeDark
+wait_idle 2s
+capture out/interface-polish-dark-08-downloaded-area.png
+
+log done

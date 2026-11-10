@@ -253,10 +253,12 @@ impl Render for PresetPickerDialog {
                                     .size(gpui::px(ROW_ICON_SIZE))
                                     .flex_shrink_0()
                                     .children(icon.map(|path| {
-                                        gpui::svg()
-                                            .path(path)
-                                            .size(gpui::px(ROW_ICON_SIZE))
-                                            .text_color(cx.theme().foreground)
+                                        crate::presets::icon_element(
+                                            path,
+                                            ROW_ICON_SIZE,
+                                            cx.theme().foreground,
+                                            cx.theme().is_dark(),
+                                        )
                                     })),
                             )
                             .child(
