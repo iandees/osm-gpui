@@ -98,6 +98,16 @@ activity:
   uploading: "Uploading changes…"
   downloading: "Downloading OSM data…"
 
+# The card over the map while no OSM data is loaded.
+welcome:
+  title: "Welcome to osm-gpui"
+  body: "Pan and zoom to the area you want to edit, then download its OpenStreetMap data. Or open an .osm file."
+  download: "Download OSM data here"
+  downloading: "Downloading…"
+  # Shown in place of the download button while the view covers too large an area.
+  zoom_in: "Zoom in to download"
+  open: "Open file…"
+
 status:
   # One-line hint for what the mouse and keyboard do in each mode.
   hint:

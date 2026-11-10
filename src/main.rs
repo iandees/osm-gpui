@@ -26,6 +26,7 @@ mod selection_actions;
 mod side_panel;
 mod status_bar;
 mod undo;
+mod welcome;
 
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
@@ -711,9 +712,9 @@ impl MapViewer {
         let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let layer_manager = LayerManager::new();
-        // No default layers; tile and grid layers are added via the menu.
-
-        // No default OSM layer; loaded files add their own
+        // No layers here; the window setup adds OSM Carto (see
+        // `add_default_layers`), other imagery and the grid come from the
+        // menu, and loaded files add their own OSM layer.
         Self {
             viewport,
             layer_manager,
@@ -4518,6 +4519,7 @@ impl Render for MapViewer {
                             div().into_any_element()
                         }
                     })
+                    .children(self.render_welcome(cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -4840,7 +4842,12 @@ fn main() {
                         cx.bind_keys(key_bindings_from_settings(
                             &osm_gpui::settings_store::snapshot(),
                         ));
-                        let view = cx.new(|cx| MapViewer::new(window, cx));
+                        let view = cx.new(|cx| {
+                            let mut viewer = MapViewer::new(window, cx);
+                            // Start on the standard map, not a blank canvas.
+                            viewer.add_default_layers();
+                            viewer
+                        });
 
                         // Publish a weak handle to the live view so the
                         // `on_window_should_close` closure below (which only has

@@ -3,6 +3,12 @@
 Release notes for osm-gpui. The section whose heading matches the pushed tag
 (`## X.Y.Z`) is used as the body of the GitHub Release.
 
+## Unreleased
+
+### Map display
+
+- First launch now shows the OpenStreetMap Carto map, with a welcome card over it (until OSM data is downloaded or opened) offering "Download OSM data here" and "Open file…". The card never blocks panning or zooming the map.
+
 ## 0.2.0
 
 First tagged release. osm-gpui is an experimental OpenStreetMap editor; much of
