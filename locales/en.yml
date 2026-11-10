@@ -130,6 +130,7 @@ status:
     select_empty: "Click to select · Shift-click to add to the selection · drag to box-select · Space-drag or right-drag to pan"
     select_selection: "Drag the selection to move it · Delete to remove · Esc to deselect"
     select_relation: "Relation selected: its members are highlighted · Esc to deselect"
+    select_member_way: "Drag the selection to move it · Delete to remove · Esc to deselect · pick its relation in the side panel"
     add_idle: "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
     add_started: "Click to continue the way · Enter or Esc to finish"
     building_idle: "Click to place the building's first corner · Esc to exit"

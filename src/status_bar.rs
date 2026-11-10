@@ -80,6 +80,21 @@ impl MapViewer {
         }
     }
 
+    /// Whether the selection is exactly one way that belongs to a relation,
+    /// so the status bar can point at the side panel's Relations row (the
+    /// way from a member to its relation).
+    fn selected_way_is_relation_member(&self) -> bool {
+        let [only] = self.selected.as_slice() else {
+            return false;
+        };
+        only.kind == osm_gpui::selection::FeatureKind::Way
+            && self
+                .layer_manager
+                .find_layer(only.layer_id)
+                .and_then(|layer| layer.as_editable())
+                .is_some_and(|editable| !editable.relations_containing_way(only.id).is_empty())
+    }
+
     /// Total created + modified + deleted objects across all layers. The
     /// underlying diff walks the whole dataset, so it's cached and only
     /// recomputed after an edit, undo/redo, upload, or layer change.
@@ -146,6 +161,8 @@ impl MapViewer {
         {
             // Relations don't move or delete; say what does work instead.
             div().child(tr!("status.hint.select_relation"))
+        } else if self.mode == EditMode::Select && self.selected_way_is_relation_member() {
+            div().child(tr!("status.hint.select_member_way"))
         } else {
             div().child(mode_hint(
                 self.mode,
@@ -253,6 +270,13 @@ mod tests {
             mode_hint(EditMode::Select, ModeProgress::Idle, true, true),
             mode_hint(EditMode::Select, ModeProgress::Idle, true, false)
         );
+    }
+
+    #[test]
+    fn the_member_way_hint_points_at_the_side_panel() {
+        let hint = tr!("status.hint.select_member_way");
+        assert!(hint.contains("relation"), "{hint}");
+        assert!(!hint.starts_with("en.status."), "{hint}");
     }
 
     #[test]

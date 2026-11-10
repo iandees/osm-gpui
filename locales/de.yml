@@ -130,6 +130,7 @@ status:
     select_empty: "Klicken zum Auswählen · Umschalt-Klick zum Ergänzen · Ziehen für Rahmenauswahl · Leertaste+Ziehen oder Rechtsziehen zum Verschieben der Karte"
     select_selection: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen"
     select_relation: "Relation gewählt: ihre Mitglieder sind hervorgehoben · Esc zum Abwählen"
+    select_member_way: "Auswahl ziehen zum Verschieben · Löschtaste zum Entfernen · Esc zum Abwählen · Relation im Seitenpanel wählen"
     add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Strg-Klick ohne Einrasten · Esc zum Beenden"
     add_started: "Klicken, um den Weg fortzusetzen · Enter oder Esc zum Abschließen"
     building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
