@@ -17,15 +17,16 @@ Experimental OpenStreetMap editor built on [GPUI](https://github.com/zed-industr
 - **Editing primitives:** Node drag-to-move with per-feature updates (incremental rebuild). Tags are edited in place in the side panel's Tags table: click a key or value to edit it (Enter or clicking away commits, Esc abandons), "Add tag" appends a row. Create nodes (negative ID for new). Delete features. Edit multi-select to batch-apply tag changes.
 - **Undo/redo stack** for moves, tag edits, creates, deletes. History panel. ⌘Z / ⌘Shift-Z.
 - **OSM OAuth login** with keyring storage (macOS Keychain / Secret Service / Windows Credential Manager). Refresh-token support. Download OSM data for current viewport (respects 0.25-sq-deg limit); a download is merged by object id into the active layer, keeping local edits, so downloading again after a pan extends one dataset rather than stacking duplicate layers. Unsaved-changes warning on quit.
+- **Upload to OSM** as a changeset (**File > Upload to OSM…**, ⌘⇧U), and **export to a file** (**File > Export…**, ⌘E): a JOSM-style `.osm` holding the whole layer with pending edits marked by `action` attributes and negative ids, so it can be reopened here or in JOSM with those edits still pending.
 - Settings window: choose OSM API server (prod/dev/custom), per-server OAuth client IDs, custom imagery sources.
 - **MapCSS-subset styling** (`node`/`way`/`area` selectors with `[k]`/`[k=v]`/`[k!=v]`; `color`, `width`, `symbol-size`, `fill-color`, `fill-opacity`). Zoom selectors, per-rule casing and dashes are not supported; the casing, vertex hiding and direction arrows above are fixed renderer behaviour.
 - **Scripted screenshot harness** for visual regression and automation. `.osmscript` DSL with viewport, click, drag, key, load_osm, capture, wait_idle ops.
 
 **Not implemented**
 - Relation rendering or editing (parsed, but unused in display/selection).
-- Upload to OSM (no changeset creation or upload path yet).
 - Text labels, POI icons.
-- Search, export, full MapCSS (e.g., text, z-index, pattern fills).
+- Search, full MapCSS (e.g., text, z-index, pattern fills).
+- Resolving upload conflicts; saving back to the opened file (Export always asks where to write).
 
 ## Build & run
 

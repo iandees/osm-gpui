@@ -1,6 +1,6 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 
@@ -99,6 +99,40 @@ pub struct OsmBounds {
     pub max_lon: f64,
 }
 
+/// Local edits recorded in a JOSM-style `.osm` file through per-element
+/// `action` attributes: what was changed relative to the server, but not
+/// yet uploaded, when the file was saved. (Elements created locally aren't
+/// listed here; they are recognisable by their negative ids.)
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileEdits {
+    /// Ids of nodes marked `action="modify"`.
+    pub modified_nodes: HashSet<i64>,
+    /// Ids of ways marked `action="modify"`.
+    pub modified_ways: HashSet<i64>,
+    /// Nodes marked `action="delete"`. These are not part of the parsed
+    /// `OsmData`; they're kept here so the deletion can still be uploaded.
+    pub deleted_nodes: HashMap<i64, OsmNode>,
+    /// Ways marked `action="delete"`; see `deleted_nodes`.
+    pub deleted_ways: HashMap<i64, OsmWay>,
+}
+
+impl FileEdits {
+    pub fn is_empty(&self) -> bool {
+        self.modified_nodes.is_empty()
+            && self.modified_ways.is_empty()
+            && self.deleted_nodes.is_empty()
+            && self.deleted_ways.is_empty()
+    }
+}
+
+/// An element's `action` attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElementAction {
+    None,
+    Modify,
+    Delete,
+}
+
 /// Interprets raw XML attribute bytes as UTF-8, mapping any invalid
 /// sequence to a descriptive `OsmParseError` instead of panicking.
 fn attr_str(bytes: &[u8]) -> Result<&str, OsmParseError> {
@@ -122,13 +156,51 @@ impl OsmParser {
     pub fn parse(&self, reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_reader(reader);
         xml_reader.config_mut().trim_text(true);
-        self.run(xml_reader)
+        self.run(xml_reader).map(|(data, _edits)| data)
     }
 
     pub fn parse_str(&self, xml_str: &str) -> Result<OsmData, OsmParseError> {
+        self.parse_str_with_edits(xml_str)
+            .map(|(data, _edits)| data)
+    }
+
+    /// Like `parse_str`, but also returns the local edits the file records
+    /// through `action` attributes (see `FileEdits`). In both variants,
+    /// elements marked `action="delete"` are left out of the `OsmData`.
+    pub fn parse_str_with_edits(
+        &self,
+        xml_str: &str,
+    ) -> Result<(OsmData, FileEdits), OsmParseError> {
         let mut xml_reader = Reader::from_str(xml_str);
         xml_reader.config_mut().trim_text(true);
         self.run(xml_reader)
+    }
+
+    /// Like `parse_file`, but also returns the file's recorded local edits;
+    /// see `parse_str_with_edits`.
+    pub fn parse_file_with_edits(
+        &self,
+        file_path: &str,
+    ) -> Result<(OsmData, FileEdits), OsmParseError> {
+        let file = File::open(file_path).map_err(OsmParseError::IoError)?;
+        let mut xml_reader = Reader::from_reader(BufReader::new(file));
+        xml_reader.config_mut().trim_text(true);
+        self.run(xml_reader)
+    }
+
+    /// The value of an element's `action` attribute.
+    fn parse_action(&self, e: &BytesStart) -> Result<ElementAction, OsmParseError> {
+        for attr in e.attributes() {
+            let attr = attr.map_err(OsmParseError::AttrError)?;
+            if attr.key.as_ref() == b"action" {
+                return Ok(match attr.value.as_ref() {
+                    b"modify" => ElementAction::Modify,
+                    b"delete" => ElementAction::Delete,
+                    _ => ElementAction::None,
+                });
+            }
+        }
+        Ok(ElementAction::None)
     }
 
     /// Handle the tag-dispatch children (`tag`/`nd`/`member`) shared between
@@ -187,16 +259,66 @@ impl OsmParser {
     fn run<R: std::io::BufRead>(
         &self,
         mut xml_reader: Reader<R>,
-    ) -> Result<OsmData, OsmParseError> {
+    ) -> Result<(OsmData, FileEdits), OsmParseError> {
         let mut osm_data = OsmData {
             nodes: HashMap::new(),
             ways: HashMap::new(),
             relations: Vec::new(),
             bounds: None,
         };
+        let mut edits = FileEdits::default();
+
+        // File a finished element by its `action`: deleted elements go to
+        // `edits` only, modified ones are noted there and kept as data.
+        fn store_node(
+            node: OsmNode,
+            action: ElementAction,
+            data: &mut OsmData,
+            edits: &mut FileEdits,
+        ) {
+            match action {
+                ElementAction::Delete => {
+                    edits.deleted_nodes.insert(node.id, node);
+                }
+                ElementAction::Modify => {
+                    edits.modified_nodes.insert(node.id);
+                    data.nodes.insert(node.id, node);
+                }
+                ElementAction::None => {
+                    data.nodes.insert(node.id, node);
+                }
+            }
+        }
+        fn store_way(
+            way: OsmWay,
+            action: ElementAction,
+            data: &mut OsmData,
+            edits: &mut FileEdits,
+        ) {
+            match action {
+                ElementAction::Delete => {
+                    edits.deleted_ways.insert(way.id, way);
+                }
+                ElementAction::Modify => {
+                    edits.modified_ways.insert(way.id);
+                    data.ways.insert(way.id, way);
+                }
+                ElementAction::None => {
+                    data.ways.insert(way.id, way);
+                }
+            }
+        }
+        // Relations aren't editable here, so their edits aren't tracked;
+        // a deleted one is simply dropped.
+        fn store_relation(relation: OsmRelation, action: ElementAction, data: &mut OsmData) {
+            if action != ElementAction::Delete {
+                data.relations.push(relation);
+            }
+        }
 
         let mut buf = Vec::new();
         let mut current_element = ElementType::None;
+        let mut current_action = ElementAction::None;
         let mut current_node: Option<OsmNode> = None;
         let mut current_way: Option<OsmWay> = None;
         let mut current_relation: Option<OsmRelation> = None;
@@ -209,14 +331,17 @@ impl OsmParser {
                     }
                     b"node" => {
                         current_element = ElementType::Node;
+                        current_action = self.parse_action(e)?;
                         current_node = Some(self.parse_node_start(e)?);
                     }
                     b"way" => {
                         current_element = ElementType::Way;
+                        current_action = self.parse_action(e)?;
                         current_way = Some(self.parse_way_start(e)?);
                     }
                     b"relation" => {
                         current_element = ElementType::Relation;
+                        current_action = self.parse_action(e)?;
                         current_relation = Some(self.parse_relation_start(e)?);
                     }
                     name => self.parse_child_element(
@@ -234,15 +359,15 @@ impl OsmParser {
                     }
                     b"node" => {
                         let node = self.parse_node_start(e)?;
-                        osm_data.nodes.insert(node.id, node);
+                        store_node(node, self.parse_action(e)?, &mut osm_data, &mut edits);
                     }
                     b"way" => {
                         let way = self.parse_way_start(e)?;
-                        osm_data.ways.insert(way.id, way);
+                        store_way(way, self.parse_action(e)?, &mut osm_data, &mut edits);
                     }
                     b"relation" => {
                         let relation = self.parse_relation_start(e)?;
-                        osm_data.relations.push(relation);
+                        store_relation(relation, self.parse_action(e)?, &mut osm_data);
                     }
                     name => self.parse_child_element(
                         e,
@@ -256,19 +381,19 @@ impl OsmParser {
                 Ok(Event::End(ref e)) => match e.name().as_ref() {
                     b"node" => {
                         if let Some(node) = current_node.take() {
-                            osm_data.nodes.insert(node.id, node);
+                            store_node(node, current_action, &mut osm_data, &mut edits);
                         }
                         current_element = ElementType::None;
                     }
                     b"way" => {
                         if let Some(way) = current_way.take() {
-                            osm_data.ways.insert(way.id, way);
+                            store_way(way, current_action, &mut osm_data, &mut edits);
                         }
                         current_element = ElementType::None;
                     }
                     b"relation" => {
                         if let Some(relation) = current_relation.take() {
-                            osm_data.relations.push(relation);
+                            store_relation(relation, current_action, &mut osm_data);
                         }
                         current_element = ElementType::None;
                     }
@@ -281,13 +406,23 @@ impl OsmParser {
             buf.clear();
         }
 
-        Ok(osm_data)
+        Ok((osm_data, edits))
     }
 
     pub fn parse_file(&self, file_path: &str) -> Result<OsmData, OsmParseError> {
-        let file = File::open(file_path).map_err(OsmParseError::IoError)?;
-        let reader = BufReader::new(file);
-        self.parse(reader)
+        self.parse_file_with_edits(file_path)
+            .map(|(data, _edits)| data)
+    }
+
+    /// The text of an attribute value with XML entities (`&amp;`, `&quot;`,
+    /// `&#10;`, …) decoded.
+    fn unescaped(
+        &self,
+        attr: &quick_xml::events::attributes::Attribute,
+    ) -> Result<String, OsmParseError> {
+        attr.unescape_value()
+            .map(|value| value.into_owned())
+            .map_err(OsmParseError::XmlError)
     }
 
     fn parse_bounds(&self, e: &BytesStart) -> Result<OsmBounds, OsmParseError> {
@@ -402,11 +537,12 @@ impl OsmParser {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             let attr_key = attr_str(attr.key.as_ref())?;
-            let attr_value = attr_str(&attr.value)?;
 
+            // Unescaped, so `v="Barnes &amp; Noble"` is stored as the text
+            // "Barnes & Noble" rather than with the entity left in.
             match attr_key {
-                "k" => key = attr_value.to_string(),
-                "v" => value = attr_value.to_string(),
+                "k" => key = self.unescaped(&attr)?,
+                "v" => value = self.unescaped(&attr)?,
                 _ => {}
             }
         }
@@ -445,7 +581,7 @@ impl OsmParser {
             match key {
                 "type" => member_type = Some(value.parse()?),
                 "ref" => reference = self.parse_i64(value)?,
-                "role" => role = value.to_string(),
+                "role" => role = self.unescaped(&attr)?,
                 _ => {}
             }
         }
@@ -829,5 +965,69 @@ mod tests {
         assert_eq!(members[0].member_type, MemberType::Node);
         assert_eq!(members[1].member_type, MemberType::Way);
         assert_eq!(members[2].member_type, MemberType::Relation);
+    }
+
+    #[test]
+    fn tag_and_role_text_is_unescaped() {
+        let xml = r#"<osm version="0.6">
+  <node id="1" lat="1" lon="2">
+    <tag k="name" v="Barnes &amp; Noble &quot;Annex&quot; &lt;2&gt;"/>
+  </node>
+  <relation id="5">
+    <member type="node" ref="1" role="a &amp; b"/>
+  </relation>
+</osm>"#;
+
+        let data = OsmParser::new().parse_str(xml).unwrap();
+
+        assert_eq!(data.nodes[&1].tags["name"], "Barnes & Noble \"Annex\" <2>");
+        assert_eq!(data.relations[0].members[0].role, "a & b");
+    }
+
+    #[test]
+    fn action_attributes_are_reported_as_file_edits() {
+        // Both self-closing elements and ones with children, for each action.
+        let xml = r#"<osm version="0.6">
+  <node id="1" version="2" lat="1" lon="1"/>
+  <node id="2" action="modify" version="3" lat="2" lon="2"/>
+  <node id="3" action="delete" version="4" lat="3" lon="3"/>
+  <node id="4" action="delete" version="5" lat="4" lon="4">
+    <tag k="note" v="gone"/>
+  </node>
+  <node id="-1" action="modify" lat="5" lon="5"/>
+  <way id="10" action="modify" version="6">
+    <nd ref="1"/>
+    <nd ref="2"/>
+  </way>
+  <way id="11" action="delete" version="7">
+    <nd ref="1"/>
+  </way>
+  <relation id="20" action="delete" version="1"/>
+  <relation id="21" version="1"/>
+</osm>"#;
+
+        let (data, edits) = OsmParser::new().parse_str_with_edits(xml).unwrap();
+
+        let mut live: Vec<i64> = data.nodes.keys().copied().collect();
+        live.sort_unstable();
+        assert_eq!(live, vec![-1, 1, 2], "deleted nodes are not live data");
+        assert_eq!(edits.modified_nodes, HashSet::from([-1, 2]));
+        assert_eq!(edits.deleted_nodes[&3].version, 4);
+        assert_eq!(edits.deleted_nodes[&4].version, 5);
+        assert_eq!(edits.modified_ways, HashSet::from([10]));
+        assert!(data.ways.contains_key(&10) && !data.ways.contains_key(&11));
+        assert_eq!(edits.deleted_ways[&11].nodes, vec![1]);
+        assert_eq!(data.relations.len(), 1);
+        assert_eq!(data.relations[0].id, 21);
+
+        // The plain entry point agrees on the data and just drops the edits.
+        assert_eq!(OsmParser::new().parse_str(xml).unwrap(), data);
+    }
+
+    #[test]
+    fn a_file_without_actions_has_no_edits() {
+        let xml = r#"<osm version="0.6"><node id="1" lat="1" lon="1"/></osm>"#;
+        let (_, edits) = OsmParser::new().parse_str_with_edits(xml).unwrap();
+        assert!(edits.is_empty());
     }
 }

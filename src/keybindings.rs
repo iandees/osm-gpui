@@ -71,6 +71,12 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::File,
     },
     ShortcutDef {
+        id: "export_osm_file",
+        default_spec: "cmd-e",
+        label: "Export…",
+        category: ShortcutCategory::File,
+    },
+    ShortcutDef {
         id: "undo",
         default_spec: "cmd-z",
         label: "Undo",

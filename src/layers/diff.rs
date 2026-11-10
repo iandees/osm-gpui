@@ -8,7 +8,56 @@
 //! `OsmLayer` gains `create_node`/`delete_feature` methods, with zero
 //! changes required here.
 
-use crate::osm::{OsmData, OsmNode, OsmWay};
+use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
+
+/// Tag placed on the *baseline* copy of an element that a loaded file marks
+/// as modified. Such a file records the element's edited state and base
+/// version but not what it looked like on the server, so its real baseline
+/// is unknown; all that matters is that the baseline copy differs from the
+/// current one, which makes the element count as locally modified for both
+/// upload diffing and download merging. The baseline is never rendered,
+/// exported, or uploaded, so this tag never leaves this process.
+pub const UNKNOWN_BASELINE_TAG: &str = "osm-gpui:unknown-baseline";
+
+/// Reconstruct the server baseline for data loaded from a JOSM-style file,
+/// so that diffing it against `current` reproduces the file's pending
+/// edits:
+///
+/// - elements with negative ids were created locally: absent from the
+///   baseline;
+/// - elements marked modified get a baseline copy that is guaranteed to
+///   differ (see [`UNKNOWN_BASELINE_TAG`]);
+/// - elements marked deleted are present in the baseline only;
+/// - everything else is identical in both.
+pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData {
+    let mut baseline = current.clone();
+    baseline.nodes.retain(|id, _| *id >= 0);
+    baseline.ways.retain(|id, _| *id >= 0);
+
+    let marker = || (UNKNOWN_BASELINE_TAG.to_string(), "yes".to_string());
+    for id in &edits.modified_nodes {
+        if let Some(node) = baseline.nodes.get_mut(id) {
+            node.tags.extend([marker()]);
+        }
+    }
+    for id in &edits.modified_ways {
+        if let Some(way) = baseline.ways.get_mut(id) {
+            way.tags.extend([marker()]);
+        }
+    }
+    for (id, node) in &edits.deleted_nodes {
+        // A deleted element that was never uploaded has nothing to delete.
+        if *id >= 0 {
+            baseline.nodes.insert(*id, node.clone());
+        }
+    }
+    for (id, way) in &edits.deleted_ways {
+        if *id >= 0 {
+            baseline.ways.insert(*id, way.clone());
+        }
+    }
+    baseline
+}
 
 /// The set of changes needed to bring the server's view of a layer's data up
 /// to date with the current in-memory state. Pure data — no gpui/network
@@ -135,6 +184,50 @@ mod tests {
             version,
             tags: empty_tags(),
         }
+    }
+
+    #[test]
+    fn baseline_for_loaded_file_reproduces_the_files_pending_edits() {
+        // Current data as loaded: node 1 untouched, node 2 marked modified,
+        // node -1 created locally; node 3 (v4) was marked deleted, as was a
+        // never-uploaded node -2.
+        let current = data(
+            vec![
+                node(1, 1.0, 1.0, 1),
+                node(2, 2.0, 2.0, 7),
+                node(-1, 9.0, 9.0, 1),
+            ],
+            vec![way(10, vec![1, 2], 3)],
+        );
+        let mut edits = FileEdits::default();
+        edits.modified_nodes.insert(2);
+        edits.modified_ways.insert(10);
+        edits.deleted_nodes.insert(3, node(3, 3.0, 3.0, 4));
+        edits.deleted_nodes.insert(-2, node(-2, 8.0, 8.0, 1));
+
+        let baseline = baseline_for_loaded_file(&current, &edits);
+        let diff = diff_osm_data(&baseline, &current);
+
+        let ids = |nodes: &[OsmNode]| {
+            let mut ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids(&diff.created_nodes), vec![-1]);
+        assert_eq!(ids(&diff.modified_nodes), vec![2]);
+        assert_eq!(diff.deleted_node_ids, vec![(3, 4)]);
+        assert_eq!(diff.modified_ways.len(), 1);
+        // The base version of a modified element is the one the file gave.
+        assert_eq!(baseline.nodes[&2].version, 7);
+        // The marker lives only in the baseline.
+        assert!(!current.nodes[&2].tags.contains_key(UNKNOWN_BASELINE_TAG));
+    }
+
+    #[test]
+    fn baseline_for_a_file_without_edits_is_the_data_itself() {
+        let current = data(vec![node(1, 1.0, 1.0, 1)], vec![way(10, vec![1], 1)]);
+        let baseline = baseline_for_loaded_file(&current, &FileEdits::default());
+        assert_eq!(baseline, current);
     }
 
     #[test]

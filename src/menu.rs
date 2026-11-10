@@ -12,10 +12,10 @@ use osm_gpui::osm::OsmParser;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditModeAction, HideApp, HideOtherApps, ImageryLoadState,
-    LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo, SelectAll, SetMode,
-    ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData,
-    ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
+    ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
+    SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, Undo, UploadToOsm, ZoomIn, ZoomOut,
+    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -50,25 +50,26 @@ pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
             .background_executor()
             .spawn(async move {
                 let parser = OsmParser::new();
-                parser.parse_file(&path_str)
+                // With edits: a file saved by File > Export… (or JOSM) may
+                // carry pending local changes, which must stay pending.
+                parser.parse_file_with_edits(&path_str)
             })
             .await;
 
-        match result {
-            Ok(osm_data) => {
-                let stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("OSM")
-                    .to_string();
-                cx.update(|cx| {
-                    if let Some(view) = crate::MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
-                        view.update(cx, |v, cx| v.add_osm_dataset(stem, osm_data, cx));
-                    }
-                });
-            }
-            Err(e) => eprintln!("Failed to parse OSM file: {}", e),
-        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("OSM")
+            .to_string();
+        cx.update(|cx| {
+            with_map_viewer(cx, |v, cx| match result {
+                Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
+                Err(e) => {
+                    v.set_status(format!("Could not open {}: {e}", path.display()));
+                    cx.notify();
+                }
+            });
+        });
     })
     .detach();
 }
@@ -353,6 +354,7 @@ pub(crate) fn rebuild_menus(
             name: "File".into(),
             items: vec![
                 MenuItem::action("Open…", OpenOsmFile),
+                MenuItem::action("Export…", ExportOsmFile),
                 MenuItem::separator(),
                 MenuItem::action("Download from OSM", DownloadFromOsm),
                 MenuItem::action("Upload to OSM…", UploadToOsm),

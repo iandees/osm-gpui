@@ -15,6 +15,7 @@ pub mod layers;
 pub mod nsi;
 pub mod osm;
 pub mod osm_api;
+pub mod osm_export;
 pub mod osm_upload;
 pub mod persist;
 pub mod presets;

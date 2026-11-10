@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
-use crate::layers::diff::{diff_osm_data, LayerDiff};
+use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::merge::{self, MergeStats};
 use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
-use crate::osm::{OsmData, OsmNode, OsmWay};
+use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
     nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot, FeatureKind,
@@ -788,6 +788,35 @@ impl OsmLayer {
             next_new_id,
             next_placeholder_way_id: -1,
         }
+    }
+
+    /// Build a layer from a loaded file's data together with the pending
+    /// local edits the file records (see `FileEdits`), so those edits are
+    /// still pending — and still uploadable — after a save and reopen. The
+    /// server baseline is reconstructed by `baseline_for_loaded_file`.
+    pub fn new_with_edits<N: Into<String>>(
+        id: LayerId,
+        name: N,
+        osm_data: Arc<OsmData>,
+        edits: &FileEdits,
+    ) -> Self {
+        let baseline = baseline_for_loaded_file(&osm_data, edits);
+        let mut layer = Self::new_with_data(id, name, osm_data.clone());
+        layer.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
+        layer.original_data = Some(Arc::new(baseline));
+        // Locally created ways in the file already use negative ids; new
+        // ones must not collide with them.
+        let lowest_way_id = osm_data.ways.keys().copied().min().unwrap_or(0);
+        layer.next_placeholder_way_id = lowest_way_id.min(0) - 1;
+        layer
+    }
+
+    /// This layer as a JOSM-style `.osm` document, including its pending
+    /// edits; see `osm_export`. `None` when the layer holds no data.
+    pub fn export_xml(&self) -> Option<String> {
+        let current = self.osm_data.as_deref()?;
+        let original = self.original_data.as_deref().unwrap_or(current);
+        Some(crate::osm_export::to_osm_xml(original, current))
     }
 
     /// Set the OSM data for this layer. Rebuilds every derived cache/index
@@ -1965,6 +1994,10 @@ impl MapLayer for OsmLayer {
 
     fn apply_upload_result(&mut self, result: &UploadResult) {
         OsmLayer::apply_upload_result(self, result);
+    }
+
+    fn export_xml(&self) -> Option<String> {
+        OsmLayer::export_xml(self)
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
