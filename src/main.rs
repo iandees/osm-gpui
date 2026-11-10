@@ -405,6 +405,8 @@ struct CliArgs {
     script: Option<PathBuf>,
     window_size: Option<(u32, u32)>,
     keep_open: bool,
+    /// UI language for this run, overriding the saved setting.
+    language: Option<String>,
 }
 
 fn parse_cli_args() -> CliArgs {
@@ -421,6 +423,9 @@ fn parse_cli_args() -> CliArgs {
                 out.window_size = Some((w.parse().expect("W"), h.parse().expect("H")));
             }
             "--keep-open" => out.keep_open = true,
+            "--language" => {
+                out.language = Some(args.next().expect("--language needs a locale tag"))
+            }
             other => eprintln!("ignoring unknown arg: {}", other),
         }
     }
@@ -4252,6 +4257,7 @@ fn main() {
 
     let args = parse_cli_args();
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
+    let cli_language = args.language.clone();
 
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.
@@ -4356,7 +4362,8 @@ fn main() {
             let app_settings = settings_store::load();
             osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
             // Pick the UI language before any menu or window text is built.
-            osm_gpui::i18n::init(app_settings.language.as_deref());
+            // `--language` overrides the saved setting for this run only.
+            osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
             settings_store::init_store(app_settings);
             auth::init_store(auth::load());
 

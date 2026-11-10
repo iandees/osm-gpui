@@ -110,7 +110,7 @@ In code, use `tr!("menu.file.open")`, `tr!("status.exported", path = path.displa
 
 **Adding a language:** copy `locales/en.yml` to `locales/<tag>.yml` (for example `fr.yml` or `pt-BR.yml`), translate the values (keep the keys, the `%{placeholders}`, and the literal `{z}`/`{x}`/`{y}` in the custom-imagery messages), and set `meta.language_name` to the language's own name; that is what the Settings dropdown shows. Rebuild. If a language needs plural forms beyond `one`/`other`, add the category to `i18n::plural_category` and the matching keys to its catalog. `cargo test` checks that every key used in the source exists in `en.yml`.
 
-**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart.
+**Choosing the language:** at startup the app uses the system locale (`fr-CA` falls back to `fr`, then to English). **Settings > Appearance > Language** overrides it (stored as `language` in `settings.json`; unset follows the system). The choice is read once at startup, so changing it takes effect after a restart. `--language <tag>` (for example `cargo run -- --language de`) overrides the stored setting for that run only and never writes to `settings.json`, which makes it handy for trying a language and for scripted screenshots.
 
 **Not translated yet:** preset and field labels from the bundled iD tagging schema and the Name Suggestion Index data (these have their own upstream translations; loading them is future work); OSM tag keys and values; the debug overlay; layer names such as "OpenStreetMap Carto" and "Coordinate Grid"; log output and the script harness. Nothing sent to the OSM API or written to files (for example changeset tags) is localized.
 
@@ -127,6 +127,7 @@ Flags:
 - `--script <path>` — run a `.osmscript` file. Without this flag, the app launches normally.
 - `--window-size WxH` — set the initial window size (default `1200x800`). Makes captures reproducible.
 - `--keep-open` — don't exit after the last step, so you can poke at the final state.
+- `--language <tag>` — use this UI language for the run instead of the saved setting (see Localization).
 
 Script format is line-oriented with `#` comments:
 
