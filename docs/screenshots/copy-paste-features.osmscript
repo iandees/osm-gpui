@@ -1,0 +1,53 @@
+# Copy, Paste and Duplicate features (Cmd+C / Cmd+V / Cmd+D).
+#
+# Uses fixtures/selection-actions.osm (see selection-actions.osmscript for the
+# coordinate model): the viewport center is window (488, 388) and way 3001, the
+# skewed building, has its bottom edge at (370, 470). It has 4 distinct nodes,
+# so a copy of it is 5 new objects.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/selection-actions.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Select the building and copy it.
+click 370,470
+wait_idle 2s
+assert_selected way 3001
+key cmd+c
+wait_idle 1s
+assert_pending 0
+capture out/copy-paste-01-copied.png
+
+# Paste with the pointer over empty map: the copy's center lands there.
+hover 780,520
+wait_idle 1s
+key cmd+v
+wait_idle 2s
+assert_pending 5
+assert_selected_count 1
+capture out/copy-paste-02-pasted.png
+
+# Duplicate the pasted building: a second copy right on top, selected.
+key cmd+d
+wait_idle 2s
+assert_pending 10
+assert_selected_count 1
+capture out/copy-paste-03-duplicated.png
+
+# Drag the duplicate away from the copy it sits on.
+drag 774,555 774,700 button=left
+wait_idle 2s
+assert_pending 10
+capture out/copy-paste-04-dragged.png
+
+# Each of the three steps undoes whole.
+key cmd+z
+wait_idle 1s
+key cmd+z
+wait_idle 1s
+assert_pending 5
+key cmd+z
+wait_idle 1s
+assert_pending 0
+capture out/copy-paste-05-undone.png

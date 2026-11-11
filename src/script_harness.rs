@@ -84,6 +84,11 @@ pub(crate) enum ScriptCommand {
         name: String,
         loaded: Box<(OsmData, osm_gpui::osm::FileEdits)>,
     },
+    /// Add a parsed GPX / GeoJSON file as a read-only reference layer.
+    LoadReference {
+        name: String,
+        data: Box<osm_gpui::reference::ReferenceData>,
+    },
     /// Dispatch the named action (bare name in the `osm_gpui` namespace,
     /// e.g. `UploadToOsm`) the way a native menu item does.
     Action { name: String },
@@ -401,6 +406,9 @@ impl MapViewer {
                 ScriptCommand::LoadOsm { name, loaded } => {
                     let (data, edits) = *loaded;
                     self.add_osm_dataset(name, data, &edits, cx);
+                }
+                ScriptCommand::LoadReference { name, data } => {
+                    self.add_reference_dataset(name, *data, cx);
                 }
                 ScriptCommand::Action { name } => {
                     // `Name` or `Name {json}`; the JSON fills the action's fields.
@@ -815,6 +823,75 @@ impl MapViewer {
 
         let phase = self.upload_dialog.as_ref().map(|d| d.read(cx).phase());
         match check {
+            Check::Layer { kind, name } => {
+                let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
+                    use osm_gpui::layers::reference_layer::ReferenceLayer;
+                    use osm_gpui::reference::Format;
+                    if let Some(r) = layer.as_any().downcast_ref::<ReferenceLayer>() {
+                        match r.format() {
+                            Format::Gpx => script::LayerKind::Gpx,
+                            Format::GeoJson => script::LayerKind::GeoJson,
+                        }
+                    } else if layer.as_editable().is_some() {
+                        script::LayerKind::Osm
+                    } else if layer.imagery_offset().is_some() {
+                        script::LayerKind::Imagery
+                    } else {
+                        script::LayerKind::Grid
+                    }
+                };
+                let layers = self.layer_manager.layers();
+                if layers
+                    .iter()
+                    .any(|l| l.name() == name && kind_of(l.as_ref()) == *kind)
+                {
+                    Ok(())
+                } else {
+                    let found: Vec<String> = layers
+                        .iter()
+                        .map(|l| format!("{:?} {:?}", kind_of(l.as_ref()), l.name()))
+                        .collect();
+                    Err(format!(
+                        "no {kind:?} layer named {name:?}; layers: {}",
+                        found.join(", ")
+                    ))
+                }
+            }
+            Check::SelectedAt {
+                lat,
+                lon,
+                tolerance_m,
+            } => {
+                let [only] = self.selected.as_slice() else {
+                    return Err(format!(
+                        "expected one selected node, found {} selected",
+                        self.selected.len()
+                    ));
+                };
+                let pos = (only.kind == osm_gpui::selection::FeatureKind::Node)
+                    .then(|| {
+                        self.layer_manager
+                            .find_layer(only.layer_id)
+                            .and_then(|l| l.as_editable())
+                            .and_then(|e| e.node_lat_lon(only.id))
+                    })
+                    .flatten()
+                    .ok_or_else(|| "the selected feature is not a node".to_string())?;
+                let (ax, ay) = osm_gpui::coordinates::lat_lon_to_mercator(pos.0, pos.1);
+                let (bx, by) = osm_gpui::coordinates::lat_lon_to_mercator(*lat, *lon);
+                // Mercator metres stretch by 1/cos(lat); undo that.
+                let scale = pos.0.to_radians().cos();
+                let metres = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt() * scale;
+                if metres <= *tolerance_m {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "the selected node is at {:.7}, {:.7}, {metres:.2} m from {lat}, {lon} \
+                         (tolerance {tolerance_m} m)",
+                        pos.0, pos.1
+                    ))
+                }
+            }
             Check::ChangesetTag { key, value } => {
                 // The tags the dialog would send now; nothing is sent.
                 let Some(dialog) = &self.upload_dialog else {
@@ -1280,6 +1357,20 @@ impl AppHandle for LiveApp {
     }
 
     fn load_osm(&mut self, path: &std::path::Path) -> Result<(), String> {
+        // GPX and GeoJSON become read-only reference layers.
+        if let Some(format) = osm_gpui::reference::sniff_path(path) {
+            let data = osm_gpui::reference::load_file(path, format).map_err(|e| e.to_string())?;
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Reference")
+                .to_string();
+            self.bus.submit(ScriptCommand::LoadReference {
+                name,
+                data: Box::new(data),
+            });
+            return Ok(());
+        }
         let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
         let loaded = parser

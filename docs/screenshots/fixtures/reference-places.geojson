@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "Cafe Aroma", "amenity": "cafe", "addr:housenumber": "12", "addr:street": "Fixture Street"},
+      "geometry": {"type": "Point", "coordinates": [-74.0095, 40.7135]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Bench", "amenity": "bench"},
+      "geometry": {"type": "Point", "coordinates": [-74.0030, 40.7090]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Old rail line", "railway": "abandoned"},
+      "geometry": {"type": "LineString", "coordinates": [[-74.0100, 40.7145], [-74.0075, 40.7135], [-74.0050, 40.7148]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Pocket park", "leisure": "park"},
+      "geometry": {"type": "Polygon", "coordinates": [[[-74.0100, 40.7092], [-74.0075, 40.7092], [-74.0075, 40.7108], [-74.0100, 40.7108], [-74.0100, 40.7092]]]}
+    }
+  ]
+}

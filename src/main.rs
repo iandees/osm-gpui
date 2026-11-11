@@ -19,11 +19,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod autosave_driver;
+mod clipboard_actions;
 mod fields_section;
 mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
 mod notes_ui;
+#[cfg(test)]
+mod reference_tests;
 mod script_harness;
 mod selection_actions;
 mod side_panel;
@@ -141,7 +144,8 @@ pub(crate) fn key_bindings_from_settings(
             // Copy/Paste Tags run the same selection actions as the menus.
             // Scoped to the map like Select All, so they never steal the
             // keys from a focused text input.
-            "copy_tags" | "paste_tags" => Some(KeyBinding::new(
+            "copy_tags" | "paste_tags" | "copy_features" | "paste_features"
+            | "duplicate_features" => Some(KeyBinding::new(
                 &spec,
                 RunSelectionAction { id: id.into() },
                 Some(MAP_VIEWER_KEY_CONTEXT),
@@ -1902,6 +1906,20 @@ impl MapViewer {
                     editable.delete_relation(snapshot.relation.id);
                 }
             }
+            UndoableAction::PasteFeatures { pasted } => {
+                let Some(editable) = self
+                    .layer_manager
+                    .find_layer_mut(pasted.layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                else {
+                    return;
+                };
+                if forward {
+                    pasted.redo(editable);
+                } else {
+                    pasted.undo(editable);
+                }
+            }
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
@@ -2348,6 +2366,10 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        if let Some(op) = clipboard_actions::op_for(action.id) {
+            self.run_clipboard_op(op, cx);
+            return;
+        }
         if action.id == selection_actions::ADD_TO_RELATION {
             // Which relation? Ask; `render` opens the picker (it needs the
             // window), and the choice comes back through
@@ -2506,7 +2528,9 @@ impl MapViewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.edits_blocked(cx) {
+        // Copy is not an edit; the other clipboard actions check for
+        // themselves (see `run_clipboard_op`).
+        if clipboard_actions::op_for(&action.id).is_none() && self.edits_blocked(cx) {
             return;
         }
         self.run_selection_action(&action.id, cx);
@@ -2819,7 +2843,23 @@ impl MapViewer {
             .filter(|feature| feature.kind == FeatureKind::Node)
             .collect();
         if !self.fit_to_features(&nodes) {
-            self.set_status(tr!("status.no_data_to_zoom"));
+            // No OSM data: fit the visible reference layers instead.
+            let extents = self
+                .layer_manager
+                .layers()
+                .iter()
+                .filter(|layer| layer.is_visible())
+                .filter_map(|layer| {
+                    layer
+                        .as_any()
+                        .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+                })
+                .filter_map(|layer| layer.data().extent())
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)));
+            match extents {
+                Some(extent) => self.fit_to_extent(extent),
+                None => self.set_status(tr!("status.no_data_to_zoom")),
+            }
         }
         cx.notify();
     }
@@ -2910,6 +2950,33 @@ impl MapViewer {
         }
         self.apply_undo_action(action, forward);
         self.select_after_history_step(action);
+        self.select_after_paste_step(action, forward);
+    }
+
+    /// A paste is undone to the selection it started from, and redone to the
+    /// pasted features, rather than to "what the step touched" (which is
+    /// nothing, after an undo). Left alone while Add or Building mode is
+    /// placing points, like `select_after_history_step`.
+    fn select_after_paste_step(&mut self, action: &UndoableAction, forward: bool) {
+        let UndoableAction::PasteFeatures { pasted } = action else {
+            return;
+        };
+        if self.add_progress.is_some() || self.building_progress.is_some() {
+            return;
+        }
+        let wanted = if forward {
+            &pasted.selection
+        } else {
+            &pasted.previous_selection
+        };
+        let next: Vec<_> = wanted
+            .iter()
+            .copied()
+            .filter(|feature| self.feature_exists(feature))
+            .collect();
+        if next != self.selected {
+            self.set_selection(next);
+        }
     }
 
     fn on_redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
@@ -3898,6 +3965,13 @@ impl MapViewer {
                 .hit_test_interior_all(&self.viewport, screen_pt);
             hit = osm_gpui::selection::resolve_hits(interior);
         }
+        // Data underneath always wins. A click on nothing but a read-only
+        // reference feature (GPX, GeoJSON) shows what it is in the status bar.
+        if hit.is_none() && !shift_held {
+            if let Some(text) = self.reference_feature_at(screen_pt) {
+                self.set_status(text);
+            }
+        }
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
@@ -3938,7 +4012,7 @@ impl MapViewer {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
+        let (mut lat, mut lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Every click after the first grows the way being drawn by a node.
         let drawing_way = self.add_progress.as_ref().and_then(|p| p.way_id);
@@ -3999,6 +4073,16 @@ impl MapViewer {
                 .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
                 .and_then(|osm_layer| osm_layer.snap_to_way(&self.viewport, screen_pt, 6.0))
         };
+
+        // With no OSM node or way to snap to (they win), a reference line or
+        // point (GPX, GeoJSON) under the cursor pulls the new, ordinary node
+        // onto itself: onto a vertex, else onto the nearest point of a segment.
+        if snap_hit.is_none() && !ctrl_held {
+            if let Some((snap_lat, snap_lon)) = self.reference_snap_at(screen_pt) {
+                lat = snap_lat;
+                lon = snap_lon;
+            }
+        }
 
         // Snapping splices a node into the way under the cursor.
         if let Some((snap_way, ..)) = snap_hit {
@@ -4466,6 +4550,92 @@ impl MapViewer {
         self.data_generation += 1;
         self.status_message = None;
         cx.notify();
+    }
+
+    /// Add a parsed GPX or GeoJSON file as a read-only reference layer (see
+    /// `layers::reference_layer`) above the imagery and below the data
+    /// layers, and zoom to its extent. It never becomes the active layer.
+    pub(crate) fn add_reference_dataset(
+        &mut self,
+        name: String,
+        data: osm_gpui::reference::ReferenceData,
+        cx: &mut Context<Self>,
+    ) {
+        let name = if name.is_empty() {
+            data.format.tag().to_string()
+        } else {
+            name
+        };
+        let candidate = self.layer_manager.unique_name(&name);
+        let extent = data.extent();
+        let layer_id = self.layer_manager.alloc_id();
+        let layer =
+            osm_gpui::layers::reference_layer::ReferenceLayer::new(layer_id, candidate, data);
+        self.layer_manager.add_reference_layer(Box::new(layer));
+        if let Some(extent) = extent {
+            self.fit_to_extent(extent);
+        }
+        self.status_message = None;
+        cx.notify();
+    }
+
+    /// Pan/zoom to a `(min_lat, max_lat, min_lon, max_lon)` extent; a single
+    /// point is centred at an editing zoom (see `fit_bounds_to_viewport`).
+    fn fit_to_extent(
+        &mut self,
+        (min_lat, max_lat, min_lon, max_lon): osm_gpui::reference::GeoExtent,
+    ) {
+        let size = self.viewport.transform.screen_size;
+        let (lat, lon, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+            size.width.to_f64(),
+            size.height.to_f64(),
+        );
+        self.viewport.pan_to(lat, lon);
+        self.viewport.set_zoom(zoom);
+    }
+
+    /// The topmost visible reference feature under `screen_pt`, described
+    /// for the status bar.
+    fn reference_feature_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<String> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .rev()
+            .filter(|layer| layer.is_visible())
+            .filter_map(|layer| {
+                layer
+                    .as_any()
+                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+            })
+            .find_map(|layer| layer.hit(&self.viewport, screen_pt))
+            .map(osm_gpui::reference::describe)
+    }
+
+    /// The point of a visible reference layer to snap a new node to: the
+    /// nearest vertex, marker or point on a segment within the snap
+    /// tolerance, as `(lat, lon)`. Topmost layer first.
+    fn reference_snap_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<(f64, f64)> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .rev()
+            .filter(|layer| layer.is_visible())
+            .filter_map(|layer| {
+                layer
+                    .as_any()
+                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+            })
+            .find_map(|layer| {
+                layer.snap(
+                    &self.viewport,
+                    screen_pt,
+                    osm_gpui::layers::reference_layer::HIT_TOLERANCE_PX,
+                )
+            })
     }
 
     /// The `(name, .osm document)` of the layer File > Export… writes: the
@@ -9119,6 +9289,392 @@ mod tests {
             .unwrap();
     }
 
+    fn ids_of(
+        view: &MapViewer,
+        kind: osm_gpui::selection::FeatureKind,
+    ) -> std::collections::BTreeSet<i64> {
+        let layer_id = view.active_layer.unwrap();
+        view.layer_manager
+            .find_layer(layer_id)
+            .unwrap()
+            .as_editable()
+            .unwrap()
+            .all_features()
+            .into_iter()
+            .filter(|f| f.kind == kind)
+            .map(|f| f.id)
+            .collect()
+    }
+
+    fn status(view: &MapViewer) -> Option<&str> {
+        view.status_message.as_ref().map(|(m, _)| m.as_str())
+    }
+
+    /// Run a history step the way Undo/Redo do, selection included.
+    fn history_step(view: &mut MapViewer, forward: bool) {
+        let action = if forward {
+            view.undo_stack.redo()
+        } else {
+            view.undo_stack.undo()
+        }
+        .expect("a step");
+        view.run_history_step(&action, forward);
+    }
+
+    #[gpui::test]
+    fn copy_and_paste_features_is_one_undo_step_with_the_same_ids_on_redo(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Copy changes nothing: no undo step, no pending edit.
+                select(view, Way, &[100, 101]);
+                view.run_selection_action("copy_features", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(status(view), Some("Copied 7 features"));
+                // The system clipboard got the text form.
+                let text = cx.read_from_clipboard().and_then(|item| item.text());
+                assert!(text.is_some_and(|t| t.contains("<way id=\"-")));
+
+                // Paste with the pointer at a spot on the map.
+                let nodes_before = ids_of(view, Node);
+                let ways_before = ids_of(view, Way);
+                let pointer = point(px(500.0), px(200.0));
+                view.last_mouse_pos = Some(pointer);
+                view.run_selection_action("paste_features", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(status(view), Some("Pasted 7 features"));
+                assert_eq!(ids_of(view, Node).len(), nodes_before.len() + 5);
+                assert_eq!(ids_of(view, Way).len(), ways_before.len() + 2);
+                let new_ways: Vec<i64> = ids_of(view, Way)
+                    .difference(&ways_before)
+                    .copied()
+                    .collect();
+                assert!(new_ways.iter().all(|id| *id < 0));
+                // New data, and the pasted ways are what is selected.
+                assert_eq!(pending(view), (5 + 2, 0, 0));
+                let mut selected: Vec<i64> = view.selected.iter().map(|f| f.id).collect();
+                selected.sort();
+                let mut want = new_ways.clone();
+                want.sort();
+                assert_eq!(selected, want);
+
+                // The copy's centre is where the pointer was.
+                let layer_id = view.active_layer.unwrap();
+                let pasted_nodes: Vec<i64> = ids_of(view, Node)
+                    .difference(&nodes_before)
+                    .copied()
+                    .collect();
+                let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+                for id in &pasted_nodes {
+                    let (lat, lon) = node_position(view, *id);
+                    let (x, y) = osm_gpui::coordinates::lat_lon_to_mercator(lat, lon);
+                    lo = (lo.0.min(x), lo.1.min(y));
+                    hi = (hi.0.max(x), hi.1.max(y));
+                }
+                let (want_lat, want_lon) = view.viewport.screen_to_geo(pointer);
+                let (cx_m, cy_m) = ((lo.0 + hi.0) / 2.0, (lo.1 + hi.1) / 2.0);
+                let (want_x, want_y) =
+                    osm_gpui::coordinates::lat_lon_to_mercator(want_lat, want_lon);
+                assert!((cx_m - want_x).abs() < 0.01 && (cy_m - want_y).abs() < 0.01);
+                // Two ways that met at node 3 still meet at one new node.
+                let meets: Vec<_> = pasted_nodes
+                    .iter()
+                    .filter(|n| ways_at_node(view, **n).len() == 2)
+                    .collect();
+                assert_eq!(meets.len(), 1);
+
+                // One undo removes it all and restores the old selection.
+                history_step(view, false);
+                assert_eq!(ids_of(view, Node), nodes_before);
+                assert_eq!(ids_of(view, Way), ways_before);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(
+                    view.selected,
+                    vec![
+                        osm_gpui::selection::FeatureRef {
+                            layer_id,
+                            kind: Way,
+                            id: 100
+                        },
+                        osm_gpui::selection::FeatureRef {
+                            layer_id,
+                            kind: Way,
+                            id: 101
+                        },
+                    ]
+                );
+
+                // Redo brings back exactly the same ids and selects them.
+                history_step(view, true);
+                assert_eq!(
+                    ids_of(view, Way)
+                        .difference(&ways_before)
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    new_ways
+                );
+                let mut selected: Vec<i64> = view.selected.iter().map(|f| f.id).collect();
+                selected.sort();
+                assert_eq!(selected, want);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[102]);
+                view.run_selection_action("copy_features", cx);
+                let copied = clipboard_actions::clipboard_content();
+
+                select(view, Way, &[103]);
+                let ways_before = ids_of(view, Way);
+                view.run_selection_action("duplicate_features", cx);
+                assert_eq!(status(view), Some("Duplicated 4 features"));
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                assert_eq!(
+                    view.undo_stack.actions[0].description(),
+                    "Duplicated features"
+                );
+                // The duplicate is selected, in the same place as the way.
+                let [dup] = view.selected.as_slice() else {
+                    panic!("one feature selected");
+                };
+                assert!(dup.id < 0 && dup.kind == Way);
+                assert!(!ways_before.contains(&dup.id));
+                let layer_id = view.active_layer.unwrap();
+                let editable = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .unwrap()
+                    .as_editable()
+                    .unwrap();
+                let at = |way: i64| -> Vec<(f64, f64)> {
+                    editable
+                        .way_node_ids(way)
+                        .unwrap()
+                        .iter()
+                        .map(|n| editable.node_lat_lon(*n).unwrap())
+                        .collect()
+                };
+                assert_eq!(at(dup.id), at(103));
+                // Duplicating does not touch what Copy put on the clipboard.
+                assert_eq!(clipboard_actions::clipboard_content(), copied);
+                // Drag the duplicate away: the original stays where it was.
+                let first = editable.way_node_ids(dup.id).unwrap()[0];
+                assert!(first < 0 && editable.node_lat_lon(8).is_some());
+                assert_ne!(first, 8);
+                let _ = Node;
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn paste_at_source_does_not_move_and_works_across_layers(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let first = view.active_layer.unwrap();
+                select(view, Way, &[101]);
+                view.run_selection_action("copy_features", cx);
+                let original: Vec<(f64, f64)> =
+                    [3, 4, 5].iter().map(|n| node_position(view, *n)).collect();
+
+                // A second, empty data layer becomes the active one.
+                let second = view.layer_manager.alloc_id();
+                view.layer_manager
+                    .add_layer(Box::new(OsmLayer::new_with_data(
+                        second,
+                        "Second".to_string(),
+                        Arc::new(osm_gpui::osm::OsmData {
+                            nodes: Default::default(),
+                            ways: Default::default(),
+                            relations: Vec::new(),
+                            bounds: Vec::new(),
+                        }),
+                    )));
+                view.active_layer = Some(second);
+                view.run_selection_action("paste_features_source", cx);
+                assert_eq!(status(view), Some("Pasted 4 features"));
+                assert_eq!(ids_of(view, Way).len(), 1);
+                assert_eq!(ids_of(view, Node).len(), 3);
+                let [pasted] = view.selected.as_slice() else {
+                    panic!("one feature selected");
+                };
+                assert_eq!(pasted.layer_id, second);
+                let nodes = way_nodes(view, second, pasted.id);
+                let positions: Vec<(f64, f64)> =
+                    nodes.iter().map(|n| node_position(view, *n)).collect();
+                assert_eq!(positions, original);
+                // The step belongs to the second layer only.
+                assert_eq!(view.undo_stack.actions[0].layers(), vec![second]);
+                assert_eq!(pending(view), (4, 0, 0));
+
+                // Undo in the second layer; the first never changed.
+                history_step(view, false);
+                assert!(ids_of(view, Way).is_empty());
+                view.active_layer = Some(first);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert_eq!(way_nodes(view, first, 101), vec![3, 4, 5]);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn the_feature_clipboard_survives_deleting_its_source_layer(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let first = view.active_layer.unwrap();
+                select(view, Way, &[101]);
+                view.run_selection_action("copy_features", cx);
+                let index = view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .position(|l| l.id() == first)
+                    .unwrap();
+                view.layer_manager.remove_at(index);
+                let second = view.layer_manager.alloc_id();
+                view.layer_manager
+                    .add_layer(Box::new(OsmLayer::new_with_data(
+                        second,
+                        "Second".to_string(),
+                        Arc::new(osm_gpui::osm::OsmData {
+                            nodes: Default::default(),
+                            ways: Default::default(),
+                            relations: Vec::new(),
+                            bounds: Vec::new(),
+                        }),
+                    )));
+                view.active_layer = Some(second);
+                view.run_selection_action("paste_features_source", cx);
+                assert_eq!(ids_of(view, Way).len(), 1);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn pasting_is_refused_during_an_upload_but_copying_is_not(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                select(view, Way, &[101]);
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::OpeningChangeset,
+                ));
+                let blocked = "An upload is in progress. Wait for it to finish before editing.";
+                let run = |view: &mut MapViewer,
+                           window: &mut Window,
+                           cx: &mut Context<MapViewer>,
+                           id: &str| {
+                    view.on_run_selection_action(&RunSelectionAction { id: id.into() }, window, cx);
+                };
+                run(view, window, cx, "copy_features");
+                assert_eq!(status(view), Some("Copied 4 features"));
+                for id in [
+                    "paste_features",
+                    "paste_features_source",
+                    "duplicate_features",
+                ] {
+                    view.status_message = None;
+                    run(view, window, cx, id);
+                    assert_eq!(status(view), Some(blocked), "{id}");
+                    assert!(view.undo_stack.actions.is_empty());
+                    assert_eq!(pending(view), (0, 0, 0));
+                }
+                // Even called straight (a script's `action`), the paste checks.
+                view.status_message = None;
+                view.run_selection_action("paste_features", cx);
+                assert_eq!(status(view), Some(blocked));
+                assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn paste_and_duplicate_explain_themselves_when_they_cannot_run(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                // Nothing copied: Paste says what to do first.
+                select(view, Way, &[101]);
+                view.run_selection_action("paste_features", cx);
+                assert_eq!(
+                    status(view),
+                    Some("Copy some features first, then paste them into a data layer")
+                );
+                assert!(view.undo_stack.actions.is_empty());
+                // Nothing selected: Copy and Duplicate say so.
+                view.set_selection(Vec::new());
+                view.run_selection_action("copy_features", cx);
+                assert_eq!(
+                    status(view),
+                    Some("Select nodes, ways or relations to copy")
+                );
+                view.run_selection_action("duplicate_features", cx);
+                assert_eq!(
+                    status(view),
+                    Some("Select nodes, ways or relations to duplicate")
+                );
+                // Something copied but no data layer to paste into.
+                select(view, Way, &[101]);
+                view.run_selection_action("copy_features", cx);
+                view.active_layer = None;
+                view.run_selection_action("paste_features", cx);
+                assert_eq!(status(view), Some("Open or download OSM data first"));
+                assert!(view.undo_stack.actions.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn feature_copy_and_paste_use_the_standard_shortcuts() {
+        let settings = settings_store::AppSettings::default();
+        for (id, spec) in [
+            ("copy_features", "secondary-c"),
+            ("paste_features", "secondary-v"),
+            ("duplicate_features", "secondary-d"),
+            ("copy_tags", "secondary-shift-c"),
+            ("paste_tags", "secondary-shift-v"),
+        ] {
+            assert_eq!(osm_gpui::keybindings::effective_spec(&settings, id), spec);
+        }
+        // Download keeps Shift+Cmd/Ctrl+D; Duplicate does not clash with it.
+        assert_eq!(
+            osm_gpui::keybindings::effective_spec(&settings, "download_osm"),
+            "secondary-shift-d"
+        );
+        // Bound on the map's key context, so a focused text field keeps its
+        // own copy and paste.
+        let bindings = key_bindings_from_settings(&settings, true);
+        for id in ["copy_features", "paste_features", "duplicate_features"] {
+            let binding = bindings
+                .iter()
+                .find(|b| {
+                    b.action()
+                        .as_any()
+                        .downcast_ref::<RunSelectionAction>()
+                        .is_some_and(|a| a.id == id)
+                })
+                .expect("bound");
+            assert!(
+                format!("{binding:?}").contains(MAP_VIEWER_KEY_CONTEXT),
+                "{id} is not scoped to the map"
+            );
+        }
+    }
+
     #[test]
     fn tag_copy_and_paste_are_modifier_key_bindings_on_the_map_context() {
         let bindings = key_bindings_from_settings(&settings_store::AppSettings::default(), true);
@@ -9127,7 +9683,16 @@ mod tests {
             .filter_map(|b| b.action().as_any().downcast_ref::<RunSelectionAction>())
             .map(|a| a.id.to_string())
             .collect();
-        assert_eq!(ids, ["copy_tags", "paste_tags"]);
+        assert_eq!(
+            ids,
+            [
+                "copy_features",
+                "paste_features",
+                "duplicate_features",
+                "copy_tags",
+                "paste_tags"
+            ]
+        );
     }
 
     #[test]

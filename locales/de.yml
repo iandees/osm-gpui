@@ -28,6 +28,10 @@ menu:
     undo: "Widerrufen"
     redo: "Wiederholen"
     delete: "Löschen"
+    copy_features: "Kopieren"
+    paste_features: "Einsetzen"
+    paste_features_source: "An Ursprungsposition einsetzen"
+    duplicate_features: "Duplizieren"
     copy_tags: "Tags kopieren"
     paste_tags: "Tags einsetzen"
     select_all: "Alles auswählen"
@@ -73,7 +77,8 @@ menu:
     map_features_wiki: "OpenStreetMap-Wiki: Map Features"
     project_page: "%{app} auf GitHub"
   open_dialog:
-    title: "OSM-Datei zum Öffnen auswählen"
+    title: "Datei zum Öffnen auswählen"
+    map_files: "OSM-, GPX- und GeoJSON-Dateien"
     osm_files: "OSM-Dateien"
     all_files: "Alle Dateien"
   export_dialog:
@@ -177,6 +182,7 @@ status:
   zoom_in_to_download: "Zum Herunterladen näher heranzoomen"
   api_offline: "Die OSM-API meldet, dass sie offline ist; bitte später erneut versuchen"
   open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
+  opening: "%{name} wird geöffnet…"
   open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
   tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
   # Das Entfernen eines Mitglieds aus einer Relation wurde abgelehnt.
@@ -244,6 +250,8 @@ limits:
     join: "Verbinden nicht möglich: der gemeinsame Weg hätte %{nodes} Knoten; der Server erlaubt %{max}"
     relation_add: "Hinzufügen nicht möglich: die Relation hätte %{members} Mitglieder; der Server erlaubt %{max}"
     relation_new: "Relation kann nicht erstellt werden: %{members} Mitglieder sind mehr als der Server erlaubt (%{max})"
+    paste_way: "Einsetzen nicht möglich: Ein kopierter Weg hat %{nodes} Knoten; der Server erlaubt %{max}"
+    paste_relation: "Einsetzen nicht möglich: Eine kopierte Relation hat %{members} Mitglieder; der Server erlaubt %{max}"
 
 # Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
 # aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
@@ -344,6 +352,8 @@ history:
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"
   changed_relation_members: "Mitglieder einer Relation geändert"
+  pasted_features: "Objekte eingesetzt"
+  duplicated_features: "Objekte dupliziert"
 
 # Allgemeine Objektbezeichnungen, wenn keine Vorlage passt.
 geometry:
@@ -468,6 +478,9 @@ shortcut:
   redo: "Wiederholen"
   select_all: "Alles auswählen"
   find: "Suchen…"
+  copy_features: "Kopieren"
+  paste_features: "Einsetzen"
+  duplicate_features: "Duplizieren"
   copy_tags: "Tags kopieren"
   paste_tags: "Tags einsetzen"
   zoom_in: "Vergrößern"
@@ -547,6 +560,27 @@ action:
   relation_count:
     one: "%{count} Relation"
     other: "%{count} Relationen"
+  copy_features:
+    label: "Kopieren"
+    hint: "Knoten, Wege oder Relationen zum Kopieren wählen"
+    done: "%{features} kopiert"
+  paste_features:
+    label: "Einsetzen"
+    hint: "Zuerst Objekte kopieren, dann in eine Datenebene einsetzen"
+    done: "%{features} eingesetzt"
+    done_dropped:
+      one: "%{features} eingesetzt; %{count} Relationsmitglied ausgelassen, das nicht in dieser Ebene ist"
+      other: "%{features} eingesetzt; %{count} Relationsmitglieder ausgelassen, die nicht in dieser Ebene sind"
+  paste_features_source:
+    label: "An Ursprungsposition einsetzen"
+    hint: "Zuerst Objekte kopieren, dann in eine Datenebene einsetzen"
+  duplicate_features:
+    label: "Duplizieren"
+    hint: "Knoten, Wege oder Relationen zum Duplizieren wählen"
+    done: "%{features} dupliziert"
+    done_dropped:
+      one: "%{features} dupliziert; %{count} Relationsmitglied ausgelassen, das nicht in dieser Ebene ist"
+      other: "%{features} dupliziert; %{count} Relationsmitglieder ausgelassen, die nicht in dieser Ebene sind"
   copy_tags:
     label: "Tags kopieren"
     hint: "Ein einzelnes Objekt mit Tags wählen, um sie zu kopieren"
@@ -832,6 +866,18 @@ upload_conflict:
   used_theirs: "%{object} wurde durch die Server-Version ersetzt; deine Änderung daran ist verworfen. Auf „Hochladen“ klicken, um fortzufahren."
   dropped: "Dein Löschen von %{object} wurde vergessen, der Server hatte es bereits gelöscht. Auf „Hochladen“ klicken, um fortzufahren."
   undo_trimmed: "Rückgängig-Schritte, die es betrafen, wurden entfernt."
+
+# Schreibgeschützte GPX- und GeoJSON-Ebenen (Vorlagen zum Nachzeichnen).
+reference:
+  error:
+    malformed: "keine gültige GPX- oder GeoJSON-Datei (%{detail})"
+    not_gpx: "das Dokument ist kein GPX"
+    not_geographic: "die Koordinaten (%{x}, %{y}) sind keine Längen- und Breitengrade in Grad (WGS84); projizierte Daten werden nicht unterstützt"
+    no_geometry: "die Datei enthält nichts zum Zeichnen"
+  kind:
+    track: "Track"
+    route: "Route"
+    waypoint: "Wegpunkt"
 
 error:
   network: "Netzwerkfehler: %{detail}"

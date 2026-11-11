@@ -9,6 +9,7 @@ pub mod merge;
 pub mod node_markers;
 pub mod notes_layer;
 pub mod osm_layer;
+pub mod reference_layer;
 pub mod resolve;
 pub mod tile_layer;
 pub mod way_stroke;
@@ -511,6 +512,22 @@ impl LayerManager {
     /// Add a new layer to the manager
     pub fn add_layer(&mut self, layer: Box<dyn MapLayer>) {
         self.layers.push(layer);
+    }
+
+    /// Add a read-only reference layer (GPX, GeoJSON) above all imagery and
+    /// below the first data layer that sits above that imagery, so the data
+    /// being edited stays on top of the tracks it is traced from.
+    pub fn add_reference_layer(&mut self, layer: Box<dyn MapLayer>) {
+        let above_imagery = self
+            .layers
+            .iter()
+            .rposition(|l| l.imagery_offset().is_some())
+            .map_or(0, |i| i + 1);
+        let at = self.layers[above_imagery..]
+            .iter()
+            .position(|l| l.as_editable().is_some())
+            .map_or(self.layers.len(), |i| i + above_imagery);
+        self.layers.insert(at, layer);
     }
 
     /// Remove the layer at `index`. Returns the removed layer, or `None` if
