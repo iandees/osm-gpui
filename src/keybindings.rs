@@ -246,6 +246,12 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         default_spec: "l",
         category: ShortcutCategory::Actions,
     },
+    // Not r: that is Reverse Way.
+    ShortcutDef {
+        id: "action_rotate",
+        default_spec: "w",
+        category: ShortcutCategory::Actions,
+    },
 ];
 
 /// Look up a shortcut's definition by id. Panics if `id` isn't in

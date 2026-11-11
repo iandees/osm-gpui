@@ -256,6 +256,11 @@ pub(crate) const ADD_TO_RELATION: &str = "add_to_relation";
 /// dialog first (see `create_parallel_ways`).
 pub(crate) const PARALLEL: &str = "parallel";
 
+/// Id of the "Rotate" action, which starts an interactive session (the
+/// selection turns with the pointer until clicked or Enter) rather than
+/// applying right away; see `MapViewer::start_rotate`.
+pub(crate) const ROTATE: &str = "rotate";
+
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
         id: "square",
@@ -439,6 +444,26 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         in_tools_menu: true,
         is_applicable: |env| env.selected_node_count() >= 3,
         apply: apply_align,
+    },
+    SelectionAction {
+        id: ROTATE,
+        shortcut_id: Some("action_rotate"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            let points: Vec<LatLon> = rotatable_nodes(editable, layer_id, env.selection)
+                .into_iter()
+                .map(|(_, p)| p)
+                .collect();
+            osm_gpui::rotate::can_rotate(&points)
+        },
+        // Interactive: `MapViewer::run_selection_action` starts the session
+        // instead of applying, and the commit pushes the undo step.
+        apply: |_, _, _| Err(tr!("action.rotate.hint").to_string()),
     },
     SelectionAction {
         id: "join_node_way",
@@ -3079,6 +3104,29 @@ fn apply_purge(
     })
 }
 
+/// The distinct nodes of the active layer that Rotate turns: the selected
+/// nodes plus every node of the selected ways, with their positions, in first
+/// seen order.
+pub(crate) fn rotatable_nodes(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<(i64, LatLon)> {
+    let mut ids: Vec<i64> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        match f.kind {
+            FeatureKind::Node => ids.push(f.id),
+            FeatureKind::Way => ids.extend(editable.way_node_ids(f.id).unwrap_or_default()),
+            _ => {}
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter()
+        .filter(|id| seen.insert(*id))
+        .filter_map(|id| Some((id, editable.node_lat_lon(id)?)))
+        .collect()
+}
+
 /// Computes new positions for a list of nodes; see `reposition_nodes`.
 type RepositionFn = fn(&[LatLon]) -> Option<Vec<LatLon>>;
 
@@ -3436,6 +3484,7 @@ mod tests {
                 "simplify",
                 "copy_features",
                 "duplicate_features",
+                "rotate",
                 "parallel",
                 "copy_tags",
                 "new_relation",
@@ -3453,6 +3502,7 @@ mod tests {
                 "extend",
                 "copy_features",
                 "duplicate_features",
+                "rotate",
                 "parallel",
                 "new_relation",
                 "purge",

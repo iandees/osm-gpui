@@ -1063,9 +1063,9 @@ impl MapViewer {
             },
             Check::StatusContains(text) => {
                 let shown = self
-                    .status_message
-                    .as_ref()
-                    .map(|(m, _)| m.to_string())
+                    .rotate_status()
+                    .or_else(|| self.status_message.as_ref().map(|(m, _)| m.clone()))
+                    .map(|m| m.to_string())
                     .unwrap_or_default();
                 if shown.contains(text.as_str()) {
                     Ok(())

@@ -543,6 +543,31 @@ struct ExtrudeResult {
     outline: Vec<(f64, f64)>,
 }
 
+/// An interactive Rotate in progress: the selection's nodes turn around their
+/// centre as the pointer circles it. The nodes are really moved on every
+/// pointer move (so the map redraws the true result); `originals` is what a
+/// cancel puts back and what the undo step's "before" is.
+struct RotateSession {
+    layer: LayerId,
+    /// The nodes being turned with their positions when the session began.
+    originals: Vec<(i64, osm_gpui::geometry::LatLon)>,
+    center: osm_gpui::geometry::LatLon,
+    /// The pointer's angle around the centre when the session began; set by
+    /// the first pointer move if the pointer position was not known yet.
+    start_angle: Option<f64>,
+    /// The rotation currently applied, radians counter-clockwise (map).
+    angle: f64,
+    /// Whether the pointer has moved since the session began. A click only
+    /// commits after that, so the click that picked Rotate in the context
+    /// menu cannot also finish it.
+    moved: bool,
+}
+
+/// A pointer position as plain f64 pixels.
+fn pointer_px(p: gpui::Point<gpui::Pixels>) -> (f64, f64) {
+    (f64::from(f32::from(p.x)), f64::from(f32::from(p.y)))
+}
+
 /// Extrude mode's in-progress drag: the way segment being extruded from,
 /// and the two endpoint node ids used to build the preview/final rectangle.
 struct ExtrudeDrag {
@@ -974,6 +999,8 @@ struct MapViewer {
     /// Extrude mode's in-progress drag, or `None` when not dragging (see
     /// `ExtrudeDrag`).
     extrude_drag: Option<ExtrudeDrag>,
+    /// The interactive Rotate in progress, if any (see `RotateSession`).
+    rotate_session: Option<RotateSession>,
     /// Window position of the last right-button press on the map, kept until
     /// the button is released: a release within `CLICK_SLOP` of it is a click
     /// (opens the context menu), anything further was a pan.
@@ -1207,6 +1234,7 @@ impl MapViewer {
             hovered: None,
             vertex_grab: None,
             extrude_drag: None,
+            rotate_session: None,
             right_press: None,
             menu_swallow_press: false,
             drawn_once: false,
@@ -1463,6 +1491,9 @@ impl MapViewer {
         if self.extrude_drag.as_ref().is_some_and(|d| d.layer == id) {
             self.extrude_drag = None;
         }
+        if self.rotate_session.as_ref().is_some_and(|r| r.layer == id) {
+            self.rotate_session = None;
+        }
         self.interaction = Interaction::Idle;
         if self.hovered.is_some_and(|h| h.layer_id == id) {
             self.hovered = None;
@@ -1581,6 +1612,7 @@ impl MapViewer {
         self.add_progress = None;
         self.building_progress = None;
         self.extrude_drag = None;
+        self.cancel_rotate();
         cx.notify();
     }
 
@@ -2655,6 +2687,11 @@ impl MapViewer {
         let Some(action) = selection_actions::find(id) else {
             return;
         };
+        // A rotation in progress owns the selection until it is applied or
+        // cancelled (Enter, click, Escape).
+        if self.rotate_session.is_some() {
+            return;
+        }
         let env = selection_actions::ActionEnv {
             selection: &self.selected,
             active_layer: self.active_layer,
@@ -2678,6 +2715,11 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        if action.id == selection_actions::ROTATE {
+            self.start_rotate();
+            cx.notify();
+            return;
+        }
         if action.id == selection_actions::PARALLEL {
             // Same shape: ask for the offset first, then
             // `create_parallel_ways` applies it.
@@ -2690,6 +2732,157 @@ impl MapViewer {
         let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
         self.finish_selection_action(result);
         cx.notify();
+    }
+
+    /// Start an interactive Rotate of the selection: the nodes of the selected
+    /// nodes and ways turn around their mean position as the pointer circles
+    /// it (Shift snaps to 15 degrees). A click or Enter applies it as one
+    /// undo step; Escape puts everything back.
+    fn start_rotate(&mut self) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let Some(layer) = self.active_layer else {
+            return;
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(layer)
+            .and_then(|l| l.as_editable())
+        else {
+            return;
+        };
+        let originals = selection_actions::rotatable_nodes(editable, layer, &self.selected);
+        let points: Vec<_> = originals.iter().map(|&(_, p)| p).collect();
+        if !osm_gpui::rotate::can_rotate(&points) {
+            self.set_status(tr!("action.rotate.hint"));
+            return;
+        }
+        let Some(center) = osm_gpui::rotate::center(&points) else {
+            return;
+        };
+        let start_angle = self
+            .last_mouse_pos
+            .map(|p| osm_gpui::rotate::pointer_angle(self.rotate_center_px(center), pointer_px(p)));
+        self.status_message = None;
+        self.rotate_session = Some(RotateSession {
+            layer,
+            originals,
+            center,
+            start_angle,
+            angle: 0.0,
+            moved: false,
+        });
+    }
+
+    /// The rotation centre in map pixels under the current viewport.
+    fn rotate_center_px(&self, center: osm_gpui::geometry::LatLon) -> (f64, f64) {
+        pointer_px(self.viewport.geo_to_screen(center.0, center.1))
+    }
+
+    /// Turn the nodes of the Rotate in progress to follow the pointer.
+    fn update_rotate(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
+        let Some(session) = self.rotate_session.as_ref() else {
+            return;
+        };
+        let now = osm_gpui::rotate::pointer_angle(
+            self.rotate_center_px(session.center),
+            pointer_px(pointer),
+        );
+        let Some(session) = self.rotate_session.as_mut() else {
+            return;
+        };
+        let start = *session.start_angle.get_or_insert(now);
+        let mut angle = osm_gpui::rotate::rotation_for_pointer(start, now);
+        if snap {
+            angle = osm_gpui::rotate::snap_angle(angle, osm_gpui::rotate::SNAP_STEP_DEG);
+        }
+        session.moved = true;
+        session.angle = angle;
+        self.apply_rotation();
+    }
+
+    /// Move the session's nodes to `originals` turned by the session's angle.
+    fn apply_rotation(&mut self) {
+        let Some(session) = self.rotate_session.as_ref() else {
+            return;
+        };
+        let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
+        let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
+        let moves: Vec<(i64, f64, f64)> = session
+            .originals
+            .iter()
+            .zip(&after)
+            .map(|(&(id, _), &(lat, lon))| (id, lat, lon))
+            .collect();
+        let layer = session.layer;
+        if let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer)
+            .and_then(|l| l.as_editable_mut())
+        {
+            editable.commit_node_moves(&moves);
+        }
+    }
+
+    /// The Rotate in progress, in degrees clockwise as the user sees it.
+    fn rotate_degrees(&self) -> Option<f64> {
+        self.rotate_session.as_ref().map(|s| -s.angle.to_degrees())
+    }
+
+    /// What the status bar says while a Rotate is in progress.
+    fn rotate_status(&self) -> Option<SharedString> {
+        let degrees = self.rotate_degrees()?;
+        Some(tr!(
+            "action.rotate.status",
+            degrees = format!("{degrees:.0}")
+        ))
+    }
+
+    /// Abandon the Rotate in progress, putting the nodes back. Returns
+    /// whether there was one.
+    fn cancel_rotate(&mut self) -> bool {
+        let Some(session) = self.rotate_session.as_mut() else {
+            return false;
+        };
+        session.angle = 0.0;
+        self.apply_rotation();
+        if let Some(session) = self.rotate_session.take() {
+            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+                layer.refresh_modified();
+            }
+        }
+        true
+    }
+
+    /// Apply the Rotate in progress as one undo step.
+    fn finish_rotate(&mut self) {
+        let Some(session) = self.rotate_session.take() else {
+            return;
+        };
+        let degrees = -session.angle.to_degrees();
+        let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
+        let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
+        let entries: Vec<NodeMoveUndoEntry> = session
+            .originals
+            .iter()
+            .zip(&after)
+            .filter(|((_, b), a)| b != *a)
+            .map(|(&(id, b), &a)| (id, b, a))
+            .collect();
+        if entries.is_empty() {
+            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+                layer.refresh_modified();
+            }
+            return;
+        }
+        self.undo_stack.push(UndoableAction::Batch {
+            label: tr!("history.rotated").to_string(),
+            actions: vec![UndoableAction::MoveNodes {
+                per_layer: vec![(session.layer, entries)],
+            }],
+        });
+        self.set_status(tr!("action.rotate.done", degrees = format!("{degrees:.0}")));
     }
 
     /// Record what a selection action produced: its undo step, selection
@@ -3223,6 +3416,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
+        self.cancel_rotate();
         if let Some(action) = self.undo_stack.undo() {
             self.run_history_step(&action, false);
             cx.notify();
@@ -3283,6 +3477,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
+        self.cancel_rotate();
         if let Some(action) = self.undo_stack.redo() {
             self.run_history_step(&action, true);
             cx.notify();
@@ -3829,6 +4024,12 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
+        // Rotating: the selection follows the pointer around its centre.
+        if self.rotate_session.is_some() {
+            self.update_rotate(adjusted_position, event.modifiers.shift);
+            cx.notify();
+            return;
+        }
         // What a click here would select — only meaningful in Select mode
         // with no button down and no pan pending.
         let hover_enabled = self.mode == EditMode::Select
@@ -3930,6 +4131,15 @@ impl MapViewer {
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = self.window_to_map(event.position);
+        if self.rotate_session.is_some() {
+            // A click applies the rotation, once the pointer has moved (the
+            // click that chose Rotate from a menu does not).
+            if self.rotate_session.as_ref().is_some_and(|r| r.moved) {
+                self.finish_rotate();
+            }
+            cx.notify();
+            return;
+        }
         self.viewport.handle_mouse_up();
 
         if self.offset_adjust_mouse_up() {
@@ -6918,6 +7128,10 @@ impl Render for MapViewer {
                                 return;
                             }
                             window.focus(&this.focus_handle, cx);
+                            if this.rotate_session.is_some() {
+                                // The release applies the rotation.
+                                return;
+                            }
                             let position = this.window_to_map(ev.position);
                             if this.space_held {
                                 this.start_pan_drag(position, cx);
@@ -6966,6 +7180,12 @@ impl Render for MapViewer {
                             // imagery, Escape cancels, Enter keeps.
                         } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
                             // Arrow keys pan; +/- zoom.
+                        } else if ev.keystroke.key == "escape" && this.cancel_rotate() {
+                            // A Rotate in progress is undone.
+                            cx.notify();
+                        } else if ev.keystroke.key == "enter" && this.rotate_session.is_some() {
+                            this.finish_rotate();
+                            cx.notify();
                         } else if ev.keystroke.key == "escape" && this.cancel_armed_note() {
                             // A New Note waiting for its click is cancelled.
                             cx.notify();
@@ -11112,6 +11332,104 @@ mod tests {
                     .map(|&id| node_position(view, id))
                     .collect();
                 assert_eq!(now, spaced);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let ids = [1, 2, 3];
+                let original: Vec<(f64, f64)> =
+                    ids.iter().map(|&id| node_position(view, id)).collect();
+                select(view, Way, &[100]);
+                view.run_selection_action("rotate", cx);
+                let center = view
+                    .rotate_session
+                    .as_ref()
+                    .expect("session started")
+                    .center;
+                let (cx_px, cy_px) = view.rotate_center_px(center);
+                let at = |dx: f64, dy: f64| {
+                    gpui::point(gpui::px((cx_px + dx) as f32), gpui::px((cy_px + dy) as f32))
+                };
+                // The pointer starts east of the centre ...
+                view.last_mouse_pos = Some(at(100.0, 0.0));
+                view.rotate_session.as_mut().unwrap().start_angle = Some(
+                    osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
+                );
+                // ... and circles a quarter turn clockwise (to the south).
+                view.update_rotate(at(0.0, 100.0), false);
+                assert!((view.rotate_degrees().unwrap() - 90.0).abs() < 1e-6);
+                let during: Vec<(f64, f64)> =
+                    ids.iter().map(|&id| node_position(view, id)).collect();
+                assert_ne!(during, original);
+                // Nothing is on the undo stack until it is applied.
+                assert_eq!(view.undo_stack.actions.len(), 0);
+                view.finish_rotate();
+                assert!(view.rotate_session.is_none());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let done: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+                assert_eq!(done, during);
+
+                undo_step(view);
+                let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+                assert_eq!(now, original);
+                redo_step(view);
+                let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+                assert_eq!(now, done);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let ids = [1, 2, 4];
+                let original: Vec<(f64, f64)> =
+                    ids.iter().map(|&id| node_position(view, id)).collect();
+                select(view, Node, &ids);
+                view.run_selection_action("rotate", cx);
+                let center = view.rotate_session.as_ref().unwrap().center;
+                let (cx_px, cy_px) = view.rotate_center_px(center);
+                view.rotate_session.as_mut().unwrap().start_angle = Some(
+                    osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
+                );
+                // About 20 degrees clockwise snaps to 15.
+                let a = 20f64.to_radians();
+                let pointer = gpui::point(
+                    gpui::px((cx_px + 100.0 * a.cos()) as f32),
+                    gpui::px((cy_px + 100.0 * a.sin()) as f32),
+                );
+                view.update_rotate(pointer, true);
+                assert!((view.rotate_degrees().unwrap() - 15.0).abs() < 1e-6);
+                view.update_rotate(pointer, false);
+                assert!((view.rotate_degrees().unwrap() - 20.0).abs() < 1e-2);
+
+                assert!(view.cancel_rotate());
+                assert!(view.rotate_session.is_none());
+                let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+                assert_eq!(now, original);
+                assert_eq!(view.undo_stack.actions.len(), 0);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn rotate_is_refused_for_a_single_node(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Node, &[1]);
+                view.run_selection_action("rotate", cx);
+                assert!(view.rotate_session.is_none());
             })
             .unwrap();
     }
