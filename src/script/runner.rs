@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::idle_tracker::IdleTracker;
-use crate::script::{Check, Op, Step};
+use crate::script::{AutosaveCmd, Check, Op, Step};
 
 /// Interface to the live app. Implemented by a shim in main.rs that holds the
 /// gpui `WindowHandle` and the `MapViewer` entity. Keeps the runner testable
@@ -77,6 +77,11 @@ pub trait AppHandle {
     fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Evaluate a read-only condition on the app; `Err` says what it found.
     fn check(&mut self, check: &Check) -> Result<(), String>;
+    /// Do one of the autosave script ops (see `AutosaveCmd`). Apps without
+    /// autosave refuse.
+    fn autosave(&mut self, _cmd: crate::script::AutosaveCmd) -> Result<(), String> {
+        Err("this app has no autosave".to_string())
+    }
     /// Show `message` in the status bar.
     fn note(&mut self, message: &str);
     /// Start the browser sign-in for the active API server.
@@ -295,6 +300,29 @@ impl Runner {
                 println!("  -> {}", path);
                 Ok(())
             }
+            Op::AutosaveNow => {
+                app.autosave(AutosaveCmd::Now)
+                    .map_err(|e| fail(format!("autosave_now: {e}")))?;
+                self.wait_autosave_idle(app, step.line_no, "autosave_now")
+            }
+            Op::RestoreAutosave => {
+                app.autosave(AutosaveCmd::Restore)
+                    .map_err(|e| fail(format!("restore_autosave: {e}")))?;
+                self.wait_autosave_idle(app, step.line_no, "restore_autosave")
+            }
+            Op::DiscardAutosave => {
+                app.autosave(AutosaveCmd::Discard)
+                    .map_err(|e| fail(format!("discard_autosave: {e}")))?;
+                self.wait_autosave_idle(app, step.line_no, "discard_autosave")
+            }
+            Op::Crash => {
+                println!("  crashing now: exiting without any clean-up");
+                app.autosave(AutosaveCmd::Crash)
+                    .map_err(|e| fail(format!("crash: {e}")))
+            }
+            Op::AssertAutosaveExists { count } => app
+                .check(&Check::AutosaveFiles(*count))
+                .map_err(|e| fail(format!("assert_autosave_exists: {e}"))),
             Op::SignIn => app.sign_in().map_err(|e| fail(format!("sign_in: {e}"))),
             Op::WaitSignedIn { timeout } => {
                 let deadline = Instant::now() + *timeout;
@@ -338,6 +366,36 @@ impl Runner {
                 app.note(message);
                 std::thread::sleep(*duration);
                 Ok(())
+            }
+        }
+    }
+
+    /// Wait until every autosave write and any restore has finished.
+    fn wait_autosave_idle<A: AppHandle>(
+        &self,
+        app: &mut A,
+        line_no: usize,
+        op: &str,
+    ) -> Result<(), RunError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // Let the command take effect (a restore starts on the next frame).
+        for _ in 0..3 {
+            app.wait_frame();
+        }
+        loop {
+            match app.check(&Check::AutosaveIdle) {
+                Ok(()) => {
+                    // One more frame so the result is on screen.
+                    app.wait_frame();
+                    return Ok(());
+                }
+                Err(why) if Instant::now() >= deadline => {
+                    return Err(RunError {
+                        line_no,
+                        message: format!("{op}: still not finished after 30s: {why}"),
+                    });
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
     }
@@ -488,6 +546,11 @@ fn describe(op: &Op) -> String {
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
         Op::ExportLayer { path } => format!("export_layer {}", path),
+        Op::AutosaveNow => "autosave_now".to_string(),
+        Op::AssertAutosaveExists { count } => format!("assert_autosave_exists {:?}", count),
+        Op::RestoreAutosave => "restore_autosave".to_string(),
+        Op::DiscardAutosave => "discard_autosave".to_string(),
+        Op::Crash => "crash".to_string(),
         Op::SignIn => "sign_in".to_string(),
         Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),
         Op::AssertSignedIn => "assert_signed_in".to_string(),
@@ -629,6 +692,10 @@ mod tests {
                 _ => self.check_result.clone(),
             }
         }
+        fn autosave(&mut self, cmd: crate::script::AutosaveCmd) -> Result<(), String> {
+            self.calls.push(format!("autosave {cmd:?}"));
+            Ok(())
+        }
         fn note(&mut self, message: &str) {
             self.calls.push(format!("note {message}"));
         }
@@ -724,6 +791,44 @@ mod tests {
                 vec!["upload_confirm", "resolve UseTheirs", "sign_in"]
             );
         }
+    }
+
+    #[test]
+    fn autosave_ops_reach_the_app_and_wait_for_it_to_settle() {
+        let (mut fake, runner) = fake_on("https://api.openstreetmap.org");
+        runner
+            .run(
+                &mut fake,
+                &steps(
+                    "autosave_now\nassert_autosave_exists 2\nrestore_autosave\ndiscard_autosave\ncrash",
+                ),
+            )
+            .unwrap();
+        let autosave: Vec<&String> = fake
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("autosave "))
+            .collect();
+        assert_eq!(
+            autosave,
+            [
+                "autosave Now",
+                "autosave Restore",
+                "autosave Discard",
+                "autosave Crash"
+            ]
+        );
+        assert!(fake
+            .calls
+            .contains(&"check AutosaveFiles(Some(2))".to_string()));
+        // Each waiting op looked at the settled state before moving on.
+        assert_eq!(
+            fake.calls
+                .iter()
+                .filter(|c| *c == "check AutosaveIdle")
+                .count(),
+            3
+        );
     }
 
     #[test]

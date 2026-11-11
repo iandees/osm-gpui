@@ -87,6 +87,21 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
+    /// The startup offer to restore autosaved layers.
+    Restore,
+}
+
+/// What the autosave script ops ask the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutosaveCmd {
+    /// Write every layer's autosave now.
+    Now,
+    /// Press Restore in the restore dialog.
+    Restore,
+    /// Press Discard in the restore dialog.
+    Discard,
+    /// Exit the process on the spot, without any clean-up, as a crash would.
+    Crash,
 }
 
 /// What `assert_selection` expects.
@@ -111,6 +126,12 @@ pub enum Check {
     Selection(SelectionKind),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
+    /// Every layer's autosave is up to date and no autosave write or
+    /// restore is running.
+    AutosaveIdle,
+    /// This run's autosave directory holds a file for at least one layer
+    /// (`None`) or for exactly this many.
+    AutosaveFiles(Option<usize>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +268,21 @@ pub enum Op {
     ExportLayer {
         path: String,
     },
+    /// Write every layer's autosave now and wait until it is on disk. Needs
+    /// an autosave directory (`--autosave-dir`).
+    AutosaveNow,
+    /// Assert this run's autosave directory holds a layer file (any, or
+    /// exactly `count`).
+    AssertAutosaveExists {
+        count: Option<usize>,
+    },
+    /// Press Restore in the restore dialog and wait for the layers to load.
+    RestoreAutosave,
+    /// Press Discard in the restore dialog.
+    DiscardAutosave,
+    /// Exit at once without cleaning up, as a crash would (so the next run
+    /// finds an unclean session). Scripted runs only.
+    Crash,
     /// Start the browser sign-in for the active API server.
     SignIn,
     /// Wait for the sign-in to finish (someone approves it in the browser).
