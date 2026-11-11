@@ -121,10 +121,7 @@ pub(crate) enum UndoableAction {
     /// Selection action "Reverse": the listed ways had their node order
     /// reversed. Reversing is its own inverse, so undo and redo both just
     /// reverse them again.
-    ReverseWays {
-        layer: LayerId,
-        way_ids: Vec<i64>,
-    },
+    ReverseWays { layer: LayerId, way_ids: Vec<i64> },
     /// A way's whole node list replaced (join, separate): undo restores
     /// `before`, redo reapplies `after`. The nodes in either list must exist
     /// whenever that direction is applied, so callers order the surrounding
