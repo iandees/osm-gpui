@@ -7,6 +7,40 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.5.0
+
+### Windows and Linux
+
+- The menus are drawn as a menu bar inside the window; earlier builds had no menus at all on Windows and Linux. Default shortcuts use Ctrl there instead of the Windows/Super key. ([#153](https://github.com/iandees/osm-gpui/pull/153))
+- macOS-only items (Hide, Hide Others, Show All, Services) are left out on Windows and Linux, and Quit, Settings and About are in File, Edit and Help. ([#154](https://github.com/iandees/osm-gpui/pull/154))
+
+### Relations
+
+- Route relations and turn restrictions are drawn on the map. ([#144](https://github.com/iandees/osm-gpui/pull/144))
+
+### Upload and sign-in
+
+- The saved login is no longer lost when the keychain cannot be read, and the upload dialog says when it is waiting for the keychain. ([#151](https://github.com/iandees/osm-gpui/pull/151))
+- The changeset comment is kept when the upload dialog is closed, the side panel cannot edit while an upload runs, and undo history for uploaded edits is trimmed. ([#145](https://github.com/iandees/osm-gpui/pull/145))
+
+### Editing
+
+- Deleting a layer that has unsaved edits asks for confirmation first. ([#152](https://github.com/iandees/osm-gpui/pull/152))
+- Deleting a layer removes its steps from the undo history. ([#150](https://github.com/iandees/osm-gpui/pull/150))
+- Select All includes relations, and deleting a selection of ways together with their nodes removes everything. ([#147](https://github.com/iandees/osm-gpui/pull/147))
+
+### Interface
+
+- Settings > Appearance has a theme choice of System, Light or Dark. The default is System, so the app now follows the operating system's light or dark appearance instead of always being light. ([#155](https://github.com/iandees/osm-gpui/pull/155))
+- The preset picker lists recently used and common presets before you type a search. ([#142](https://github.com/iandees/osm-gpui/pull/142))
+- Untagged vertices are drawn only from zoom 18, and tagged nodes are small squares when zoomed out, which makes large downloads much faster to draw. ([#149](https://github.com/iandees/osm-gpui/pull/149))
+- Shorter mode hints in the status bar, a clearer downloaded-area wash, and coloured iD preset icons. ([#143](https://github.com/iandees/osm-gpui/pull/143))
+
+### Development
+
+- The script harness can drive real uploads against the OpenStreetMap development server, and refuses to upload to any other server. ([#147](https://github.com/iandees/osm-gpui/pull/147))
+- Opt-in per-frame render timing (`OSM_GPUI_FRAME_STATS=1`), a benchmark script and a measurement report. ([#148](https://github.com/iandees/osm-gpui/pull/148))
+
 ## 0.4.0
 
 ### Editing
