@@ -773,6 +773,8 @@ dialog:
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
+    notes_title: "Für Hinweise anmelden"
+    notes_body: "Zum Erstellen, Kommentieren, Schließen oder Wiedereröffnen von Hinweisen ist die Anmeldung bei OpenStreetMap nötig. Wenn du dich angemeldet hast, bevor Hinweise unterstützt wurden, melde dich erneut an, um die zusätzliche Berechtigung zu erteilen. Die Einstellungen öffnen, um sich anzumelden."
     open_settings: "Einstellungen öffnen"
   about:
     title: "Über %{app}"

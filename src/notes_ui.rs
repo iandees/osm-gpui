@@ -29,6 +29,7 @@ use osm_gpui::notes::{
 use osm_gpui::script::{NoteCheck, NoteOp};
 use osm_gpui::settings_store;
 use osm_gpui::ui::note_dialog::{DialogEvent, NewNoteDialog};
+use osm_gpui::ui::sign_in_dialog::SignInPurpose;
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::{tr, tr_count};
 
@@ -425,7 +426,7 @@ impl MapViewer {
     pub(crate) fn on_new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
         if !self.signed_in_for_notes() {
             // Notes are attributed to a user: offer the sign-in flow.
-            self.show_sign_in_dialog(window, cx);
+            self.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
             return;
         }
         self.set_show_notes(true, cx);
@@ -787,7 +788,7 @@ impl MapViewer {
                         Button::new("note-sign-in")
                             .label(tr!("notes.panel.sign_in"))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_sign_in_dialog(window, cx);
+                                this.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
                             })),
                     )
                     .into_any_element()
