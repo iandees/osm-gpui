@@ -39,6 +39,10 @@ pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
 pub(crate) fn open_osm_file(_: &OpenOsmFile, cx: &mut App) {
     cx.spawn(async move |cx| {
         let Some(file_path) = rfd::AsyncFileDialog::new()
+            .add_filter(
+                tr!("menu.open_dialog.map_files").as_ref(),
+                &["osm", "xml", "gpx", "geojson", "json"],
+            )
             .add_filter(tr!("menu.open_dialog.osm_files").as_ref(), &["osm", "xml"])
             .add_filter(tr!("menu.open_dialog.all_files").as_ref(), &["*"])
             .set_title(tr!("menu.open_dialog.title").as_ref())
@@ -61,34 +65,77 @@ pub(crate) fn open_osm_path(path: std::path::PathBuf, cx: &mut App) {
         .detach();
 }
 
+/// What a background load of a file produced.
+enum Loaded {
+    Osm(Box<Result<(osm_gpui::osm::OsmData, osm_gpui::osm::FileEdits), String>>),
+    Reference(Result<osm_gpui::reference::ReferenceData, String>),
+}
+
+/// Open a file by type: `.gpx` and `.geojson`/`.json` (and `.xml`/other
+/// files that start like one) become read-only reference layers, everything
+/// else is OSM XML. Parsed on the background executor.
 async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
     let path_str = path.to_string_lossy().to_string();
-
-    let result = cx
-        .background_executor()
-        .spawn(async move {
-            let parser = OsmParser::new();
-            // With edits: a file saved by File > Export… (or JOSM) may
-            // carry pending local changes, which must stay pending.
-            parser.parse_file_with_edits(&path_str)
-        })
-        .await;
-
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("OSM")
         .to_string();
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&path_str)
+        .to_string();
     cx.update(|cx| {
-        with_map_viewer(cx, |v, cx| match result {
-            Ok((osm_data, edits)) => {
-                v.add_osm_dataset(stem, osm_data, &edits, cx);
-                v.note_last_layer_source(&path);
+        with_map_viewer(cx, |v, cx| {
+            v.set_status(tr!("status.opening", name = file_name));
+            cx.notify();
+        });
+    });
+
+    let bg_path = path.clone();
+    let result = cx
+        .background_executor()
+        .spawn(async move {
+            if let Some(format) = osm_gpui::reference::sniff_path(&bg_path) {
+                return Loaded::Reference(
+                    osm_gpui::reference::load_file(&bg_path, format).map_err(|e| e.to_string()),
+                );
             }
-            Err(e) => {
-                v.set_status(tr!("status.open_failed", path = path.display(), error = e));
-                cx.notify();
-            }
+            let parser = OsmParser::new();
+            // With edits: a file saved by File > Export… (or JOSM) may
+            // carry pending local changes, which must stay pending.
+            Loaded::Osm(Box::new(
+                parser
+                    .parse_file_with_edits(&path_str)
+                    .map_err(|e| e.to_string()),
+            ))
+        })
+        .await;
+
+    cx.update(|cx| {
+        with_map_viewer(cx, |v, cx| {
+            let failure = match result {
+                Loaded::Osm(loaded) => match *loaded {
+                    Ok((osm_data, edits)) => {
+                        v.add_osm_dataset(stem, osm_data, &edits, cx);
+                        v.note_last_layer_source(&path);
+                        return;
+                    }
+                    Err(e) => e,
+                },
+                Loaded::Reference(Ok(data)) => {
+                    v.add_reference_dataset(stem, data, cx);
+                    return;
+                }
+                Loaded::Reference(Err(e)) => e,
+            };
+            v.set_status(tr!(
+                "status.open_failed",
+                path = path.display(),
+                error = failure
+            ));
+            cx.notify();
         });
     });
 }
