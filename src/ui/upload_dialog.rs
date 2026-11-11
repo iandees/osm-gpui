@@ -18,6 +18,8 @@ use gpui_component::{
 use crate::osm_upload::{ConflictKind, UploadConflict};
 use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
+use crate::ui::validation_list::summary_text;
+use crate::validator::Report;
 use crate::{tr, tr_count};
 
 /// One row of the pending-changes summary: a layer name plus its
@@ -78,6 +80,10 @@ pub enum DialogEvent {
         comment: String,
     },
     Cancelled,
+    /// User pressed "Show in side panel": close the dialog (keeping the
+    /// comment draft) and open the Validation section so the problems can be
+    /// fixed on the map.
+    ShowInSidePanel,
     /// User picked a way forward from a refused upload.
     Conflict {
         action: ConflictAction,
@@ -227,6 +233,9 @@ pub struct UploadDialog {
     /// After a stop part way through a multi-changeset upload: how many of
     /// how many changesets the server accepted.
     partial: Option<(usize, usize)>,
+    /// What the validator found in the pending changes, run once when the
+    /// dialog opened. Errors block the upload.
+    validation: Report,
 }
 
 impl EventEmitter<DialogEvent> for UploadDialog {}
@@ -246,7 +255,36 @@ impl UploadDialog {
             notice: None,
             changesets: 1,
             partial: None,
+            validation: Report::default(),
         }
+    }
+
+    /// Show what the validator found. Errors disable the Upload button;
+    /// warnings leave it as "Upload anyway".
+    pub fn set_validation(&mut self, report: Report, cx: &mut Context<Self>) {
+        self.validation = report;
+        cx.notify();
+    }
+
+    /// The validator's findings shown in the dialog.
+    pub fn validation(&self) -> &Report {
+        &self.validation
+    }
+
+    /// Press "Show in side panel" (what a click does). `false` when there is
+    /// nothing to show (the validator found no problems).
+    pub fn press_show_in_panel(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.validation.is_empty() {
+            return false;
+        }
+        cx.emit(DialogEvent::ShowInSidePanel);
+        true
+    }
+
+    /// Whether the Upload button can be pressed: the state allows it, there
+    /// is a comment and the validator found no errors.
+    fn can_upload(&self, comment_empty: bool) -> bool {
+        self.state.confirm_enabled(comment_empty) && !self.validation.has_errors()
     }
 
     /// Say how many changesets the pending changes will be sent as (shown
@@ -359,6 +397,8 @@ impl UploadDialog {
         let empty = self.comment.read(cx).value().trim().is_empty();
         if self.state.is_busy() {
             Some("an upload is already running")
+        } else if self.validation.has_errors() {
+            Some("the validator found errors (fix them first)")
         } else if empty {
             Some("the changeset comment is empty (type one first)")
         } else {
@@ -399,7 +439,7 @@ impl UploadDialog {
 
     fn upload(&mut self, cx: &mut Context<Self>) {
         let comment = self.comment_text(cx);
-        if !self.state.confirm_enabled(comment.is_empty()) {
+        if !self.can_upload(comment.is_empty()) {
             return;
         }
         self.notice = None;
@@ -439,6 +479,61 @@ impl UploadDialog {
 impl Focusable for UploadDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+impl UploadDialog {
+    /// The validator's verdict: nothing at all when it has nothing to say
+    /// about the changes, a discreet line when it found no problems, and
+    /// otherwise the counts, a note on what blocks and a button that opens
+    /// the list in the side panel (the list itself is not shown here).
+    fn render_validation(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let report = &self.validation;
+        if !report.checked_changes {
+            return div().into_any_element();
+        }
+        if report.is_empty() {
+            return Label::new(summary_text(report))
+                .text_size(muted_text_size())
+                .text_color(muted)
+                .into_any_element();
+        }
+        let theme = cx.theme().clone();
+        let (headline_color, note) = if report.has_errors() {
+            (theme.danger, tr!("validator.blocked"))
+        } else {
+            (theme.warning, tr!("validator.warnings_note"))
+        };
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        Label::new(summary_text(report))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(headline_color),
+                    )
+                    .child(
+                        Button::new("upload-show-findings")
+                            .small()
+                            .label(tr!("validator.show_in_panel"))
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                this.press_show_in_panel(cx);
+                            })),
+                    ),
+            )
+            .child(
+                Label::new(note)
+                    .text_size(muted_text_size())
+                    .text_color(muted),
+            )
+            .into_any_element()
     }
 }
 
@@ -503,6 +598,7 @@ impl Render for UploadDialog {
                 if let Some(notice) = &self.notice {
                     body = body.child(Label::new(notice.clone()).text_color(cx.theme().foreground));
                 }
+                body = body.child(self.render_validation(cx));
             }
             UploadState::InFlight(handle) => {
                 body = body.child(busy_row(handle.snapshot().label()));
@@ -560,6 +656,8 @@ impl Render for UploadDialog {
 
         let confirm_label = if matches!(self.state, UploadState::Failed(_)) {
             tr!("dialog.upload.retry")
+        } else if self.validation.warnings() > 0 {
+            tr!("validator.upload_anyway")
         } else {
             tr!("dialog.upload.confirm")
         };
@@ -578,7 +676,7 @@ impl Render for UploadDialog {
                 Button::new("upload-confirm")
                     .primary()
                     .label(confirm_label)
-                    .disabled(!self.state.confirm_enabled(comment_empty))
+                    .disabled(!self.can_upload(comment_empty))
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             );
 

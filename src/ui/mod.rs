@@ -15,3 +15,4 @@ pub mod sign_in_dialog;
 pub mod style;
 pub mod tag_edit;
 pub mod upload_dialog;
+pub mod validation_list;

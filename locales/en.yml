@@ -783,3 +783,66 @@ error:
     expired: "Login expired and can't be refreshed; please sign in again"
     # `%{detail}` is the system's reason (e.g. "access denied").
     keychain_read: "Couldn't read your saved login from the system keychain (%{detail}). Your login and edits are kept; try again and allow access when asked."
+
+# The validator: problems found in the objects about to be uploaded.
+validator:
+  title: "Validation"
+  menu: "Validate"
+  close: "Close"
+  show_in_panel: "Show in side panel"
+  severity:
+    error: "Error"
+    warning: "Warning"
+  none: "No problems found."
+  nothing_pending: "There are no pending changes to check."
+  # `%{count}` problems of that severity.
+  errors:
+    one: "%{count} error"
+    other: "%{count} errors"
+  warnings:
+    one: "%{count} warning"
+    other: "%{count} warnings"
+  # `%{errors}` and `%{warnings}` are the two counts above.
+  summary_both: "%{errors}, %{warnings}"
+  more:
+    one: "…and %{count} more not shown"
+    other: "…and %{count} more not shown"
+  blocked: "Fix the errors before uploading. The side panel lists each one."
+  warnings_note: "Warnings do not block the upload, but check them first."
+  upload_anyway: "Upload anyway"
+  # Names of the objects a finding is about.
+  feature:
+    node: "Node"
+    way: "Way"
+    relation: "Relation"
+    plain: "%{kind} %{id}"
+    named: "%{kind} %{id} (%{name})"
+    more: "%{count} more"
+  # Kinds of way that can cross (lower case, in a sentence).
+  kind:
+    highway: "highway"
+    railway: "railway"
+    waterway: "waterway"
+    building: "building"
+  msg:
+    untagged_way: "Way has no tags and is not part of a relation"
+    untagged_node: "Node has no tags and is not part of a way or relation"
+    way_too_short:
+      one: "Way has %{count} node; a way needs at least 2"
+      other: "Way has %{count} nodes; a way needs at least 2"
+    closed_way_too_short: "Closed way has %{count} node references; a closed way needs at least 4"
+    duplicate_way_node: "Way lists node %{node} twice in a row"
+    duplicate_nodes: "%{count} nodes are at the same position"
+    crossing_ways: "A %{a} and a %{b} cross without a shared node"
+    area_tags_on_open_way: "Tagged %{tag}, which makes an area, but the way is not closed"
+    multipolygon_no_outer: "Multipolygon has no outer member"
+    multipolygon_role: "Multipolygon has way members whose role is empty or not outer or inner"
+    multipolygon_open_ring: "Multipolygon has rings that do not close"
+    relation_empty: "Relation has no members"
+    relation_no_type: "Relation has no type tag"
+    tag_empty_key: "Tag with an empty key (value \"%{value}\")"
+    tag_empty_value: "Tag \"%{key}\" has an empty value"
+    tag_too_long: "Tag \"%{key}\" has a key or value longer than %{max} characters"
+    tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
+    fixme: "Has a note to fix: %{key}=%{value}"
+    deprecated_tag: "Deprecated tag %{old}; use %{new}"

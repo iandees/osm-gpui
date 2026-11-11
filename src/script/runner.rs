@@ -77,6 +77,8 @@ pub trait AppHandle {
     fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Evaluate a read-only condition on the app; `Err` says what it found.
     fn check(&mut self, check: &Check) -> Result<(), String>;
+    /// Click a finding's row in the side panel's Validation section.
+    fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
     /// Show `message` in the status bar.
     fn note(&mut self, message: &str);
     /// Start the browser sign-in for the active API server.
@@ -309,6 +311,23 @@ impl Runner {
             Op::AssertSelection { kind } => app
                 .check(&Check::Selection(*kind))
                 .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::AssertValidation {
+                errors,
+                warnings,
+                checks,
+            } => app
+                .check(&Check::Validation {
+                    errors: *errors,
+                    warnings: *warnings,
+                    checks: checks.clone(),
+                })
+                .map_err(|e| fail(format!("assert_validation: {e}"))),
+            Op::ShowFinding { target } => app
+                .show_finding(target)
+                .map_err(|e| fail(format!("show_finding: {e}"))),
+            Op::AssertValidationPanel { shown } => app
+                .check(&Check::ValidationPanel(*shown))
+                .map_err(|e| fail(format!("assert_validation_panel: {e}"))),
             Op::AssertNativeAppearance { expect } => app
                 .check(&Check::NativeAppearance(*expect))
                 .map_err(|e| fail(format!("assert_native_appearance: {e}"))),
@@ -521,6 +540,16 @@ fn describe(op: &Op) -> String {
         Op::AssertAdjustingOffset { on } => format!("assert_adjusting_offset {on}"),
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::AssertValidation {
+            errors,
+            warnings,
+            checks,
+        } => format!(
+            "assert_validation errors={:?} warnings={:?} {:?}",
+            errors, warnings, checks
+        ),
+        Op::ShowFinding { target } => format!("show_finding {:?}", target),
+        Op::AssertValidationPanel { shown } => format!("assert_validation_panel {}", shown),
         Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
         Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
@@ -665,6 +694,10 @@ mod tests {
                 }
                 _ => self.check_result.clone(),
             }
+        }
+        fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String> {
+            self.calls.push(format!("show_finding {target:?}"));
+            Ok(())
         }
         fn note(&mut self, message: &str) {
             self.calls.push(format!("note {message}"));

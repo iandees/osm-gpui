@@ -109,6 +109,8 @@ pub(crate) enum ScriptCommand {
     Export { path: std::path::PathBuf },
     /// Evaluate a read-only condition.
     Check(script::Check),
+    /// Click a validator finding's row in the side panel.
+    ShowFinding(script::FindingTarget),
     /// Show a message in the status bar.
     Note(String),
 }
@@ -528,6 +530,10 @@ impl MapViewer {
                     let result = self.script_check(&check, cx);
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::ShowFinding(target) => {
+                    let result = self.script_show_finding(&target, window, cx);
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Note(message) => {
                     self.set_status(message);
                     cx.notify();
@@ -617,6 +623,36 @@ impl MapViewer {
         Ok(())
     }
 
+    /// Click a finding's row in the side panel's Validation section (what a
+    /// click on it does: select the objects and zoom to them).
+    fn script_show_finding(
+        &mut self,
+        target: &script::FindingTarget,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(report) = self.shown_validation() else {
+            return Err("the Validation section is not showing (run `action Validate`)".into());
+        };
+        let index = match target {
+            script::FindingTarget::Index(n) if *n < report.entries.len() => *n,
+            script::FindingTarget::Index(n) => {
+                return Err(format!(
+                    "there is no finding {n} (the list has {})",
+                    report.entries.len()
+                ))
+            }
+            script::FindingTarget::Check(id) => report
+                .entries
+                .iter()
+                .position(|e| e.finding.check.id() == id)
+                .ok_or_else(|| format!("no finding of check {id}"))?,
+        };
+        // Run from `render`, on this view itself: no deferral needed.
+        self.select_finding(index, cx);
+        Ok(())
+    }
+
     fn script_resolve_conflict(
         &mut self,
         choice: script::ConflictChoice,
@@ -697,6 +733,59 @@ impl MapViewer {
                 } else {
                     Err(format!(
                         "status bar says {shown:?}, expected it to contain {text:?}"
+                    ))
+                }
+            }
+            Check::ValidationPanel(want) => {
+                if self.validation_shown() == *want {
+                    Ok(())
+                } else if *want {
+                    Err("the Validation section is not showing".into())
+                } else {
+                    Err("the Validation section is showing".into())
+                }
+            }
+            Check::Validation {
+                errors,
+                warnings,
+                checks,
+            } => {
+                // The section's own list while it is showing, so that waiting
+                // for it to refresh after an edit is what is tested.
+                let report = self
+                    .shown_validation()
+                    .cloned()
+                    .unwrap_or_else(|| self.validation_report());
+                let mut wrong = Vec::new();
+                let mut compare = |what: &str, want: usize, got: usize| {
+                    if want != got {
+                        wrong.push(format!("{what}: expected {want}, found {got}"));
+                    }
+                };
+                if let Some(want) = errors {
+                    compare("errors", *want, report.errors());
+                }
+                if let Some(want) = warnings {
+                    compare("warnings", *want, report.warnings());
+                }
+                for (id, want) in checks {
+                    let got = osm_gpui::validator::Check::from_id(id)
+                        .map(|c| report.count_of(c))
+                        .unwrap_or(0);
+                    compare(id, *want, got);
+                }
+                if wrong.is_empty() {
+                    Ok(())
+                } else {
+                    let found: Vec<String> = report
+                        .entries
+                        .iter()
+                        .map(|e| format!("{} ({})", e.finding.check.id(), e.label))
+                        .collect();
+                    Err(format!(
+                        "{}; findings: {}",
+                        wrong.join("; "),
+                        found.join(", ")
                     ))
                 }
             }
@@ -1199,6 +1288,14 @@ impl AppHandle for LiveApp {
     fn check(&mut self, check: &script::Check) -> Result<(), String> {
         self.bus.submit(ScriptCommand::Check(check.clone()));
         self.bus.take_assert_result()
+    }
+
+    fn show_finding(&mut self, target: &script::FindingTarget) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::ShowFinding(target.clone()));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
     }
 
     fn note(&mut self, message: &str) {

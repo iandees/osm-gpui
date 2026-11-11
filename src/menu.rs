@@ -19,7 +19,8 @@ use crate::{
     DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
     RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
-    Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow,
+    IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -150,6 +151,12 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
 // window-scoped listener was in the dispatch path (e.g. nothing focused).
 pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx)));
+}
+
+// Global fallback for Tools > Validate, for the same reason as
+// `upload_to_osm`; the normal path is `MapViewer::on_validate`.
+pub(crate) fn validate(_: &Validate, cx: &mut App) {
+    cx.defer(|cx| with_map_viewer_in(cx, |v, _window, cx| v.show_validation(cx)));
 }
 
 // Global fallback for the `Quit` action, registered once at app startup
@@ -602,10 +609,16 @@ fn build_menus(
             name: tr!("menu.tools.title"),
             // Every selection action, applicable or not: running one that
             // doesn't fit the selection explains why in the status bar.
-            items: selection_actions::ACTIONS
-                .iter()
-                .filter(|a| a.in_tools_menu)
-                .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
+            items: std::iter::once(MenuItem::action(tr!("validator.menu"), Validate))
+                .chain(std::iter::once(MenuItem::separator()))
+                .chain(
+                    selection_actions::ACTIONS
+                        .iter()
+                        .filter(|a| a.in_tools_menu)
+                        .map(|a| {
+                            MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() })
+                        }),
+                )
                 .collect(),
             disabled: false,
         },
@@ -824,6 +837,7 @@ mod tests {
         assert!(has::<ExportOsmFile>(&actions));
         assert!(has::<DownloadFromOsm>(&actions));
         assert!(has::<UploadToOsm>(&actions));
+        assert!(has::<Validate>(&actions));
         assert!(has::<OpenMapFeaturesWiki>(&actions));
         assert!(has::<OpenProjectPage>(&actions));
         assert!(has::<Undo>(&actions));
