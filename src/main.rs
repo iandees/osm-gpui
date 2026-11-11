@@ -6720,8 +6720,15 @@ fn main() {
         })
         .detach();
 
-        // Load persisted custom imagery entries.
-        let loaded = custom_imagery_store::load();
+        // Load persisted custom imagery entries. Scripted runs start with an
+        // empty list instead, so captures never show the user's own entries
+        // (the list is never written in a scripted run either: see
+        // `ScriptSeedCustomImagery`).
+        let loaded = if script_harness::script_mode() {
+            Vec::new()
+        } else {
+            custom_imagery_store::load()
+        };
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.
