@@ -201,7 +201,6 @@ fn join_where_only_the_removed_way_is_a_member_points_the_member_at_the_survivor
 }
 
 #[gpui::test]
-#[ignore = "bug: join drops the second route membership silently when the two ways are not adjacent in the route; JOSM and iD refuse or warn; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn join_of_ways_that_are_not_adjacent_in_a_route_is_refused(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 2, 3, 4, 5])
@@ -363,7 +362,6 @@ fn merge_refuses_to_collapse_a_two_node_way_to_one_node(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-#[ignore = "bug: merging two nodes of a triangle leaves a closed way with only two distinct nodes ([1,3,1]); iD removes such a degenerate way; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn merge_must_not_leave_a_degenerate_closed_way(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 2, 3])
