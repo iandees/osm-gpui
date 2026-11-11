@@ -259,6 +259,29 @@ fn validation_ops() {
 }
 
 #[test]
+fn find_dialog_ops() {
+    assert_eq!(
+        op("assert_dialog find"),
+        Op::AssertDialog {
+            expect: DialogExpect::Find
+        }
+    );
+    assert_eq!(
+        op("assert_selected_count 12"),
+        Op::AssertSelectedCount { count: 12 }
+    );
+    assert!(parse("assert_selected_count").is_err());
+    assert!(parse("assert_selected_count -1").is_err());
+    assert_eq!(
+        op("assert_find_preview 3 matches"),
+        Op::AssertFindPreview {
+            text: "3 matches".into()
+        }
+    );
+    assert!(parse("assert_find_preview").is_err());
+}
+
+#[test]
 fn assert_server() {
     assert_eq!(op("assert_server dev"), Op::AssertServerDev);
     assert!(parse("assert_server").is_err());

@@ -89,6 +89,8 @@ pub enum DialogExpect {
     DeleteLayer,
     /// The Tools > Validate dialog.
     Validate,
+    /// The Edit > Find dialog.
+    Find,
 }
 
 /// Which validator finding `show_finding` presses Show on.
@@ -127,6 +129,10 @@ pub enum Check {
         checks: Vec<(String, usize)>,
     },
     Selection(SelectionKind),
+    /// Exactly this many features are selected.
+    SelectedCount(usize),
+    /// The open Find dialog's match-count line contains the text.
+    FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
 }
@@ -270,6 +276,14 @@ pub enum Op {
     /// Press Show on a finding of the open Validate (or upload) dialog.
     ShowFinding {
         target: FindingTarget,
+    },
+    /// Assert exactly `count` features are selected.
+    AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert the Find dialog's match-count line contains `text`.
+    AssertFindPreview {
+        text: String,
     },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.
