@@ -177,6 +177,17 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             }),
             _ => Err(err(line_no, "assert_selected_count: want COUNT")),
         },
+        "assert_layer_count" => match rest.as_slice() {
+            [n] => Ok(Op::AssertLayerCount {
+                count: n.parse().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_layer_count: bad count '{}': {}", n, e),
+                    )
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_layer_count: want COUNT")),
+        },
         "assert_find_preview" => {
             let text = text_after(line, head, 0);
             if text.is_empty() {

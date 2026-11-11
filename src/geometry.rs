@@ -20,14 +20,14 @@ const SQUARE_MAX_ITERATIONS: usize = 5000;
 
 /// An equirectangular projection around a fixed origin, accurate to well
 /// under a millimetre across the size of a single way.
-struct LocalProjection {
+pub struct LocalProjection {
     lat0: f64,
     lon0: f64,
     cos_lat0: f64,
 }
 
 impl LocalProjection {
-    fn new(origin: LatLon) -> Self {
+    pub fn new(origin: LatLon) -> Self {
         Self {
             lat0: origin.0,
             lon0: origin.1,
@@ -35,14 +35,14 @@ impl LocalProjection {
         }
     }
 
-    fn project(&self, p: LatLon) -> (f64, f64) {
+    pub fn project(&self, p: LatLon) -> (f64, f64) {
         (
             (p.1 - self.lon0).to_radians() * self.cos_lat0 * EARTH_RADIUS_M,
             (p.0 - self.lat0).to_radians() * EARTH_RADIUS_M,
         )
     }
 
-    fn unproject(&self, xy: (f64, f64)) -> LatLon {
+    pub fn unproject(&self, xy: (f64, f64)) -> LatLon {
         (
             self.lat0 + (xy.1 / EARTH_RADIUS_M).to_degrees(),
             self.lon0 + (xy.0 / (EARTH_RADIUS_M * self.cos_lat0)).to_degrees(),
@@ -50,7 +50,7 @@ impl LocalProjection {
     }
 }
 
-fn mean_point(points: &[LatLon]) -> LatLon {
+pub fn mean_point(points: &[LatLon]) -> LatLon {
     let n = points.len() as f64;
     (
         points.iter().map(|p| p.0).sum::<f64>() / n,

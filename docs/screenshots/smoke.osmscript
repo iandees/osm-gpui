@@ -11,7 +11,7 @@ drag 600,400 300,400
 wait_idle
 capture docs/screenshots/smoke-02-panned.png
 
-scroll 600,400 dy=-5
+scroll 600,400 dy=5
 wait_idle
 capture docs/screenshots/smoke-03-zoomed.png
 

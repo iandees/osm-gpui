@@ -316,16 +316,10 @@ pub fn save_to(path: &Path, store: &OffsetStore) -> std::io::Result<()> {
 }
 
 /// `<config_dir>/osm-gpui/imagery-offsets.json`, beside the custom-imagery
-/// file. `None` under test so no unit test can touch the real file.
+/// file. `None` where the persistence policy forbids touching real state (the
+/// default, so no test can reach the real file).
 pub fn default_path() -> Option<PathBuf> {
-    if cfg!(test) {
-        return None;
-    }
-    Some(
-        dirs::config_dir()?
-            .join("osm-gpui")
-            .join("imagery-offsets.json"),
-    )
+    persist::config_file("imagery-offsets.json")
 }
 
 static STORE: JsonStore<OffsetStore> = JsonStore::new();

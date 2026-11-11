@@ -170,6 +170,8 @@ pub enum Check {
     NativeAppearance(NativeAppearanceWant),
     /// Exactly this many features are selected.
     SelectedCount(usize),
+    /// Exactly this many layers are on the map (imagery and data).
+    LayerCount(usize),
     /// The open Find dialog's match-count line contains the text.
     FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
@@ -367,6 +369,10 @@ pub enum Op {
     },
     /// Assert exactly `count` features are selected.
     AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert exactly `count` layers are on the map.
+    AssertLayerCount {
         count: usize,
     },
     /// Assert the Find dialog's match-count line contains `text`.

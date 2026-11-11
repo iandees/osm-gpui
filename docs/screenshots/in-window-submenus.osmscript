@@ -1,0 +1,148 @@
+# The in-window menu bar (Windows/Linux layout, forced on macOS), and its
+# submenus:
+#
+#   OSM_GPUI_IN_WINDOW_MENU=other cargo run -- --script docs/screenshots/in-window-submenus.osmscript
+#
+# gpui-component only supports a submenu in a parent that does not scroll,
+# and a menu scrolls once it has more than 20 entries. So the in-window bar
+# keeps every top-level menu at 20 entries or fewer: Imagery > Custom Imagery
+# and Imagery > Available Imagery (the long list for the area, needs the
+# network for the imagery index) are real submenus.
+#
+# A scripted run starts with no custom imagery and never writes the user's
+# file; ScriptSeedCustomImagery adds two sample entries in memory.
+#
+# The bar is a 30px row; labels are at window y=15. Imagery is at x=210.
+# Imagery menu rows (default window, x 189-355): Custom Imagery y=48,
+# OpenStreetMap Carto y=84, Coordinate Grid y=120, Adjust y=156, Reset y=184,
+# Available Imagery y=220. A submenu opens beside it from x=360; Custom's
+# rows are Add y=50, Sample A y=86, Sample B y=113; Available's rows start at
+# y=220 and are about 24px apart.
+#
+# The layers added at the end are drawn over the whole map, so that part runs
+# last; and `wait` replaces `wait_idle` there because their tiles never
+# finish loading.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait 3s
+wait_idle 5s
+action ScriptSeedCustomImagery
+wait_idle 2s
+assert_layer_count 2
+
+# 1. Open Imagery, hover Custom Imagery: its submenu opens beside the parent.
+click 210,15
+wait_idle 3s
+capture out/sub-01-imagery-menu.png
+hover 235,48
+hover 240,48
+wait_idle 2s
+capture out/sub-02-custom-hover.png
+
+# 2. A click (no hover) on a submenu entry does not close the menu.
+key escape
+wait_idle 2s
+click 210,15
+wait_idle 2s
+click 240,48
+wait_idle 2s
+capture out/sub-03-click-no-hover.png
+key escape
+wait_idle 2s
+
+# 3. Available Imagery: the long list is its own scrolling submenu. Right
+#    enters it from the keyboard, Down moves inside it.
+click 210,15
+wait_idle 2s
+hover 235,220
+hover 240,220
+wait_idle 2s
+capture out/sub-04-available-hover.png
+key right
+key down
+key down
+wait_idle 2s
+capture out/sub-05-available-key-down.png
+# Escape with the focus inside the submenu closes everything.
+key escape
+wait_idle 2s
+capture out/sub-05b-escape-from-submenu.png
+
+# 4. Keyboard: Down selects Custom Imagery, Right opens its submenu, Left
+#    closes it again, Escape closes the whole menu.
+click 210,15
+wait_idle 2s
+key down
+wait_idle 2s
+key right
+wait_idle 2s
+capture out/sub-06-key-right-opens.png
+key left
+wait_idle 2s
+capture out/sub-07-key-left-closes.png
+key escape
+wait_idle 2s
+capture out/sub-08-escape.png
+
+# 5. A press on the map with a menu (and its submenu) open only closes it.
+click 488,403
+wait_idle 2s
+assert_selected_count 1
+click 210,15
+wait_idle 2s
+hover 235,48
+hover 240,48
+wait_idle 2s
+click 700,600
+wait_idle 3s
+assert_selected_count 1
+capture out/sub-09-click-away-keeps-selection.png
+
+# 6. A narrow window: the submenus must stay on screen.
+window 600 500
+wait_idle 3s
+click 210,15
+wait_idle 2s
+hover 235,48
+hover 240,48
+wait_idle 2s
+capture out/sub-10-narrow-custom.png
+hover 235,220
+hover 240,220
+wait_idle 2s
+capture out/sub-11-narrow-available.png
+key escape
+wait_idle 2s
+window 1200 800
+wait_idle 3s
+
+# 7. Choose entries inside the submenus by click: each adds a layer.
+click 210,15
+wait_idle 2s
+hover 235,48
+hover 240,48
+hover 300,48
+hover 380,50
+hover 400,86
+wait_idle 2s
+capture out/sub-12-custom-entry-hover.png
+click 400,86
+wait 3s
+assert_layer_count 3
+capture out/sub-13-custom-chosen.png
+
+click 210,15
+wait 2s
+hover 235,220
+hover 240,220
+hover 300,220
+hover 430,222
+hover 430,245
+wait 2s
+capture out/sub-14-available-entry-hover.png
+click 430,245
+wait 3s
+assert_layer_count 4
+capture out/sub-15-available-chosen.png
