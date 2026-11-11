@@ -6,6 +6,7 @@
 //! the data, the pending upload diff, and one undo / redo.
 
 mod delete_and_disconnect;
+mod interactions_topology;
 mod join_and_merge;
 mod parse_and_export;
 mod reverse;
