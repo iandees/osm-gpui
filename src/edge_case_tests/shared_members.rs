@@ -472,7 +472,6 @@ fn the_membership_stays_with_the_original_node_even_when_its_own_way_is_the_one_
 }
 
 #[gpui::test]
-#[ignore = "bug: disconnecting the via node of a turn restriction leaves the from or to way off the via node with no refusal or warning, so the restriction is silently invalid"]
 fn disconnecting_a_restriction_via_node_must_not_silently_break_the_restriction(
     cx: &mut TestAppContext,
 ) {
@@ -497,6 +496,41 @@ fn disconnecting_a_restriction_via_node_must_not_silently_break_the_restriction(
                 "way {way} no longer touches the via node {via}"
             );
         }
+    });
+}
+
+#[gpui::test]
+fn disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed(cx: &mut TestAppContext) {
+    let mut data = stop_network(true);
+    data.nodes.insert(
+        6,
+        OsmNode {
+            id: 6,
+            lat: 40.02,
+            lon: -74.02,
+            version: 3,
+            tags: HashMap::new(),
+        },
+    );
+    data.ways.insert(
+        12,
+        OsmWay {
+            id: 12,
+            nodes: vec![3, 6],
+            version: 3,
+            tags: HashMap::new(),
+        },
+    );
+    with_session(cx, data, move |s| {
+        let before = s.snap();
+        s.select(&[(N, 3), (W, 12)]);
+        assert!(s.act("separate"));
+        assert!(s.way_nodes(12).unwrap()[0] < 0);
+        // The restriction's ways still touch the via node.
+        assert!(s.way_nodes(10).unwrap().contains(&3));
+        assert!(s.way_nodes(11).unwrap().contains(&3));
+        assert_eq!(s.members(900), mem(&[(10, "from"), (3, "via"), (11, "to")]));
+        undo_redo(s, &before);
     });
 }
 
@@ -688,7 +722,6 @@ fn reverse_swaps_a_pair_of_opposite_keys_without_losing_either_or_truncating(
 }
 
 #[gpui::test]
-#[ignore = "bug: reversing a way whose key is 255 characters and ends in :forward renames it to :backward (256 characters), which the server rejects, with no refusal"]
 fn reverse_must_not_grow_a_key_past_255_characters(cx: &mut TestAppContext) {
     let key = format!("{}:forward", long('k', 247));
     assert_eq!(key.chars().count(), 255);
@@ -711,7 +744,6 @@ fn reverse_must_not_grow_a_key_past_255_characters(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: reversing a way with a 255-character numeric incline value negates it to 256 characters, which the server rejects, with no refusal"]
 fn reverse_must_not_grow_a_value_past_255_characters(cx: &mut TestAppContext) {
     let value = format!("{}%", long('9', 254));
     assert_eq!(value.chars().count(), 255);
