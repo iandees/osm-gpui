@@ -1,0 +1,79 @@
+# The in-window menu bar (Windows/Linux layout, forced on macOS):
+#
+#   OSM_GPUI_IN_WINDOW_MENU=other cargo run -- --script docs/screenshots/in-window-submenus.osmscript
+#
+# gpui-component clips a submenu when its parent menu scrolls, which the
+# Imagery menu does once the imagery index is loaded, so the bar shows
+# Imagery > Custom Imagery inline under a disabled header instead. This script
+# checks that, then the keyboard use of the bar, the label highlight after a
+# dropdown is toggled closed, and that a click on the map closes an open menu
+# without also acting on the map.
+#
+# The bar is a 30px row; labels are at window y=15. Imagery is at x=210.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait 3s
+wait_idle 5s
+# In memory only (script runs never write custom-imagery.json).
+action ScriptSeedCustomImagery
+wait_idle 2s
+
+# 1. Imagery with a saved custom entry: Custom Imagery header, Add, the entry.
+click 210,15
+wait_idle 3s
+capture out/submenus-01-imagery-inline.png
+
+# 2. Hover over the first entry under the header, then click it: the menu must
+#    stay sensible (the click on the disabled header does nothing).
+hover 240,48
+hover 245,48
+wait_idle 2s
+click 245,48
+wait_idle 2s
+capture out/submenus-02-click-header.png
+
+# 3. Keyboard: Down twice, then Right to the next top-level menu (View).
+key down
+key down
+wait_idle 2s
+capture out/submenus-03-key-down.png
+key right
+wait_idle 2s
+capture out/submenus-04-key-right.png
+key left
+wait_idle 2s
+capture out/submenus-05-key-left.png
+
+# 4. Escape closes the menu.
+key escape
+wait_idle 2s
+capture out/submenus-06-escape.png
+
+# 5. Toggle a dropdown closed with a second click: is the label still lit?
+# The pointer is moved onto the label first, as a real one would be; then
+# away to the map, so a highlight that is only hover goes out.
+hover 205,15
+hover 210,15
+click 210,15
+wait_idle 2s
+capture out/submenus-07a-opened.png
+click 210,15
+wait_idle 3s
+capture out/submenus-07b-second-click-pointer-on-label.png
+hover 700,600
+hover 705,600
+wait_idle 2s
+capture out/submenus-07c-pointer-moved-away.png
+
+# 6. Select the POI, open File, then click empty map: the menu closes and the
+#    selection stays (the click did not reach the map).
+click 488,403
+wait_idle 2s
+capture out/submenus-08-selected.png
+click 21,15
+wait_idle 2s
+click 700,600
+wait_idle 3s
+capture out/submenus-09-after-map-click.png
