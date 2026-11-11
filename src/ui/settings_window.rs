@@ -197,6 +197,12 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn set_autosave(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.app_settings.autosave = on;
+        self.save_settings();
+        cx.notify();
+    }
+
     /// Turn the welcome card on or off. Written straight to the store (which
     /// the main window reads on every render) and the windows are repainted,
     /// so the card reappears at once when no data layer is open.
@@ -502,6 +508,7 @@ impl SettingsWindow {
         vec![
             self.account_page(view.clone()),
             self.appearance_page(view.clone()),
+            self.editing_page(view.clone()),
             self.imagery_page(view.clone()),
             self.shortcuts_page(view),
         ]
@@ -629,6 +636,26 @@ impl SettingsWindow {
                     .title(tr!("settings.appearance.welcome_group"))
                     .item(welcome_item),
             ])
+    }
+
+    /// The Editing page: for now the autosave switch.
+    fn editing_page(&self, view: Entity<Self>) -> SettingPage {
+        let value_view = view.clone();
+        let item = SettingItem::new(
+            tr!("settings.editing.autosave"),
+            SettingField::switch(
+                move |cx: &App| value_view.read(cx).app_settings.autosave,
+                move |on: bool, cx: &mut App| {
+                    view.update(cx, |this, cx| this.set_autosave(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.editing.autosave_description"));
+        SettingPage::new(tr!("settings.editing.title"))
+            .icon(Icon::new(IconName::Settings2))
+            .groups(vec![SettingGroup::new()
+                .title(tr!("settings.editing.autosave_group"))
+                .item(item)])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {

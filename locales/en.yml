@@ -213,6 +213,12 @@ status:
   uploaded_many:
     one: "Uploaded changes in %{count} changeset (last: changeset %{changeset})"
     other: "Uploaded changes in %{count} changesets (last: changeset %{changeset})"
+  # After restoring autosaved layers at startup.
+  restored_autosave:
+    one: "Restored %{count} layer with unsaved edits"
+    other: "Restored %{count} layers with unsaved edits"
+  # `%{layer}` is the layer's name, `%{error}` the reason.
+  restore_failed: "Could not restore \"%{layer}\": %{error}"
   downloaded: "Downloaded OSM data: %{summary}"
   # The parts of the download summary above, joined with `separator`.
   merge:
@@ -376,6 +382,11 @@ settings:
     welcome_group: "Welcome card"
     welcome_card: "Show welcome card"
     welcome_card_description: "Show the welcome card over the map while no OpenStreetMap data is loaded."
+  editing:
+    title: "Editing"
+    autosave_group: "Recovery"
+    autosave: "Autosave"
+    autosave_description: "Save layers with unsaved edits every 30 seconds, so they can be restored after a crash, a force quit or a power failure."
   account:
     title: "Account"
     api_server_group: "API Server"
@@ -659,6 +670,34 @@ dialog:
       one: "Layer \"%{layer}\" has %{count} unsaved edit. Deleting the layer discards it. This cannot be undone."
       other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
     confirm: "Delete Layer"
+  # Offered at startup when the app did not exit normally last time.
+  restore:
+    title: "Restore Unsaved Edits?"
+    intro: "The app did not close normally last time. These layers had edits that were not uploaded:"
+    # `%{layer}` is the layer's name, `%{edits}` and `%{when}` the two
+    # phrases below.
+    layer: "%{layer}: %{edits}, %{when}"
+    edits:
+      one: "%{count} edit"
+      other: "%{count} edits"
+    # `%{server}` is the API server the layer was downloaded from,
+    # `%{current}` the server in use now.
+    other_server: "Downloaded from %{server}; the current server is %{current}."
+    footnote: "Undo history is not restored. Discard deletes these autosaved edits for good. Escape keeps them and asks again next time."
+    restore: "Restore"
+    discard: "Discard"
+    later: "Ask Me Next Time"
+  age:
+    just_now: "just now"
+    minutes:
+      one: "%{count} minute ago"
+      other: "%{count} minutes ago"
+    hours:
+      one: "%{count} hour ago"
+      other: "%{count} hours ago"
+    days:
+      one: "%{count} day ago"
+      other: "%{count} days ago"
   find:
     title: "Find"
     placeholder: "Search tags, types and states, e.g. amenity=cafe"

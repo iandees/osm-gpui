@@ -211,6 +211,22 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             }),
             _ => Err(err(line_no, "export_layer: want PATH")),
         },
+        "autosave_now" => no_args(line_no, "autosave_now", &rest, Op::AutosaveNow),
+        "assert_autosave_exists" => match rest.as_slice() {
+            [] => Ok(Op::AssertAutosaveExists { count: None }),
+            [n] => Ok(Op::AssertAutosaveExists {
+                count: Some(n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_autosave_exists: bad count '{}': {}", n, e),
+                    )
+                })?),
+            }),
+            _ => Err(err(line_no, "assert_autosave_exists: want [COUNT]")),
+        },
+        "restore_autosave" => no_args(line_no, "restore_autosave", &rest, Op::RestoreAutosave),
+        "discard_autosave" => no_args(line_no, "discard_autosave", &rest, Op::DiscardAutosave),
+        "crash" => no_args(line_no, "crash", &rest, Op::Crash),
         "sign_in" => no_args(line_no, "sign_in", &rest, Op::SignIn),
         "wait_signed_in" => Ok(Op::WaitSignedIn {
             timeout: optional_duration(line_no, "wait_signed_in", &rest, Duration::from_secs(200))?,
@@ -413,7 +429,7 @@ fn parse_assert_validation_panel(line_no: usize, rest: &[&str]) -> Result<Op, Pa
 }
 
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|find|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|find|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -425,6 +441,7 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("sign_in", []) => DialogExpect::SignIn,
         ("notice", []) => DialogExpect::Notice,
         ("delete_layer", []) => DialogExpect::DeleteLayer,
+        ("restore", []) => DialogExpect::Restore,
         ("find", []) => DialogExpect::Find,
         ("conflict", words) => {
             let mut kind = None;

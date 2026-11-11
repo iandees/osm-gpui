@@ -1,0 +1,14 @@
+# Autosave and crash recovery, launch 4 of 4: the restored layer survived a
+# second crash. Discard deletes it for good; the run then ends normally.
+# See autosave-1-edit-and-crash.osmscript for how to run the four launches.
+
+window 1200 800
+viewport 40.7120 -74.0060 16
+wait 1500ms
+assert_dialog restore
+capture out/autosave-05-offer-after-second-crash.png
+
+discard_autosave
+assert_dialog none
+assert_autosave_exists 0
+capture out/autosave-06-discarded.png

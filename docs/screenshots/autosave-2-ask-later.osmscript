@@ -1,0 +1,16 @@
+# Autosave and crash recovery, launch 2 of 4: the previous run crashed, so the
+# restore offer appears. Escape is "ask me next time": it keeps the files.
+# See autosave-1-edit-and-crash.osmscript for how to run the four launches.
+
+window 1200 800
+viewport 40.7120 -74.0060 16
+wait 1500ms
+assert_dialog restore
+capture out/autosave-02-restore-offer.png
+
+key escape
+wait_idle 1s
+assert_dialog none
+# Nothing was restored, and nothing was deleted: the next launch is offered it again.
+assert_autosave_exists 0
+capture out/autosave-03-after-escape.png

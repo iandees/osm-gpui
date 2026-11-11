@@ -256,6 +256,11 @@ pub struct OsmLayer {
     vertex_hints: VertexHints,
     /// Whether this layer has had a committed move since it was loaded.
     modified: bool,
+    /// Bumped by every change to the layer's data or to its baseline (every
+    /// edit, an undo or redo of one, a download merged in, an upload applied):
+    /// the autosave compares it with the value it last saved to tell, without
+    /// looking at the data, whether there is anything new to write.
+    revision: u64,
     /// Next id to hand out to an auto-allocated new node (`create_node`
     /// called with `id: None`), always negative per OSM's not-yet-uploaded
     /// convention. Initialized from `min(existing node ids) - 1` so a
@@ -1324,6 +1329,7 @@ impl OsmLayer {
             drag_preview: None,
             vertex_hints: VertexHints::default(),
             modified: false,
+            revision: 0,
             next_new_id: -1,
             next_placeholder_way_id: -1,
         }
@@ -1376,6 +1382,7 @@ impl OsmLayer {
             drag_preview: None,
             vertex_hints: VertexHints::default(),
             modified: false,
+            revision: 0,
             next_new_id,
             next_placeholder_way_id: -1,
         }
@@ -1394,6 +1401,7 @@ impl OsmLayer {
         let baseline = baseline_for_loaded_file(&osm_data, edits);
         let mut layer = Self::new_with_data(id, name, osm_data.clone());
         layer.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
+        layer.revision += 1;
         layer.original_data = Some(Arc::new(baseline));
         // Locally created ways in the file already use negative ids; new
         // ones must not collide with them.
@@ -1442,6 +1450,32 @@ impl OsmLayer {
         self.osm_data = Some(osm_data.clone());
         self.original_data = Some(osm_data);
         self.modified = false;
+        self.revision += 1;
+    }
+
+    /// Record that the layer's data changed by a local edit (or the undo or
+    /// redo of one).
+    fn mark_modified(&mut self) {
+        self.modified = true;
+        self.revision += 1;
+    }
+
+    /// The layer's change counter; see the `revision` field.
+    pub fn edit_revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The layer's current data and its server baseline, for the autosave to
+    /// serialize elsewhere. Cheap: two reference-count bumps, nothing is
+    /// copied (an edit made while the other side still holds them pays one
+    /// copy-on-write of the data instead). `None` for a layer with no data.
+    pub fn autosave_snapshot(&self) -> Option<(Arc<OsmData>, Arc<OsmData>)> {
+        let current = self.osm_data.clone()?;
+        let original = self
+            .original_data
+            .clone()
+            .unwrap_or_else(|| current.clone());
+        Some((current, original))
     }
 
     /// Merge freshly downloaded server data into this layer by object id,
@@ -1467,6 +1501,7 @@ impl OsmLayer {
         // restore the real one so pending edits stay pending.
         self.original_data = Some(Arc::new(original));
         self.modified = modified;
+        self.revision += 1;
         stats
     }
 
@@ -1490,6 +1525,7 @@ impl OsmLayer {
         self.set_osm_data(Arc::new(current));
         self.original_data = Some(Arc::new(original));
         self.modified = !self.diff_for_upload().is_empty();
+        self.revision += 1;
         true
     }
 
@@ -1500,6 +1536,7 @@ impl OsmLayer {
         else {
             return false;
         };
+        self.revision += 1;
         resolve::set_base_version(
             Arc::make_mut(original),
             Arc::make_mut(current),
@@ -1751,7 +1788,7 @@ impl OsmLayer {
     #[cfg(test)]
     pub(crate) fn set_osm_data_for_test(&mut self, data: Arc<OsmData>) {
         self.osm_data = Some(data);
-        self.modified = true;
+        self.mark_modified();
     }
 
     /// Commit a set of node moves: clones the current `OsmData`, applies the
@@ -1799,6 +1836,7 @@ impl OsmLayer {
             }
         }
         self.modified = true;
+        self.revision += 1;
         if moved_ids.is_empty() {
             // None of the moved ids were actually present; nothing to patch.
             return;
@@ -1948,6 +1986,7 @@ impl OsmLayer {
         };
         tags.insert(key.to_string(), value.to_string());
         self.modified = true;
+        self.revision += 1;
         apply_style_refresh(
             kind,
             id,
@@ -1989,6 +2028,7 @@ impl OsmLayer {
         };
         tags.remove(key);
         self.modified = true;
+        self.revision += 1;
         apply_style_refresh(
             kind,
             id,
@@ -2054,7 +2094,7 @@ impl OsmLayer {
         }
         let using_ways = self.ways_using_node(node_id);
         self.node_to_ways.remove(&node_id);
-        self.modified = true;
+        self.mark_modified();
         self.osm_data = Some(Arc::new(data));
         self.mp_refresh_ways(&using_ways);
         self.mp_refresh_nodes(&[node_id]);
@@ -2117,7 +2157,7 @@ impl OsmLayer {
         self.way_styles.push(style);
         data.ways.insert(way.id, way);
 
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_ways(&[id]);
         id
     }
@@ -2168,7 +2208,7 @@ impl OsmLayer {
         }
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
 
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_ways(&[way_id]);
     }
 
@@ -2236,7 +2276,7 @@ impl OsmLayer {
             .insert(way_idx);
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
-        self.modified = true;
+        self.mark_modified();
     }
 
     /// Create a new node at `(lat, lon)` (via `add_node`'s same allocator/
@@ -2268,7 +2308,7 @@ impl OsmLayer {
         self.node_to_ways.entry(new_id).or_default().insert(way_idx);
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
-        self.modified = true;
+        self.mark_modified();
         new_id
     }
 
@@ -2305,7 +2345,7 @@ impl OsmLayer {
         }
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
 
-        self.modified = true;
+        self.mark_modified();
     }
 
     /// Reverse the node order of a way and refresh that way's derived caches.
@@ -2326,7 +2366,7 @@ impl OsmLayer {
         let way_snapshot = way.clone();
         // The set of nodes (and so `node_to_ways`) is unchanged.
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-        self.modified = true;
+        self.mark_modified();
         true
     }
 
@@ -2359,7 +2399,7 @@ impl OsmLayer {
             self.node_to_ways.entry(added).or_default().insert(way_idx);
         }
         self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-        self.modified = true;
+        self.mark_modified();
         true
     }
 
@@ -2509,7 +2549,7 @@ impl OsmLayer {
         let data = Arc::make_mut(self.osm_data.as_mut()?);
         let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
         let previous = std::mem::replace(&mut relation.members, members);
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_relations(&[relation_id]);
         Some(previous)
     }
@@ -2560,7 +2600,7 @@ impl OsmLayer {
             version: 0,
             tags: tags.into_iter().collect(),
         });
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_relations(&[id]);
         Some(id)
     }
@@ -2583,7 +2623,7 @@ impl OsmLayer {
         let index = data.relations.iter().position(|r| r.id == relation_id)?;
         let data = Arc::make_mut(self.osm_data.as_mut()?);
         let relation = data.relations.remove(index);
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_relations(&[relation_id]);
         Some(DeletedRelationSnapshot { relation, index })
     }
@@ -2609,7 +2649,7 @@ impl OsmLayer {
         if id <= self.next_placeholder_way_id {
             self.next_placeholder_way_id = id - 1;
         }
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_relations(&[id]);
         true
     }
@@ -2719,7 +2759,7 @@ impl OsmLayer {
         if id <= self.next_new_id {
             self.next_new_id = id - 1;
         }
-        self.modified = true;
+        self.mark_modified();
     }
 
     /// Delete a node or way this layer owns. Dispatches to `delete_node`/
@@ -2772,7 +2812,7 @@ impl OsmLayer {
             }
         }
         self.node_to_ways.remove(&id);
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_nodes(&[id]);
 
         let snapshot = DeletedFeatureSnapshot {
@@ -2831,7 +2871,7 @@ impl OsmLayer {
                 .collect();
         }
         self.node_to_ways.retain(|_, ways| !ways.is_empty());
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_ways(&[id]);
 
         let snapshot = DeletedFeatureSnapshot {
@@ -2930,7 +2970,7 @@ impl OsmLayer {
         self.way_styles.push(style);
         let restored_id = way.id;
         data.ways.insert(way.id, way);
-        self.modified = true;
+        self.mark_modified();
         self.mp_refresh_ways(&[restored_id]);
     }
 
@@ -2973,6 +3013,7 @@ impl OsmLayer {
         self.node_to_ways.clear();
         self.drag_preview = None;
         self.modified = false;
+        self.revision += 1;
         self.next_new_id = -1;
         self.next_placeholder_way_id = -1;
     }
@@ -3978,6 +4019,14 @@ impl MapLayer for OsmLayer {
 
     fn export_xml(&self) -> Option<String> {
         OsmLayer::export_xml(self)
+    }
+
+    fn edit_revision(&self) -> u64 {
+        OsmLayer::edit_revision(self)
+    }
+
+    fn autosave_snapshot(&self) -> Option<(Arc<OsmData>, Arc<OsmData>)> {
+        OsmLayer::autosave_snapshot(self)
     }
 
     fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
