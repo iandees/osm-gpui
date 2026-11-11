@@ -124,6 +124,8 @@ pub(crate) enum ScriptCommand {
     ShowFinding(script::FindingTarget),
     /// Show a message in the status bar.
     Note(String),
+    /// An OSM notes op (`show_notes`, `note_close`, ...).
+    NoteOp(script::NoteOp),
 }
 
 /// Shared state between the script-runner thread and the gpui main thread.
@@ -576,6 +578,10 @@ impl MapViewer {
                 ScriptCommand::Note(message) => {
                     self.set_status(message);
                     cx.notify();
+                }
+                ScriptCommand::NoteOp(op) => {
+                    let result = self.script_note_op(&op, window, cx);
+                    bus.set_assert_result(result);
                 }
             }
         }
@@ -1035,6 +1041,7 @@ impl MapViewer {
                     ))
                 }
             }
+            Check::Note(c) => self.script_note_check(c),
             Check::Selection(want) => {
                 let got = match self.selected.as_slice() {
                     [] => SelectionKind::None,
@@ -1194,6 +1201,15 @@ pub(crate) fn scripted_upload_refusal(server: &str) -> Option<String> {
         return None;
     }
     script::runner::upload_guard(&script::Op::UploadConfirm, server).err()
+}
+
+/// Why a scripted run may not write a note to `server`, if it may not (the
+/// same rule as for uploads, applied where the write starts).
+pub(crate) fn scripted_note_write_refusal(server: &str) -> Option<String> {
+    if !script_mode() {
+        return None;
+    }
+    script::runner::upload_guard(&script::Op::Note(script::NoteOp::Reopen(None)), server).err()
 }
 
 /// The keystroke that types `ch`. A printable ASCII character is its own key
@@ -1553,6 +1569,15 @@ impl AppHandle for LiveApp {
 
     fn note(&mut self, message: &str) {
         self.bus.submit(ScriptCommand::Note(message.to_string()));
+    }
+
+    fn note_op(&mut self, op: &script::NoteOp) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::NoteOp(op.clone()));
+        let result = self.bus.take_assert_result();
+        // Let the panel (opened or updated on the next frame) show.
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
     }
 
     fn sign_in(&mut self) -> Result<(), String> {

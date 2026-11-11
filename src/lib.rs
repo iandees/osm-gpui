@@ -30,6 +30,7 @@ pub mod keybindings;
 pub mod layers;
 pub mod limits;
 pub mod multipolygon;
+pub mod notes;
 pub mod nsi;
 pub mod object_history;
 pub mod open_files;

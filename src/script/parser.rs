@@ -363,7 +363,8 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 message: message.to_string(),
             })
         }
-        other => Err(err(line_no, format!("unknown op '{}'", other))),
+        other => super::note_ops::parse_note_op(line_no, other, line, &rest)
+            .unwrap_or_else(|| Err(err(line_no, format!("unknown op '{}'", other)))),
     }
 }
 

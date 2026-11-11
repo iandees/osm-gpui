@@ -64,6 +64,29 @@ has unsaved edits (answer it with `confirm_delete_layer` or
 at once otherwise. The live-test scripts only delete layers with nothing
 pending, and assert `assert_dialog none` afterwards.
 
+## Notes (`04-notes.osmscript`)
+
+`04-notes.osmscript` creates a note in open ocean near lat -48, lon -123 on the
+development server, comments, closes, reopens and closes it again (a note
+cannot be deleted; it ends closed). Sign in first (`00-sign-in.osmscript`). A
+login saved before the Notes feature lacks the `write_notes` scope: the server
+answers 403 and the panel says to sign in again.
+
+```
+cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/04-notes.osmscript
+```
+
+`05-notes-read.osmscript` shows the canned notes in `notes-sample.xml` with no
+network and no sign-in, on any server.
+
+| Op | Meaning |
+|---|---|
+| `show_notes on\|off` | View > Show Notes (turning on fetches, anonymously, and waits). |
+| `load_notes_file PATH` | Show the notes of a local API response instead of fetching. |
+| `open_note ID` | Open a loaded note in the side panel. |
+| `note_comment TEXT`, `note_close [TEXT]`, `note_reopen [TEXT]`, `new_note LAT LON TEXT` | Note writes; dev server only (refused elsewhere like `upload_confirm`). `#` starts a comment, so it cannot be in the text. |
+| `assert_notes N`, `assert_note_status open\|closed\|none`, `assert_note_comments N` | Check what is loaded / open. |
+
 Other useful existing ops: `action layers::DeleteLayer {"index":1}`,
 `action layers::SetActiveLayer {"index":N}`,
 `action selection::RunSelectionAction {"id":"new_relation"}`,

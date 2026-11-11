@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 /// Public-server default for `/map`: maximum bbox area in square degrees.
 pub const DEFAULT_AREA_MAXIMUM: f64 = 0.25;
+/// Public-server default for the notes bbox (`<note_area maximum=.../>`).
+pub const DEFAULT_NOTE_AREA_MAXIMUM: f64 = 25.0;
 pub const DEFAULT_WAYNODES_MAXIMUM: u32 = 2000;
 pub const DEFAULT_RELATIONMEMBERS_MAXIMUM: u32 = 32000;
 pub const DEFAULT_CHANGESET_MAXIMUM_ELEMENTS: u32 = 10000;
@@ -52,6 +54,8 @@ impl ServiceStatus {
 pub struct Capabilities {
     /// Maximum bbox area (square degrees) accepted by `/map`.
     pub area_maximum: f64,
+    /// Maximum bbox area (square degrees) accepted by `/notes`.
+    pub note_area_maximum: f64,
     pub waynodes_maximum: u32,
     pub relationmembers_maximum: u32,
     pub changeset_maximum_elements: u32,
@@ -64,6 +68,7 @@ impl Default for Capabilities {
     fn default() -> Self {
         Self {
             area_maximum: DEFAULT_AREA_MAXIMUM,
+            note_area_maximum: DEFAULT_NOTE_AREA_MAXIMUM,
             waynodes_maximum: DEFAULT_WAYNODES_MAXIMUM,
             relationmembers_maximum: DEFAULT_RELATIONMEMBERS_MAXIMUM,
             changeset_maximum_elements: DEFAULT_CHANGESET_MAXIMUM_ELEMENTS,
@@ -109,6 +114,13 @@ impl Capabilities {
                 if let Some(a) = attr("maximum").and_then(|v| v.trim().parse::<f64>().ok()) {
                     if a.is_finite() && a > 0.0 {
                         self.area_maximum = a;
+                    }
+                }
+            }
+            b"note_area" => {
+                if let Some(a) = attr("maximum").and_then(|v| v.trim().parse::<f64>().ok()) {
+                    if a.is_finite() && a > 0.0 {
+                        self.note_area_maximum = a;
                     }
                 }
             }
@@ -178,6 +190,12 @@ pub fn for_server(base_url: &str) -> Capabilities {
 /// shared download gate (status bar hint, Download action, `fetch_bbox`).
 pub fn allows_download(base_url: &str, bounds: &GeoBounds) -> bool {
     for_server(base_url).allows_download(bounds)
+}
+
+/// Largest bbox area (square degrees) the server at `base_url` answers a
+/// notes request for.
+pub fn max_note_area(base_url: &str) -> f64 {
+    for_server(base_url).note_area_maximum
 }
 
 /// Most nodes a way may have on the server at `base_url`.
@@ -294,6 +312,20 @@ mod tests {
         let c = Capabilities::parse(LIVE).unwrap();
         assert_eq!(c, Capabilities::default());
         assert_eq!(c.api_status, ServiceStatus::Online);
+    }
+
+    #[test]
+    fn note_area_is_read_separately_from_the_map_area() {
+        let c = Capabilities::parse(
+            r#"<osm><api><area maximum="0.5"/><note_area maximum="9"/></api></osm>"#,
+        )
+        .unwrap();
+        assert_eq!(c.area_maximum, 0.5);
+        assert_eq!(c.note_area_maximum, 9.0);
+        let c = Capabilities::parse(r#"<osm><api><area maximum="0.5"/></api></osm>"#).unwrap();
+        assert_eq!(c.note_area_maximum, DEFAULT_NOTE_AREA_MAXIMUM);
+        let c = Capabilities::parse(r#"<osm><api><note_area maximum="-1"/></api></osm>"#).unwrap();
+        assert_eq!(c.note_area_maximum, DEFAULT_NOTE_AREA_MAXIMUM);
     }
 
     #[test]

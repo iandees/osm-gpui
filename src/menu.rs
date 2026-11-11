@@ -13,6 +13,7 @@ use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
 
 use crate::history_actions::ShowObjectHistory;
+use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::selection_actions;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
@@ -864,6 +865,10 @@ fn build_menus(
                             MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() })
                         }),
                 )
+                .chain([
+                    MenuItem::separator(),
+                    MenuItem::action(tr!("notes.menu.new"), NewNote),
+                ])
                 .collect(),
             disabled: false,
         },
@@ -893,6 +898,9 @@ fn build_menus(
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
                     .checked(show_downloaded_area),
+                MenuItem::action(tr!("notes.menu.show"), ToggleNotes)
+                    .checked(osm_gpui::notes::menu_shows_notes()),
+                MenuItem::action(tr!("notes.menu.refresh"), RefreshNotes),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
             ],
             disabled: false,

@@ -99,9 +99,17 @@ impl MapViewer {
         let muted = cx.theme().muted_foreground;
         let selection_header = self.render_selection_header(cx);
 
-        let selection_title = match self.selected.len() {
-            0 | 1 => tr!("panel.selection.title"),
-            n => tr_count!("panel.selection.title_count", n),
+        // An open note takes the Selection zone's place.
+        let note_section = self.render_note_section(cx);
+        let note_open = note_section.is_some();
+        let (note_title, note_body) = match note_section {
+            Some((title, body)) => (Some(title), Some(body)),
+            None => (None, None),
+        };
+        let selection_title = match (note_title, self.selected.len()) {
+            (Some(title), _) => title,
+            (None, 0 | 1) => tr!("panel.selection.title"),
+            (None, n) => tr_count!("panel.selection.title_count", n),
         };
 
         // A thin strip along the panel's left edge that drags its width.
@@ -175,7 +183,8 @@ impl MapViewer {
                             .flex_shrink_0()
                             // Nothing selected: one friendly message instead
                             // of empty Fields and Tags sections.
-                            .when(selected_count == 0, |group| {
+                            .children(note_body)
+                            .when(selected_count == 0 && !note_open, |group| {
                                 group.child(
                                     div()
                                         .flex()
@@ -197,7 +206,7 @@ impl MapViewer {
                                         ),
                                 )
                             })
-                            .when(selected_count > 0, |group| {
+                            .when(selected_count > 0 && !note_open, |group| {
                                 group
                                     .when(selected_count == 1, |group| {
                                         group.child(selection_header)

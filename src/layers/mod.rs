@@ -7,6 +7,7 @@ pub mod diff;
 pub mod grid_layer;
 pub mod merge;
 pub mod node_markers;
+pub mod notes_layer;
 pub mod osm_layer;
 pub mod reference_layer;
 pub mod resolve;

@@ -1,0 +1,21 @@
+# Notes, read only: shows the canned notes in docs/live-test/notes-sample.xml on
+# the map and walks the note panel. Nothing is fetched or written, so it runs
+# against any server and needs no sign-in.
+#
+#   cargo run -- --script docs/live-test/05-notes-read.osmscript
+#
+# Captures go to out/notes-*.png.
+
+window 1200 800
+viewport 51.4995 -0.1220 15
+wait_idle 10s
+load_notes_file docs/live-test/notes-sample.xml
+assert_notes 3
+capture out/notes-01-pins.png
+open_note 1001
+assert_note_status open
+assert_note_comments 3
+capture out/notes-02-open-note.png
+open_note 1003
+assert_note_status closed
+capture out/notes-03-closed-note.png
