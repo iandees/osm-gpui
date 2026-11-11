@@ -1,0 +1,32 @@
+# Autosave and crash recovery, launch 1 of 4: edit a layer, make the autosave
+# write it, then die without cleaning up (as a crash or a power cut would).
+#
+# Run all four with the same temporary directory; scripted runs never touch
+# the real autosave directory unless --autosave-dir is given:
+#
+#   D=$(mktemp -d)
+#   cargo run -- --script docs/screenshots/autosave-1-edit-and-crash.osmscript --autosave-dir "$D"
+#   cargo run -- --script docs/screenshots/autosave-2-ask-later.osmscript     --autosave-dir "$D"
+#   cargo run -- --script docs/screenshots/autosave-3-restore.osmscript       --autosave-dir "$D"
+#   cargo run -- --script docs/screenshots/autosave-4-discard.osmscript       --autosave-dir "$D"
+#
+# Same fixture and coordinates as delete-layer-confirm.osmscript (window
+# 1200x800): way 8301 at (340, 400). Never uploads.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/side-panel-clarity.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 340,400
+wait_idle 2s
+assert_selected way 8301
+set_tag note autosave test
+wait_idle 1s
+assert_pending 1
+capture out/autosave-01-edited-before-crash.png
+
+autosave_now
+assert_autosave_exists 1
+log autosave written; crashing now
+crash
