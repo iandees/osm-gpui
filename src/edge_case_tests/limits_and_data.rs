@@ -736,7 +736,6 @@ fn unicode_keys_and_values_survive_reverse_untouched(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: a numeric `direction` on a way (compass degrees such as direction=90) is treated like an incline and its sign flipped to -90 by Reverse"]
 fn numeric_compass_direction_on_a_way_is_not_negated(cx: &mut TestAppContext) {
     assert_eq!(
         reverse_tags(cx, &[("direction", "90")]),
