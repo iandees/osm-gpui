@@ -887,6 +887,153 @@ pub fn continue_from_node(node: i64, ways: &[(i64, Vec<i64>)]) -> Option<Continu
     })
 }
 
+/// Whether unjoining `node` from `way` would change anything useful: the
+/// node is a vertex of that way (see `is_unjoinable_vertex`) and some other
+/// way uses it too.
+pub fn can_unjoin(node: i64, ways: &[(i64, Vec<i64>)], way: i64) -> bool {
+    ways.iter()
+        .find(|(id, _)| *id == way)
+        .is_some_and(|(_, nodes)| is_unjoinable_vertex(nodes, node))
+        && ways
+            .iter()
+            .any(|(id, nodes)| *id != way && nodes.contains(&node))
+}
+
+/// Plan unjoining `node` from `way`: every place the way uses the node gets
+/// the one node `alloc` returns (called once). `None` if `can_unjoin` is false.
+pub fn plan_unjoin(
+    node: i64,
+    ways: &[(i64, Vec<i64>)],
+    way: i64,
+    alloc: impl FnOnce() -> i64,
+) -> Option<Vec<SeparateEdit>> {
+    if !can_unjoin(node, ways, way) {
+        return None;
+    }
+    let (_, before) = ways.iter().find(|(id, _)| *id == way)?;
+    let new_node = alloc();
+    let after = before
+        .iter()
+        .map(|&n| if n == node { new_node } else { n })
+        .collect();
+    Some(vec![SeparateEdit {
+        way_id: way,
+        before: before.clone(),
+        after,
+    }])
+}
+
+/// Whether `node` can be unjoined from the way with these nodes: it is a
+/// vertex of the way, not one of its two ends. A closed way's closing node
+/// counts as a vertex (a ring has no ends), an open way's first and last
+/// nodes do not (JOSM leaves those alone: there is nothing to unjoin).
+pub fn is_unjoinable_vertex(nodes: &[i64], node: i64) -> bool {
+    if !nodes.contains(&node) {
+        return false;
+    }
+    let closed = nodes.len() >= 4 && nodes.first() == nodes.last();
+    if closed {
+        return true;
+    }
+    // An open way that is visited again in the middle still has a vertex use.
+    let last = nodes.len().saturating_sub(1);
+    (1..last).any(|p| nodes[p] == node)
+}
+
+/// Why a segment can't be deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentError {
+    /// The two nodes are not next to each other in the way.
+    NotAdjacent,
+    /// The way runs along the same two nodes more than once.
+    Ambiguous,
+    /// The segment is all there is (a two-node way): delete the way instead.
+    WholeWay,
+}
+
+/// Deleting the segment between two adjacent nodes of a way: what is left.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SegmentDeletion {
+    pub way_id: i64,
+    pub before: Vec<i64>,
+    /// The two nodes of the segment, as the way lists them.
+    pub segment: [i64; 2],
+    /// What remains, in travel order: one or two open pieces of at least two
+    /// nodes each. A closed way leaves one piece (starting after the
+    /// segment, ending before it); an open way leaves the part before and
+    /// the part after, and a part of a single node is dropped.
+    pub pieces: Vec<Vec<i64>>,
+}
+
+impl SegmentDeletion {
+    /// The nodes of the segment that no remaining piece uses.
+    pub fn dropped_nodes(&self) -> Vec<i64> {
+        self.segment
+            .iter()
+            .copied()
+            .filter(|n| !self.pieces.iter().any(|p| p.contains(n)))
+            .collect()
+    }
+
+    /// When two pieces remain: the cut as a three-part split (before, the
+    /// segment, after) in which the original way keeps the longer piece (the
+    /// first of equal ones). The middle part is the one to throw away.
+    pub fn as_split(&self) -> Option<SplitPlan> {
+        let [left, right] = self.pieces.as_slice() else {
+            return None;
+        };
+        Some(SplitPlan {
+            way_id: self.way_id,
+            before: self.before.clone(),
+            parts: vec![left.clone(), self.segment.to_vec(), right.clone()],
+            keeper: if right.len() > left.len() { 2 } else { 0 },
+        })
+    }
+}
+
+/// Plan deleting the segment between the adjacent nodes `a` and `b` of the
+/// way `nodes`. The way is cut at the segment and the segment itself is
+/// removed (JOSM `DeleteCommand` for a way segment): an open way becomes the
+/// piece before and the piece after; a segment at an end just shortens it;
+/// a closed way is opened at the segment.
+pub fn plan_delete_segment(
+    way_id: i64,
+    nodes: &[i64],
+    a: i64,
+    b: i64,
+) -> Result<SegmentDeletion, SegmentError> {
+    let closed = nodes.len() >= 4 && nodes.first() == nodes.last();
+    let at: Vec<usize> = (0..nodes.len().saturating_sub(1))
+        .filter(|&i| (nodes[i] == a && nodes[i + 1] == b) || (nodes[i] == b && nodes[i + 1] == a))
+        .collect();
+    let i = match at.as_slice() {
+        [] => return Err(SegmentError::NotAdjacent),
+        [i] => *i,
+        _ => return Err(SegmentError::Ambiguous),
+    };
+    let segment = [nodes[i], nodes[i + 1]];
+    let pieces = if closed {
+        let ring = &nodes[..nodes.len() - 1];
+        let mut line = ring[i + 1..].to_vec();
+        line.extend_from_slice(&ring[..=i]);
+        vec![line]
+    } else {
+        [nodes[..=i].to_vec(), nodes[i + 1..].to_vec()]
+            .into_iter()
+            .filter(|p| p.len() >= 2)
+            .collect()
+    };
+    if pieces.is_empty() {
+        return Err(SegmentError::WholeWay);
+    }
+    Ok(SegmentDeletion {
+        way_id,
+        before: nodes.to_vec(),
+        segment,
+        pieces,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

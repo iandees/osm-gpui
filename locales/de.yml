@@ -613,6 +613,22 @@ action:
       other: "Knoten in %{count} Kopien aufgetrennt"
     error:
       restriction: "Abtrennen nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}, die ihn am Via-Knoten braucht"
+  unjoin:
+    label: "Knoten vom Weg lösen"
+    hint: "Einen Knoten und einen Weg wählen, zu dem er gehört (und den ein anderer Weg mitnutzt), damit dieser Weg eine eigene Kopie des Knotens bekommt"
+    done: "Knoten von einem Weg gelöst"
+    error:
+      end_node: "Lösen nicht möglich: Der Knoten ist ein Ende des Weges, es gibt nichts abzulösen (Knoten abtrennen verwenden)"
+      not_shared: "Lösen nicht möglich: Kein anderer Weg nutzt den Knoten"
+  delete_segment:
+    label: "Wegsegment löschen"
+    hint: "Zwei benachbarte Knoten eines Weges wählen, um das Segment dazwischen zu löschen"
+    done: "Wegsegment gelöscht"
+    error:
+      several_ways: "Segment löschen nicht möglich: Mehrere Wege verlaufen dort, den Weg zusätzlich wählen"
+      twice: "Segment löschen nicht möglich: Der Weg verläuft mehrfach über das Segment"
+      whole_way: "Segment löschen nicht möglich: Es ist alles, was der Weg hat, stattdessen den Weg löschen"
+      restriction: "Segment löschen nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}, die ihn am Via-Knoten braucht"
   extend:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"

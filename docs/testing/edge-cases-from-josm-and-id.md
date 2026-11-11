@@ -105,7 +105,7 @@ in the bug list at the end.
 | D2 | Same way visits the node twice | Later visit gets the new node | iD "replaces later occurrences in a self-intersecting way" | pass `disconnect_replaces_a_later_visit_of_the_same_way` |
 | D3 | Closing node of a ring shared with another way | Ring stays closed, one new node | iD "disconnects the closing node of an area without breaking the area" | pass `disconnecting_a_ring_from_another_way_keeps_the_ring_closed` |
 | D4 | Node on one way only | Nothing to do | JOSM `testSingleNodeInSingleWay`; iD `not_connected` | pass `disconnect_of_a_node_used_once_is_refused` |
-| D5 | JOSM "UnJoinNodeWay" (pull a node off a way, ticket 10396) | | JOSM `UnJoinNodeWayActionTest` | absent |
+| D5 | JOSM "UnJoinNodeWay" (pull a node off a way, ticket 10396) | The named way gets a fresh untagged node, the other ways keep the original | JOSM `UnJoinNodeWayActionTest` | implemented as the Unjoin Node from Way action, see batch L |
 
 ## Delete
 
@@ -124,7 +124,7 @@ in the bug list at the end.
 | X11 | Node member not on any way | Removed from the relation | | pass `deleting_a_node_member_that_is_not_on_a_way_edits_the_relation` |
 | X12 | Members that are not downloaded | Kept, in place | JOSM #18863 flavour | pass `unknown_members_survive_edits_of_their_relation` |
 | X13 | Restriction role removal, relation member of relation | Refused | | existing |
-| X14 | Delete way segment (JOSM `DeleteCommandTest.testDeleteWaySegment*`) | | | absent |
+| X14 | Delete way segment (JOSM `DeleteCommandTest.testDeleteWaySegment*`) | Way cut at the segment, the segment thrown away | JOSM `DeleteCommandTest` | implemented as the Delete Way Segment action, see batch L |
 
 ## Relation ordering, multipolygons, restrictions, geometry, copy/paste
 
@@ -473,6 +473,64 @@ other's edge are refused.
 Member limit: the new relation is checked with `limits::relation_over_limit`
 like New Relation (covered by `new_relation_is_refused_past_the_member_limit`);
 no separate test.
+
+No bugs found in this batch.
+
+## Further situations (batch L)
+
+Unjoin Node from Way (D5) and Delete Way Segment (X14), both in
+`src/edge_case_tests/unjoin_and_segment.rs`; the planners are in
+`src/topology.rs` (`plan_unjoin`, `plan_delete_segment`). Neither has a default
+shortcut; both are in the Tools menu and the context menu, and when they do not
+apply the status bar says why (end node, no other way, segment shared, ...).
+
+Unjoin Node from Way: select a node and one way it belongs to. Every place that
+way uses the node gets one new untagged node at the same position (negative
+id); the other ways keep the original, which also keeps its tags and relation
+memberships (the same design difference from iD as Disconnect, D1). Decisions:
+the node must be a vertex of the way, so an end node of an open way is refused
+(there is nothing to pull it off; Disconnect handles that case), while the
+closing node of a ring is fine and both ring ends get the same new node; the
+node must be used by some other way, otherwise nothing would be unjoined. A
+turn restriction whose `from` or `to` way is the unjoined one, with the node as
+`via`, refuses it (same message as Disconnect). One undo step: new node, then
+the modified way.
+
+Delete Way Segment: the UI has no segment selection, so a segment is two
+selected nodes that are next to each other in a way (optionally with the way
+selected, which is needed when several ways run along the same two nodes). The
+way is cut at the segment and the segment is thrown away: an open way becomes
+the part before and the part after (the original keeps the longer one, the
+first on a tie, other part is a new way with a copy of the tags); a segment at
+an end just shortens the way; a closed way is opened at the segment and keeps
+its id. Relations go through the same `relations::split_members` logic as Split
+Way (so a restriction follows the part that holds its via node, or the action is
+refused when the via node is on the segment) and the thrown-away piece is then
+removed again. An end node left unused is deleted when untagged, in no other
+way and in no relation. Refused: nodes not adjacent, a way that runs along the
+segment twice, a two-node way (delete the way instead), a relation that would
+pass 32,000 members, a restriction that would lose its via node. One undo step.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| L1 | Unjoin a shared vertex | Selected way gets a bare copy at the same position; original keeps tags and relation membership; one step; new node then modified way | pass `unjoin_gives_only_the_selected_way_a_bare_copy_and_the_original_keeps_everything`, `which_way_is_unjoined_is_the_selected_one_even_if_it_is_the_older_way` |
+| L2 | No way selected, or node not in the way | Refused with the hint, nothing changes | pass `unjoin_without_a_way_selected_is_refused`, `unjoin_of_a_node_that_is_not_in_the_way_is_refused` |
+| L3 | End node of the way | Refused (use Separate Node) | pass `unjoin_of_an_end_node_is_refused_and_says_to_use_separate` |
+| L4 | Node no other way uses, also a way passing the node twice alone | Refused | pass `unjoin_of_a_node_nothing_else_uses_is_refused` |
+| L5 | Way visits the node twice, plus another way | Both visits get one shared new node | pass `unjoin_replaces_every_visit_of_the_way_with_one_new_node` |
+| L6 | Ring: closing node and another vertex | Ring stays closed, one new node | pass `unjoin_on_a_ring_keeps_it_closed_whichever_node_it_is` |
+| L7 | Turn restriction with the node as via | Refused for the from / to ways, allowed for others | pass `unjoin_is_refused_for_the_from_way_of_a_restriction_at_its_via_node` |
+| L8 | Way with 2,000 nodes; upload order | Node count unchanged; new node created before the modified way | pass `unjoin_keeps_the_way_node_count_so_a_full_way_stays_valid`, `unjoin_uploads_the_new_node_before_the_way_that_uses_it` |
+| L9 | Middle segment | Two parts, longer keeps the id, no way for the segment, one step, undo / redo | pass `a_middle_segment_splits_the_way_and_the_original_keeps_the_longer_part`, `the_left_part_stays_when_it_is_longer_or_ties`, `it_does_not_matter_which_node_was_selected_first_or_whether_the_way_is_too` |
+| L10 | Segment at an end | Way shortened; orphaned end node deleted unless tagged, shared or in a relation | pass `a_segment_at_the_end_shortens_the_way_and_deletes_the_orphaned_end_node`, `tagged_shared_or_member_end_nodes_survive_the_segment` |
+| L11 | Two-node way | Refused, delete the way instead | pass `deleting_the_only_segment_of_a_two_node_way_is_refused` |
+| L12 | Closed way, including the closing segment | Opened at the segment, same id, nothing created | pass `a_closed_way_is_opened_at_the_segment_without_creating_anything` |
+| L13 | Not adjacent, not two nodes, no nodes | Refused | pass `nodes_that_are_not_next_to_each_other_or_not_two_are_refused` |
+| L14 | Segment shared by two ways; way along it twice; node visited twice elsewhere | Select the way too; refused; node kept in both parts | pass `a_segment_shared_by_two_ways_needs_the_way_to_be_selected`, `a_way_that_runs_along_the_segment_twice_is_refused`, `a_way_that_passes_the_node_twice_elsewhere_keeps_it_in_both_parts` |
+| L15 | Way in routes | Both parts in order, segment piece absent, every relation edited; shortened way leaves relations alone | pass `a_route_gets_both_remaining_parts_in_order_and_not_the_segment`, `a_shortened_way_stays_in_its_relations_unchanged` |
+| L16 | Turn restriction | `from` follows the part with the via node; via on the segment refused; via lost at a shortened end refused | pass `a_restriction_whose_via_node_stays_with_one_part_follows_that_part`, `a_restriction_is_refused_when_the_segment_touches_the_via_node`, `a_restriction_that_would_lose_its_via_node_at_a_shortened_end_is_refused` |
+| L17 | Relation at the member limit | 32,000 allowed, 32,001 refused (a shortening still works) | pass `a_relation_may_grow_to_exactly_32000_members_but_not_past_it` |
+| L18 | Way node limit; upload order; undo | Both parts under the limit; new way created, old modified, nodes deleted last; tags copied at that moment | pass `both_parts_fit_the_way_node_limit_that_the_whole_way_exceeded`, `upload_creates_the_new_way_then_modifies_the_old_one_then_deletes_nodes`, `undoing_a_segment_deletion_after_other_edits_in_between_restores_each_step` |
 
 No bugs found in this batch.
 

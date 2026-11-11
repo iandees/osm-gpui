@@ -19,6 +19,7 @@ mod snap_join_node;
 mod split;
 mod undo_interactions;
 mod undo_sequences;
+mod unjoin_and_segment;
 mod upload_failures;
 mod upload_order;
 
