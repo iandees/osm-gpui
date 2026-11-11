@@ -1,0 +1,61 @@
+# The validator: Tools > Validate lists what is wrong with the objects an upload
+# would send, errors first, and Show selects the objects. Never uploads, and
+# never signs in (the upload dialog shows the same list but needs an account;
+# its behaviour is covered by unit tests).
+#
+# Coordinates: fixtures/validator.osm is laid out in window coordinates at
+# zoom 18, centered on (40.7120, -74.0060), in a 1200x800 window. The fixture
+# holds deliberate problems in new objects (negative ids), plus old problems
+# in untouched objects that must NOT be reported (an untagged way 5001, an
+# untagged node 5103, a cafe 5104 with stray spaces, and two crossing roads).
+# The script edits node 2002 (a field) so that it counts as modified.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/validator.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/validator-01-map.png
+
+# An old object touched in this session is validated; the rest of the old data
+# is not.
+click 600,560
+wait_idle 2s
+assert_selected node 2002
+set_tag landuse farm
+set_tag fixme check the field boundary
+wait_idle 1s
+
+# 3 errors and 11 warnings, and none of the old problems.
+assert_validation errors=3 warnings=11 way_too_short=1 duplicate_way_node=1 tag_empty_value=1 crossing_ways=2 area_tags_on_open_way=1 duplicate_nodes=1 untagged_node=1 untagged_way=1 tag_whitespace=1 relation_empty=1 relation_no_type=1 deprecated_tag=1 fixme=1
+
+action Validate
+wait_idle 2s
+assert_dialog validate
+capture out/validator-02-validate-dialog.png
+
+# Show on a crossing: the dialog closes and both streets are selected.
+show_finding crossing_ways
+wait_idle 2s
+assert_dialog none
+assert_selection multiple
+capture out/validator-03-crossing-shown.png
+
+# Show on an error: the one-node way.
+action Validate
+wait_idle 2s
+assert_dialog validate
+show_finding way_too_short
+wait_idle 2s
+assert_dialog none
+assert_selected way -207
+wait 2s
+capture out/validator-04-error-shown.png
+
+# Escape closes the dialog without touching the selection.
+action Validate
+wait_idle 2s
+key escape
+wait_idle 1s
+assert_dialog none
+assert_selected way -207
+log done
