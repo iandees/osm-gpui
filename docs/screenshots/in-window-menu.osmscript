@@ -1,0 +1,43 @@
+# The in-window menu bar (the one Windows and Linux users get), forced on
+# macOS for testing. Run with the override set, e.g.:
+#
+#   OSM_GPUI_IN_WINDOW_MENU=1 cargo run -- --script docs/screenshots/in-window-menu.osmscript
+#
+# The bar is a 30px row at the top of the window content; labels are at
+# window y=15. The map area starts below it (and the toolbar to its left).
+
+window 1200 800
+wait 3s
+wait_idle 5s
+capture out/in-window-menu-01-bar.png
+
+# A real click on the File label opens its dropdown.
+click 99,15
+wait_idle 3s
+capture out/in-window-menu-02-file.png
+
+# Click File again to close it, then open Edit (shortcuts and separators).
+click 99,15
+wait_idle 2s
+click 139,15
+wait_idle 3s
+capture out/in-window-menu-03-edit.png
+
+# Add mode needs data to draw into; load a local fixture (no network).
+click 139,15
+wait_idle 2s
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Open Mode and click its "Add" item: the action reaches the
+# window.
+click 237,15
+wait_idle 3s
+capture out/in-window-menu-04-mode.png
+click 255,76
+wait_idle 3s
+capture out/in-window-menu-05-add-mode.png
+assert_mode add
+
+log done

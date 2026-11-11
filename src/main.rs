@@ -327,6 +327,18 @@ impl ExtrudeStyle {
     }
 }
 
+/// Window-space position to map-area-local, given the height of the chrome
+/// (in-window menu bar) above the map. See `MapViewer::window_to_map`.
+fn window_to_map_origin(
+    position: gpui::Point<gpui::Pixels>,
+    top_chrome: gpui::Pixels,
+) -> gpui::Point<gpui::Pixels> {
+    gpui::point(
+        position.x - px(MapViewer::MODE_PANEL_WIDTH),
+        position.y - top_chrome,
+    )
+}
+
 /// The index `i` such that `node_ids[i] == a && node_ids[i + 1] == b`,
 /// preferring `hint` (the hit-test's index) when it is consistent.
 fn segment_index_in_way(node_ids: &[i64], hint: usize, a: i64, b: i64) -> Option<usize> {
@@ -1217,8 +1229,11 @@ impl MapViewer {
     /// already adds back `bounds.origin` (the map div's real window
     /// position) when painting — this is the input-side counterpart of
     /// that.
+    ///
+    /// The in-window menu bar (Windows/Linux, see `menu::in_window_menu_enabled`)
+    /// is a row above the map, so it shifts the map's origin down too.
     fn window_to_map(&self, position: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
-        gpui::point(position.x - px(Self::MODE_PANEL_WIDTH), position.y)
+        window_to_map_origin(position, menu::top_chrome_height())
     }
 
     /// Left-button mouse-down: if the point hits a currently-selected
@@ -5293,7 +5308,7 @@ impl Render for MapViewer {
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
-            window_size.height - px(status_bar::STATUS_BAR_HEIGHT),
+            window_size.height - px(status_bar::STATUS_BAR_HEIGHT) - menu::top_chrome_height(),
         );
         self.viewport.update_size(map_size);
 
@@ -5999,6 +6014,21 @@ impl Render for MapViewer {
             .text_size(osm_gpui::ui::style::current_text_scale().body)
             .flex()
             .flex_col()
+            // Windows/Linux (or macOS with OSM_GPUI_IN_WINDOW_MENU=1): the
+            // menu bar is a row inside the window, above everything else.
+            .children(menu::in_window_menu_bar(cx).map(|bar| {
+                div()
+                    .h(px(menu::IN_WINDOW_MENU_BAR_HEIGHT))
+                    .w_full()
+                    .flex_none()
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .child(bar)
+            }))
             .child(main_row)
             .child(status_bar)
             // A side panel resize drag is tracked here, on the window-sized
@@ -6385,6 +6415,17 @@ fn append_custom_imagery(entry: CustomImageryEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_to_map_removes_the_toolbar_and_any_menu_bar_row() {
+        let p = point(px(300.0), px(200.0));
+        let without_bar = window_to_map_origin(p, px(0.0));
+        assert_eq!(without_bar.x, px(300.0 - MapViewer::MODE_PANEL_WIDTH));
+        assert_eq!(without_bar.y, px(200.0));
+        let with_bar = window_to_map_origin(p, px(menu::IN_WINDOW_MENU_BAR_HEIGHT));
+        assert_eq!(with_bar.x, without_bar.x);
+        assert_eq!(with_bar.y, px(200.0 - menu::IN_WINDOW_MENU_BAR_HEIGHT));
+    }
     use gpui::{point, size, TestAppContext};
     use osm_gpui::osm::{OsmNode, OsmWay};
     use std::collections::HashMap;
