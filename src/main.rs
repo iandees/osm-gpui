@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod fields_section;
+mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
 mod script_harness;
@@ -402,6 +403,9 @@ enum LayerRequest {
         min_zoom: Option<u32>,
         max_zoom: Option<u32>,
         attribution: Option<imagery::AttributionInfo>,
+        /// Stable id of the source (the ELI id) that imagery offsets are
+        /// remembered under; `None` for a custom template.
+        imagery_id: Option<String>,
     },
 }
 
@@ -731,6 +735,9 @@ struct MapViewer {
     right_press: Option<gpui::Point<gpui::Pixels>>,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
+    /// The "Adjust imagery offset" mode, while it is on (see
+    /// `imagery_offset_ui`).
+    offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -930,6 +937,7 @@ impl MapViewer {
             extrude_drag: None,
             right_press: None,
             context_menu: None,
+            offset_adjust: None,
         }
     }
 
@@ -1271,7 +1279,7 @@ impl MapViewer {
     /// 6-8 populate these fields; they don't exist until then, so this
     /// handler is added here as a no-op placeholder for those clears and
     /// extended in each later task).
-    fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_mode(&mut self, action: &SetMode, window: &mut Window, cx: &mut Context<Self>) {
         let mode: EditMode = action.mode.into();
         // The drawing modes need a layer to write into. The toolbar buttons
         // are disabled in that state; this covers the keyboard and menu paths.
@@ -1280,6 +1288,8 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        // Picking a tool ends the imagery offset adjustment, keeping it.
+        self.finish_offset_adjust(true, window, cx);
         // Entering Building mode with one squared way selected borrows its
         // orientation; staying in Building mode keeps the existing one.
         self.building_reference = match mode {
@@ -1358,6 +1368,11 @@ impl MapViewer {
         position: gpui::Point<gpui::Pixels>,
         modifiers: gpui::Modifiers,
     ) {
+        // Adjusting the imagery offset: the press starts moving the imagery.
+        if self.offset_adjust_mouse_down(position) {
+            self.interaction = Interaction::Idle;
+            return;
+        }
         // Oriented Building mode owns the left button entirely (no
         // box-select, and no move-drag of the selected reference way): the
         // press places the first corner, the release decides click vs drag.
@@ -3045,6 +3060,7 @@ impl MapViewer {
         self.hovered = if self.mode == EditMode::Select
             && event.pressed_button.is_none()
             && !self.space_held
+            && self.offset_adjust.is_none()
         {
             osm_gpui::selection::resolve_hits(
                 self.layer_manager
@@ -3056,6 +3072,11 @@ impl MapViewer {
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
         cx.notify();
+
+        // Adjusting the imagery offset: a left-drag moves the imagery.
+        if self.offset_adjust_mouse_move(adjusted_position, left_pressed, cx) {
+            return;
+        }
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
             if let Some(delta_pt) =
@@ -3098,6 +3119,11 @@ impl MapViewer {
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = self.window_to_map(event.position);
         self.viewport.handle_mouse_up();
+
+        if self.offset_adjust_mouse_up() {
+            cx.notify();
+            return;
+        }
 
         if let Some(press) = self.building_press.take() {
             self.finish_oriented_building_press(press, up_pos);
@@ -4280,7 +4306,11 @@ impl MapViewer {
                     .is_none()
                 {
                     let layer_id = self.layer_manager.alloc_id();
-                    let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
+                    let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone()).with_offset(
+                        self.saved_imagery_offset(
+                            osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID,
+                        ),
+                    );
                     self.layer_manager.add_layer(Box::new(tile_layer));
                 }
             }
@@ -4297,9 +4327,12 @@ impl MapViewer {
                 min_zoom,
                 max_zoom,
                 attribution,
+                imagery_id,
             } => {
                 let candidate = self.layer_manager.unique_name(&name);
                 let layer_id = self.layer_manager.alloc_id();
+                let imagery_id = imagery_id.unwrap_or_else(|| format!("custom:{url_template}"));
+                let offset = self.saved_imagery_offset(&imagery_id);
                 let layer = TileLayer::new_with_template(
                     layer_id,
                     candidate,
@@ -4308,7 +4341,9 @@ impl MapViewer {
                 )
                 .with_min_zoom(min_zoom)
                 .with_max_zoom(max_zoom)
-                .with_attribution(attribution);
+                .with_attribution(attribution)
+                .with_imagery_id(imagery_id)
+                .with_offset(offset);
                 self.layer_manager.add_layer(Box::new(layer));
             }
         }
@@ -4473,6 +4508,7 @@ impl MapViewer {
                                 min_zoom: Some(entry.min_zoom),
                                 max_zoom: Some(entry.max_zoom),
                                 attribution: None,
+                                imagery_id: None,
                             },
                             cx,
                         );
@@ -5601,6 +5637,7 @@ impl Render for MapViewer {
         self.viewport.update_size(map_size);
 
         self.expire_status();
+        self.drop_stale_offset_adjust();
 
         // Keyboard shortcuts scoped to this view only match while focus is
         // somewhere inside it. With nothing focused at all — at launch, or
@@ -5633,12 +5670,22 @@ impl Render for MapViewer {
                     .flex_1()
                     .relative()
                     .track_focus(&self.focus_handle)
-                    .cursor(map_cursor(
-                        self.mode,
-                        self.viewport.is_dragging,
-                        self.space_held,
-                        self.hovered.is_some(),
-                    ))
+                    .cursor(match &self.offset_adjust {
+                        // Imagery is dragged with the left button: a hand.
+                        Some(adjust) if !self.viewport.is_dragging && !self.space_held => {
+                            if adjust.dragging() {
+                                gpui::CursorStyle::ClosedHand
+                            } else {
+                                gpui::CursorStyle::OpenHand
+                            }
+                        }
+                        _ => map_cursor(
+                            self.mode,
+                            self.viewport.is_dragging,
+                            self.space_held,
+                            self.hovered.is_some(),
+                        ),
+                    })
                     // When the pointer leaves the map, drop everything that
                     // tracks it: the hover highlight, the status bar's cursor
                     // coordinates, and the drawing modes' rubber bands.
@@ -5721,7 +5768,9 @@ impl Render for MapViewer {
                     }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         let modifiers = ev.keystroke.modifiers;
-                        if modifiers.platform || modifiers.control || modifiers.alt {
+                        if this.offset_field_focused(window, cx) {
+                            // Typing in the imagery offset panel's fields.
+                        } else if modifiers.platform || modifiers.control || modifiers.alt {
                             // Modifier chords belong to the keymap (menu
                             // shortcuts), never to the bare-key handling below.
                         } else if ev.keystroke.key == "space" {
@@ -5730,6 +5779,14 @@ impl Render for MapViewer {
                                 this.space_held = true;
                                 cx.notify();
                             }
+                        } else if this.offset_adjust_key(
+                            &ev.keystroke.key,
+                            modifiers.shift,
+                            window,
+                            cx,
+                        ) {
+                            // Adjusting imagery offset: arrows nudge the
+                            // imagery, Escape cancels, Enter keeps.
                         } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
                             // Arrow keys pan; +/- zoom.
                         } else if ev.keystroke.key == "escape" {
@@ -6237,6 +6294,7 @@ impl Render for MapViewer {
                         }
                     })
                     .children(self.render_welcome(cx))
+                    .children(self.render_imagery_offset_panel(window, cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -6354,6 +6412,11 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
+            .on_action(cx.listener(Self::on_adjust_imagery_offset))
+            .on_action(cx.listener(Self::on_adjust_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_reset_imagery_offset))
+            .on_action(cx.listener(Self::on_reset_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_set_imagery_offset))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_run_selection_action))
             .on_action(cx.listener(Self::on_undo))
@@ -6511,6 +6574,9 @@ fn main() {
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
         custom_imagery_store::init_store(loaded);
+        // Remembered imagery offsets. Scripted runs neither read nor write the
+        // user's file: their offsets live for the run only.
+        osm_gpui::imagery_offset::init_store(!script_harness::script_mode());
 
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value

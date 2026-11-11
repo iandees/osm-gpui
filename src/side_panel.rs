@@ -14,6 +14,7 @@ use osm_gpui::layers::LayerId;
 use osm_gpui::ui::style::{interactive_row, muted_text_size, panel_row, PANEL_ROW_HEIGHT};
 use osm_gpui::{tr, tr_count};
 
+use crate::imagery_offset_ui::{AdjustLayerImageryOffset, ResetLayerImageryOffset};
 use crate::{
     DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
     ToggleLayerVisibilityAction,
@@ -21,6 +22,17 @@ use crate::{
 
 /// The least height the Selection zone keeps in a short window.
 const SELECTION_MIN_HEIGHT: f32 = 100.0;
+
+/// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
+/// layer, and (imagery layers only) its imagery offset.
+type LayerRowInfo = (
+    LayerId,
+    String,
+    bool,
+    bool,
+    bool,
+    Option<osm_gpui::imagery_offset::ImageryOffset>,
+);
 
 /// One membership of the selected feature in a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +62,7 @@ impl MapViewer {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let layer_info: Vec<(LayerId, String, bool, bool, bool)> = self
+        let layer_info: Vec<LayerRowInfo> = self
             .layer_manager
             .layers()
             .iter()
@@ -62,6 +74,7 @@ impl MapViewer {
                     layer.is_visible(),
                     layer.is_modified(),
                     is_osm,
+                    layer.imagery_offset(),
                 )
             })
             .collect();
@@ -1068,7 +1081,7 @@ impl MapViewer {
     /// dismissing itself on mouse move).
     fn render_layers_section(
         &self,
-        layer_info: &[(LayerId, String, bool, bool, bool)],
+        layer_info: &[LayerRowInfo],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -1094,8 +1107,15 @@ impl MapViewer {
                     .iter()
                     .enumerate()
                     .map(
-                        |(index, (layer_id, name, is_visible, is_modified, is_osm))| {
+                        |(
+                            index,
+                            (layer_id, name, is_visible, is_modified, is_osm, imagery_offset),
+                        )| {
                             let layer_id = *layer_id;
+                            let is_imagery = imagery_offset.is_some();
+                            // Imagery drawn shifted says so, so nobody traces
+                            // on moved imagery without knowing.
+                            let shifted = imagery_offset.filter(|o| !o.is_zero());
                             let is_osm = *is_osm;
                             let is_active = self.active_layer == Some(layer_id);
                             let is_visible = *is_visible;
@@ -1156,6 +1176,25 @@ impl MapViewer {
                             row.gap_2()
                                 .child(eye)
                                 .child(name_label)
+                                .children(shifted.map(|offset| {
+                                    div()
+                                        .id(("layer-offset-tag", index))
+                                        .flex_shrink_0()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_size(muted_text_size())
+                                        .bg(cx.theme().warning.opacity(0.35))
+                                        .text_color(cx.theme().foreground)
+                                        .child(tr!(
+                                            "panel.layers.offset_tag",
+                                            east = osm_gpui::imagery_offset::format_metres(
+                                                offset.east_m
+                                            ),
+                                            north = osm_gpui::imagery_offset::format_metres(
+                                                offset.north_m
+                                            )
+                                        ))
+                                }))
                                 .when(is_active, |this| {
                                     this.child(
                                         div()
@@ -1184,6 +1223,18 @@ impl MapViewer {
                                             tr!("panel.layers.move_down"),
                                             Box::new(MoveLayer { index, delta: 1 }),
                                         );
+                                    }
+                                    if is_imagery {
+                                        menu = menu.separator().menu(
+                                            tr!("panel.layers.adjust_offset"),
+                                            Box::new(AdjustLayerImageryOffset { index }),
+                                        );
+                                        if shifted.is_some() {
+                                            menu = menu.menu(
+                                                tr!("panel.layers.reset_offset"),
+                                                Box::new(ResetLayerImageryOffset { index }),
+                                            );
+                                        }
                                     }
                                     menu.separator()
                                         .menu(

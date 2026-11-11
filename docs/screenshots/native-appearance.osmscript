@@ -1,0 +1,31 @@
+# The native window appearance (macOS title bar, system panels) follows the
+# app theme: Dark/Light force it, System hands it back to the OS. SetAppearance
+# only changes this run's in-memory settings. Run with:
+#
+#   cargo run -- --script docs/screenshots/native-appearance.osmscript
+#
+# The waits leave time to look at (or screencapture) the title bar.
+
+window 1200 800
+wait 3s
+wait_idle 5s
+assert_native_appearance system
+
+action SetAppearance {"mode":"Dark"}
+wait 2s
+assert_native_appearance dark
+capture out/native-appearance-dark.png
+wait 6s
+
+action SetAppearance {"mode":"Light"}
+wait 2s
+assert_native_appearance light
+capture out/native-appearance-light.png
+wait 6s
+
+action SetAppearance {"mode":"System"}
+wait 2s
+assert_native_appearance system
+capture out/native-appearance-system.png
+
+log done

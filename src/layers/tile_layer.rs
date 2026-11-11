@@ -2,9 +2,10 @@ use gpui::*;
 use std::sync::{Arc, Mutex};
 
 use crate::imagery::AttributionInfo;
+use crate::imagery_offset::{offset_to_mercator, tiles_covering, ImageryOffset};
 use crate::layers::{LayerId, MapLayer};
 use crate::tile_cache::TileCache;
-use crate::tiles::{get_tiles_for_bounds, url_from_template, TileCoord};
+use crate::tiles::{url_from_template, TileCoord};
 use crate::viewport::Viewport;
 
 /// The built-in OpenStreetMap Carto tile URL template.
@@ -13,6 +14,9 @@ pub const OSM_CARTO_TEMPLATE: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}
 /// Attribution text required for the built-in OpenStreetMap Carto base
 /// layer. This is not sourced from the ELI index, so it's hardcoded here.
 pub const OSM_CARTO_ATTRIBUTION: &str = "© OpenStreetMap contributors";
+
+/// The imagery id under which the built-in OSM Carto layer's offset is kept.
+pub const OSM_CARTO_IMAGERY_ID: &str = "osm-carto";
 
 /// Link target for the built-in OpenStreetMap Carto attribution.
 pub const OSM_CARTO_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
@@ -29,6 +33,10 @@ pub struct TileLayer {
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
     attribution: Option<AttributionInfo>,
+    /// Stable key of the imagery source, under which offsets are remembered.
+    imagery_id: String,
+    /// How far the imagery is painted from where its tiles say it is.
+    offset: ImageryOffset,
 }
 
 impl TileLayer {
@@ -43,6 +51,7 @@ impl TileLayer {
             text: OSM_CARTO_ATTRIBUTION.to_string(),
             url: Some(OSM_CARTO_ATTRIBUTION_URL.to_string()),
         }))
+        .with_imagery_id(OSM_CARTO_IMAGERY_ID)
     }
 
     pub fn new_with_name(id: LayerId, name: String, tile_cache: Arc<Mutex<TileCache>>) -> Self {
@@ -56,6 +65,7 @@ impl TileLayer {
         tile_cache: Arc<Mutex<TileCache>>,
     ) -> Self {
         let source_key = crate::tile_cache::source_key_for_template(&url_template);
+        let imagery_id = format!("custom:{url_template}");
         Self {
             id,
             name,
@@ -67,7 +77,36 @@ impl TileLayer {
             min_zoom: None,
             max_zoom: None,
             attribution: None,
+            imagery_id,
+            offset: ImageryOffset::ZERO,
         }
+    }
+
+    /// Set the stable id of the imagery source (see `MapLayer::imagery_id`).
+    pub fn with_imagery_id(mut self, id: impl Into<String>) -> Self {
+        self.imagery_id = id.into();
+        self
+    }
+
+    pub fn with_offset(mut self, offset: ImageryOffset) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// The tiles to fetch and paint for `viewport` at `tile_zoom`, allowing
+    /// for the layer's offset: these are the tiles that are visible *after*
+    /// the shift, so no strip at the viewport edge is left empty.
+    fn visible_tiles(&self, viewport: &Viewport, tile_zoom: u32) -> Vec<TileCoord> {
+        tiles_covering(
+            viewport.mercator_view_bounds(),
+            self.mercator_offset(viewport),
+            tile_zoom,
+        )
+    }
+
+    /// The offset as a Web Mercator shift, scaled for the view's latitude.
+    fn mercator_offset(&self, viewport: &Viewport) -> (f64, f64) {
+        offset_to_mercator(self.offset, viewport.center().0)
     }
 
     pub fn with_min_zoom(mut self, min_zoom: Option<u32>) -> Self {
@@ -198,10 +237,21 @@ fn tile_mercator_bounds(tile: &TileCoord) -> (f64, f64, f64, f64) {
 /// neighbor but not its left/top one, leaving the shared corner of a 2×2
 /// tile block uncovered from every direction — visible as a faint cross
 /// where the dark fallback background shows through at that one point.
+#[cfg(test)]
 fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
+    tile_screen_rect_shifted(viewport, tile, (0.0, 0.0))
+}
+
+/// `tile_screen_rect` for imagery painted `(off_x, off_y)` Web Mercator metres
+/// away from where the tile says it is (the layer's imagery offset).
+fn tile_screen_rect_shifted(
+    viewport: &Viewport,
+    tile: &TileCoord,
+    (off_x, off_y): (f64, f64),
+) -> (Pixels, Pixels, Pixels, Pixels) {
     let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(tile);
-    let top_left = viewport.mercator_to_screen(min_x, max_y);
-    let bottom_right = viewport.mercator_to_screen(max_x, min_y);
+    let top_left = viewport.mercator_to_screen(min_x + off_x, max_y + off_y);
+    let bottom_right = viewport.mercator_to_screen(max_x + off_x, min_y + off_y);
 
     let half_overlap = px(TILE_OVERLAP_PX / 2.0);
     let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
@@ -239,6 +289,18 @@ impl MapLayer for TileLayer {
         self.attribution.as_ref()
     }
 
+    fn imagery_offset(&self) -> Option<ImageryOffset> {
+        Some(self.offset)
+    }
+
+    fn set_imagery_offset(&mut self, offset: ImageryOffset) {
+        self.offset = offset;
+    }
+
+    fn imagery_id(&self) -> Option<&str> {
+        Some(&self.imagery_id)
+    }
+
     fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {
         let mut elements = Vec::new();
 
@@ -246,17 +308,12 @@ impl MapLayer for TileLayer {
         let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
             return elements;
         };
-        let bounds_geo = viewport.visible_bounds();
-        let (min_lat, min_lon, max_lat, max_lon) = (
-            bounds_geo.min_lat,
-            bounds_geo.min_lon,
-            bounds_geo.max_lat,
-            bounds_geo.max_lon,
-        );
-        let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
+        let visible_tiles = self.visible_tiles(viewport, tile_zoom);
+        let merc_offset = self.mercator_offset(viewport);
 
         for tile_coord in &visible_tiles {
-            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(viewport, tile_coord);
+            let (tile_x, tile_y, tile_width, tile_height) =
+                tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
 
             // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -366,19 +423,14 @@ impl MapLayer for TileLayer {
         let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
             return;
         };
-        let bounds_geo = viewport.visible_bounds();
-        let (min_lat, min_lon, max_lat, max_lon) = (
-            bounds_geo.min_lat,
-            bounds_geo.min_lon,
-            bounds_geo.max_lat,
-            bounds_geo.max_lon,
-        );
-        let visible_tiles = get_tiles_for_bounds(min_lat, min_lon, max_lat, max_lon, tile_zoom);
+        let visible_tiles = self.visible_tiles(viewport, tile_zoom);
+        let merc_offset = self.mercator_offset(viewport);
 
         let tile_color = rgb(0x4a5568);
         for tile_coord in &visible_tiles {
             // Use the same positioning as render_elements for consistency
-            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect(viewport, tile_coord);
+            let (tile_x, tile_y, tile_width, tile_height) =
+                tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
             let screen_top_left = point(tile_x, tile_y);
             let screen_bottom_right = point(tile_x + tile_width, tile_y + tile_height);
 
@@ -588,6 +640,28 @@ mod tests {
             );
             prev_x = cur_x;
         }
+    }
+
+    /// An offset in metres moves a tile on screen by exactly the pixels the
+    /// pure conversion says, at the view's zoom and latitude.
+    #[test]
+    fn offset_shifts_tiles_by_the_converted_pixels() {
+        use super::tile_screen_rect_shifted;
+        use crate::imagery_offset::{metres_to_pixels, offset_to_mercator, ImageryOffset};
+
+        let viewport = Viewport::new(40.71277, -74.00591, 18.0, size(px(900.0), px(600.0)));
+        let tile = TileCoord::new(77_000, 98_500, 18);
+        let offset = ImageryOffset::new(3.2, -1.75);
+        let (zero_x, zero_y, _, _) = tile_screen_rect(&viewport, &tile);
+        let (x, y, _, _) = tile_screen_rect_shifted(
+            &viewport,
+            &tile,
+            offset_to_mercator(offset, viewport.center().0),
+        );
+        let (dx, dy) = metres_to_pixels(offset, 18.0, viewport.center().0);
+        assert!((x.as_f32() - zero_x.as_f32() - dx as f32).abs() < 0.01);
+        assert!((y.as_f32() - zero_y.as_f32() - dy as f32).abs() < 0.01);
+        assert!(dx > 0.0 && dy > 0.0, "east is right, south is down");
     }
 
     #[test]
