@@ -323,6 +323,8 @@ panel:
     empty: "(keine Mitglieder)"
     # Platzhalter im Rolleneingabefeld.
     role: "Rolle"
+    sort: "Mitglieder sortieren"
+    sort_hint: "Wege in zusammenhängende Reihenfolge bringen; andere Mitglieder und alle Rollen bleiben unverändert"
     move_up: "Nach oben"
     move_down: "Nach unten"
     remove: "Aus Relation entfernen"
@@ -348,6 +350,7 @@ history:
   created_way: "1 Weg erstellt"
   created_relation: "Relation erstellt"
   deleted_relation: "Relation gelöscht"
+  purged: "Objekte aus der Ebene entfernt"
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
@@ -400,6 +403,10 @@ settings:
     autosave_group: "Wiederherstellung"
     autosave: "Automatisch sichern"
     autosave_description: "Ebenen mit ungesicherten Änderungen alle 30 Sekunden sichern, damit sie nach einem Absturz, einem erzwungenen Beenden oder einem Stromausfall wiederhergestellt werden können."
+    simplify_group: "Weg vereinfachen"
+    simplify_tolerance: "Toleranz beim Vereinfachen (Meter)"
+    simplify_tolerance_description: "Weg vereinfachen entfernt Knoten, die höchstens diesen Abstand von der Linie durch ihre Nachbarn haben. Erlaubt sind 0,1 bis 100 Meter; Standard ist 3."
+    simplify_tolerance_error: "Eine Zahl von 0,1 bis 100 eingeben"
     taginfo_group: "Tag-Vorschläge"
     taginfo: "Tags von taginfo vorschlagen"
     taginfo_description: "Während Sie in die Felder für Tag-Schlüssel und -Werte tippen, wird der Text an taginfo.openstreetmap.org gesendet, um Schlüssel und Werte vorzuschlagen, die andere verwenden. Werte von Freitext-Schlüsseln wie name oder addr:* werden nie gesendet. Vorschläge aus den geladenen Daten und dem Tagging-Schema funktionieren immer, auch ohne taginfo."
@@ -613,6 +620,22 @@ action:
       other: "Knoten in %{count} Kopien aufgetrennt"
     error:
       restriction: "Abtrennen nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}, die ihn am Via-Knoten braucht"
+  unjoin:
+    label: "Knoten vom Weg lösen"
+    hint: "Einen Knoten und einen Weg wählen, zu dem er gehört (und den ein anderer Weg mitnutzt), damit dieser Weg eine eigene Kopie des Knotens bekommt"
+    done: "Knoten von einem Weg gelöst"
+    error:
+      end_node: "Lösen nicht möglich: Der Knoten ist ein Ende des Weges, es gibt nichts abzulösen (Knoten abtrennen verwenden)"
+      not_shared: "Lösen nicht möglich: Kein anderer Weg nutzt den Knoten"
+  delete_segment:
+    label: "Wegsegment löschen"
+    hint: "Zwei benachbarte Knoten eines Weges wählen, um das Segment dazwischen zu löschen"
+    done: "Wegsegment gelöscht"
+    error:
+      several_ways: "Segment löschen nicht möglich: Mehrere Wege verlaufen dort, den Weg zusätzlich wählen"
+      twice: "Segment löschen nicht möglich: Der Weg verläuft mehrfach über das Segment"
+      whole_way: "Segment löschen nicht möglich: Es ist alles, was der Weg hat, stattdessen den Weg löschen"
+      restriction: "Segment löschen nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}, die ihn am Via-Knoten braucht"
   extend:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"
@@ -684,6 +707,13 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  simplify:
+    label: "Weg vereinfachen"
+    hint: "Einen oder mehrere Wege mit 3 oder mehr Knoten wählen, um überflüssige Knoten zu entfernen"
+    none: "Nichts zu vereinfachen (Toleranz %{tolerance} m)"
+    done:
+      one: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
+      other: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
   align:
     label: "Knoten in einer Linie ausrichten"
     hint: "3 oder mehr Knoten wählen, um sie auf eine gerade Linie zu legen (für alle Knoten eines Wegs den Weg wählen und Begradigen verwenden)"
@@ -747,6 +777,20 @@ action:
       relation_in_relation: "Relation %{relation} kann nicht gelöscht werden: Sie ist Mitglied der Relation %{parent}"
       relation_empty: "%{what} %{id} kann nicht gelöscht werden: Er ist das einzige Mitglied der Relation %{relation}"
       restriction_role: "%{what} %{id} kann nicht gelöscht werden: Der Abbiegebeschränkung %{relation} würde das Mitglied mit der Rolle „%{role}“ fehlen"
+  purge:
+    label: "Entfernen (Purge)"
+    hint: "Etwas auswählen, das aus der Ebene entfernt werden soll"
+    done:
+      one: "%{count} Objekt aus der Ebene entfernt"
+      other: "%{count} Objekte aus der Ebene entfernt"
+    kept: "%{done}; %{kept} Knoten behalten, die noch verwendet oder bearbeitet werden"
+    kind:
+      node: "Knoten"
+      way: "Weg"
+      relation: "Relation"
+    error:
+      modified: "%{what} %{id} kann nicht entfernt werden: Er hat nicht hochgeladene Änderungen. Zuerst hochladen oder rückgängig machen"
+      in_way: "Knoten %{id} kann nicht entfernt werden: Weg %{way} verwendet ihn noch"
 
 shortcut_category:
   general: "Allgemein"
@@ -1109,3 +1153,9 @@ notes:
     rate_limited: "Zu viele Anfragen. Versuche es gleich noch einmal."
     http: "Der Server antwortete %{status}: %{detail}"
     parse: "Unlesbare Antwort des Hinweis-Servers: %{detail}"
+
+relation_sort:
+  done:
+    one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
+    other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
+  already: "Die Mitglieder sind bereits in Reihenfolge"

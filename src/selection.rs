@@ -57,6 +57,45 @@ pub struct DeletedRelationSnapshot {
     pub index: usize,
 }
 
+/// Objects removed from a layer's downloaded data by Purge, exactly as they
+/// were in both the current data and the server baseline (a purged object is
+/// never modified, so the two copies are equal), with the position each
+/// relation held in each list so undo puts everything back in place.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PurgedFeatures {
+    pub nodes: Vec<crate::osm::OsmNode>,
+    pub ways: Vec<crate::osm::OsmWay>,
+    /// `(relation, index in the current data, index in the baseline)`.
+    pub relations: Vec<(crate::osm::OsmRelation, usize, usize)>,
+}
+
+impl PurgedFeatures {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.ways.is_empty() && self.relations.is_empty()
+    }
+
+    /// The purged objects as feature references in `layer_id`.
+    pub fn features(&self, layer_id: LayerId) -> Vec<FeatureRef> {
+        let mut out = Vec::new();
+        out.extend(self.nodes.iter().map(|n| FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id: n.id,
+        }));
+        out.extend(self.ways.iter().map(|w| FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: w.id,
+        }));
+        out.extend(self.relations.iter().map(|(r, ..)| FeatureRef {
+            layer_id,
+            kind: FeatureKind::Relation,
+            id: r.id,
+        }));
+        out
+    }
+}
+
 /// Shortest distance (in screen pixels) from point `p` to line segment `a`-`b`.
 /// Handles zero-length segments by returning the distance to the single point.
 pub fn point_to_segment_distance(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> f32 {

@@ -2135,6 +2135,24 @@ impl MapViewer {
                     editable.delete_relation(snapshot.relation.id);
                 }
             }
+            UndoableAction::Purge { layer, purged } => {
+                let Some(editable) = self
+                    .layer_manager
+                    .find_layer_mut(*layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                else {
+                    return;
+                };
+                if forward {
+                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
+                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
+                    let relation_ids: Vec<i64> =
+                        purged.relations.iter().map(|(r, ..)| r.id).collect();
+                    editable.purge_features(&ids, &way_ids, &relation_ids);
+                } else {
+                    editable.restore_purged(purged.clone());
+                }
+            }
             UndoableAction::PasteFeatures { pasted } => {
                 let Some(editable) = self
                     .layer_manager
@@ -2489,6 +2507,31 @@ impl MapViewer {
         {
             self.change_relation_members(member.layer_id, member.relation_id, after);
         }
+    }
+
+    /// Put the way members of a relation into connected order as one undo
+    /// step, or say in the status bar that there is nothing to change.
+    pub(crate) fn sort_relation_members(&mut self, layer_id: LayerId, relation_id: i64) {
+        let Some(relation) = self.relation_of(layer_id, relation_id) else {
+            return;
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(layer_id)
+            .and_then(|layer| layer.as_editable())
+        else {
+            return;
+        };
+        let sorted = osm_gpui::relation_sort::sort_members(&relation.members, &|way| {
+            editable.way_node_ids(way)
+        });
+        if sorted.members == relation.members {
+            self.set_status(tr!("relation_sort.already"));
+            return;
+        }
+        let chains = sorted.chains;
+        self.change_relation_members(layer_id, relation_id, sorted.members);
+        self.set_status(tr_count!("relation_sort.done", chains));
     }
 
     /// Remove member `member.index` from its relation, or say in the status
