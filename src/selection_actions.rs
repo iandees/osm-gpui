@@ -2173,9 +2173,19 @@ pub(crate) fn join_node_into_way(
     let before = editable
         .way_node_ids(way)
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    // With a chosen segment only its two end nodes are looked at, so nodes
+    // that are not loaded (a partial download) elsewhere in the way do not
+    // matter and get a placeholder. Choosing the nearest segment needs them all.
     let points: Vec<LatLon> = before
         .iter()
-        .map(|&id| editable.node_lat_lon(id))
+        .map(|&id| {
+            let found = editable.node_lat_lon(id);
+            if segment.is_some() {
+                Some(found.unwrap_or(position))
+            } else {
+                found
+            }
+        })
         .collect::<Option<_>>()
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
     let plan = match segment {
