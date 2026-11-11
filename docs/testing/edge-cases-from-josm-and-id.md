@@ -179,7 +179,7 @@ Tests in `src/edge_case_tests/interactions_reverse_split.rs`.
 
 | # | Situation | Expectation | Status |
 |---|-----------|-------------|--------|
-| A1 | Reverse a way whose node (stop sign `direction=forward`) is shared with a second way that is not reversed | The node still serves the other way, so its direction should not flip | FAIL `reversing_one_way_leaves_a_direction_tag_on_a_node_shared_with_another_way` (the tag is flipped to `backward`) |
+| A1 | Reverse a way whose node (stop sign `direction=forward`) is shared with a second way that is not reversed | The node still serves the other way, so its direction should not flip | pass `reversing_one_way_leaves_a_direction_tag_on_a_node_shared_with_another_way` |
 | A1b | Same node shared by two ways that are both reversed | Flipped once, not twice | pass `a_node_shared_by_two_reversed_ways_is_flipped_exactly_once` |
 | A2 | Reverse a roundabout (`junction=roundabout`) | Ring reversed, closing node kept, tags unchanged | pass `reversing_a_roundabout_reverses_the_ring_and_keeps_the_closing_node` |
 | A2b | Reverse a closed `area=yes` + `oneway=yes` way; closed building | Stays closed, oneway/area kept, side keys swapped | pass `reversing_a_oneway_area_keeps_the_area_and_oneway_tags_and_swaps_side_keys`, `reversing_a_closed_building_keeps_it_closed` |
@@ -192,9 +192,10 @@ Tests in `src/edge_case_tests/interactions_reverse_split.rs`.
 | A6b | Same, delete | Both memberships removed | pass `deleting_a_member_with_two_roles_removes_both_memberships` |
 | A6c | Same, join | Refused with "different role" and nothing changes | design `join_is_refused_when_the_way_has_different_roles_in_one_relation` |
 
-Bug found in this batch: A1, LOW-MEDIUM. Reversing only one of two ways that
-share a tagged node flips the node's `direction`, which then faces the wrong
-way for the other way.
+Bug found in this batch (fixed): A1, LOW-MEDIUM. Reversing only one of two
+ways that share a tagged node used to flip the node's `direction`, which then
+faced the wrong way for the other way. The node's tags are now left alone when
+a way that is not being reversed also uses it.
 
 ## Further situations (batch C)
 
