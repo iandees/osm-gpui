@@ -78,6 +78,9 @@ click 520,200
 wait_idle 2s
 key delete
 wait_idle 2s
+# History starts collapsed (its header shows the step count); open it.
+panel history expand
+wait_idle 1s
 capture out/side-panel-polish-07-history.png
 
 # The long selection again, now with History entries: still pinned.

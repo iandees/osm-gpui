@@ -280,6 +280,8 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "assert_selection" => parse_assert_selection(line_no, &rest),
         "assert_validation" => parse_assert_validation(line_no, &rest),
         "show_finding" => parse_show_finding(line_no, &rest),
+        "panel" => parse_panel(line_no, &rest),
+        "assert_panel" => parse_assert_panel(line_no, &rest),
         "assert_validation_panel" => parse_assert_validation_panel(line_no, &rest),
         "assert_native_appearance" => {
             let expect = match rest.as_slice() {
@@ -523,6 +525,53 @@ fn parse_show_finding(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         _ => return Err(err(line_no, "show_finding: want ROW or CHECK_ID")),
     };
     Ok(Op::ShowFinding { target })
+}
+
+fn panel_section(line_no: usize, name: &str) -> Result<crate::script::PanelSection, ParseError> {
+    match name {
+        "validation" => Ok(crate::script::PanelSection::Validation),
+        "history" => Ok(crate::script::PanelSection::History),
+        _ => Err(err(
+            line_no,
+            format!("'{name}' is not a panel section (validation or history)"),
+        )),
+    }
+}
+
+/// `panel validation|history expand|collapse`.
+fn parse_panel(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    match rest {
+        [section, "expand"] => Ok(Op::SetPanelOpen {
+            section: panel_section(line_no, section)?,
+            open: true,
+        }),
+        [section, "collapse"] => Ok(Op::SetPanelOpen {
+            section: panel_section(line_no, section)?,
+            open: false,
+        }),
+        _ => Err(err(
+            line_no,
+            "panel: want validation|history expand|collapse",
+        )),
+    }
+}
+
+/// `assert_panel validation|history expanded|collapsed`.
+fn parse_assert_panel(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    match rest {
+        [section, "expanded"] => Ok(Op::AssertPanelOpen {
+            section: panel_section(line_no, section)?,
+            open: true,
+        }),
+        [section, "collapsed"] => Ok(Op::AssertPanelOpen {
+            section: panel_section(line_no, section)?,
+            open: false,
+        }),
+        _ => Err(err(
+            line_no,
+            "assert_panel: want validation|history expanded|collapsed",
+        )),
+    }
 }
 
 /// `assert_validation_panel shown|hidden`.

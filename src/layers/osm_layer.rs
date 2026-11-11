@@ -4153,6 +4153,12 @@ impl MapLayer for OsmLayer {
         self.modified
     }
 
+    fn refresh_modified(&mut self) {
+        if self.modified {
+            self.modified = !OsmLayer::diff_for_upload(self).is_empty();
+        }
+    }
+
     fn as_editable(&self) -> Option<&dyn EditableLayer> {
         Some(self)
     }

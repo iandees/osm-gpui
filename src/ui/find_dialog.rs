@@ -301,6 +301,12 @@ fn mode_label(mode: SearchMode) -> SharedString {
     }
 }
 
+impl modal::ModalDialog for FindDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.query.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for FindDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

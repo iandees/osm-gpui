@@ -330,6 +330,9 @@ panel:
   history:
     title: "Verlauf"
     empty: "Noch keine Aktionen."
+    steps:
+      one: "%{count} Schritt"
+      other: "%{count} Schritte"
 
 # Einträge des Rückgängig-Verlaufs.
 history:
@@ -507,10 +510,9 @@ object_history:
   revert_edits_blocked: "Ein Upload läuft; Tags können erst danach geändert werden"
   new_object: "Ein neues Objekt hat noch keinen Verlauf auf dem Server"
   select_one: "Wähle ein Objekt, um seinen Verlauf anzuzeigen"
-  # Kopfzeile der Auswahl: „v7 · bearbeitet von Name · vor 3 Monaten · Changeset 123“.
+  # Kopfzeile der Auswahl: „v7 · Name · vor 3 Monaten · Changeset 123“.
   last_edit:
     version: "v%{version}"
-    by: "bearbeitet von"
     changeset: "Changeset"
   error:
     not_found: "Der Server kennt keinen Verlauf für dieses Objekt. Es wurde nie auf %{server} hochgeladen; es stammt vielleicht aus einer Datei oder von einem anderen Server."
@@ -773,6 +775,8 @@ dialog:
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
+    notes_title: "Für Hinweise anmelden"
+    notes_body: "Zum Erstellen, Kommentieren, Schließen oder Wiedereröffnen von Hinweisen ist die Anmeldung bei OpenStreetMap nötig. Wenn du dich angemeldet hast, bevor Hinweise unterstützt wurden, melde dich erneut an, um die zusätzliche Berechtigung zu erteilen. Die Einstellungen öffnen, um sich anzumelden."
     open_settings: "Einstellungen öffnen"
   about:
     title: "Über %{app}"
@@ -1047,10 +1051,7 @@ notes:
     comment: "Kommentieren"
     close_note: "Hinweis schließen"
     reopen_note: "Hinweis wieder öffnen"
-    website: "Auf openstreetmap.org öffnen"
     working: "Wird ausgeführt …"
-    needs_sign_in: "Melde dich an, um Hinweise zu kommentieren, zu schließen oder wieder zu öffnen."
-    sign_in: "Anmelden …"
     upload_running: "Ein Upload läuft. Versuche es nach dem Ende erneut."
     comment_empty: "Gib zuerst einen Kommentar ein."
   new:

@@ -94,6 +94,12 @@ pub trait AppHandle {
     }
     /// Click a finding's row in the side panel's Validation section.
     fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
+    /// Expand or collapse a side panel section.
+    fn set_panel_open(
+        &mut self,
+        section: crate::script::PanelSection,
+        open: bool,
+    ) -> Result<(), String>;
     /// Show `message` in the status bar.
     fn note(&mut self, message: &str);
     /// Start the browser sign-in for the active API server.
@@ -379,6 +385,12 @@ impl Runner {
             Op::ShowFinding { target } => app
                 .show_finding(target)
                 .map_err(|e| fail(format!("show_finding: {e}"))),
+            Op::SetPanelOpen { section, open } => app
+                .set_panel_open(*section, *open)
+                .map_err(|e| fail(format!("panel: {e}"))),
+            Op::AssertPanelOpen { section, open } => app
+                .check(&Check::PanelOpen(*section, *open))
+                .map_err(|e| fail(format!("assert_panel: {e}"))),
             Op::AssertValidationPanel { shown } => app
                 .check(&Check::ValidationPanel(*shown))
                 .map_err(|e| fail(format!("assert_validation_panel: {e}"))),
@@ -737,6 +749,10 @@ fn describe(op: &Op) -> String {
         ),
         Op::ShowFinding { target } => format!("show_finding {:?}", target),
         Op::AssertValidationPanel { shown } => format!("assert_validation_panel {}", shown),
+        Op::SetPanelOpen { section, open } => format!("panel {:?} open={}", section, open),
+        Op::AssertPanelOpen { section, open } => {
+            format!("assert_panel {:?} open={}", section, open)
+        }
         Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
         Op::AssertLayerCount { count } => format!("assert_layer_count {}", count),
@@ -903,6 +919,14 @@ mod tests {
         }
         fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String> {
             self.calls.push(format!("show_finding {target:?}"));
+            Ok(())
+        }
+        fn set_panel_open(
+            &mut self,
+            section: crate::script::PanelSection,
+            open: bool,
+        ) -> Result<(), String> {
+            self.calls.push(format!("panel {section:?} {open}"));
             Ok(())
         }
         fn note(&mut self, message: &str) {
