@@ -370,7 +370,17 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         touch_phase: gpui::TouchPhase::Moved,
                     };
-                    self.handle_scroll(&ev, cx);
+                    let over_side_panel =
+                        x >= window.viewport_size().width.as_f32() - self.side_panel_width;
+                    if over_side_panel {
+                        // Over the side panel: a real wheel event, so its
+                        // scroll areas scroll instead of the map zooming.
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_event(gpui::PlatformInput::ScrollWheel(ev), cx);
+                        });
+                    } else {
+                        self.handle_scroll(&ev, cx);
+                    }
                 }
                 ScriptCommand::Hover { x, y } => {
                     let ev = MouseMoveEvent {
