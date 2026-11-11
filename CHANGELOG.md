@@ -13,6 +13,7 @@ file.
 
 - Scrolling the mouse wheel up now zooms in by default, as in JOSM and on the OpenStreetMap website. If you turned on Settings > Appearance > Invert scroll zoom in 0.6.0 to get this direction, turn it off again. ([#170](https://github.com/iandees/osm-gpui/pull/170))
 - Signing in now also asks for permission to modify notes. An existing login keeps working for editing, but commenting on or closing notes needs a new sign-in. ([#179](https://github.com/iandees/osm-gpui/pull/179))
+- The History and Validation sections of the side panel start collapsed; click a header to open it. A collapsed History shows the number of undo steps, and Validation shows its error and warning counts. ([#187](https://github.com/iandees/osm-gpui/pull/187))
 
 ### Editing
 
@@ -34,6 +35,14 @@ file.
 ### Windows and Linux
 
 - Submenus work in the in-window menu bar: Imagery has Custom Imagery and Available Imagery submenus, where 0.6.0 could not open the custom imagery list. Clicking the map to close a menu no longer changes the selection. ([#172](https://github.com/iandees/osm-gpui/pull/172))
+- A dialog opened from the menu bar now takes the keyboard: typing goes into its field and Escape and Enter work. Before, the keys went to the map and could switch modes or make edits. ([#186](https://github.com/iandees/osm-gpui/pull/186))
+
+### Fixes
+
+- A layer is no longer shown as modified, and the quit and Delete Layer warnings no longer appear, after undoing every change. ([#185](https://github.com/iandees/osm-gpui/pull/185))
+- The side panel no longer cuts off its contents: the selection or open note scrolls, and Layers, Validation and History stay within bounds at any window height. ([#187](https://github.com/iandees/osm-gpui/pull/187))
+- In the upload dialog the button reads "Upload anyway" only when there are warnings and no errors, and only layers with changes are listed. ([#184](https://github.com/iandees/osm-gpui/pull/184))
+- Buttons, checkbox labels and links in the Find dialog and other recent dialogs and panels use the same text sizes as the rest of the app. ([#183](https://github.com/iandees/osm-gpui/pull/183))
 
 ### Development
 
