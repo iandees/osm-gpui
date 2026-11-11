@@ -6931,16 +6931,19 @@ impl Render for MapViewer {
                         } else {
                             let n = credits.len();
                             let link_hover = cx.theme().link_hover;
+                            // Tucked into the map's bottom-right corner with
+                            // no margin and small text, so it covers as
+                            // little of the map as it can while staying
+                            // readable.
                             div()
                                 .absolute()
-                                .bottom_4()
-                                .right_4()
-                                .px_2()
-                                .py_1()
+                                .bottom_0()
+                                .right_0()
+                                .px_1()
                                 .bg(cx.theme().popover)
-                                .rounded_lg()
+                                .rounded_tl_sm()
                                 .text_color(cx.theme().popover_foreground)
-                                .text_size(osm_gpui::ui::style::muted_text_size())
+                                .text_size(px(10.0))
                                 .opacity(0.75)
                                 .flex()
                                 .flex_row()
