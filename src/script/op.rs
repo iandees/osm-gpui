@@ -87,6 +87,8 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
+    /// The Edit > Find dialog.
+    Find,
 }
 
 /// What `assert_selection` expects.
@@ -120,6 +122,10 @@ pub enum Check {
     Dialog(DialogExpect),
     Selection(SelectionKind),
     NativeAppearance(NativeAppearanceWant),
+    /// Exactly this many features are selected.
+    SelectedCount(usize),
+    /// The open Find dialog's match-count line contains the text.
+    FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
 }
@@ -257,6 +263,14 @@ pub enum Op {
     /// app last set it) is forced to dark or light, or not forced (system).
     AssertNativeAppearance {
         expect: NativeAppearanceWant,
+    },
+    /// Assert exactly `count` features are selected.
+    AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert the Find dialog's match-count line contains `text`.
+    AssertFindPreview {
+        text: String,
     },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.

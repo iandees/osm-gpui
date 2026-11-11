@@ -121,6 +121,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
+        id: "find",
+        default_spec: "secondary-f",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
         id: "copy_tags",
         default_spec: "secondary-shift-c",
         category: ShortcutCategory::Edit,

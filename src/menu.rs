@@ -16,7 +16,7 @@ use crate::selection_actions;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
+    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
     RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
     Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
@@ -578,6 +578,7 @@ fn build_menus(
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
                     MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
+                    MenuItem::action(tr!("menu.edit.find"), Find),
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
                     MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),
@@ -659,6 +660,7 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
+    cx.on_action(crate::welcome::dismiss_welcome_action);
     cx.on_action(|_: &SetThemeLight, cx: &mut App| {
         osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
     });

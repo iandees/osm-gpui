@@ -32,6 +32,7 @@ menu:
     paste_tags: "Tags einsetzen"
     select_all: "Alles auswählen"
     deselect_all: "Auswahl aufheben"
+    find: "Suchen…"
     change_feature_type: "Objekttyp ändern …"
     apply_nsi_preset: "NSI-Vorlage anwenden …"
   tools:
@@ -129,6 +130,8 @@ welcome:
   # Ersetzt die Schaltfläche zum Herunterladen, solange der Ausschnitt zu groß ist.
   zoom_in: "Zum Herunterladen näher heranzoomen"
   open: "Datei öffnen …"
+  # Kurzinfo der Schließen-Schaltfläche; der Kasten bleibt aus, bis er in den Einstellungen wieder eingeschaltet wird.
+  dismiss: "Nicht mehr anzeigen (in den Einstellungen wieder einschaltbar)"
 
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
@@ -173,6 +176,11 @@ status:
   delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "Keine OSM-Daten zum Zoomen"
   nothing_selected: "Nichts ausgewählt"
+  find_no_layer: "Es gibt keine Datenebene zum Durchsuchen"
+  find_no_matches: "Keine Treffer"
+  find_selected:
+    one: "%{count} Objekt ausgewählt"
+    other: "%{count} Objekte ausgewählt"
   no_data_to_export: "Keine OSM-Daten zum Exportieren"
   exported: "Exportiert nach %{path}"
   export_failed: "Export fehlgeschlagen: %{error}"
@@ -238,6 +246,11 @@ panel:
     # `%{kind}` ist die Bezeichnung Knoten/Weg/Relation oben, `%{id}` die OSM-ID.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
+    # Eine sehr große Auswahl listet nur die ersten `%{shown}` Objekte auf;
+    # `%{count}` ist die Zahl der nicht aufgelisteten.
+    more:
+      one: "…und %{count} weiteres (die ersten %{shown} aufgelistet)"
+      other: "…und %{count} weitere (die ersten %{shown} aufgelistet)"
   fields:
     title: "Felder"
     change_type: "Objekttyp ändern …"
@@ -252,6 +265,10 @@ panel:
     title: "Tags"
     add: "Tag hinzufügen"
     empty: "(keine Tags)"
+    # Mehr als `%{limit}` Objekte ausgewählt: ihre Tags werden nicht zusammengeführt.
+    too_many:
+      one: "%{count} Objekt ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
+      other: "%{count} Objekte ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
   relations:
@@ -328,6 +345,9 @@ settings:
     size_small: "Klein"
     size_medium: "Mittel"
     size_large: "Groß"
+    welcome_group: "Hinweiskasten"
+    welcome_card: "Hinweiskasten anzeigen"
+    welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."
   account:
     title: "Konto"
     api_server_group: "API-Server"
@@ -409,6 +429,7 @@ shortcut:
   undo: "Widerrufen"
   redo: "Wiederholen"
   select_all: "Alles auswählen"
+  find: "Suchen…"
   copy_tags: "Tags kopieren"
   paste_tags: "Tags einsetzen"
   zoom_in: "Vergrößern"
@@ -605,6 +626,45 @@ dialog:
       one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
       other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
     confirm: "Ebene löschen"
+  find:
+    title: "Suchen"
+    placeholder: "Tags, Typen und Zustände suchen, z. B. amenity=cafe"
+    apply: "Suchen"
+    counting: "Zähle…"
+    no_matches: "Keine Treffer"
+    matches:
+      one: "%{count} Treffer"
+      other: "%{count} Treffer"
+    recent: "Letzte Suchen (↑ ↓ zum Abrufen)"
+    mode:
+      replace: "Auswahl ersetzen"
+      add: "Zur Auswahl hinzufügen"
+      remove: "Aus Auswahl entfernen"
+      in_selection: "In Auswahl suchen"
+    hint:
+      show: "Syntaxhilfe"
+      hide: "Syntaxhilfe ausblenden"
+      equals: "Tag hat genau diesen Wert"
+      wildcard: "* steht für beliebigen Text"
+      word: "ein Schlüssel oder Wert enthält das Wort"
+      negation: "Wege mit highway-Tag, aber ohne name"
+      counts: "Wege mit 10 oder mehr Knoten"
+      states: "neue oder geänderte Objekte"
+      keys: "Außerdem: child …, parent …, selected, inview, closed, untagged, id:N, tags:N. Cmd/Strg+1 bis 4 wählen den Modus, F1 blendet diese Hilfe ein oder aus."
+    # `%{position}` ist die Zeichenposition in der Suche, ab 1 gezählt.
+    error:
+      at: "Position %{position}: %{message}"
+      empty: "Die Suche ist leer."
+      expected_expression: "hier fehlt etwas, wonach gesucht werden soll"
+      unexpected_close_paren: "unerwartete schließende Klammer"
+      unclosed_paren: "diese Klammer wird nie geschlossen"
+      unterminated_quote: "dieses Anführungszeichen wird nie geschlossen"
+      empty_quotes: "leere Anführungszeichen"
+      missing_key: "davor wird ein Schlüssel benötigt"
+      invalid_number: "„%{text}“ ist keine Zahl"
+      invalid_range: "„%{text}“ ist kein gültiger Bereich"
+      unknown_type: "unbekannter Typ „%{text}“ (node, way oder relation verwenden)"
+      too_deep: "zu tief verschachtelt"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
     name: "Name"
