@@ -1,0 +1,82 @@
+# Tag key/value autocomplete in the side panel's Tags table. taginfo is off
+# in scripted runs, so these captures show the loaded data and the schema.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript; fixtures/tag-autocomplete.osm extends styles.osm (see
+# side-panel.osmscript for "Add tag" at (960,360) on the untagged way 3005).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/tag-autocomplete.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# A road, to see the panel layout.
+click 388,339
+wait_idle 2s
+assert_selected way 3002
+capture out/tag-autocomplete-00-road.png
+
+# An untagged way: Add tag, then type a key prefix. Typing is slowed with
+# short pauses so each character reaches the input as a real keystroke.
+click 188,553
+wait_idle 2s
+assert_selected way 3005
+panel history expand
+click 990,374
+wait_idle 2s
+type surf
+wait 400ms
+capture out/tag-autocomplete-01-key-dropdown.png
+
+# Down highlights the first suggestion; the text is still what was typed.
+key down
+wait 250ms
+capture out/tag-autocomplete-02-key-highlight.png
+
+# Escape closes the list and leaves the typed text.
+key escape
+wait 250ms
+capture out/tag-autocomplete-03-escape.png
+
+# Down opens it again; Tab accepts the highlighted key and moves to the value.
+key down
+key down
+wait 250ms
+key tab
+wait 400ms
+capture out/tag-autocomplete-04-value-after-tab.png
+
+# Typing in the value filters its suggestions.
+type as
+wait 400ms
+capture out/tag-autocomplete-05-value-dropdown.png
+
+# Down + Enter accepts and commits: one history step.
+key down
+wait 250ms
+key enter
+wait_idle 2s
+capture out/tag-autocomplete-06-committed.png
+
+# A busy node (long Tags list), in a short window. History is collapsed so
+# the Tags rows have room; the key of the last visible row is edited, and
+# the list has to open above it because the window ends just below.
+window 1200 460
+viewport 40.7160 -74.0000 18
+panel history collapse
+wait_idle 3s
+click 488,218
+wait_idle 2s
+assert_selected node 4001
+capture out/tag-autocomplete-07-short-window.png
+click 960,371
+wait_idle 1s
+type su
+wait 400ms
+capture out/tag-autocomplete-08-flipped-above.png
+key escape
+key escape
+wait 250ms
+capture out/tag-autocomplete-09-cancelled.png
+
+log done
