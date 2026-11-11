@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 mod add_click_tests;
 mod autosave_driver;
 mod clipboard_actions;
+#[cfg(test)]
+mod edge_case_tests;
 mod fields_section;
 mod history_actions;
 mod imagery_offset_ui;
