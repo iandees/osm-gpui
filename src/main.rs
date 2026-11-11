@@ -3911,6 +3911,16 @@ impl MapViewer {
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
             |w| snap_way_ok(editable, layer_id, sources, node, w),
         )?;
+        // `index` counts only the way's nodes that are loaded; with some
+        // missing (a partial download) it is not a position in the node
+        // list, so find the segment by its two end nodes.
+        let index = editable
+            .way_node_ids(way_id)
+            .and_then(|nodes| {
+                (0..nodes.len().saturating_sub(1))
+                    .find(|&k| nodes[k] == a && nodes[k + 1..].contains(&b))
+            })
+            .unwrap_or(index);
         Some(SnapTarget::Way {
             way_id,
             a: editable.node_lat_lon(a)?,
