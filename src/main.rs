@@ -443,6 +443,13 @@ enum ImageryLoadState {
 /// outside that window's own dispatch (background tasks, other windows).
 pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
 
+/// Whether the app may write the owner's settings file: not during a
+/// `--script` run (the harness keeps changes in memory) and never in a unit
+/// test.
+pub(crate) fn may_persist_settings() -> bool {
+    !cfg!(test) && !script_harness::script_mode()
+}
+
 /// Ask the live `MapViewer` (via `MAP_VIEWER_HANDLE`) whether any layer
 /// currently has unsaved changes. This performs a fresh per-layer
 /// `is_modified()` query against the real view every time it's called — no
@@ -652,6 +659,9 @@ struct MapViewer {
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
     upload_comment_draft: String,
+    /// The sources text kept when the upload dialog closed without
+    /// uploading; `None` means prefill the last uploaded one.
+    upload_source_draft: Option<String>,
     sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
     /// Active "can't do that" notice (an upload refused for a server size
     /// limit), if open.
@@ -932,6 +942,7 @@ impl MapViewer {
             upload_dialog: None,
             validation: None,
             upload_comment_draft: String::new(),
+            upload_source_draft: None,
             sign_in_dialog: None,
             notice_dialog: None,
             tag_inline_edit: None,
@@ -4888,6 +4899,27 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_upload_dialog_with(signed_in_name, false, window, cx);
+    }
+
+    /// The upload dialog as a script-only preview: it shows the pending
+    /// edits and every control, needs no sign-in, and its Upload button
+    /// never does anything (see `UploadDialog::set_preview`).
+    pub(crate) fn open_upload_dialog_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_upload_dialog_with(Some("preview"), true, window, cx);
+    }
+
+    fn open_upload_dialog_with(
+        &mut self,
+        signed_in_name: Option<&str>,
+        preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.upload_dialog.is_some()
             || self.sign_in_dialog.is_some()
             || self.notice_dialog.is_some()
@@ -4937,7 +4969,12 @@ impl MapViewer {
             return;
         }
         use osm_gpui::ui::upload_dialog::{plan_upload, UploadPlan};
-        match plan_upload(signed_in_name, &summaries) {
+        let plan = if preview {
+            UploadPlan::ShowDialog
+        } else {
+            plan_upload(signed_in_name, &summaries)
+        };
+        match plan {
             UploadPlan::SignIn => {
                 // Uploading needs an OSM account; send signed-out users to
                 // Settings instead of letting the upload fail for lack of a
@@ -4973,6 +5010,22 @@ impl MapViewer {
             let draft = self.upload_comment_draft.clone();
             dialog.update(cx, |dialog, cx| dialog.set_draft_comment(draft, window, cx));
         }
+        // The sources: what was typed before the dialog was closed, else the
+        // last uploaded text.
+        let settings = settings_store::snapshot();
+        let source = self
+            .upload_source_draft
+            .clone()
+            .unwrap_or(settings.last_source);
+        let imagery = self.visible_imagery_names();
+        dialog.update(cx, |dialog, cx| {
+            if !source.is_empty() {
+                dialog.set_draft_source(source, window, cx);
+            }
+            dialog.set_imagery(imagery, cx);
+            dialog.set_recent_comments(settings.recent_comments, cx);
+            dialog.set_preview(preview, cx);
+        });
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::upload_dialog::DialogEvent, cx| {
@@ -4982,10 +5035,14 @@ impl MapViewer {
                         this.close_upload_dialog_keeping_draft(cx);
                         cx.notify();
                     }
-                    DialogEvent::Upload { comment } => {
+                    DialogEvent::Upload {
+                        comment,
+                        source,
+                        tags,
+                    } => {
                         // The dialog stays open to show the upload's stage;
                         // `start_upload` closes it on success.
-                        this.start_upload(comment.clone(), cx);
+                        this.start_upload(comment.clone(), source.clone(), tags.clone(), cx);
                     }
                     DialogEvent::ShowInSidePanel => {
                         this.close_upload_dialog_keeping_draft(cx);
@@ -5082,7 +5139,21 @@ impl MapViewer {
     /// `osm_upload::run_upload`). A refusal by the server (409/410/412) is
     /// handed to the dialog as a conflict the user can act on; see
     /// `handle_conflict_action`.
-    fn start_upload(&mut self, comment: String, cx: &mut Context<Self>) {
+    fn start_upload(
+        &mut self,
+        comment: String,
+        source: String,
+        tags: osm_gpui::changeset_tags::ChangesetTags,
+        cx: &mut Context<Self>,
+    ) {
+        // The script-only preview can never upload.
+        if self
+            .upload_dialog
+            .as_ref()
+            .is_some_and(|d| d.read(cx).is_preview())
+        {
+            return;
+        }
         // A scripted run never uploads anywhere but the development server,
         // whatever key or click reached this point.
         if let Some(refusal) =
@@ -5173,10 +5244,10 @@ impl MapViewer {
                 let Some((part, chunk)) = queue.next_chunk() else {
                     break None;
                 };
-                let (oauth_base, base_url, comment, progress) = (
+                let (oauth_base, base_url, tags, progress) = (
                     oauth_base.clone(),
                     base_url.clone(),
-                    comment.clone(),
+                    tags.clone(),
                     progress.clone(),
                 );
                 let sent = cx
@@ -5194,7 +5265,7 @@ impl MapViewer {
                             &osm_gpui::http::UreqClient::new(),
                             &base_url,
                             &token.access_token,
-                            &comment,
+                            &tags,
                             part,
                             chunk,
                             &mut |part, phase| progress.set_upload_phase(part, phase),
@@ -5243,6 +5314,14 @@ impl MapViewer {
                     None => {
                         this.upload_dialog = None;
                         this.upload_comment_draft.clear();
+                        this.upload_source_draft = None;
+                        // Remember the source and comment for next time. Never
+                        // written to disk from a script run or a test.
+                        settings_store::remember_upload_text(
+                            &source,
+                            &comment,
+                            may_persist_settings(),
+                        );
                         if accepted > 1 {
                             this.set_status(tr_count!(
                                 "status.uploaded_many",
@@ -5301,7 +5380,24 @@ impl MapViewer {
     fn close_upload_dialog_keeping_draft(&mut self, cx: &mut Context<Self>) {
         if let Some(dialog) = self.upload_dialog.take() {
             self.upload_comment_draft = dialog.read(cx).draft_comment(cx);
+            self.upload_source_draft = Some(dialog.read(cx).draft_source(cx));
         }
+    }
+
+    /// Names of the visible imagery layers (tile layers other than the
+    /// built-in OSM Carto map, which is the map style rather than imagery),
+    /// in layer order, for the changeset's `imagery_used` tag.
+    fn visible_imagery_names(&self) -> Vec<String> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .filter(|l| {
+                l.is_visible()
+                    && l.imagery_offset().is_some()
+                    && l.imagery_id() != Some(osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID)
+            })
+            .map(|l| l.name().to_string())
+            .collect()
     }
 
     /// Bring an open upload dialog's pending counts and changeset count up to
@@ -11141,6 +11237,251 @@ mod tests {
             let report = view.shown_validation().expect("the section opens");
             assert_eq!((report.errors(), report.warnings()), (1, 1));
             assert!(view.side_panel_open[validation_panel::SECTION]);
+        });
+    }
+
+    fn tag(
+        dialog: &gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>,
+        key: &str,
+        cx: &gpui::App,
+    ) -> Option<String> {
+        dialog
+            .read(cx)
+            .changeset_tags(cx)
+            .get(key)
+            .map(str::to_string)
+    }
+
+    #[gpui::test]
+    fn the_dialog_writes_source_review_locale_and_hashtags(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            // Nothing beyond created_by, the comment and the language.
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("Add a cafe #cafe #Cafe #pizza".into(), window, cx)
+            });
+            assert_eq!(
+                tag(&dialog, "comment", cx).as_deref(),
+                Some("Add a cafe #cafe #Cafe #pizza")
+            );
+            assert_eq!(tag(&dialog, "source", cx), None);
+            assert_eq!(tag(&dialog, "review_requested", cx), None);
+            assert_eq!(tag(&dialog, "imagery_used", cx), None);
+            assert_eq!(
+                tag(&dialog, "hashtags", cx).as_deref(),
+                Some("#cafe;#pizza")
+            );
+            assert_eq!(
+                tag(&dialog, "locale", cx).as_deref(),
+                Some(osm_gpui::i18n::current_locale().as_str())
+            );
+
+            // Chips append with "; " and never twice.
+            dialog.update(cx, |d, cx| {
+                d.press_source_chip("survey", window, cx);
+                d.press_source_chip("GPS", window, cx);
+                d.press_source_chip("survey", window, cx);
+            });
+            assert_eq!(dialog.read(cx).draft_source(cx), "survey; GPS");
+            assert_eq!(tag(&dialog, "source", cx).as_deref(), Some("survey; GPS"));
+
+            dialog.update(cx, |d, cx| d.set_review_requested(true, cx));
+            assert_eq!(tag(&dialog, "review_requested", cx).as_deref(), Some("yes"));
+            dialog.update(cx, |d, cx| d.set_review_requested(false, cx));
+            assert_eq!(tag(&dialog, "review_requested", cx), None);
+            assert_eq!(dialog.read(cx).confirm_blocker(cx), None);
+        });
+    }
+
+    #[gpui::test]
+    /// A dialog that is not hooked to the app: pressing Upload only emits an
+    /// event that this test collects, so nothing can start an upload.
+    #[gpui::test]
+    fn the_upload_event_carries_the_same_tags_the_dialog_shows(cx: &mut TestAppContext) {
+        use osm_gpui::ui::upload_dialog::{DialogEvent, UploadDialog};
+        let (view, vcx) = validation_view(cx);
+        let seen: std::rc::Rc<std::cell::RefCell<Vec<(String, String, String)>>> =
+            Default::default();
+        view.update_in(vcx, |view, window, cx| {
+            let dialog = cx.new(|cx| UploadDialog::new(window, cx, Vec::new()));
+            // Keep it alive until the event has been delivered.
+            view.upload_dialog = Some(dialog.clone());
+            let sink = seen.clone();
+            cx.subscribe(&dialog, move |_this, _d, event: &DialogEvent, _cx| {
+                if let DialogEvent::Upload {
+                    comment,
+                    source,
+                    tags,
+                } = event
+                {
+                    let review = tags.get("review_requested").unwrap_or("-").to_string();
+                    sink.borrow_mut().push((
+                        comment.clone(),
+                        format!("{source}|{}", tags.get("source").unwrap_or("-")),
+                        review,
+                    ));
+                }
+            })
+            .detach();
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("  Fix roads ".into(), window, cx);
+                d.set_draft_source(" survey ".into(), window, cx);
+                d.set_review_requested(true, cx);
+                assert_eq!(d.confirm_blocker(cx), None);
+                d.press_confirm(cx);
+            });
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            *seen.borrow(),
+            vec![(
+                "Fix roads".to_string(),
+                "survey|survey".to_string(),
+                "yes".to_string()
+            )]
+        );
+    }
+
+    #[gpui::test]
+    fn the_preview_dialog_can_never_upload(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_preview(window, cx);
+            let dialog = view.upload_dialog.clone().expect("preview opens");
+            assert!(dialog.read(cx).is_preview());
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("Add a node".into(), window, cx)
+            });
+            assert!(dialog
+                .read(cx)
+                .confirm_blocker(cx)
+                .is_some_and(|why| why.contains("preview")));
+            // Pressing Upload does nothing (the dialog stays editable and
+            // no upload is under way).
+            dialog.update(cx, |d, cx| d.press_confirm(cx));
+            assert!(view.transfer.is_none());
+            assert!(matches!(
+                dialog.read(cx).phase(),
+                osm_gpui::ui::upload_dialog::Phase::Editing
+            ));
+        });
+    }
+
+    #[gpui::test]
+    fn recent_comments_are_offered_and_picking_one_replaces_the_comment(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                // Nothing to open while there are no recent comments.
+                d.toggle_recent_comments(cx);
+                assert!(!d.recent_comments_open());
+                d.set_recent_comments(vec!["Newest".into(), "Older".into()], cx);
+                d.set_draft_comment("typing".into(), window, cx);
+                d.toggle_recent_comments(cx);
+                assert!(d.recent_comments_open());
+                assert!(!d.pick_recent_comment(5, window, cx));
+                assert!(d.pick_recent_comment(1, window, cx));
+                assert!(!d.recent_comments_open());
+                assert_eq!(d.draft_comment(cx), "Older");
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn imagery_is_written_unless_cleared_and_only_visible_imagery_counts(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            // A visible and a hidden imagery layer, and a shifted one; the
+            // OSM Carto map itself is not imagery.
+            for (name, visible, east) in [
+                ("Esri World Imagery", true, 0.0),
+                ("Hidden Imagery", false, 0.0),
+                ("Shifted Imagery", true, 3.0),
+            ] {
+                let id = view.layer_manager.alloc_id();
+                let mut layer =
+                    TileLayer::new_with_name(id, name.to_string(), view.tile_cache.clone())
+                        .with_imagery_id(name)
+                        .with_offset(osm_gpui::imagery_offset::ImageryOffset::new(east, 0.0));
+                osm_gpui::layers::MapLayer::set_visible(&mut layer, visible);
+                view.layer_manager.add_layer(Box::new(layer));
+            }
+            let id = view.layer_manager.alloc_id();
+            view.layer_manager
+                .add_layer(Box::new(TileLayer::new(id, view.tile_cache.clone())));
+            assert_eq!(
+                view.visible_imagery_names(),
+                vec!["Esri World Imagery", "Shifted Imagery"]
+            );
+
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            assert_eq!(
+                tag(&dialog, "imagery_used", cx).as_deref(),
+                Some("Esri World Imagery;Shifted Imagery")
+            );
+            // A shifted layer adds no extra tags.
+            let tags = dialog.read(cx).changeset_tags(cx);
+            let keys: Vec<&str> = tags.pairs().iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(keys, ["created_by", "imagery_used", "locale"]);
+            dialog.update(cx, |d, cx| d.set_imagery_cleared(true, cx));
+            assert_eq!(tag(&dialog, "imagery_used", cx), None);
+            dialog.update(cx, |d, cx| d.set_imagery_cleared(false, cx));
+            assert!(tag(&dialog, "imagery_used", cx).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn a_comment_or_source_over_255_characters_blocks_upload(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("ok".into(), window, cx);
+                d.set_draft_source("s".repeat(255), window, cx);
+            });
+            assert_eq!(dialog.read(cx).confirm_blocker(cx), None);
+            dialog.update(cx, |d, cx| d.set_draft_source("s".repeat(256), window, cx));
+            assert!(dialog
+                .read(cx)
+                .confirm_blocker(cx)
+                .is_some_and(|why| why.contains("255")));
+            // Even then, the tag that would be written is cut.
+            assert_eq!(tag(&dialog, "source", cx).unwrap().chars().count(), 255);
+            dialog.update(cx, |d, cx| d.set_draft_source(String::new(), window, cx));
+            dialog.update(cx, |d, cx| d.set_draft_comment("c".repeat(256), window, cx));
+            assert!(dialog.read(cx).confirm_blocker(cx).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn the_source_is_prefilled_from_the_draft_and_the_review_box_is_not_kept(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                d.press_source_chip("survey", window, cx);
+                d.set_review_requested(true, cx);
+            });
+            view.close_upload_dialog_keeping_draft(cx);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog reopens");
+            assert_eq!(dialog.read(cx).draft_source(cx), "survey");
+            assert!(!dialog.read(cx).review_requested());
         });
     }
 

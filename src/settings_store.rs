@@ -139,6 +139,15 @@ pub struct AppSettings {
     /// older files, meaning the default direction.
     #[serde(default)]
     pub invert_scroll_zoom: bool,
+    /// The `source` text of the last upload, prefilled in the next upload
+    /// dialog. Missing in older files, meaning empty.
+    #[serde(default)]
+    pub last_source: String,
+    /// The last distinct changeset comments, most recent first (see
+    /// `crate::changeset_tags::push_recent_comment`). Missing in older files,
+    /// meaning none.
+    #[serde(default)]
+    pub recent_comments: Vec<String>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -165,6 +174,8 @@ impl Default for AppSettings {
             autosave: true,
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            last_source: String::new(),
+            recent_comments: Vec::new(),
         }
     }
 }
@@ -225,6 +236,21 @@ pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
     let mut settings = snapshot();
     settings.invert_scroll_zoom = invert;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Remember the source text and the comment of an upload that went through:
+/// the source is prefilled next time and the comment joins the recent list.
+/// Applied on top of the store's current settings so nothing else is touched.
+/// Written to disk when `persist` is true.
+pub fn remember_upload_text(source: &str, comment: &str, persist: bool) {
+    let mut settings = snapshot();
+    settings.last_source = source.trim().to_string();
+    crate::changeset_tags::push_recent_comment(&mut settings.recent_comments, comment);
     if persist {
         update_store(settings);
     } else {
@@ -396,6 +422,8 @@ mod tests {
             autosave: false,
             welcome_dismissed: true,
             invert_scroll_zoom: true,
+            last_source: "survey; GPS".into(),
+            recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -572,10 +600,23 @@ mod tests {
             autosave: true,
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            last_source: String::new(),
+            recent_comments: Vec::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_changeset_memory_means_no_source_and_no_recent_comments() {
+        let dir = tmp_dir("legacy-no-changeset-memory");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.last_source, "");
+        assert!(loaded.recent_comments.is_empty());
+        assert_eq!(AppSettings::default().last_source, "");
     }
 
     #[test]

@@ -652,6 +652,22 @@ dialog:
     layer_summary: "%{layer}: %{created} created, %{modified} modified, %{deleted} deleted"
     comment_label: "Changeset comment"
     comment_placeholder: "Describe your changes (required)"
+    # Recent changeset comments, offered from a button beside the comment field.
+    recent: "Recent"
+    recent_tooltip: "Reuse one of your recent changeset comments"
+    # The changeset `source` tag: where the information came from.
+    source_label: "Sources"
+    source_placeholder: "Where the information came from, e.g. survey"
+    # Under a text field whose value would be longer than OSM allows.
+    too_long: "Too long: %{count} of %{max} characters. Shorten it to upload."
+    chars_used: "%{count} / %{max}"
+    # The changeset `imagery_used` tag: the visible imagery layers.
+    imagery_used: "Imagery used: %{names}"
+    imagery_cleared: "Imagery used: not recorded for this upload"
+    imagery_clear: "Clear"
+    imagery_include: "Include"
+    review_requested: "I would like someone to review my edits"
+    preview_note: "Preview only: uploading is disabled."
     failed: "Upload failed"
     # Title when the pending changes break a server size limit (the body is
     # one of `limits.upload.*`).
