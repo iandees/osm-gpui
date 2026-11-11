@@ -32,6 +32,7 @@ menu:
     delete: "Delete"
     select_all: "Select All"
     deselect_all: "Deselect All"
+    find: "Find…"
     change_feature_type: "Change Feature Type…"
     apply_nsi_preset: "Apply NSI Preset…"
   tools:
@@ -176,6 +177,11 @@ status:
   delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "No OSM data to zoom to"
   nothing_selected: "Nothing selected"
+  find_no_layer: "There is no data layer to search"
+  find_no_matches: "No matches"
+  find_selected:
+    one: "%{count} feature selected"
+    other: "%{count} features selected"
   no_data_to_export: "No OSM data to export"
   exported: "Exported to %{path}"
   export_failed: "Export failed: %{error}"
@@ -242,6 +248,11 @@ panel:
     # `%{kind}` is the Node/Way/Relation label above, `%{id}` the OSM id.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
+    # A very large selection lists only its first `%{shown}` features;
+    # `%{count}` is how many are left out.
+    more:
+      one: "…and %{count} more (first %{shown} listed)"
+      other: "…and %{count} more (first %{shown} listed)"
   fields:
     title: "Fields"
     change_type: "Change feature type…"
@@ -256,6 +267,10 @@ panel:
     title: "Tags"
     add: "Add tag"
     empty: "(no tags)"
+    # More than `%{limit}` features selected: their tags are not combined.
+    too_many:
+      one: "%{count} feature selected: too many to show combined tags (limit %{limit})"
+      other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
   relations:
@@ -413,6 +428,7 @@ shortcut:
   undo: "Undo"
   redo: "Redo"
   select_all: "Select All"
+  find: "Find…"
   copy_tags: "Copy Tags"
   paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
@@ -614,6 +630,45 @@ dialog:
       one: "Layer \"%{layer}\" has %{count} unsaved edit. Deleting the layer discards it. This cannot be undone."
       other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
     confirm: "Delete Layer"
+  find:
+    title: "Find"
+    placeholder: "Search tags, types and states, e.g. amenity=cafe"
+    apply: "Find"
+    counting: "Counting…"
+    no_matches: "No matches"
+    matches:
+      one: "%{count} match"
+      other: "%{count} matches"
+    recent: "Recent searches (↑ ↓ to recall)"
+    mode:
+      replace: "Replace selection"
+      add: "Add to selection"
+      remove: "Remove from selection"
+      in_selection: "Find in selection"
+    hint:
+      show: "Syntax help"
+      hide: "Hide syntax help"
+      equals: "tag equals value"
+      wildcard: "* matches any text"
+      word: "any key or value contains the word"
+      negation: "ways with a highway tag but no name"
+      counts: "ways with 10 or more nodes"
+      states: "new or changed objects"
+      keys: "Also: child …, parent …, selected, inview, closed, untagged, id:N, tags:N. Cmd/Ctrl+1 to 4 pick the mode, F1 toggles this help."
+    # `%{position}` is the 1-based character position in the query.
+    error:
+      at: "Position %{position}: %{message}"
+      empty: "The query is empty."
+      expected_expression: "something to search for is missing here"
+      unexpected_close_paren: "unexpected closing parenthesis"
+      unclosed_paren: "this parenthesis is never closed"
+      unterminated_quote: "this quotation mark is never closed"
+      empty_quotes: "empty quotes"
+      missing_key: "a key is needed before this"
+      invalid_number: "\"%{text}\" is not a number"
+      invalid_range: "\"%{text}\" is not a valid range"
+      unknown_type: "unknown type \"%{text}\" (use node, way or relation)"
+      too_deep: "nested too deeply"
   custom_imagery:
     title: "Custom Imagery"
     name: "Name"
