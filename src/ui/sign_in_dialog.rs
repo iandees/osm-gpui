@@ -94,8 +94,8 @@ impl Focusable for SignInDialog {
 
 impl Render for SignInDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = v_flex()
-            .child(Label::new(self.purpose.body()).text_color(cx.theme().foreground));
+        let body =
+            v_flex().child(Label::new(self.purpose.body()).text_color(cx.theme().foreground));
 
         let footer = div()
             .flex()

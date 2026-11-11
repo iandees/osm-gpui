@@ -79,6 +79,31 @@ pub fn plan_upload(signed_in_display_name: Option<&str>, summaries: &[LayerSumma
     }
 }
 
+/// Which label the dialog's confirm button carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKind {
+    /// After a failed attempt.
+    Retry,
+    /// The validator found warnings and no errors: the upload is allowed.
+    UploadAnyway,
+    /// No findings, or errors that block the upload (the button is disabled
+    /// then, and "anyway" would contradict that). The script-only preview
+    /// follows the same rule: it only disables the button.
+    Upload,
+}
+
+/// The confirm button's label from the dialog's state and the validator's
+/// error and warning counts.
+pub fn confirm_kind(failed: bool, errors: usize, warnings: usize) -> ConfirmKind {
+    if failed {
+        ConfirmKind::Retry
+    } else if errors == 0 && warnings > 0 {
+        ConfirmKind::UploadAnyway
+    } else {
+        ConfirmKind::Upload
+    }
+}
+
 pub enum DialogEvent {
     /// User clicked "Upload" with a non-empty comment. `tags` are the
     /// changeset tags to write on every changeset of the upload; `comment`
@@ -297,7 +322,7 @@ impl UploadDialog {
     }
 
     /// Show what the validator found. Errors disable the Upload button;
-    /// warnings leave it as "Upload anyway".
+    /// warnings alone turn it into "Upload anyway" (see `confirm_kind`).
     pub fn set_validation(&mut self, report: Report, cx: &mut Context<Self>) {
         self.validation = report;
         cx.notify();
@@ -902,11 +927,12 @@ impl Render for UploadDialog {
         let in_flight = self.state.is_busy();
 
         let mut summary_list = v_flex().gap_1();
-        if self.summaries.is_empty() {
+        if self.summaries.iter().all(|s| s.is_empty()) {
             summary_list =
                 summary_list.child(Label::new(tr!("dialog.upload.no_changes")).text_color(muted));
         } else {
-            for s in &self.summaries {
+            // Only the layers that have something to upload.
+            for s in self.summaries.iter().filter(|s| !s.is_empty()) {
                 summary_list =
                     summary_list.child(Label::new(s.describe()).text_color(cx.theme().foreground));
             }
@@ -1011,12 +1037,14 @@ impl Render for UploadDialog {
             }
         }
 
-        let confirm_label = if matches!(self.state, UploadState::Failed(_)) {
-            tr!("dialog.upload.retry")
-        } else if self.validation.warnings() > 0 {
-            tr!("validator.upload_anyway")
-        } else {
-            tr!("dialog.upload.confirm")
+        let confirm_label = match confirm_kind(
+            matches!(self.state, UploadState::Failed(_)),
+            self.validation.errors(),
+            self.validation.warnings(),
+        ) {
+            ConfirmKind::Retry => tr!("dialog.upload.retry"),
+            ConfirmKind::UploadAnyway => tr!("validator.upload_anyway"),
+            ConfirmKind::Upload => tr!("dialog.upload.confirm"),
         };
         let footer = div()
             .flex()
@@ -1091,6 +1119,28 @@ impl Render for UploadDialog {
 mod tests {
     use super::*;
     use crate::selection::FeatureKind;
+
+    #[test]
+    fn confirm_label_follows_the_findings() {
+        // No findings.
+        assert_eq!(confirm_kind(false, 0, 0), ConfirmKind::Upload);
+        // Warnings only: allowed, "anyway".
+        assert_eq!(confirm_kind(false, 0, 3), ConfirmKind::UploadAnyway);
+        // Errors only: blocked, plain "Upload".
+        assert_eq!(confirm_kind(false, 2, 0), ConfirmKind::Upload);
+        // Errors and warnings: still blocked, plain "Upload".
+        assert_eq!(confirm_kind(false, 2, 3), ConfirmKind::Upload);
+        // A failed attempt offers a retry whatever was found.
+        assert_eq!(confirm_kind(true, 0, 0), ConfirmKind::Retry);
+    }
+
+    #[test]
+    fn preview_label_uses_the_same_rule() {
+        // The preview only disables the button; it has no label of its own,
+        // so errors in a preview read "Upload" and warnings "Upload anyway".
+        assert_eq!(confirm_kind(false, 1, 1), ConfirmKind::Upload);
+        assert_eq!(confirm_kind(false, 0, 1), ConfirmKind::UploadAnyway);
+    }
 
     #[test]
     fn layer_summary_describe_format() {
