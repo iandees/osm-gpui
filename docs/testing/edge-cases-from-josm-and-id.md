@@ -130,7 +130,7 @@ in the bug list at the end.
 
 | # | Situation | Reference | Status |
 |---|-----------|-----------|--------|
-| O1 | Relation sorting (RelationSorterTest, WayConnectionTypeCalculatorTest: roundabouts, loops, oneway/forward/backward) | JOSM `gui/dialogs/relation/sort` | absent (no member sorting; app only edits member order manually) |
+| O1 | Relation sorting (RelationSorterTest, WayConnectionTypeCalculatorTest: roundabouts, loops, oneway/forward/backward) | JOSM `gui/dialogs/relation/sort` | implemented as the Sort members button in the Members panel, see batch M |
 | O2 | Multipolygon building from loose ways (MultipolygonBuilder tests, CreateMultipolygonActionTest #17767 ...) | JOSM | implemented as the Create Multipolygon action, see batch J (rendering is covered by `src/multipolygon.rs` tests) |
 | O3 | Validator tests (DuplicateNode, CrossingWays, MultipolygonTest, TurnrestrictionTest, RelationChecker) | JOSM `data/validation/tests` | existing in `src/validator/` (not repeated) |
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
@@ -473,6 +473,40 @@ other's edge are refused.
 Member limit: the new relation is checked with `limits::relation_over_limit`
 like New Relation (covered by `new_relation_is_refused_past_the_member_limit`);
 no separate test.
+
+No bugs found in this batch.
+
+## Further situations (batch M)
+
+Sort members (`src/edge_case_tests/relation_sort.rs`, logic in
+`src/relation_sort.rs`). Design: only the
+order changes, never a role and never a way's node order. Members that are not
+sortable ways (nodes, relations, ways that are not downloaded, ways whose role
+starts with `stop` or `platform`) keep their slot; the sortable ways refill
+the slots the sortable ways held, in chain order. A chain starts at the first
+member not yet placed and grows at both ends, so a loop starts at its first
+member, separate chains (gaps) keep their original relative order, and a list
+that already is a valid walk (in either direction) is left alone with no undo
+step. Roles `forward` / `backward` fix the direction a way is walked; a closed
+way (roundabout) connects to its neighbours at any of its nodes; ways with
+different non-route roles (`outer` / `inner`) are never linked. A way listed
+twice is two entries (out and back). When the direction is open, the walk that
+walks fewer ways against their stored direction wins. One undo step; only the
+relation is modified in the upload. Not done: per-row connection markers,
+a geometry-based direction guess (the first member decides which way a free
+chain runs), and sorting of public-transport stop/platform pairs.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| M1 | Scrambled route with a stop node, a sub-relation and forward roles | Ways chained, node and relation stay, roles unchanged, one step, only the relation uploaded | pass `scrambled_route_is_chained_and_other_members_stay` |
+| M2 | A way stored against the walk | Placed in the walk, not reversed | pass `reversed_ways_are_ordered_not_reversed` |
+| M3 | Already sorted, one member, none | No undo step, no change | pass `already_sorted_is_a_no_op` |
+| M4 | `forward` / `backward` roles | Role fixes the direction; an impossible link stays unlinked | pass `forward_and_backward_roles_constrain_the_walk` |
+| M5 | Gaps | Chains keep their original relative order | pass `gaps_keep_chains_in_original_order` |
+| M6 | Roundabout between two ways | Connected on any ring node | pass `roundabout_connects_on_any_node` |
+| M7 | Loop | Starts at the first member | pass `loop_starts_at_the_first_member` |
+| M8 | Out and back (ways listed twice) | Every entry kept, result a connected walk | pass `out_and_back_route_stays_a_valid_walk` |
+| M9 | Way not downloaded | Keeps its slot | pass `ways_that_are_not_downloaded_keep_their_slot` |
 
 No bugs found in this batch.
 

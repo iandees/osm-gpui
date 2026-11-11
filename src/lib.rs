@@ -46,6 +46,7 @@ pub mod preset_translations;
 pub mod presets;
 pub mod reference;
 pub mod relation_overlay;
+pub mod relation_sort;
 pub mod relations;
 pub mod script;
 pub mod search;

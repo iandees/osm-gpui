@@ -435,6 +435,20 @@ impl MapViewer {
             total.min(Self::MEMBERS_INITIAL_ROWS)
         };
 
+        let sort_relation_id = relation.id;
+        let sort_row = div().flex().flex_row().child(
+            Button::new("members-sort")
+                .label(tr!("panel.members.sort"))
+                .tooltip(tr!("panel.members.sort_hint"))
+                .ghost()
+                .small()
+                .disabled(total < 2)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.sort_relation_members(layer_id, sort_relation_id);
+                    cx.notify();
+                })),
+        );
+
         let rows = relation
             .members
             .iter()
@@ -661,7 +675,8 @@ impl MapViewer {
                     )
             });
 
-        let mut column = div().flex().flex_col().gap_0p5().child(
+        let mut column = div().flex().flex_col().gap_0p5().child(sort_row);
+        column = column.child(
             div()
                 .id("members-list")
                 .flex()

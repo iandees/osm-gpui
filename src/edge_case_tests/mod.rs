@@ -13,6 +13,8 @@ mod join_and_merge;
 mod limits_and_data;
 mod multipolygon_edits;
 mod parse_and_export;
+mod relation_sort;
+
 mod purge;
 mod reverse;
 mod shared_members;
