@@ -5570,7 +5570,9 @@ impl Render for MapViewer {
                     }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         let modifiers = ev.keystroke.modifiers;
-                        if modifiers.platform || modifiers.control || modifiers.alt {
+                        if this.offset_field_focused(window, cx) {
+                            // Typing in the imagery offset panel's fields.
+                        } else if modifiers.platform || modifiers.control || modifiers.alt {
                             // Modifier chords belong to the keymap (menu
                             // shortcuts), never to the bare-key handling below.
                         } else if ev.keystroke.key == "space" {

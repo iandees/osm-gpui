@@ -1122,8 +1122,8 @@ impl MapViewer {
                                         .px_1()
                                         .rounded_sm()
                                         .text_size(muted_text_size())
-                                        .bg(cx.theme().warning.opacity(0.2))
-                                        .text_color(cx.theme().warning_foreground)
+                                        .bg(cx.theme().warning.opacity(0.35))
+                                        .text_color(cx.theme().foreground)
                                         .child(tr!(
                                             "panel.layers.offset_tag",
                                             east = osm_gpui::imagery_offset::format_metres(

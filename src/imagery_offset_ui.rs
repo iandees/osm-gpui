@@ -370,6 +370,15 @@ impl MapViewer {
 
     // --- keyboard --------------------------------------------------------
 
+    /// Whether one of the panel's metre fields has keyboard focus, so the
+    /// map must leave the key to it.
+    pub(crate) fn offset_field_focused(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.offset_adjust.as_ref().is_some_and(|adjust| {
+            adjust.east.focus_handle(cx).is_focused(window)
+                || adjust.north.focus_handle(cx).is_focused(window)
+        })
+    }
+
     /// A key pressed on the map while adjusting. Returns whether it was
     /// handled (arrows nudge, Escape cancels, Enter keeps).
     pub(crate) fn offset_adjust_key(
@@ -505,14 +514,16 @@ impl MapViewer {
             .rounded_lg()
             .shadow_lg()
             .text_color(cx.theme().popover_foreground)
-            // Nothing typed or clicked in the panel reaches the map: Space,
-            // digits, "-" and the like are for the fields. Escape still
-            // cancels the mode.
+            // Escape in a field cancels the mode. Other keys must keep
+            // propagating (typed text is inserted after key-down handlers
+            // run, and only if none stopped the event); the map's own key
+            // handler skips them while a field has focus
+            // (`offset_field_focused`).
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
                     this.finish_offset_adjust(false, window, cx);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
