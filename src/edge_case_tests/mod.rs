@@ -11,6 +11,7 @@ mod limits_and_data;
 mod parse_and_export;
 mod reverse;
 mod split;
+mod undo_interactions;
 mod undo_sequences;
 mod upload_order;
 

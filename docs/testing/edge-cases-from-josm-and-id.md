@@ -115,9 +115,9 @@ in the bug list at the end.
 | X2 | Way listed twice in a relation | Both memberships go | JOSM #19432 flavour | pass `a_way_listed_twice_in_a_route_loses_both_memberships` |
 | X3 | Last member of a relation | iD and JOSM delete the relation | iD "deletes parent relations that become empty" | design `deleting_the_last_member_of_a_relation_is_refused` |
 | X4 | Tagged or shared nodes of a deleted way | Kept | iD "does not delete member nodes with interesting tags / referenced by another parent" | pass `deleting_a_way_keeps_nodes_that_are_tagged_or_shared` |
-| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | FAIL `deleting_a_way_deletes_its_untagged_unshared_nodes` |
-| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | FAIL `deleting_a_vertex_removes_it_from_its_way` |
-| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | FAIL `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`; current behaviour pinned by `deleting_a_node_used_by_a_way_changes_nothing_today` |
+| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | pass `deleting_a_way_deletes_its_untagged_unshared_nodes` |
+| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | pass `deleting_a_vertex_removes_it_from_its_way` |
+| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | pass `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way` |
 | X8 | Way and its nodes selected together | One step, ways before nodes in the upload | | pass `deleting_a_way_with_its_nodes_in_one_selection_is_one_step` |
 | X9 | Delete a relation | Members stay | iD `delete_relation.js` (iD also deletes untagged member ways; JOSM does not) | pass `deleting_a_relation_keeps_its_members` (JOSM behaviour) |
 | X10 | Delete an inner ring of a multipolygon | Outer stays a member | | pass `deleting_an_inner_ring_leaves_the_outer_member` |
@@ -212,6 +212,26 @@ Bugs from this batch:
 - LOW. K6: Reverse negates a numeric `direction` on a way.
 - L4: same cause as X6 (vertices cannot be deleted).
 
+## Further situations (batch D)
+
+Undo / redo against refusals, autosave and several layers
+(`src/edge_case_tests/undo_interactions.rs`).
+
+| # | Situation | Status |
+|---|-----------|--------|
+| D1 | Join refused (T junction) between two edits, with a live redo branch: stack, cursor and revision unchanged, redo still works | pass `a_refused_join_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D2 | Merge refused (would collapse a two-node way) in the same position | pass `a_refused_merge_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D3 | Delete refused by the last-relation-member check in the same position | pass `a_delete_refused_by_a_relation_check_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D4 | After restore from autosave, pending edits are back but undo history is not persisted: nothing to undo; new edits undo only back to the restored state | design `a_restored_layer_keeps_its_pending_edits_but_has_no_undo_history` |
+| D5 | Restoring a layer into a running view leaves existing steps and the redo branch untouched, and no step names the restored layer | pass `restoring_a_layer_into_a_running_view_leaves_the_existing_history_alone` |
+| D6 | Several layers: the undo stack is one global list; undo reverts the layer a step was recorded on, not the active layer, and the active layer then follows the undone feature | design `undo_reverts_the_layer_the_step_was_recorded_on_not_the_active_layer` |
+| D7 | Edits interleaved across two layers undo and redo in one shared order, restoring both layers exactly | pass `edits_interleaved_across_layers_undo_in_one_shared_order_and_redo_back` |
+| D8 | A new edit in one layer discards the redo branch of another layer (global history) | design `a_new_edit_in_one_layer_drops_the_redo_branch_of_the_other_layer` |
+| D9 | Per-layer undo stacks | absent (one global stack; deleting a layer prunes its steps, covered in `main.rs` tests) |
+| D10 | Persisting undo history across a restart | absent |
+
+No bugs found in this batch.
+
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
 - Split at several nodes at once; split at a node the way visits twice (S16,
@@ -235,11 +255,10 @@ Ordered by risk of corrupting data on upload.
 4. MEDIUM. J9 join of two ways that are not adjacent in a shared route drops the
    second membership without asking, which can leave the route disconnected.
    `join_of_ways_that_are_not_adjacent_in_a_route_is_refused`.
-5. MEDIUM. X6/X7 a vertex cannot be deleted (the action refuses any node
-   used by a way), so the user cannot take a node out of a way.
-   `deleting_a_vertex_removes_it_from_its_way`,
+5. FIXED. X6/X7 a vertex can now be deleted: it is removed from its ways, and
+   a way left too short is deleted. `deleting_a_vertex_removes_it_from_its_way`,
    `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`.
-6. LOW-MEDIUM. X5 deleting a way leaves its untagged unshared nodes as orphans
-   that stay on the server. `deleting_a_way_deletes_its_untagged_unshared_nodes`.
+6. FIXED. X5 deleting a way now also deletes its untagged unshared nodes.
+   `deleting_a_way_deletes_its_untagged_unshared_nodes`.
 7. LOW. M6 merging two nodes of a triangle leaves a closed way with two
    distinct nodes. `merge_must_not_leave_a_degenerate_closed_way`.
