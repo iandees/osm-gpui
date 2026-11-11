@@ -788,6 +788,8 @@ dialog:
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
+    notes_title: "Sign in to work with notes"
+    notes_body: "You need to sign in to OpenStreetMap to create, comment on, close or reopen notes. If you signed in before notes were supported, sign in again to grant the extra permission. Open Settings to sign in."
     open_settings: "Open Settings"
   about:
     title: "About %{app}"
@@ -1074,10 +1076,7 @@ notes:
     comment: "Comment"
     close_note: "Close Note"
     reopen_note: "Reopen Note"
-    website: "Open on openstreetmap.org"
     working: "Working…"
-    needs_sign_in: "Sign in to comment on, close or reopen notes."
-    sign_in: "Sign In…"
     upload_running: "An upload is running. Try again when it has finished."
     comment_empty: "Type a comment first."
   new:

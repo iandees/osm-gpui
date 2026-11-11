@@ -24,17 +24,49 @@ pub enum DialogEvent {
     Cancelled,
 }
 
+/// What the user was trying to do when the prompt appeared; selects the
+/// wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignInPurpose {
+    Upload,
+    Notes,
+}
+
+impl SignInPurpose {
+    pub fn title(self) -> String {
+        match self {
+            SignInPurpose::Upload => tr!("dialog.sign_in.title").to_string(),
+            SignInPurpose::Notes => tr!("dialog.sign_in.notes_title").to_string(),
+        }
+    }
+
+    pub fn body(self) -> String {
+        match self {
+            SignInPurpose::Upload => tr!("dialog.sign_in.body").to_string(),
+            SignInPurpose::Notes => tr!("dialog.sign_in.notes_body").to_string(),
+        }
+    }
+}
+
 pub struct SignInDialog {
     focus_handle: FocusHandle,
+    purpose: SignInPurpose,
 }
 
 impl EventEmitter<DialogEvent> for SignInDialog {}
 
 impl SignInDialog {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(purpose: SignInPurpose, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
-        Self { focus_handle }
+        Self {
+            focus_handle,
+            purpose,
+        }
+    }
+
+    pub fn purpose(&self) -> SignInPurpose {
+        self.purpose
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -62,8 +94,8 @@ impl Focusable for SignInDialog {
 
 impl Render for SignInDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = v_flex()
-            .child(Label::new(tr!("dialog.sign_in.body")).text_color(cx.theme().foreground));
+        let body =
+            v_flex().child(Label::new(self.purpose.body()).text_color(cx.theme().foreground));
 
         let footer = div()
             .flex()
@@ -97,7 +129,7 @@ impl Render for SignInDialog {
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.sign_in.title")),
+                    .child(self.purpose.title()),
             )
             .child(div().p_4().child(body))
             .child(
@@ -135,5 +167,15 @@ mod tests {
     #[test]
     fn sign_in_not_needed_when_signed_in() {
         assert!(!needs_sign_in(Some("someone")));
+    }
+
+    #[test]
+    fn wording_follows_the_purpose() {
+        assert!(SignInPurpose::Upload.title().contains("upload"));
+        assert!(SignInPurpose::Upload.body().contains("upload"));
+        assert!(SignInPurpose::Notes.title().contains("notes"));
+        assert!(SignInPurpose::Notes.body().contains("notes"));
+        assert!(!SignInPurpose::Notes.body().contains("upload"));
+        assert!(!SignInPurpose::Notes.title().contains("upload"));
     }
 }

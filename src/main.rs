@@ -5176,7 +5176,11 @@ impl MapViewer {
                 // Uploading needs an OSM account; send signed-out users to
                 // Settings instead of letting the upload fail for lack of a
                 // token.
-                self.show_sign_in_dialog(window, cx);
+                self.show_sign_in_dialog(
+                    osm_gpui::ui::sign_in_dialog::SignInPurpose::Upload,
+                    window,
+                    cx,
+                );
                 return;
             }
             UploadPlan::NothingToUpload => {
@@ -5305,10 +5309,18 @@ impl MapViewer {
         cx.notify();
     }
 
-    /// Show the "sign in to upload" prompt. "Open Settings" closes it and
-    /// opens the Settings window; Cancel/Esc just closes it.
-    fn show_sign_in_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dialog = cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(window, cx));
+    /// Show the sign-in prompt, worded for `purpose` (upload or notes).
+    /// "Open Settings" closes it and opens the Settings window; Cancel/Esc
+    /// just closes it. Nothing continues after sign-in in either flow: the
+    /// user repeats the action once signed in.
+    pub(crate) fn show_sign_in_dialog(
+        &mut self,
+        purpose: osm_gpui::ui::sign_in_dialog::SignInPurpose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(purpose, window, cx));
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
@@ -12536,6 +12548,104 @@ mod tests {
                 make_pending_change(view);
                 view.open_upload_dialog_as(None, window, cx);
                 assert!(view.sign_in_dialog.is_some());
+                assert!(view.upload_dialog.is_none());
+                let dialog = view.sign_in_dialog.as_ref().unwrap().read(cx);
+                assert_eq!(
+                    dialog.purpose(),
+                    osm_gpui::ui::sign_in_dialog::SignInPurpose::Upload
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn new_note_signed_out_shows_the_notes_sign_in_wording(cx: &mut TestAppContext) {
+        use osm_gpui::ui::sign_in_dialog::SignInPurpose;
+        let stored =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if !osm_gpui::ui::sign_in_dialog::needs_sign_in(stored.as_deref()) {
+            return;
+        }
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.on_new_note(&crate::notes_ui::NewNote, window, cx);
+                let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                assert!(!view.notes_armed());
+                assert!(view.upload_dialog.is_none());
+            })
+            .unwrap();
+    }
+
+    /// Signed out, Comment, Close and Reopen in the note panel open the notes
+    /// sign-in prompt, send nothing and keep the typed text and the panel.
+    #[gpui::test]
+    fn signed_out_note_panel_actions_open_the_sign_in_prompt(cx: &mut TestAppContext) {
+        use osm_gpui::script::NoteOp;
+        use osm_gpui::ui::sign_in_dialog::{DialogEvent, SignInPurpose};
+        let stored =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if !osm_gpui::ui::sign_in_dialog::needs_sign_in(stored.as_deref()) {
+            return;
+        }
+        let window = setup(cx);
+        let ops = [
+            NoteOp::Comment("hello there".to_string()),
+            NoteOp::Close(Some("hello there".to_string())),
+            NoteOp::Reopen(Some("hello there".to_string())),
+        ];
+        for op in ops {
+            window
+                .update(cx, |view, window, cx| {
+                    let load = NoteOp::LoadFile("docs/live-test/notes-sample.xml".to_string());
+                    view.script_note_op(&load, window, cx).unwrap();
+                    view.script_note_op(&NoteOp::Open(1001), window, cx)
+                        .unwrap();
+                    let result = view.script_note_op(&op, window, cx);
+                    assert!(result.unwrap_err().contains("not signed in"));
+                    // Nothing was started, the panel is still open and the
+                    // typed text is still in the box.
+                    let (text, has_error, writing) =
+                        view.note_panel_state(cx).expect("panel stays open");
+                    assert_eq!(text, "hello there");
+                    assert!(!has_error && !writing);
+                    let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                    assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                    assert!(view.upload_dialog.is_none());
+                    dialog.update(cx, |_, cx| cx.emit(DialogEvent::Cancelled));
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |view, _, cx| {
+                    assert!(view.sign_in_dialog.is_none());
+                    assert_eq!(view.note_panel_state(cx).unwrap().0, "hello there");
+                })
+                .unwrap();
+        }
+    }
+
+    /// A signed-out comment/close/reopen all go through `show_sign_in_dialog(Notes, ..)`; closing the prompt
+    /// (as after "Open Settings") leaves no upload dialog behind.
+    #[gpui::test]
+    fn note_panel_sign_in_uses_notes_wording_and_never_opens_upload(cx: &mut TestAppContext) {
+        use osm_gpui::ui::sign_in_dialog::SignInPurpose;
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
+                let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                dialog.update(cx, |_, cx| {
+                    cx.emit(osm_gpui::ui::sign_in_dialog::DialogEvent::Cancelled)
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.sign_in_dialog.is_none());
                 assert!(view.upload_dialog.is_none());
             })
             .unwrap();
