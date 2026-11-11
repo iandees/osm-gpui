@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-74.0000"/>
+
+  <!-- A street of three nodes; way 3001 is at version 5 (see
+       object-history-way-3001.history.xml for its versions). -->
+  <node id="1001" version="2" lat="40.7110" lon="-74.0075"/>
+  <node id="1003" version="1" lat="40.7122" lon="-74.0060"/>
+  <node id="1002" version="3" lat="40.7130" lon="-74.0040"/>
+
+  <way id="3001" version="5">
+    <nd ref="1001"/>
+    <nd ref="1003"/>
+    <nd ref="1002"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Fixture Street"/>
+    <tag k="surface" v="asphalt"/>
+    <tag k="lanes" v="2"/>
+  </way>
+</osm>
