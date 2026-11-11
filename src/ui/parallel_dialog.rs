@@ -110,6 +110,7 @@ impl Render for ParallelDialog {
                 Checkbox::new("parallel-copy-tags")
                     .checked(self.copy_tags)
                     .label(tr!("dialog.parallel.copy_tags"))
+                    .text_size(crate::ui::style::body_text_size())
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.copy_tags = *checked;
                         cx.notify();
@@ -119,6 +120,7 @@ impl Render for ParallelDialog {
                 Checkbox::new("parallel-reverse")
                     .checked(self.reverse)
                     .label(tr!("dialog.parallel.reverse"))
+                    .text_size(crate::ui::style::body_text_size())
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.reverse = *checked;
                         cx.notify();
