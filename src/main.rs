@@ -10374,15 +10374,16 @@ mod tests {
                 );
                 let remaining = relation_members(view, 900);
                 assert_eq!(remaining, vec![(7, "stop".to_string())]);
-                // The deleted way and the relation that lost it.
-                assert_eq!(pending(view), (0, 1, 1));
+                // The deleted way, its orphaned node, and the relation that
+                // lost it.
+                assert_eq!(pending(view), (0, 1, 2));
 
                 undo_step(view);
                 assert_eq!(relation_members(view, 900), original);
                 assert_eq!(pending(view), (0, 0, 0));
                 redo_step(view);
                 assert_eq!(relation_members(view, 900), remaining);
-                assert_eq!(pending(view), (0, 1, 1));
+                assert_eq!(pending(view), (0, 1, 2));
                 undo_step(view);
                 assert_eq!(pending(view), (0, 0, 0));
             })
@@ -11434,10 +11435,11 @@ mod tests {
         window
             .update(vcx, |view, _, _| {
                 assert!(editable(view).way_node_ids(102).is_some());
-                // Exactly the way: way 102 is a member of relation 900, which
-                // the step also touched, but relations are never mixed in.
-                assert_eq!(view.selected.len(), 1);
+                // The way (and the orphan node restored with it): way 102 is a
+                // member of relation 900, which the step also touched, but
+                // relations are never mixed in.
                 assert_eq!(selected_ids(view, Way), vec![102]);
+                assert!(selected_ids(view, osm_gpui::selection::FeatureKind::Relation).is_empty());
             })
             .unwrap();
 
@@ -11455,7 +11457,8 @@ mod tests {
         vcx.dispatch_action(Undo);
         window
             .update(vcx, |view, _, _| {
-                assert_eq!(view.selected.len(), 1);
+                // The way, plus the orphan node that was deleted with it.
+                assert_eq!(view.selected.len(), 2);
                 assert_eq!(selected_ids(view, Way), vec![102]);
             })
             .unwrap();

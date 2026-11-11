@@ -1547,9 +1547,220 @@ pub(crate) fn add_to_relation(
     })
 }
 
-/// Delete every selected feature. Node deletion is refused per feature if the
-/// node is still referenced by a way (see `OsmLayer::delete_feature`); refused
-/// features are skipped. A deleted node or way is also removed from the
+/// One relation's member list before and after a feature leaves it.
+type MemberEdit = (
+    i64,
+    Vec<osm_gpui::osm::OsmMember>,
+    Vec<osm_gpui::osm::OsmMember>,
+);
+
+/// The relation edits that deleting a node or way needs, or the reason it
+/// must be refused (it would empty a relation or break a restriction).
+fn plan_member_edits(
+    editable: &dyn EditableLayer,
+    kind: FeatureKind,
+    id: i64,
+) -> Result<Vec<MemberEdit>, String> {
+    let (member_type, relation_ids, what) = match kind {
+        FeatureKind::Node => (
+            MemberType::Node,
+            editable.relations_containing_node(id),
+            tr!("action.delete.kind.node"),
+        ),
+        FeatureKind::Way => (
+            MemberType::Way,
+            editable.relations_containing_way(id),
+            tr!("action.delete.kind.way"),
+        ),
+        FeatureKind::Relation => return Ok(Vec::new()),
+    };
+    let mut edits = Vec::new();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        match osm_gpui::relations::delete_member(&relation, member_type, id) {
+            Ok(Some(after)) => edits.push((relation_id, relation.members, after)),
+            Ok(None) => {}
+            Err(e) => return Err(e.message(&what, id)),
+        }
+    }
+    Ok(edits)
+}
+
+/// Apply planned relation edits and record them as undo entries.
+fn apply_member_edits(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    edits: Vec<MemberEdit>,
+    actions: &mut Vec<UndoableAction>,
+    changed_relations: &mut Vec<(LayerId, i64)>,
+) {
+    for (relation_id, before, after) in edits {
+        editable.set_relation_members(relation_id, after.clone());
+        actions.push(UndoableAction::SetRelationMembers {
+            layer: layer_id,
+            relation_id,
+            before,
+            after,
+        });
+        if !changed_relations.contains(&(layer_id, relation_id)) {
+            changed_relations.push((layer_id, relation_id));
+        }
+    }
+}
+
+/// Delete the way, then every node it used that is now an orphan: untagged,
+/// in no other way and no relation, and not selected itself (a selected node
+/// is handled on its own turn) nor `keep`. `Ok(false)` if the way is gone.
+fn delete_way_and_orphans(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    way_id: i64,
+    keep: Option<i64>,
+    selection: &[FeatureRef],
+    actions: &mut Vec<UndoableAction>,
+    changed_relations: &mut Vec<(LayerId, i64)>,
+) -> Result<bool, String> {
+    let edits = plan_member_edits(editable, FeatureKind::Way, way_id)?;
+    // The layer may still refuse; then nothing about the relations changes.
+    let Some(snapshot) = editable.delete_feature(FeatureKind::Way, way_id) else {
+        return Ok(false);
+    };
+    let way_nodes = snapshot.way_nodes.clone();
+    actions.push(UndoableAction::DeleteFeature {
+        layer: layer_id,
+        snapshot,
+    });
+    apply_member_edits(editable, layer_id, edits, actions, changed_relations);
+    let mut seen = Vec::new();
+    for node_id in way_nodes {
+        if seen.contains(&node_id) {
+            continue;
+        }
+        seen.push(node_id);
+        let node = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id: node_id,
+        };
+        if Some(node_id) == keep
+            || selection.contains(&node)
+            || !editable.ways_using_node(node_id).is_empty()
+            || !editable.relations_containing_node(node_id).is_empty()
+            || editable
+                .feature_tags(&node)
+                .is_some_and(|tags| !tags.is_empty())
+        {
+            continue;
+        }
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, node_id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+    Ok(true)
+}
+
+/// What deleting a vertex does to one way that uses it.
+enum WayFate {
+    /// The way keeps going without the node.
+    Shorten(Vec<i64>),
+    /// Too few nodes would be left, so the way goes too.
+    Delete,
+}
+
+/// `way_nodes` with every occurrence of `node` taken out (a closed way stays
+/// closed), or `Delete` if what is left can no longer be a way.
+fn way_without_node(way_nodes: &[i64], node: i64) -> WayFate {
+    let closed = way_nodes.len() > 1 && way_nodes.first() == way_nodes.last();
+    let mut rest: Vec<i64> = way_nodes.iter().copied().filter(|&n| n != node).collect();
+    rest.dedup();
+    if closed {
+        // The ring's start and end are the same node; losing it moves both.
+        if way_nodes.first() == Some(&node) {
+            if let Some(&first) = rest.first() {
+                rest.push(first);
+            }
+        }
+        if rest.len() < 4 {
+            return WayFate::Delete;
+        }
+    } else if rest.len() < 2 {
+        return WayFate::Delete;
+    }
+    WayFate::Shorten(rest)
+}
+
+/// Delete a node. One used by ways is taken out of each of them first; a way
+/// left with too few nodes is deleted (with its orphaned nodes). Everything
+/// is checked before anything changes, so a refusal leaves no trace.
+fn delete_vertex(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    node_id: i64,
+    selection: &[FeatureRef],
+    actions: &mut Vec<UndoableAction>,
+    changed_relations: &mut Vec<(LayerId, i64)>,
+) -> Result<bool, String> {
+    if editable.node_lat_lon(node_id).is_none() {
+        return Ok(false);
+    }
+    let node_edits = plan_member_edits(editable, FeatureKind::Node, node_id)?;
+    let mut fates = Vec::new();
+    let mut way_ids = editable.ways_using_node(node_id);
+    way_ids.sort_unstable();
+    for way_id in way_ids {
+        let Some(way_nodes) = editable.way_node_ids(way_id) else {
+            continue;
+        };
+        let fate = way_without_node(&way_nodes, node_id);
+        if matches!(fate, WayFate::Delete) {
+            plan_member_edits(editable, FeatureKind::Way, way_id)?;
+        }
+        fates.push((way_id, way_nodes, fate));
+    }
+    for (way_id, before, fate) in fates {
+        match fate {
+            WayFate::Shorten(after) => {
+                if editable.set_way_nodes(way_id, after.clone()) {
+                    actions.push(UndoableAction::SetWayNodes {
+                        layer: layer_id,
+                        way_id,
+                        before,
+                        after,
+                    });
+                }
+            }
+            WayFate::Delete => {
+                delete_way_and_orphans(
+                    editable,
+                    layer_id,
+                    way_id,
+                    Some(node_id),
+                    selection,
+                    actions,
+                    changed_relations,
+                )?;
+            }
+        }
+    }
+    let Some(snapshot) = editable.delete_feature(FeatureKind::Node, node_id) else {
+        return Ok(false);
+    };
+    actions.push(UndoableAction::DeleteFeature {
+        layer: layer_id,
+        snapshot,
+    });
+    apply_member_edits(editable, layer_id, node_edits, actions, changed_relations);
+    Ok(true)
+}
+
+/// Delete every selected feature. A node used by ways is removed from them
+/// (a way left too short is deleted); deleting a way also deletes its
+/// untagged nodes nothing else uses. Refused features are skipped. A deleted node or way is also removed from the
 /// relations it is a member of (see `relations::delete_member`); a feature
 /// whose removal would empty a relation or break a turn restriction is refused
 /// instead, with the reason in the status. The deletions and membership
@@ -1634,59 +1845,32 @@ fn apply_delete(
         else {
             continue;
         };
-        let (member_type, relation_ids, what) = match feature.kind {
-            FeatureKind::Node => (
-                MemberType::Node,
-                editable.relations_containing_node(feature.id),
-                tr!("action.delete.kind.node"),
+        let layer_id = feature.layer_id;
+        let result = match feature.kind {
+            FeatureKind::Way => delete_way_and_orphans(
+                editable,
+                layer_id,
+                feature.id,
+                None,
+                selection,
+                &mut actions,
+                &mut changed_relations,
             ),
-            FeatureKind::Way => (
-                MemberType::Way,
-                editable.relations_containing_way(feature.id),
-                tr!("action.delete.kind.way"),
+            FeatureKind::Node => delete_vertex(
+                editable,
+                layer_id,
+                feature.id,
+                selection,
+                &mut actions,
+                &mut changed_relations,
             ),
             FeatureKind::Relation => continue,
         };
-        // The memberships to drop; a refusal skips the feature entirely.
-        let mut edits = Vec::new();
-        let mut refused = false;
-        for relation_id in relation_ids {
-            let Some(relation) = editable.relation(relation_id) else {
-                continue;
-            };
-            match osm_gpui::relations::delete_member(&relation, member_type, feature.id) {
-                Ok(Some(after)) => edits.push((relation_id, relation.members, after)),
-                Ok(None) => {}
-                Err(e) => {
-                    refusal.get_or_insert_with(|| e.message(&what, feature.id));
-                    refused = true;
-                    break;
-                }
-            }
-        }
-        if refused {
-            continue;
-        }
-        // The layer may still refuse (a node used by a way); then nothing
-        // about the relations changes either.
-        let Some(snapshot) = editable.delete_feature(feature.kind, feature.id) else {
-            continue;
-        };
-        deleted += 1;
-        actions.push(UndoableAction::DeleteFeature {
-            layer: feature.layer_id,
-            snapshot,
-        });
-        for (relation_id, before, after) in edits {
-            editable.set_relation_members(relation_id, after.clone());
-            actions.push(UndoableAction::SetRelationMembers {
-                layer: feature.layer_id,
-                relation_id,
-                before,
-                after,
-            });
-            if !changed_relations.contains(&(feature.layer_id, relation_id)) {
-                changed_relations.push((feature.layer_id, relation_id));
+        match result {
+            Ok(true) => deleted += 1,
+            Ok(false) => {}
+            Err(message) => {
+                refusal.get_or_insert(message);
             }
         }
     }
@@ -2272,7 +2456,7 @@ mod tests {
         assert!(out.clear_selection);
         assert_eq!(out.status, "Deleted 2 features");
         assert!(
-            matches!(out.undo.as_ref().unwrap(), UndoableAction::Batch { actions, .. } if actions.len() == 2)
+            matches!(out.undo.as_ref().unwrap(), UndoableAction::Batch { actions, .. } if actions.len() >= 2)
         );
         assert_eq!(
             out.undo.as_ref().unwrap().description(),
@@ -2291,7 +2475,8 @@ mod tests {
             "Deleted 1 feature and removed it from 1 relation"
         );
         assert_eq!(n.members(), members_of(&[(7, "stop")]));
-        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
+        // The way and its one untagged node nothing else uses, plus the relation.
+        assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 2));
         let undo = out.undo.as_ref().unwrap();
         assert_eq!(undo.description(), out.status);
         let UndoableAction::Batch { actions, .. } = undo else {
@@ -2304,7 +2489,8 @@ mod tests {
                 UndoableAction::SetRelationMembers {
                     relation_id: 900,
                     ..
-                }
+                },
+                UndoableAction::DeleteFeature { .. }
             ]
         ));
 
@@ -2402,11 +2588,13 @@ mod tests {
         );
         assert!(n.editable().way_node_ids(102).is_some());
         assert!(n.editable().way_node_ids(106).is_none());
-        // The undo step is just the one deletion.
-        assert!(matches!(
-            out.undo.as_ref().unwrap(),
-            UndoableAction::DeleteFeature { .. }
-        ));
+        // The undo step is just way 106 and its orphaned node.
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(actions
+            .iter()
+            .all(|a| matches!(a, UndoableAction::DeleteFeature { .. })));
     }
 
     #[test]
