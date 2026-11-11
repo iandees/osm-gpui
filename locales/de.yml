@@ -330,6 +330,9 @@ panel:
   history:
     title: "Verlauf"
     empty: "Noch keine Aktionen."
+    steps:
+      one: "%{count} Schritt"
+      other: "%{count} Schritte"
 
 # Einträge des Rückgängig-Verlaufs.
 history:

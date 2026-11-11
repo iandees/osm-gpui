@@ -22,6 +22,9 @@ use crate::{
 
 use crate::side_panel_layout as layout;
 
+/// Index of the History (undo) section in `MapViewer::side_panel_open`.
+pub(crate) const HISTORY_SECTION: usize = 4;
+
 /// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
 /// layer, and (imagery layers only) its imagery offset.
 type LayerRowInfo = (
@@ -93,7 +96,7 @@ impl MapViewer {
             },
             self.validation_want(),
             layout::Want {
-                open: self.side_panel_open[4],
+                open: self.side_panel_open[HISTORY_SECTION],
                 content: self.undo_stack.actions.len().max(1) as f32 * PANEL_ROW_HEIGHT,
             },
         );
@@ -113,7 +116,19 @@ impl MapViewer {
         let open_layers = self.side_panel_open[0];
         let open_fields = self.side_panel_open[2];
         let open_tags = self.side_panel_open[3];
-        let open_history = self.side_panel_open[4];
+        let open_history = self.side_panel_open[HISTORY_SECTION];
+        // Collapsed, the header says how many steps are in it.
+        let steps = self.undo_stack.actions.len();
+        let history_steps = (!open_history && steps > 0).then(|| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(muted_text_size())
+                .text_color(cx.theme().muted_foreground)
+                .child(tr_count!("panel.history.steps", steps))
+                .into_any_element()
+        });
 
         let selected_count = self.selected.len();
         let muted = cx.theme().muted_foreground;
@@ -303,10 +318,11 @@ impl MapViewer {
             // selection and Validation that may shrink (to its header) when
             // the window is very short.
             .child(
-                self.collapsible_section(
+                self.collapsible_section_with(
                     tr!("panel.history.title"),
-                    4,
+                    HISTORY_SECTION,
                     open_history,
+                    history_steps,
                     history_section,
                     cx,
                 )
@@ -747,6 +763,10 @@ impl MapViewer {
     /// current position) is highlighted; anything after it is available to
     /// redo but not currently applied, and renders dimmed.
     fn render_history_section(&self, max_height: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Collapsed: the rows are not drawn, so they are not built either.
+        if !self.side_panel_open[HISTORY_SECTION] {
+            return div().into_any_element();
+        }
         if self.undo_stack.actions.is_empty() {
             return Label::new(tr!("panel.history.empty"))
                 .text_color(cx.theme().muted_foreground)
@@ -838,7 +858,8 @@ impl MapViewer {
         // like the selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
         // header and a hairline.
-        let document_level = index == 0 || index == 4 || index == crate::validation_panel::SECTION;
+        let document_level =
+            index == 0 || index == HISTORY_SECTION || index == crate::validation_panel::SECTION;
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())

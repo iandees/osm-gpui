@@ -89,8 +89,18 @@ impl MapViewer {
         self.validation.as_ref().map(|p| &p.report)
     }
 
-    /// Tools > Validate: run the checks and show the section (expanded),
-    /// whatever the result.
+    /// "Show in side panel": the explicit request to see the list, so the
+    /// section is shown expanded.
+    pub(crate) fn show_validation_expanded(&mut self, cx: &mut Context<Self>) {
+        self.show_validation(cx);
+        self.side_panel_open[SECTION] = true;
+        cx.notify();
+    }
+
+    /// Tools > Validate: run the checks and show the section, whatever the
+    /// result. It is collapsed (its header carries the counts) until the user
+    /// expands it, and stays as the user left it for the rest of the session
+    /// (a later Validate does not change it).
     pub(crate) fn show_validation(&mut self, cx: &mut Context<Self>) {
         let report = self.validation_report();
         self.set_status(if report.checked_changes {
@@ -107,7 +117,6 @@ impl MapViewer {
             generation: 0,
             current,
         });
-        self.side_panel_open[SECTION] = true;
         cx.notify();
     }
 
@@ -246,7 +255,11 @@ impl MapViewer {
                     })),
             );
 
-        let body = if !report.checked_changes {
+        // Collapsed, only the header (with the counts) is drawn, so the
+        // rows are not built.
+        let body = if !open {
+            div().into_any_element()
+        } else if !report.checked_changes {
             note_row(tr!("validator.nothing_pending"), cx).into_any_element()
         } else if report.is_empty() {
             note_row(tr!("validator.none"), cx).into_any_element()

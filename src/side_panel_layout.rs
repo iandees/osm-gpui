@@ -240,6 +240,17 @@ mod tests {
     }
 
     #[test]
+    fn by_default_the_middle_zone_gets_most_of_the_panel() {
+        // At start-up: Layers open, History collapsed, no Validation.
+        let p = plan(776.0, open(60.0), None, closed(240.0));
+        assert!(p.middle > 776.0 / 2.0, "{}", p.middle);
+        // After Validate (collapsed too): the same.
+        let v = plan(776.0, open(60.0), Some(closed(600.0)), closed(240.0));
+        assert!(v.middle > 776.0 / 2.0, "{}", v.middle);
+        assert!(v.pins_selection_header());
+    }
+
+    #[test]
     fn the_selection_header_is_pinned_only_when_there_is_room() {
         // Nothing else open: lots of room.
         let roomy = plan(776.0, closed(0.0), None, closed(0.0));

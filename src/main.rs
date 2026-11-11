@@ -985,7 +985,14 @@ impl MapViewer {
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true; 8],
+            // Everything open except History and Validation, which keep to
+            // their headers until the user opens them.
+            side_panel_open: {
+                let mut open = [true; 8];
+                open[side_panel::HISTORY_SECTION] = false;
+                open[validation_panel::SECTION] = false;
+                open
+            },
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -5244,7 +5251,7 @@ impl MapViewer {
                     }
                     DialogEvent::ShowInSidePanel => {
                         this.close_upload_dialog_keeping_draft(cx);
-                        this.show_validation(cx);
+                        this.show_validation_expanded(cx);
                     }
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
@@ -12138,12 +12145,13 @@ mod tests {
         view.update_in(vcx, |view, _window, _cx| {
             assert!(!view.validation_shown());
         });
-        // Nothing pending: the section opens and says so (collapsed sections
-        // are expanded).
+        // Nothing pending: the section appears (collapsed by default, like
+        // History) and says so.
         view.update_in(vcx, |view, _window, cx| {
-            view.side_panel_open[validation_panel::SECTION] = false;
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert!(!view.side_panel_open[side_panel::HISTORY_SECTION]);
             view.show_validation(cx);
-            assert!(view.side_panel_open[validation_panel::SECTION]);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
             let report = view.shown_validation().expect("shown");
             assert!(!report.checked_changes);
             assert_eq!(
@@ -12174,6 +12182,67 @@ mod tests {
         view.update_in(vcx, |view, _window, cx| {
             view.close_validation(cx);
             assert!(!view.validation_shown());
+        });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_keeps_the_users_choice_of_open_or_collapsed(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            // The user expands it (what a click on its header does): later
+            // runs, and a close and reopen, leave it expanded.
+            view.side_panel_open[validation_panel::SECTION] = true;
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            view.close_validation(cx);
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            // Collapsed by the user: stays collapsed too.
+            view.side_panel_open[validation_panel::SECTION] = false;
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            // The explicit "Show in side panel" expands it.
+            view.show_validation_expanded(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+        });
+    }
+
+    #[gpui::test]
+    fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            record_edit(view);
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            assert!(view.select_finding(0, cx));
+        });
+        vcx.run_until_parked();
+        // Fix the problem while the section is collapsed: the header's
+        // counts (read from the report) still refresh by themselves.
+        view.update_in(vcx, |view, _window, cx| {
+            let node = view.selected[0].id;
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 0);
         });
     }
 

@@ -336,6 +336,9 @@ panel:
   history:
     title: "History"
     empty: "No actions yet."
+    steps:
+      one: "%{count} step"
+      other: "%{count} steps"
 
 # Undo history entries.
 history:
