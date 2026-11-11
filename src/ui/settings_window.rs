@@ -18,7 +18,7 @@ use gpui_component::{
 use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
 use crate::keybindings::{self, ShortcutCategory, SHORTCUTS};
-use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset};
+use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset, ThemePreference};
 use crate::ui::modal::field_row;
 use crate::{tr, tr_count};
 
@@ -149,7 +149,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         self.app_settings.api_server = choice;
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
         cx.notify();
@@ -165,21 +165,35 @@ impl SettingsWindow {
         }
         self.custom_url_error = None;
         self.app_settings.custom_api_url = url.trim_end_matches('/').to_string();
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
         cx.notify();
     }
 
+    /// Persist `app_settings`. The appearance can also change from the View
+    /// menu while this window is open, so the store's value wins over this
+    /// window's possibly stale copy.
+    fn save_settings(&mut self) {
+        self.app_settings.theme = settings_store::snapshot().theme;
+        settings_store::update_store(self.app_settings.clone());
+    }
+
+    fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
+        crate::appearance::set_preference(theme, true, cx);
+        self.app_settings.theme = theme;
+        cx.notify();
+    }
+
     fn set_text_size_preset(&mut self, preset: TextSizePreset, cx: &mut Context<Self>) {
         self.app_settings.text_size_preset = preset;
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         cx.notify();
     }
 
     fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
         self.app_settings.language = language;
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         cx.notify();
     }
 
@@ -191,7 +205,7 @@ impl SettingsWindow {
         } else {
             self.app_settings.client_ids.insert(oauth_base, client_id);
         }
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         cx.notify();
     }
 
@@ -201,7 +215,7 @@ impl SettingsWindow {
             Ok(mb) if mb >= 10 => {
                 self.cache_budget_error = None;
                 self.app_settings.cache_budget_mb = mb;
-                settings_store::update_store(self.app_settings.clone());
+                self.save_settings();
                 crate::tile_cache::set_budget_mb(mb);
             }
             Ok(_) => {
@@ -249,7 +263,7 @@ impl SettingsWindow {
             return;
         }
         self.app_settings.keybindings.remove(id);
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
@@ -257,7 +271,7 @@ impl SettingsWindow {
     /// Clear every shortcut override, restoring all ten defaults.
     fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
         self.app_settings.keybindings.clear();
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
@@ -300,7 +314,7 @@ impl SettingsWindow {
         }
 
         self.app_settings.keybindings.insert(id.to_string(), spec);
-        settings_store::update_store(self.app_settings.clone());
+        self.save_settings();
         self.recording = None;
         self.shortcut_error = None;
         cx.emit(SettingsEvent::KeybindingsChanged);
@@ -512,8 +526,27 @@ impl SettingsWindow {
 
     fn appearance_page(&self, view: Entity<Self>) -> SettingPage {
         let language_view = view.clone();
+        let theme_view = view.clone();
         let value_view = view.clone();
         let set_value_view = view;
+        let theme_item = SettingItem::new(
+            tr!("settings.appearance.theme"),
+            SettingField::dropdown(
+                ThemePreference::ALL
+                    .into_iter()
+                    .map(|p| (p.as_key().into(), p.label()))
+                    .collect(),
+                // The store, not this window's copy: the View menu can change it too.
+                |_cx: &App| SharedString::from(settings_store::snapshot().theme.as_key()),
+                move |val: SharedString, cx: &mut App| {
+                    let Some(theme) = ThemePreference::from_key(&val) else {
+                        return;
+                    };
+                    theme_view.update(cx, |this, cx| this.set_theme(theme, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.theme_description"));
         let item = SettingItem::new(
             tr!("settings.appearance.text_size"),
             SettingField::dropdown(
@@ -537,6 +570,9 @@ impl SettingsWindow {
         SettingPage::new(tr!("settings.appearance.title"))
             .icon(Icon::new(IconName::Palette))
             .groups(vec![
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.theme_group"))
+                    .item(theme_item),
                 SettingGroup::new()
                     .title(tr!("settings.appearance.text_group"))
                     .item(item),

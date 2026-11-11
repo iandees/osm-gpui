@@ -52,6 +52,41 @@ impl TextSizePreset {
     }
 }
 
+/// Colour appearance preference: follow the OS, or force light or dark.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    pub const ALL: [ThemePreference; 3] = [Self::System, Self::Light, Self::Dark];
+
+    pub fn label(self) -> gpui::SharedString {
+        match self {
+            Self::System => crate::tr!("settings.appearance.theme_system"),
+            Self::Light => crate::tr!("settings.appearance.theme_light"),
+            Self::Dark => crate::tr!("settings.appearance.theme_dark"),
+        }
+    }
+
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_key() == key)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub api_server: ApiServerChoice,
@@ -88,6 +123,9 @@ pub struct AppSettings {
     /// recent first (see `crate::preset_recents`).
     #[serde(default)]
     pub recent_presets: Vec<String>,
+    /// Light, dark, or follow the OS. Missing in older files, meaning System.
+    #[serde(default)]
+    pub theme: ThemePreference,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -106,6 +144,7 @@ impl Default for AppSettings {
             side_panel_width: None,
             language: None,
             recent_presets: Vec::new(),
+            theme: ThemePreference::default(),
         }
     }
 }
@@ -142,6 +181,11 @@ pub fn update_store(settings: AppSettings) {
             crate::capabilities::ensure_fetched(&base);
         }
     }
+}
+
+/// Replace the in-memory settings only, without writing the settings file.
+pub fn update_store_in_memory(settings: AppSettings) {
+    APP_SETTINGS.update("settings_store", |g| *g = settings);
 }
 
 /// Return a snapshot of the current in-memory settings.
@@ -281,6 +325,7 @@ mod tests {
             side_panel_width: Some(340.0),
             language: Some("en".into()),
             recent_presets: vec!["building".into(), "natural/tree".into()],
+            theme: ThemePreference::Dark,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -453,9 +498,26 @@ mod tests {
             side_panel_width: None,
             language: None,
             recent_presets: Vec::new(),
+            theme: ThemePreference::default(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_theme_defaults_to_system() {
+        let dir = tmp_dir("legacy-no-theme");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(load_from(&path).theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn theme_preference_keys_round_trip() {
+        for p in ThemePreference::ALL {
+            assert_eq!(ThemePreference::from_key(p.as_key()), Some(p));
+        }
+        assert_eq!(ThemePreference::from_key("sepia"), None);
     }
 }

@@ -316,6 +316,12 @@ settings:
     description: "Wird nach einem Neustart der App wirksam."
   appearance:
     title: "Erscheinungsbild"
+    theme_group: "Design"
+    theme: "Erscheinungsbild"
+    theme_description: "„System“ folgt dem hellen oder dunklen Erscheinungsbild des Betriebssystems."
+    theme_system: "System"
+    theme_light: "Hell"
+    theme_dark: "Dunkel"
     text_group: "Text"
     text_size: "Textgröße"
     text_size_description: "Größe des Texts in der gesamten App."

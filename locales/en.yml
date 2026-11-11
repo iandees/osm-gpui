@@ -320,6 +320,12 @@ settings:
     description: "Takes effect after restarting the app."
   appearance:
     title: "Appearance"
+    theme_group: "Theme"
+    theme: "Appearance"
+    theme_description: "System follows the light or dark appearance of your operating system."
+    theme_system: "System"
+    theme_light: "Light"
+    theme_dark: "Dark"
     text_group: "Text"
     text_size: "Text Size"
     text_size_description: "Size of text throughout the app."
