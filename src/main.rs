@@ -669,6 +669,9 @@ struct MapViewer {
     /// Whether the Members list shows every member of a long relation
     /// instead of the first few.
     members_show_all: bool,
+    /// The selection's measurement, kept while neither the selection nor the
+    /// layer's edit revision changes (see `side_panel::selection_measurement`).
+    measure_cache: side_panel::MeasureCache,
     /// One focus handle per Members row, grouping that row's buttons so the
     /// row can tell whether focus is inside it (grown lazily while rendering).
     member_controls_focus: std::cell::RefCell<Vec<gpui::FocusHandle>>,
@@ -943,6 +946,7 @@ impl MapViewer {
             parallel_params: osm_gpui::parallel::ParallelParams::default(),
             pending_role_edit_open: None,
             members_show_all: false,
+            measure_cache: Default::default(),
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
@@ -9109,6 +9113,74 @@ mod tests {
                 assert_eq!(pending(view), (0, 1, 1));
                 undo_step(view);
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn selection_measurement_follows_edits_and_drags_and_skips_huge_selections(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::measure::Measurement;
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                assert_eq!(view.selection_measurement(), None);
+                select(view, Way, &[100]);
+                let Some(Measurement::Length { ways: 1, metres }) = view.selection_measurement()
+                else {
+                    panic!("expected a length");
+                };
+                assert!(metres > 100.0);
+                // Same selection and revision: the cached value is returned.
+                assert_eq!(
+                    view.selection_measurement(),
+                    Some(Measurement::Length { ways: 1, metres })
+                );
+
+                // A committed move changes the revision, so it is measured again.
+                let (lat, lon) = node_position(view, 1);
+                view.layer_manager
+                    .find_layer_mut(layer_id)
+                    .unwrap()
+                    .as_editable_mut()
+                    .unwrap()
+                    .commit_node_moves(&[(1, lat - 0.01, lon)]);
+                let Some(Measurement::Length { metres: moved, .. }) = view.selection_measurement()
+                else {
+                    panic!("expected a length");
+                };
+                assert!(moved > metres + 500.0, "{moved} vs {metres}");
+
+                // While node 1 is dragged 200 px, the measurement follows the
+                // drag without the data changing.
+                let (lat, lon) = node_position(view, 1);
+                view.interaction = Interaction::MoveDrag {
+                    down: (100.0, 100.0),
+                    targets: vec![(layer_id, vec![(1, lat, lon)])],
+                };
+                view.last_mouse_pos = Some(from_pt((300.0, 100.0)));
+                let Some(Measurement::Length {
+                    metres: dragged, ..
+                }) = view.selection_measurement()
+                else {
+                    panic!("expected a length");
+                };
+                assert!((dragged - moved).abs() > 1.0, "{dragged} vs {moved}");
+                assert_eq!(node_position(view, 1), (lat, lon));
+                view.interaction = Interaction::Idle;
+
+                // A selection past the cap is not measured.
+                view.selected = (0..=osm_gpui::measure::MAX_FEATURES as i64)
+                    .map(|id| osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: Way,
+                        id,
+                    })
+                    .collect();
+                assert_eq!(view.selection_measurement(), Some(Measurement::TooMany));
             })
             .unwrap();
     }

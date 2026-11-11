@@ -45,6 +45,16 @@ pub(crate) struct Membership {
     pub index: usize,
 }
 
+/// What the last selection measurement was computed for: the selection, the
+/// layer's edit revision, and the result.
+pub(crate) type MeasureCache = std::cell::RefCell<
+    Option<(
+        Vec<osm_gpui::selection::FeatureRef>,
+        u64,
+        Option<osm_gpui::measure::Measurement>,
+    )>,
+>;
+
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
     /// A selection of tens of thousands (Edit > Select All, Edit > Find)
@@ -98,6 +108,7 @@ impl MapViewer {
         let selected_count = self.selected.len();
         let muted = cx.theme().muted_foreground;
         let selection_header = self.render_selection_header(cx);
+        let measurement = self.render_measurement(cx);
 
         let selection_title = match self.selected.len() {
             0 | 1 => tr!("panel.selection.title"),
@@ -202,6 +213,7 @@ impl MapViewer {
                                     .when(selected_count == 1, |group| {
                                         group.child(selection_header)
                                     })
+                                    .children(measurement)
                                     .when(selected_count > 1, |group| {
                                         group.child(div().px_2().py_1().child(selection_section))
                                     })
@@ -975,6 +987,119 @@ impl MapViewer {
                     ),
             )
             .into_any_element()
+    }
+
+    /// The measurement of the current selection (see `osm_gpui::measure`).
+    /// Cached per selection and layer edit revision, so a frame with nothing
+    /// changed costs one comparison; nothing at all is computed for an empty
+    /// selection or one past `measure::MAX_FEATURES`. While nodes are being
+    /// dragged it is computed from their dragged positions on every frame
+    /// instead (the data only changes when the drag ends).
+    pub(crate) fn selection_measurement(&self) -> Option<osm_gpui::measure::Measurement> {
+        use osm_gpui::measure::{measure_selection, Measurement, MAX_FEATURES};
+        use std::collections::HashMap;
+
+        let first = self.selected.first()?;
+        if self.selected.len() > MAX_FEATURES {
+            return Some(Measurement::TooMany);
+        }
+        let layer = self.layer_manager.find_layer(first.layer_id)?;
+        let editable = layer.as_editable()?;
+
+        if let (crate::Interaction::MoveDrag { down, targets }, Some(mouse)) =
+            (&self.interaction, self.last_mouse_pos)
+        {
+            let now = crate::to_pt(mouse);
+            let delta = crate::from_pt((now.0 - down.0, now.1 - down.1));
+            if (now.0 - down.0).hypot(now.1 - down.1) >= osm_gpui::interaction::DRAG_THRESHOLD {
+                let overrides: HashMap<i64, (f64, f64)> = targets
+                    .iter()
+                    .flat_map(|(_, nodes)| nodes.iter())
+                    .map(|&(id, lat, lon)| {
+                        let moved = self.viewport.geo_to_screen(lat, lon) + delta;
+                        (id, self.viewport.screen_to_geo(moved))
+                    })
+                    .collect();
+                return measure_selection(editable, first.layer_id, &self.selected, &overrides);
+            }
+        }
+
+        let revision = layer.edit_revision();
+        let mut cache = self.measure_cache.borrow_mut();
+        if let Some((selection, rev, result)) = cache.as_ref() {
+            if *rev == revision && *selection == self.selected {
+                return result.clone();
+            }
+        }
+        let result = measure_selection(editable, first.layer_id, &self.selected, &HashMap::new());
+        *cache = Some((self.selected.clone(), revision, result.clone()));
+        result
+    }
+
+    /// The muted measurement line under the selection header, if the
+    /// selection has one. A single node's coordinates copy to the clipboard
+    /// when clicked.
+    fn render_measurement(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use osm_gpui::measure::{
+            format_area, format_degrees, format_length, Measurement, MAX_FEATURES,
+        };
+
+        let measurement = self.selection_measurement()?;
+        let text: SharedString = match &measurement {
+            Measurement::Point { lat, lon } => tr!(
+                "panel.measure.point",
+                lat = format_degrees(*lat),
+                lon = format_degrees(*lon)
+            ),
+            Measurement::Distance { metres } => {
+                tr!("panel.measure.distance", distance = format_length(*metres))
+            }
+            Measurement::Length { ways: 1, metres } => {
+                tr!("panel.measure.length", length = format_length(*metres))
+            }
+            Measurement::Length { ways, metres } => tr!(
+                "panel.measure.total_length",
+                count = ways,
+                length = format_length(*metres)
+            ),
+            Measurement::Ring {
+                area_m2,
+                perimeter_m,
+            } => tr!(
+                "panel.measure.ring",
+                area = format_area(*area_m2),
+                perimeter = format_length(*perimeter_m)
+            ),
+            Measurement::Area { area_m2 } => {
+                tr!("panel.measure.area", area = format_area(*area_m2))
+            }
+            Measurement::TooMany => tr!("panel.measure.too_many", max = MAX_FEATURES),
+        };
+        let line = div()
+            .id("selection-measurement")
+            .px_3()
+            .pb_2()
+            .text_size(muted_text_size())
+            .text_color(cx.theme().muted_foreground)
+            .child(text.clone());
+        let line = if matches!(measurement, Measurement::Point { .. }) {
+            line.cursor_pointer()
+                .tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new(tr!("panel.measure.copy"))
+                        .build(window, cx)
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
+                        this.set_status(tr!("panel.measure.copied"));
+                        cx.notify();
+                    }),
+                )
+        } else {
+            line
+        };
+        Some(line.into_any_element())
     }
 
     /// The Selection accordion section for a multi-selection: a scrollable

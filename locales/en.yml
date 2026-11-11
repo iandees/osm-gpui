@@ -264,6 +264,18 @@ panel:
     reset_offset: "Reset imagery offset"
     # Tag on an imagery layer that is drawn shifted; the values are metres.
     offset_tag: "offset E %{east}, N %{north}"
+  # The muted measurement line under the Selection header. Lengths and
+  # areas arrive formatted (`%{length}`, `%{area}`, `%{perimeter}`).
+  measure:
+    point: "%{lat}, %{lon}"
+    copy: "Click to copy the coordinates"
+    copied: "Copied the coordinates"
+    distance: "Distance %{distance}"
+    length: "Length %{length}"
+    total_length: "%{count} ways · total length %{length}"
+    ring: "Area %{area} · perimeter %{perimeter}"
+    area: "Area %{area}"
+    too_many: "Too many features to measure (more than %{max})"
   selection:
     title: "Selection"
     title_count:

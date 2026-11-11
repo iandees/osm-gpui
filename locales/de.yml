@@ -258,6 +258,16 @@ panel:
     reset_offset: "Luftbildversatz zurücksetzen"
     # Markierung an einer Bildebene, die verschoben gezeichnet wird; Werte in Metern.
     offset_tag: "Versatz O %{east}, N %{north}"
+  measure:
+    point: "%{lat}, %{lon}"
+    copy: "Klicken, um die Koordinaten zu kopieren"
+    copied: "Koordinaten kopiert"
+    distance: "Abstand %{distance}"
+    length: "Länge %{length}"
+    total_length: "%{count} Wege · Gesamtlänge %{length}"
+    ring: "Fläche %{area} · Umfang %{perimeter}"
+    area: "Fläche %{area}"
+    too_many: "Zu viele Objekte zum Messen (mehr als %{max})"
   selection:
     title: "Auswahl"
     title_count:
