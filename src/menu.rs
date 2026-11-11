@@ -195,21 +195,6 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.request_download(cx));
 }
 
-/// Whether any layer has changes to upload, for File > Upload to OSM (the
-/// menus are built outside the window, which owns the real state). The
-/// window keeps it current and rebuilds the menus when it flips.
-static MENU_CAN_UPLOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub(crate) fn menu_can_upload() -> bool {
-    MENU_CAN_UPLOAD.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Record whether there is anything to upload; true if that changed (the
-/// caller then rebuilds the menus).
-pub(crate) fn set_menu_can_upload(on: bool) -> bool {
-    MENU_CAN_UPLOAD.swap(on, std::sync::atomic::Ordering::Relaxed) != on
-}
-
 // Global fallback for the File > Upload to OSM menu action; the normal path
 // is `MapViewer::on_upload_to_osm`, a window-scoped listener. A global
 // handler runs while the map window is still checked out for the dispatch, so
@@ -369,16 +354,28 @@ pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
     // the startup call to `rebuild_menus` in `main.rs`).
-    let (lat, lon, state, show_downloaded_area) = crate::MAP_VIEWER_HANDLE
+    let (lat, lon, state, show_downloaded_area, can_upload) = crate::MAP_VIEWER_HANDLE
         .get()
         .and_then(|h| h.upgrade())
         .map(|view| {
             let view = view.read(cx);
             let (lat, lon, state) = view.imagery_menu_context();
-            (lat, lon, state, view.shows_downloaded_area())
+            (
+                lat,
+                lon,
+                state,
+                view.shows_downloaded_area(),
+                view.has_uploadable_changes(),
+            )
         })
-        .unwrap_or((40.7128, -74.0060, crate::ImageryLoadState::Loading, true));
-    rebuild_menus(cx, lat, lon, state, show_downloaded_area);
+        .unwrap_or((
+            40.7128,
+            -74.0060,
+            crate::ImageryLoadState::Loading,
+            true,
+            false,
+        ));
+    rebuild_menus(cx, lat, lon, state, show_downloaded_area, can_upload);
 }
 
 /// Build and install the menu bar, using the current viewport center to filter
@@ -395,6 +392,7 @@ pub(crate) fn rebuild_menus(
     center_lon: f64,
     state: ImageryLoadState,
     show_downloaded_area: bool,
+    can_upload: bool,
 ) {
     cx.set_menus(build_menus(
         cfg!(target_os = "macos"),
@@ -402,6 +400,7 @@ pub(crate) fn rebuild_menus(
         center_lon,
         state,
         show_downloaded_area,
+        can_upload,
     ));
     if in_window_menu_enabled() {
         // `Menu` is not `Clone`, so build the (cheap) list a second time for
@@ -412,6 +411,7 @@ pub(crate) fn rebuild_menus(
             center_lon,
             state,
             show_downloaded_area,
+            can_upload,
         )
         .into_iter()
         .map(|menu| fit_owned_menu(menu.owned()))
@@ -666,6 +666,7 @@ fn build_menus(
     center_lon: f64,
     state: ImageryLoadState,
     show_downloaded_area: bool,
+    can_upload: bool,
 ) -> Vec<Menu> {
     let custom = custom_imagery_snapshot();
     let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
@@ -753,7 +754,7 @@ fn build_menus(
         MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
-        MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!menu_can_upload()),
+        MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!can_upload),
     ];
     let mut edit_tail = vec![];
     let mut help_items = vec![
@@ -1028,7 +1029,7 @@ mod tests {
     }
 
     fn menus_for(is_macos: bool) -> Vec<gpui::OwnedMenu> {
-        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Loading, true)
+        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Loading, true, true)
             .into_iter()
             .map(Menu::owned)
             .collect()
@@ -1147,7 +1148,7 @@ mod tests {
                 attribution: None,
             })
             .collect();
-        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Ready, true)
+        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Ready, true, true)
             .into_iter()
             .map(|m| fit_owned_menu(m.owned()))
             .collect()

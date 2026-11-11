@@ -855,6 +855,8 @@ struct MapViewer {
     /// bounds dimmed) is drawn. View > Show Downloaded Area; on by default and
     /// not persisted (the settings store holds no other View preferences).
     show_downloaded_area: bool,
+    /// Whether the menus were last built with File > Upload to OSM enabled.
+    upload_menu_enabled: bool,
     /// Active custom imagery dialog, if open.
     custom_imagery_dialog:
         Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
@@ -1170,6 +1172,7 @@ impl MapViewer {
             last_imagery_load_state: None,
             show_debug_overlay: false,
             show_downloaded_area: true,
+            upload_menu_enabled: false,
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             delete_layer_dialog: None,
@@ -1283,7 +1286,14 @@ impl MapViewer {
         }
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
-        rebuild_menus(&mut *cx, lat, lon, current_state, self.show_downloaded_area);
+        rebuild_menus(
+            &mut *cx,
+            lat,
+            lon,
+            current_state,
+            self.show_downloaded_area,
+            self.has_uploadable_changes(),
+        );
         self.last_menu_center = Some((lat, lon));
         self.last_imagery_load_state = Some(current_state);
     }
@@ -5729,7 +5739,14 @@ impl MapViewer {
         }
         self.show_downloaded_area = show;
         let (lat, lon, state) = self.imagery_menu_context();
-        rebuild_menus(&mut *cx, lat, lon, state, show);
+        rebuild_menus(
+            &mut *cx,
+            lat,
+            lon,
+            state,
+            show,
+            self.has_uploadable_changes(),
+        );
         cx.notify();
     }
 
@@ -5904,12 +5921,18 @@ impl MapViewer {
         self.open_upload_dialog_as(signed_in_name.as_deref(), window, cx);
     }
 
+    /// Whether any layer has changes to upload (enables File > Upload to OSM).
+    pub(crate) fn has_uploadable_changes(&self) -> bool {
+        self.layer_manager.layers().iter().any(|l| l.is_modified())
+    }
+
     /// Keep File > Upload to OSM disabled while no layer has changes. The
     /// menus are rebuilt (deferred, as this runs during a render) only when
-    /// the answer flips.
-    fn sync_upload_menu(&self, cx: &mut Context<Self>) {
-        let can_upload = self.layer_manager.layers().iter().any(|l| l.is_modified());
-        if menu::set_menu_can_upload(can_upload) {
+    /// the answer differs from the one they were last built for.
+    fn sync_upload_menu(&mut self, cx: &mut Context<Self>) {
+        let can_upload = self.has_uploadable_changes();
+        if can_upload != self.upload_menu_enabled {
+            self.upload_menu_enabled = can_upload;
             cx.defer(menu::rebuild_menus_for_live_viewer);
         }
     }
@@ -8117,7 +8140,14 @@ fn main() {
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
-        rebuild_menus(cx, 40.7128, -74.0060, ImageryLoadState::Loading, true);
+        rebuild_menus(
+            cx,
+            40.7128,
+            -74.0060,
+            ImageryLoadState::Loading,
+            true,
+            false,
+        );
 
         // Kick off background download/parse of the Editor Layer Index.
         cx.background_executor()
