@@ -15,6 +15,10 @@
 //!   added in Add mode) would otherwise be invisible and unselectable for
 //!   good, so it follows the tagged rule.
 //!
+//! The vertices of the way under the pointer (the "preview way") are shown,
+//! small and light, from `PREVIEW_MIN_ZOOM`, and are hover/click/drag
+//! targets while it is previewed.
+//!
 //! Selected nodes, the hovered node and the nodes of selected ways are shown
 //! in full at any zoom; that is decided by the layer, which passes
 //! `pinned = true` to `node_form`. The one function `node_form` answers
@@ -42,6 +46,15 @@ pub const SIMPLE_RGBA: u32 = (SIMPLE_COLOR << 8) | 0xFF;
 /// Hit radius, in pixels, of a full marker and of a simple one.
 pub const FULL_HIT_RADIUS: f32 = 8.0;
 pub const SIMPLE_HIT_RADIUS: f32 = 5.0;
+/// The vertices of the way under the pointer are previewed from this zoom
+/// (the one where tagged nodes get their full marker): below it vertices are
+/// too close together to grab, and the map would flash as the pointer crosses
+/// many ways.
+pub const PREVIEW_MIN_ZOOM: f64 = FULL_MIN_ZOOM;
+/// Diameter of a previewed vertex: smaller than a selected way's vertex.
+pub const PREVIEW_DIAMETER: f32 = 7.0;
+/// Hit radius, in pixels, of a previewed vertex.
+pub const PREVIEW_HIT_RADIUS: f32 = 7.0;
 
 /// How a node's marker is drawn at a given view.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +65,10 @@ pub enum NodeForm {
     Simple(f32),
     /// The full marker: casing and the style's colour and size.
     Full,
+    /// A vertex of the way under the pointer: a small white dot with a dark
+    /// outline, lighter than a selected way's vertices. A hover and click
+    /// target.
+    Preview,
 }
 
 impl NodeForm {
@@ -65,6 +82,7 @@ impl NodeForm {
             NodeForm::Hidden => 0.0,
             NodeForm::Simple(_) => SIMPLE_HIT_RADIUS,
             NodeForm::Full => FULL_HIT_RADIUS,
+            NodeForm::Preview => PREVIEW_HIT_RADIUS,
         }
     }
 }
@@ -74,6 +92,28 @@ impl NodeForm {
 /// true for an untagged node that belongs to no way (callers may pass false
 /// for tagged nodes, where it makes no difference).
 pub fn node_form(tagged: bool, standalone: bool, pinned: bool, zoom: f64) -> NodeForm {
+    node_form_previewed(tagged, standalone, pinned, false, zoom)
+}
+
+/// Like `node_form`, with `previewed` true for a node of the way under the
+/// pointer. A previewed node that would otherwise be hidden is shown in the
+/// preview form from `PREVIEW_MIN_ZOOM`; any form it already has wins.
+pub fn node_form_previewed(
+    tagged: bool,
+    standalone: bool,
+    pinned: bool,
+    previewed: bool,
+    zoom: f64,
+) -> NodeForm {
+    let form = base_form(tagged, standalone, pinned, zoom);
+    if form == NodeForm::Hidden && previewed && zoom >= PREVIEW_MIN_ZOOM {
+        NodeForm::Preview
+    } else {
+        form
+    }
+}
+
+fn base_form(tagged: bool, standalone: bool, pinned: bool, zoom: f64) -> NodeForm {
     if pinned {
         NodeForm::Full
     } else if !(tagged || standalone) {
@@ -156,6 +196,49 @@ mod tests {
             assert_eq!(node_form(false, false, true, z), NodeForm::Full);
             assert_eq!(node_form(true, false, true, z), NodeForm::Full);
         }
+    }
+
+    #[test]
+    fn previewed_vertex_is_shown_small_from_the_preview_zoom_only() {
+        for z in [3.0, 16.0, 17.0, 17.99] {
+            assert_eq!(
+                node_form_previewed(false, false, false, true, z),
+                NodeForm::Hidden,
+                "z{z}"
+            );
+        }
+        for z in [18.0, 19.0, 22.0] {
+            assert_eq!(
+                node_form_previewed(false, false, false, true, z),
+                NodeForm::Preview,
+                "z{z}"
+            );
+        }
+        // Not previewed: still hidden.
+        assert_eq!(
+            node_form_previewed(false, false, false, false, 19.0),
+            NodeForm::Hidden
+        );
+    }
+
+    #[test]
+    fn preview_never_downgrades_a_form_the_node_already_has() {
+        assert_eq!(
+            node_form_previewed(false, false, true, true, 19.0),
+            NodeForm::Full
+        );
+        assert_eq!(
+            node_form_previewed(true, false, false, true, 19.0),
+            NodeForm::Full
+        );
+    }
+
+    #[test]
+    fn preview_form_is_a_target_and_lighter_than_full() {
+        assert!(NodeForm::Preview.is_shown());
+        assert!(NodeForm::Preview.hit_radius() >= 5.0);
+        assert!(NodeForm::Preview.hit_radius() <= NodeForm::Full.hit_radius());
+        assert_eq!(PREVIEW_MIN_ZOOM, FULL_MIN_ZOOM);
     }
 
     #[test]
