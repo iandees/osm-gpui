@@ -1,0 +1,48 @@
+# Deleting a layer with unsaved edits asks first; Cancel is the default (Enter
+# and Escape cancel), "Delete Layer" is the destructive button. Never uploads.
+#
+# Same fixture and coordinates as side-panel-polish.osmscript (window
+# 1200x800): way 8301 at (340, 400). Layer 0 is the map tiles, layer 1 the
+# data layer.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/side-panel-clarity.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 340,400
+wait_idle 2s
+assert_selected way 8301
+set_tag note delete layer test
+wait_idle 1s
+assert_pending 1
+capture out/delete-layer-01-edited.png
+
+# Asks first; nothing is deleted yet.
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+assert_dialog delete_layer
+capture out/delete-layer-02-dialog.png
+
+# Enter picks the default button, Cancel: the layer and its edit stay.
+key enter
+wait_idle 2s
+assert_dialog none
+assert_pending 1
+capture out/delete-layer-03-cancelled.png
+
+# Again, and this time confirm.
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+assert_dialog delete_layer
+cancel_delete_layer
+wait_idle 1s
+assert_dialog none
+assert_pending 1
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+assert_dialog delete_layer
+confirm_delete_layer
+wait_idle 2s
+assert_dialog none
+capture out/delete-layer-04-deleted.png
