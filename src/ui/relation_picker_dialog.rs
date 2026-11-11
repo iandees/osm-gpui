@@ -82,6 +82,12 @@ impl RelationPickerDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for RelationPickerDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.query.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for RelationPickerDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

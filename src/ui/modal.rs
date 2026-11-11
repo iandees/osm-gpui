@@ -16,6 +16,57 @@ use gpui_component::{
 
 use crate::ui::style::muted_text_size;
 
+/// A modal dialog the host (`MapViewer::render`) keeps focused while it is
+/// open. Dialogs focus themselves when built, but something can take the
+/// focus back before the next frame: choosing an item of the in-window menu
+/// bar restores focus to whatever held it before the menu opened. The host
+/// then calls [`ModalDialog::initial_focus`] again, so Escape, Enter, Tab and
+/// typing reach the dialog however it was opened.
+pub trait ModalDialog: gpui::Focusable {
+    /// The handle that holds focus when the dialog opens: the dialog's own
+    /// handle by default, or its first text field.
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        gpui::Focusable::focus_handle(self, cx)
+    }
+}
+
+/// What the host needs of one open dialog: the handle that contains every
+/// control of it, and the one to focus when none of them is focused.
+pub struct OpenModal {
+    pub container: FocusHandle,
+    pub initial: FocusHandle,
+}
+
+/// Describe `dialog` for [`ensure_modal_focus`] (`None` when it is closed).
+pub fn open_modal<T: ModalDialog + 'static>(
+    dialog: &Option<gpui::Entity<T>>,
+    cx: &App,
+) -> Option<OpenModal> {
+    let dialog = dialog.as_ref()?.read(cx);
+    Some(OpenModal {
+        container: gpui::Focusable::focus_handle(dialog, cx),
+        initial: dialog.initial_focus(cx),
+    })
+}
+
+/// Give the last of `open` (the one drawn on top) the focus unless focus is
+/// already inside one of them. Returns whether focus was moved.
+pub fn ensure_modal_focus(open: &[OpenModal], window: &mut Window, cx: &mut App) -> bool {
+    let Some(top) = open.last() else {
+        return false;
+    };
+    // The first frame after a dialog opens has no dispatch tree for it yet,
+    // so a focused first field is checked directly too.
+    if open
+        .iter()
+        .any(|m| m.container.contains_focused(window, cx) || m.initial.is_focused(window))
+    {
+        return false;
+    }
+    window.focus(&top.initial, cx);
+    true
+}
+
 /// Wrap `content` (typically a [`dialog_frame`]) in the shared modal scrim: a
 /// full-window, click-occluding, semi-transparent backdrop that centers its
 /// child and dispatches key-down events (Escape/Enter) via `on_key_down`.

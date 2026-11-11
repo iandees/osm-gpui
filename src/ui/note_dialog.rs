@@ -109,6 +109,12 @@ impl NewNoteDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for NewNoteDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for NewNoteDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
