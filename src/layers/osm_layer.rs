@@ -168,6 +168,9 @@ struct NodeCache {
     styles: Vec<NodeStyle>,
 }
 
+/// How close, in pixels, the pointer must be to a way's line to hover it.
+const WAY_HIT_TOL: f32 = 6.0;
+
 /// Nodes shown in full whatever the zoom because they are selected; see
 /// `OsmLayer::pins`.
 #[derive(Default)]
@@ -175,6 +178,9 @@ struct Pins {
     nodes: HashSet<i64>,
     /// Indices into `way_vertices`.
     ways: HashSet<usize>,
+    /// Index into `way_vertices` of the way whose vertices are previewed
+    /// (the one under the pointer), if any.
+    preview: Option<usize>,
 }
 
 /// Layer for rendering OSM vector data (nodes and ways)
@@ -232,6 +238,10 @@ pub struct OsmLayer {
     stylesheet: Arc<Stylesheet>,
     /// Feature to highlight (set each frame by MapViewer).
     highlight: Vec<FeatureRef>,
+    /// The way under the pointer in Select mode, whose vertices are shown
+    /// (small and light) and can be hovered, clicked and dragged. Set by
+    /// `update_vertex_preview`; costs nothing while `None`.
+    preview_way: Option<i64>,
     /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
     /// data changes. Used by box-select (`hit_test_rect`) and indexed
     /// point-click hit-testing (`hit_test`).
@@ -1098,6 +1108,21 @@ fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: No
     ));
 }
 
+/// A previewed vertex (see `NodeForm::Preview`): a small white dot in a dark
+/// outline, deliberately lighter than the style-coloured marker of a selected
+/// way's vertex so hover and selection read differently.
+fn paint_preview_marker(window: &mut Window, screen_point: Point<Pixels>) {
+    let diameter = node_markers::PREVIEW_DIAMETER;
+    window.paint_quad(quad(
+        circle_bounds(screen_point, diameter),
+        px(diameter / 2.0),
+        rgb(0xFFFFFF),
+        px(1.5),
+        rgb(CASING_COLOR),
+        BorderStyle::Solid,
+    ));
+}
+
 /// The simple form of a tagged node at low zoom: a tiny empty square of outer
 /// edge `edge` with a `SIMPLE_STROKE` outline, as four thin rectangles (eight
 /// triangles) of the frame's shared `path`. The corner is snapped to half a
@@ -1240,6 +1265,7 @@ impl OsmLayer {
             },
             stylesheet: Arc::new(Stylesheet::load_default()),
             highlight: Vec::new(),
+            preview_way: None,
             node_index: RTree::new(),
             way_index: RTree::new(),
             way_id_to_index: HashMap::new(),
@@ -1293,6 +1319,7 @@ impl OsmLayer {
             node_cache,
             stylesheet,
             highlight: Vec::new(),
+            preview_way: None,
             node_index,
             way_index,
             way_id_to_index,
@@ -3159,20 +3186,115 @@ impl OsmLayer {
                 FeatureKind::Relation => {}
             }
         }
+        pins.preview = self
+            .preview_way
+            .and_then(|w| self.way_id_to_index.get(&w).copied());
         pins
     }
 
     /// How node `id` (at `idx` in the node cache) is shown at `zoom`: the
     /// one answer behind drawing, hover, click and box select.
     fn node_form_at(&self, pins: &Pins, idx: usize, id: i64, zoom: f64) -> NodeForm {
+        let in_way = |pred: &dyn Fn(&usize) -> bool| {
+            self.node_to_ways
+                .get(&id)
+                .is_some_and(|ws| ws.iter().any(pred))
+        };
         let pinned = pins.nodes.contains(&id)
-            || (!pins.ways.is_empty()
-                && self
-                    .node_to_ways
-                    .get(&id)
-                    .is_some_and(|ws| ws.iter().any(|w| pins.ways.contains(w))));
+            || (!pins.ways.is_empty() && in_way(&|w| pins.ways.contains(w)));
+        let previewed = pins.preview.is_some_and(|p| in_way(&|w| *w == p));
         let tagged = self.node_cache.styles[idx].tagged;
-        node_markers::node_form(tagged, self.is_standalone(tagged, id, zoom), pinned, zoom)
+        node_markers::node_form_previewed(
+            tagged,
+            self.is_standalone(tagged, id, zoom),
+            pinned,
+            previewed,
+            zoom,
+        )
+    }
+
+    /// The way whose vertices are currently previewed, if any.
+    pub fn vertex_preview_way(&self) -> Option<i64> {
+        self.preview_way
+    }
+
+    /// Whether node `node_id` is a vertex of way `way_id`.
+    fn node_in_way(&self, node_id: i64, way_id: i64) -> bool {
+        self.way_id_to_index.get(&way_id).is_some_and(|idx| {
+            self.node_to_ways
+                .get(&node_id)
+                .is_some_and(|ws| ws.contains(idx))
+        })
+    }
+
+    /// Decide which way's vertices to preview after a pointer move to `pt`.
+    /// `hovered` is what the hover hit test picked (which already gives
+    /// previewed vertices priority over the way's line); `enabled` is false
+    /// outside Select mode, while a dialog is open, and so on.
+    ///
+    /// * hovering a way previews that way (the hit test's pick, so with
+    ///   overlapping ways the same one the hover highlight shows);
+    /// * hovering one of the preview way's vertices keeps it previewed;
+    /// * hovering anything else drops it;
+    /// * hovering nothing keeps it while the pointer is within the way's hit
+    ///   tolerance plus a vertex's hit radius of the way (hysteresis, so a
+    ///   vertex slightly off the line stays reachable).
+    ///
+    /// Returns whether the preview way changed. Reads one way's vertices at
+    /// most; never touches the way scene or any cache.
+    pub fn update_vertex_preview(
+        &mut self,
+        viewport: &Viewport,
+        pt: Point<Pixels>,
+        hovered: Option<&FeatureRef>,
+        enabled: bool,
+    ) -> bool {
+        let next = if !enabled
+            || self.osm_data.is_none()
+            || viewport.zoom_level() < node_markers::PREVIEW_MIN_ZOOM
+        {
+            None
+        } else {
+            match hovered {
+                Some(h) if h.layer_id == self.id => match h.kind {
+                    FeatureKind::Way => self.way_id_to_index.contains_key(&h.id).then_some(h.id),
+                    FeatureKind::Node => self.preview_way.filter(|&w| self.node_in_way(h.id, w)),
+                    FeatureKind::Relation => None,
+                },
+                Some(_) => None,
+                None => self.preview_way.filter(|&w| {
+                    self.way_screen_distance(viewport, pt, w)
+                        .is_some_and(|d| d <= WAY_HIT_TOL + node_markers::PREVIEW_HIT_RADIUS)
+                }),
+            }
+        };
+        let changed = next != self.preview_way;
+        self.preview_way = next;
+        changed
+    }
+
+    /// Distance in pixels from `pt` to the polyline of way `way_id`.
+    fn way_screen_distance(
+        &self,
+        viewport: &Viewport,
+        pt: Point<Pixels>,
+        way_id: i64,
+    ) -> Option<f32> {
+        let verts = &self.way_vertices[*self.way_id_to_index.get(&way_id)?];
+        let mut best: Option<f32> = None;
+        let mut prev: Option<Point<Pixels>> = None;
+        for &(_, mx, my) in verts.iter() {
+            let sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) {
+                continue;
+            }
+            if let Some(p0) = prev {
+                let d = point_to_segment_distance(pt, p0, sp);
+                best = Some(best.map_or(d, |b| b.min(d)));
+            }
+            prev = Some(sp);
+        }
+        best
     }
 
     /// Whether node `id` is an untagged node that belongs to no way, so it
@@ -4162,6 +4284,29 @@ impl MapLayer for OsmLayer {
             };
             window.paint_path(path, rgba(node_markers::SIMPLE_RGBA));
         }
+        // The preview way's vertices (only this one way's, so hovering costs
+        // a handful of quads): the ones no other rule shows.
+        if let Some(wi) = self
+            .preview_way
+            .filter(|_| zoom >= node_markers::PREVIEW_MIN_ZOOM)
+            .and_then(|w| self.way_id_to_index.get(&w).copied())
+        {
+            let pins = self.pins();
+            for &(id, mx, my) in self.way_vertices[wi].iter() {
+                let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
+                    continue;
+                };
+                if self.node_form_at(&pins, idx, id, zoom) != NodeForm::Preview {
+                    continue;
+                }
+                let mut sp = viewport.mercator_to_screen(mx, my);
+                if !is_point_valid(sp) {
+                    continue;
+                }
+                sp += self.drag_preview_offset(id);
+                paint_preview_marker(window, point(sp.x + origin_x, sp.y + origin_y));
+            }
+        }
         crate::frame_stats::count("count.nodes_in_view", nodes_in_view);
         crate::frame_stats::count("count.markers_drawn", markers_drawn);
 
@@ -4206,6 +4351,16 @@ impl MapLayer for OsmLayer {
 impl EditableLayer for OsmLayer {
     fn set_highlight(&mut self, features: &[FeatureRef]) {
         self.highlight = features.to_vec();
+    }
+
+    fn update_vertex_preview(
+        &mut self,
+        viewport: &Viewport,
+        pt: Point<Pixels>,
+        hovered: Option<&FeatureRef>,
+        enabled: bool,
+    ) -> bool {
+        OsmLayer::update_vertex_preview(self, viewport, pt, hovered, enabled)
     }
 
     fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
@@ -4349,7 +4504,7 @@ impl EditableLayer for OsmLayer {
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
         const NODE_TOL: f32 = node_markers::FULL_HIT_RADIUS;
-        const WAY_TOL: f32 = 6.0;
+        const WAY_TOL: f32 = WAY_HIT_TOL;
         // Generous multiplier on the query envelope vs. the exact pixel
         // tolerance above: the R-tree query is only a coarse candidate
         // filter, the refinement loops below do the exact distance check,
@@ -4967,11 +5122,19 @@ impl EditableLayer for OsmLayer {
                 // zoom rule shows (the ones that can be targeted); a
                 // selected way shows all of its vertices.
                 let zoom = viewport.zoom_level();
+                // The hovered way is the preview way: its vertices that are
+                // not otherwise shown get the small preview dot (the
+                // stroke above covered the ones painted by `render_canvas`).
+                let preview = kind == HighlightKind::Hovered
+                    && self.preview_way == Some(feature.id)
+                    && zoom >= node_markers::PREVIEW_MIN_ZOOM;
                 for (p, style) in pts.iter().zip(node_styles.iter()) {
                     if kind == HighlightKind::Selected
                         || node_markers::node_form(style.tagged, false, false, zoom).is_shown()
                     {
                         paint_node_marker(window, *p, *style);
+                    } else if preview {
+                        paint_preview_marker(window, *p);
                     }
                 }
             }
@@ -8578,6 +8741,202 @@ mod tests {
         assert!(boxed
             .iter()
             .any(|f| f.kind == FeatureKind::Node && f.id == 30));
+    }
+
+    fn way_ref(id: i64) -> FeatureRef {
+        FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id,
+        }
+    }
+
+    fn node_ref(id: i64) -> FeatureRef {
+        FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Node,
+            id,
+        }
+    }
+
+    /// Preview way 100 as a hover on its line would.
+    fn preview_100(layer: &mut OsmLayer, vp: &Viewport) -> bool {
+        let on_line = node_point(layer, vp, 30);
+        layer.update_vertex_preview(vp, on_line, Some(&way_ref(100)), true)
+    }
+
+    #[test]
+    fn preview_vertices_are_drawn_and_targets_from_the_preview_zoom_only() {
+        for z in [16.0, 17.0, 17.99] {
+            let mut layer = way_with_poi_layer(60);
+            let vp = view_at(z);
+            preview_100(&mut layer, &vp);
+            assert_eq!(layer.vertex_preview_way(), None, "z{z}: no preview");
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
+            assert!(hits.iter().all(|h| h.kind == FeatureKind::Way), "z{z}");
+        }
+        for z in [18.0, 19.0, 21.0] {
+            let mut layer = way_with_poi_layer(60);
+            let vp = view_at(z);
+            assert!(preview_100(&mut layer, &vp), "z{z}");
+            assert_eq!(layer.vertex_preview_way(), Some(100));
+            let pins = layer.pins();
+            let idx = layer.node_cache.index_by_id[&30];
+            assert_eq!(layer.node_form_at(&pins, idx, 30, z), NodeForm::Preview);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
+            assert_eq!(hits.len(), 1, "z{z}");
+            assert_eq!(hits[0].feature, node_ref(30), "z{z}");
+        }
+        // A preview left over from a higher zoom does not show or target
+        // anything once the view is below the threshold.
+        let mut layer = way_with_poi_layer(60);
+        preview_100(&mut layer, &view_at(19.0));
+        let low = view_at(17.0);
+        let hits = layer.hit_test(&low, node_point(&layer, &low, 30));
+        assert!(hits.iter().all(|h| h.kind == FeatureKind::Way));
+    }
+
+    #[test]
+    fn previewed_vertex_wins_over_the_line_and_is_hit_slightly_off_it() {
+        let mut layer = way_with_poi_layer(60);
+        let vp = view_at(19.0);
+        let at = node_point(&layer, &vp, 30);
+        // Without a preview the line is hit.
+        assert_eq!(layer.hit_test(&vp, at)[0].kind, FeatureKind::Way);
+        preview_100(&mut layer, &vp);
+        let hits = layer.hit_test(&vp, at);
+        assert!(hits.iter().all(|h| h.kind == FeatureKind::Node));
+        // Off the vertex but within its radius (and within the line's own
+        // tolerance): still the node, not the way.
+        let near = point(at.x + px(5.0), at.y + px(3.0));
+        let hits = layer.hit_test(&vp, near);
+        assert_eq!(hits[0].feature, node_ref(30));
+        // Beyond the vertex radius but on the line: the way.
+        let on_line = point(at.x + px(20.0), at.y);
+        assert_eq!(layer.hit_test(&vp, on_line)[0].kind, FeatureKind::Way);
+    }
+
+    #[test]
+    fn only_the_preview_ways_vertices_are_previewed() {
+        // Ways 100 (nodes 1-5) and 200 (nodes 5-9) share node 5; way 300 is
+        // apart.
+        let mut nodes = Vec::new();
+        let mut add = |id: i64, lat: f64, lon: f64| {
+            nodes.push(OsmNode {
+                id,
+                lat,
+                lon,
+                version: 1,
+                tags: empty_tags(),
+            });
+        };
+        for i in 1..=5 {
+            add(i, 40.0, -74.0 + i as f64 * 0.0001);
+        }
+        for i in 6..=9 {
+            add(i, 40.0 + (i - 5) as f64 * 0.0001, -74.0 + 5.0 * 0.0001);
+        }
+        for i in 11..=15 {
+            add(i, 40.002, -74.0 + (i - 10) as f64 * 0.0001);
+        }
+        let way = |id: i64, nodes: Vec<i64>| OsmWay {
+            id,
+            nodes,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let data = data_with(
+            nodes,
+            vec![
+                way(100, vec![1, 2, 3, 4, 5]),
+                way(200, vec![5, 6, 7, 8, 9]),
+                way(300, vec![11, 12, 13, 14, 15]),
+            ],
+        );
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let vp = Viewport::new(40.0003, -74.0003, 19.0, size(px(800.0), px(600.0)));
+        let forms = |layer: &OsmLayer| -> Vec<i64> {
+            let pins = layer.pins();
+            (1..=15)
+                .filter(|id| {
+                    layer.node_cache.index_by_id.get(id).is_some_and(|&idx| {
+                        layer.node_form_at(&pins, idx, *id, 19.0) == NodeForm::Preview
+                    })
+                })
+                .collect()
+        };
+        assert!(forms(&layer).is_empty());
+        let mid = node_point(&layer, &vp, 3);
+        layer.update_vertex_preview(&vp, mid, Some(&way_ref(100)), true);
+        assert_eq!(forms(&layer), vec![1, 2, 3, 4, 5]);
+        // The shared node appears when either way is hovered.
+        let mid = node_point(&layer, &vp, 7);
+        layer.update_vertex_preview(&vp, mid, Some(&way_ref(200)), true);
+        assert_eq!(forms(&layer), vec![5, 6, 7, 8, 9]);
+        layer.update_vertex_preview(&vp, mid, None, false);
+        assert!(forms(&layer).is_empty());
+    }
+
+    #[test]
+    fn preview_hysteresis_and_switching() {
+        let mut layer = way_with_poi_layer(60);
+        let vp = view_at(19.0);
+        preview_100(&mut layer, &vp);
+        let at = node_point(&layer, &vp, 30);
+        let off = |dy: f32| point(at.x + px(24.0), at.y + px(dy));
+        // Hovering nothing, 10px off the line (past its 6px tolerance but
+        // inside tolerance + vertex radius): still previewed.
+        assert!(!layer.update_vertex_preview(&vp, off(10.0), None, true));
+        assert_eq!(layer.vertex_preview_way(), Some(100));
+        // Well away: dropped.
+        assert!(layer.update_vertex_preview(&vp, off(16.0), None, true));
+        assert_eq!(layer.vertex_preview_way(), None);
+        // Hovering one of its vertices keeps the preview; a node that is
+        // not one of its vertices drops it; another way replaces it.
+        preview_100(&mut layer, &vp);
+        layer.update_vertex_preview(&vp, at, Some(&node_ref(30)), true);
+        assert_eq!(layer.vertex_preview_way(), Some(100));
+        layer.update_vertex_preview(&vp, at, Some(&node_ref(1000)), true);
+        assert_eq!(layer.vertex_preview_way(), None);
+        preview_100(&mut layer, &vp);
+        layer.update_vertex_preview(&vp, at, Some(&way_ref(999)), true);
+        assert_eq!(layer.vertex_preview_way(), None);
+        // Hovering a feature of another layer drops it too.
+        preview_100(&mut layer, &vp);
+        let foreign = FeatureRef {
+            layer_id: LayerId(2),
+            kind: FeatureKind::Way,
+            id: 100,
+        };
+        layer.update_vertex_preview(&vp, at, Some(&foreign), true);
+        assert_eq!(layer.vertex_preview_way(), None);
+        // Disabled (other mode, dialog, imagery offset) clears it.
+        preview_100(&mut layer, &vp);
+        layer.update_vertex_preview(&vp, at, Some(&way_ref(100)), false);
+        assert_eq!(layer.vertex_preview_way(), None);
+    }
+
+    #[test]
+    fn box_select_counts_previewed_vertices_as_drawn_only_while_previewed() {
+        let mut layer = way_with_poi_layer(60);
+        let vp = view_at(19.0);
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let has_vertex = |layer: &OsmLayer| {
+            layer
+                .hit_test_rect(&vp, rect)
+                .iter()
+                .any(|f| f.kind == FeatureKind::Node && f.id == 30)
+        };
+        assert!(!has_vertex(&layer));
+        preview_100(&mut layer, &vp);
+        assert!(has_vertex(&layer));
+        // The viewer clears the preview as soon as a box-select drag moves.
+        let at = node_point(&layer, &vp, 30);
+        layer.update_vertex_preview(&vp, at, None, false);
+        assert!(!has_vertex(&layer));
     }
 }
 
