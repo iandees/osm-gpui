@@ -92,6 +92,11 @@ pub trait AppHandle {
     fn signed_in(&mut self) -> bool;
     /// Why the sign-in started by `sign_in` failed, if it did.
     fn sign_in_failure(&mut self) -> Option<String>;
+    /// Do an OSM notes op (see `note_ops`). A write starts in the background;
+    /// the runner then waits for `NoteCheck::Idle`.
+    fn note_op(&mut self, _op: &crate::script::NoteOp) -> Result<(), String> {
+        Err("this app has no notes".to_string())
+    }
 }
 
 /// Why `op` may not run against `server`, if it may not. An op that starts or
@@ -103,6 +108,9 @@ pub fn upload_guard(op: &Op, server: &str) -> Result<(), String> {
         Op::UploadConfirm => "upload_confirm",
         Op::ResolveConflict { .. } => "resolve_conflict",
         Op::SignIn => "sign_in",
+        // Writing to notes (comment, close, reopen, create) is held to the
+        // same rule as an upload.
+        Op::Note(n) if n.is_write() => n.name(),
         _ => return Ok(()),
     };
     if crate::settings_store::is_dev_server(server) {
@@ -110,8 +118,8 @@ pub fn upload_guard(op: &Op, server: &str) -> Result<(), String> {
     } else {
         Err(format!(
             "{name}: refusing to run: the active API server is {server}, not the OSM development \
-             server ({}). Scripted uploads only run against the development server; \
-             start the app with --api-server dev",
+             server ({}). Scripted uploads and note writes only run against the development \
+             server; start the app with --api-server dev",
             crate::settings_store::DEV_API_URL
         ))
     }
@@ -156,9 +164,10 @@ impl Runner {
         };
         // Checked before anything else, whatever the op: see `upload_guard`.
         if matches!(
-            step.op,
+            &step.op,
             Op::UploadConfirm | Op::ResolveConflict { .. } | Op::SignIn
-        ) {
+        ) || matches!(&step.op, Op::Note(n) if n.is_write())
+        {
             let server = app.api_server();
             upload_guard(&step.op, &server).map_err(fail)?;
         }
@@ -415,6 +424,47 @@ impl Runner {
                 std::thread::sleep(*duration);
                 Ok(())
             }
+            Op::Note(n) => {
+                let name = n.name();
+                app.note_op(n).map_err(|e| fail(format!("{name}: {e}")))?;
+                if n.waits() {
+                    self.wait_notes_idle(app, step.line_no, name)?;
+                }
+                Ok(())
+            }
+            Op::AssertNote(c) => app
+                .check(&Check::Note(c.clone()))
+                .map_err(|e| fail(format!("assert_note: {e}"))),
+        }
+    }
+
+    /// Wait until the note fetch or write just started has finished (the
+    /// outcome is then in the note panel and the status bar).
+    fn wait_notes_idle<A: AppHandle>(
+        &self,
+        app: &mut A,
+        line_no: usize,
+        op: &str,
+    ) -> Result<(), RunError> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        for _ in 0..3 {
+            app.wait_frame();
+        }
+        loop {
+            if app
+                .check(&Check::Note(crate::script::NoteCheck::Idle))
+                .is_ok()
+            {
+                app.wait_frame();
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(RunError {
+                    line_no,
+                    message: format!("{op}: still running after 60s"),
+                });
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
@@ -622,6 +672,8 @@ fn describe(op: &Op) -> String {
         Op::AssertSignedIn => "assert_signed_in".to_string(),
         Op::AssertServerDev => "assert_server dev".to_string(),
         Op::Pause { message, .. } => format!("pause {}", message),
+        Op::Note(n) => format!("{} {:?}", n.name(), n),
+        Op::AssertNote(c) => format!("assert_note {:?}", c),
     }
 }
 
@@ -779,6 +831,10 @@ mod tests {
         fn sign_in_failure(&mut self) -> Option<String> {
             self.sign_in_failure.clone()
         }
+        fn note_op(&mut self, op: &crate::script::NoteOp) -> Result<(), String> {
+            self.calls.push(format!("note_op {}", op.name()));
+            Ok(())
+        }
     }
 
     const DEV: &str = "https://master.apis.dev.openstreetmap.org";
@@ -844,6 +900,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scripted_note_writes_are_refused_unless_the_server_is_the_dev_server() {
+        for server in [
+            "https://api.openstreetmap.org",
+            "https://www.openstreetmap.org",
+            "http://127.0.0.1:9",
+            "https://master.apis.dev.openstreetmap.org.evil.example",
+            "https://master.apis.dev.openstreetmap.org@evil.example",
+        ] {
+            for line in [
+                "note_comment hello",
+                "note_close",
+                "note_close done",
+                "note_reopen",
+                "new_note -48 -123 test",
+            ] {
+                let (mut fake, runner) = fake_on(server);
+                let e = runner.run(&mut fake, &steps(line)).unwrap_err();
+                assert!(
+                    e.message.contains("refusing to run") && e.message.contains(server),
+                    "{line} on {server}: {}",
+                    e.message
+                );
+                assert!(
+                    fake.calls.is_empty(),
+                    "{line} on {server} reached the app: {:?}",
+                    fake.calls
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn note_writes_run_on_the_dev_server_and_wait_for_the_write() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps("note_comment hi\nassert_note_status open"),
+            )
+            .unwrap();
+        assert!(fake.calls.contains(&"note_op note_comment".to_string()));
+        assert!(fake.calls.contains(&"check Note(Idle)".to_string()));
+    }
+
+    #[test]
+    fn reading_notes_is_allowed_on_any_server() {
+        let (mut fake, runner) = fake_on("https://api.openstreetmap.org");
+        runner
+            .run(
+                &mut fake,
+                &steps("show_notes on\nload_notes_file x.xml\nopen_note 5\nassert_notes 2"),
+            )
+            .unwrap();
+        assert_eq!(
+            fake.calls
+                .iter()
+                .filter(|c| c.starts_with("note_op "))
+                .count(),
+            3
+        );
+        // Turning notes on waits for the fetch; loading a file and opening a
+        // note are immediate.
+        assert_eq!(
+            fake.calls
+                .iter()
+                .filter(|c| *c == "check Note(Idle)")
+                .count(),
+            1
+        );
     }
 
     #[test]

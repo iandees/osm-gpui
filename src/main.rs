@@ -23,6 +23,7 @@ mod fields_section;
 mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
+mod notes_ui;
 mod script_harness;
 mod selection_actions;
 mod side_panel;
@@ -753,6 +754,8 @@ struct MapViewer {
     /// The "Adjust imagery offset" mode, while it is on (see
     /// `imagery_offset_ui`).
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
+    /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
+    notes: notes_ui::NotesState,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -955,6 +958,7 @@ impl MapViewer {
             right_press: None,
             context_menu: None,
             offset_adjust: None,
+            notes: Default::default(),
         }
     }
 
@@ -3268,6 +3272,10 @@ impl MapViewer {
         click_count: usize,
         ctrl_held: bool,
     ) {
+        // New Note placing its pin, or a click on a note's pin.
+        if self.notes_click(screen_pt) {
+            return;
+        }
         match self.mode {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
@@ -5598,7 +5606,13 @@ impl MapViewer {
                 this.transfer = None;
                 this.data_generation += 1;
                 match result {
-                    Ok(data) => this.apply_download(data),
+                    Ok(data) => {
+                        this.apply_download(data);
+                        // New data, new downloaded area: refetch the notes.
+                        if this.shows_notes() {
+                            this.refresh_notes(cx);
+                        }
+                    }
                     Err(e) => this.set_status(e.to_string()),
                 }
                 cx.notify();
@@ -5659,6 +5673,7 @@ impl Render for MapViewer {
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
         self.check_for_pending_restore(window, cx);
+        self.notes_frame(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
         // Validation section was last filled.
@@ -5726,7 +5741,12 @@ impl Render for MapViewer {
                             }
                         }
                         _ => map_cursor(
-                            self.mode,
+                            // A New Note waiting for its click: a crosshair.
+                            if self.notes_armed() {
+                                EditMode::Add
+                            } else {
+                                self.mode
+                            },
                             self.viewport.is_dragging,
                             self.space_held,
                             self.hovered.is_some(),
@@ -5835,6 +5855,9 @@ impl Render for MapViewer {
                             // imagery, Escape cancels, Enter keeps.
                         } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
                             // Arrow keys pan; +/- zoom.
+                        } else if ev.keystroke.key == "escape" && this.cancel_armed_note() {
+                            // A New Note waiting for its click is cancelled.
+                            cx.notify();
                         } else if ev.keystroke.key == "escape" {
                             let cancelled_drag = this.cancel_move_drag(cx);
                             match this.mode {
@@ -6452,6 +6475,9 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_zoom_to_data))
             .on_action(cx.listener(Self::on_zoom_to_selection))
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
+            .on_action(cx.listener(Self::on_toggle_notes))
+            .on_action(cx.listener(Self::on_refresh_notes))
+            .on_action(cx.listener(Self::on_new_note))
             .on_action(cx.listener(Self::on_minimize_window))
             .on_action(cx.listener(Self::on_zoom_window))
             .on_action(cx.listener(Self::on_move_layer))
@@ -6486,6 +6512,7 @@ impl Render for MapViewer {
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
+            .children(self.new_note_dialog_element())
             .children(self.render_context_menu(window, cx))
     }
 }
