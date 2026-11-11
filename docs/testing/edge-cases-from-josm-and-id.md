@@ -185,7 +185,7 @@ relation). Big networks are built in code.
 | L1 | Merge nodes of two ways that both have 2,000 nodes | No way grows, nothing refused | pass `merge_between_two_full_ways_keeps_both_at_the_limit` |
 | L2 | Merge two nodes of one 2,000 node way (far apart, neighbours, the two ends) | Length stays 2,000 (1,999 for neighbours) | pass `merge_inside_a_full_way_never_grows_it`, `merging_the_ends_of_a_full_open_way_closes_it_without_growing` |
 | L3 | Delete a vertex of a 2,000 node way | Node removed (X6) | design `a_vertex_of_a_full_way_cannot_be_deleted_today` (refused, nothing changes) |
-| L4 | Delete a vertex to bring a 2,001 node way back to the limit | Way shortened | FAIL `deleting_a_vertex_of_a_way_over_the_limit_shortens_it` (same cause as X6) |
+| L4 | Delete a vertex to bring a 2,001 node way back to the limit | Way shortened | pass `deleting_a_vertex_of_a_way_over_the_limit_shortens_it` (X6 is fixed) |
 | L5 | Join to exactly 2,000 nodes (one way reversed), undo, redo; then one more node | One undo splits it back, redo repeats, 2,001 refused with no undo step recorded | pass `join_right_at_the_limit_then_undo_redo_and_one_more_node_is_refused` |
 | L6 | Split a way in a relation of 32,000 members | Refused with "32,001 ... 32,000", nothing changed | design `split_that_would_push_a_relation_past_32000_is_refused_and_changes_nothing` |
 | L7 | Same at 31,999 members | Goes through, exactly 32,000, undo/redo | pass `split_that_lands_exactly_on_32000_members_goes_through` |
@@ -210,7 +210,6 @@ Bugs from this batch:
 - LOW-MEDIUM. G5: distribute across the antimeridian (`LocalProjection`
   averages longitudes without wrapping).
 - LOW. K6: Reverse negates a numeric `direction` on a way.
-- L4: same cause as X6 (vertices cannot be deleted).
 
 ## Further situations (batch D)
 
