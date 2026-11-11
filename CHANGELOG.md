@@ -7,6 +7,41 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.8.0
+
+### Changed behaviour
+
+- Deleting a vertex of a way now removes it from the way instead of being refused, and a way left with fewer than two nodes is deleted too. Deleting a way also deletes its untagged nodes that nothing else uses, so they are no longer left behind as orphans. ([#196](https://github.com/iandees/osm-gpui/pull/196))
+- Reversing a way now swaps `forward` and `backward` member roles in the relations the way belongs to, flips `direction` tags on its nodes (a node shared with a way that is not reversed is left alone), and flips `left`/`right`/`forward`/`backward` values such as `sidewalk=left`. A numeric compass `direction` is left as it is. Reverse is refused if a tag would pass 255 characters. ([#194](https://github.com/iandees/osm-gpui/pull/194)) ([#201](https://github.com/iandees/osm-gpui/pull/201)) ([#203](https://github.com/iandees/osm-gpui/pull/203)) ([#205](https://github.com/iandees/osm-gpui/pull/205))
+- Joining ways is refused instead of silently dropping a route membership when the ways are not next to each other in a shared route, or when it would give a multipolygon a ring it does not contain. Merging nodes is refused if it would leave a closed way with fewer than three distinct nodes. ([#195](https://github.com/iandees/osm-gpui/pull/195)) ([#204](https://github.com/iandees/osm-gpui/pull/204))
+- Separating a node is refused when it would take a turn restriction's from or to way off its via node. ([#205](https://github.com/iandees/osm-gpui/pull/205))
+- After an upload is accepted, undo steps that name objects the upload created or deleted are dropped, so undoing can no longer re-create them with ids the server refuses. ([#206](https://github.com/iandees/osm-gpui/pull/206))
+
+### Editing
+
+- Snapping: when you place a node while drawing, or drop a single dragged node, it snaps onto a nearby way (becoming a vertex of it) or onto an existing node, with an amber highlight showing the target. Hold Alt/Option to turn snapping off. Which features may snap together depends on their tags, so a `landuse` outline does not snap to a road. ([#209](https://github.com/iandees/osm-gpui/pull/209))
+- Tools > Join Node to Way inserts a selected node into a selected way. ([#209](https://github.com/iandees/osm-gpui/pull/209))
+- Tools > Create Multipolygon builds a `type=multipolygon` relation from the selected closed ways, or open ways that chain into rings, giving each ring the `outer` or `inner` role from how the rings nest. ([#207](https://github.com/iandees/osm-gpui/pull/207))
+- Tools > Simplify Way removes redundant vertices from the selected ways; junctions, tagged vertices and relation members are kept. The tolerance (3 m by default) is set in Settings > Editing. ([#212](https://github.com/iandees/osm-gpui/pull/212))
+- Tools > Unjoin Node from Way gives one way its own copy of a node it shares; Tools > Delete Way Segment deletes the stretch between two adjacent selected nodes. ([#211](https://github.com/iandees/osm-gpui/pull/211))
+- Tools > Purge removes the selected objects from the loaded data without deleting them, so nothing is uploaded for them. ([#210](https://github.com/iandees/osm-gpui/pull/210))
+- Sort members in a relation's Members section puts its ways into connected order. ([#213](https://github.com/iandees/osm-gpui/pull/213))
+- Split Way works with several selected nodes at once, at a node the way passes through twice, and with one node on a closed way, which opens the ring there. ([#208](https://github.com/iandees/osm-gpui/pull/208))
+- Tag keys and values autocomplete from the loaded data, the preset schema and taginfo. ([#192](https://github.com/iandees/osm-gpui/pull/192))
+- The Fields section resolves preset field references and inheritance, so roads show Name and their other fields. ([#191](https://github.com/iandees/osm-gpui/pull/191))
+- The selection header's history and change-type buttons are replaced by a single pencil icon button. ([#190](https://github.com/iandees/osm-gpui/pull/190))
+
+### Fixes
+
+- Distribute Nodes and the other geometry tools give sensible results for nodes on both sides of the 180th meridian. ([#202](https://github.com/iandees/osm-gpui/pull/202))
+- On macOS, switching the appearance setting to System follows the system appearance straight away. ([#188](https://github.com/iandees/osm-gpui/pull/188))
+- The map attribution is smaller and sits in the corner. ([#189](https://github.com/iandees/osm-gpui/pull/189))
+
+### Development
+
+- A catalogue of editing edge cases (`docs/testing/edge-cases-from-josm-and-id.md`) and hundreds of new tests in `src/edge_case_tests/` cover splitting, reversing, joining, merging, disconnecting, deleting, relations, uploads, limits and undo. ([#193](https://github.com/iandees/osm-gpui/pull/193)) ([#197](https://github.com/iandees/osm-gpui/pull/197)) ([#198](https://github.com/iandees/osm-gpui/pull/198)) ([#199](https://github.com/iandees/osm-gpui/pull/199)) ([#200](https://github.com/iandees/osm-gpui/pull/200)) ([#204](https://github.com/iandees/osm-gpui/pull/204)) ([#205](https://github.com/iandees/osm-gpui/pull/205)) ([#206](https://github.com/iandees/osm-gpui/pull/206))
+- Scripts can hover, click and drag with modifier keys held, split a drag into begin, move and end to capture or check mid-drag, and assert the snap target, a way's nodes and which ways share a node; a scripted snapping suite lives in `docs/screenshots/snap-behaviour.osmscript`. ([#214](https://github.com/iandees/osm-gpui/pull/214))
+
 ## 0.7.0
 
 ### Changed behaviour
