@@ -7,11 +7,13 @@ pub mod runner;
 #[cfg(test)]
 mod autosave_op_tests;
 #[cfg(test)]
+mod changeset_op_tests;
+#[cfg(test)]
 mod upload_op_tests;
 
 pub use op::{
     AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode,
     FeatureKind, FindingTarget, HistoryCmd, MouseButton, NativeAppearanceWant, Op, Point2,
-    SelectionKind, Step,
+    SelectionKind, Step, UploadDialogCmd,
 };
 pub use parser::{parse, ParseError};

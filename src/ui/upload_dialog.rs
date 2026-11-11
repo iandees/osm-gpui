@@ -9,12 +9,17 @@ use gpui::{
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     input::{Input, InputState},
     label::Label,
     spinner::Spinner,
-    v_flex, ActiveTheme as _, Disableable as _, Sizable as _,
+    v_flex, ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
 };
 
+use crate::changeset_tags::{
+    add_source_value, build_changeset_tags, source_has_value, value_chars, value_too_long,
+    ChangesetTags, TagInputs, MAX_VALUE_CHARS, SOURCE_CHIPS,
+};
 use crate::osm_upload::{ConflictKind, UploadConflict};
 use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
@@ -75,9 +80,13 @@ pub fn plan_upload(signed_in_display_name: Option<&str>, summaries: &[LayerSumma
 }
 
 pub enum DialogEvent {
-    /// User clicked "Upload" with a non-empty comment.
+    /// User clicked "Upload" with a non-empty comment. `tags` are the
+    /// changeset tags to write on every changeset of the upload; `comment`
+    /// and `source` are the typed texts (to be remembered once it succeeds).
     Upload {
         comment: String,
+        source: String,
+        tags: ChangesetTags,
     },
     Cancelled,
     /// User pressed "Show in side panel": close the dialog (keeping the
@@ -236,6 +245,23 @@ pub struct UploadDialog {
     /// What the validator found in the pending changes, run once when the
     /// dialog opened. Errors block the upload.
     validation: Report,
+    /// The single-line "Sources" field, written as the `source` tag.
+    source: Entity<InputState>,
+    /// The "I would like someone to review my edits" box. Never remembered.
+    review_requested: bool,
+    /// Names of the visible imagery layers, written as `imagery_used`.
+    imagery: Vec<String>,
+    /// The mapper chose not to record the imagery for this upload.
+    imagery_cleared: bool,
+    /// Recent changeset comments, most recent first, offered from a button
+    /// beside the comment field.
+    recent_comments: Vec<String>,
+    /// The recent-comments list is showing.
+    recent_open: bool,
+    /// The UI language, written as the `locale` tag.
+    locale: String,
+    /// A script-only preview: shown to look at, can never upload.
+    preview: bool,
 }
 
 impl EventEmitter<DialogEvent> for UploadDialog {}
@@ -245,9 +271,20 @@ impl UploadDialog {
         let comment = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("dialog.upload.comment_placeholder"))
         });
+        let source = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("dialog.upload.source_placeholder"))
+        });
         let focus_handle = cx.focus_handle();
         comment.update(cx, |state, cx| state.focus(window, cx));
         Self {
+            source,
+            review_requested: false,
+            imagery: Vec::new(),
+            imagery_cleared: false,
+            recent_comments: Vec::new(),
+            recent_open: false,
+            locale: crate::i18n::current_locale(),
+            preview: false,
             summaries,
             comment,
             focus_handle,
@@ -283,8 +320,126 @@ impl UploadDialog {
 
     /// Whether the Upload button can be pressed: the state allows it, there
     /// is a comment and the validator found no errors.
-    fn can_upload(&self, comment_empty: bool) -> bool {
-        self.state.confirm_enabled(comment_empty) && !self.validation.has_errors()
+    fn can_upload(&self, comment_empty: bool, cx: &App) -> bool {
+        self.state.confirm_enabled(comment_empty)
+            && !self.validation.has_errors()
+            && !self.preview
+            && !self.text_too_long(cx)
+    }
+
+    /// The comment or the sources text is longer than a tag value may be.
+    fn text_too_long(&self, cx: &App) -> bool {
+        value_too_long(self.comment.read(cx).value().as_ref())
+            || value_too_long(self.source.read(cx).value().as_ref())
+    }
+
+    /// Make this a script-only preview: every control works but the Upload
+    /// button never does, and no upload can start from it.
+    pub fn set_preview(&mut self, preview: bool, cx: &mut Context<Self>) {
+        self.preview = preview;
+        cx.notify();
+    }
+
+    /// Whether this is the script-only preview.
+    pub fn is_preview(&self) -> bool {
+        self.preview
+    }
+
+    /// The sources text as typed.
+    pub fn draft_source(&self, cx: &App) -> String {
+        self.source.read(cx).value().to_string()
+    }
+
+    /// Replace the sources text.
+    pub fn set_draft_source(&self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.source
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
+    /// Press a quick-add source button: the value joins the sources text
+    /// after `; ` unless it is already there.
+    pub fn press_source_chip(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let next = add_source_value(&self.source.read(cx).value(), value);
+        self.set_draft_source(next, window, cx);
+    }
+
+    /// Tick or untick "I would like someone to review my edits".
+    pub fn set_review_requested(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.review_requested = on;
+        cx.notify();
+    }
+
+    pub fn review_requested(&self) -> bool {
+        self.review_requested
+    }
+
+    /// The imagery layers visible now (names), to be written as
+    /// `imagery_used` unless cleared.
+    pub fn set_imagery(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
+        self.imagery = names;
+        cx.notify();
+    }
+
+    /// Leave `imagery_used` out of this upload (`true`) or put it back.
+    pub fn set_imagery_cleared(&mut self, cleared: bool, cx: &mut Context<Self>) {
+        self.imagery_cleared = cleared;
+        cx.notify();
+    }
+
+    /// The recent comments to offer, most recent first.
+    pub fn set_recent_comments(&mut self, comments: Vec<String>, cx: &mut Context<Self>) {
+        self.recent_comments = comments;
+        if self.recent_comments.is_empty() {
+            self.recent_open = false;
+        }
+        cx.notify();
+    }
+
+    /// Open or close the recent-comments list (what the button beside the
+    /// comment field does). No-op when there are none.
+    pub fn toggle_recent_comments(&mut self, cx: &mut Context<Self>) {
+        self.recent_open = !self.recent_open && !self.recent_comments.is_empty();
+        cx.notify();
+    }
+
+    pub fn recent_comments_open(&self) -> bool {
+        self.recent_open
+    }
+
+    /// Pick recent comment number `index` (0 is the newest): it replaces the
+    /// comment field and the list closes. `false` when there is no such one.
+    pub fn pick_recent_comment(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(text) = self.recent_comments.get(index).cloned() else {
+            return false;
+        };
+        self.set_draft_comment(text, window, cx);
+        self.recent_open = false;
+        cx.notify();
+        true
+    }
+
+    /// The changeset tags an upload from the dialog's current state would
+    /// write on every changeset (nothing is sent by asking).
+    pub fn changeset_tags(&self, cx: &App) -> ChangesetTags {
+        let comment = self.comment.read(cx).value();
+        let source = self.source.read(cx).value();
+        let imagery: &[String] = if self.imagery_cleared {
+            &[]
+        } else {
+            &self.imagery
+        };
+        build_changeset_tags(&TagInputs {
+            comment: &comment,
+            source: &source,
+            review_requested: self.review_requested,
+            imagery,
+            locale: &self.locale,
+        })
     }
 
     /// Say how many changesets the pending changes will be sent as (shown
@@ -395,8 +550,12 @@ impl UploadDialog {
     /// or `None` when it would go ahead.
     pub fn confirm_blocker(&self, cx: &App) -> Option<&'static str> {
         let empty = self.comment.read(cx).value().trim().is_empty();
-        if self.state.is_busy() {
+        if self.preview {
+            Some("this is a preview (uploading is disabled)")
+        } else if self.state.is_busy() {
             Some("an upload is already running")
+        } else if self.text_too_long(cx) {
+            Some("the comment or the sources text is over 255 characters")
         } else if self.validation.has_errors() {
             Some("the validator found errors (fix them first)")
         } else if empty {
@@ -439,11 +598,17 @@ impl UploadDialog {
 
     fn upload(&mut self, cx: &mut Context<Self>) {
         let comment = self.comment_text(cx);
-        if !self.can_upload(comment.is_empty()) {
+        if !self.can_upload(comment.is_empty(), cx) {
             return;
         }
         self.notice = None;
-        cx.emit(DialogEvent::Upload { comment });
+        let source = self.source.read(cx).value().trim().to_string();
+        let tags = self.changeset_tags(cx);
+        cx.emit(DialogEvent::Upload {
+            comment,
+            source,
+            tags,
+        });
     }
 
     fn resolve(&mut self, action: ConflictAction, cx: &mut Context<Self>) {
@@ -537,8 +702,201 @@ impl UploadDialog {
     }
 }
 
+impl UploadDialog {
+    /// "Over the limit" or "n / 255" under a text field, as the text needs.
+    fn length_note(&self, text: &str, cx: &Context<Self>) -> Option<gpui::AnyElement> {
+        let count = value_chars(text);
+        if count > MAX_VALUE_CHARS {
+            Some(
+                Label::new(tr!(
+                    "dialog.upload.too_long",
+                    count = count,
+                    max = MAX_VALUE_CHARS
+                ))
+                .text_size(muted_text_size())
+                .text_color(cx.theme().danger)
+                .into_any_element(),
+            )
+        } else if count >= MAX_VALUE_CHARS - 40 {
+            Some(
+                Label::new(tr!(
+                    "dialog.upload.chars_used",
+                    count = count,
+                    max = MAX_VALUE_CHARS
+                ))
+                .text_size(muted_text_size())
+                .text_color(cx.theme().muted_foreground)
+                .into_any_element(),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// The comment field, with a "Recent" button beside it (when there are
+    /// recent comments) that opens the list to pick one from.
+    fn render_comment(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let mut field_row = div().flex().flex_row().items_center().gap_1().child(
+            div()
+                .flex_1()
+                .min_w(gpui::px(0.0))
+                .child(Input::new(&self.comment)),
+        );
+        if !self.recent_comments.is_empty() {
+            field_row = field_row.child(
+                Button::new("upload-recent-comments")
+                    .small()
+                    .ghost()
+                    .label(tr!("dialog.upload.recent"))
+                    .icon(if self.recent_open {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .tooltip(tr!("dialog.upload.recent_tooltip"))
+                    .on_click(cx.listener(|this, _, _w, cx| this.toggle_recent_comments(cx))),
+            );
+        }
+        let mut column = v_flex()
+            .gap_1()
+            .child(
+                Label::new(tr!("dialog.upload.comment_label"))
+                    .text_size(muted_text_size())
+                    .text_color(theme.muted_foreground),
+            )
+            .child(field_row);
+        if self.recent_open {
+            let mut list = v_flex()
+                .id("upload-recent-list")
+                .max_h(gpui::px(130.0))
+                .overflow_y_scroll()
+                .border_1()
+                .border_color(theme.border)
+                .rounded(theme.radius)
+                .bg(theme.background);
+            for (index, text) in self.recent_comments.iter().enumerate() {
+                list = list.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(theme.foreground)
+                        .hover(|el| el.bg(theme.accent))
+                        .cursor_pointer()
+                        .child(text.clone())
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev, window, cx| {
+                                this.pick_recent_comment(index, window, cx);
+                            }),
+                        ),
+                );
+            }
+            column = column.child(list);
+        }
+        if let Some(note) = self.length_note(self.comment.read(cx).value().as_ref(), cx) {
+            column = column.child(note);
+        }
+        column.into_any_element()
+    }
+
+    /// Sources (with quick-add buttons), the imagery that will be recorded
+    /// and the review request: what goes beyond the comment.
+    fn render_extras(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme().clone();
+        let source_text = self.source.read(cx).value().to_string();
+
+        let mut chips = div().flex().flex_row().flex_wrap().gap_1();
+        for (index, chip) in SOURCE_CHIPS.iter().copied().enumerate() {
+            chips = chips.child(
+                Button::new(SharedString::from(format!("upload-source-chip-{index}")))
+                    .small()
+                    .outline()
+                    .label(chip)
+                    .selected(source_has_value(&source_text, chip))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.press_source_chip(chip, window, cx)
+                    })),
+            );
+        }
+        let mut column = v_flex()
+            .gap_1()
+            .child(
+                Label::new(tr!("dialog.upload.source_label"))
+                    .text_size(muted_text_size())
+                    .text_color(theme.muted_foreground),
+            )
+            .child(Input::new(&self.source))
+            .child(chips);
+        if let Some(note) = self.length_note(&source_text, cx) {
+            column = column.child(note);
+        }
+
+        if !self.imagery.is_empty() {
+            let (text, button_label) = if self.imagery_cleared {
+                (
+                    tr!("dialog.upload.imagery_cleared"),
+                    tr!("dialog.upload.imagery_include"),
+                )
+            } else {
+                let recorded = self
+                    .changeset_tags(cx)
+                    .get("imagery_used")
+                    .unwrap_or_default()
+                    .replace(';', "; ");
+                (
+                    tr!("dialog.upload.imagery_used", names = recorded),
+                    tr!("dialog.upload.imagery_clear"),
+                )
+            };
+            let cleared = self.imagery_cleared;
+            column = column.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(gpui::px(0.0))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(muted_text_size())
+                            .text_color(theme.muted_foreground)
+                            .child(text),
+                    )
+                    .child(
+                        Button::new("upload-imagery-toggle")
+                            .small()
+                            .ghost()
+                            .label(button_label)
+                            .on_click(cx.listener(move |this, _, _w, cx| {
+                                this.set_imagery_cleared(!cleared, cx)
+                            })),
+                    ),
+            );
+        }
+
+        column = column.child(
+            Checkbox::new("upload-review-requested")
+                .label(tr!("dialog.upload.review_requested"))
+                .checked(self.review_requested)
+                .on_click(cx.listener(|this, checked: &bool, _w, cx| {
+                    this.set_review_requested(*checked, cx)
+                })),
+        );
+        column.into_any_element()
+    }
+}
+
 impl Render for UploadDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let comment_empty = self.comment.read(cx).value().trim().is_empty();
         let in_flight = self.state.is_busy();
@@ -566,16 +924,8 @@ impl Render for UploadDialog {
                     )
                     .child(summary_list),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        Label::new(tr!("dialog.upload.comment_label"))
-                            .text_size(muted_text_size())
-                            .text_color(muted),
-                    )
-                    .child(Input::new(&self.comment)),
-            );
+            .child(self.render_comment(cx))
+            .child(self.render_extras(cx));
 
         let busy_row = |label: SharedString| {
             div()
@@ -599,6 +949,13 @@ impl Render for UploadDialog {
                     body = body.child(Label::new(notice.clone()).text_color(cx.theme().foreground));
                 }
                 body = body.child(self.render_validation(cx));
+                if self.preview {
+                    body = body.child(
+                        Label::new(tr!("dialog.upload.preview_note"))
+                            .text_size(muted_text_size())
+                            .text_color(muted),
+                    );
+                }
             }
             UploadState::InFlight(handle) => {
                 body = body.child(busy_row(handle.snapshot().label()));
@@ -676,7 +1033,7 @@ impl Render for UploadDialog {
                 Button::new("upload-confirm")
                     .primary()
                     .label(confirm_label)
-                    .disabled(!self.can_upload(comment_empty))
+                    .disabled(!self.can_upload(comment_empty, cx))
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             );
 
@@ -697,7 +1054,16 @@ impl Render for UploadDialog {
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(tr!("dialog.upload.title")),
             )
-            .child(div().p_4().child(body))
+            // The body scrolls when the window is too short for it, so the
+            // title and the buttons stay on screen.
+            .child(
+                div()
+                    .id("upload-body")
+                    .p_4()
+                    .max_h(window.viewport_size().height - gpui::px(170.0))
+                    .overflow_y_scroll()
+                    .child(body),
+            )
             .child(
                 div()
                     .px_4()

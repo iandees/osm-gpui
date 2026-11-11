@@ -180,6 +180,8 @@ impl SettingsWindow {
         self.app_settings.theme = live.theme;
         self.app_settings.welcome_dismissed = live.welcome_dismissed;
         self.app_settings.invert_scroll_zoom = live.invert_scroll_zoom;
+        self.app_settings.last_source = live.last_source;
+        self.app_settings.recent_comments = live.recent_comments;
         settings_store::update_store(self.app_settings.clone());
     }
 

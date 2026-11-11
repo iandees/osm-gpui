@@ -49,6 +49,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::changeset_tags::ChangesetTags;
 use crate::http::HttpClient;
 use crate::layers::diff::LayerDiff;
 use crate::osm::{MemberType, OsmNode, OsmRelation, OsmWay};
@@ -521,17 +522,18 @@ pub fn upload_chunk(
     client: &dyn HttpClient,
     base_url: &str,
     token: &str,
-    comment: &str,
+    tags: impl Into<ChangesetTags>,
     part: Part,
     chunk: LayerDiff,
     on_phase: &mut dyn FnMut(Part, TransferPhase),
 ) -> Result<CompletedChunk, UploadFailure> {
     on_phase(part, TransferPhase::OpeningChangeset);
     let sent = [("upload", chunk)];
-    let (changeset_id, result) =
-        run_upload(client, base_url, token, comment, &sent, &mut |phase| {
-            on_phase(part, phase)
-        })?;
+    // Every changeset of a split upload carries the same tags: the caller
+    // passes the same list for each part, and no part marker is added.
+    let (changeset_id, result) = run_upload(client, base_url, token, tags, &sent, &mut |phase| {
+        on_phase(part, phase)
+    })?;
     let [(_, chunk)] = sent;
     Ok(CompletedChunk {
         changeset_id,
@@ -552,12 +554,13 @@ pub fn run_chunked_upload(
     client: &dyn HttpClient,
     base_url: &str,
     token: &str,
-    comment: &str,
+    tags: impl Into<ChangesetTags>,
     layers: &[(&str, LayerDiff)],
     max: usize,
     on_phase: &mut dyn FnMut(Part, TransferPhase),
     on_chunk: &mut dyn FnMut(&CompletedChunk),
 ) -> Result<ChunkedUpload, PlanError> {
+    let tags: ChangesetTags = tags.into();
     let diffs: Vec<&LayerDiff> = layers.iter().map(|(_, d)| d).collect();
     let mut queue = ChunkQueue::plan(&diffs, max)?;
     let mut out = ChunkedUpload {
@@ -566,7 +569,7 @@ pub fn run_chunked_upload(
         failure: None,
     };
     while let Some((part, chunk)) = queue.next_chunk() {
-        match upload_chunk(client, base_url, token, comment, part, chunk, on_phase) {
+        match upload_chunk(client, base_url, token, &tags, part, chunk, on_phase) {
             Ok(mut done) => {
                 done.last = queue.remaining() == 0;
                 queue.accept(&done.result);
@@ -1044,6 +1047,63 @@ mod tests {
         let merged = merge_results(&out.completed);
         assert_eq!(merged.node_id_remap.len(), 3);
         assert_eq!(merged.way_id_remap.get(&-1), Some(&(6001, 1)));
+    }
+
+    #[test]
+    fn every_changeset_of_a_split_upload_carries_the_same_tags() {
+        use crate::changeset_tags::{build_changeset_tags, TagInputs};
+        let client = FakeClient::new(vec![
+            ok(200, "101"),
+            ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+            ok(200, ""),
+            ok(200, "102"),
+            ok(200, diff_result(&[(-3, 5003)], &[(-1, 6001)])),
+            ok(200, ""),
+        ]);
+        let imagery = vec!["Bing".to_string()];
+        let tags = build_changeset_tags(&TagInputs {
+            comment: "Add a path #mapathon",
+            source: "survey; GPS",
+            review_requested: true,
+            imagery: &imagery,
+            locale: "en",
+        });
+        let layers = [("L", node_way_diff())];
+        let out = run_chunked_upload(
+            &client,
+            BASE,
+            "tok",
+            &tags,
+            &layers,
+            2,
+            &mut |_, _| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(out.total, 2);
+        let creates: Vec<String> = client
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.ends_with("/create"))
+            .map(|r| match &r.body {
+                Some(crate::http::Body::Text(xml)) => xml.clone(),
+                other => panic!("no xml body: {other:?}"),
+            })
+            .collect();
+        assert_eq!(creates.len(), 2);
+        assert_eq!(creates[0], creates[1], "no part marker, nothing differs");
+        for key in [
+            "comment",
+            "source",
+            "imagery_used",
+            "locale",
+            "hashtags",
+            "review_requested",
+        ] {
+            assert!(creates[0].contains(&format!(r#"k="{key}""#)), "{key}");
+        }
     }
 
     #[test]

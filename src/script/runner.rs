@@ -67,6 +67,11 @@ pub trait AppHandle {
     fn set_comment(&mut self, text: &str) -> Result<(), String>;
     /// Press the upload dialog's Cancel button.
     fn upload_cancel(&mut self) -> Result<(), String>;
+    /// One of the upload dialog's changeset-extras ops. None of them can
+    /// start an upload.
+    fn upload_dialog(&mut self, _cmd: &crate::script::UploadDialogCmd) -> Result<(), String> {
+        Err("this app has no upload dialog".to_string())
+    }
     /// Press the delete-layer confirmation's "Delete Layer" button.
     fn confirm_delete_layer(&mut self) -> Result<(), String>;
     /// Press the delete-layer confirmation's Cancel button.
@@ -274,6 +279,15 @@ impl Runner {
             Op::UploadCancel => app
                 .upload_cancel()
                 .map_err(|e| fail(format!("upload_cancel: {e}"))),
+            Op::UploadDialog(cmd) => app
+                .upload_dialog(cmd)
+                .map_err(|e| fail(format!("{}: {e}", describe(&step.op)))),
+            Op::AssertChangesetTag { key, value } => app
+                .check(&Check::ChangesetTag {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .map_err(|e| fail(format!("assert_changeset_tag: {e}"))),
             Op::ConfirmDeleteLayer => app
                 .confirm_delete_layer()
                 .map_err(|e| fail(format!("confirm_delete_layer: {e}"))),
@@ -621,6 +635,10 @@ fn describe(op: &Op) -> String {
         Op::ConfirmDeleteLayer => "confirm_delete_layer".to_string(),
         Op::CancelDeleteLayer => "cancel_delete_layer".to_string(),
         Op::SetComment { text } => format!("set_comment {}", text),
+        Op::UploadDialog(cmd) => format!("upload dialog {:?}", cmd),
+        Op::AssertChangesetTag { key, value } => {
+            format!("assert_changeset_tag {} {:?}", key, value)
+        }
         Op::ResolveConflict { choice } => format!("resolve_conflict {:?}", choice),
         Op::WaitTransfer { timeout } => format!("wait_transfer {:?}", timeout),
         Op::CaptureWhileTransferring { prefix, .. } => {
@@ -764,6 +782,10 @@ mod tests {
         }
         fn upload_cancel(&mut self) -> Result<(), String> {
             self.calls.push("upload_cancel".into());
+            Ok(())
+        }
+        fn upload_dialog(&mut self, cmd: &crate::script::UploadDialogCmd) -> Result<(), String> {
+            self.calls.push(format!("upload_dialog {cmd:?}"));
             Ok(())
         }
         fn confirm_delete_layer(&mut self) -> Result<(), String> {

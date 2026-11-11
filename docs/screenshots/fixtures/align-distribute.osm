@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="align-distribute fixture">
+  <!-- Six street trees along a wobbly, unevenly spaced row. -->
+  <node id="6501" version="1" lat="40.7125611" lon="-74.0072766"><tag k="natural" v="tree"/></node>
+  <node id="6502" version="1" lat="40.7124188" lon="-74.0068475"><tag k="natural" v="tree"/></node>
+  <node id="6503" version="1" lat="40.7126221" lon="-74.0064184"><tag k="natural" v="tree"/></node>
+  <node id="6504" version="1" lat="40.7124798" lon="-74.0059356"><tag k="natural" v="tree"/></node>
+  <node id="6505" version="1" lat="40.7126628" lon="-74.0053992"><tag k="natural" v="tree"/></node>
+  <node id="6506" version="1" lat="40.7125204" lon="-74.0045946"><tag k="natural" v="tree"/></node>
+</osm>

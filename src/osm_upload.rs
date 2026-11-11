@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::changeset_tags::ChangesetTags;
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpRequest, Method, RetryPolicy, UreqClient,
 };
@@ -312,21 +313,28 @@ fn call_with_retries(
 }
 
 /// `PUT {base_url}/api/0.6/changeset/create`. Returns the new changeset id.
-pub fn create_changeset(base_url: &str, token: &str, comment: &str) -> Result<u64, UploadError> {
-    create_changeset_with(&UreqClient::new(), base_url, token, comment)
+///
+/// `tags` is the comment alone (`&str`) or the full tag list from
+/// `changeset_tags::build_changeset_tags`.
+pub fn create_changeset(
+    base_url: &str,
+    token: &str,
+    tags: impl Into<ChangesetTags>,
+) -> Result<u64, UploadError> {
+    create_changeset_with(&UreqClient::new(), base_url, token, tags)
 }
 
 pub fn create_changeset_with(
     client: &dyn HttpClient,
     base_url: &str,
     token: &str,
-    comment: &str,
+    tags: impl Into<ChangesetTags>,
 ) -> Result<u64, UploadError> {
     let url = format!(
         "{}/api/0.6/changeset/create",
         base_url.trim_end_matches('/')
     );
-    let xml = build_changeset_create_xml(comment);
+    let xml = build_changeset_create_xml(&tags.into());
     let body = call_with_retries(
         client,
         &RetryPolicy::none(),
@@ -340,12 +348,17 @@ pub fn create_changeset_with(
         .map_err(|_| UploadError::Parse(format!("invalid changeset id in response: {:?}", body)))
 }
 
-fn build_changeset_create_xml(comment: &str) -> String {
-    format!(
-        r#"<osm><changeset><tag k="created_by" v="{}"/><tag k="comment" v="{}"/></changeset></osm>"#,
-        xml_escape(crate::CREATED_BY),
-        xml_escape(comment),
-    )
+fn build_changeset_create_xml(tags: &ChangesetTags) -> String {
+    let mut xml = String::from("<osm><changeset>");
+    for (key, value) in tags.pairs() {
+        xml.push_str(&format!(
+            r#"<tag k="{}" v="{}"/>"#,
+            xml_escape(key),
+            xml_escape(value)
+        ));
+    }
+    xml.push_str("</changeset></osm>");
+    xml
 }
 
 /// `POST {base_url}/api/0.6/changeset/{id}/upload` with `xml` as the body.
@@ -421,12 +434,12 @@ pub fn run_upload(
     client: &dyn HttpClient,
     base_url: &str,
     token: &str,
-    comment: &str,
+    tags: impl Into<ChangesetTags>,
     layers: &[(&str, LayerDiff)],
     on_phase: &mut dyn FnMut(TransferPhase),
 ) -> Result<(u64, UploadResult), UploadFailure> {
     let changeset_id =
-        create_changeset_with(client, base_url, token, comment).map_err(|error| UploadFailure {
+        create_changeset_with(client, base_url, token, tags).map_err(|error| UploadFailure {
             error,
             changeset_id: None,
         })?;
@@ -793,12 +806,44 @@ mod tests {
 
     #[test]
     fn changeset_create_xml_has_created_by_and_comment() {
-        let xml = build_changeset_create_xml("fix <stuff>");
+        let xml = build_changeset_create_xml(&ChangesetTags::from("fix <stuff>"));
         assert!(xml.contains(&format!(
             r#"<tag k="created_by" v="osm-gpui {}"/>"#,
             env!("CARGO_PKG_VERSION")
         )));
         assert!(xml.contains(r#"<tag k="comment" v="fix &lt;stuff&gt;"/>"#));
+        // Nothing else is written for a bare comment.
+        assert_eq!(xml.matches("<tag ").count(), 2);
+    }
+
+    #[test]
+    fn changeset_create_xml_writes_every_tag_in_order_and_escapes_values() {
+        use crate::changeset_tags::{build_changeset_tags, TagInputs};
+        let imagery = vec!["Esri & Co".to_string()];
+        let tags = build_changeset_tags(&TagInputs {
+            comment: "Fix #a",
+            source: "survey <x>",
+            review_requested: true,
+            imagery: &imagery,
+            locale: "de",
+        });
+        let xml = build_changeset_create_xml(&tags);
+        let positions: Vec<usize> = [
+            r#"k="created_by""#,
+            r#"<tag k="comment" v="Fix #a"/>"#,
+            r#"<tag k="source" v="survey &lt;x&gt;"/>"#,
+            r#"<tag k="imagery_used" v="Esri &amp; Co"/>"#,
+            r#"<tag k="locale" v="de"/>"#,
+            r##"<tag k="hashtags" v="#a"/>"##,
+            r#"<tag k="review_requested" v="yes"/>"#,
+        ]
+        .iter()
+        .map(|needle| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        })
+        .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{xml}");
     }
 
     #[test]
@@ -1099,7 +1144,7 @@ mod tests {
 
     #[test]
     fn changeset_comment_is_escaped() {
-        let xml = build_changeset_create_xml("Fix <road> & \"stuff\"");
+        let xml = build_changeset_create_xml(&ChangesetTags::from("Fix <road> & \"stuff\""));
         assert!(
             xml.contains("Fix &lt;road&gt; &amp; &quot;stuff&quot;"),
             "{}",
