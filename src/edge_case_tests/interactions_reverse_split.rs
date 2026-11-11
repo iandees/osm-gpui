@@ -20,7 +20,6 @@ fn road() -> [(&'static str, &'static str); 1] {
 // ---------------------------------------------------------------- 1. shared node
 
 #[gpui::test]
-#[ignore = "bug: reversing one way flips direction=forward on a junction node that a second, non-reversed way also uses, so the sign now faces the wrong way for the other way"]
 fn reversing_one_way_leaves_a_direction_tag_on_a_node_shared_with_another_way(
     cx: &mut TestAppContext,
 ) {

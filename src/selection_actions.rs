@@ -793,11 +793,19 @@ fn apply_reverse(
     }
     // Facing tags on the ways' nodes (a stop sign's `direction=forward`,
     // `traffic_sign:forward`) flip too. A node shared by several reversed ways
-    // is flipped once.
+    // is flipped once; a node that is also used by a way that is not being
+    // reversed keeps its tags, since it still faces the right way for that way.
     let mut seen_nodes = std::collections::HashSet::new();
     for way in ways.iter().filter(|w| reversed.contains(&w.way_id)) {
         for &node_id in &way.node_ids {
             if !seen_nodes.insert(node_id) {
+                continue;
+            }
+            if editable
+                .ways_using_node(node_id)
+                .iter()
+                .any(|w| !reversed.contains(w))
+            {
                 continue;
             }
             let node_ref = FeatureRef {
