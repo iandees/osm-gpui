@@ -84,6 +84,8 @@ capture out/live-01-06-uploaded.png
 pause 1s Dropping the local layer and downloading the area again
 action layers::DeleteLayer {"index":1}
 wait_idle 2s
+# Nothing is pending (asserted above), so no confirmation opens.
+assert_dialog none
 action DownloadFromOsm
 wait_transfer 60s
 wait_idle 5s

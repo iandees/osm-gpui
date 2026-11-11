@@ -44,17 +44,25 @@ with `assert_server dev`.
 | `remove_tag KEY` | Remove a tag from the selection. |
 | `upload_confirm` | Press Upload / Try again. Dev server only. |
 | `upload_cancel` | Press Cancel in the upload dialog. |
+| `confirm_delete_layer` | Press "Delete Layer" in the delete-layer confirmation. |
+| `cancel_delete_layer` | Press Cancel in the delete-layer confirmation. |
 | `resolve_conflict keep_mine\|use_theirs\|drop_mine\|show` | Press a conflict button. Dev server only. |
 | `wait_transfer [T]` | Wait until no download/upload/resolution is running (default 120s). |
 | `capture_while_transferring PREFIX [every=D] [timeout=D]` | Capture `PREFIX-NN.png` while a transfer runs. |
 | `assert_pending N` | Pending edits in the active layer. |
 | `assert_status_contains TEXT` | Status bar message contains text. |
-| `assert_dialog none\|editing\|in_flight\|failed\|sign_in\|notice\|conflict [KIND] [node\|way\|relation]` | What is on screen; KIND is `version_mismatch`, `already_deleted`, `still_in_use`, `missing_dependency`, `other`. |
+| `assert_dialog none\|editing\|in_flight\|failed\|sign_in\|notice\|delete_layer\|conflict [KIND] [node\|way\|relation]` | What is on screen; KIND is `version_mismatch`, `already_deleted`, `still_in_use`, `missing_dependency`, `other`. |
 | `assert_selection none\|node\|way\|relation\|multiple` | Selection kind without ids. |
 | `export_layer PATH` | Write the active layer (with pending edits) as File > Export does. Load it back with `load_osm`. |
 | `sign_in`, `wait_signed_in [T]`, `assert_signed_in` | Browser sign-in. Dev server only for `sign_in`. |
 | `assert_server dev` | Active server is the dev server. |
 | `pause [D] MESSAGE` | Show a message in the status bar and wait (default 2s). |
+
+`action layers::DeleteLayer {"index":1}` opens a confirmation when the layer
+has unsaved edits (answer it with `confirm_delete_layer` or
+`cancel_delete_layer`, check it with `assert_dialog delete_layer`) and deletes
+at once otherwise. The live-test scripts only delete layers with nothing
+pending, and assert `assert_dialog none` afterwards.
 
 Other useful existing ops: `action layers::DeleteLayer {"index":1}`,
 `action layers::SetActiveLayer {"index":N}`,

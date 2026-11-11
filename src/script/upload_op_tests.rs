@@ -198,6 +198,21 @@ fn comment_and_cancel() {
 }
 
 #[test]
+fn delete_layer_dialog_ops() {
+    assert_eq!(op("confirm_delete_layer"), Op::ConfirmDeleteLayer);
+    assert_eq!(op("cancel_delete_layer"), Op::CancelDeleteLayer);
+    assert!(parse("confirm_delete_layer now").is_err());
+    assert!(parse("cancel_delete_layer now").is_err());
+    assert_eq!(
+        op("assert_dialog delete_layer"),
+        Op::AssertDialog {
+            expect: DialogExpect::DeleteLayer
+        }
+    );
+    assert!(parse("assert_dialog delete_layer extra").is_err());
+}
+
+#[test]
 fn assert_server() {
     assert_eq!(op("assert_server dev"), Op::AssertServerDev);
     assert!(parse("assert_server").is_err());
