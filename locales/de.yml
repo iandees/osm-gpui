@@ -507,10 +507,9 @@ object_history:
   revert_edits_blocked: "Ein Upload läuft; Tags können erst danach geändert werden"
   new_object: "Ein neues Objekt hat noch keinen Verlauf auf dem Server"
   select_one: "Wähle ein Objekt, um seinen Verlauf anzuzeigen"
-  # Kopfzeile der Auswahl: „v7 · bearbeitet von Name · vor 3 Monaten · Changeset 123“.
+  # Kopfzeile der Auswahl: „v7 · Name · vor 3 Monaten · Changeset 123“.
   last_edit:
     version: "v%{version}"
-    by: "bearbeitet von"
     changeset: "Changeset"
   error:
     not_found: "Der Server kennt keinen Verlauf für dieses Objekt. Es wurde nie auf %{server} hochgeladen; es stammt vielleicht aus einer Datei oder von einem anderen Server."
