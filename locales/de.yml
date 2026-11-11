@@ -400,6 +400,9 @@ settings:
     autosave_group: "Wiederherstellung"
     autosave: "Automatisch sichern"
     autosave_description: "Ebenen mit ungesicherten Änderungen alle 30 Sekunden sichern, damit sie nach einem Absturz, einem erzwungenen Beenden oder einem Stromausfall wiederhergestellt werden können."
+    taginfo_group: "Tag-Vorschläge"
+    taginfo: "Tags von taginfo vorschlagen"
+    taginfo_description: "Während Sie in die Felder für Tag-Schlüssel und -Werte tippen, wird der Text an taginfo.openstreetmap.org gesendet, um Schlüssel und Werte vorzuschlagen, die andere verwenden. Werte von Freitext-Schlüsseln wie name oder addr:* werden nie gesendet. Vorschläge aus den geladenen Daten und dem Tagging-Schema funktionieren immer, auch ohne taginfo."
   account:
     title: "Konto"
     api_server_group: "API-Server"
@@ -478,7 +481,6 @@ object_history:
   close: "Schließen"
   retry: "Erneut versuchen"
   open_web: "Auf openstreetmap.org öffnen"
-  show_tooltip: "Objektverlauf anzeigen"
   unsaved: "Deine ungespeicherten Änderungen"
   version: "Version %{version}"
   deleted: "Gelöscht"

@@ -5,12 +5,20 @@
 use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
+/// The pencil icon (lucide, ISC) that gpui-component's bundle lacks; used for
+/// the Selection header's change-feature-type control.
+pub const PENCIL_ICON_PATH: &str = "icons/pencil.svg";
+const PENCIL_ICON_SVG: &str = include_str!("../assets/icons/pencil.svg");
+
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         if path.starts_with(crate::presets::ICON_ASSET_DIR) {
             return Ok(crate::presets::icon_asset(path).map(Cow::Borrowed));
+        }
+        if path == PENCIL_ICON_PATH {
+            return Ok(Some(Cow::Borrowed(PENCIL_ICON_SVG.as_bytes())));
         }
         gpui_component_assets::Assets.load(path)
     }
@@ -38,6 +46,12 @@ mod tests {
             .expect("embedded icon");
         assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
         assert!(AppAssets.load("preset-icons/nope.svg").unwrap().is_none());
+    }
+
+    #[test]
+    fn serves_the_pencil_icon() {
+        let bytes = AppAssets.load(PENCIL_ICON_PATH).unwrap().expect("pencil");
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
     }
 
     #[test]

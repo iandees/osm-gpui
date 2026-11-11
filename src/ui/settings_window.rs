@@ -182,7 +182,16 @@ impl SettingsWindow {
         self.app_settings.invert_scroll_zoom = live.invert_scroll_zoom;
         self.app_settings.last_source = live.last_source;
         self.app_settings.recent_comments = live.recent_comments;
+        self.app_settings.suggest_from_taginfo = live.suggest_from_taginfo;
         settings_store::update_store(self.app_settings.clone());
+    }
+
+    /// Turn taginfo tag suggestions on or off. Written straight to the
+    /// store, which the main window reads before every lookup.
+    fn set_suggest_from_taginfo(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings_store::set_suggest_from_taginfo(on, true);
+        self.app_settings.suggest_from_taginfo = on;
+        cx.notify();
     }
 
     /// Reverse (or restore) the scroll-zoom direction. Written straight to the
@@ -640,8 +649,19 @@ impl SettingsWindow {
             ])
     }
 
-    /// The Editing page: for now the autosave switch.
+    /// The Editing page: the autosave switch and the tag-suggestion switch.
     fn editing_page(&self, view: Entity<Self>) -> SettingPage {
+        let taginfo_view = view.clone();
+        let taginfo_item = SettingItem::new(
+            tr!("settings.editing.taginfo"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().suggest_from_taginfo,
+                move |on: bool, cx: &mut App| {
+                    taginfo_view.update(cx, |this, cx| this.set_suggest_from_taginfo(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.editing.taginfo_description"));
         let value_view = view.clone();
         let item = SettingItem::new(
             tr!("settings.editing.autosave"),
@@ -655,9 +675,14 @@ impl SettingsWindow {
         .description(tr!("settings.editing.autosave_description"));
         SettingPage::new(tr!("settings.editing.title"))
             .icon(Icon::new(IconName::Settings2))
-            .groups(vec![SettingGroup::new()
-                .title(tr!("settings.editing.autosave_group"))
-                .item(item)])
+            .groups(vec![
+                SettingGroup::new()
+                    .title(tr!("settings.editing.autosave_group"))
+                    .item(item),
+                SettingGroup::new()
+                    .title(tr!("settings.editing.taginfo_group"))
+                    .item(taginfo_item),
+            ])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {
