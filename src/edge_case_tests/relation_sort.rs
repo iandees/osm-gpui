@@ -1,5 +1,4 @@
-//! Sort members of a relation (JOSM `RelationSorterTest`,
-//! `WayConnectionTypeCalculatorTest`): ways into connected order, roles and
+//! Sort members of a relation: ways into connected order, roles and
 //! other members untouched, one undo step, and only the relation in the
 //! upload.
 

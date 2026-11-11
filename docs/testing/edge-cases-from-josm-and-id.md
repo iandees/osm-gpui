@@ -479,7 +479,7 @@ No bugs found in this batch.
 ## Further situations (batch M)
 
 Sort members (`src/edge_case_tests/relation_sort.rs`, logic in
-`src/relation_sort.rs`), modelled on JOSM's relation sorter. Design: only the
+`src/relation_sort.rs`). Design: only the
 order changes, never a role and never a way's node order. Members that are not
 sortable ways (nodes, relations, ways that are not downloaded, ways whose role
 starts with `stop` or `platform`) keep their slot; the sortable ways refill
@@ -492,9 +492,9 @@ way (roundabout) connects to its neighbours at any of its nodes; ways with
 different non-route roles (`outer` / `inner`) are never linked. A way listed
 twice is two entries (out and back). When the direction is open, the walk that
 walks fewer ways against their stored direction wins. One undo step; only the
-relation is modified in the upload. Differences from JOSM: no per-row
-connection markers, no geometry-based direction guess (the first member decides
-which way a free chain runs), no sorting of PT stop/platform pairs.
+relation is modified in the upload. Not done: per-row connection markers,
+a geometry-based direction guess (the first member decides which way a free
+chain runs), and sorting of public-transport stop/platform pairs.
 
 | # | Situation | Expectation | Status |
 |---|-----------|-------------|--------|

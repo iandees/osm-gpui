@@ -1,4 +1,4 @@
-//! Sort a relation's members (JOSM's "Sort" button in the relation editor):
+//! Sort a relation's members:
 //! the way members are put into connected, end-to-end order.
 //!
 //! Only the order changes. Roles are never touched and no way is reversed;
