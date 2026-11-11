@@ -80,10 +80,119 @@ pub struct Preset {
     pub geometry: Vec<Geometry>,
     #[serde(default = "default_match_score")]
     pub match_score: f32,
+    /// Ids of the fields to show, in order, with `{preset_id}` references
+    /// expanded and an absent list inherited from the parent preset (see
+    /// [`PresetIndex::from_json`]). Never contains a `{...}` entry.
     #[serde(default)]
     pub fields: Vec<String>,
+    /// Ids of the optional fields ("Add field"), resolved the same way.
     #[serde(default)]
     pub more_fields: Vec<String>,
+}
+
+/// A preset as the vendored file spells it, before its field lists are
+/// resolved. `None` means the key is absent (the preset inherits).
+#[derive(serde::Deserialize)]
+struct RawPreset {
+    #[serde(flatten)]
+    preset: Preset,
+    #[serde(default, rename = "fields")]
+    raw_fields: Option<Vec<String>>,
+    #[serde(default, rename = "more_fields")]
+    raw_more_fields: Option<Vec<String>>,
+}
+
+/// `{highway/primary}` -> `highway/primary`.
+fn preset_reference(entry: &str) -> Option<&str> {
+    entry.strip_prefix('{')?.strip_suffix('}')
+}
+
+/// Resolves the `fields` / `moreFields` lists of every preset the way iD's
+/// `preset.js` does:
+/// - an entry `{preset_id}` is replaced by that preset's own (resolved) list
+///   of the same kind, recursively; a reference cycle contributes nothing;
+/// - a preset whose list is absent (or resolves to nothing) takes the list of
+///   its nearest ancestor preset: the id with trailing `/segment`s removed,
+///   which must share a geometry with it;
+/// - duplicates are dropped, keeping the first.
+struct FieldListResolver<'a> {
+    raw: &'a [RawPreset],
+    by_id: HashMap<&'a str, usize>,
+    /// `[fields, more_fields]` results that did not depend on a cycle.
+    memo: [HashMap<usize, Vec<String>>; 2],
+    cycle_hit: bool,
+}
+
+impl<'a> FieldListResolver<'a> {
+    fn new(raw: &'a [RawPreset]) -> Self {
+        Self {
+            raw,
+            by_id: raw
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (r.preset.id.as_str(), i))
+                .collect(),
+            memo: [HashMap::new(), HashMap::new()],
+            cycle_hit: false,
+        }
+    }
+
+    fn resolve(&mut self, index: usize, which: usize, stack: &mut Vec<usize>) -> Vec<String> {
+        if let Some(done) = self.memo[which].get(&index) {
+            return done.clone();
+        }
+        if stack.contains(&index) {
+            self.cycle_hit = true;
+            return Vec::new();
+        }
+        stack.push(index);
+        let raw = &self.raw[index];
+        let list = if which == 0 {
+            &raw.raw_fields
+        } else {
+            &raw.raw_more_fields
+        };
+        let mut out: Vec<String> = Vec::new();
+        for entry in list.iter().flatten() {
+            match preset_reference(entry) {
+                Some(target) => {
+                    if let Some(&other) = self.by_id.get(target) {
+                        out.extend(self.resolve(other, which, stack));
+                    }
+                }
+                None => out.push(entry.clone()),
+            }
+        }
+        if out.is_empty() {
+            let geometry = &raw.preset.geometry;
+            let mut ancestor = raw.preset.id.as_str();
+            while let Some(slash) = ancestor.rfind('/') {
+                ancestor = &ancestor[..slash];
+                let Some(&parent) = self.by_id.get(ancestor) else {
+                    continue;
+                };
+                if self.raw[parent]
+                    .preset
+                    .geometry
+                    .iter()
+                    .any(|g| geometry.contains(g))
+                {
+                    out = self.resolve(parent, which, stack);
+                    break;
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|id| seen.insert(id.clone()));
+        stack.pop();
+        if stack.is_empty() || !self.cycle_hit {
+            self.memo[which].insert(index, out.clone());
+        }
+        if stack.is_empty() {
+            self.cycle_hit = false;
+        }
+        out
+    }
 }
 
 impl Preset {
@@ -99,14 +208,38 @@ impl Preset {
 /// A parsed, in-memory collection of vendored `Preset`s.
 pub struct PresetIndex {
     presets: Vec<Preset>,
+    /// The schema's `@templates/...` presets: field-list building blocks that
+    /// other presets refer to as `{@templates/...}`. Not features' presets, so
+    /// they take no part in matching, searching or `iter`; [`Self::get`] still
+    /// finds them.
+    templates: Vec<Preset>,
 }
 
 impl PresetIndex {
     /// Parse a JSON array of `Preset` (the vendored `assets/presets/presets.json`
-    /// shape, or a small fixture array in tests).
+    /// shape, or a small fixture array in tests), resolving each preset's
+    /// `fields` / `more_fields` (see [`FieldListResolver`]) once, here.
     pub fn from_json(body: &str) -> Result<Self, serde_json::Error> {
-        let presets: Vec<Preset> = serde_json::from_str(body)?;
-        Ok(Self { presets })
+        let raw: Vec<RawPreset> = serde_json::from_str(body)?;
+        let mut resolver = FieldListResolver::new(&raw);
+        let mut lists = Vec::with_capacity(raw.len());
+        for index in 0..raw.len() {
+            let fields = resolver.resolve(index, 0, &mut Vec::new());
+            let more_fields = resolver.resolve(index, 1, &mut Vec::new());
+            lists.push((fields, more_fields));
+        }
+        let (mut presets, mut templates) = (Vec::new(), Vec::new());
+        for (raw, (fields, more_fields)) in raw.into_iter().zip(lists) {
+            let mut preset = raw.preset;
+            preset.fields = fields;
+            preset.more_fields = more_fields;
+            if preset.id.starts_with('@') {
+                templates.push(preset);
+            } else {
+                presets.push(preset);
+            }
+        }
+        Ok(Self { presets, templates })
     }
 
     pub fn len(&self) -> usize {
@@ -126,8 +259,11 @@ impl PresetIndex {
     /// A preset matches only if every one of its required `tags` entries
     /// is present on the feature (`"*"` means "key present, any value")
     /// and its `geometry` list includes the feature's geometry. Among
-    /// matches, the preset with the most matched tag pairs wins; ties are
-    /// broken by `match_score` descending.
+    /// matches, the highest score wins, scored like iD's `matchScore`: each
+    /// matched tag adds the preset's `match_score`, but only half of it for a
+    /// `"*"` value. So `highway=service` is the Service Road preset (0.9)
+    /// rather than the generic any-`highway` one (1.0 x 0.5). Ties go to the
+    /// larger `match_score`.
     pub fn match_feature(
         &self,
         tags: &HashMap<String, String>,
@@ -137,17 +273,18 @@ impl PresetIndex {
             .iter()
             .filter(|p| p.geometry.contains(&geometry))
             .filter_map(|p| {
-                let mut matched = 0usize;
+                let mut score = 0.0f32;
                 for (key, value) in &p.tags {
                     match tags.get(key) {
-                        Some(actual) if value == "*" || actual == value => matched += 1,
+                        Some(actual) if actual == value => score += p.match_score,
+                        Some(_) if value == "*" => score += p.match_score / 2.0,
                         _ => return None,
                     }
                 }
-                Some((matched, p))
+                Some((score, p))
             })
-            .max_by(|(matched_a, preset_a), (matched_b, preset_b)| {
-                matched_a.cmp(matched_b).then(
+            .max_by(|(score_a, preset_a), (score_b, preset_b)| {
+                score_a.total_cmp(score_b).then(
                     preset_a
                         .match_score
                         .partial_cmp(&preset_b.match_score)
@@ -157,9 +294,17 @@ impl PresetIndex {
             .map(|(_, p)| p)
     }
 
+    /// The `@templates/...` building-block presets (see the field).
+    pub fn templates(&self) -> impl Iterator<Item = &Preset> {
+        self.templates.iter()
+    }
+
     /// Look up a preset by its exact `id` (e.g. `"amenity/cafe"`).
     pub fn get(&self, id: &str) -> Option<&Preset> {
-        self.presets.iter().find(|p| p.id == id)
+        self.presets
+            .iter()
+            .chain(&self.templates)
+            .find(|p| p.id == id)
     }
 
     /// Search presets by name (case-insensitive substring, same normalize
@@ -796,6 +941,145 @@ mod tests {
         let tags = HashMap::from([("building".to_string(), "house".to_string())]);
         let preset = index.match_feature(&tags, Geometry::Area).unwrap();
         assert_eq!(preset.id, "building");
+    }
+
+    #[test]
+    fn a_wildcard_match_scores_half_so_a_specific_preset_wins() {
+        // A generic `highway=*` preset (1.0) must not beat `highway=service`
+        // (0.9): the wildcard counts for half.
+        let index = PresetIndex::from_json(
+            r#"[
+              {"id": "highway", "name": "Highway", "tags": {"highway": "*"},
+               "geometry": ["line"]},
+              {"id": "highway/service", "name": "Service Road",
+               "tags": {"highway": "service"}, "geometry": ["line"],
+               "match_score": 0.9}
+            ]"#,
+        )
+        .unwrap();
+        let tags = HashMap::from([("highway".to_string(), "service".to_string())]);
+        assert_eq!(
+            index.match_feature(&tags, Geometry::Line).unwrap().id,
+            "highway/service"
+        );
+        // An unlisted value still falls back to the generic preset.
+        let tags = HashMap::from([("highway".to_string(), "corridor".to_string())]);
+        assert_eq!(
+            index.match_feature(&tags, Geometry::Line).unwrap().id,
+            "highway"
+        );
+    }
+
+    const INHERIT_FIXTURE: &str = r#"
+    [
+      {"id": "highway", "name": "Highway", "tags": {"highway": "*"},
+       "geometry": ["point", "line"], "fields": ["name", "highway"], "more_fields": ["note"]},
+      {"id": "highway/primary", "name": "Primary", "tags": {"highway": "primary"},
+       "geometry": ["line"], "fields": ["name", "oneway", "{@templates/lanes}"],
+       "more_fields": ["lit"]},
+      {"id": "highway/tertiary", "name": "Tertiary", "tags": {"highway": "tertiary"},
+       "geometry": ["line"], "fields": ["{highway/primary}", "name", "ref"],
+       "more_fields": ["{highway/primary}", "cyclestreet"]},
+      {"id": "highway/tertiary/link", "name": "Tertiary Link",
+       "tags": {"highway": "tertiary_link"}, "geometry": ["line"]},
+      {"id": "highway/bus_stop", "name": "Bus Stop", "tags": {"highway": "bus_stop"},
+       "geometry": ["point"]},
+      {"id": "highway/area_thing", "name": "Area Thing", "tags": {"highway": "x"},
+       "geometry": ["area"]},
+      {"id": "@templates/lanes", "name": "{line}", "tags": {"@template": "lanes"},
+       "geometry": ["line"], "fields": ["lanes", "{@templates/lanes}", "{no/such/preset}"]},
+      {"id": "loop/a", "name": "A", "tags": {"a": "1"}, "geometry": ["line"],
+       "fields": ["x", "{loop/b}"]},
+      {"id": "loop/b", "name": "B", "tags": {"b": "1"}, "geometry": ["line"],
+       "fields": ["y", "{loop/a}"]}
+    ]
+    "#;
+
+    fn field_ids(index: &PresetIndex, id: &str) -> (Vec<String>, Vec<String>) {
+        let p = index.get(id).unwrap();
+        (p.fields.clone(), p.more_fields.clone())
+    }
+
+    #[test]
+    fn preset_references_expand_recursively_in_order_without_duplicates() {
+        let index = PresetIndex::from_json(INHERIT_FIXTURE).unwrap();
+        let (fields, more) = field_ids(&index, "highway/tertiary");
+        // {highway/primary} -> name, oneway, (template -> lanes), then the
+        // preset's own entries; `name` is not repeated.
+        assert_eq!(fields, ["name", "oneway", "lanes", "ref"]);
+        assert_eq!(more, ["lit", "cyclestreet"]);
+    }
+
+    #[test]
+    fn a_missing_list_is_inherited_from_the_nearest_ancestor_with_the_geometry() {
+        let index = PresetIndex::from_json(INHERIT_FIXTURE).unwrap();
+        // highway/tertiary/link -> highway/tertiary (the grandparent's list
+        // is not skipped over: the nearest existing ancestor wins).
+        let (fields, more) = field_ids(&index, "highway/tertiary/link");
+        assert_eq!(fields, ["name", "oneway", "lanes", "ref"]);
+        assert_eq!(more, ["lit", "cyclestreet"]);
+        // highway/bus_stop is a point: its parent `highway` also is.
+        let (fields, more) = field_ids(&index, "highway/bus_stop");
+        assert_eq!(fields, ["name", "highway"]);
+        assert_eq!(more, ["note"]);
+    }
+
+    #[test]
+    fn a_parent_with_no_shared_geometry_is_not_inherited_from() {
+        let index = PresetIndex::from_json(INHERIT_FIXTURE).unwrap();
+        // `highway` offers point and line, not area.
+        let (fields, more) = field_ids(&index, "highway/area_thing");
+        assert!(fields.is_empty() && more.is_empty());
+    }
+
+    #[test]
+    fn reference_cycles_and_unknown_references_resolve_without_braces() {
+        let index = PresetIndex::from_json(INHERIT_FIXTURE).unwrap();
+        let (fields, _) = field_ids(&index, "@templates/lanes");
+        assert_eq!(fields, ["lanes"]);
+        let (a, _) = field_ids(&index, "loop/a");
+        let (b, _) = field_ids(&index, "loop/b");
+        assert_eq!(a, ["x", "y"]);
+        assert_eq!(b, ["y", "x"]);
+        for p in index.iter().chain(index.templates()) {
+            assert!(p.fields.iter().all(|f| !f.contains('{')), "{}", p.id);
+        }
+    }
+
+    #[test]
+    fn template_presets_are_findable_but_never_matched_or_listed() {
+        let index = PresetIndex::from_json(INHERIT_FIXTURE).unwrap();
+        assert!(index.get("@templates/lanes").is_some());
+        assert!(index.iter().all(|p| !p.id.starts_with('@')));
+        assert!(index
+            .search_in(None, "{line}", Geometry::Line, 10)
+            .is_empty());
+    }
+
+    #[test]
+    fn bundled_roads_match_their_own_presets() {
+        let index = preset_index();
+        for (value, id) in [
+            ("residential", "highway/residential"),
+            ("tertiary", "highway/tertiary"),
+            ("primary", "highway/primary"),
+            ("service", "highway/service"),
+            ("footway", "highway/footway"),
+            ("track", "highway/track"),
+            ("path", "highway/path"),
+        ] {
+            let tags = HashMap::from([("highway".to_string(), value.to_string())]);
+            assert_eq!(
+                index.match_feature(&tags, Geometry::Line).unwrap().id,
+                id,
+                "highway={value}"
+            );
+        }
+        let fence = HashMap::from([("barrier".to_string(), "fence".to_string())]);
+        assert_eq!(
+            index.match_feature(&fence, Geometry::Line).unwrap().id,
+            "barrier/fence"
+        );
     }
 
     #[test]

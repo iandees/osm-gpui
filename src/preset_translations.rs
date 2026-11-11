@@ -31,6 +31,26 @@ struct RawField {
     placeholder: Option<String>,
     #[serde(default)]
     options: HashMap<String, String>,
+    /// Labels of the sub-keys of a multi-key field (`access`: "Foot", ...).
+    #[serde(default)]
+    types: HashMap<String, String>,
+}
+
+impl RawField {
+    /// Forget any string that is itself a `{other_field}` reference: it names
+    /// text that belongs to another field, which `Field` finds through its
+    /// `strings_id`, so the lookups here must report "no translation".
+    fn drop_references(&mut self) {
+        let is_ref = |s: &String| crate::fields::is_reference(s);
+        if self.label.as_ref().is_some_and(is_ref) {
+            self.label = None;
+        }
+        if self.placeholder.as_ref().is_some_and(is_ref) {
+            self.placeholder = None;
+        }
+        self.options.retain(|_, v| !is_ref(v));
+        self.types.retain(|_, v| !is_ref(v));
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -70,10 +90,9 @@ impl PresetTranslations {
                 (id, text)
             })
             .collect();
-        Ok(Self {
-            presets,
-            fields: raw.fields,
-        })
+        let mut fields = raw.fields;
+        fields.values_mut().for_each(RawField::drop_references);
+        Ok(Self { presets, fields })
     }
 
     pub fn preset_name(&self, preset_id: &str) -> Option<&str> {
@@ -98,6 +117,15 @@ impl PresetTranslations {
 
     pub fn field_placeholder(&self, field_id: &str) -> Option<&str> {
         self.fields.get(field_id)?.placeholder.as_deref()
+    }
+
+    /// The label of one sub-key of a multi-key field (`access` + `foot`).
+    pub fn field_type_label(&self, field_id: &str, key: &str) -> Option<&str> {
+        self.fields
+            .get(field_id)?
+            .types
+            .get(key)
+            .map(String::as_str)
     }
 
     pub fn option_label(&self, field_id: &str, value: &str) -> Option<&str> {
