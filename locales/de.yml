@@ -179,6 +179,7 @@ status:
   uploaded: "Änderungen hochgeladen (Änderungssatz %{changeset})"
   upload_blocks_edits: "Ein Upload läuft. Warte, bis er abgeschlossen ist, bevor du weiter bearbeitest."
   upload_blocks_quit: "Ein Upload läuft. Warte, bis er abgeschlossen ist, bevor du das Programm beendest."
+  history_step_skipped: "Dieser Schritt gehört zu einer Ebene, die es nicht mehr gibt, und wurde übersprungen."
   uploaded_many:
     one: "Änderungen in %{count} Änderungssatz hochgeladen (zuletzt: Änderungssatz %{changeset})"
     other: "Änderungen in %{count} Änderungssätzen hochgeladen (zuletzt: Änderungssatz %{changeset})"
