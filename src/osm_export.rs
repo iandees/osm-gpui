@@ -126,6 +126,17 @@ fn write_relation(out: &mut String, relation: &OsmRelation, action: Action) {
 /// are written in id order within each kind.
 pub fn to_osm_xml(original: &OsmData, current: &OsmData) -> String {
     let diff = diff_osm_data(original, current);
+    to_osm_xml_with_diff(original, current, &diff)
+}
+
+/// [`to_osm_xml`] for a caller that already computed
+/// `diff_osm_data(original, current)` (the autosave counts its edits from the
+/// same diff, and on a large layer the diff is not free).
+pub fn to_osm_xml_with_diff(
+    original: &OsmData,
+    current: &OsmData,
+    diff: &crate::layers::diff::LayerDiff,
+) -> String {
     let changed_nodes: HashSet<i64> = diff
         .created_nodes
         .iter()
@@ -493,6 +504,23 @@ mod tests {
         assert!(diff.modified_relations.is_empty());
         assert_eq!(diff.counts(), (2, 0, 1));
         assert_eq!(to_osm_xml(&baseline, &reloaded), xml);
+    }
+
+    #[test]
+    fn line_breaks_and_tabs_in_tag_values_survive_as_character_references() {
+        let current = data(
+            vec![node(1, 1.0, 2.0, 1, &[("note", "line one\nline two\tend\r")])],
+            vec![],
+        );
+        let xml = to_osm_xml(&current, &current);
+        // A literal line break would be read back as a space by any
+        // conforming XML parser (JOSM, the OSM server).
+        assert!(
+            xml.contains("v=\"line one&#10;line two&#9;end&#13;\""),
+            "{xml}"
+        );
+        let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        assert_eq!(reloaded.nodes[&1].tags["note"], "line one\nline two\tend\r");
     }
 
     #[test]

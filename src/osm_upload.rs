@@ -490,6 +490,13 @@ pub(crate) fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+        // A literal line break or tab inside an attribute value is turned
+        // into a plain space by any conforming XML reader (the OSM server,
+        // JOSM), so a multi-line `note=*` would change in transit. As
+        // character references they arrive intact.
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+        .replace('\t', "&#9;")
 }
 
 /// Serialize the combined diff from every modified layer into one osmChange
