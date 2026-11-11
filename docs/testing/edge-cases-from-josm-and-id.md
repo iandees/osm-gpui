@@ -136,7 +136,7 @@ in the bug list at the end.
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
 | G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify absent |
 | C1 | Copy / paste / duplicate (JOSM `CopyActionTest`, `PasteAction`; PurgeAction #12038) | | existing in `feature_clipboard` and `main.rs` tests |
-| C2 | Purge | JOSM `PurgeAction`, #12038 | implemented, see batch N |
+| C2 | Purge | | implemented, see batch N |
 | C3 | Conflict/merge of downloaded data (`DataSetMergerTest`, #7481, #12599, #12616) | | existing in `src/layers/merge.rs` |
 
 ## Upload diff and ordering
@@ -478,17 +478,17 @@ No bugs found in this batch.
 
 ## Further situations (batch N)
 
-Purge (`src/edge_case_tests/purge.rs`), modelled on JOSM `PurgeAction`: the
+Purge (`src/edge_case_tests/purge.rs`): the
 selected objects are removed from the layer's downloaded data and from its
 server baseline together, so they are not deleted, not modified, and the upload
-diff never mentions them. Design (the conservative reading of JOSM):
+diff never mentions them. Design (deliberately conservative):
 
 - An object with a pending local edit (created here, or different from the
   baseline, including a relation whose member list was edited) is refused, with
-  the reason in the status; nothing changes. JOSM would offer to purge it
-  anyway; here the user uploads or undoes the edit first.
-- A selected node that a way outside the selection still uses is refused (JOSM
-  offers to purge the referrers too).
+  the reason in the status; nothing changes. The user uploads or undoes the
+  edit first.
+- A selected node that a way outside the selection still uses is refused, naming
+  the way.
 - A way or relation that a remaining relation names is purged; the relation is
   not touched and keeps the member, which is now a member that is not
   downloaded (X12), never a deleted one. Relation members are never purged

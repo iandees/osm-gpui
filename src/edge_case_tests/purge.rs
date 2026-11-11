@@ -1,4 +1,4 @@
-//! Purge (JOSM `PurgeAction`, ticket 12038): drop objects from the layer's
+//! Purge: drop objects from the layer's
 //! downloaded data without deleting them. They leave the data and the server
 //! baseline together, so the upload diff never mentions them.
 

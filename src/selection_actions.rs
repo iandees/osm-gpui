@@ -2424,7 +2424,7 @@ fn apply_delete(
     })
 }
 
-/// Purge (JOSM "Purge"): drop the selected objects from the layer's
+/// Purge: drop the selected objects from the layer's
 /// downloaded data without deleting them. Nothing is uploaded for them; they
 /// are simply no longer loaded.
 ///
