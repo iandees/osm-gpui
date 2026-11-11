@@ -211,6 +211,23 @@ Bugs from this batch:
   averages longitudes without wrapping).
 - LOW. K6: Reverse negates a numeric `direction` on a way.
 
+## Further situations (batch B)
+
+Interactions between merge, disconnect, join and delete. Tests are in
+`src/edge_case_tests/interactions_topology.rs`. No bugs found in this batch.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| B1 | Merge two nodes of one way that are not neighbours (`[1,2,3,4]`, merge 2 and 4) | Allowed: `[1,2,3,2]`, node 4 deleted, one undo / redo | design `merge_of_non_neighbours_in_one_way_makes_the_way_revisit_the_survivor`; first selected survives (`merge_of_non_neighbours_with_the_other_node_selected_first_keeps_that_node`) |
+| B2 | Disconnect: upload order | New node in `<create>`, the way that names it only in `<modify>` after it; undo / redo | pass `disconnect_creates_the_new_node_before_the_way_that_names_it` |
+| B3 | Two disconnects in a row | Both nodes created before the modified ways; one undo per step | pass `disconnect_of_a_ring_and_a_second_disconnect_create_nodes_before_both_ways` |
+| B4 | Join with one way selected | Refused, nothing recorded | pass `join_of_a_single_way_is_refused` |
+| B5 | Join a closed way and an open way touching it | Refused (a ring has no free end; iD refuses too) | design `join_of_a_closed_way_and_an_open_way_touching_it_is_refused` |
+| B6 | Join two closed ways sharing a node | Refused | pass `join_of_two_closed_ways_sharing_a_node_is_refused` |
+| B7 | Join a way with itself (same way selected twice) | Refused, nothing recorded | pass `join_of_a_way_with_itself_changes_nothing` |
+| B8 | Delete a way a relation lists twice (different roles, other members between), then undo | Both slots return at their original positions with their roles; redo removes both again | pass `deleting_a_way_listed_twice_then_undo_restores_both_slots_in_place` |
+| B9 | Delete a way that is every member of a relation (listed twice) | Refused, like X3 | design `deleting_a_way_that_is_the_only_two_entries_of_a_relation_is_refused` |
+
 ## Further situations (batch D)
 
 Undo / redo against refusals, autosave and several layers
