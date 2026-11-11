@@ -483,7 +483,6 @@ fn align_stays_sane_for_a_line_that_straddles_the_antimeridian(cx: &mut TestAppC
 }
 
 #[gpui::test]
-#[ignore = "bug: distribute on nodes either side of the antimeridian averages longitudes (about 0) and spreads them along a planet-sized line, moving nodes thousands of km; geometry::LocalProjection does not wrap longitude"]
 fn distribute_stays_sane_for_a_line_that_straddles_the_antimeridian(cx: &mut TestAppContext) {
     line_action(cx, "distribute", 10.0, 180.0, UNEVEN, 25.0);
 }
