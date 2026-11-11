@@ -759,6 +759,9 @@ fn apply_circularize(
     )
 }
 
+/// The most characters the server allows in a tag key or value.
+const MAX_TAG_CHARS: usize = 255;
+
 fn apply_reverse(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -766,6 +769,40 @@ fn apply_reverse(
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = selected_ways_in(editable, layer_id, selection);
+    // Renaming `:forward` to `:backward` or negating an incline can push a
+    // key or value past the server's limit; refuse before changing anything.
+    let too_long = |changes: Vec<topology::TagChange>| {
+        changes.iter().any(|(key, _, after)| {
+            after.is_some()
+                && (key.chars().count() > MAX_TAG_CHARS
+                    || after
+                        .as_ref()
+                        .is_some_and(|v| v.chars().count() > MAX_TAG_CHARS))
+        })
+    };
+    for way in ways.iter().filter(|w| w.node_ids.len() >= 2) {
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: way.way_id,
+        };
+        let mut over = too_long(topology::reversed_tag_changes(
+            &editable.feature_tags(&way_ref).unwrap_or_default(),
+        ));
+        for &node_id in &way.node_ids {
+            let node_ref = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id: node_id,
+            };
+            over |= too_long(topology::reversed_node_tag_changes(
+                &editable.feature_tags(&node_ref).unwrap_or_default(),
+            ));
+        }
+        if over {
+            return Err(tr!("action.reverse.error.tag_too_long", way = way.way_id).to_string());
+        }
+    }
     let mut reversed = Vec::new();
     let mut tag_entries = Vec::new();
     for way in ways.iter().filter(|w| w.node_ids.len() >= 2) {
@@ -1006,6 +1043,44 @@ fn apply_separate(
         .node_lat_lon(node)
         .ok_or_else(|| tr!("action.separate.node_missing").to_string())?;
     let ways = ways_using(editable, node);
+
+    // A turn restriction needs its `from` and `to` ways to touch the `via`
+    // node. Dry-run the plan with throwaway ids, and refuse before anything
+    // is created if a way it detaches is such a member.
+    let mut fake = i64::MIN;
+    let dry = topology::plan_separate(node, &ways, detach, || {
+        fake += 1;
+        fake
+    })
+    .ok_or_else(hint)?;
+    for relation_id in editable.relations_containing_node(node) {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        if !osm_gpui::relations::is_restriction(&relation)
+            || !relation.members.iter().any(|m| {
+                m.member_type == MemberType::Node && m.reference == node && m.role == "via"
+            })
+        {
+            continue;
+        }
+        for edit in &dry {
+            let detached = !edit.after.contains(&node);
+            let is_end = relation.members.iter().any(|m| {
+                m.member_type == MemberType::Way
+                    && m.reference == edit.way_id
+                    && (m.role == "from" || m.role == "to")
+            });
+            if detached && is_end {
+                return Err(tr!(
+                    "action.separate.error.restriction",
+                    way = edit.way_id,
+                    relation = relation_id
+                )
+                .to_string());
+            }
+        }
+    }
 
     let mut created = Vec::new();
     let edits = topology::plan_separate(node, &ways, detach, || {

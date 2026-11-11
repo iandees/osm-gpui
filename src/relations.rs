@@ -361,6 +361,10 @@ pub enum JoinError {
     /// A way to be removed is not next to the surviving way in a relation
     /// where both are members, so folding it in would change the order.
     NotAdjacent { relation_id: i64, way_id: i64 },
+    /// A way to be removed is a ring member of a multipolygon that the
+    /// surviving way is not part of: renaming it would add the survivor's
+    /// geometry to that multipolygon.
+    SurvivorNotInArea { relation_id: i64, way_id: i64 },
 }
 
 impl JoinError {
@@ -390,6 +394,15 @@ impl JoinError {
                 way_id,
             } => tr!(
                 "action.join.error.not_adjacent",
+                way = way_id,
+                relation = relation_id
+            )
+            .to_string(),
+            JoinError::SurvivorNotInArea {
+                relation_id,
+                way_id,
+            } => tr!(
+                "action.join.error.not_in_area",
                 way = way_id,
                 relation = relation_id
             )
@@ -425,6 +438,12 @@ pub fn join_members(
             let role = members[at].role.clone();
             let survivor_roles = roles_of_members(&members, keep);
             if survivor_roles.is_empty() {
+                if relation_type(&relation.tags) == Some("multipolygon") {
+                    return Err(JoinError::SurvivorNotInArea {
+                        relation_id: relation.id,
+                        way_id,
+                    });
+                }
                 members[at].reference = keep;
             } else if survivor_roles.contains(&role) {
                 let next_to_survivor = (at > 0 && is_way_member(&members[at - 1], keep))
