@@ -69,7 +69,7 @@ impl MapViewer {
                     return;
                 }
                 let value = entity.read(cx).value().to_string();
-                this.apply_nsi_preset(
+                this.apply_field_values(
                     &feature,
                     std::collections::HashMap::from([(field_key.clone(), value)]),
                 );
@@ -96,8 +96,9 @@ impl MapViewer {
         // tag keys and values never do.
         let tr = osm_gpui::preset_translations::active();
         let body = osm_gpui::ui::style::current_text_scale().body;
-        match field.field_type {
-            osm_gpui::fields::FieldType::Text => {
+        use osm_gpui::fields::Widget;
+        match field.widget() {
+            Widget::Text => {
                 let current = tags.get(&field.key).cloned().unwrap_or_default();
                 let input = self.text_field_input(
                     &field.id,
@@ -120,7 +121,7 @@ impl MapViewer {
                     )
                     .into_any_element()
             }
-            osm_gpui::fields::FieldType::Check => {
+            Widget::Check => {
                 let current = tags.get(&field.key).map(String::as_str) == Some("yes");
                 let field_key = field.key.clone();
                 let element_id: gpui::ElementId =
@@ -139,7 +140,7 @@ impl MapViewer {
                             .text_size(body)
                             .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
                                 let value = if *checked { "yes" } else { "no" };
-                                this.apply_nsi_preset(
+                                this.apply_field_values(
                                     &feature,
                                     std::collections::HashMap::from([(
                                         field_key.clone(),
@@ -151,7 +152,7 @@ impl MapViewer {
                     )
                     .into_any_element()
             }
-            osm_gpui::fields::FieldType::Radio => {
+            Widget::Radio => {
                 let current_value = tags.get(&field.key).cloned();
                 let field_key = field.key.clone();
                 let options = field.options.clone();
@@ -172,7 +173,7 @@ impl MapViewer {
                         let Some(opt) = options.get(*index) else {
                             return;
                         };
-                        this.apply_nsi_preset(
+                        this.apply_field_values(
                             &feature,
                             std::collections::HashMap::from([(
                                 field_key.clone(),
@@ -190,13 +191,21 @@ impl MapViewer {
                     .child(group)
                     .into_any_element()
             }
-            osm_gpui::fields::FieldType::Combo => {
+            Widget::Combo => {
                 let current_value = tags.get(&field.key).cloned();
                 let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                // A value the options don't list (a custom one) is shown as
+                // it is rather than as "None".
                 let current_label = current_value
                     .as_ref()
-                    .and_then(|v| field.options.iter().find(|o| &o.value == v))
-                    .map(|o| field.display_option_label(o, tr).to_string())
+                    .map(|v| {
+                        field
+                            .options
+                            .iter()
+                            .find(|o| &o.value == v)
+                            .map(|o| field.display_option_label(o, tr).to_string())
+                            .unwrap_or_else(|| v.clone())
+                    })
                     .unwrap_or_else(|| tr!("panel.fields.none").to_string());
 
                 let field_id_for_toggle = field.id.clone();
@@ -261,6 +270,32 @@ impl MapViewer {
 
                 if is_open {
                     let field_key = field.key.clone();
+                    // The first row clears the field (removes the tag).
+                    let clear_key = field.key.clone();
+                    let clear_row = gpui::div()
+                        .id(format!("field-combo-clear-{}", field.id))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(cx.theme().accent))
+                        .child(
+                            Label::new(tr!("panel.fields.none"))
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.apply_field_values(
+                                    &feature,
+                                    std::collections::HashMap::from([(
+                                        clear_key.clone(),
+                                        String::new(),
+                                    )]),
+                                );
+                                this.fields_open_combo = None;
+                                cx.notify();
+                            }),
+                        );
                     column = column.child(
                         gpui::div()
                             .id(format!("field-combo-options-{}", field.id))
@@ -270,6 +305,7 @@ impl MapViewer {
                             .overflow_y_scroll()
                             .border_1()
                             .border_color(cx.theme().border)
+                            .child(clear_row)
                             .children(field.options.iter().enumerate().map(|(i, opt)| {
                                 let value = opt.value.clone();
                                 let field_key = field_key.clone();
@@ -285,7 +321,7 @@ impl MapViewer {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _ev, _window, cx| {
-                                            this.apply_nsi_preset(
+                                            this.apply_field_values(
                                                 &feature,
                                                 std::collections::HashMap::from([(
                                                     field_key.clone(),
@@ -302,7 +338,133 @@ impl MapViewer {
 
                 column.into_any_element()
             }
-            osm_gpui::fields::FieldType::MultiCombo => {
+            Widget::MultiKey => {
+                // Several keys: one simple row per key under the field's name.
+                let mut column = gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(field_label(field.display_label(tr).to_string(), cx));
+                for sub in field.sub_fields(tags, tr) {
+                    column = column.child(self.render_one_field(&sub, tags, feature, window, cx));
+                }
+                column.into_any_element()
+            }
+            Widget::PrefixMulti => {
+                // `payment:` + `cash` -> payment:cash=yes. Chips for the set
+                // options; picking one sets its key, a chip's x clears it.
+                let set: Vec<&osm_gpui::fields::FieldOption> = field
+                    .options
+                    .iter()
+                    .filter(|o| tags.get(&format!("{}{}", field.key, o.value)).is_some())
+                    .collect();
+                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                let mut column = gpui::div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(field_label(field.display_label(tr).to_string(), cx));
+                column = column.child(gpui::div().flex().flex_row().flex_wrap().gap_1().children(
+                    set.iter().map(|opt| {
+                        let tag_key = format!("{}{}", field.key, opt.value);
+                        gpui::div()
+                            .id(format!("field-prefixmulti-chip-{}", tag_key))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
+                            .bg(cx.theme().accent)
+                            .cursor_pointer()
+                            .child(
+                                Label::new(format!("{} ×", field.display_option_label(opt, tr)))
+                                    .text_size(muted_text_size()),
+                            )
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _ev, _window, cx| {
+                                    this.apply_field_values(
+                                        &feature,
+                                        std::collections::HashMap::from([(
+                                            tag_key.clone(),
+                                            String::new(),
+                                        )]),
+                                    );
+                                    cx.notify();
+                                }),
+                            )
+                    }),
+                ));
+                let field_id_for_toggle = field.id.clone();
+                column = column.child(
+                    gpui::div()
+                        .id(format!("field-prefixmulti-add-{}", field.id))
+                        .cursor_pointer()
+                        .child(
+                            Label::new(tr!("panel.fields.multi_add"))
+                                .text_size(muted_text_size())
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.fields_open_combo = if this.fields_open_combo.as_deref()
+                                    == Some(field_id_for_toggle.as_str())
+                                {
+                                    None
+                                } else {
+                                    Some(field_id_for_toggle.clone())
+                                };
+                                cx.notify();
+                            }),
+                        ),
+                );
+                if is_open {
+                    column = column.child(
+                        gpui::div()
+                            .id(format!("field-prefixmulti-options-{}", field.id))
+                            .flex()
+                            .flex_col()
+                            .max_h(gpui::px(160.0))
+                            .overflow_y_scroll()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .children(
+                                field
+                                    .options
+                                    .iter()
+                                    .filter(|o| !set.iter().any(|s| s.value == o.value))
+                                    .enumerate()
+                                    .map(|(i, opt)| {
+                                        let tag_key = format!("{}{}", field.key, opt.value);
+                                        gpui::div()
+                                            .id(("field-prefixmulti-option", i))
+                                            .px_2()
+                                            .py_1()
+                                            .cursor_pointer()
+                                            .hover(|el| el.bg(cx.theme().accent))
+                                            .child(Label::new(
+                                                field.display_option_label(opt, tr).to_string(),
+                                            ))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(move |this, _ev, _window, cx| {
+                                                    this.apply_field_values(
+                                                        &feature,
+                                                        std::collections::HashMap::from([(
+                                                            tag_key.clone(),
+                                                            "yes".to_string(),
+                                                        )]),
+                                                    );
+                                                    this.fields_open_combo = None;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                    }),
+                            ),
+                    );
+                }
+                column.into_any_element()
+            }
+            Widget::SemiCombo => {
                 let current_values: Vec<String> = tags
                     .get(&field.key)
                     .map(|v| {
@@ -348,7 +510,7 @@ impl MapViewer {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _ev, _window, cx| {
-                                    this.apply_nsi_preset(
+                                    this.apply_field_values(
                                         &feature,
                                         std::collections::HashMap::from([(
                                             field_key.clone(),
@@ -423,7 +585,7 @@ impl MapViewer {
                                                 cx.listener(move |this, _ev, _window, cx| {
                                                     let mut updated = base_values.clone();
                                                     updated.push(value.clone());
-                                                    this.apply_nsi_preset(
+                                                    this.apply_field_values(
                                                         &feature,
                                                         std::collections::HashMap::from([(
                                                             field_key.clone(),
@@ -469,7 +631,7 @@ impl MapViewer {
         let change_type_button = gpui::div().flex().flex_row().child(change_type_button);
 
         // (The feature's name is the selection header above the sections.)
-        let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
+        let Some((preset, tags, geometry)) = self.matched_preset_for_field_editing(&feature) else {
             let column = gpui::div().flex().flex_col().gap_2();
             return column
                 .child(change_type_button)
@@ -480,7 +642,19 @@ impl MapViewer {
                 .into_any_element();
         };
 
-        if preset.fields.is_empty() {
+        // Which fields to show was settled when the index loaded (references
+        // and inheritance); here only the feature's geometry and tags decide
+        // what applies, plus what the user has added.
+        let tr = osm_gpui::preset_translations::active();
+        let resolved = osm_gpui::fields::field_index().for_feature(
+            preset,
+            geometry,
+            &tags,
+            &self.fields_promoted_more_fields,
+        );
+        // Only a feature with nothing to show *and* nothing to add is empty;
+        // universal fields (name, note, ...) are always on offer.
+        if resolved.shown.is_empty() && resolved.addable.is_empty() {
             let column = gpui::div().flex().flex_col().gap_2();
             return column
                 .child(change_type_button)
@@ -491,39 +665,17 @@ impl MapViewer {
                 .into_any_element();
         }
 
-        let tr = osm_gpui::preset_translations::active();
-        let field_index = osm_gpui::fields::field_index();
-        let fields = osm_gpui::fields::resolve_fields(field_index, &preset.fields);
-        let mut field_elements: Vec<gpui::AnyElement> = fields
+        let field_elements: Vec<gpui::AnyElement> = resolved
+            .shown
             .into_iter()
-            .map(|field| {
-                let field = field.clone();
-                self.render_one_field(&field, &tags, feature, window, cx)
-            })
+            .map(|field| self.render_one_field(field, &tags, feature, window, cx))
             .collect();
-
-        // Promoted `more_fields` render through the exact same per-type
-        // dispatch as default fields.
-        let promoted_ids: Vec<String> = self.fields_promoted_more_fields.iter().cloned().collect();
-        let promoted_fields = osm_gpui::fields::resolve_fields(field_index, &promoted_ids);
-        for field in promoted_fields {
-            let field = field.clone();
-            field_elements.push(self.render_one_field(&field, &tags, feature, window, cx));
-        }
 
         let mut column = gpui::div().flex().flex_col().gap_3();
         column = column.child(change_type_button).children(field_elements);
 
-        // "Add field" control: list `preset.more_fields` not already shown
-        // (default fields or already-promoted more_fields).
-        let already_shown: Vec<String> = preset
-            .fields
-            .iter()
-            .cloned()
-            .chain(self.fields_promoted_more_fields.iter().cloned())
-            .collect();
-        let addable =
-            osm_gpui::fields::resolve_more_fields(field_index, &preset.more_fields, &already_shown);
+        // "Add field" control: the optional fields not already shown.
+        let addable = resolved.addable;
 
         if !addable.is_empty() {
             // One "Add field" control instead of a row per optional field
@@ -596,6 +748,7 @@ impl MapViewer {
     ) -> Option<(
         &'static osm_gpui::presets::Preset,
         std::collections::HashMap<String, String>,
+        osm_gpui::presets::Geometry,
     )> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
@@ -603,6 +756,6 @@ impl MapViewer {
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
         let preset = osm_gpui::presets::preset_index().match_feature(&tags, geometry)?;
-        Some((preset, tags))
+        Some((preset, tags, geometry))
     }
 }

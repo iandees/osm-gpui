@@ -3252,6 +3252,37 @@ impl MapViewer {
         target: &osm_gpui::selection::FeatureRef,
         preset_tags: std::collections::HashMap<String, String>,
     ) {
+        let values = preset_tags.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        self.apply_tag_values(target, values);
+    }
+
+    /// A Fields-section edit: set each key to its value, or remove the tag
+    /// where the value is empty (clearing a field removes its tag rather than
+    /// leaving `key=`). One undo step for all the keys.
+    fn apply_field_values(
+        &mut self,
+        target: &osm_gpui::selection::FeatureRef,
+        values: std::collections::HashMap<String, String>,
+    ) {
+        let values = values
+            .into_iter()
+            .map(|(k, v)| {
+                let v = v.trim().to_string();
+                (k, if v.is_empty() { None } else { Some(v) })
+            })
+            .collect();
+        self.apply_tag_values(target, values);
+    }
+
+    /// The shared tag write behind [`Self::apply_nsi_preset`] and
+    /// [`Self::apply_field_values`]: `Some(v)` sets a key, `None` removes it;
+    /// keys that already have the wanted value are skipped, and what changed
+    /// is one `SetTags` undo step (none if nothing changed).
+    fn apply_tag_values(
+        &mut self,
+        target: &osm_gpui::selection::FeatureRef,
+        preset_tags: std::collections::HashMap<String, Option<String>>,
+    ) {
         if self.refuse_edit_during_upload() {
             return;
         }
@@ -3271,7 +3302,7 @@ impl MapViewer {
         let entries: Vec<_> = keys
             .into_iter()
             .filter_map(|key| {
-                let after = preset_tags.get(key).cloned();
+                let after = preset_tags.get(key).cloned().flatten();
                 let before = existing
                     .iter()
                     .find(|(k, _)| k == key)
@@ -3289,8 +3320,9 @@ impl MapViewer {
         for (feature, key, _before, after) in &entries {
             if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
                 if let Some(editable) = layer.as_editable_mut() {
-                    if let Some(v) = after {
-                        editable.set_tag(feature.kind, feature.id, key, v);
+                    match after {
+                        Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
+                        None => editable.remove_tag(feature.kind, feature.id, key),
                     }
                 }
             }
@@ -9368,6 +9400,79 @@ mod tests {
         list.iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    fn field_edit(view: &mut MapViewer, id: i64, key: &str, value: &str) {
+        let layer_id = view.active_layer.unwrap();
+        let way = osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id,
+        };
+        view.apply_field_values(
+            &way,
+            std::collections::HashMap::from([(key.to_string(), value.to_string())]),
+        );
+    }
+
+    #[gpui::test]
+    fn name_field_on_a_road_sets_changes_and_clears_the_tag_one_undo_step_each(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                field_edit(view, 10, "highway", "tertiary");
+                let base = view.undo_stack.actions.len();
+
+                field_edit(view, 10, "name", "Fixture Street");
+                assert_eq!(view.undo_stack.actions.len(), base + 1);
+                assert!(tags_of(view, Way, 10).contains(&("name".into(), "Fixture Street".into())));
+
+                field_edit(view, 10, "name", "Other Street");
+                assert_eq!(view.undo_stack.actions.len(), base + 2);
+                assert!(tags_of(view, Way, 10).contains(&("name".into(), "Other Street".into())));
+
+                // Clearing removes the tag; it is not left as `name=`.
+                field_edit(view, 10, "name", "");
+                assert_eq!(view.undo_stack.actions.len(), base + 3);
+                assert!(tags_of(view, Way, 10).iter().all(|(k, _)| k != "name"));
+
+                // Clearing what is already empty changes nothing.
+                field_edit(view, 10, "name", "  ");
+                assert_eq!(view.undo_stack.actions.len(), base + 3);
+
+                // Each edit undoes on its own.
+                undo_step(view);
+                assert!(tags_of(view, Way, 10).contains(&("name".into(), "Other Street".into())));
+                undo_step(view);
+                assert!(tags_of(view, Way, 10).contains(&("name".into(), "Fixture Street".into())));
+                undo_step(view);
+                assert!(tags_of(view, Way, 10).iter().all(|(k, _)| k != "name"));
+                assert!(tags_of(view, Way, 10).contains(&("highway".into(), "tertiary".into())));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn combo_field_edit_sets_and_clears_its_key(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let surface = osm_gpui::fields::field_index().get("surface").unwrap();
+                assert_eq!(surface.widget(), osm_gpui::fields::Widget::Combo);
+                let option = surface.options[0].value.clone();
+                field_edit(view, 10, &surface.key, &option);
+                assert!(tags_of(view, Way, 10).contains(&("surface".into(), option)));
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                field_edit(view, 10, &surface.key, "");
+                assert!(tags_of(view, Way, 10).iter().all(|(k, _)| k != "surface"));
+                undo_step(view);
+                assert!(tags_of(view, Way, 10).iter().any(|(k, _)| k == "surface"));
+            })
+            .unwrap();
     }
 
     #[gpui::test]
