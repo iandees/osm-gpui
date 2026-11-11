@@ -96,6 +96,11 @@ impl FieldIndex {
         self.fields.get(id)
     }
 
+    /// Every field in the index, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = &Field> {
+        self.fields.values()
+    }
+
     pub fn len(&self) -> usize {
         self.fields.len()
     }
