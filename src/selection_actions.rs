@@ -252,6 +252,10 @@ pub(crate) type ApplyFn =
 /// applying right away.
 pub(crate) const ADD_TO_RELATION: &str = "add_to_relation";
 
+/// Id of the "Create Parallel Way…" action, which asks for the offset in a
+/// dialog first (see `create_parallel_ways`).
+pub(crate) const PARALLEL: &str = "parallel";
+
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
         id: "square",
@@ -389,6 +393,18 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         in_tools_menu: false,
         is_applicable: crate::clipboard_actions::can_copy,
         apply: crate::clipboard_actions::apply_elsewhere,
+    },
+    SelectionAction {
+        id: PARALLEL,
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 2),
+        // Needs the offset first, which takes a dialog: see
+        // `MapViewer::run_selection_action`, which opens it instead of
+        // applying, and `create_parallel_ways` below, which applies the answer.
+        apply: |_, _, _| Err(tr!("action.parallel.hint").to_string()),
     },
     SelectionAction {
         id: "copy_tags",
@@ -1691,6 +1707,107 @@ fn apply_delete(
     })
 }
 
+/// Create an offset copy of every selected way of the active layer (the
+/// dialog's answer; see `osm_gpui::parallel`). Each copy gets its own new
+/// nodes and is not connected to the original; relation memberships of the
+/// original are not copied. The new ways become the selection. One undo step.
+pub(crate) fn create_parallel_ways(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    params: osm_gpui::parallel::ParallelParams,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let ways = selected_ways_in(editable, layer_id, selection);
+
+    // Plan everything first, so a refusal leaves no trace.
+    type Plan = (Vec<LatLon>, Vec<(String, String)>);
+    let mut plans: Vec<Plan> = Vec::new();
+    let mut seen: Vec<i64> = Vec::new();
+    for way in &ways {
+        if seen.contains(&way.way_id) {
+            continue;
+        }
+        seen.push(way.way_id);
+        let Some(mut line) = osm_gpui::parallel::offset_way(&way.points, params.offset_m) else {
+            continue;
+        };
+        if params.reverse {
+            line.reverse();
+        }
+        if let Some(m) =
+            osm_gpui::limits::way_over_limit(line.len(), osm_gpui::limits::way_full_message)
+        {
+            return Err(m);
+        }
+        let tags = if params.copy_tags {
+            let way_ref = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Way,
+                id: way.way_id,
+            };
+            editable.feature_tags(&way_ref).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        plans.push((line, tags));
+    }
+    if plans.is_empty() {
+        return Err(tr!("action.parallel.hint").to_string());
+    }
+
+    let mut actions = Vec::new();
+    let mut new_ways = Vec::new();
+    for (line, tags) in plans {
+        // A ring's last point is its first node again.
+        let closed = line.len() >= 4 && line.first() == line.last();
+        let distinct = if closed { line.len() - 1 } else { line.len() };
+        let mut node_ids = Vec::with_capacity(line.len());
+        for &(lat, lon) in &line[..distinct] {
+            let id = editable.add_node(lat, lon);
+            actions.push(UndoableAction::CreateNode {
+                layer: layer_id,
+                id,
+                lat,
+                lon,
+            });
+            node_ids.push(id);
+        }
+        if closed {
+            node_ids.push(node_ids[0]);
+        }
+        let way_id = editable.add_way(node_ids.clone(), tags.clone());
+        actions.push(UndoableAction::CreateWay {
+            layer: layer_id,
+            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: FeatureKind::Way,
+                id: way_id,
+                tags,
+                way_nodes: node_ids,
+                node_lat_lon: None,
+                version: 0,
+            },
+        });
+        new_ways.push(FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: way_id,
+        });
+    }
+
+    let label = tr_count!("action.parallel.done", new_ways.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: Some(new_ways),
+        continue_way: None,
+    })
+}
+
 /// A small road network with server (positive) ids, shared by the tests here
 /// and in `main.rs`:
 ///
@@ -1861,13 +1978,14 @@ mod tests {
                 "reverse",
                 "copy_features",
                 "duplicate_features",
+                "parallel",
                 "copy_tags",
                 "new_relation",
                 "delete"
             ]
         );
-        // An open two-node way can only be reversed (or copied, put in a
-        // relation, or deleted).
+        // An open two-node way can only be reversed or copied alongside (or
+        // extended, copied, put in a relation, or deleted).
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.line)]),
             [
@@ -1875,6 +1993,7 @@ mod tests {
                 "extend",
                 "copy_features",
                 "duplicate_features",
+                "parallel",
                 "new_relation",
                 "delete"
             ]
@@ -3554,5 +3673,122 @@ mod tests {
         // Changed nothing: no new way, way 101 intact.
         assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
         assert!(!n.layer().is_modified());
+    }
+
+    fn parallel(
+        n: &mut Net,
+        ids: &[i64],
+        params: osm_gpui::parallel::ParallelParams,
+    ) -> Result<ActionOutcome, String> {
+        let selection = n.ways(ids);
+        create_parallel_ways(&mut n.layers, &selection, Some(n.layer_id), params)
+    }
+
+    #[test]
+    fn parallel_way_is_new_unconnected_tagged_and_selected() {
+        let mut n = net();
+        let out = parallel(&mut n, &[100], Default::default()).unwrap();
+        assert_eq!(out.status, "Created 1 parallel way");
+        let select = out.select.clone().unwrap();
+        assert_eq!(select.len(), 1);
+        let new_id = select[0].id;
+        assert!(new_id < 0);
+        let nodes = n.editable().way_node_ids(new_id).unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().all(|&id| id < 0));
+        // The original is untouched, and the copy shares no node with it.
+        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3]));
+        let tags = n.editable().feature_tags(&select[0]).unwrap();
+        assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
+        // One undo step: nodes first, then the way.
+        let Some(UndoableAction::Batch { actions, .. }) = &out.undo else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateNode { .. },
+                UndoableAction::CreateNode { .. },
+                UndoableAction::CreateNode { .. },
+                UndoableAction::CreateWay { .. },
+            ]
+        ));
+        // 5 m to the right of the first segment, in metres on the ground.
+        let (a, b) = (
+            n.editable().node_lat_lon(1).unwrap(),
+            n.editable().node_lat_lon(2).unwrap(),
+        );
+        let (c, d) = (
+            n.editable().node_lat_lon(nodes[0]).unwrap(),
+            n.editable().node_lat_lon(nodes[1]).unwrap(),
+        );
+        let p = geometry::LocalProjection::new(a);
+        let (a, b, c, d) = (p.project(a), p.project(b), p.project(c), p.project(d));
+        assert!(((c.0 - a.0).hypot(c.1 - a.1) - 5.0).abs() < 0.05);
+        let along = ((b.0 - a.0), (b.1 - a.1));
+        let right = (along.1, -along.0);
+        assert!((c.0 - a.0) * right.0 + (c.1 - a.1) * right.1 > 0.0);
+        assert!(
+            ((d.0 - c.0) * along.1 - (d.1 - c.1) * along.0).abs() < 0.05 * along.0.hypot(along.1)
+        );
+    }
+
+    #[test]
+    fn parallel_way_can_skip_tags_reverse_and_go_left() {
+        let mut n = net();
+        let params = osm_gpui::parallel::ParallelParams {
+            offset_m: -8.0,
+            copy_tags: false,
+            reverse: true,
+        };
+        let out = parallel(&mut n, &[101], params).unwrap();
+        let new_way = out.select.unwrap()[0];
+        assert!(n.editable().feature_tags(&new_way).unwrap().is_empty());
+        let nodes = n.editable().way_node_ids(new_way.id).unwrap();
+        // Reversed: the copy starts beside original node 5, not node 3.
+        let first = n.editable().node_lat_lon(nodes[0]).unwrap();
+        let near = |id: i64| {
+            let o = n.editable().node_lat_lon(id).unwrap();
+            ((first.0 - o.0) * 111_000.0).hypot((first.1 - o.1) * 85_000.0)
+        };
+        assert!(near(5) < near(3));
+    }
+
+    #[test]
+    fn parallel_of_a_ring_is_a_ring_and_leaves_relations_alone() {
+        let mut n = net();
+        let before = n.editable().relation(900).unwrap();
+        let out = parallel(&mut n, &[108, 102], Default::default()).unwrap();
+        assert_eq!(out.status, "Created 2 parallel ways");
+        let new_ways = out.select.unwrap();
+        let ring = n.editable().way_node_ids(new_ways[0].id).unwrap();
+        assert_eq!(ring.first(), ring.last());
+        assert_eq!(ring.len(), 4);
+        assert_eq!(n.editable().relation(900).unwrap(), before);
+        assert!(n
+            .editable()
+            .relations_containing_way(new_ways[1].id)
+            .is_empty());
+    }
+
+    #[test]
+    fn parallel_needs_a_way_with_two_different_nodes() {
+        let n = net();
+        assert!(!n
+            .applicable(&[n.feature(FeatureKind::Node, 1)])
+            .contains(&"parallel"));
+        assert!(n.applicable(&n.ways(&[100])).contains(&"parallel"));
+        let mut n = net();
+        // Collapse way 102's two nodes onto one point: nothing to offset.
+        let (lat, lon) = n.editable().node_lat_lon(5).unwrap();
+        n.layers
+            .find_layer_mut(n.layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+            .commit_node_moves(&[(6, lat, lon)]);
+        let result = parallel(&mut n, &[102], Default::default());
+        assert!(result.is_err());
+        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
     }
 }

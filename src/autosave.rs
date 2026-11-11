@@ -93,11 +93,11 @@ const LOCK_FILE: &str = "session.lock";
 const HEARTBEAT_FILE: &str = "heartbeat";
 
 /// The directory autosaves live in by default, or `None` where the platform
-/// has no per-user data directory. Always `None` in the library's own unit
-/// tests, which must never touch the user's real files (the app's binary
-/// passes its directory in explicitly; see [`resolve_root`]).
+/// has no per-user data directory. `None` unless the persistence policy is
+/// `Normal` (the default is not, so no test reaches the user's real files; the
+/// app's binary passes its directory in explicitly; see [`resolve_root`]).
 pub fn default_root() -> Option<PathBuf> {
-    if cfg!(test) {
+    if crate::persist::policy() != crate::persist::Policy::Normal {
         return None;
     }
     Some(dirs::data_local_dir()?.join("osm-gpui").join("autosave"))
@@ -196,6 +196,11 @@ pub fn render(snap: &Snapshot) -> Option<Rendered> {
 /// old file or the new one: a temporary sibling, flushed to disk, renamed
 /// over the target.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // Defence in depth: a path inside the user's real data directory is only
+    // writable under the `Normal` persistence policy.
+    if !crate::persist::write_permitted(path) {
+        return Ok(());
+    }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);

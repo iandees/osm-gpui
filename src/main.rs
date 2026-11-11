@@ -53,6 +53,7 @@ use osm_gpui::layers::{
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
 use osm_gpui::osm_upload;
+use osm_gpui::persist;
 use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
@@ -72,6 +73,7 @@ actions!(
         ToggleDebugOverlay,
         ToggleDownloadedArea,
         AddCustomImagery,
+        ScriptSeedCustomImagery,
         OpenSettings,
         Undo,
         Redo,
@@ -680,6 +682,13 @@ struct MapViewer {
     /// Active "add to relation" picker dialog, if open.
     relation_picker_dialog:
         Option<gpui::Entity<osm_gpui::ui::relation_picker_dialog::RelationPickerDialog>>,
+    /// Set by "Create Parallel Way…"; `render` opens the dialog and clears it.
+    pending_parallel_dialog: bool,
+    /// Active "create parallel way" dialog, if open.
+    parallel_dialog: Option<gpui::Entity<osm_gpui::ui::parallel_dialog::ParallelDialog>>,
+    /// What the parallel-way dialog was last submitted with, offered again
+    /// next time (this session only).
+    parallel_params: osm_gpui::parallel::ParallelParams,
     /// The feature whose Fields section has its "Add field" list expanded.
     /// Keyed by feature so the list is closed again for any other selection
     /// without every selection-changing path having to reset it.
@@ -743,6 +752,11 @@ struct MapViewer {
     /// The feature under the cursor that a click would select, if any
     /// (Select mode only). Drawn with the hover highlight.
     hovered: Option<osm_gpui::selection::FeatureRef>,
+    /// A visible vertex (previewed, or on a selected way) that was pressed
+    /// without being selected: the move-drag it started moves just this node,
+    /// and the node becomes the selection once the drag passes the threshold
+    /// (a release without moving is a plain click and selects it that way).
+    vertex_grab: Option<osm_gpui::selection::FeatureRef>,
     /// Extrude mode's in-progress drag, or `None` when not dragging (see
     /// `ExtrudeDrag`).
     extrude_drag: Option<ExtrudeDrag>,
@@ -750,6 +764,9 @@ struct MapViewer {
     /// the button is released: a release within `CLICK_SLOP` of it is a click
     /// (opens the context menu), anything further was a pan.
     right_press: Option<gpui::Point<gpui::Pixels>>,
+    /// The left press now in progress began while an in-window menu was open
+    /// (so it only closes the menu): the map ignores it and its release.
+    menu_swallow_press: bool,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
     /// The "Adjust imagery offset" mode, while it is on (see
@@ -933,6 +950,9 @@ impl MapViewer {
             role_edit: None,
             pending_relation_picker: false,
             relation_picker_dialog: None,
+            pending_parallel_dialog: false,
+            parallel_dialog: None,
+            parallel_params: osm_gpui::parallel::ParallelParams::default(),
             pending_role_edit_open: None,
             members_show_all: false,
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
@@ -953,8 +973,10 @@ impl MapViewer {
             building_press: None,
             last_mouse_pos: None,
             hovered: None,
+            vertex_grab: None,
             extrude_drag: None,
             right_press: None,
+            menu_swallow_press: false,
             context_menu: None,
             offset_adjust: None,
         }
@@ -1321,6 +1343,7 @@ impl MapViewer {
         self.building_press = None;
         self.mode = mode;
         self.hovered = None;
+        self.clear_vertex_preview();
         self.add_progress = None;
         self.building_progress = None;
         self.extrude_drag = None;
@@ -1457,7 +1480,8 @@ impl MapViewer {
             return;
         }
 
-        let hit_move_targets = if self.selected.is_empty()
+        self.vertex_grab = None;
+        let mut hit_move_targets = if self.selected.is_empty()
             || self
                 .layer_manager
                 .hit_test_selection(&self.viewport, position, &self.selected)
@@ -1472,7 +1496,37 @@ impl MapViewer {
                 Some(per_layer)
             }
         };
+        // A press on a visible vertex that is not selected (one of the
+        // previewed way's, or of a selected way) grabs just that node, as in
+        // iD and JOSM: select-and-move in one gesture. Shift keeps the
+        // toggle-on-click meaning, and the other modes are untouched.
+        if hit_move_targets.is_none() && self.mode == EditMode::Select && !modifiers.shift {
+            if let Some((feature, targets)) = self.unselected_node_grab(position) {
+                self.vertex_grab = Some(feature);
+                hit_move_targets = Some(targets);
+            }
+        }
         self.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
+    }
+
+    /// The node a press at `position` lands on, if it is not already
+    /// selected, with the one-node move target for dragging it.
+    fn unselected_node_grab(
+        &self,
+        position: gpui::Point<gpui::Pixels>,
+    ) -> Option<(osm_gpui::selection::FeatureRef, NodeMoveTargets)> {
+        let hit = osm_gpui::selection::resolve_hits(
+            self.layer_manager.hit_test_all(&self.viewport, position),
+        )?;
+        if hit.kind != osm_gpui::selection::FeatureKind::Node || self.selected.contains(&hit) {
+            return None;
+        }
+        let (lat, lon) = self
+            .layer_manager
+            .find_layer(hit.layer_id)?
+            .as_editable()?
+            .node_lat_lon(hit.id)?;
+        Some((hit, vec![(hit.layer_id, vec![(hit.id, lat, lon)])]))
     }
 
     /// Resolve the current selection into, per owning layer, the set of node
@@ -1531,6 +1585,7 @@ impl MapViewer {
         let Some(targets) = interaction::cancel_move_drag(&mut self.interaction) else {
             return false;
         };
+        self.vertex_grab = None;
         for (layer_id, _) in &targets {
             if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                 if let Some(editable) = layer.as_editable_mut() {
@@ -2306,6 +2361,15 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        if action.id == selection_actions::PARALLEL {
+            // Same shape: ask for the offset first, then
+            // `create_parallel_ways` applies it.
+            if !self.refuse_edit_during_upload() {
+                self.pending_parallel_dialog = true;
+            }
+            cx.notify();
+            return;
+        }
         let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
         self.finish_selection_action(result);
         cx.notify();
@@ -2380,6 +2444,50 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Open the "Create Parallel Way" dialog if the action asked for it.
+    /// Called from `Render::render`, as the dialog needs the window.
+    fn check_for_pending_parallel_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::parallel_dialog::{DialogEvent, ParallelDialog};
+
+        if !std::mem::take(&mut self.pending_parallel_dialog) || self.parallel_dialog.is_some() {
+            return;
+        }
+        let initial = self.parallel_params;
+        let dialog = cx.new(|cx| ParallelDialog::new(initial, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, event: &DialogEvent, cx| {
+                match event {
+                    DialogEvent::Cancelled => {}
+                    DialogEvent::Submitted(params) => {
+                        this.parallel_params = *params;
+                        this.create_parallel_ways(*params);
+                    }
+                }
+                this.parallel_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.parallel_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Create the parallel copies of the selected ways as one undo step (the
+    /// dialog's answer).
+    fn create_parallel_ways(&mut self, params: osm_gpui::parallel::ParallelParams) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let result = selection_actions::create_parallel_ways(
+            &mut self.layer_manager,
+            &self.selected,
+            self.active_layer,
+            params,
+        );
+        self.finish_selection_action(result);
+    }
+
     /// Append the selected nodes and ways to relation `relation_id` as one
     /// undo step (the picker's choice).
     fn add_selection_to_relation(&mut self, relation_id: i64) {
@@ -2418,6 +2526,7 @@ impl MapViewer {
     fn continue_way_in_add_mode(&mut self, from: osm_gpui::topology::Continuation) {
         self.mode = EditMode::Add;
         self.hovered = None;
+        self.clear_vertex_preview();
         self.building_press = None;
         self.building_progress = None;
         self.building_reference = None;
@@ -2555,6 +2664,7 @@ impl MapViewer {
             || self.preset_picker_dialog.is_some()
             || self.nsi_dialog.is_some()
             || self.relation_picker_dialog.is_some()
+            || self.parallel_dialog.is_some()
             || self.about_dialog.is_some()
             || self.custom_imagery_dialog.is_some();
         if other_dialog_open {
@@ -3119,24 +3229,73 @@ impl MapViewer {
         self.undo_stack.push(UndoableAction::SetTags { entries });
     }
 
+    /// Whether a modal dialog is open (the vertex preview is suppressed).
+    fn any_dialog_open(&self) -> bool {
+        self.quit_confirm_dialog.is_some()
+            || self.delete_layer_dialog.is_some()
+            || self.upload_dialog.is_some()
+            || self.sign_in_dialog.is_some()
+            || self.notice_dialog.is_some()
+            || self.preset_picker_dialog.is_some()
+            || self.nsi_dialog.is_some()
+            || self.relation_picker_dialog.is_some()
+            || self.about_dialog.is_some()
+            || self.custom_imagery_dialog.is_some()
+            || self.find_dialog.is_some()
+    }
+
+    /// Drop the vertex preview (the pointer left the map, or the mode changed).
+    fn clear_vertex_preview(&mut self) {
+        self.layer_manager.update_vertex_preview(
+            &self.viewport,
+            gpui::point(px(0.0), px(0.0)),
+            None,
+            false,
+        );
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
         // What a click here would select — only meaningful in Select mode
         // with no button down and no pan pending.
-        self.hovered = if self.mode == EditMode::Select
+        let hover_enabled = self.mode == EditMode::Select
             && event.pressed_button.is_none()
             && !self.space_held
-            && self.offset_adjust.is_none()
-        {
+            && self.offset_adjust.is_none();
+        let hit_here = |this: &Self| {
             osm_gpui::selection::resolve_hits(
-                self.layer_manager
-                    .hit_test_all(&self.viewport, adjusted_position),
+                this.layer_manager
+                    .hit_test_all(&this.viewport, adjusted_position),
             )
-        } else {
-            None
         };
+        self.hovered = if hover_enabled { hit_here(self) } else { None };
+        // Which way's vertices to preview. Nothing to do while a move-drag
+        // holds the button (the dragged node's way stays previewed); a press
+        // that is not a move-drag (a box-select) or any suppressing state
+        // (other modes, imagery offset, an open dialog) clears it. When the
+        // preview way changes, its vertices just became targets, so the
+        // hover is resolved once more; otherwise there is no second scan.
+        let move_dragging = event.pressed_button.is_some()
+            && matches!(self.interaction, Interaction::MoveDrag { .. });
+        if !move_dragging {
+            let enabled = hover_enabled && !self.any_dialog_open();
+            let changed = self.layer_manager.update_vertex_preview(
+                &self.viewport,
+                adjusted_position,
+                self.hovered.as_ref(),
+                enabled,
+            );
+            if changed
+                && enabled
+                && self
+                    .hovered
+                    .is_some_and(|h| h.kind == osm_gpui::selection::FeatureKind::Way)
+            {
+                self.hovered = hit_here(self);
+            }
+        }
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
         cx.notify();
@@ -3152,6 +3311,13 @@ impl MapViewer {
             {
                 let delta = from_pt(delta_pt);
                 let targets = targets.clone();
+                // A grabbed vertex becomes the selection once the press has
+                // really become a drag.
+                if delta_pt.0.hypot(delta_pt.1) >= interaction::DRAG_THRESHOLD {
+                    if let Some(grabbed) = self.vertex_grab.take() {
+                        self.set_selection(vec![grabbed]);
+                    }
+                }
                 for (layer_id, originals) in &targets {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
@@ -3217,6 +3383,9 @@ impl MapViewer {
 
         match interaction::on_mouse_up(&mut self.interaction, to_pt(up_pos)) {
             interaction::Gesture::MoveCommitted { targets, delta } => {
+                if let Some(grabbed) = self.vertex_grab.take() {
+                    self.set_selection(vec![grabbed]);
+                }
                 let delta = from_pt(delta);
                 for (layer_id, _) in &targets {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
@@ -3255,6 +3424,7 @@ impl MapViewer {
                 cx.notify();
             }
             interaction::Gesture::MoveCancelledAsClick { targets, at } => {
+                self.vertex_grab = None;
                 for (layer_id, _) in &targets {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
@@ -5707,6 +5877,7 @@ impl Render for MapViewer {
         self.check_for_pending_tag_edit(window, cx);
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
+        self.check_for_pending_parallel_dialog(window, cx);
         self.check_for_pending_restore(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
@@ -5787,6 +5958,7 @@ impl Render for MapViewer {
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                         if !*hovered {
                             this.hovered = None;
+                            this.clear_vertex_preview();
                             this.last_mouse_pos = None;
                             cx.notify();
                         }
@@ -5835,6 +6007,10 @@ impl Render for MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            if this.menu_swallow_press {
+                                // This press only closed an open menu.
+                                return;
+                            }
                             window.focus(&this.focus_handle, cx);
                             let position = this.window_to_map(ev.position);
                             if this.space_held {
@@ -5979,6 +6155,9 @@ impl Render for MapViewer {
                     .on_mouse_up(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                            if std::mem::take(&mut this.menu_swallow_press) {
+                                return;
+                            }
                             this.handle_mouse_up(ev, cx);
                         }),
                     )
@@ -6459,6 +6638,12 @@ impl Render for MapViewer {
             .text_size(osm_gpui::ui::style::current_text_scale().body)
             .flex()
             .flex_col()
+            // Seen in the capture phase, before the open menu dismisses
+            // itself on this same press.
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, _| {
+                this.menu_swallow_press =
+                    ev.button == gpui::MouseButton::Left && menu::in_window_menu_open(window);
+            }))
             // Windows/Linux (or macOS with OSM_GPUI_IN_WINDOW_MENU=1): the
             // menu bar is a row inside the window, above everything else.
             .children(menu::in_window_menu_bar(cx).map(|bar| {
@@ -6532,6 +6717,7 @@ impl Render for MapViewer {
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
             .children(self.relation_picker_dialog.clone())
+            .children(self.parallel_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
@@ -6546,6 +6732,20 @@ fn main() {
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
     let cli_theme = args.theme;
+    // The one place the persistence policy is raised above its safe default
+    // (`Disabled`, which every test binary keeps). A normal run reads and
+    // writes the user's saved state; a scripted run reads it but never
+    // writes it. The single exception is the OAuth file, which auth narrows
+    // to the development server's login so the live-test sign-in persists
+    // and no production login can be touched.
+    if args.script.is_some() {
+        persist::set_policy(persist::Policy::ReadOnly);
+        if let Some(oauth_file) = auth::default_path() {
+            persist::allow_read_only_writes_to(oauth_file);
+        }
+    } else {
+        persist::set_policy(persist::Policy::Normal);
+    }
     // Where autosaves go (and are looked for): the app-data directory, except
     // in a scripted run, which has none unless `--autosave-dir` names one.
     let autosave_root = osm_gpui::autosave::resolve_root(
@@ -6685,8 +6885,15 @@ fn main() {
         })
         .detach();
 
-        // Load persisted custom imagery entries.
-        let loaded = custom_imagery_store::load();
+        // Load persisted custom imagery entries. Scripted runs start with an
+        // empty list instead, so captures never show the user's own entries
+        // (the list is never written in a scripted run either: see
+        // `ScriptSeedCustomImagery`).
+        let loaded = if script_harness::script_mode() {
+            Vec::new()
+        } else {
+            custom_imagery_store::load()
+        };
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.
@@ -7115,6 +7322,279 @@ mod tests {
             .and_then(|l| l.as_editable())
             .and_then(|e| e.way_node_ids(way_id))
             .unwrap_or_default()
+    }
+
+    // --- Vertex preview on hover, and press-drag on a visible vertex ---
+
+    /// Window position of a map-local point (inverse of `window_to_map`).
+    fn win_pt(p: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+        point(
+            p.x + px(MapViewer::MODE_PANEL_WIDTH),
+            p.y + menu::top_chrome_height(),
+        )
+    }
+
+    fn pointer_to(
+        view: &mut MapViewer,
+        p: gpui::Point<gpui::Pixels>,
+        pressed: bool,
+        cx: &mut Context<MapViewer>,
+    ) {
+        view.handle_mouse_move(
+            &MouseMoveEvent {
+                position: win_pt(p),
+                pressed_button: pressed.then_some(gpui::MouseButton::Left),
+                modifiers: gpui::Modifiers::none(),
+            },
+            cx,
+        );
+    }
+
+    fn press(view: &mut MapViewer, p: gpui::Point<gpui::Pixels>) {
+        view.handle_map_mouse_down(p, gpui::Modifiers::none());
+    }
+
+    fn release(view: &mut MapViewer, p: gpui::Point<gpui::Pixels>, cx: &mut Context<MapViewer>) {
+        view.handle_mouse_up(
+            &MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: win_pt(p),
+                modifiers: gpui::Modifiers::none(),
+                click_count: 1,
+            },
+            cx,
+        );
+    }
+
+    fn preview_way_of(view: &MapViewer) -> Option<i64> {
+        let id = view.active_layer?;
+        view.layer_manager
+            .find_layer(id)?
+            .as_any()
+            .downcast_ref::<OsmLayer>()?
+            .vertex_preview_way()
+    }
+
+    fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
+        let (lat, lon) = view
+            .layer_manager
+            .find_layer(view.active_layer.unwrap())
+            .and_then(|l| l.as_editable())
+            .and_then(|e| e.node_lat_lon(id))
+            .unwrap();
+        view.viewport.geo_to_screen(lat, lon)
+    }
+
+    fn feature(
+        view: &MapViewer,
+        kind: osm_gpui::selection::FeatureKind,
+        id: i64,
+    ) -> osm_gpui::selection::FeatureRef {
+        osm_gpui::selection::FeatureRef {
+            layer_id: view.active_layer.unwrap(),
+            kind,
+            id,
+        }
+    }
+
+    /// `setup`, switched to Select mode.
+    fn select_setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _w, _cx| view.mode = EditMode::Select)
+            .unwrap();
+        window
+    }
+
+    #[gpui::test]
+    fn hovering_a_way_previews_its_vertices_and_a_vertex_becomes_the_hover(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind;
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                // Far from everything: nothing hovered, nothing previewed.
+                pointer_to(view, point(px(400.0), px(500.0)), false, cx);
+                assert_eq!(view.hovered, None);
+                assert_eq!(preview_way_of(view), None);
+                // On the line: the way is hovered and previewed.
+                pointer_to(view, point(px(400.0), px(300.0)), false, cx);
+                assert_eq!(view.hovered, Some(feature(view, FeatureKind::Way, 10)));
+                assert_eq!(preview_way_of(view), Some(10));
+                // Onto a vertex: the node is hovered, the way stays previewed.
+                let n1 = node_screen(view, 1);
+                pointer_to(view, n1, false, cx);
+                assert_eq!(view.hovered, Some(feature(view, FeatureKind::Node, 1)));
+                assert_eq!(preview_way_of(view), Some(10));
+                // A little off the line, past its tolerance: still previewed.
+                pointer_to(view, point(px(400.0), px(310.0)), false, cx);
+                assert_eq!(view.hovered, None);
+                assert_eq!(preview_way_of(view), Some(10));
+                // Away: gone.
+                pointer_to(view, point(px(400.0), px(500.0)), false, cx);
+                assert_eq!(preview_way_of(view), None);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_pointer_landing_straight_on_a_vertex_hovers_the_node(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                let n2 = node_screen(view, 2);
+                pointer_to(view, n2, false, cx);
+                assert_eq!(view.hovered, Some(feature(view, FeatureKind::Node, 2)));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn no_preview_outside_select_mode_while_space_is_held_or_when_zoomed_out(
+        cx: &mut TestAppContext,
+    ) {
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                let on_line = point(px(400.0), px(300.0));
+                view.space_held = true;
+                pointer_to(view, on_line, false, cx);
+                assert_eq!(preview_way_of(view), None);
+                view.space_held = false;
+                pointer_to(view, on_line, false, cx);
+                assert_eq!(preview_way_of(view), Some(10));
+                // Switching to Add mode drops it and keeps it away.
+                view.mode = EditMode::Add;
+                view.clear_vertex_preview();
+                pointer_to(view, on_line, false, cx);
+                assert_eq!(preview_way_of(view), None);
+                assert_eq!(view.hovered, None);
+                // Select mode below the preview zoom.
+                view.mode = EditMode::Select;
+                view.viewport.set_zoom(17.0);
+                pointer_to(view, on_line, false, cx);
+                assert_eq!(preview_way_of(view), None);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn clicking_a_previewed_vertex_selects_the_node_without_an_undo_step(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                pointer_to(view, point(px(400.0), px(300.0)), false, cx);
+                let n1 = node_screen(view, 1);
+                pointer_to(view, n1, false, cx);
+                press(view, n1);
+                release(view, n1, cx);
+                assert_eq!(view.selected, vec![feature(view, FeatureKind::Node, 1)]);
+                assert!(view.undo_stack.undo().is_none(), "a click is not an edit");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn press_drag_on_a_previewed_vertex_selects_and_moves_it_in_one_undo_step(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind;
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                pointer_to(view, point(px(400.0), px(300.0)), false, cx);
+                let n1 = node_screen(view, 1);
+                let before2 = node_screen(view, 2);
+                pointer_to(view, n1, false, cx);
+                press(view, n1);
+                let to = point(n1.x + px(30.0), n1.y + px(20.0));
+                pointer_to(view, to, true, cx);
+                // Selected as soon as the drag starts.
+                assert_eq!(view.selected, vec![feature(view, FeatureKind::Node, 1)]);
+                release(view, to, cx);
+                assert_eq!(view.selected, vec![feature(view, FeatureKind::Node, 1)]);
+                let moved = node_screen(view, 1);
+                assert!((moved.x - to.x).abs() < px(0.5) && (moved.y - to.y).abs() < px(0.5));
+                assert_eq!(node_screen(view, 2), before2, "only the grabbed node moves");
+                let action = view.undo_stack.undo().expect("one undo step");
+                assert_eq!(action.description(), "Moved 1 node");
+                assert!(view.undo_stack.undo().is_none(), "exactly one step");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn press_drag_on_a_vertex_of_a_selected_way_moves_just_that_node(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                let way = feature(view, FeatureKind::Way, 10);
+                view.selected = vec![way];
+                let layer = view.active_layer.unwrap();
+                view.layer_manager
+                    .find_layer_mut(layer)
+                    .and_then(|l| l.as_editable_mut())
+                    .unwrap()
+                    .set_highlight(&[way]);
+                let n1 = node_screen(view, 1);
+                let before2 = node_screen(view, 2);
+                press(view, n1);
+                let to = point(n1.x + px(0.0), n1.y + px(40.0));
+                pointer_to(view, to, true, cx);
+                release(view, to, cx);
+                assert_eq!(view.selected, vec![feature(view, FeatureKind::Node, 1)]);
+                assert_eq!(node_screen(view, 2), before2);
+                assert_eq!(
+                    view.undo_stack.undo().unwrap().description(),
+                    "Moved 1 node"
+                );
+                assert!(view.undo_stack.undo().is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_drag_that_starts_on_the_line_still_box_selects(cx: &mut TestAppContext) {
+        let window = select_setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                let n1_before = node_screen(view, 1);
+                // Start between the vertices, on the line; drag out a box
+                // that would enclose node 1.
+                let from = point(px(300.0), px(305.0));
+                pointer_to(view, from, false, cx);
+                assert_eq!(preview_way_of(view), Some(10));
+                press(view, from);
+                let to = point(px(100.0), px(100.0));
+                pointer_to(view, to, true, cx);
+                release(view, to, cx);
+                assert_eq!(node_screen(view, 1), n1_before, "nothing moved");
+                assert!(view.undo_stack.undo().is_none());
+                // The box catches only what is drawn: the preview is gone
+                // once the button is down and moving, so not the vertex.
+                assert!(view.selected.is_empty(), "{:?}", view.selected);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn add_mode_press_on_a_vertex_does_not_grab_it(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _w, cx| {
+                assert_eq!(view.mode, EditMode::Add);
+                let n1 = node_screen(view, 1);
+                pointer_to(view, n1, false, cx);
+                assert_eq!(preview_way_of(view), None);
+                press(view, n1);
+                assert!(view.vertex_grab.is_none());
+                assert!(matches!(view.interaction, Interaction::Pending { .. }));
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -9527,6 +10007,61 @@ mod tests {
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("Can't straighten: the way bends more than 10% of its length")
                 );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn parallel_way_asks_first_then_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100]);
+                // Running the action only asks for the offset.
+                view.run_selection_action("parallel", cx);
+                assert!(view.pending_parallel_dialog);
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                view.pending_parallel_dialog = false;
+
+                view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                // Three new nodes and the new way; the copy is selected.
+                assert_eq!(pending(view), (4, 0, 0));
+                assert_eq!(view.selected.len(), 1);
+                let copy = view.selected[0].id;
+                assert!(copy < 0);
+                assert_eq!(way_nodes(view, layer_id, copy).len(), 3);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert!(way_nodes(view, layer_id, copy).is_empty());
+                redo_step(view);
+                assert_eq!(pending(view), (4, 0, 0));
+                assert_eq!(way_nodes(view, layer_id, copy).len(), 3);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn parallel_way_is_refused_during_an_upload(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[100]);
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::OpeningChangeset,
+                ));
+                view.run_selection_action("parallel", cx);
+                assert!(!view.pending_parallel_dialog);
+                view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
             })
             .unwrap();
     }
@@ -12293,5 +12828,54 @@ mod autosave_tests {
             ),
             None
         );
+    }
+
+    /// The binary's tests link the library without its `cfg(test)`, so this is
+    /// the guard that matters for them: the persistence policy is never raised
+    /// outside `main()`, and no save entry point reaches the real files.
+    #[test]
+    fn bin_tests_never_modify_the_real_saved_state() {
+        let state_dir = dirs::config_dir().map(|d| d.join("osm-gpui"));
+        let probe_paths: Vec<PathBuf> = state_dir
+            .iter()
+            .flat_map(|d| {
+                [
+                    "settings.json",
+                    "custom-imagery.json",
+                    "imagery-offsets.json",
+                    "oauth.json",
+                ]
+                .map(|f| d.join(f))
+            })
+            .collect();
+        // Preconditions first: if the guard were broken, fail before saving.
+        assert_eq!(persist::policy(), persist::Policy::Disabled);
+        assert_eq!(settings_store::default_path(), None);
+        assert_eq!(auth::default_path(), None);
+        assert_eq!(osm_gpui::autosave::default_root(), None);
+        for p in &probe_paths {
+            assert!(!persist::write_permitted(p), "{p:?} must be protected");
+        }
+        let mtimes = |paths: &[PathBuf]| -> Vec<Option<std::time::SystemTime>> {
+            paths
+                .iter()
+                .map(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()))
+                .collect()
+        };
+        let before = mtimes(&probe_paths);
+
+        let mut settings = settings_store::snapshot();
+        settings.welcome_dismissed = true;
+        settings_store::update_store(settings);
+        settings_store::set_welcome_dismissed(true, true);
+        settings_store::set_invert_scroll_zoom(true, true);
+        custom_imagery_store::update_store(Vec::new());
+
+        // The lowest write point reports the skip for the real settings file.
+        if let Some(real) = probe_paths.first() {
+            let outcome = persist::try_write_atomic(real, b"{}", persist::WriteOpts::default());
+            assert_eq!(outcome.unwrap(), persist::WriteOutcome::Skipped);
+        }
+        assert_eq!(before, mtimes(&probe_paths));
     }
 }

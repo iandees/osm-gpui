@@ -35,6 +35,13 @@ pub fn append(entry: CustomImageryEntry) {
     save(&snapshot);
 }
 
+/// Append one entry to the in-memory store only; nothing is written to disk.
+/// For scripted runs that need a custom imagery entry without touching the
+/// user's real file.
+pub fn append_in_memory(entry: CustomImageryEntry) {
+    CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry));
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomImageryEntry {
     pub name: String,
@@ -58,11 +65,7 @@ pub fn save_to(path: &Path, entries: &[CustomImageryEntry]) -> std::io::Result<(
 /// Default on-disk location: `<config_dir>/osm-gpui/custom-imagery.json`.
 /// Returns `None` if the OS has no conventional config dir (e.g., exotic platforms).
 pub fn default_path() -> Option<PathBuf> {
-    Some(
-        dirs::config_dir()?
-            .join("osm-gpui")
-            .join("custom-imagery.json"),
-    )
+    persist::config_file("custom-imagery.json")
 }
 
 /// Load from the default path. Empty vec if unavailable.
@@ -96,6 +99,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn default_save_entry_points_never_reach_the_real_file() {
+        assert_eq!(default_path(), None);
+        let real = dirs::config_dir().map(|d| d.join("osm-gpui").join("custom-imagery.json"));
+        if let Some(real) = &real {
+            assert!(!persist::write_permitted(real));
+        }
+        let before = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        update_store(Vec::new());
+        save(&[]);
+        let after = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        assert_eq!(before, after);
     }
 
     fn sample() -> Vec<CustomImageryEntry> {
