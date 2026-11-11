@@ -583,6 +583,12 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  parallel:
+    label: "Create Parallel Way…"
+    hint: "Select one or more ways with at least two different nodes to copy them alongside"
+    done:
+      one: "Created %{count} parallel way"
+      other: "Created %{count} parallel ways"
   add_to_relation:
     label: "Add to Relation…"
     hint: "Select nodes or ways in a layer that has relations to add them to one"
@@ -769,6 +775,15 @@ dialog:
     members:
       one: "%{count} member"
       other: "%{count} members"
+  parallel:
+    title: "Create Parallel Way"
+    offset: "Offset (metres)"
+    offset_hint: "Positive is to the right of the way's direction, negative to the left."
+    copy_tags: "Copy tags"
+    reverse: "Reverse the copy's direction"
+    confirm: "Create"
+    error:
+      offset: "Enter a distance in metres, not zero and at most %{max} either way."
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"
