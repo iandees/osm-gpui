@@ -106,6 +106,28 @@ pub enum AutosaveCmd {
     Crash,
 }
 
+/// What the upload dialog's changeset-extras script ops ask it to do. None of
+/// them can start an upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadDialogCmd {
+    /// Open the dialog as a preview: no sign-in needed, Upload never works.
+    OpenPreview,
+    /// Replace the Sources text.
+    SetSource(String),
+    /// Press a quick-add source button.
+    PressSourceChip(String),
+    /// Tick or untick the review request.
+    SetReviewRequested(bool),
+    /// Leave `imagery_used` out of this upload (`true`) or put it back.
+    SetImageryCleared(bool),
+    /// Put a comment on the in-memory recent-comments list (never saved).
+    AddRecentComment(String),
+    /// Open or close the recent-comments list.
+    ToggleRecentComments,
+    /// Pick the Nth recent comment (0 is the newest).
+    PickRecentComment(usize),
+}
+
 /// Which validator finding `show_finding` clicks in the side panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindingTarget {
@@ -159,6 +181,8 @@ pub enum Check {
     NativeAppearance(NativeAppearanceWant),
     /// Exactly this many features are selected.
     SelectedCount(usize),
+    /// Exactly this many layers are on the map (imagery and data).
+    LayerCount(usize),
     /// The open Find dialog's match-count line contains the text.
     FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
@@ -183,6 +207,12 @@ pub enum Check {
     },
     /// Whether the Adjust imagery offset mode is active.
     AdjustingOffset(bool),
+    /// The tags the upload dialog would write now include `key` with
+    /// `value` (`Some`) or do not include `key` at all (`None`).
+    ChangesetTag {
+        key: String,
+        value: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +312,15 @@ pub enum Op {
     SetComment {
         text: String,
     },
+    /// One of the upload dialog's changeset-extras ops (see `UploadDialogCmd`).
+    UploadDialog(UploadDialogCmd),
+    /// Assert a changeset tag the upload dialog would write now
+    /// (`assert_changeset_tag KEY VALUE`), or that it would not write `key`
+    /// (`assert_no_changeset_tag KEY`, `value` is `None`). Nothing is sent.
+    AssertChangesetTag {
+        key: String,
+        value: Option<String>,
+    },
     /// Press the upload dialog's Cancel button.
     UploadCancel,
     /// Press the delete-layer confirmation's destructive "Delete Layer" button.
@@ -351,6 +390,10 @@ pub enum Op {
     },
     /// Assert exactly `count` features are selected.
     AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert exactly `count` layers are on the map.
+    AssertLayerCount {
         count: usize,
     },
     /// Assert the Find dialog's match-count line contains `text`.

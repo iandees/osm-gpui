@@ -39,8 +39,13 @@ menu:
     title: "Werkzeuge"
   mode:
     title: "Modus"
+  # Untermenü für die Einträge eines zu langen Menüs in der Menüleiste im
+  # Fenster (Windows und Linux).
+  more: "Mehr"
   imagery:
     title: "Hintergrundbild"
+    # Die lange Liste der Bildquellen für das Gebiet, als Untermenü.
+    available: "Verfügbare Hintergrundbilder"
     custom: "Eigenes Hintergrundbild"
     custom_add: "Hinzufügen …"
     osm_carto: "OpenStreetMap Carto"
@@ -492,6 +497,7 @@ shortcut:
   action_split: "Weg teilen"
   action_merge: "Knoten vereinigen"
   action_straighten: "Weg begradigen"
+  action_align: "Knoten in einer Linie ausrichten"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
 # und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
@@ -587,6 +593,21 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  align:
+    label: "Knoten in einer Linie ausrichten"
+    hint: "3 oder mehr Knoten wählen, um sie auf eine gerade Linie zu legen (für alle Knoten eines Wegs den Weg wählen und Begradigen verwenden)"
+    none: "Die gewählten Knoten liegen bereits richtig"
+    done:
+      one: "%{count} Knoten verschoben"
+      other: "%{count} Knoten verschoben"
+    error:
+      same_place: "Ausrichten nicht möglich: Die äußersten Knoten liegen an derselben Stelle"
+  distribute:
+    label: "Knoten gleichmäßig verteilen"
+    hint: "3 oder mehr Knoten wählen, um sie gleichmäßig zwischen den äußersten beiden zu verteilen"
+    done:
+      one: "%{count} Knoten verschoben"
+      other: "%{count} Knoten verschoben"
   parallel:
     label: "Parallelen Weg erstellen …"
     hint: "Einen oder mehrere Wege mit mindestens zwei verschiedenen Knoten wählen, um sie daneben zu kopieren"
@@ -635,6 +656,18 @@ dialog:
     layer_summary: "%{layer}: %{created} erstellt, %{modified} geändert, %{deleted} gelöscht"
     comment_label: "Kommentar zum Änderungssatz"
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
+    recent: "Zuletzt"
+    recent_tooltip: "Einen deiner letzten Kommentare zum Änderungssatz wiederverwenden"
+    source_label: "Quellen"
+    source_placeholder: "Woher die Informationen stammen, z. B. survey"
+    too_long: "Zu lang: %{count} von %{max} Zeichen. Zum Hochladen kürzen."
+    chars_used: "%{count} / %{max}"
+    imagery_used: "Verwendete Luftbilder: %{names}"
+    imagery_cleared: "Verwendete Luftbilder: für diesen Upload nicht erfasst"
+    imagery_clear: "Entfernen"
+    imagery_include: "Aufnehmen"
+    review_requested: "Ich möchte, dass jemand meine Änderungen prüft"
+    preview_note: "Nur Vorschau: Hochladen ist deaktiviert."
     failed: "Hochladen fehlgeschlagen"
     refused_title: "Hochladen noch nicht möglich"
     retry: "Erneut versuchen"

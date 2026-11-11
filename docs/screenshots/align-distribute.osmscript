@@ -1,0 +1,47 @@
+# Align Nodes in Line (L) and Distribute Nodes (Tools menu) on a row of trees.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/align-distribute.osm is laid
+# out in window coordinates at zoom 18, centered on (40.7120, -74.0060): six
+# trees at x = 250, 330, 410, 500, 600, 750 and y between 225 and 285.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/align-distribute.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/align-01-start.png
+
+# Box-select all six trees.
+drag 200,180 800,330 button=left
+wait_idle 2s
+assert_selected_count 6
+capture out/align-02-selected.png
+
+# Align: the two outermost trees stay, the other four land on the line
+# through them.
+key l
+wait_idle 2s
+assert_status_contains Moved 4 nodes
+assert_pending 4
+capture out/align-03-aligned.png
+
+# One undo step; redo again.
+key cmd+z
+wait_idle 2s
+assert_pending 0
+capture out/align-04-undone.png
+key cmd+shift+z
+wait_idle 2s
+assert_pending 4
+capture out/align-05-redone.png
+
+# Select them again and space them evenly between the ends.
+drag 200,180 800,330 button=left
+wait_idle 2s
+assert_selected_count 6
+action selection::RunSelectionAction {"id":"distribute"}
+wait_idle 2s
+assert_status_contains Moved
+capture out/align-06-distributed.png
+
+log done
