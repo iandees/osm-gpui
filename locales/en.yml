@@ -406,6 +406,9 @@ settings:
     autosave_group: "Recovery"
     autosave: "Autosave"
     autosave_description: "Save layers with unsaved edits every 30 seconds, so they can be restored after a crash, a force quit or a power failure."
+    taginfo_group: "Tag suggestions"
+    taginfo: "Suggest tags from taginfo"
+    taginfo_description: "While you type in the tag key and value fields, the text is sent to taginfo.openstreetmap.org to suggest keys and values that others use. Values of free-text keys such as name or addr:* are never sent. Suggestions from the loaded data and the tagging schema always work without it."
   account:
     title: "Account"
     api_server_group: "API Server"

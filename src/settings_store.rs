@@ -148,10 +148,19 @@ pub struct AppSettings {
     /// meaning none.
     #[serde(default)]
     pub recent_comments: Vec<String>,
+    /// Whether the tag key/value inputs ask taginfo.openstreetmap.org for
+    /// suggestions (see `crate::taginfo`). On by default, including for
+    /// settings files written before this field existed.
+    #[serde(default = "default_suggest_from_taginfo")]
+    pub suggest_from_taginfo: bool,
 }
 
 fn default_cache_budget_mb() -> u64 {
     500
+}
+
+fn default_suggest_from_taginfo() -> bool {
+    true
 }
 
 fn default_autosave() -> bool {
@@ -176,6 +185,7 @@ impl Default for AppSettings {
             invert_scroll_zoom: false,
             last_source: String::new(),
             recent_comments: Vec::new(),
+            suggest_from_taginfo: true,
         }
     }
 }
@@ -236,6 +246,18 @@ pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
     let mut settings = snapshot();
     settings.invert_scroll_zoom = invert;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the taginfo-suggestions flag, on top of the store's current
+/// settings so nothing else is touched. Written to disk when `persist` is true.
+pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.suggest_from_taginfo = on;
     if persist {
         update_store(settings);
     } else {
@@ -398,6 +420,7 @@ mod tests {
         save(&AppSettings::default());
         set_welcome_dismissed(true, true);
         set_invert_scroll_zoom(true, true);
+        set_suggest_from_taginfo(false, true);
         let after = real
             .as_ref()
             .and_then(|p| fs::metadata(p).ok()?.modified().ok());
@@ -424,6 +447,7 @@ mod tests {
             invert_scroll_zoom: true,
             last_source: "survey; GPS".into(),
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
+            suggest_from_taginfo: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -602,10 +626,20 @@ mod tests {
             invert_scroll_zoom: false,
             last_source: String::new(),
             recent_comments: Vec::new(),
+            suggest_from_taginfo: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn taginfo_suggestions_are_on_by_default_and_for_older_settings_files() {
+        assert!(AppSettings::default().suggest_from_taginfo);
+        let dir = tmp_dir("legacy-no-taginfo");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(load_from(&path).suggest_from_taginfo);
     }
 
     #[test]
