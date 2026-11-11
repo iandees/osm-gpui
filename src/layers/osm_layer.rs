@@ -3264,7 +3264,54 @@ impl OsmLayer {
                     .node_to_ways
                     .get(&id)
                     .is_some_and(|ws| ws.iter().any(|w| pins.ways.contains(w))));
-        node_markers::node_form(self.node_cache.styles[idx].tagged, pinned, zoom)
+        let tagged = self.node_cache.styles[idx].tagged;
+        node_markers::node_form(tagged, self.is_standalone(tagged, id, zoom), pinned, zoom)
+    }
+
+    /// Whether node `id` is an untagged node that belongs to no way, so it
+    /// is drawn like a tagged one. The way lookup only runs for untagged
+    /// nodes at zooms where a standalone node would be drawn at all.
+    fn is_standalone(&self, tagged: bool, id: i64, zoom: f64) -> bool {
+        !tagged
+            && zoom >= node_markers::TAGGED_MIN_ZOOM
+            && self
+                .node_to_ways
+                .get(&id)
+                .is_none_or(|ways| ways.is_empty())
+    }
+
+    /// The node nearest `screen_pt` within `tol_px`, whether or not its
+    /// marker is drawn. Add mode snaps a new point onto it, so a vertex
+    /// that is not drawn can still be connected to.
+    pub fn snap_to_node(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+    ) -> Option<i64> {
+        self.osm_data.as_ref()?;
+        let pad = px(tol_px * 2.0);
+        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let envelope =
+            AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
+        let mut best: Option<(f32, i64)> = None;
+        for item in self.node_index.locate_in_envelope(envelope) {
+            let id = item.data;
+            let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
+                continue;
+            };
+            let (_, mx, my) = self.node_cache.flat[idx];
+            let sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) {
+                continue;
+            }
+            let dist = (sp - screen_pt).magnitude() as f32;
+            if dist <= tol_px && best.is_none_or(|(bd, _)| dist < bd) {
+                best = Some((dist, id));
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     /// Find the way segment nearest `screen_pt`, within `tol_px`, returning
@@ -4107,7 +4154,11 @@ impl MapLayer for OsmLayer {
             // Selected and hovered nodes and selected ways' nodes are painted
             // in full by `render_highlight`, so only the zoom rule applies.
             let style = self.node_cache.styles[idx];
-            let form = node_markers::node_form(style.tagged, false, zoom);
+            // An untagged vertex of a way is never drawn here (only the
+            // highlight pass draws it, when selected): the way lookup runs
+            // only for untagged nodes at zooms where a standalone one shows.
+            let standalone = self.is_standalone(style.tagged, id, zoom);
+            let form = node_markers::node_form(style.tagged, standalone, false, zoom);
             if form == NodeForm::Hidden {
                 continue;
             }
@@ -4925,7 +4976,7 @@ impl EditableLayer for OsmLayer {
                 let zoom = viewport.zoom_level();
                 for (p, style) in pts.iter().zip(node_styles.iter()) {
                     if kind == HighlightKind::Selected
-                        || node_markers::node_form(style.tagged, false, zoom).is_shown()
+                        || node_markers::node_form(style.tagged, false, false, zoom).is_shown()
                     {
                         paint_node_marker(window, *p, *style);
                     }
@@ -5074,7 +5125,13 @@ mod tests {
         };
         let data = data_with(vec![n1, n2], vec![way]);
         let viewport = viewport_centered_on(center_lat, center_lon);
-        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        // Plain vertices are drawn (and hit) only on a selected way.
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 10,
+        }]);
 
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
         assert_eq!(hits.len(), 1);
@@ -5548,7 +5605,13 @@ mod tests {
         };
         let data = data_with(vec![n1, n2, n3], vec![way_in, way_partial]);
         let viewport = viewport_centered_on(center_lat, center_lon);
-        let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
+        // Plain vertices are boxed only when their way is selected.
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 10,
+        }]);
 
         // A screen-space box symmetric around the viewport's center screen
         // point (400, 300) — always brackets the center's mercator position
@@ -6081,6 +6144,11 @@ mod tests {
         // hit_test at the NEW location finds node 1 (and, via node priority,
         // stops there — but the way-vertex assertions above already prove
         // the way geometry moved too).
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 10,
+        }]);
         let viewport_new = viewport_centered_on(new_lat, new_lon);
         let hits_new = layer.hit_test(&viewport_new, point(px(400.0), px(300.0)));
         assert!(
@@ -6710,6 +6778,11 @@ mod tests {
 
         // way_b (still referencing node 1) must still be findable/correct.
         assert_eq!(layer.way_node_ids(20), Some(vec![1, 3]));
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 20,
+        }]);
         let viewport = viewport_centered_on(40.0, -74.0);
         let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
         assert!(hits
@@ -8272,7 +8345,8 @@ mod tests {
     }
 
     /// One untagged way of `n` nodes 0.0001 degrees (about 8 m) apart along
-    /// latitude 40, plus a tagged node (id 1000) beside the middle one.
+    /// latitude 40, plus a tagged node (id 1000) beside the middle one and an
+    /// untagged node on no way (id 2000) ten steps further along.
     fn way_with_poi_layer(n: i64) -> OsmLayer {
         let mut nodes: Vec<OsmNode> = (1..=n)
             .map(|i| OsmNode {
@@ -8289,6 +8363,13 @@ mod tests {
             lon: -74.0 + (n / 2) as f64 * 0.0001,
             version: 1,
             tags: tagged(),
+        });
+        nodes.push(OsmNode {
+            id: 2000,
+            lat: 40.0003,
+            lon: -74.0 + (n / 2 + 10) as f64 * 0.0001,
+            version: 1,
+            tags: empty_tags(),
         });
         let way = OsmWay {
             id: 100,
@@ -8324,12 +8405,62 @@ mod tests {
     }
 
     #[test]
-    fn vertex_is_a_target_from_the_threshold() {
+    fn unselected_vertex_is_never_a_target_even_at_high_zoom() {
         let layer = way_with_poi_layer(60);
-        let vp = view_at(node_markers::UNTAGGED_MIN_ZOOM);
-        let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
-        assert_eq!(hits[0].kind, FeatureKind::Node);
-        assert_eq!(hits[0].feature.id, 30);
+        for z in [17.0, node_markers::FULL_MIN_ZOOM, 20.0] {
+            let vp = view_at(z);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
+            assert!(hits.iter().all(|h| h.kind == FeatureKind::Way), "z{z}");
+        }
+    }
+
+    #[test]
+    fn vertex_of_a_selected_way_is_clickable_at_high_zoom() {
+        let mut layer = way_with_poi_layer(60);
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 100,
+        }]);
+        for z in [18.0, 20.0] {
+            let vp = view_at(z);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
+            assert_eq!(hits[0].kind, FeatureKind::Node, "z{z}");
+            assert_eq!(hits[0].feature.id, 30, "z{z}");
+        }
+    }
+
+    #[test]
+    fn standalone_untagged_node_is_a_target_like_a_tagged_one() {
+        let layer = way_with_poi_layer(60);
+        for z in [12.0, 16.0] {
+            let vp = view_at(z);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 2000));
+            assert!(hits.iter().all(|h| h.feature.id != 2000), "z{z}");
+        }
+        for z in [17.0, 18.0, 20.0] {
+            let vp = view_at(z);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 2000));
+            assert_eq!(hits[0].feature.id, 2000, "z{z}");
+        }
+    }
+
+    #[test]
+    fn add_mode_snaps_to_an_undrawn_vertex() {
+        let layer = way_with_poi_layer(60);
+        for z in [14.0, 17.0, 19.0] {
+            let vp = view_at(z);
+            let near = node_point(&layer, &vp, 30);
+            // Not a hit target, but a snap target.
+            let hits = layer.hit_test(&vp, near);
+            assert!(hits.iter().all(|h| h.kind == FeatureKind::Way), "z{z}");
+            assert_eq!(layer.snap_to_node(&vp, near, 8.0), Some(30), "z{z}");
+        }
+        // Far from any node: nothing to snap to.
+        let vp = view_at(19.0);
+        let mut far = node_point(&layer, &vp, 30);
+        far.y += px(100.0);
+        assert_eq!(layer.snap_to_node(&vp, far, 8.0), None);
     }
 
     #[test]
@@ -8393,7 +8524,7 @@ mod tests {
                 .filter(|f| f.kind == FeatureKind::Node)
                 .map(|f| f.id)
                 .collect();
-            for id in (1..=60).chain([1000]) {
+            for id in (1..=60).chain([1000, 2000]) {
                 let sp = node_point(&layer, &vp, id);
                 let in_view = sp.x >= px(0.0) && sp.x <= px(800.0) && sp.y >= px(0.0);
                 let in_view = in_view && sp.y <= px(600.0);
@@ -8404,16 +8535,14 @@ mod tests {
                 if in_view && boxed.contains(&id) {
                     assert!(clicked, "z{z}: node {id} boxed but not clickable");
                 }
-                if id == 1000 {
+                if id >= 1000 {
                     assert_eq!(
                         boxed.contains(&id),
                         z >= node_markers::TAGGED_MIN_ZOOM,
-                        "z{z}: tagged node boxed only from its minimum zoom"
+                        "z{z}: tagged/standalone node {id} boxed only from its minimum zoom"
                     );
-                } else if z < node_markers::UNTAGGED_MIN_ZOOM {
-                    assert!(!boxed.contains(&id), "z{z}: hidden vertex {id} boxed");
-                } else if in_view {
-                    assert!(boxed.contains(&id), "z{z}: vertex {id} not boxed");
+                } else {
+                    assert!(!boxed.contains(&id), "z{z}: undrawn vertex {id} boxed");
                 }
             }
         }
@@ -8426,11 +8555,36 @@ mod tests {
         let vertex = layer.node_cache.index_by_id[&3];
         let poi = layer.node_cache.index_by_id[&1000];
         assert_eq!(layer.node_form_at(&pins, vertex, 3, 17.0), NodeForm::Hidden);
-        assert_eq!(layer.node_form_at(&pins, vertex, 3, 18.5), NodeForm::Full);
+        assert_eq!(layer.node_form_at(&pins, vertex, 3, 18.5), NodeForm::Hidden);
         assert_eq!(
             layer.node_form_at(&pins, poi, 1000, 17.0),
             NodeForm::Simple(node_markers::SIMPLE_SIZE)
         );
+        let stray = layer.node_cache.index_by_id[&2000];
+        assert_eq!(
+            layer.node_form_at(&pins, stray, 2000, 17.0),
+            NodeForm::Simple(node_markers::SIMPLE_SIZE)
+        );
+        assert_eq!(layer.node_form_at(&pins, stray, 2000, 18.5), NodeForm::Full);
+    }
+
+    #[test]
+    fn box_select_includes_vertices_of_a_selected_way() {
+        let mut layer = way_with_poi_layer(60);
+        layer.set_highlight(&[FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 100,
+        }]);
+        let rect = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        let vp = view_at(19.0);
+        let boxed = layer.hit_test_rect(&vp, rect);
+        assert!(boxed
+            .iter()
+            .any(|f| f.kind == FeatureKind::Node && f.id == 30));
     }
 }
 
@@ -8919,7 +9073,7 @@ mod relation_overlay_tests {
 
     #[test]
     fn clicking_the_marker_selects_the_restriction_only_at_vertex_zoom() {
-        let layer = layer();
+        let mut layer = layer();
         let v = Viewport::new(40.0005, -73.9985, 18.0, size(px(800.0), px(600.0)));
         let via = v.geo_to_screen(40.0, -73.999);
         let on_marker = point(
@@ -8932,7 +9086,13 @@ mod relation_overlay_tests {
             (hit[0].kind, hit[0].feature.id),
             (FeatureKind::Relation, 20)
         );
-        // The via node itself is still the node.
+        // The via node itself is still the node (once it is selected: a
+        // plain vertex is not otherwise a target).
+        layer.set_highlight(&[crate::selection::FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Node,
+            id: 2,
+        }]);
         let hit = layer.hit_test(&v, point(via.x, via.y));
         assert_eq!(hit[0].kind, FeatureKind::Node);
         // Zoomed out, no marker to click.

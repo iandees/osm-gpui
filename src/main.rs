@@ -3763,23 +3763,38 @@ impl MapViewer {
         // connecting to it. Skipped entirely when Ctrl is held.
         if !ctrl_held && self.add_progress.is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-            if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
-                if hit.layer_id == layer_id {
-                    if let osm_gpui::selection::FeatureKind::Node = hit.kind {
-                        let way_id = self.add_extend_or_start_way(layer_id, hit.id, false, None);
-                        self.add_progress = None;
-                        self.selected = vec![osm_gpui::selection::FeatureRef {
-                            layer_id,
-                            kind: osm_gpui::selection::FeatureKind::Way,
-                            id: way_id,
-                        }];
-                        self.fields_text_inputs.clear();
-                        self.fields_text_subscribed.clear();
-                        self.fields_open_combo = None;
-                        self.fields_promoted_more_fields.clear();
-                        return;
-                    }
-                }
+            let hit_node = osm_gpui::selection::resolve_hits(per_layer)
+                .filter(|hit| {
+                    hit.layer_id == layer_id && hit.kind == osm_gpui::selection::FeatureKind::Node
+                })
+                .map(|hit| hit.id)
+                // Vertices that are not drawn (untagged ones, unless
+                // selected) are not hit targets, but still snap targets.
+                .or_else(|| {
+                    self.layer_manager
+                        .find_layer(layer_id)
+                        .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
+                        .and_then(|osm_layer| {
+                            osm_layer.snap_to_node(
+                                &self.viewport,
+                                screen_pt,
+                                osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                            )
+                        })
+                });
+            if let Some(node_id) = hit_node {
+                let way_id = self.add_extend_or_start_way(layer_id, node_id, false, None);
+                self.add_progress = None;
+                self.selected = vec![osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: way_id,
+                }];
+                self.fields_text_inputs.clear();
+                self.fields_text_subscribed.clear();
+                self.fields_open_combo = None;
+                self.fields_promoted_more_fields.clear();
+                return;
             }
         }
 
@@ -7134,6 +7149,32 @@ mod tests {
             .unwrap();
     }
 
+    /// Plain vertices are never drawn unless selected, but a click on one in
+    /// Add mode still connects to it instead of splicing in a new node.
+    #[gpui::test]
+    fn second_click_on_an_undrawn_vertex_connects_to_it(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                // Node 1 is untagged and way 10 is not selected: not drawn,
+                // not a hit target.
+                let on_node_1 = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON - 0.001);
+                let hits = view.layer_manager.hit_test_all(&view.viewport, on_node_1);
+                assert!(hits.iter().flatten().all(|h| h.feature.id != 1));
+
+                view.handle_add_click(point(px(50.0), px(50.0)), false);
+                let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+                view.handle_add_click(on_node_1, false);
+
+                // Way 10 gained no node; the new way runs from A to node 1.
+                assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
+                let selected = view.selected[0].id;
+                assert_eq!(way_nodes(view, layer_id, selected), vec![node_a, 1]);
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
         let window = setup(cx);
@@ -7924,7 +7965,17 @@ mod tests {
         let xml = std::fs::read_to_string("docs/screenshots/fixtures/topology-actions.osm")
             .expect("fixture");
         let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
-        let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        // The script selects the open path before clicking its first node:
+        // plain vertices are drawn (and clickable) only on a selected way.
+        osm_gpui::layers::EditableLayer::set_highlight(
+            &mut layer,
+            &[osm_gpui::selection::FeatureRef {
+                layer_id: LayerId(1),
+                kind: Way,
+                id: 4107,
+            }],
+        );
         let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
         let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
         for (x, y, kind, id) in [
@@ -7999,11 +8050,18 @@ mod tests {
             std::fs::read_to_string("docs/screenshots/fixtures/relations.osm").expect("fixture");
         let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
         let mut layers = osm_gpui::layers::LayerManager::new();
-        layers.add_layer(Box::new(OsmLayer::new_with_data(
-            LayerId(1),
-            "L".to_string(),
-            Arc::new(data),
-        )));
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
+        // The script selects the middle route way before clicking its middle
+        // node: plain vertices are drawn (and clickable) only on a selected way.
+        osm_gpui::layers::EditableLayer::set_highlight(
+            &mut layer,
+            &[FeatureRef {
+                layer_id: LayerId(1),
+                kind: Way,
+                id: 8202,
+            }],
+        );
+        layers.add_layer(Box::new(layer));
         let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
         let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
             let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
@@ -8112,6 +8170,20 @@ mod tests {
             kind,
             id,
         };
+        // The script selects a way first; its plain vertices are then drawn
+        // and so clickable (untagged vertices never are otherwise).
+        let select_way = |layers: &mut osm_gpui::layers::LayerManager, id: i64| {
+            layers
+                .find_layer_mut(LayerId(1))
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .set_highlight(&[FeatureRef {
+                    layer_id: LayerId(1),
+                    kind: Way,
+                    id,
+                }]);
+        };
         let run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
             let action = selection_actions::find(id).unwrap();
             let env = selection_actions::ActionEnv {
@@ -8123,11 +8195,13 @@ mod tests {
             (action.apply)(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
         };
 
+        select_way(&mut layers, 5101);
         for (x, y, kind, id) in [
             (550.0, 120.0, Node, 7103),
             (700.0, 120.0, Way, 5101),
             (400.0, 120.0, Way, 5101),
             (650.0, 262.0, Way, 5202),
+            (450.0, 250.0, Way, 5201),
             (500.0, 401.0, Way, 5301),
             (425.0, 520.0, Way, 5401),
             (500.0, 640.0, Way, 5501),
@@ -8146,7 +8220,9 @@ mod tests {
         assert_eq!(hit_at(&layers, 700.0, 120.0), Some((Way, -1)));
         assert_eq!(hit_at(&layers, 400.0, 120.0), Some((Way, 5101)));
 
-        // The box around B's end nodes picks exactly those two nodes.
+        // The box around B's end nodes picks exactly those two nodes (with
+        // the west road selected, as the script has it).
+        select_way(&mut layers, 5201);
         let rect = gpui::Bounds::from_corners(local(520.0, 232.0), local(580.0, 280.0));
         let boxed = layers
             .find_layer(LayerId(1))
