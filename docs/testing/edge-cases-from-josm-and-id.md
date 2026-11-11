@@ -227,13 +227,12 @@ relation). Big networks are built in code.
 | K3 | Values `Forward`, `forward `, `forwards`, `LEFT`, `right `, `backwards` (R13) | Only exact lower case flips; `forwards` is not read as legacy iD does | design `values_with_other_case_spaces_or_an_s_are_not_taken_for_directions`, `directional_values_of_directional_keys_follow_the_same_exact_rule` |
 | K4 | Unicode keys and values | Untouched except real `:forward` parts | pass `unicode_keys_and_values_survive_reverse_untouched` |
 | K5 | Node tags with the same odd keys / values on a reversed way | Same exact rule | pass `node_direction_tags_with_odd_keys_and_values_follow_the_exact_rule` |
-| K6 | `direction=90` (compass degrees) on a way | Unchanged | FAIL `numeric_compass_direction_on_a_way_is_not_negated` (becomes `-90`) |
+| K6 | `direction=90` (compass degrees) on a way | Unchanged | pass `numeric_compass_direction_on_a_way_is_not_negated` |
 
 Bugs from this batch:
 
 - LOW-MEDIUM. G5: distribute across the antimeridian (`LocalProjection`
   averages longitudes without wrapping).
-- LOW. K6: Reverse negates a numeric `direction` on a way.
 
 ## Further situations (batch B)
 

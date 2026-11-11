@@ -164,6 +164,16 @@ fn is_free_text_key(base: &str) -> bool {
 /// The new value of `key=value` when the way is reversed.
 fn reversed_value(key: &str, value: &str) -> String {
     if has_directional_value(key) {
+        // A numeric `direction` is a compass bearing, which is absolute and
+        // must not change sign; only a numeric incline is negated.
+        let is_incline = key.split(':').any(|p| p == "incline");
+        let is_word = matches!(
+            value,
+            "forward" | "backward" | "left" | "right" | "up" | "down"
+        );
+        if !is_incline && !is_word {
+            return value.to_string();
+        }
         return flip_value(value);
     }
     let mut parts = key.split(':');
