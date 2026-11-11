@@ -488,6 +488,7 @@ shortcut:
   action_split: "Split Way"
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
+  action_align: "Align Nodes in Line"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
 # menu, the Tools menu, and their status-bar messages. Each action id has a
@@ -583,6 +584,21 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  align:
+    label: "Align Nodes in Line"
+    hint: "Select 3 or more nodes to put them on a straight line (select a way and use Straighten to align all of its nodes)"
+    none: "The selected nodes are already in place"
+    done:
+      one: "Moved %{count} node"
+      other: "Moved %{count} nodes"
+    error:
+      same_place: "Can't align: the outermost nodes are in the same place"
+  distribute:
+    label: "Distribute Nodes"
+    hint: "Select 3 or more nodes to space them evenly between the outermost two"
+    done:
+      one: "Moved %{count} node"
+      other: "Moved %{count} nodes"
   parallel:
     label: "Create Parallel Way…"
     hint: "Select one or more ways with at least two different nodes to copy them alongside"

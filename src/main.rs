@@ -5988,7 +5988,11 @@ impl Render for MapViewer {
                                 // Like the mode keys above, these only fire
                                 // while the map area has focus, so typing in
                                 // a text input never triggers them.
-                                this.run_selection_action(action.id, cx);
+                                // Every bare-key action edits, so none runs
+                                // while an upload is in flight.
+                                if !this.edits_blocked(cx) {
+                                    this.run_selection_action(action.id, cx);
+                                }
                             }
                         }
                     }))
@@ -9109,6 +9113,75 @@ mod tests {
                 assert_eq!(pending(view), (0, 1, 1));
                 undo_step(view);
                 assert_eq!(pending(view), (0, 0, 0));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn align_and_distribute_nodes_are_one_undo_step_each_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let original: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                select(view, Node, &[1, 2, 4, 5]);
+                view.run_selection_action("align", cx);
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                let aligned: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                assert_ne!(aligned, original);
+                view.run_selection_action("distribute", cx);
+                assert_eq!(view.undo_stack.actions.len(), 2);
+                let spaced: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                assert_ne!(spaced, aligned);
+
+                undo_step(view);
+                let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                assert_eq!(now, aligned);
+                undo_step(view);
+                let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                assert_eq!(now, original);
+                redo_step(view);
+                redo_step(view);
+                let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+                    .iter()
+                    .map(|&id| node_position(view, id))
+                    .collect();
+                assert_eq!(now, spaced);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn align_is_refused_during_an_upload_and_for_too_few_nodes(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Node;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Node, &[1, 2]);
+                view.run_selection_action("align", cx);
+                assert!(view.undo_stack.actions.is_empty());
+                select(view, Node, &[1, 2, 4, 5]);
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::OpeningChangeset,
+                ));
+                assert!(view.edits_blocked(cx));
+                assert!(view.undo_stack.actions.is_empty());
             })
             .unwrap();
     }

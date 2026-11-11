@@ -220,6 +220,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         default_spec: "t",
         category: ShortcutCategory::Actions,
     },
+    ShortcutDef {
+        id: "action_align",
+        default_spec: "l",
+        category: ShortcutCategory::Actions,
+    },
 ];
 
 /// Look up a shortcut's definition by id. Panics if `id` isn't in
