@@ -78,7 +78,7 @@ in the bug list at the end.
 | J6 | Which way survives | iD / JOSM keep the oldest / the one on the server | iD "prefers to keep the oldest way" | design `join_of_two_server_ways_keeps_the_first_selected_id` (server way wins over a new one, else first selected) |
 | J7 | Both ways in the same route, adjacent | One membership remains | iD "merges relations", "preserves duplicate route segments" | pass `join_into_a_member_of_a_route_keeps_the_route_in_order` |
 | J8 | Only the removed way is a member | Membership moves to the survivor | iD "merges relations" | pass `join_where_only_the_removed_way_is_a_member_points_the_member_at_the_survivor` |
-| J9 | Both in a route but not adjacent | iD `conflicting_relations`; JOSM asks | iD join.js, JOSM combine dialog | FAIL `join_of_ways_that_are_not_adjacent_in_a_route_is_refused` |
+| J9 | Both in a route but not adjacent | iD `conflicting_relations`; JOSM asks | iD join.js, JOSM combine dialog | pass `join_of_ways_that_are_not_adjacent_in_a_route_is_refused` (refused with a status message) |
 | J10 | Restriction member / role clash | Refused | iD "relation would be damaged" | pass `join_refuses_a_turn_restriction_member_and_a_role_clash` |
 | J11 | Result beyond the node limit | Refused | OSM API limit | existing (`join_is_refused_when_the_result_would_pass_the_way_node_limit`) |
 | J12 | Join collapses a single-member multipolygon into an area | iD converts | iD join.js 710-781 | absent |
@@ -93,7 +93,7 @@ in the bug list at the end.
 | M3 | Neighbours in one way | No repeated node | iD "merges two nodes along a single way" | pass `merge_of_neighbours_in_one_way_does_not_repeat_the_node` |
 | M4 | Ends of an open way merged | Closed way | | pass `merge_of_the_two_ends_of_an_open_way_closes_it` |
 | M5 | Way would collapse to one node | Refused (JOSM) | | pass `merge_refuses_to_collapse_a_two_node_way_to_one_node` |
-| M6 | Triangle collapses to two distinct nodes | iD deletes the degenerate way | iD connect (degenerate ways) | FAIL `merge_must_not_leave_a_degenerate_closed_way` |
+| M6 | Triangle collapses to two distinct nodes | iD deletes the degenerate way | iD connect (degenerate ways) | pass `merge_must_not_leave_a_degenerate_closed_way` (refused rather than deleted) |
 | M7 | Same relation, different roles | Both memberships kept | | pass `merge_keeps_both_memberships_of_one_relation_when_the_roles_differ` |
 | M8 | Tag conflict | Refused, key named | iD / JOSM conflict dialog | pass `merge_with_conflicting_tags_names_the_key_and_changes_nothing` |
 
@@ -202,7 +202,7 @@ Ordered by risk of corrupting data on upload.
    meaning that is wrong after the reversal. `sidewalk_value_left_becomes_right`,
    `forward_backward_values_flip_for_any_key_except_free_text`,
    `side_specific_oneway_value_flips_with_the_side`.
-4. MEDIUM. J9 join of two ways that are not adjacent in a shared route drops the
+4. FIXED (join is now refused). J9 join of two ways that are not adjacent in a shared route drops the
    second membership without asking, which can leave the route disconnected.
    `join_of_ways_that_are_not_adjacent_in_a_route_is_refused`.
 5. MEDIUM. X6/X7 a vertex cannot be deleted (the action refuses any node
@@ -211,5 +211,5 @@ Ordered by risk of corrupting data on upload.
    `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`.
 6. LOW-MEDIUM. X5 deleting a way leaves its untagged unshared nodes as orphans
    that stay on the server. `deleting_a_way_deletes_its_untagged_unshared_nodes`.
-7. LOW. M6 merging two nodes of a triangle leaves a closed way with two
+7. FIXED (merge is now refused). M6 merging two nodes of a triangle leaves a closed way with two
    distinct nodes. `merge_must_not_leave_a_degenerate_closed_way`.

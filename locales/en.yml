@@ -606,6 +606,7 @@ action:
       needs_reversal: "Can't join: way %{id} would have to be reversed but its tags depend on its direction"
       restriction: "Can't join: way %{way} is part of turn restriction %{relation}"
       role_mismatch: "Can't join: way %{way} has a different role in relation %{relation} than the way it would be joined into"
+      not_adjacent: "Can't join: way %{way} is not next to the way it would be joined into in relation %{relation}"
   separate:
     label: "Separate Node"
     hint: "Select a node shared by two or more ways to separate it"
