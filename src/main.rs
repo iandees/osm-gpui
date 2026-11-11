@@ -1881,7 +1881,7 @@ impl MapViewer {
 
     fn apply_undo_action_inner(&mut self, action: &UndoableAction, forward: bool) {
         match action {
-            UndoableAction::MoveNodes { per_layer } => {
+            UndoableAction::MoveNodes { per_layer, .. } => {
                 for (layer_id, entries) in per_layer {
                     let moves: Vec<(i64, f64, f64)> = entries
                         .iter()
@@ -2902,6 +2902,7 @@ impl MapViewer {
         self.undo_stack.push(UndoableAction::Batch {
             label: tr!("history.rotated").to_string(),
             actions: vec![UndoableAction::MoveNodes {
+                select: None,
                 per_layer: vec![(session.layer, entries)],
             }],
         });
@@ -4272,6 +4273,7 @@ impl MapViewer {
                     undo_per_layer.push((*layer_id, undo_entries));
                 }
                 let move_action = UndoableAction::MoveNodes {
+                    select: (!self.selected.is_empty()).then(|| self.selected.clone()),
                     per_layer: undo_per_layer,
                 };
                 if let Some(((layer_id, node), SnapTarget::Node { id: target, .. })) = snap {
@@ -4743,6 +4745,7 @@ impl MapViewer {
             }
             editable.commit_node_moves(&moves);
             actions.push(UndoableAction::MoveNodes {
+                select: None,
                 per_layer: vec![(drag.layer, entries)],
             });
         }
@@ -12353,6 +12356,7 @@ mod tests {
                 let (lat, lon) = editable(view).node_lat_lon(1).unwrap();
                 editable(view).commit_node_moves(&[(1, lat + 0.001, lon)]);
                 view.undo_stack.push(UndoableAction::MoveNodes {
+                    select: None,
                     per_layer: vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
                 });
                 // A selection holding a feature that doesn't exist is pruned
@@ -12365,6 +12369,33 @@ mod tests {
                 view.on_undo(&Undo, window, cx);
                 assert_eq!(selected_ids(view, Node), vec![1]);
                 assert!(selected_ids(view, Way).is_empty());
+            })
+            .unwrap();
+    }
+
+    /// Undoing and redoing a dragged way's move keeps the way selected, not
+    /// the nodes that were translated with it.
+    #[gpui::test]
+    fn undo_of_a_dragged_way_keeps_the_way_selected(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[101]);
+                let nodes = editable(view).way_node_ids(101).unwrap();
+                let (lat, lon) = editable(view).node_lat_lon(nodes[0]).unwrap();
+                editable(view).commit_node_moves(&[(nodes[0], lat + 0.001, lon)]);
+                view.undo_stack.push(UndoableAction::MoveNodes {
+                    select: Some(view.selected.clone()),
+                    per_layer: vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],
+                });
+                view.on_undo(&Undo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101]);
+                assert!(selected_ids(view, Node).is_empty());
+                view.on_redo(&Redo, window, cx);
+                assert_eq!(selected_ids(view, Way), vec![101]);
+                assert!(selected_ids(view, Node).is_empty());
             })
             .unwrap();
     }
