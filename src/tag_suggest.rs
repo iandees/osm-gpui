@@ -16,7 +16,7 @@
 
 use crate::fields::{FieldIndex, FieldType};
 use crate::osm::OsmData;
-use crate::presets::PresetIndex;
+use crate::presets::{Geometry, PresetIndex};
 use crate::taginfo::TaginfoItem;
 use std::collections::{HashMap, HashSet};
 
@@ -148,6 +148,10 @@ pub struct SchemaValue {
 pub struct SchemaIndex {
     keys: Vec<String>,
     values: HashMap<String, Vec<SchemaValue>>,
+    /// Per key used as a preset tag: the geometries of the presets that use
+    /// it (`building` is only an area's tag, for example). Keys no preset
+    /// uses as a tag (`name`, `addr:*`) are not listed and fit anything.
+    key_geometries: HashMap<String, Vec<Geometry>>,
 }
 
 impl SchemaIndex {
@@ -158,6 +162,7 @@ impl SchemaIndex {
         let mut keys: HashSet<String> = HashSet::new();
         let mut values: HashMap<String, Vec<SchemaValue>> = HashMap::new();
         let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut key_geometries: HashMap<String, Vec<Geometry>> = HashMap::new();
 
         let mut push =
             |key: &str, sv: SchemaValue, values: &mut HashMap<String, Vec<SchemaValue>>| {
@@ -210,6 +215,12 @@ impl SchemaIndex {
                     continue;
                 }
                 keys.insert(k.clone());
+                let geometries = key_geometries.entry(k.clone()).or_default();
+                for g in &preset.geometry {
+                    if !geometries.contains(g) {
+                        geometries.push(*g);
+                    }
+                }
                 if v != "*" && !v.is_empty() {
                     push(
                         k,
@@ -225,11 +236,28 @@ impl SchemaIndex {
         }
         let mut keys: Vec<String> = keys.into_iter().collect();
         keys.sort();
-        SchemaIndex { keys, values }
+        SchemaIndex {
+            keys,
+            values,
+            key_geometries,
+        }
     }
 
     pub fn keys(&self) -> &[String] {
         &self.keys
+    }
+
+    /// Whether `key` makes sense on every one of the features whose
+    /// possible geometries are `features` (a closed way can be a line or an
+    /// area, so each feature lists several). True for a key no preset uses
+    /// as a tag, and for an empty `features`.
+    pub fn key_fits(&self, key: &str, features: &[Vec<Geometry>]) -> bool {
+        let Some(allowed) = self.key_geometries.get(key) else {
+            return true;
+        };
+        features.iter().all(|candidates| {
+            candidates.is_empty() || candidates.iter().any(|g| allowed.contains(g))
+        })
     }
 
     pub fn values_of(&self, key: &str) -> &[SchemaValue] {
@@ -349,18 +377,28 @@ fn finish(
 /// Key suggestions for the typed text `query`.
 ///
 /// `exclude` holds keys that must not be offered (those the feature already
-/// has). `data` is one index per visible layer, merged by summing counts.
+/// has). `features` lists each selected feature's possible geometries; keys
+/// the presets only use on other geometries (`building` on an open way) are
+/// left out. `data` is one index per visible layer, merged by summing counts.
 pub fn suggest_keys(
     query: &str,
     data: &[&DataIndex],
     schema: &SchemaIndex,
     taginfo: &[TaginfoItem],
     exclude: &HashSet<String>,
+    features: &[Vec<Geometry>],
     limit: usize,
 ) -> Vec<Suggestion> {
     let query = query.trim();
     let q = query.to_lowercase();
 
+    // Nothing typed: only taginfo's (related or popular) keys are offered,
+    // not every key there is.
+    let (data, schema_keys): (&[&DataIndex], &[String]) = if query.is_empty() {
+        (&[], &[])
+    } else {
+        (data, schema.keys())
+    };
     let mut counts: HashMap<&str, u64> = HashMap::new();
     for index in data {
         for (k, c) in index.keys() {
@@ -369,7 +407,7 @@ pub fn suggest_keys(
     }
     let mut local: Vec<(u8, Suggestion)> = Vec::new();
     for (k, c) in &counts {
-        if *k == query || exclude.contains(*k) {
+        if *k == query || exclude.contains(*k) || !schema.key_fits(k, features) {
             continue;
         }
         if let Some(class) = match_class(&q, k) {
@@ -385,8 +423,12 @@ pub fn suggest_keys(
             ));
         }
     }
-    for k in schema.keys() {
-        if k == query || exclude.contains(k) || counts.contains_key(k.as_str()) {
+    for k in schema_keys {
+        if k == query
+            || exclude.contains(k)
+            || counts.contains_key(k.as_str())
+            || !schema.key_fits(k, features)
+        {
             continue;
         }
         if let Some(class) = match_class(&q, k) {
@@ -402,7 +444,14 @@ pub fn suggest_keys(
             ));
         }
     }
-    finish(local, taginfo, &q, query, |k| !exclude.contains(k), limit)
+    finish(
+        local,
+        taginfo,
+        &q,
+        query,
+        |k| !exclude.contains(k) && schema.key_fits(k, features),
+        limit,
+    )
 }
 
 /// Value suggestions for `key` given the typed text `query`.
@@ -611,6 +660,7 @@ mod tests {
             &SchemaIndex::default(),
             &ti(&[("name", 9), ("atm", 8), ("operator", 5)]),
             &exclude,
+            &[],
             10,
         );
         assert_eq!(texts(&got), ["atm", "operator"]);
@@ -625,9 +675,64 @@ mod tests {
             &SchemaIndex::default(),
             &ti(&[("atm", 8), ("operator", 5), ("opening_hours", 4)]),
             &HashSet::new(),
+            &[],
             10,
         );
         assert_eq!(texts(&got), ["operator", "opening_hours"]);
+    }
+
+    fn geo_schema() -> SchemaIndex {
+        let presets = PresetIndex::from_json(
+            r#"[
+              {"id":"building/house","name":"House","tags":{"building":"house"},"geometry":["area"]},
+              {"id":"highway/service","name":"Service","tags":{"highway":"service"},"geometry":["line"]},
+              {"id":"amenity/bank","name":"Bank","tags":{"amenity":"bank"},"geometry":["point","area"]}
+            ]"#,
+        )
+        .unwrap();
+        let fields = FieldIndex::from_json("[]").unwrap();
+        SchemaIndex::build(&presets, &fields)
+    }
+
+    #[test]
+    fn keys_for_other_geometries_are_left_out() {
+        let schema = geo_schema();
+        let taginfo = ti(&[("building", 9), ("highway", 8), ("name", 7), ("amenity", 6)]);
+        let ask = |features: &[Vec<Geometry>]| {
+            texts(&suggest_keys(
+                "",
+                &[],
+                &SchemaIndex::default(),
+                &taginfo,
+                &HashSet::new(),
+                features,
+                10,
+            ))
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+        };
+        // Without a schema, nothing is known and nothing is filtered.
+        assert_eq!(ask(&[]), ["building", "highway", "name", "amenity"]);
+        let filtered = |features: &[Vec<Geometry>]| {
+            let got = suggest_keys("", &[], &schema, &taginfo, &HashSet::new(), features, 10);
+            texts(&got)
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        };
+        // An open way is only a line: no building or amenity, name is fine.
+        assert_eq!(filtered(&[vec![Geometry::Line]]), ["highway", "name"]);
+        // A closed way may be an area or a line.
+        assert_eq!(
+            filtered(&[vec![Geometry::Area, Geometry::Line]]),
+            ["building", "highway", "name", "amenity"]
+        );
+        // Every selected feature must fit: a node and an open way.
+        assert_eq!(
+            filtered(&[vec![Geometry::Point], vec![Geometry::Line]]),
+            ["name"]
+        );
     }
 
     #[test]
@@ -718,7 +823,7 @@ mod tests {
             ("surface:note", 5),
             ("tunnel_surface", 4),
         ]);
-        let got = suggest_keys("sur", &[&d], &s, &web, &HashSet::new(), 20);
+        let got = suggest_keys("sur", &[&d], &s, &web, &HashSet::new(), &[], 20);
         assert_eq!(
             texts(&got),
             [
@@ -741,7 +846,15 @@ mod tests {
             &[&[("aa", "1")], &[("ab", "1")], &[("ab", "1")]],
             &[],
         ));
-        let got = suggest_keys("a", &[&d], &SchemaIndex::default(), &[], &HashSet::new(), 5);
+        let got = suggest_keys(
+            "a",
+            &[&d],
+            &SchemaIndex::default(),
+            &[],
+            &HashSet::new(),
+            &[],
+            5,
+        );
         assert_eq!(texts(&got), ["ab", "aa"]);
     }
 
@@ -751,10 +864,18 @@ mod tests {
         let mut exclude = HashSet::new();
         exclude.insert("surface".to_string());
         let web = ti(&[("surface", 1), ("surfaced", 1)]);
-        let got = suggest_keys("sur", &[&d], &schema(), &web, &exclude, 20);
+        let got = suggest_keys("sur", &[&d], &schema(), &web, &exclude, &[], 20);
         assert_eq!(texts(&got), ["surface:lanes", "surfaced"]);
         // The text typed in full is not offered back.
-        let got = suggest_keys("surface:lanes", &[&d], &schema(), &[], &HashSet::new(), 20);
+        let got = suggest_keys(
+            "surface:lanes",
+            &[&d],
+            &schema(),
+            &[],
+            &HashSet::new(),
+            &[],
+            20,
+        );
         assert!(got.is_empty());
     }
 
@@ -768,6 +889,7 @@ mod tests {
             &SchemaIndex::default(),
             &[],
             &HashSet::new(),
+            &[],
             5,
         );
         assert_eq!(got.len(), 1);
@@ -877,7 +999,7 @@ mod tests {
         let t = Instant::now();
         let mut n = 0;
         for _ in 0..100 {
-            n += suggest_keys("su", &[&idx], &schema, &[], &HashSet::new(), 30).len();
+            n += suggest_keys("su", &[&idx], &schema, &[], &HashSet::new(), &[], 30).len();
         }
         println!("key lookup: {:?} per call ({n})", t.elapsed() / 100);
         let t = Instant::now();
@@ -904,7 +1026,15 @@ mod tests {
             &[&[("k1", "v")], &[("k2", "v")], &[("k3", "v")]],
             &[],
         ));
-        let got = suggest_keys("k", &[&d], &SchemaIndex::default(), &[], &HashSet::new(), 2);
+        let got = suggest_keys(
+            "k",
+            &[&d],
+            &SchemaIndex::default(),
+            &[],
+            &HashSet::new(),
+            &[],
+            2,
+        );
         assert_eq!(got.len(), 2);
     }
 }

@@ -17,10 +17,12 @@ use gpui::{
 use gpui_component::ActiveTheme;
 
 use osm_gpui::layers::LayerId;
+use osm_gpui::presets::Geometry;
+use osm_gpui::selection::FeatureKind;
 use osm_gpui::selection::FeatureRef;
 use osm_gpui::settings_store;
 use osm_gpui::tag_suggest::{suggest_keys, suggest_values, DataIndex, SchemaIndex, Source};
-use osm_gpui::taginfo::{self, Lookup, TaginfoItem, TaginfoState, Target};
+use osm_gpui::taginfo::{self, Lookup, ObjectType, TaginfoItem, TaginfoState, Target};
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::ui::tag_edit::TagEditField;
 
@@ -304,6 +306,32 @@ impl MapViewer {
 
     // --- the list ---------------------------------------------------------
 
+    /// What kind of objects `features` are, for taginfo's `filter=` (none if
+    /// they are mixed), and each one's possible geometries (a closed way can
+    /// be a line or an area), for hiding keys that only fit other geometries.
+    fn object_info(&self, features: &[FeatureRef]) -> (Option<ObjectType>, Vec<Vec<Geometry>>) {
+        let kind_of = |k: FeatureKind| match k {
+            FeatureKind::Node => ObjectType::Nodes,
+            FeatureKind::Way => ObjectType::Ways,
+            FeatureKind::Relation => ObjectType::Relations,
+        };
+        let object = features
+            .first()
+            .map(|f| kind_of(f.kind))
+            .filter(|first| features.iter().all(|f| kind_of(f.kind) == *first));
+        let geometries = features
+            .iter()
+            .map(|f| {
+                self.layer_manager
+                    .find_layer(f.layer_id)
+                    .and_then(|l| l.as_editable())
+                    .map(|e| e.feature_geometry_candidates(f, osm_gpui::presets::area_keys()))
+                    .unwrap_or_default()
+            })
+            .collect();
+        (object, geometries)
+    }
+
     /// Recompute the open dropdown's entries from the typed text, the
     /// selection, the indexes and the latest taginfo answer. Returns whether
     /// anything is shown (or was just removed).
@@ -361,15 +389,17 @@ impl MapViewer {
                             exclude.retain(|k| tags.iter().any(|(tk, _)| tk == k));
                         }
                     }
+                    let (_, geometries) = self.object_info(&edit.ctx.features);
                     if typed.trim().is_empty() {
                         // Nothing typed: only taginfo's keys that go with
                         // the feature's main tag, never the whole local list.
                         suggest_keys(
                             "",
                             &[],
-                            &SchemaIndex::default(),
+                            schema(),
                             &edit.suggest.taginfo,
                             &exclude,
+                            &geometries,
                             LIST_LIMIT,
                         )
                     } else {
@@ -379,6 +409,7 @@ impl MapViewer {
                             schema(),
                             &edit.suggest.taginfo,
                             &exclude,
+                            &geometries,
                             LIST_LIMIT,
                         )
                     }
@@ -457,9 +488,15 @@ impl MapViewer {
         };
         // The tag every selected feature shares that says what it is (e.g.
         // amenity=bank): keys that usually go with it are suggested.
+        let edit_features = self
+            .tag_inline_edit
+            .as_ref()
+            .expect("checked above")
+            .ctx
+            .features
+            .clone();
         let related = {
-            let edit = self.tag_inline_edit.as_ref().expect("checked above");
-            let snapshots = self.feature_tag_snapshots(&edit.ctx.features);
+            let snapshots = self.feature_tag_snapshots(&edit_features);
             snapshots.split_first().and_then(|((_, first), rest)| {
                 let (k, v) = taginfo::primary_tag(first)?;
                 rest.iter()
@@ -473,6 +510,7 @@ impl MapViewer {
             &key_text,
             &typed,
             related.as_ref().map(|(k, v)| (k.as_str(), v.as_str())),
+            self.object_info(&edit_features).0,
         );
         let lookup = self.tag_suggest.taginfo.request(Instant::now(), query);
 

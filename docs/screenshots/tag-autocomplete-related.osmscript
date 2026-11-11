@@ -58,3 +58,20 @@ key escape
 wait 300ms
 
 log done
+
+# Keys that do not fit the feature are left out: this residential road is an
+# open way, so taginfo's "building" (a key only areas use) is not offered
+# even though taginfo lists it.
+click 388,339
+wait_idle 2s
+assert_selected way 3002
+capture out/tag-related-06-road-selected.png
+panel history collapse
+scroll 1050,400 dy=-60
+wait_idle 1s
+capture out/tag-related-07-road-scrolled.png
+click 988,724
+wait 800ms
+capture out/tag-related-08-road-empty-key.png
+key escape
+key escape
