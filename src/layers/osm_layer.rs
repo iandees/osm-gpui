@@ -3717,7 +3717,7 @@ impl MapLayer for OsmLayer {
                 origin: point(px(min_x), px(min_y)),
                 size: size(px(max_x - min_x), px(max_y - min_y)),
             };
-            window.paint_path(path, rgb(node_markers::SIMPLE_COLOR));
+            window.paint_path(path, rgba(node_markers::SIMPLE_RGBA));
         }
         crate::frame_stats::count("count.nodes_in_view", nodes_in_view);
         crate::frame_stats::count("count.markers_drawn", markers_drawn);
@@ -7882,7 +7882,13 @@ mod tests {
     #[test]
     fn simple_tagged_node_is_a_target_at_low_zoom() {
         let layer = way_with_poi_layer(60);
-        for z in [12.0, 16.0] {
+        for z in [12.0, 15.0] {
+            // Not drawn, so not a target.
+            let vp = view_at(z);
+            let hits = layer.hit_test(&vp, node_point(&layer, &vp, 1000));
+            assert!(hits.iter().all(|h| h.feature.id != 1000), "z{z}");
+        }
+        for z in [node_markers::TAGGED_MIN_ZOOM, 17.0] {
             let vp = view_at(z);
             let hits = layer.hit_test(&vp, node_point(&layer, &vp, 1000));
             assert_eq!(hits[0].kind, FeatureKind::Node, "z{z}");
@@ -7946,7 +7952,11 @@ mod tests {
                     assert!(clicked, "z{z}: node {id} boxed but not clickable");
                 }
                 if id == 1000 {
-                    assert!(boxed.contains(&id), "z{z}: tagged node not boxed");
+                    assert_eq!(
+                        boxed.contains(&id),
+                        z >= node_markers::TAGGED_MIN_ZOOM,
+                        "z{z}: tagged node boxed only from its minimum zoom"
+                    );
                 } else if z < node_markers::UNTAGGED_MIN_ZOOM {
                     assert!(!boxed.contains(&id), "z{z}: hidden vertex {id} boxed");
                 } else if in_view {
