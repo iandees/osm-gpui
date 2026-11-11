@@ -26,6 +26,7 @@ file.
 ### Map drawing
 
 - Way vertices without tags are drawn only when the node or its way is selected, so select a way to see and move its vertices. Tagged nodes are hidden below zoom 17 and drawn as tiny empty squares at zoom 17. ([#158](https://github.com/iandees/osm-gpui/pull/158))
+- Ways are drawn with joined corners and rounded ends from zoom 16, so bends and roads split into several ways look continuous. ([#169](https://github.com/iandees/osm-gpui/pull/169))
 - Ways are drawn much faster on large downloads, with simplified geometry and fewer details when zoomed out. ([#157](https://github.com/iandees/osm-gpui/pull/157))
 
 ### Interface
