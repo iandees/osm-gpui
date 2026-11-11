@@ -37,10 +37,10 @@ pub(crate) fn show_welcome(layers: &LayerManager, dismissed: bool) -> bool {
 }
 
 /// Hide the welcome card for good (the × button and the `DismissWelcome`
-/// script action). Saved to the settings file, except in script mode where it
-/// only changes the in-memory settings so a run never touches the user's file.
+/// script action). Saved to the settings file, except in script mode where the
+/// persistence policy is read-only, so only the in-memory settings change.
 pub(crate) fn dismiss_welcome(cx: &mut gpui::App) {
-    osm_gpui::settings_store::set_welcome_dismissed(true, !crate::script_harness::script_mode());
+    osm_gpui::settings_store::set_welcome_dismissed(true, true);
     cx.refresh_windows();
 }
 
