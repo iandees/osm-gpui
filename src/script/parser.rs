@@ -89,6 +89,22 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             label: rest.join("_"),
         }),
         "load_osm" => parse_load_osm(line_no, &rest),
+        "load_file" => match rest.as_slice() {
+            [path] => Ok(Op::LoadFile {
+                path: path.to_string(),
+            }),
+            _ => Err(err(line_no, "load_file: want PATH")),
+        },
+        "assert_layer_count" => match rest.as_slice() {
+            [n] => Ok(Op::AssertLayerCount {
+                count: n.parse::<usize>().map_err(|e| {
+                    err(line_no, format!("assert_layer_count: bad count '{n}': {e}"))
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_layer_count: want COUNT")),
+        },
+        "assert_layer" => parse_assert_layer(line_no, line, &rest),
+        "assert_selected_at" => parse_assert_selected_at(line_no, &rest),
         "assert_mode" => parse_assert_mode(line_no, &rest),
         "assert_selected" => parse_assert_selected(line_no, &rest),
         "type" => {
@@ -529,6 +545,53 @@ fn parse_assert_zoom(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         tolerance: match tolerance {
             Some(t) => parse_f64(line_no, t, "assert_zoom tol")?,
             None => 0.001,
+        },
+    })
+}
+
+/// `assert_layer gpx|geojson|osm|imagery|grid NAME` (the name is the rest of
+/// the line, spaces included).
+fn parse_assert_layer(line_no: usize, line: &str, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_layer: want gpx|geojson|osm|imagery|grid NAME";
+    let kind = match rest.first().copied() {
+        Some("gpx") => LayerKind::Gpx,
+        Some("geojson") => LayerKind::GeoJson,
+        Some("osm") => LayerKind::Osm,
+        Some("imagery") => LayerKind::Imagery,
+        Some("grid") => LayerKind::Grid,
+        _ => return Err(err(line_no, usage)),
+    };
+    let name = text_after(line, "assert_layer", 1);
+    if name.is_empty() {
+        return Err(err(line_no, usage));
+    }
+    Ok(Op::AssertLayer {
+        kind,
+        name: name.to_string(),
+    })
+}
+
+/// `assert_selected_at LAT LON [tol=METRES]` (default tolerance 0.5 m).
+fn parse_assert_selected_at(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_selected_at: want LAT LON [tol=METRES]";
+    let (lat, lon, tol) = match rest {
+        [lat, lon] => (lat, lon, None),
+        [lat, lon, tol] => (
+            lat,
+            lon,
+            Some(
+                tol.strip_prefix("tol=")
+                    .ok_or_else(|| err(line_no, usage))?,
+            ),
+        ),
+        _ => return Err(err(line_no, usage)),
+    };
+    Ok(Op::AssertSelectedAt {
+        lat: parse_f64(line_no, lat, "assert_selected_at lat")?,
+        lon: parse_f64(line_no, lon, "assert_selected_at lon")?,
+        tolerance_m: match tol {
+            Some(t) => parse_f64(line_no, t, "assert_selected_at tol")?,
+            None => 0.5,
         },
     })
 }
@@ -1165,6 +1228,40 @@ mod tests {
                 path: "path/to/fixture.osm".into()
             }
         );
+    }
+
+    #[test]
+    fn reference_layer_ops_parse() {
+        assert_eq!(
+            parse("load_file a/b.gpx").unwrap()[0].op,
+            Op::LoadFile {
+                path: "a/b.gpx".to_string()
+            }
+        );
+        assert!(parse("load_file").is_err());
+        assert_eq!(
+            parse("assert_layer_count 3").unwrap()[0].op,
+            Op::AssertLayerCount { count: 3 }
+        );
+        assert!(parse("assert_layer_count x").is_err());
+        assert_eq!(
+            parse("assert_layer geojson My Places").unwrap()[0].op,
+            Op::AssertLayer {
+                kind: LayerKind::GeoJson,
+                name: "My Places".to_string()
+            }
+        );
+        assert!(parse("assert_layer banana x").is_err());
+        assert!(parse("assert_layer gpx").is_err());
+        assert_eq!(
+            parse("assert_selected_at 40.5 -74.25 tol=2").unwrap()[0].op,
+            Op::AssertSelectedAt {
+                lat: 40.5,
+                lon: -74.25,
+                tolerance_m: 2.0
+            }
+        );
+        assert!(parse("assert_selected_at 40.5").is_err());
     }
 
     #[test]

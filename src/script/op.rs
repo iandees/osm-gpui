@@ -136,9 +136,33 @@ pub enum NativeAppearanceWant {
     Dark,
 }
 
+/// The kind of a layer, for `assert_layer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKind {
+    Gpx,
+    GeoJson,
+    /// An OSM data layer.
+    Osm,
+    Imagery,
+    Grid,
+}
+
 /// A read-only condition about the running app, evaluated on its main thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Check {
+    /// The map has exactly this many layers.
+    LayerCount(usize),
+    /// A layer of this kind and exact name exists.
+    Layer {
+        kind: LayerKind,
+        name: String,
+    },
+    /// Exactly one node is selected, within `tolerance_m` metres of the point.
+    SelectedAt {
+        lat: f64,
+        lon: f64,
+        tolerance_m: f64,
+    },
     /// Pending (created + modified + deleted) edits in the active layer.
     Pending(usize),
     /// The status bar's message contains the text.
@@ -251,6 +275,26 @@ pub enum Op {
     },
     LoadOsm {
         path: String,
+    },
+    /// `load_file PATH`: open a file the way File > Open does, routed by type
+    /// (`.osm`, `.gpx`, `.geojson`/`.json`).
+    LoadFile {
+        path: String,
+    },
+    /// `assert_layer_count N`.
+    AssertLayerCount {
+        count: usize,
+    },
+    /// `assert_layer KIND NAME`.
+    AssertLayer {
+        kind: LayerKind,
+        name: String,
+    },
+    /// `assert_selected_at LAT LON [tol=METRES]`.
+    AssertSelectedAt {
+        lat: f64,
+        lon: f64,
+        tolerance_m: f64,
     },
     AssertMode {
         mode: EditMode,
