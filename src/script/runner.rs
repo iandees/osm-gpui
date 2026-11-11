@@ -77,6 +77,8 @@ pub trait AppHandle {
     fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Evaluate a read-only condition on the app; `Err` says what it found.
     fn check(&mut self, check: &Check) -> Result<(), String>;
+    /// Press Show on a finding of the open Validate (or upload) dialog.
+    fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
     /// Show `message` in the status bar.
     fn note(&mut self, message: &str);
     /// Start the browser sign-in for the active API server.
@@ -289,6 +291,20 @@ impl Runner {
             Op::AssertSelection { kind } => app
                 .check(&Check::Selection(*kind))
                 .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::AssertValidation {
+                errors,
+                warnings,
+                checks,
+            } => app
+                .check(&Check::Validation {
+                    errors: *errors,
+                    warnings: *warnings,
+                    checks: checks.clone(),
+                })
+                .map_err(|e| fail(format!("assert_validation: {e}"))),
+            Op::ShowFinding { target } => app
+                .show_finding(target)
+                .map_err(|e| fail(format!("show_finding: {e}"))),
             Op::ExportLayer { path } => {
                 app.export_layer(std::path::Path::new(path))
                     .map_err(|e| fail(format!("export_layer: {e}")))?;
@@ -487,6 +503,15 @@ fn describe(op: &Op) -> String {
         Op::AssertStatusContains { text } => format!("assert_status_contains {}", text),
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::AssertValidation {
+            errors,
+            warnings,
+            checks,
+        } => format!(
+            "assert_validation errors={:?} warnings={:?} {:?}",
+            errors, warnings, checks
+        ),
+        Op::ShowFinding { target } => format!("show_finding {:?}", target),
         Op::ExportLayer { path } => format!("export_layer {}", path),
         Op::SignIn => "sign_in".to_string(),
         Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),
@@ -628,6 +653,10 @@ mod tests {
                 }
                 _ => self.check_result.clone(),
             }
+        }
+        fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String> {
+            self.calls.push(format!("show_finding {target:?}"));
+            Ok(())
         }
         fn note(&mut self, message: &str) {
             self.calls.push(format!("note {message}"));

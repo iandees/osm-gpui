@@ -109,6 +109,8 @@ pub(crate) enum ScriptCommand {
     Export { path: std::path::PathBuf },
     /// Evaluate a read-only condition.
     Check(script::Check),
+    /// Press Show on a validator finding.
+    ShowFinding(script::FindingTarget),
     /// Show a message in the status bar.
     Note(String),
 }
@@ -528,6 +530,10 @@ impl MapViewer {
                     let result = self.script_check(&check, cx);
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::ShowFinding(target) => {
+                    let result = self.script_show_finding(&target, window, cx);
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Note(message) => {
                     self.set_status(message);
                     cx.notify();
@@ -617,6 +623,51 @@ impl MapViewer {
         Ok(())
     }
 
+    /// Press Show on a finding of the Validate dialog (or, failing that, the
+    /// upload dialog's list).
+    fn script_show_finding(
+        &mut self,
+        target: &script::FindingTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let find = |report: &osm_gpui::validator::Report| -> Result<usize, String> {
+            match target {
+                script::FindingTarget::Index(n) if *n < report.entries.len() => Ok(*n),
+                script::FindingTarget::Index(n) => Err(format!(
+                    "there is no finding {n} (the list has {})",
+                    report.entries.len()
+                )),
+                script::FindingTarget::Check(id) => report
+                    .entries
+                    .iter()
+                    .position(|e| e.finding.check.id() == id)
+                    .ok_or_else(|| format!("no finding of check {id}")),
+            }
+        };
+        // Deferred like the other dialog presses: the dialog's event is
+        // handled by this view, which is being rendered right now.
+        if let Some(dialog) = self.validate_dialog.clone() {
+            let index = find(dialog.read(cx).report())?;
+            window.defer(cx, move |_window, cx| {
+                dialog.update(cx, |dialog, cx| {
+                    dialog.press_show(index, cx);
+                });
+            });
+            return Ok(());
+        }
+        if let Some(dialog) = self.upload_dialog.clone() {
+            let index = find(dialog.read(cx).validation())?;
+            window.defer(cx, move |_window, cx| {
+                dialog.update(cx, |dialog, cx| {
+                    dialog.press_show_finding(index, cx);
+                });
+            });
+            return Ok(());
+        }
+        Err("neither the Validate dialog nor the upload dialog is open".into())
+    }
+
     fn script_resolve_conflict(
         &mut self,
         choice: script::ConflictChoice,
@@ -700,6 +751,45 @@ impl MapViewer {
                     ))
                 }
             }
+            Check::Validation {
+                errors,
+                warnings,
+                checks,
+            } => {
+                let report = self.validation_report();
+                let mut wrong = Vec::new();
+                let mut compare = |what: &str, want: usize, got: usize| {
+                    if want != got {
+                        wrong.push(format!("{what}: expected {want}, found {got}"));
+                    }
+                };
+                if let Some(want) = errors {
+                    compare("errors", *want, report.errors());
+                }
+                if let Some(want) = warnings {
+                    compare("warnings", *want, report.warnings());
+                }
+                for (id, want) in checks {
+                    let got = osm_gpui::validator::Check::from_id(id)
+                        .map(|c| report.count_of(c))
+                        .unwrap_or(0);
+                    compare(id, *want, got);
+                }
+                if wrong.is_empty() {
+                    Ok(())
+                } else {
+                    let found: Vec<String> = report
+                        .entries
+                        .iter()
+                        .map(|e| format!("{} ({})", e.finding.check.id(), e.label))
+                        .collect();
+                    Err(format!(
+                        "{}; findings: {}",
+                        wrong.join("; "),
+                        found.join(", ")
+                    ))
+                }
+            }
             Check::TransferIdle => {
                 if self.transfer.is_some() || matches!(phase, Some(Phase::Busy)) {
                     Err("a transfer is still running".into())
@@ -730,6 +820,7 @@ impl MapViewer {
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
+                    (DialogExpect::Validate, _) => self.validate_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -766,6 +857,7 @@ impl MapViewer {
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
+            None if self.validate_dialog.is_some() => "the Validate dialog".into(),
             None => "no dialog".into(),
         }
     }
@@ -1117,6 +1209,14 @@ impl AppHandle for LiveApp {
     fn check(&mut self, check: &script::Check) -> Result<(), String> {
         self.bus.submit(ScriptCommand::Check(check.clone()));
         self.bus.take_assert_result()
+    }
+
+    fn show_finding(&mut self, target: &script::FindingTarget) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::ShowFinding(target.clone()));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
     }
 
     fn note(&mut self, message: &str) {

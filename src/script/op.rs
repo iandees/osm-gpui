@@ -87,6 +87,17 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
+    /// The Tools > Validate dialog.
+    Validate,
+}
+
+/// Which validator finding `show_finding` presses Show on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingTarget {
+    /// The Nth finding in the list (0 is the first row).
+    Index(usize),
+    /// The first finding of the check with this id (e.g. `crossing_ways`).
+    Check(String),
 }
 
 /// What `assert_selection` expects.
@@ -108,6 +119,13 @@ pub enum Check {
     /// The status bar's message contains the text.
     StatusContains(String),
     Dialog(DialogExpect),
+    /// What the validator finds in the pending changes right now: the number
+    /// of errors and warnings (when given) and of findings per check id.
+    Validation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
     Selection(SelectionKind),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
@@ -241,6 +259,17 @@ pub enum Op {
     },
     AssertSelection {
         kind: SelectionKind,
+    },
+    /// Run the validator and compare its findings with what is expected
+    /// (see `Check::Validation`).
+    AssertValidation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
+    /// Press Show on a finding of the open Validate (or upload) dialog.
+    ShowFinding {
+        target: FindingTarget,
     },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.

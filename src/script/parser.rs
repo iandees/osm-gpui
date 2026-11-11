@@ -161,6 +161,8 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         }
         "assert_dialog" => parse_assert_dialog(line_no, &rest),
         "assert_selection" => parse_assert_selection(line_no, &rest),
+        "assert_validation" => parse_assert_validation(line_no, &rest),
+        "show_finding" => parse_show_finding(line_no, &rest),
         "export_layer" => match rest.as_slice() {
             [path] => Ok(Op::ExportLayer {
                 path: path.to_string(),
@@ -292,8 +294,72 @@ fn parse_feature_kind_word(word: &str) -> Option<FeatureKind> {
     }
 }
 
+/// `assert_validation errors=N warnings=M CHECK_ID=COUNT ...`: at least one
+/// pair; `CHECK_ID` is a validator check id such as `crossing_ways`.
+fn parse_assert_validation(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_validation: want errors=N and/or warnings=N and/or CHECK_ID=COUNT";
+    if rest.is_empty() {
+        return Err(err(line_no, usage));
+    }
+    let mut errors = None;
+    let mut warnings = None;
+    let mut checks = Vec::new();
+    for pair in rest {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(err(line_no, usage));
+        };
+        let count = value.parse::<usize>().map_err(|e| {
+            err(
+                line_no,
+                format!("assert_validation: bad count '{}': {}", value, e),
+            )
+        })?;
+        match key {
+            "errors" => errors = Some(count),
+            "warnings" => warnings = Some(count),
+            id if crate::validator::Check::from_id(id).is_some() => {
+                checks.push((id.to_string(), count))
+            }
+            other => {
+                return Err(err(
+                    line_no,
+                    format!("assert_validation: unknown check '{}'", other),
+                ))
+            }
+        }
+    }
+    Ok(Op::AssertValidation {
+        errors,
+        warnings,
+        checks,
+    })
+}
+
+/// `show_finding N` (0 is the first row) or `show_finding CHECK_ID`.
+fn parse_show_finding(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let target = match rest {
+        [word] => match word.parse::<usize>() {
+            Ok(n) => FindingTarget::Index(n),
+            Err(_) if crate::validator::Check::from_id(word).is_some() => {
+                FindingTarget::Check(word.to_string())
+            }
+            Err(_) => {
+                return Err(err(
+                    line_no,
+                    format!(
+                        "show_finding: '{}' is neither a row number nor a check id",
+                        word
+                    ),
+                ))
+            }
+        },
+        _ => return Err(err(line_no, "show_finding: want ROW or CHECK_ID")),
+    };
+    Ok(Op::ShowFinding { target })
+}
+
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|validate|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -305,6 +371,7 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("sign_in", []) => DialogExpect::SignIn,
         ("notice", []) => DialogExpect::Notice,
         ("delete_layer", []) => DialogExpect::DeleteLayer,
+        ("validate", []) => DialogExpect::Validate,
         ("conflict", words) => {
             let mut kind = None;
             let mut object = None;

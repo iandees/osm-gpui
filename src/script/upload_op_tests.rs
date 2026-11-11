@@ -213,6 +213,52 @@ fn delete_layer_dialog_ops() {
 }
 
 #[test]
+fn validation_ops() {
+    assert_eq!(
+        op("assert_validation errors=2 warnings=0 crossing_ways=1"),
+        Op::AssertValidation {
+            errors: Some(2),
+            warnings: Some(0),
+            checks: vec![("crossing_ways".into(), 1)]
+        }
+    );
+    assert_eq!(
+        op("assert_validation warnings=3"),
+        Op::AssertValidation {
+            errors: None,
+            warnings: Some(3),
+            checks: vec![]
+        }
+    );
+    assert!(parse("assert_validation").is_err());
+    assert!(parse("assert_validation errors").is_err());
+    assert!(parse("assert_validation errors=x").is_err());
+    assert!(parse("assert_validation not_a_check=1").is_err());
+
+    assert_eq!(
+        op("show_finding 2"),
+        Op::ShowFinding {
+            target: FindingTarget::Index(2)
+        }
+    );
+    assert_eq!(
+        op("show_finding crossing_ways"),
+        Op::ShowFinding {
+            target: FindingTarget::Check("crossing_ways".into())
+        }
+    );
+    assert!(parse("show_finding").is_err());
+    assert!(parse("show_finding nope").is_err());
+    assert!(parse("show_finding 1 2").is_err());
+    assert_eq!(
+        op("assert_dialog validate"),
+        Op::AssertDialog {
+            expect: DialogExpect::Validate
+        }
+    );
+}
+
+#[test]
 fn assert_server() {
     assert_eq!(op("assert_server dev"), Op::AssertServerDev);
     assert!(parse("assert_server").is_err());
