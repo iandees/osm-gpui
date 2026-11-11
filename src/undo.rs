@@ -16,6 +16,9 @@ pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 pub(crate) enum UndoableAction {
     MoveNodes {
         per_layer: NodeMoveUndoEntries,
+        /// What to select after undoing or redoing this step, when it should
+        /// differ from the moved nodes (a dragged way stays the selection).
+        select: Option<Vec<osm_gpui::selection::FeatureRef>>,
     },
     /// One entry per affected feature: which key, and its value before/
     /// after (`None` = key was/becomes absent). A key rename is modeled as
@@ -118,10 +121,7 @@ pub(crate) enum UndoableAction {
     /// Selection action "Reverse": the listed ways had their node order
     /// reversed. Reversing is its own inverse, so undo and redo both just
     /// reverse them again.
-    ReverseWays {
-        layer: LayerId,
-        way_ids: Vec<i64>,
-    },
+    ReverseWays { layer: LayerId, way_ids: Vec<i64> },
     /// A way's whole node list replaced (join, separate): undo restores
     /// `before`, redo reapplies `after`. The nodes in either list must exist
     /// whenever that direction is applied, so callers order the surrounding
@@ -198,9 +198,13 @@ impl UndoableAction {
         };
         let mut out: Vec<FeatureRef> = Vec::new();
         match self {
-            UndoableAction::MoveNodes { per_layer } => {
-                for (layer, entries) in per_layer {
-                    out.extend(entries.iter().map(|&(id, _, _)| node(*layer, id)));
+            UndoableAction::MoveNodes { per_layer, select } => {
+                if let Some(select) = select {
+                    out.extend(select.iter().copied());
+                } else {
+                    for (layer, entries) in per_layer {
+                        out.extend(entries.iter().map(|&(id, _, _)| node(*layer, id)));
+                    }
                 }
             }
             UndoableAction::SetTags { entries } => {
@@ -297,7 +301,7 @@ impl UndoableAction {
             }
         };
         match self {
-            UndoableAction::MoveNodes { per_layer } => {
+            UndoableAction::MoveNodes { per_layer, .. } => {
                 for (layer, _) in per_layer {
                     add(*layer);
                 }
@@ -333,7 +337,7 @@ impl UndoableAction {
     /// Human-readable label for the history list, e.g. "Moved 3 nodes".
     pub(crate) fn description(&self) -> String {
         match self {
-            UndoableAction::MoveNodes { per_layer } => {
+            UndoableAction::MoveNodes { per_layer, .. } => {
                 let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
                 osm_gpui::tr_count!("history.moved_nodes", count).to_string()
             }
@@ -500,6 +504,7 @@ mod undo_stack_tests {
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
         UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(LayerId(1), vec![(id, before, after)])],
         }
     }
@@ -551,6 +556,7 @@ mod undo_stack_tests {
 
     fn move_in(layer: u64, id: i64) -> UndoableAction {
         UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(LayerId(layer), vec![(id, (0.0, 0.0), (1.0, 1.0))])],
         }
     }
@@ -597,6 +603,7 @@ mod undo_stack_tests {
     fn remove_layer_drops_whole_steps_spanning_layers() {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![
                 (LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))]),
                 (LayerId(2), vec![(2, (0.0, 0.0), (1.0, 1.0))]),
@@ -612,6 +619,7 @@ mod undo_stack_tests {
         });
         // A layer with an empty entry still counts as touched.
         stack.push(UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![
                 (LayerId(1), vec![(9, (0.0, 0.0), (1.0, 1.0))]),
                 (LayerId(2), vec![]),
@@ -643,6 +651,7 @@ mod undo_stack_tests {
         assert_eq!(one.description(), "Moved 1 node");
 
         let two = UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(
                 LayerId(1),
                 vec![(1, (0.0, 0.0), (1.0, 1.0)), (2, (0.0, 0.0), (1.0, 1.0))],

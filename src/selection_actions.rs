@@ -806,6 +806,7 @@ fn reshape_ways(
 
     Ok(ActionOutcome {
         undo: Some(UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(layer_id, entries)],
         }),
         status: done(changed_ways).to_string(),
@@ -2190,6 +2191,7 @@ pub(crate) fn join_node_into_way(
     if plan.point != position {
         editable.commit_node_moves(&[(node, plan.point.0, plan.point.1)]);
         actions.push(UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(layer_id, vec![(node, position, plan.point)])],
         });
     }
@@ -3172,6 +3174,7 @@ fn reposition_nodes(
     editable.commit_node_moves(&moves);
     Ok(ActionOutcome {
         undo: Some(UndoableAction::MoveNodes {
+            select: None,
             per_layer: vec![(layer_id, entries.clone())],
         }),
         status: done(entries.len()).to_string(),
@@ -3614,7 +3617,7 @@ mod tests {
         let out = (find("square").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Squared 1 way");
         assert!(!out.clear_selection);
-        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
+        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected one MoveNodes step");
         };
         assert_eq!(per_layer.len(), 1);
@@ -3634,7 +3637,7 @@ mod tests {
         let sel = [way_ref(&f, f.rect)];
         let out =
             (find("circularize").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
-        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
+        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected MoveNodes");
         };
         // Each entry's `before` is the original position.
@@ -4947,7 +4950,7 @@ mod tests {
         n.nudge(2, straight.0 + 0.00005, straight.1);
         let out = n.run("straighten", &n.ways(&[100])).unwrap();
         assert_eq!(out.status, "Straightened 1 way");
-        let UndoableAction::MoveNodes { per_layer } = out.undo.as_ref().unwrap() else {
+        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected one MoveNodes step");
         };
         // Only the interior node moved: from the nudge back onto the line.
