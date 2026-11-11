@@ -33,6 +33,7 @@ menu:
     select_all: "Select All"
     deselect_all: "Deselect All"
     find: "Find…"
+    show_history: "Show Object History"
     change_feature_type: "Change Feature Type…"
     apply_nsi_preset: "Apply NSI Preset…"
   tools:
@@ -458,6 +459,61 @@ settings:
 
 # Keyboard shortcut display names, one per shortcut id in
 # `keybindings::SHORTCUTS`. The ids themselves are stable and not translated.
+# The object history view: the versions the server has of the selected
+# node, way or relation. (The side panel's "History" section is the undo
+# history; this is a different thing, called "Object history" in the UI.)
+object_history:
+  title: "Object history · %{kind} %{id}"
+  loading: "Loading history…"
+  close: "Close"
+  retry: "Retry"
+  open_web: "Open on openstreetmap.org"
+  show_tooltip: "Show object history"
+  unsaved: "Your unsaved changes"
+  version: "Version %{version}"
+  deleted: "Deleted"
+  unknown_user: "unknown user"
+  changeset: "changeset %{id}"
+  no_changes: "No tag, geometry or member changes"
+  unchanged_tags:
+    one: "%{count} unchanged tag"
+    other: "%{count} unchanged tags"
+  moved: "Moved %{distance}"
+  nodes_added:
+    one: "%{count} node added"
+    other: "%{count} nodes added"
+  nodes_removed:
+    one: "%{count} node removed"
+    other: "%{count} nodes removed"
+  nodes_reordered: "Nodes reordered"
+  members_count: "Members: %{before} → %{after}"
+  members_changed: "Members or roles changed"
+  redacted:
+    one: "Version %{range} is hidden (redacted)"
+    other: "Versions %{range} are hidden (redacted)"
+  show_more:
+    one: "Show more (%{count} older version)"
+    other: "Show more (%{count} older versions)"
+  revert_tags: "Revert tags to this version"
+  reverted: "Tags set to version %{version}"
+  revert_nothing: "The tags already match version %{version}"
+  revert_edits_blocked: "An upload is running; tags can't be changed until it finishes"
+  new_object: "A new object has no history on the server yet"
+  select_one: "Select one object to show its history"
+  # Selection header: "v7 · edited by Name · 3 months ago · changeset 123".
+  last_edit:
+    version: "v%{version}"
+    by: "edited by"
+    changeset: "changeset"
+  error:
+    not_found: "The server has no history for this object. It was never uploaded to %{server}; it may come from a file or from another server."
+    gone: "This object has been permanently removed from the server."
+    network: "Could not load the history: %{detail}"
+    http: "The server refused the request (HTTP %{status})."
+    parse: "The server's reply could not be read: %{detail}"
+    empty: "The server returned no visible versions (they may all be redacted)."
+    cancelled: "Cancelled."
+
 shortcut:
   open_settings: "Settings…"
   quit: "Quit"
@@ -469,6 +525,7 @@ shortcut:
   redo: "Redo"
   select_all: "Select All"
   find: "Find…"
+  show_history: "Show Object History"
   copy_tags: "Copy Tags"
   paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
@@ -698,6 +755,12 @@ dialog:
     days:
       one: "%{count} day ago"
       other: "%{count} days ago"
+    months:
+      one: "%{count} month ago"
+      other: "%{count} months ago"
+    years:
+      one: "%{count} year ago"
+      other: "%{count} years ago"
   find:
     title: "Find"
     placeholder: "Search tags, types and states, e.g. amenity=cafe"

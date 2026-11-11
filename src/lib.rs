@@ -26,6 +26,7 @@ pub mod layers;
 pub mod limits;
 pub mod multipolygon;
 pub mod nsi;
+pub mod object_history;
 pub mod open_files;
 pub mod osm;
 pub mod osm_api;

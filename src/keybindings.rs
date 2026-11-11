@@ -125,6 +125,12 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         default_spec: "secondary-f",
         category: ShortcutCategory::Edit,
     },
+    // Not secondary-h: that is Hide on macOS.
+    ShortcutDef {
+        id: "show_history",
+        default_spec: "secondary-shift-h",
+        category: ShortcutCategory::Edit,
+    },
     ShortcutDef {
         id: "copy_tags",
         default_spec: "secondary-shift-c",
