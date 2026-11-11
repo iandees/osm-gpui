@@ -8,6 +8,7 @@ pub mod auth;
 pub mod autosave;
 pub mod building;
 pub mod capabilities;
+pub mod changeset_tags;
 pub mod coordinates;
 pub mod custom_imagery_store;
 pub mod download_bounds;
