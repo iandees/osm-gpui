@@ -659,7 +659,7 @@ action:
     done: "%{tags} auf %{features} übertragen"
   split:
     label: "Weg teilen"
-    hint: "Einen Knoten innerhalb eines Wegs (oder zwei Knoten eines geschlossenen Wegs) zum Teilen wählen"
+    hint: "Einen oder mehrere Knoten innerhalb eines Wegs (zwei oder mehr Knoten eines geschlossenen Wegs) zum Teilen wählen"
     done:
       one: "%{count} Weg geteilt"
       other: "%{count} Wege geteilt"

@@ -1230,8 +1230,8 @@ fn apply_paste_tags(
     })
 }
 
-/// What Split Way would do for the selection: one or two nodes of the active
-/// layer (two for a closed way), plus optionally one way to restrict it to.
+/// What Split Way would do for the selection: one or more nodes of the active
+/// layer, plus optionally one way to restrict it to.
 /// Empty unless the selection has that shape and something can be split.
 fn split_plans(
     editable: &dyn EditableLayer,
@@ -1252,7 +1252,7 @@ fn split_plans(
     };
     let nodes = in_layer(FeatureKind::Node);
     let selected_ways = in_layer(FeatureKind::Way);
-    if nodes.is_empty() || nodes.len() > 2 || selected_ways.len() > 1 {
+    if nodes.is_empty() || selected_ways.len() > 1 {
         return Vec::new();
     }
     let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
@@ -1267,8 +1267,9 @@ fn split_plans(
 }
 
 /// Split the ways at the selected node(s) (JOSM "Split Way"): the original
-/// keeps its id and the longer part, a new way gets the rest with a copy of
-/// the tags, and both share the split node. Relations that hold the way keep
+/// keeps its id and the longest part, every other part is a new way with a
+/// copy of the tags, and neighbouring parts share the split node. A closed
+/// way with one node is only rewritten to start there. Relations that hold the way keep
 /// working: see `relations::split_members` for where the new way goes (and
 /// the turn restriction exception, which can refuse the split). One undo
 /// step: per way, the new way's creation, then the original's new nodes, and
@@ -1286,42 +1287,57 @@ fn apply_split(
     // Work out every relation's new member list before changing anything, so
     // a refusal leaves no trace. The new ways don't exist yet; each stands in
     // under a placeholder id that is swapped for the real one below.
-    let placeholder = |k: usize| i64::MIN + k as i64;
     let mut relations: Vec<osm_gpui::osm::OsmRelation> = Vec::new();
     let mut way_nodes: HashMap<i64, Vec<i64>> = HashMap::new();
-    for (k, plan) in plans.iter().enumerate() {
-        let step = osm_gpui::relations::SplitStep {
-            way_id: plan.way_id,
-            new_id: placeholder(k),
-            before: &plan.before,
-            keep: &plan.keep,
-            new: &plan.new,
-        };
-        for relation_id in editable.relations_containing_way(plan.way_id) {
-            let at = match relations.iter().position(|r| r.id == relation_id) {
-                Some(at) => at,
-                None => {
-                    let Some(relation) = editable.relation(relation_id) else {
-                        continue;
-                    };
-                    relations.push(relation);
-                    relations.len() - 1
-                }
-            };
-            let lookup = |id: i64| {
-                way_nodes
-                    .get(&id)
-                    .cloned()
-                    .or_else(|| editable.way_node_ids(id))
-            };
-            let members = osm_gpui::relations::split_members(&relations[at], &step, &lookup)
-                .map_err(|e| e.message())?;
-            if let Some(members) = members {
-                relations[at].members = members;
-            }
+    // Per plan: the id each of its ways stands under (the original, then a
+    // placeholder per new way, in the order the cuts create them).
+    let mut placeholders: Vec<i64> = Vec::new();
+    let mut ids_by_plan: Vec<Vec<i64>> = Vec::new();
+    for plan in plans.iter() {
+        let cuts = plan.cuts();
+        let mut ids = vec![plan.way_id];
+        for _ in &cuts {
+            let id = i64::MIN + placeholders.len() as i64;
+            placeholders.push(id);
+            ids.push(id);
         }
-        way_nodes.insert(plan.way_id, plan.keep.clone());
-        way_nodes.insert(placeholder(k), plan.new.clone());
+        // A part cut off more than once is several steps of one split: each
+        // is worked out as if the user had split at one node at a time.
+        for (i, cut) in cuts.iter().enumerate() {
+            let step = osm_gpui::relations::SplitStep {
+                way_id: ids[cut.holder],
+                new_id: ids[i + 1],
+                before: &cut.before,
+                keep: &cut.keep,
+                new: &cut.new,
+            };
+            for relation_id in editable.relations_containing_way(plan.way_id) {
+                let at = match relations.iter().position(|r| r.id == relation_id) {
+                    Some(at) => at,
+                    None => {
+                        let Some(relation) = editable.relation(relation_id) else {
+                            continue;
+                        };
+                        relations.push(relation);
+                        relations.len() - 1
+                    }
+                };
+                let lookup = |id: i64| {
+                    way_nodes
+                        .get(&id)
+                        .cloned()
+                        .or_else(|| editable.way_node_ids(id))
+                };
+                let members = osm_gpui::relations::split_members(&relations[at], &step, &lookup)
+                    .map_err(|e| e.message())?;
+                if let Some(members) = members {
+                    relations[at].members = members;
+                }
+            }
+            way_nodes.insert(step.way_id, cut.keep.clone());
+            way_nodes.insert(step.new_id, cut.new.clone());
+        }
+        ids_by_plan.push(ids);
     }
 
     // The new halves are added to the relations the way is in; refuse if that
@@ -1342,32 +1358,44 @@ fn apply_split(
 
     let mut actions = Vec::new();
     let mut new_ids = Vec::new();
-    for plan in plans.iter() {
+    for (plan, ids) in plans.iter().zip(&ids_by_plan) {
         let way_ref = FeatureRef {
             layer_id,
             kind: FeatureKind::Way,
             id: plan.way_id,
         };
         let tags = editable.feature_tags(&way_ref).unwrap_or_default();
-        let new_id = editable.add_way(plan.new.clone(), tags.clone());
-        new_ids.push(new_id);
-        actions.push(UndoableAction::CreateWay {
-            layer: layer_id,
-            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
-                kind: FeatureKind::Way,
-                id: new_id,
-                tags,
-                way_nodes: plan.new.clone(),
-                node_lat_lon: None,
-                version: 0,
-            },
-        });
-        editable.set_way_nodes(plan.way_id, plan.keep.clone());
+        // Where every way of this plan ends up, replaying its cuts.
+        let mut finals = vec![plan.before.clone()];
+        for cut in plan.cuts() {
+            finals[cut.holder] = cut.keep;
+            finals.push(cut.new);
+        }
+        for (k, nodes) in finals.iter().enumerate().skip(1) {
+            let new_id = editable.add_way(nodes.clone(), tags.clone());
+            new_ids.push((ids[k], new_id));
+            actions.push(UndoableAction::CreateWay {
+                layer: layer_id,
+                snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                    kind: FeatureKind::Way,
+                    id: new_id,
+                    tags: tags.clone(),
+                    way_nodes: nodes.clone(),
+                    node_lat_lon: None,
+                    version: 0,
+                },
+            });
+        }
+        if plan.cuts().is_empty() {
+            // A closed way only turned to start at the node.
+            finals[0] = plan.keep().to_vec();
+        }
+        editable.set_way_nodes(plan.way_id, finals[0].clone());
         actions.push(UndoableAction::SetWayNodes {
             layer: layer_id,
             way_id: plan.way_id,
             before: plan.before.clone(),
-            after: plan.keep.clone(),
+            after: finals[0].clone(),
         });
     }
     for relation in relations {
@@ -1376,8 +1404,8 @@ fn apply_split(
         };
         let mut after = relation.members;
         for member in &mut after {
-            if let Some(k) = (0..new_ids.len()).find(|&k| placeholder(k) == member.reference) {
-                member.reference = new_ids[k];
+            if let Some(&(_, real)) = new_ids.iter().find(|(p, _)| *p == member.reference) {
+                member.reference = real;
             }
         }
         if after != before {
@@ -3337,9 +3365,10 @@ mod tests {
         assert!(!n.applicable(&n.nodes(&[1])).contains(&"split"));
         assert!(!n.applicable(&n.nodes(&[7])).contains(&"split"));
         assert!(!n.applicable(&[]).contains(&"split"));
-        // Two nodes of an open way are ambiguous; of a ring they are fine,
-        // but one ring node alone is not.
-        assert!(!n.applicable(&n.nodes(&[2, 3])).contains(&"split"));
+        // Several nodes of an open way split it into several parts (an end
+        // node among them is ignored); of a ring they are fine, and one
+        // ring node alone only turns the ring so it starts there.
+        assert!(n.applicable(&n.nodes(&[2, 3])).contains(&"split"));
         assert!(n.applicable(&n.nodes(&[14, 16])).contains(&"split"));
         assert!(!n.applicable(&n.nodes(&[14])).contains(&"split"));
         assert!(!n.applicable(&n.ways(&[100])).contains(&"split"));
@@ -3679,7 +3708,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "Select a node inside a way (or two nodes of a closed way) to split it"
+            "Select one or more nodes inside a way (two or more nodes of a closed way) to split it"
         );
         assert!(!n.layer().is_modified());
     }

@@ -641,84 +641,207 @@ pub fn plan_separate(
     Some(edits)
 }
 
-/// One way split in two: it keeps `keep` and `new` becomes a new way, both
-/// containing the split node.
+/// One way split into several parts at the selected node(s). Every part but
+/// one becomes a new way; the longest part (the first of equal ones) stays in
+/// the original way, which keeps the id and version. A closed way with a
+/// single split node is not cut at all: it is rewritten to start and end at
+/// that node, so `parts` has one entry and nothing new is created.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SplitPlan {
     pub way_id: i64,
     /// The way's node list before the split.
     pub before: Vec<i64>,
-    /// The node list the original way keeps (the longer part; the first
-    /// when they tie).
+    /// The parts in travel order (consecutive parts share their joint node;
+    /// for a ring the last one ends where the first starts).
+    pub parts: Vec<Vec<i64>>,
+    /// Index into `parts` of the part the original way keeps.
+    pub keeper: usize,
+}
+
+/// One binary cut of a `SplitPlan`, applied in order. Cut `i` creates new way
+/// number `i + 1` (way 0 is the original), so a relation sees the same member
+/// lists as if the user had split one node at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitCut {
+    /// The way being cut: 0 for the original, `k` for the new way created by
+    /// cut `k - 1`.
+    pub holder: usize,
+    /// The holder's node list before this cut.
+    pub before: Vec<i64>,
+    /// What the holder keeps.
     pub keep: Vec<i64>,
-    /// The node list of the new way.
+    /// What the new way created by this cut gets.
     pub new: Vec<i64>,
 }
 
-/// Split one node list at the selected node(s), as `(kept part, new part)`.
+impl SplitPlan {
+    /// The nodes the original way ends up with.
+    pub fn keep(&self) -> &[i64] {
+        &self.parts[self.keeper]
+    }
+
+    /// The node lists of the new ways, in travel order.
+    pub fn new_parts(&self) -> Vec<&[i64]> {
+        (0..self.parts.len())
+            .filter(|&k| k != self.keeper)
+            .map(|k| self.parts[k].as_slice())
+            .collect()
+    }
+
+    /// The plan as a sequence of two-way cuts, in which the original ends up
+    /// with the `keeper` part. Empty for a closed way that is only rewritten.
+    pub fn cuts(&self) -> Vec<SplitCut> {
+        if self.parts.len() == 1 {
+            return Vec::new();
+        }
+        let mut line = self.parts[0].clone();
+        for part in &self.parts[1..] {
+            line.extend_from_slice(&part[1..]);
+        }
+        // Index in `line` where each part starts.
+        let mut starts = vec![0usize];
+        for part in &self.parts[..self.parts.len() - 1] {
+            starts.push(starts.last().unwrap() + part.len() - 1);
+        }
+        let mut cuts = Vec::new();
+        let mut holder = 0usize;
+        for k in 0..self.parts.len() - 1 {
+            let before = if k == 0 {
+                self.before.clone()
+            } else {
+                line[starts[k]..].to_vec()
+            };
+            let left = self.parts[k].clone();
+            let rest = line[starts[k + 1]..].to_vec();
+            // The original keeps the left part if that is its final one,
+            // otherwise it carries on with the rest; a new way always keeps
+            // its left part and carries on with the rest.
+            let (keep, new, next) = if holder == 0 && self.keeper == k {
+                (left, rest, k + 1)
+            } else if holder == 0 {
+                (rest, left, 0)
+            } else {
+                (left, rest, k + 1)
+            };
+            cuts.push(SplitCut {
+                holder,
+                before,
+                keep,
+                new,
+            });
+            holder = next;
+        }
+        cuts
+    }
+}
+
+/// Split one node list at the selected node(s) into parts (see `SplitPlan`).
 ///
-/// - An open way is split at one selected node that occurs exactly once and
-///   isn't an end node, giving `[..=at]` and `[at..]`.
-/// - A closed way is split at two selected nodes that each occur in the ring
-///   once, giving the two arcs between them, each an open way.
+/// - An open way is cut at every interior occurrence of every selected node
+///   (JOSM): a node the way passes through twice is cut at both passes, and
+///   an occurrence at the first or last position is not a cut. Selected
+///   nodes that are only end nodes (or not in the way) are ignored.
+/// - A closed way is cut at two or more selected nodes that each occur in the
+///   ring once, giving the arcs between them, each an open way.
+/// - A closed way with exactly one selected node (when `rotate` allows) is
+///   rewritten to start and end at it.
 ///
-/// Anything else (other counts, an end node, a node that isn't in the way, a
-/// node the way passes through twice) can't be split.
-fn split_parts(nodes: &[i64], selected: &[i64]) -> Option<(Vec<i64>, Vec<i64>)> {
+/// Anything else (no cut, a cut that would leave a one-node part because the
+/// way lists the node twice in a row, a ring node visited twice) can't be
+/// split.
+fn split_parts(nodes: &[i64], selected: &[i64], rotate: bool) -> Option<(Vec<Vec<i64>>, usize)> {
     let closed = nodes.len() >= 4 && nodes.first() == nodes.last();
-    let ring = if closed {
-        &nodes[..nodes.len() - 1]
-    } else {
-        nodes
-    };
-    let once = |node: i64| {
-        let mut at = (0..ring.len()).filter(|&p| ring[p] == node);
-        let first = at.next()?;
-        at.next().is_none().then_some(first)
-    };
-    let (first, second) = match (closed, selected) {
-        (false, &[node]) => {
-            let at = once(node)?;
-            // Not an end node.
-            if at == 0 || at + 1 == ring.len() {
+    let (line, cuts): (Vec<i64>, Vec<usize>) = if closed {
+        let ring = &nodes[..nodes.len() - 1];
+        let mut at = Vec::new();
+        for &node in selected {
+            let mut found = (0..ring.len()).filter(|&p| ring[p] == node);
+            let Some(first) = found.next() else { continue };
+            if found.next().is_some() {
                 return None;
             }
-            (nodes[..=at].to_vec(), nodes[at..].to_vec())
+            at.push(first);
         }
-        (true, &[a, b]) if a != b => {
-            let (i, j) = (once(a)?, once(b)?);
-            let (i, j) = (i.min(j), i.max(j));
-            let mut around = ring[j..].to_vec();
-            around.extend_from_slice(&ring[..=i]);
-            (ring[i..=j].to_vec(), around)
+        at.sort_unstable();
+        match at.as_slice() {
+            [] => return None,
+            [p] => {
+                if !rotate || selected.len() != 1 || *p == 0 {
+                    return None;
+                }
+                let mut line = ring[*p..].to_vec();
+                line.extend_from_slice(&ring[..=*p]);
+                return Some((vec![line], 0));
+            }
+            [first, rest @ ..] => {
+                let mut line = ring[*first..].to_vec();
+                line.extend_from_slice(&ring[..=*first]);
+                (line, rest.iter().map(|p| p - first).collect())
+            }
         }
-        _ => return None,
-    };
-    Some(if first.len() >= second.len() {
-        (first, second)
     } else {
-        (second, first)
-    })
+        let cuts: Vec<usize> = (1..nodes.len().saturating_sub(1))
+            .filter(|&p| selected.contains(&nodes[p]))
+            .collect();
+        (nodes.to_vec(), cuts)
+    };
+    if cuts.is_empty() {
+        return None;
+    }
+    // The same node twice in a row would leave a part of one place.
+    if cuts
+        .iter()
+        .any(|&p| line[p - 1] == line[p] || line[p + 1] == line[p])
+    {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let mut from = 0;
+    for &p in cuts.iter().chain(std::iter::once(&(line.len() - 1))) {
+        parts.push(line[from..=p].to_vec());
+        from = p;
+    }
+    // The longest part stays; the first of equal ones.
+    let keeper = (0..parts.len())
+        .max_by_key(|&k| (parts[k].len(), std::cmp::Reverse(k)))
+        .unwrap_or(0);
+    Some((parts, keeper))
 }
 
 /// Plan splitting ways at the selected node(s) (JOSM "Split Way"). `ways`
 /// is every way that uses a selected node, as `(id, node list)`; with
 /// `only_way`, just that one is split, otherwise every one that can be. The
 /// result is in the order of `ways`; empty if nothing can be split.
+///
+/// A closed way with a single selected node is only rewritten to start at it
+/// when it is the only way to act on (named by `only_way`, or the only way
+/// using the node), so splitting a street at a junction doesn't also turn a
+/// neighbouring building.
 pub fn plan_split(
     selected: &[i64],
     only_way: Option<i64>,
     ways: &[(i64, Vec<i64>)],
 ) -> Vec<SplitPlan> {
-    ways.iter()
+    let mut distinct: Vec<i64> = Vec::new();
+    for &n in selected {
+        if !distinct.contains(&n) {
+            distinct.push(n);
+        }
+    }
+    let candidates: Vec<&(i64, Vec<i64>)> = ways
+        .iter()
         .filter(|(id, _)| only_way.is_none_or(|only| only == *id))
+        .collect();
+    let rotate = only_way.is_some() || candidates.len() == 1;
+    candidates
+        .into_iter()
         .filter_map(|(id, nodes)| {
-            let (keep, new) = split_parts(nodes, selected)?;
+            let (parts, keeper) = split_parts(nodes, &distinct, rotate)?;
             Some(SplitPlan {
                 way_id: *id,
                 before: nodes.clone(),
-                keep,
-                new,
+                parts,
+                keeper,
             })
         })
         .collect()
@@ -926,6 +1049,24 @@ mod tests {
         assert!(!is_direction_dependent(&t("highway", "residential")));
     }
 
+    fn new_of(p: &SplitPlan) -> Vec<Vec<i64>> {
+        p.new_parts().into_iter().map(|n| n.to_vec()).collect()
+    }
+
+    /// Replaying the cuts gives the same final lists as the plan's parts.
+    fn replay(p: &SplitPlan) -> Vec<Vec<i64>> {
+        let mut lists = vec![p.before.clone()];
+        for (i, cut) in p.cuts().iter().enumerate() {
+            assert_eq!(
+                cut.before, lists[cut.holder],
+                "cut {i} starts from its holder"
+            );
+            lists[cut.holder] = cut.keep.clone();
+            lists.push(cut.new.clone());
+        }
+        lists
+    }
+
     #[test]
     fn split_an_open_way_keeps_the_longer_part() {
         let w = ways(&[(10, &[1, 2, 3, 4, 5])]);
@@ -933,29 +1074,94 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].way_id, 10);
         assert_eq!(plans[0].before, vec![1, 2, 3, 4, 5]);
-        assert_eq!(plans[0].keep, vec![1, 2, 3, 4]);
-        assert_eq!(plans[0].new, vec![4, 5]);
+        assert_eq!(plans[0].keep(), [1, 2, 3, 4]);
+        assert_eq!(new_of(&plans[0]), vec![vec![4, 5]]);
         // Splitting nearer the start: the original keeps the far part.
         let plans = plan_split(&[2], None, &w);
-        assert_eq!(plans[0].keep, vec![2, 3, 4, 5]);
-        assert_eq!(plans[0].new, vec![1, 2]);
+        assert_eq!(plans[0].keep(), [2, 3, 4, 5]);
+        assert_eq!(new_of(&plans[0]), vec![vec![1, 2]]);
         // Equal halves: the original keeps the first.
         let plans = plan_split(&[3], None, &w);
-        assert_eq!(plans[0].keep, vec![1, 2, 3]);
-        assert_eq!(plans[0].new, vec![3, 4, 5]);
+        assert_eq!(plans[0].keep(), [1, 2, 3]);
+        assert_eq!(new_of(&plans[0]), vec![vec![3, 4, 5]]);
     }
 
     #[test]
-    fn split_needs_an_interior_node_that_occurs_once() {
+    fn split_needs_an_interior_occurrence() {
         let w = ways(&[(10, &[1, 2, 3])]);
-        // End nodes, strangers, and several nodes on an open way: no.
+        // End nodes, strangers and nothing at all: no.
         assert!(plan_split(&[1], None, &w).is_empty());
         assert!(plan_split(&[3], None, &w).is_empty());
         assert!(plan_split(&[9], None, &w).is_empty());
         assert!(plan_split(&[], None, &w).is_empty());
-        assert!(plan_split(&[2, 3], None, &w).is_empty());
-        // A way that passes through the node twice is ambiguous.
-        assert!(plan_split(&[2], None, &ways(&[(10, &[1, 2, 3, 2, 4])])).is_empty());
+        // An end node next to an interior one is ignored, not an error.
+        let plans = plan_split(&[2, 3], None, &w);
+        assert_eq!(plans[0].parts, vec![vec![1, 2], vec![2, 3]]);
+        // The same node twice in a row would leave a one-place part.
+        assert!(plan_split(&[2], None, &ways(&[(10, &[1, 2, 2, 3])])).is_empty());
+    }
+
+    #[test]
+    fn split_an_open_way_at_several_nodes_gives_several_parts() {
+        let w = ways(&[(10, &[1, 2, 3, 4, 5, 6, 7])]);
+        let plans = plan_split(&[6, 3], None, &w);
+        assert_eq!(
+            plans[0].parts,
+            vec![vec![1, 2, 3], vec![3, 4, 5, 6], vec![6, 7]]
+        );
+        // The longest (middle) part keeps the id.
+        assert_eq!(plans[0].keeper, 1);
+        assert_eq!(plans[0].keep(), [3, 4, 5, 6]);
+        assert_eq!(new_of(&plans[0]), vec![vec![1, 2, 3], vec![6, 7]]);
+        // Selection order and repeats don't matter.
+        assert_eq!(plan_split(&[3, 6, 3], None, &w), plans);
+        // On a tie the first of the longest parts keeps the id.
+        let tie = plan_split(&[3, 5], None, &ways(&[(10, &[1, 2, 3, 4, 5, 6, 7])]));
+        assert_eq!(tie[0].keeper, 0);
+    }
+
+    #[test]
+    fn cuts_replay_to_the_same_parts_whichever_part_keeps_the_id() {
+        let w = ways(&[(10, &[1, 2, 3, 4, 5, 6, 7, 8, 9])]);
+        // Cut after 2 parts of different lengths, so every keeper position is
+        // exercised in turn.
+        for selected in [
+            &[2, 3, 4][..],
+            &[5, 6, 7],
+            &[2, 3, 8],
+            &[2, 8, 9],
+            &[3, 6],
+            &[2, 3, 4, 5, 6, 7, 8],
+        ] {
+            let plan = &plan_split(selected, None, &w)[0];
+            let lists = replay(plan);
+            assert_eq!(lists.len(), plan.parts.len());
+            assert_eq!(lists[0], plan.keep(), "{selected:?}");
+            // Same parts, as sets.
+            let mut got = lists.clone();
+            let mut want = plan.parts.clone();
+            got.sort();
+            want.sort();
+            assert_eq!(got, want, "{selected:?}");
+        }
+    }
+
+    #[test]
+    fn split_at_a_node_the_way_passes_through_twice_cuts_both_passes() {
+        // Figure eight through node 3.
+        let w = ways(&[(10, &[1, 2, 3, 4, 5, 3, 6])]);
+        let plans = plan_split(&[3], None, &w);
+        assert_eq!(
+            plans[0].parts,
+            vec![vec![1, 2, 3], vec![3, 4, 5, 3], vec![3, 6]]
+        );
+        assert_eq!(plans[0].keeper, 1);
+        // P shape ending on node 2: only the interior pass is a cut.
+        let p = plan_split(&[2], None, &ways(&[(11, &[1, 2, 3, 4, 2])]));
+        assert_eq!(p[0].parts, vec![vec![1, 2], vec![2, 3, 4, 2]]);
+        // And starting on it.
+        let q = plan_split(&[2], None, &ways(&[(11, &[2, 3, 4, 2, 5])]));
+        assert_eq!(q[0].parts, vec![vec![2, 3, 4, 2], vec![2, 5]]);
     }
 
     #[test]
@@ -964,23 +1170,53 @@ mod tests {
         let plans = plan_split(&[4, 2], None, &ring);
         assert_eq!(plans.len(), 1);
         // The arc 2-3-4 has 3 nodes, the other 4-5-1-2 has 4: that stays.
-        assert_eq!(plans[0].keep, vec![4, 5, 1, 2]);
-        assert_eq!(plans[0].new, vec![2, 3, 4]);
+        assert_eq!(plans[0].keep(), [4, 5, 1, 2]);
+        assert_eq!(new_of(&plans[0]), vec![vec![2, 3, 4]]);
         // A split through the ring's start/end node works too.
         let plans = plan_split(&[1, 3], None, &ring);
-        assert_eq!(plans[0].keep, vec![3, 4, 5, 1]);
-        assert_eq!(plans[0].new, vec![1, 2, 3]);
+        assert_eq!(plans[0].keep(), [3, 4, 5, 1]);
+        assert_eq!(new_of(&plans[0]), vec![vec![1, 2, 3]]);
         // The order the nodes were selected in doesn't matter.
         assert_eq!(plan_split(&[3, 1], None, &ring), plans);
     }
 
     #[test]
-    fn split_a_ring_needs_exactly_two_distinct_nodes() {
+    fn split_a_ring_at_three_nodes_makes_three_arcs() {
+        let ring = ways(&[(10, &[1, 2, 3, 4, 5, 6, 1])]);
+        let plans = plan_split(&[5, 1, 3], None, &ring);
+        assert_eq!(
+            plans[0].parts,
+            vec![vec![1, 2, 3], vec![3, 4, 5], vec![5, 6, 1]]
+        );
+        assert_eq!(plans[0].keeper, 0);
+        assert_eq!(replay(&plans[0]).len(), 3);
+    }
+
+    #[test]
+    fn split_a_ring_at_one_node_only_rewrites_it_to_start_there() {
         let ring = ways(&[(10, &[1, 2, 3, 4, 1])]);
-        assert!(plan_split(&[2], None, &ring).is_empty());
-        assert!(plan_split(&[2, 2], None, &ring).is_empty());
-        assert!(plan_split(&[1, 2, 3], None, &ring).is_empty());
+        let plans = plan_split(&[3], None, &ring);
+        assert_eq!(plans[0].parts, vec![vec![3, 4, 1, 2, 3]]);
+        assert_eq!(plans[0].keeper, 0);
+        assert!(plans[0].cuts().is_empty());
+        // Already the start: nothing to do.
+        assert!(plan_split(&[1], None, &ring).is_empty());
+        // Only when the ring is the only way involved, or chosen.
+        let both = ways(&[(10, &[1, 2, 3, 4, 1]), (11, &[5, 3, 6])]);
+        let plans = plan_split(&[3], None, &both);
+        assert_eq!(plans.iter().map(|p| p.way_id).collect::<Vec<_>>(), [11]);
+        let plans = plan_split(&[3], Some(10), &both);
+        assert_eq!(plans[0].keep(), [3, 4, 1, 2, 3]);
+    }
+
+    #[test]
+    fn split_a_ring_refuses_strangers_and_repeated_nodes() {
+        let ring = ways(&[(10, &[1, 2, 3, 4, 1])]);
+        // One node of the ring plus a stranger is not "one node".
         assert!(plan_split(&[2, 9], None, &ring).is_empty());
+        // A ring node visited twice is ambiguous.
+        let eight = ways(&[(10, &[1, 2, 3, 2, 4, 1])]);
+        assert!(plan_split(&[2, 4], None, &eight).is_empty());
     }
 
     #[test]
@@ -992,8 +1228,8 @@ mod tests {
         let only = plan_split(&[2], Some(11), &w);
         assert_eq!(only.len(), 1);
         assert_eq!(only[0].way_id, 11);
-        assert_eq!(only[0].keep, vec![2, 5, 6]);
-        assert_eq!(only[0].new, vec![4, 2]);
+        assert_eq!(only[0].keep(), [2, 5, 6]);
+        assert_eq!(new_of(&only[0]), vec![vec![4, 2]]);
         // Naming a way that can't be split at the node gives nothing.
         assert!(plan_split(&[2], Some(12), &w).is_empty());
         assert!(plan_split(&[2], Some(99), &w).is_empty());
