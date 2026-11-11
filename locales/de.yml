@@ -1049,10 +1049,7 @@ notes:
     comment: "Kommentieren"
     close_note: "Hinweis schließen"
     reopen_note: "Hinweis wieder öffnen"
-    website: "Auf openstreetmap.org öffnen"
     working: "Wird ausgeführt …"
-    needs_sign_in: "Melde dich an, um Hinweise zu kommentieren, zu schließen oder wieder zu öffnen."
-    sign_in: "Anmelden …"
     upload_running: "Ein Upload läuft. Versuche es nach dem Ende erneut."
     comment_empty: "Gib zuerst einen Kommentar ein."
   new:
