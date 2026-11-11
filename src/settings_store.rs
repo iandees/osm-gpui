@@ -317,9 +317,11 @@ pub fn save_to(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
     persist::save_json(path, settings, WriteOpts::default())
 }
 
-/// Default on-disk location: `<config_dir>/osm-gpui/settings.json`.
+/// Default on-disk location: `<config_dir>/osm-gpui/settings.json`. `None`
+/// where the persistence policy forbids touching real state (see
+/// `persist::Policy`; the default, so tests never reach the real file).
 pub fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("osm-gpui").join("settings.json"))
+    persist::config_file("settings.json")
 }
 
 /// Load from the default path. Defaults if unavailable.
@@ -353,6 +355,27 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn default_save_entry_points_never_reach_the_real_file() {
+        // The precondition is checked before anything is saved.
+        assert_eq!(default_path(), None);
+        let real = dirs::config_dir().map(|d| d.join("osm-gpui").join("settings.json"));
+        if let Some(real) = &real {
+            assert!(!persist::write_permitted(real));
+        }
+        let before = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        update_store(AppSettings::default());
+        save(&AppSettings::default());
+        set_welcome_dismissed(true, true);
+        set_invert_scroll_zoom(true, true);
+        let after = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        assert_eq!(before, after);
     }
 
     #[test]
