@@ -31,6 +31,7 @@ mod reference_tests;
 mod script_harness;
 mod selection_actions;
 mod side_panel;
+mod side_panel_layout;
 mod status_bar;
 mod undo;
 mod validation_panel;
@@ -12328,10 +12329,10 @@ mod tests {
 
     #[test]
     fn the_findings_list_gets_a_bounded_share_of_the_window() {
-        use validation_panel::list_max_height;
-        assert_eq!(list_max_height(800.0), 224.0);
-        assert_eq!(list_max_height(300.0), 84.0);
-        assert_eq!(list_max_height(2000.0), 260.0);
+        use side_panel_layout::validation_cap;
+        assert_eq!(validation_cap(800.0), 224.0);
+        assert_eq!(validation_cap(300.0), 84.0);
+        assert_eq!(validation_cap(2000.0), 260.0);
     }
 
     #[gpui::test]
