@@ -165,6 +165,7 @@ mod tests {
         assert_eq!(rows_shown(0), (0, 0));
         assert_eq!(rows_shown(MAX_ROWS), (MAX_ROWS, 0));
         assert_eq!(rows_shown(MAX_ROWS + 7), (MAX_ROWS, 7));
+        assert_eq!(tr_count!("validator.more", 7), "…and 7 more not shown");
     }
 
     #[test]

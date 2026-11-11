@@ -720,7 +720,9 @@ validator:
     other: "%{count} warnings"
   # `%{errors}` and `%{warnings}` are the two counts above.
   summary_both: "%{errors}, %{warnings}"
-  more: "…and %{count} more not shown"
+  more:
+    one: "…and %{count} more not shown"
+    other: "…and %{count} more not shown"
   blocked: "Fix the errors before uploading. Show finds each one."
   warnings_note: "Warnings do not block the upload, but check them first."
   upload_anyway: "Upload anyway"
@@ -741,7 +743,9 @@ validator:
   msg:
     untagged_way: "Way has no tags and is not part of a relation"
     untagged_node: "Node has no tags and is not part of a way or relation"
-    way_too_short: "Way has %{count} nodes; a way needs at least 2"
+    way_too_short:
+      one: "Way has %{count} node; a way needs at least 2"
+      other: "Way has %{count} nodes; a way needs at least 2"
     closed_way_too_short: "Closed way has %{count} node references; a closed way needs at least 4"
     duplicate_way_node: "Way lists node %{node} twice in a row"
     duplicate_nodes: "%{count} nodes are at the same position"

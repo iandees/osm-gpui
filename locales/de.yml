@@ -707,7 +707,9 @@ validator:
     one: "%{count} Warnung"
     other: "%{count} Warnungen"
   summary_both: "%{errors}, %{warnings}"
-  more: "… und %{count} weitere nicht angezeigt"
+  more:
+    one: "… und %{count} weiteres nicht angezeigt"
+    other: "… und %{count} weitere nicht angezeigt"
   blocked: "Behebe die Fehler vor dem Hochladen. „Anzeigen“ findet jeden einzelnen."
   warnings_note: "Warnungen verhindern das Hochladen nicht, sollten aber vorher geprüft werden."
   upload_anyway: "Trotzdem hochladen"
@@ -726,7 +728,9 @@ validator:
   msg:
     untagged_way: "Der Weg hat keine Tags und gehört zu keiner Relation"
     untagged_node: "Der Knoten hat keine Tags und gehört zu keinem Weg und keiner Relation"
-    way_too_short: "Der Weg hat %{count} Knoten; ein Weg braucht mindestens 2"
+    way_too_short:
+      one: "Der Weg hat %{count} Knoten; ein Weg braucht mindestens 2"
+      other: "Der Weg hat %{count} Knoten; ein Weg braucht mindestens 2"
     closed_way_too_short: "Der geschlossene Weg hat %{count} Knotenverweise; ein geschlossener Weg braucht mindestens 4"
     duplicate_way_node: "Der Weg nennt den Knoten %{node} zweimal hintereinander"
     duplicate_nodes: "%{count} Knoten liegen an derselben Position"

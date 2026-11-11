@@ -56,7 +56,7 @@ use crate::layers::LayerId;
 use crate::multipolygon;
 use crate::osm::{MemberType, OsmData, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
-use crate::tr;
+use crate::{tr, tr_count};
 
 /// The longest key or value the OSM API accepts, in characters.
 pub const MAX_TAG_CHARS: usize = 255;
@@ -405,7 +405,7 @@ fn check_way(way: &OsmWay, cx: &Context, out: &mut Vec<Finding>) {
     if way.nodes.len() < 2 {
         out.push(finding(
             Check::WayTooShort,
-            tr!("validator.msg.way_too_short", count = way.nodes.len()).to_string(),
+            tr_count!("validator.msg.way_too_short", way.nodes.len()).to_string(),
             feature.clone(),
         ));
     } else if way.nodes.first() == way.nodes.last() && way.nodes.len() < 4 {

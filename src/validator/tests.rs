@@ -1187,6 +1187,62 @@ fn a_large_dataset_with_many_changes_validates() {
     assert!(!has(&f, Check::CrossingWays));
 }
 
+/// The screenshot fixture, loaded the way the app loads a file, with the two
+/// edits `docs/screenshots/validator.osmscript` makes to node 2002.
+#[test]
+fn the_screenshot_fixture_reports_exactly_its_new_and_edited_objects() {
+    use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data};
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/screenshots/fixtures/validator.osm"
+    );
+    let (mut current, edits) = crate::osm::OsmParser::new()
+        .parse_file_with_edits(path)
+        .unwrap();
+    let baseline = baseline_for_loaded_file(&current, &edits);
+    let tags = &mut current.nodes.get_mut(&2002).unwrap().tags;
+    tags.insert("landuse".into(), "farm".into());
+    tags.insert("fixme".into(), "check the field boundary".into());
+    let diff = diff_osm_data(&baseline, &current);
+    let findings = validate_diff(&current, &diff);
+    for f in &findings {
+        eprintln!(
+            "{:?} {} {:?} {}",
+            f.severity,
+            f.check.id(),
+            f.features,
+            f.message
+        );
+    }
+    let count = |c: Check| findings.iter().filter(|f| f.check == c).count();
+    // Errors.
+    assert_eq!(count(Check::WayTooShort), 1);
+    assert_eq!(count(Check::DuplicateWayNode), 1);
+    assert_eq!(count(Check::TagEmptyValue), 1);
+    // Warnings.
+    assert_eq!(count(Check::CrossingWays), 2);
+    assert_eq!(count(Check::AreaTagsOnOpenWay), 1);
+    assert_eq!(count(Check::DuplicateNodes), 1);
+    assert_eq!(count(Check::UntaggedNode), 1);
+    assert_eq!(count(Check::UntaggedWay), 1);
+    assert_eq!(count(Check::TagWhitespace), 1);
+    assert_eq!(count(Check::RelationEmpty), 1);
+    assert_eq!(count(Check::RelationNoType), 1);
+    assert_eq!(count(Check::DeprecatedTag), 1);
+    assert_eq!(count(Check::Fixme), 1);
+    // Nothing else: the old problems in the file are not reported.
+    assert_eq!(findings.len(), 14, "{findings:#?}");
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Error)
+        .count();
+    assert_eq!(errors, 3);
+    assert!(findings.iter().all(|f| f
+        .features
+        .iter()
+        .all(|&(_, id)| id < 0 || id == 2002 || id == 2003)));
+}
+
 /// `cargo test --release validator::tests::timing -- --ignored --nocapture`
 #[test]
 #[ignore = "timing, run in release"]
