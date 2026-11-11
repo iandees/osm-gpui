@@ -18,9 +18,9 @@ use crate::{
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
     DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
-    Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow,
-    IMAGERY_INDEX,
+    RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
+    ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
+    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -278,7 +278,26 @@ fn apply_keybindings_change(cx: &mut App) {
         &settings,
         cfg!(target_os = "macos"),
     ));
+    rebuild_menus_for_live_viewer(cx);
+}
 
+/// Scripted runs only (a no-op otherwise): add a sample entry to the custom
+/// imagery list in memory, never to the user's file, and rebuild the menus so
+/// Imagery > Custom has something in it.
+fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
+    if !crate::script_harness::script_mode() {
+        return;
+    }
+    custom_imagery_store::append_in_memory(CustomImageryEntry {
+        name: "Script Sample Imagery".into(),
+        url_template: "https://tile.example.invalid/{z}/{x}/{y}.png".into(),
+        min_zoom: 0,
+        max_zoom: 19,
+    });
+    rebuild_menus_for_live_viewer(cx);
+}
+
+fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
@@ -328,10 +347,48 @@ pub(crate) fn rebuild_menus(
             show_downloaded_area,
         )
         .into_iter()
-        .map(Menu::owned)
+        .map(|menu| flatten_owned_menu(menu.owned()))
         .collect();
         sync_in_window_menu(cx, owned);
     }
+}
+
+/// The in-window bar cannot show submenus reliably: gpui-component's popup
+/// menu draws a submenu inside the parent's element tree, and once the parent
+/// scrolls (more than 20 items, as the Imagery menu is with the imagery index
+/// loaded) the submenu is clipped away (a TODO in its `popup_menu.rs`). So the
+/// bar gets each submenu's items inline, under a disabled header with the
+/// submenu's name. The native macOS menu is not touched.
+fn flatten_owned_menu(mut menu: gpui::OwnedMenu) -> gpui::OwnedMenu {
+    menu.items = flatten_owned_items(menu.items);
+    menu
+}
+
+/// Replace every submenu in `items` by a disabled header line followed by its
+/// own (recursively flattened) items. Order is kept, no action is dropped, and
+/// a submenu with nothing in it is omitted altogether.
+fn flatten_owned_items(items: Vec<gpui::OwnedMenuItem>) -> Vec<gpui::OwnedMenuItem> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            gpui::OwnedMenuItem::Submenu(sub) => {
+                let inner = flatten_owned_items(sub.items);
+                if inner.is_empty() {
+                    continue;
+                }
+                out.push(gpui::OwnedMenuItem::Action {
+                    name: sub.name.to_string(),
+                    action: Box::new(NoOpImageryInfo),
+                    os_action: None,
+                    checked: false,
+                    disabled: true,
+                });
+                out.extend(inner);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Name of the environment variable that forces the in-window menu bar on
@@ -393,6 +450,16 @@ pub(crate) fn top_chrome_height() -> gpui::Pixels {
     } else {
         px(0.0)
     }
+}
+
+/// Whether a dropdown of the in-window bar is open: the popup holds the focus
+/// then, and the bar's key context is above it.
+pub(crate) fn in_window_menu_open(window: &gpui::Window) -> bool {
+    in_window_menu_enabled()
+        && window
+            .context_stack()
+            .iter()
+            .any(|c| c.contains("AppMenuBar"))
 }
 
 struct InWindowMenuBar(gpui::Entity<AppMenuBar>);
@@ -688,6 +755,7 @@ pub(crate) fn register_app_actions(cx: &mut App) {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
     cx.on_action(crate::welcome::dismiss_welcome_action);
+    cx.on_action(script_seed_custom_imagery);
     cx.on_action(|_: &SetThemeLight, cx: &mut App| {
         osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
     });
@@ -795,6 +863,95 @@ mod tests {
 
     fn has<T: gpui::Action>(actions: &[Box<dyn gpui::Action>]) -> bool {
         actions.iter().any(|a| a.as_any().is::<T>())
+    }
+
+    fn act(name: &str, action: impl gpui::Action) -> gpui::OwnedMenuItem {
+        MenuItem::action(name.to_string(), action).owned()
+    }
+
+    fn sub(name: &str, items: Vec<gpui::OwnedMenuItem>) -> gpui::OwnedMenuItem {
+        gpui::OwnedMenuItem::Submenu(gpui::OwnedMenu {
+            name: name.to_string().into(),
+            items,
+            disabled: false,
+        })
+    }
+
+    /// Item names in order, `-` for a separator, `?` for anything else.
+    fn shape(items: &[gpui::OwnedMenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                gpui::OwnedMenuItem::Action { name, .. } => name.clone(),
+                gpui::OwnedMenuItem::Separator => "-".into(),
+                _ => "?".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flattening_puts_submenu_items_inline_under_a_disabled_header() {
+        let items = vec![
+            act("Before", Undo),
+            sub(
+                "Custom",
+                vec![act("Add", AddCustomImagery), act("One", Redo)],
+            ),
+            gpui::OwnedMenuItem::Separator,
+            act("After", Quit),
+        ];
+        let flat = flatten_owned_items(items);
+        assert_eq!(
+            shape(&flat),
+            ["Before", "Custom", "Add", "One", "-", "After"]
+        );
+        match &flat[1] {
+            gpui::OwnedMenuItem::Action { disabled, .. } => assert!(*disabled),
+            _ => panic!("header is an action line"),
+        }
+        let (actions, _) = {
+            let (mut out, mut sys) = (vec![], 0);
+            walk(&flat, &mut out, &mut sys);
+            (out, sys)
+        };
+        assert!(has::<AddCustomImagery>(&actions));
+        assert!(has::<Redo>(&actions));
+        assert!(has::<Quit>(&actions));
+    }
+
+    #[test]
+    fn flattening_handles_nested_submenus_and_omits_empty_ones() {
+        let items = vec![
+            sub("Empty", vec![]),
+            sub(
+                "Outer",
+                vec![
+                    sub("Inner", vec![act("Leaf", Undo)]),
+                    sub("Nothing", vec![]),
+                ],
+            ),
+        ];
+        let flat = flatten_owned_items(items);
+        assert_eq!(shape(&flat), ["Outer", "Inner", "Leaf"]);
+    }
+
+    #[test]
+    fn flattened_in_window_menus_have_no_submenus_and_lose_no_action() {
+        for is_macos in [true, false] {
+            let menus = menus_for(is_macos);
+            let (before, _) = all_actions(&menus);
+            let flat: Vec<_> = menus.into_iter().map(flatten_owned_menu).collect();
+            fn no_submenu(items: &[gpui::OwnedMenuItem]) -> bool {
+                items
+                    .iter()
+                    .all(|i| !matches!(i, gpui::OwnedMenuItem::Submenu(_)))
+            }
+            assert!(flat.iter().all(|m| no_submenu(&m.items)));
+            let (after, _) = all_actions(&flat);
+            assert!(has::<AddCustomImagery>(&after));
+            // One extra disabled header line per non-empty submenu.
+            assert!(after.len() >= before.len());
+        }
     }
 
     #[test]

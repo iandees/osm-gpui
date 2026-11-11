@@ -35,6 +35,13 @@ pub fn append(entry: CustomImageryEntry) {
     save(&snapshot);
 }
 
+/// Append one entry to the in-memory store only; nothing is written to disk.
+/// For scripted runs that need a custom imagery entry without touching the
+/// user's real file.
+pub fn append_in_memory(entry: CustomImageryEntry) {
+    CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry));
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomImageryEntry {
     pub name: String,

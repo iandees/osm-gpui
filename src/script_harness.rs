@@ -368,6 +368,19 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                     };
                     self.handle_mouse_move(&ev, cx);
+                    // Also a real window-level move, so widgets that open on
+                    // hover (menu bar dropdowns, submenus, tooltips) see it.
+                    // Deferred for the same reason as `Click`.
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                                position: point(px(x), px(y)),
+                                pressed_button: None,
+                                modifiers: gpui::Modifiers::none(),
+                            }),
+                            cx,
+                        );
+                    });
                 }
                 ScriptCommand::Capture { path } => {
                     let result = (|| -> Result<(), String> {
