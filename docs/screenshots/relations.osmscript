@@ -36,6 +36,10 @@ capture out/relations-04-restriction-way.png
 
 # Split the middle route way at its middle node (P). The new way (id -1) joins
 # the route right after the original, and the relation is one more pending edit.
+# (Select the way first: its plain vertices are drawn only while it is.)
+click 520,200
+wait_idle 2s
+assert_selected way 8202
 click 640,200
 wait_idle 2s
 assert_selected node 8105

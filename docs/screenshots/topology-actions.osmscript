@@ -75,6 +75,9 @@ capture out/topology-11-extended-end.png
 # Extend from the first node instead: new nodes are prepended.
 key s
 wait_idle 2s
+click 600,430
+wait_idle 2s
+assert_selected way 4107
 click 560,420
 wait_idle 2s
 assert_selected node 6401
