@@ -888,6 +888,7 @@ impl MapViewer {
     /// preset icon and name in large type, with its kind and id as secondary
     /// text. An empty element otherwise.
     fn render_selection_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_component::Disableable as _;
         use osm_gpui::selection::FeatureKind;
 
         let [feat] = self.selected.as_slice() else {
@@ -929,6 +930,31 @@ impl MapViewer {
         };
         let muted = cx.theme().muted_foreground;
         let body = osm_gpui::ui::style::current_text_scale().body;
+        // Who last edited it, once its server history has been fetched (the
+        // download itself does not keep that).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let last_edit = self.last_edit_for(feat).map(|edit| {
+            osm_gpui::ui::object_history_view::last_edit_line(&edit, &self.web_base(), now, cx)
+        });
+        let is_new = feat.id < 0;
+        let history_button = Button::new("show-object-history")
+            .ghost()
+            .xsmall()
+            .icon(Icon::new(IconName::Calendar))
+            .disabled(is_new)
+            .tooltip(if is_new {
+                tr!("object_history.new_object")
+            } else {
+                tr!("object_history.show_tooltip")
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Err(why) = this.show_object_history(cx) {
+                    this.set_status(why);
+                    cx.notify();
+                }
+            }));
 
         div()
             .flex()
@@ -972,8 +998,10 @@ impl MapViewer {
                             .text_size(muted_text_size())
                             .text_color(muted)
                             .child(detail),
-                    ),
+                    )
+                    .children(last_edit),
             )
+            .child(history_button)
             .into_any_element()
     }
 

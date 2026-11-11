@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 mod autosave_driver;
 mod fields_section;
+mod history_actions;
 mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
@@ -135,6 +136,11 @@ pub(crate) fn key_bindings_from_settings(
                 Some(MAP_VIEWER_KEY_CONTEXT),
             )),
             "find" => Some(KeyBinding::new(&spec, Find, Some(MAP_VIEWER_KEY_CONTEXT))),
+            "show_history" => Some(KeyBinding::new(
+                &spec,
+                history_actions::ShowObjectHistory,
+                Some(MAP_VIEWER_KEY_CONTEXT),
+            )),
             // Copy/Paste Tags run the same selection actions as the menus.
             // Scoped to the map like Select All, so they never steal the
             // keys from a focused text input.
@@ -634,6 +640,9 @@ struct MapViewer {
     /// Autosave and crash recovery for this run; `None` when off (see
     /// `autosave_driver`).
     autosave: Option<autosave_driver::AutosaveState>,
+    /// The object history view and what was learned from the server's
+    /// version history of objects (see `history_actions`).
+    object_history: history_actions::HistoryState,
     /// Edit > Find, while open.
     find_dialog: Option<gpui::Entity<osm_gpui::ui::find_dialog::FindDialog>>,
     /// The last few queries run through Find this session, newest first.
@@ -908,6 +917,7 @@ impl MapViewer {
             delete_layer_dialog: None,
             restore_dialog: None,
             autosave: None,
+            object_history: Default::default(),
             find_dialog: None,
             find_history: Default::default(),
             find_mode: Default::default(),
@@ -4124,6 +4134,8 @@ impl MapViewer {
 
         let settings = settings_store::snapshot();
         let focus = self.focus_handle.clone();
+        // One existing object: its server history can be shown.
+        let history_item = self.object_history_unavailable().is_none();
         let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
             menu = menu.action_context(focus).min_w(px(190.0));
             for (i, action) in actions.iter().enumerate() {
@@ -4149,6 +4161,13 @@ impl MapViewer {
                             id: action.id.into(),
                         })),
                     );
+            }
+            if history_item {
+                let label = tr!("menu.edit.show_history");
+                menu = menu.separator().item(
+                    PopupMenuItem::element(move |_, _| div().child(label.clone()))
+                        .action(Box::new(history_actions::ShowObjectHistory)),
+                );
             }
             menu
         });
@@ -5663,6 +5682,7 @@ impl Render for MapViewer {
         // Re-run the validator (debounced) if the edits changed since the
         // Validation section was last filled.
         self.watch_validation(cx);
+        self.sync_history_local(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
@@ -6340,6 +6360,7 @@ impl Render for MapViewer {
                         }
                     })
                     .children(self.render_welcome(cx))
+                    .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
                     .child({
                         // Legally-required tile/imagery attribution for
@@ -6446,6 +6467,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))
             .on_action(cx.listener(Self::on_find))
+            .on_action(cx.listener(Self::on_show_object_history))
             .on_action(cx.listener(Self::on_delete_selection))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
