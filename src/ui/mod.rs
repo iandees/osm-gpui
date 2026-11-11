@@ -5,6 +5,7 @@ pub mod custom_imagery_dialog;
 pub mod delete_layer_dialog;
 pub mod find_dialog;
 pub mod modal;
+pub mod note_dialog;
 pub mod notice_dialog;
 pub mod nsi_dialog;
 pub mod parallel_dialog;

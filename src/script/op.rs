@@ -229,6 +229,8 @@ pub enum Check {
     },
     /// Whether the Adjust imagery offset mode is active.
     AdjustingOffset(bool),
+    /// A condition about OSM notes (see `note_ops`).
+    Note(super::note_ops::NoteCheck),
     /// The tags the upload dialog would write now include `key` with
     /// `value` (`Some`) or do not include `key` at all (`None`).
     ChangesetTag {
@@ -474,6 +476,10 @@ pub enum Op {
         duration: Duration,
         message: String,
     },
+    /// An OSM notes op (`show_notes`, `open_note`, `note_close`, ...).
+    Note(super::note_ops::NoteOp),
+    /// An assertion about OSM notes (`assert_notes`, ...).
+    AssertNote(super::note_ops::NoteCheck),
 }
 
 #[derive(Debug, Clone, PartialEq)]

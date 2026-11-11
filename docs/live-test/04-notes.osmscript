@@ -1,0 +1,54 @@
+# Live test 4: OSM notes. Creates a note in open ocean near lat -48, lon -123 on
+# the development server, comments on it, closes it, reopens it and closes it
+# again, so the note ends up closed. Notes cannot be deleted; a closed test note
+# is the cleanest state possible.
+#
+#   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/04-notes.osmscript
+#
+# Sign in first with 00-sign-in.osmscript. If you signed in before the Notes
+# feature existed, sign in again: the saved login lacks the write_notes scope
+# and the server answers 403 (the note panel then says to sign in again).
+# Captures go to out/live-04-*.png. Window 1200x800.
+#
+# Every note write here refuses to run unless the active server is the OSM
+# development server.
+
+assert_server dev
+assert_signed_in
+window 1200 800
+viewport -48.0 -123.0 12
+wait_idle 10s
+show_notes on
+assert_dialog none
+
+pause 1s Creating a test note
+new_note -48.0 -123.0 osm-gpui live test: please ignore this note
+# new_note turns Notes on and opens the new note in the side panel.
+assert_note_status open
+assert_note_comments 1
+capture out/live-04-01-created.png
+
+pause 1s Commenting
+note_comment second comment from the osm-gpui live test
+assert_note_comments 2
+capture out/live-04-02-commented.png
+
+pause 1s Closing
+note_close closing the osm-gpui live test note
+assert_note_status closed
+assert_note_comments 3
+capture out/live-04-03-closed.png
+
+pause 1s Reopening
+note_reopen reopening for the live test
+assert_note_status open
+assert_note_comments 4
+capture out/live-04-04-reopened.png
+
+pause 1s Closing again
+note_close done, the osm-gpui live test is finished
+assert_note_status closed
+assert_note_comments 5
+capture out/live-04-05-closed-again.png
+pause 2s Notes live test finished: the test note is closed
+log done

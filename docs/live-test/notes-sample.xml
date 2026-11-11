@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A canned notes API response for the `load_notes_file` script op (no network). -->
+<osm version="0.6" generator="OpenStreetMap server">
+  <note lon="-0.1240" lat="51.5010">
+    <id>1001</id>
+    <date_created>2026-11-05 10:00:00 UTC</date_created>
+    <status>open</status>
+    <comments>
+      <comment>
+        <date>2026-11-05 10:00:00 UTC</date>
+        <uid>42</uid>
+        <user>mapper_one</user>
+        <action>opened</action>
+        <text>The footbridge over the canal is missing on the map.</text>
+      </comment>
+      <comment>
+        <date>2026-11-07 15:30:00 UTC</date>
+        <action>commented</action>
+        <text>I walked it yesterday, it is a steel bridge with steps on both sides.</text>
+      </comment>
+      <comment>
+        <date>2026-11-09 08:05:00 UTC</date>
+        <uid>77</uid>
+        <user>Zoë</user>
+        <action>commented</action>
+        <text>Will add it this weekend.</text>
+      </comment>
+    </comments>
+  </note>
+  <note lon="-0.1190" lat="51.4985">
+    <id>1002</id>
+    <date_created>2026-11-08 12:00:00 UTC</date_created>
+    <status>open</status>
+    <comments>
+      <comment>
+        <date>2026-11-08 12:00:00 UTC</date>
+        <action>opened</action>
+        <text>Cafe closed down, now a bakery.</text>
+      </comment>
+    </comments>
+  </note>
+  <note lon="-0.1270" lat="51.4990">
+    <id>1003</id>
+    <date_created>2026-10-01 09:00:00 UTC</date_created>
+    <status>closed</status>
+    <date_closed>2026-11-06 18:00:00 UTC</date_closed>
+    <comments>
+      <comment>
+        <date>2026-10-01 09:00:00 UTC</date>
+        <uid>5</uid>
+        <user>visitor</user>
+        <action>opened</action>
+        <text>One-way street is drawn the wrong way round.</text>
+      </comment>
+      <comment>
+        <date>2026-11-06 18:00:00 UTC</date>
+        <uid>77</uid>
+        <user>Zoë</user>
+        <action>closed</action>
+        <text>Fixed, thanks.</text>
+      </comment>
+    </comments>
+  </note>
+</osm>
