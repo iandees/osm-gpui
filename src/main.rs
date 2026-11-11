@@ -7351,15 +7351,6 @@ impl Render for MapViewer {
                                             window,
                                         );
                                         osm_gpui::frame_stats::lap("layers.canvas", fs_layers);
-                                        if let Some(hovered) = &hovered {
-                                            this.layer_manager.render_highlight(
-                                                hovered,
-                                                HighlightKind::Hovered,
-                                                &viewport_clone,
-                                                bounds,
-                                                window,
-                                            );
-                                        }
                                         // A selection of tens of thousands (Edit >
                                         // Find) highlights only its first
                                         // `MAX_SELECTION_HIGHLIGHTS`; features off
@@ -7368,6 +7359,18 @@ impl Render for MapViewer {
                                             this.layer_manager.render_highlight(
                                                 sel,
                                                 HighlightKind::Selected,
+                                                &viewport_clone,
+                                                bounds,
+                                                window,
+                                            );
+                                        }
+
+                                        // Hover goes after the selection so a hovered
+                                        // vertex of a selected way shows above the way.
+                                        if let Some(hovered) = &hovered {
+                                            this.layer_manager.render_highlight(
+                                                hovered,
+                                                HighlightKind::Hovered,
                                                 &viewport_clone,
                                                 bounds,
                                                 window,
