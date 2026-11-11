@@ -56,7 +56,6 @@ menu:
     zoom_to_selection: "Zoom to Selection"
     show_downloaded_area: "Show Downloaded Area"
     toggle_debug_overlay: "Toggle Debug Overlay"
-    appearance: "Appearance"
   window:
     title: "Window"
     minimize: "Minimize"

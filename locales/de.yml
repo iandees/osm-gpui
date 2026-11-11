@@ -56,7 +56,6 @@ menu:
     zoom_to_selection: "Auf Auswahl zoomen"
     show_downloaded_area: "Heruntergeladenes Gebiet anzeigen"
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
-    appearance: "Erscheinungsbild"
   window:
     title: "Fenster"
     minimize: "Im Dock ablegen"

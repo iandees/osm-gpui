@@ -120,9 +120,6 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                         osm_gpui::ui::settings_window::SettingsEvent::KeybindingsChanged => {
                             apply_keybindings_change(cx);
                         }
-                        osm_gpui::ui::settings_window::SettingsEvent::AppearanceChanged => {
-                            rebuild_menus_from_live_state(cx);
-                        }
                     },
                 )
                 .detach();
@@ -556,12 +553,6 @@ fn build_menus(
                 MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
                     .checked(show_downloaded_area),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
-                MenuItem::separator(),
-                MenuItem::submenu(Menu {
-                    name: tr!("menu.view.appearance"),
-                    items: appearance_menu_items(osm_gpui::settings_store::snapshot().theme),
-                    disabled: false,
-                }),
             ],
             disabled: false,
         },
@@ -617,7 +608,6 @@ pub(crate) fn register_app_actions(cx: &mut App) {
             !crate::script_harness::script_mode(),
             cx,
         );
-        cx.defer(rebuild_menus_from_live_state);
     });
 }
 
@@ -626,21 +616,14 @@ pub(crate) fn register_app_actions(cx: &mut App) {
 // override the saved Appearance setting for this run and are never saved.
 actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
 
-/// Action behind View > Appearance (and `action SetAppearance {"mode":"dark"}`
-/// in scripts; `mode` is `System`, `Light` or `Dark`).
+/// Script/harness action (`action SetAppearance {"mode":"Dark"}`; `mode` is
+/// `System`, `Light` or `Dark`), shown in no menu. The user-facing control is
+/// Settings > Appearance.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
 #[action(namespace = osm_gpui)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetAppearance {
     pub mode: osm_gpui::settings_store::ThemePreference,
-}
-
-/// The items of the View > Appearance submenu, with a checkmark on `current`.
-fn appearance_menu_items(current: osm_gpui::settings_store::ThemePreference) -> Vec<MenuItem> {
-    osm_gpui::settings_store::ThemePreference::ALL
-        .into_iter()
-        .map(|mode| MenuItem::action(mode.label(), SetAppearance { mode }).checked(mode == current))
-        .collect()
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.
@@ -667,39 +650,6 @@ mod tests {
         assert!(!in_window_menu_wanted(true, Some("0")));
         assert!(!in_window_menu_wanted(true, Some("true")));
         assert!(in_window_menu_wanted(true, Some("1")));
-    }
-
-    #[test]
-    fn appearance_menu_checks_only_the_current_choice() {
-        use osm_gpui::settings_store::ThemePreference;
-        for current in ThemePreference::ALL {
-            let items = appearance_menu_items(current);
-            assert_eq!(items.len(), 3);
-            for (item, mode) in items.iter().zip(ThemePreference::ALL) {
-                assert_eq!(item.is_checked(), mode == current);
-            }
-        }
-    }
-
-    #[test]
-    fn view_menu_has_an_appearance_submenu_checking_system_by_default() {
-        let menus = build_menus(40.0, -74.0, ImageryLoadState::Loading, true);
-        let view = menus
-            .into_iter()
-            .find(|m| m.name.as_ref() == tr!("menu.view.title").as_ref())
-            .expect("View menu");
-        let sub = view
-            .items
-            .into_iter()
-            .find_map(|i| match i {
-                MenuItem::Submenu(m) if m.name.as_ref() == tr!("menu.view.appearance").as_ref() => {
-                    Some(m)
-                }
-                _ => None,
-            })
-            .expect("Appearance submenu");
-        let checked: Vec<bool> = sub.items.iter().map(|i| i.is_checked()).collect();
-        assert_eq!(checked, vec![true, false, false]);
     }
 
     #[test]

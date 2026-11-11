@@ -38,9 +38,6 @@ enum LoginState {
 /// has access to.
 pub enum SettingsEvent {
     KeybindingsChanged,
-    /// The appearance choice changed; the View > Appearance checkmark needs a
-    /// menu rebuild.
-    AppearanceChanged,
 }
 
 pub struct SettingsWindow {
@@ -185,7 +182,6 @@ impl SettingsWindow {
     fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
         crate::appearance::set_preference(theme, true, cx);
         self.app_settings.theme = theme;
-        cx.emit(SettingsEvent::AppearanceChanged);
         cx.notify();
     }
 
