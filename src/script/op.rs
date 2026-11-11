@@ -128,6 +128,11 @@ pub enum Check {
     FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
+    /// The map zoom level is `level`, within `tolerance`.
+    Zoom {
+        level: f64,
+        tolerance: f64,
+    },
     /// The imagery offset (of the layer being adjusted, else the topmost
     /// visible imagery layer) is `east`/`north` metres, within `tolerance`.
     ImageryOffset {
@@ -261,6 +266,11 @@ pub enum Op {
     },
     AssertStatusContains {
         text: String,
+    },
+    /// `assert_zoom LEVEL [tol=N]`.
+    AssertZoom {
+        level: f64,
+        tolerance: f64,
     },
     /// `assert_imagery_offset EAST NORTH [tol=METRES]`.
     AssertImageryOffset {

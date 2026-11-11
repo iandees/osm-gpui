@@ -3983,10 +3983,16 @@ impl MapViewer {
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let position = self.window_to_map(event.position);
         let zoom_modifier = event.modifiers.platform || event.modifiers.control;
+        // Read live so the Settings switch applies at once, without a restart.
+        // Only the zoom paths are inverted; panning and pinch are not.
+        let invert = osm_gpui::settings_store::snapshot().invert_scroll_zoom;
         let changed = match event.delta {
-            gpui::ScrollDelta::Lines(delta) => self.viewport.zoom_by_wheel(position, delta.y),
+            gpui::ScrollDelta::Lines(delta) => self
+                .viewport
+                .zoom_by_wheel(position, Viewport::scroll_zoom_step(delta.y, invert)),
             gpui::ScrollDelta::Pixels(delta) if zoom_modifier => {
-                self.viewport.zoom_by_scroll_pixels(position, delta.y)
+                let step = Viewport::scroll_zoom_step(delta.y.to_f64() as f32, invert);
+                self.viewport.zoom_by_scroll_pixels(position, px(step))
             }
             gpui::ScrollDelta::Pixels(delta) => self.viewport.pan_by_scroll(delta),
         };

@@ -685,6 +685,12 @@ pub(crate) fn register_app_actions(cx: &mut App) {
             cx,
         );
     });
+    cx.on_action(|action: &SetInvertScrollZoom, _cx: &mut App| {
+        osm_gpui::settings_store::set_invert_scroll_zoom(
+            action.on,
+            !crate::script_harness::script_mode(),
+        );
+    });
 }
 
 // Run-only theme switches with no menu item: reachable from the script
@@ -700,6 +706,16 @@ actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetAppearance {
     pub mode: osm_gpui::settings_store::ThemePreference,
+}
+
+/// Script/harness action (`action SetInvertScrollZoom {"on":true}`), shown in
+/// no menu. The user-facing control is Settings > Appearance. In script mode
+/// it changes the in-memory setting only, never the settings file.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetInvertScrollZoom {
+    pub on: bool,
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.
