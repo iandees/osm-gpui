@@ -890,6 +890,14 @@ impl MapViewer {
                     ))
                 }
             }
+            Check::LayerCount(want) => {
+                let have = self.layer_manager.layers().len();
+                if have == *want {
+                    Ok(())
+                } else {
+                    Err(format!("expected {want} layers, found {have}"))
+                }
+            }
             Check::SelectedCount(want) => {
                 if self.selected.len() == *want {
                     Ok(())
