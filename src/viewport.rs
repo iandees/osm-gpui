@@ -171,6 +171,13 @@ impl Viewport {
         self.transform.mercator_to_screen(mx, my)
     }
 
+    /// The trig-free Mercator-to-screen mapping as a copyable value for hot
+    /// loops (see [`crate::coordinates::MercatorProjector`]).
+    #[inline]
+    pub fn projector(&self) -> crate::coordinates::MercatorProjector {
+        self.transform.projector()
+    }
+
     /// Mercator-space AABB of the current view (min_x, max_x, min_y, max_y).
     #[inline]
     pub fn mercator_view_bounds(&self) -> (f64, f64, f64, f64) {
