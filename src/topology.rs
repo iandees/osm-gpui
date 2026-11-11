@@ -119,31 +119,78 @@ fn flip_value(value: &str) -> String {
     }
 }
 
-/// The tag changes that keep a way's meaning when its node order is reversed
-/// (what iD's and JOSM's Reverse do besides reordering the nodes):
-///
-/// - in keys, a `:forward` part becomes `:backward` and vice versa, and
-///   `:left` becomes `:right` and vice versa (`lanes:forward`,
-///   `cycleway:left`, `parking:lane:right:parallel`);
-/// - in the values of `direction`, `incline` and `side` keys (including
-///   prefixed ones like `traffic_signals:direction`), `forward`/`backward`,
-///   `left`/`right` and `up`/`down` swap, and a numeric incline changes sign
-///   (`10%` becomes `-10%`);
-/// - `oneway` is deliberately left alone: reversing a `oneway=yes` way is
-///   how the user turns the traffic around, so the tag keeps its meaning.
-///
-/// Returns only the keys that end up different, sorted by key.
-pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
-    let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let mut after: BTreeMap<String, String> = BTreeMap::new();
-    for (key, value) in &before {
-        let value = if has_directional_value(key) {
-            flip_value(value)
-        } else {
-            value.to_string()
-        };
-        after.insert(flip_key(key), value);
+/// Keys (by their first `:`-part) whose values are free text, names or
+/// identifiers, or deliberately keep their meaning under Reverse, so a value
+/// that merely looks directional (`name=Left`, `conveying=forward`) is left
+/// alone.
+fn is_free_text_key(base: &str) -> bool {
+    matches!(
+        base,
+        "name"
+            | "alt_name"
+            | "old_name"
+            | "loc_name"
+            | "short_name"
+            | "official_name"
+            | "int_name"
+            | "nat_name"
+            | "reg_name"
+            | "ref"
+            | "old_ref"
+            | "note"
+            | "description"
+            | "fixme"
+            | "FIXME"
+            | "inscription"
+            | "comment"
+            | "source"
+            | "type"
+            | "operator"
+            | "brand"
+            | "network"
+            | "destination"
+            | "website"
+            | "email"
+            | "phone"
+            | "image"
+            | "wikipedia"
+            | "wikidata"
+            | "oneway"
+            | "conveying"
+            | "addr"
+    )
+}
+
+/// The new value of `key=value` when the way is reversed.
+fn reversed_value(key: &str, value: &str) -> String {
+    if has_directional_value(key) {
+        return flip_value(value);
     }
+    let mut parts = key.split(':');
+    let base = parts.next().unwrap_or(key);
+    let rest: Vec<&str> = parts.collect();
+    // A side-specific oneway (`cycleway:left:oneway=-1`): the side swaps, and
+    // so does the direction the lane runs relative to the way.
+    if rest.last() == Some(&"oneway") && rest.iter().any(|p| matches!(*p, "left" | "right")) {
+        return match value {
+            "yes" => "-1".to_string(),
+            "-1" => "yes".to_string(),
+            _ => value.to_string(),
+        };
+    }
+    if is_free_text_key(base) {
+        return value.to_string();
+    }
+    match value {
+        "forward" | "backward" | "left" | "right" => flip_value(value),
+        _ => value.to_string(),
+    }
+}
+
+fn changes_between(
+    before: &BTreeMap<&str, &str>,
+    after: &BTreeMap<String, String>,
+) -> Vec<TagChange> {
     let mut keys: Vec<&str> = before.keys().copied().collect();
     keys.extend(after.keys().map(String::as_str));
     keys.sort_unstable();
@@ -155,6 +202,66 @@ pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
             (old != new).then(|| (key.to_string(), old, new))
         })
         .collect()
+}
+
+/// The tag changes that keep a way's meaning when its node order is reversed
+/// (what iD's and JOSM's Reverse do besides reordering the nodes):
+///
+/// - in keys, a `:forward` part becomes `:backward` and vice versa, and
+///   `:left` becomes `:right` and vice versa (`lanes:forward`,
+///   `cycleway:left`, `parking:lane:right:parallel`);
+/// - in the values of `direction`, `incline` and `side` keys (including
+///   prefixed ones like `traffic_signals:direction`), `forward`/`backward`,
+///   `left`/`right` and `up`/`down` swap, and a numeric incline changes sign
+///   (`10%` becomes `-10%`);
+/// - in the values of any other key, a value that is exactly `forward`,
+///   `backward`, `left` or `right` swaps too (`sidewalk=left`,
+///   `priority=forward`), except for free-text keys like `name` or `note`;
+/// - a side-specific oneway (`cycleway:left:oneway=-1`) flips `yes` and `-1`
+///   along with the side;
+/// - `oneway` itself is deliberately left alone: reversing a `oneway=yes` way
+///   is how the user turns the traffic around, so the tag keeps its meaning.
+///
+/// Returns only the keys that end up different, sorted by key.
+pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
+    let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut after: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in &before {
+        after.insert(flip_key(key), reversed_value(key, value));
+    }
+    changes_between(&before, &after)
+}
+
+/// The tag changes for a node on a way that is being reversed: a facing
+/// `direction=forward`/`backward` (also `traffic_signals:direction` and
+/// similar) swaps, as do `:forward`/`:backward` key parts such as
+/// `traffic_sign:forward`. Compass and degree directions are absolute and
+/// stay. Only the keys that end up different are returned, sorted by key.
+pub fn reversed_node_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
+    let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut after: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in &before {
+        let new_key = key
+            .split(':')
+            .enumerate()
+            .map(|(i, part)| match (i, part) {
+                (0, _) => part,
+                (_, "forward") => "backward",
+                (_, "backward") => "forward",
+                _ => part,
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+        let new_value = if key.split(':').any(|p| p == "direction")
+            && matches!(*value, "forward" | "backward")
+        {
+            flip_value(value)
+        } else {
+            value.to_string()
+        };
+        after.insert(new_key, new_value);
+    }
+    changes_between(&before, &after)
 }
 
 /// Order and orient `ways` into one chain: each entry is a way index and
