@@ -1,0 +1,40 @@
+# The in-window menu bar with the Windows/Linux menu contents, forced on
+# macOS for testing (the native menu stays the macOS one):
+#
+#   OSM_GPUI_IN_WINDOW_MENU=other cargo run -- --script docs/screenshots/in-window-menu-other.osmscript
+#
+# Menus off macOS: File, Edit, Tools, Mode, Imagery, View, Window, Help (no
+# app-name menu). The bar is a 30px row; labels are at window y=15.
+
+window 1200 800
+wait 3s
+wait_idle 5s
+capture out/other-menu-01-bar.png
+
+# File: Quit is at the end.
+click 21,15
+wait_idle 3s
+capture out/other-menu-02-file.png
+
+# Click File again to close it, then open Edit: Settings is at the end.
+click 21,15
+wait_idle 2s
+click 61,15
+wait_idle 3s
+capture out/other-menu-03-edit.png
+
+# Window: Minimize and Zoom.
+click 61,15
+wait_idle 2s
+click 337,15
+wait_idle 3s
+capture out/other-menu-04-window.png
+
+# Help: About is at the end.
+click 337,15
+wait_idle 2s
+click 394,15
+wait_idle 3s
+capture out/other-menu-05-help.png
+click 394,15
+wait_idle 2s
