@@ -1,6 +1,8 @@
 //! Refreshes the vendored iD tagging schema data and the preset icons under
 //! `assets/presets/`. Run manually with:
-//!   cargo run --example update_presets [-- <schema-version>]
+//!   cargo run --example update_presets [-- <schema-version>] [--data-only]
+//!
+//! `--data-only` skips the icon downloads and rewrites only the JSON data.
 //!
 //! `<schema-version>` is the `@openstreetmap/id-tagging-schema` release to
 //! fetch (default: `DEFAULT_SCHEMA_VERSION`, the one the repo currently
@@ -113,8 +115,12 @@ const AREA_IGNORE_KEYS: &[&str] = &[
 const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/presets");
 
 fn main() {
+    // `--data-only` rewrites presets.json / area_keys.json / fields.json and
+    // leaves the icons alone (no icon downloads).
+    let data_only = std::env::args().any(|a| a == "--data-only");
     let schema_version = std::env::args()
-        .nth(1)
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
         .unwrap_or_else(|| DEFAULT_SCHEMA_VERSION.to_string());
     println!("id-tagging-schema {}", schema_version);
     let base = schema_base(&schema_version);
@@ -132,34 +138,19 @@ fn main() {
     let fields_body = fetch(&client, &format!("{}/fields.json", base));
     let fields_root: Value = serde_json::from_str(&fields_body).expect("parse fields.json");
     let field_translations_map = field_translations(&translations_body);
-    let (trimmed_fields, kept_field_ids) = trim_fields(&fields_root, &field_translations_map);
+    let trimmed_fields = trim_fields(&fields_root, &field_translations_map);
 
-    // Filter each trimmed preset's fields/more_fields to only field ids that
-    // survived trimming, so the Rust side never sees a dangling reference.
+    // The field-id lists are kept exactly as upstream wrote them: entries
+    // like `{highway/primary}` (insert that preset's list here) and a missing
+    // `fields` (inherit the parent preset's) are resolved by the app when it
+    // loads the index (`PresetIndex::from_json`), not here. Only `moreFields`
+    // is renamed to `more_fields`.
     let trimmed_presets: Vec<Value> = trimmed_presets
         .into_iter()
         .map(|mut preset| {
-            for key in ["fields", "moreFields"] {
-                if let Some(Value::Array(ids)) = preset.get(key).cloned() {
-                    let filtered: Vec<Value> = ids
-                        .into_iter()
-                        .filter(|id| {
-                            id.as_str()
-                                .map(|s| kept_field_ids.contains(s))
-                                .unwrap_or(false)
-                        })
-                        .collect();
-                    let out_key = if key == "moreFields" {
-                        "more_fields"
-                    } else {
-                        key
-                    };
-                    let obj = preset.as_object_mut().unwrap();
-                    obj.insert(out_key.to_string(), Value::Array(filtered));
-                    if out_key != key {
-                        obj.remove(key);
-                    }
-                }
+            let obj = preset.as_object_mut().unwrap();
+            if let Some(more) = obj.remove("moreFields") {
+                obj.insert("more_fields".to_string(), more);
             }
             preset
         })
@@ -181,6 +172,16 @@ fn main() {
         serde_json::to_string_pretty(&trimmed_fields).unwrap(),
     )
     .expect("write fields.json");
+
+    if data_only {
+        println!(
+            "done (data only): {} presets, {} fields in {}",
+            trimmed_presets.len(),
+            trimmed_fields.len(),
+            OUT_DIR
+        );
+        return;
+    }
 
     let icons_dir = Path::new(OUT_DIR).join("icons");
     fs::create_dir_all(&icons_dir).expect("create icons dir");
@@ -468,24 +469,19 @@ fn compute_area_keys(root: &Value) -> serde_json::Map<String, Value> {
         .collect()
 }
 
-/// Map upstream's field `type` string to our vendored `FieldType`, or
-/// `None` if it's not one of the types this tool vendors (see Global
-/// Constraints — no multi-key fields, no dynamic-suggestion types).
-fn map_field_type(upstream_type: &str) -> Option<&'static str> {
-    match upstream_type {
-        "text" | "number" | "url" | "tel" | "email" => Some("text"),
-        "combo" | "typeCombo" | "semiCombo" => Some("combo"),
-        "check" | "onewayCheck" | "defaultCheck" => Some("check"),
-        "radio" => Some("radio"),
-        "multiCombo" => Some("multiCombo"),
-        _ => None,
-    }
-}
-
 struct FieldTranslation {
     label: Option<String>,
     placeholder: Option<String>,
     options: HashMap<String, String>, // option value -> translated label
+    types: HashMap<String, String>,   // sub-key -> label (multi-key fields)
+}
+
+/// An option or type entry's English text: a plain string, or the `title` of
+/// a `{ "title": ..., "description": ... }` object.
+fn entry_title(v: &Value) -> Option<String> {
+    v.as_str()
+        .or_else(|| v.get("title").and_then(|t| t.as_str()))
+        .map(str::to_string)
 }
 
 /// Parse `dist/translations/en.json`'s field section into a flat
@@ -511,67 +507,50 @@ fn field_translations(body: &str) -> HashMap<String, FieldTranslation> {
             .get("placeholder")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let options = entry
-            .get("options")
-            .and_then(|v| v.as_object())
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let titles = |key: &str| -> HashMap<String, String> {
+            entry
+                .get(key)
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| entry_title(v).map(|s| (k.clone(), s)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         out.insert(
             id.clone(),
             FieldTranslation {
                 label,
                 placeholder,
-                options,
+                options: titles("options"),
+                types: titles("types"),
             },
         );
     }
     out
 }
 
-/// Extract only the fields our `Field` type keeps, from upstream's full
-/// `fields.json` object-of-objects shape, merging in translated
-/// label/placeholder/option-labels. Drops any field with an unsupported
-/// `type`, a multi-key (`keys` instead of `key`) definition, or — for
-/// combo/radio/multiCombo — no static `options` list.
-fn trim_fields(
-    root: &Value,
-    translations: &HashMap<String, FieldTranslation>,
-) -> (Vec<Value>, HashSet<String>) {
+/// Extract what the app reads of each field, from upstream's full
+/// `fields.json` object-of-objects shape, merging in the English
+/// label/placeholder/option-labels. Every field is kept, whatever its type:
+/// what each type can do is decided by the app, not here. Strings that are
+/// references to another field (`"{leaf_cycle}"`, `stringsCrossReference`) are
+/// kept as written and resolved when the index loads; an option or label
+/// with no English text of its own is written empty for the same reason.
+fn trim_fields(root: &Value, translations: &HashMap<String, FieldTranslation>) -> Vec<Value> {
     let obj = root.as_object().expect("fields.json root is not an object");
     let mut out = Vec::new();
-    let mut kept_ids = HashSet::new();
 
     for (id, entry) in obj {
-        let Some(key) = entry.get("key").and_then(|v| v.as_str()) else {
-            continue; // multi-key ("keys") or keyless field — not vendored
-        };
-        let Some(upstream_type) = entry.get("type").and_then(|v| v.as_str()) else {
+        let Some(field_type) = entry.get("type").and_then(|v| v.as_str()) else {
             continue;
         };
-        let Some(field_type) = map_field_type(upstream_type) else {
-            continue;
-        };
-
         let translation = translations.get(id);
-        let label = entry
-            .get("label")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| translation.and_then(|t| t.label.clone()));
-        let Some(label) = label else {
-            continue;
-        };
-        let placeholder = entry
-            .get("placeholder")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| translation.and_then(|t| t.placeholder.clone()));
-
-        let needs_options = matches!(field_type, "combo" | "radio" | "multiCombo");
+        let text = |name: &str| entry.get(name).and_then(|v| v.as_str()).map(str::to_string);
+        let label = text("label").or_else(|| translation.and_then(|t| t.label.clone()));
+        let placeholder =
+            text("placeholder").or_else(|| translation.and_then(|t| t.placeholder.clone()));
         let options: Vec<Value> = entry
             .get("options")
             .and_then(|v| v.as_array())
@@ -581,36 +560,57 @@ fn trim_fields(
                     .map(|value| {
                         let label = translation
                             .and_then(|t| t.options.get(value).cloned())
-                            .unwrap_or_else(|| value.to_string());
-                        let mut opt = serde_json::Map::new();
-                        opt.insert("value".to_string(), Value::String(value.to_string()));
-                        opt.insert("label".to_string(), Value::String(label));
-                        Value::Object(opt)
+                            .unwrap_or_default();
+                        serde_json::json!({ "value": value, "label": label })
                     })
                     .collect()
             })
             .unwrap_or_default();
-        if needs_options && options.is_empty() {
-            continue; // no static options to offer — not vendored
-        }
 
         let mut trimmed = serde_json::Map::new();
         trimmed.insert("id".to_string(), Value::String(id.clone()));
-        trimmed.insert("key".to_string(), Value::String(key.to_string()));
+        if let Some(key) = entry.get("key").and_then(|v| v.as_str()) {
+            trimmed.insert("key".to_string(), Value::String(key.to_string()));
+        }
+        if let Some(keys) = entry.get("keys").filter(|v| v.is_array()) {
+            trimmed.insert("keys".to_string(), keys.clone());
+        }
         trimmed.insert(
             "field_type".to_string(),
             Value::String(field_type.to_string()),
         );
-        trimmed.insert("label".to_string(), Value::String(label));
+        if let Some(label) = label {
+            trimmed.insert("label".to_string(), Value::String(label));
+        }
         if let Some(p) = placeholder {
             trimmed.insert("placeholder".to_string(), Value::String(p));
         }
         if !options.is_empty() {
             trimmed.insert("options".to_string(), Value::Array(options));
         }
+        if let Some(types) = translation.map(|t| &t.types).filter(|t| !t.is_empty()) {
+            trimmed.insert(
+                "types".to_string(),
+                Value::Object(
+                    types
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                        .collect(),
+                ),
+            );
+        }
+        for (from, to) in [
+            ("geometry", "geometry"),
+            ("prerequisiteTag", "prerequisite_tag"),
+            ("stringsCrossReference", "strings_cross_reference"),
+            ("universal", "universal"),
+        ] {
+            if let Some(v) = entry.get(from) {
+                trimmed.insert(to.to_string(), v.clone());
+            }
+        }
         out.push(Value::Object(trimmed));
-        kept_ids.insert(id.clone());
     }
 
-    (out, kept_ids)
+    out
 }

@@ -9,7 +9,8 @@
 //! fields that are actually vendored:
 //!   { "presets": { "<id>": { "name": "...", "terms": ["..."] } },
 //!     "fields":  { "<id>": { "label": "...", "placeholder": "...",
-//!                            "options": { "<value>": "..." } } } }
+//!                            "options": { "<value>": "..." },
+//!                            "types": { "<key>": "..." } } } }
 //! A preset's `terms` are upstream's `terms` plus its `aliases`, both of which
 //! are alternative search words.
 //!
@@ -183,6 +184,18 @@ fn trim_fields(
         }
         if !options.is_empty() {
             trimmed.insert("options".into(), Value::Object(options));
+        }
+        // Labels of the sub-keys of a multi-key field (`access`: "Foot", ...).
+        let mut types = Map::new();
+        if let Some(entries) = entry.get("types").and_then(|v| v.as_object()) {
+            for (key, text) in entries {
+                if let Some(text) = text.as_str() {
+                    types.insert(key.clone(), Value::String(text.to_string()));
+                }
+            }
+        }
+        if !types.is_empty() {
+            trimmed.insert("types".into(), Value::Object(types));
         }
         if !trimmed.is_empty() {
             out.insert(id.clone(), Value::Object(trimmed));

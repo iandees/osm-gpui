@@ -791,23 +791,86 @@ fn apply_reverse(
     if reversed.is_empty() {
         return Err(tr!("action.reverse.hint").to_string());
     }
+    // Facing tags on the ways' nodes (a stop sign's `direction=forward`,
+    // `traffic_sign:forward`) flip too. A node shared by several reversed ways
+    // is flipped once.
+    let mut seen_nodes = std::collections::HashSet::new();
+    for way in ways.iter().filter(|w| reversed.contains(&w.way_id)) {
+        for &node_id in &way.node_ids {
+            if !seen_nodes.insert(node_id) {
+                continue;
+            }
+            let node_ref = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id: node_id,
+            };
+            let tags = editable.feature_tags(&node_ref).unwrap_or_default();
+            for (key, before, after) in topology::reversed_node_tag_changes(&tags) {
+                match &after {
+                    Some(value) => editable.set_tag(FeatureKind::Node, node_id, &key, value),
+                    None => editable.remove_tag(FeatureKind::Node, node_id, &key),
+                }
+                tag_entries.push((node_ref, key, before, after));
+            }
+        }
+    }
+    // Route relations: a member's `forward`/`backward` role swaps with its way.
+    let mut relation_edits = Vec::new();
+    let mut relation_ids: Vec<i64> = reversed
+        .iter()
+        .flat_map(|id| editable.relations_containing_way(*id))
+        .collect();
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        let mut after = relation.members.clone();
+        let mut changed = false;
+        for member in after.iter_mut() {
+            if member.member_type == osm_gpui::osm::MemberType::Way
+                && reversed.contains(&member.reference)
+            {
+                let flipped = match member.role.as_str() {
+                    "forward" => "backward",
+                    "backward" => "forward",
+                    _ => continue,
+                };
+                member.role = flipped.to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            editable.set_relation_members(relation_id, after.clone());
+            relation_edits.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id,
+                before: relation.members,
+                after,
+            });
+        }
+    }
     let status = tr_count!("action.reverse.done", reversed.len()).to_string();
     let reverse = UndoableAction::ReverseWays {
         layer: layer_id,
         way_ids: reversed,
     };
-    // The node order and the tag flips are one undo step.
-    let undo = if tag_entries.is_empty() {
+    // The node order, the tag flips and the role swaps are one undo step.
+    let undo = if tag_entries.is_empty() && relation_edits.is_empty() {
         reverse
     } else {
+        let mut actions = vec![reverse];
+        if !tag_entries.is_empty() {
+            actions.push(UndoableAction::SetTags {
+                entries: tag_entries,
+            });
+        }
+        actions.extend(relation_edits);
         UndoableAction::Batch {
             label: status.clone(),
-            actions: vec![
-                reverse,
-                UndoableAction::SetTags {
-                    entries: tag_entries,
-                },
-            ],
+            actions,
         }
     };
     Ok(ActionOutcome {

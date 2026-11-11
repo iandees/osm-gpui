@@ -120,7 +120,6 @@ fn conveying_is_kept_like_oneway(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: reverse flips left/right values only for keys with a direction/incline/side part, so sidewalk=left stays left; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn sidewalk_value_left_becomes_right(cx: &mut TestAppContext) {
     let _ = DOC;
     assert_eq!(
@@ -130,7 +129,6 @@ fn sidewalk_value_left_becomes_right(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: reverse flips forward/backward values only for direction/incline/side keys, so priority=forward and railway:preferred_direction=forward are unchanged; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn forward_backward_values_flip_for_any_key_except_free_text(cx: &mut TestAppContext) {
     assert_eq!(
         reversed_tags(
@@ -150,7 +148,6 @@ fn forward_backward_values_flip_for_any_key_except_free_text(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-#[ignore = "bug: reverse swaps cycleway:left/right keys but not the relative oneway value, so a cycleway:left:oneway=-1 track ends up running the wrong way; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn side_specific_oneway_value_flips_with_the_side(cx: &mut TestAppContext) {
     assert_eq!(
         reversed_tags(cx, &[("cycleway:left:oneway", "-1")]),
@@ -159,7 +156,6 @@ fn side_specific_oneway_value_flips_with_the_side(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: reversing a way does not swap forward/backward roles of the route relations it is in; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn route_roles_forward_and_backward_swap(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 2, 3, 4])
@@ -209,7 +205,6 @@ fn restriction_from_and_to_roles_are_not_swapped(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: reversing a way does not flip direction=forward/backward (or traffic_signals:direction) on its nodes, so a stop sign ends up facing the wrong traffic; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn direction_tags_on_the_ways_nodes_flip(cx: &mut TestAppContext) {
     let data = Build::new()
         .node(1, &[])

@@ -1,0 +1,30 @@
+# Preset fields: the Fields section of a tertiary road (Name, ref, lanes, ...),
+# a tree (leaf fields with real labels), a cafe and a building.
+#
+# Viewport (zoom 18, centered on 40.7120, -74.0060): the map center is
+# (488, 388). Pass --language de to see the German labels.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/preset-fields.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 288,238
+wait_idle 2s
+assert_selection way
+capture out/preset-fields-1-road.png
+
+click 488,488
+wait_idle 2s
+assert_selection node
+capture out/preset-fields-2-tree.png
+
+click 638,488
+wait_idle 2s
+assert_selection node
+capture out/preset-fields-3-cafe.png
+
+click 638,188
+wait_idle 2s
+assert_selection way
+capture out/preset-fields-4-building.png
