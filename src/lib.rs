@@ -51,6 +51,7 @@ pub mod script;
 pub mod search;
 pub mod selection;
 pub mod settings_store;
+pub mod snap;
 pub mod style;
 pub mod svg_normalize;
 pub mod tag_suggest;

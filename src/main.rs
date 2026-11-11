@@ -339,6 +339,156 @@ struct BuildingPress {
     placed_first_corner: bool,
 }
 
+/// What a pointer at a given spot would snap onto (see `osm_gpui::snap`):
+/// shown as a highlight while it applies, and what a click (Add mode) or
+/// drag release (a single node) then does.
+#[derive(Clone, Debug, PartialEq)]
+enum SnapTarget {
+    /// An existing node, reused / merged into.
+    Node { id: i64, lat: f64, lon: f64 },
+    /// A way segment: the node becomes a new vertex at `index + 1`, at
+    /// `(lat, lon)`, the nearest point of the segment.
+    Way {
+        way_id: i64,
+        a: (f64, f64),
+        b: (f64, f64),
+        index: usize,
+        lat: f64,
+        lon: f64,
+    },
+}
+
+type Tags = Vec<(String, String)>;
+
+/// Tags used to classify way `way_id` as a snap target: its own, or, for a
+/// way with nothing recognisable (an untagged multipolygon member), those of
+/// the first classifiable relation that contains it.
+fn snap_target_tags(
+    editable: &dyn osm_gpui::layers::EditableLayer,
+    layer_id: LayerId,
+    way_id: i64,
+) -> Tags {
+    let tags = editable
+        .feature_tags(&osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
+        })
+        .unwrap_or_default();
+    if osm_gpui::snap::classify(&tags).is_some() {
+        return tags;
+    }
+    editable
+        .relations_containing_way(way_id)
+        .into_iter()
+        .filter_map(|r| editable.relation(r))
+        .map(|r| r.tags.into_iter().collect::<Tags>())
+        .find(|t| osm_gpui::snap::classify(t).is_some())
+        .unwrap_or(tags)
+}
+
+/// The tag sets that decide what node `node` may snap onto: its own tags
+/// and those of every way it is part of.
+fn snap_node_sources(
+    editable: &dyn osm_gpui::layers::EditableLayer,
+    layer_id: LayerId,
+    node: i64,
+) -> Vec<Tags> {
+    let mut sources = vec![editable
+        .feature_tags(&osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Node,
+            id: node,
+        })
+        .unwrap_or_default()];
+    for way in editable.ways_using_node(node) {
+        sources.push(snap_target_tags(editable, layer_id, way));
+    }
+    sources
+}
+
+/// Whether way `way_id` may be snapped onto by something with `sources`
+/// tags, given `node` (the node being moved, if any) must not already be in
+/// it.
+fn snap_way_ok(
+    editable: &dyn osm_gpui::layers::EditableLayer,
+    layer_id: LayerId,
+    sources: &[Tags],
+    node: Option<i64>,
+    way_id: i64,
+) -> bool {
+    if let Some(node) = node {
+        if editable
+            .way_node_ids(way_id)
+            .is_some_and(|nodes| nodes.contains(&node))
+        {
+            return false;
+        }
+    }
+    let refs: Vec<&[(String, String)]> = sources.iter().map(|t| t.as_slice()).collect();
+    osm_gpui::snap::may_snap(&refs, &snap_target_tags(editable, layer_id, way_id))
+}
+
+/// Whether existing node `target` may be snapped onto: not the moving node
+/// itself, and every way it belongs to must suit `sources`.
+fn snap_node_ok(
+    editable: &dyn osm_gpui::layers::EditableLayer,
+    layer_id: LayerId,
+    sources: &[Tags],
+    node: Option<i64>,
+    target: i64,
+) -> bool {
+    if node == Some(target) {
+        return false;
+    }
+    let refs: Vec<&[(String, String)]> = sources.iter().map(|t| t.as_slice()).collect();
+    editable
+        .ways_using_node(target)
+        .into_iter()
+        .all(|w| osm_gpui::snap::may_snap(&refs, &snap_target_tags(editable, layer_id, w)))
+}
+
+/// Highlight a snap target: the segment it would join (amber) and a ring
+/// around the point the node would land on.
+fn paint_snap_target(
+    target: &SnapTarget,
+    viewport: &Viewport,
+    origin: gpui::Point<gpui::Pixels>,
+    window: &mut Window,
+) {
+    let amber = rgb(0xf59e0b);
+    let at = |lat: f64, lon: f64| {
+        let p = viewport.geo_to_screen(lat, lon);
+        point(p.x + origin.x, p.y + origin.y)
+    };
+    let (lat, lon) = match target {
+        SnapTarget::Node { lat, lon, .. } => (*lat, *lon),
+        SnapTarget::Way { a, b, lat, lon, .. } => {
+            let mut builder = PathBuilder::stroke(px(4.0));
+            builder.move_to(at(a.0, a.1));
+            builder.line_to(at(b.0, b.1));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, amber);
+            }
+            (*lat, *lon)
+        }
+    };
+    let c = at(lat, lon);
+    let half = px(7.0);
+    let bounds = Bounds {
+        origin: point(c.x - half, c.y - half),
+        size: size(half * 2.0, half * 2.0),
+    };
+    window.paint_quad(gpui::quad(
+        bounds,
+        half,
+        gpui::transparent_black(),
+        px(2.5),
+        amber,
+        gpui::BorderStyle::default(),
+    ));
+}
+
 /// What an Extrude-mode drag does, fixed by the modifier keys held at
 /// mouse-down.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -797,6 +947,9 @@ struct MapViewer {
     /// In-progress Add-mode way-building state, or `None` between
     /// continuations (see `AddProgress`).
     add_progress: Option<AddProgress>,
+    /// What the pointer would snap onto right now (Add mode hover, or a
+    /// single node being dragged), drawn as a highlight. See `SnapTarget`.
+    snap_preview: Option<SnapTarget>,
     /// In-progress Building-mode rectangle state, or `None` between
     /// continuations (see `BuildingProgress`).
     building_progress: Option<BuildingProgress>,
@@ -1046,6 +1199,7 @@ impl MapViewer {
             mode: EditMode::Select,
             active_layer: None,
             add_progress: None,
+            snap_preview: None,
             building_progress: None,
             building_reference: None,
             building_press: None,
@@ -3461,6 +3615,132 @@ impl MapViewer {
         );
     }
 
+    /// What `screen_pt` would snap onto in `layer_id`, for something with
+    /// tags `sources` (see `osm_gpui::snap::may_snap`). `node` is the node
+    /// being moved, if any: never a target itself, and no way that already
+    /// contains it is one. With `with_nodes`, an existing node under the
+    /// pointer wins over a way segment.
+    fn find_snap_target(
+        &self,
+        layer_id: LayerId,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        node: Option<i64>,
+        sources: &[Tags],
+        with_nodes: bool,
+    ) -> Option<SnapTarget> {
+        let layer = self.layer_manager.find_layer(layer_id)?;
+        let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+        let editable = layer.as_editable()?;
+        if with_nodes {
+            let hit = osm_layer.snap_to_node_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                |n| snap_node_ok(editable, layer_id, sources, node, n),
+            );
+            if let Some(id) = hit {
+                let (lat, lon) = editable.node_lat_lon(id)?;
+                return Some(SnapTarget::Node { id, lat, lon });
+            }
+        }
+        let (way_id, a, b, index, lat, lon) = osm_layer.snap_to_way_where(
+            &self.viewport,
+            screen_pt,
+            osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
+            |w| snap_way_ok(editable, layer_id, sources, node, w),
+        )?;
+        Some(SnapTarget::Way {
+            way_id,
+            a: editable.node_lat_lon(a)?,
+            b: editable.node_lat_lon(b)?,
+            index,
+            lat,
+            lon,
+        })
+    }
+
+    /// The single node a move-drag is carrying, with its layer, if it is
+    /// just one node (a way or a multi-selection drag never snaps).
+    fn single_dragged_node(targets: &NodeMoveTargets) -> Option<(LayerId, i64)> {
+        match targets.as_slice() {
+            [(layer, nodes)] => match nodes.as_slice() {
+                [(id, _, _)] => Some((*layer, *id)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// What a single dragged node released at `pos` snaps onto, honouring the
+    /// snapping-off modifiers.
+    fn drag_snap_target(
+        &self,
+        pos: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        dragged: (LayerId, i64),
+    ) -> Option<SnapTarget> {
+        let (layer_id, node) = dragged;
+        if osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
+            || self.active_layer != Some(layer_id)
+        {
+            return None;
+        }
+        let sources = self
+            .layer_manager
+            .find_layer(layer_id)
+            .and_then(|l| l.as_editable())
+            .map(|e| snap_node_sources(e, layer_id, node))?;
+        self.find_snap_target(layer_id, pos, Some(node), &sources, true)
+    }
+
+    /// Refresh `snap_preview` for a pointer at `pos`: while drawing in Add
+    /// mode, or while a single node is dragged. Cleared whenever snapping is
+    /// off (a modifier is held) or nothing is in reach. Returns whether the
+    /// highlight changed.
+    fn update_snap_preview(
+        &mut self,
+        pos: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        dragged: Option<(LayerId, i64)>,
+    ) -> bool {
+        let target = if let Some(dragged) = dragged {
+            self.drag_snap_target(pos, modifiers, dragged)
+        } else if self.mode == EditMode::Add
+            && !osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
+        {
+            self.active_layer.and_then(|layer_id| {
+                let sources = self.add_snap_sources(layer_id);
+                self.find_snap_target(layer_id, pos, None, &sources, self.add_progress.is_some())
+            })
+        } else {
+            None
+        };
+        let changed = self.snap_preview != target;
+        self.snap_preview = target;
+        changed
+    }
+
+    /// The tags that decide what Add mode may snap onto: those of the way
+    /// being drawn, if it has any. A way with none yet (the usual case; tags
+    /// come after drawing) snaps to anything, see `osm_gpui::snap`.
+    fn add_snap_sources(&self, layer_id: LayerId) -> Vec<Tags> {
+        let Some(way_id) = self.add_progress.as_ref().and_then(|p| p.way_id) else {
+            return Vec::new();
+        };
+        self.layer_manager
+            .find_layer(layer_id)
+            .and_then(|l| l.as_editable())
+            .and_then(|e| {
+                e.feature_tags(&osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: osm_gpui::selection::FeatureKind::Way,
+                    id: way_id,
+                })
+            })
+            .map(|t| vec![t])
+            .unwrap_or_default()
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
@@ -3502,6 +3782,18 @@ impl MapViewer {
             {
                 self.hovered = hit_here(self);
             }
+        }
+        // Highlight what a click / release here would snap onto.
+        let dragged = match &self.interaction {
+            Interaction::MoveDrag { targets, .. } if left_pressed => {
+                Self::single_dragged_node(targets)
+            }
+            _ => None,
+        };
+        if dragged.is_some() || (self.mode == EditMode::Add && event.pressed_button.is_none()) {
+            self.update_snap_preview(adjusted_position, event.modifiers, dragged);
+        } else {
+            self.snap_preview = None;
         }
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
@@ -3606,6 +3898,44 @@ impl MapViewer {
                     return;
                 }
 
+                // A single node released on a way or another node snaps onto
+                // it (unless a snapping-off modifier is held).
+                let snap = Self::single_dragged_node(&targets).and_then(|dragged| {
+                    self.drag_snap_target(up_pos, event.modifiers, dragged)
+                        .map(|target| (dragged, target))
+                });
+                self.snap_preview = None;
+                if let Some(((layer_id, node), SnapTarget::Way { way_id, index, .. })) = &snap {
+                    let joined = self
+                        .layer_manager
+                        .find_layer_mut(*layer_id)
+                        .and_then(|l| l.as_editable_mut())
+                        .map(|editable| {
+                            selection_actions::join_node_into_way(
+                                editable,
+                                *layer_id,
+                                *node,
+                                *way_id,
+                                Some(*index),
+                            )
+                        });
+                    match joined {
+                        Some(Ok(actions)) => {
+                            let label = tr!("action.join_node_way.done").to_string();
+                            self.undo_stack.push(UndoableAction::Batch {
+                                label: label.clone(),
+                                actions,
+                            });
+                            self.set_status(label);
+                            cx.notify();
+                            return;
+                        }
+                        // Refused (way full, ...): the node just moves.
+                        Some(Err(message)) => self.set_status(message),
+                        None => {}
+                    }
+                }
+
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
                     let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
@@ -3614,7 +3944,11 @@ impl MapViewer {
                     for &(id, lat, lon) in originals {
                         let anchor = self.viewport.geo_to_screen(lat, lon);
                         let new_screen = anchor + delta;
-                        let (new_lat, new_lon) = self.viewport.screen_to_geo(new_screen);
+                        let (mut new_lat, mut new_lon) = self.viewport.screen_to_geo(new_screen);
+                        // Onto an existing node: land exactly on it.
+                        if let Some((_, SnapTarget::Node { lat, lon, .. })) = &snap {
+                            (new_lat, new_lon) = (*lat, *lon);
+                        }
                         moves.push((id, new_lat, new_lon));
                         undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
                     }
@@ -3625,9 +3959,43 @@ impl MapViewer {
                     }
                     undo_per_layer.push((*layer_id, undo_entries));
                 }
-                self.undo_stack.push(UndoableAction::MoveNodes {
+                let move_action = UndoableAction::MoveNodes {
                     per_layer: undo_per_layer,
-                });
+                };
+                if let Some(((layer_id, node), SnapTarget::Node { id: target, .. })) = snap {
+                    // Merge the dropped node with the one it landed on, as
+                    // one undo step with the move.
+                    let pick = |id| osm_gpui::selection::FeatureRef {
+                        layer_id,
+                        kind: osm_gpui::selection::FeatureKind::Node,
+                        id,
+                    };
+                    match selection_actions::apply_merge(
+                        &mut self.layer_manager,
+                        &[pick(node), pick(target)],
+                        self.active_layer,
+                    ) {
+                        Ok(outcome) => {
+                            let label = outcome.status.clone();
+                            let mut actions = vec![move_action];
+                            actions.extend(outcome.undo);
+                            self.undo_stack.push(UndoableAction::Batch {
+                                label: label.clone(),
+                                actions,
+                            });
+                            if let Some(selection) = outcome.select {
+                                self.set_selection(selection);
+                            }
+                            self.set_status(label);
+                        }
+                        Err(message) => {
+                            self.undo_stack.push(move_action);
+                            self.set_status(message);
+                        }
+                    }
+                } else {
+                    self.undo_stack.push(move_action);
+                }
                 cx.notify();
             }
             interaction::Gesture::MoveCancelledAsClick { targets, at } => {
@@ -3643,7 +4011,7 @@ impl MapViewer {
                     from_pt(at),
                     event.modifiers.shift,
                     event.click_count,
-                    event.modifiers.control,
+                    osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
                 );
                 // Always notify, regardless of whether the selection changed:
                 // `self.interaction` just transitioned back to `Idle` and the
@@ -3672,7 +4040,7 @@ impl MapViewer {
                     from_pt(at),
                     event.modifiers.shift,
                     event.click_count,
-                    event.modifiers.control,
+                    osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
                 );
                 // Add mode re-selects the same way on every extend click (the
                 // way id doesn't change), so the before/after diff alone
@@ -4176,9 +4544,11 @@ impl MapViewer {
     /// Add mode: place a node, or extend/connect the in-progress way. See
     /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Add mode"
     /// and docs/superpowers/specs/2026-07-08-add-mode-snap-to-way-design.md
-    /// for the snap-to-way behavior. `ctrl_held` bypasses both snapping onto
-    /// a nearby existing node and snapping onto a nearby way's line
-    /// geometry, always producing a fully independent node.
+    /// for the snap-to-way behavior. `ctrl_held` (true when a snapping-off
+    /// modifier, Alt or Ctrl, is held; see `osm_gpui::snap`) bypasses both
+    /// snapping onto a nearby existing node and onto a nearby way's line
+    /// geometry, always producing a fully independent node. Only targets
+    /// `osm_gpui::snap::may_snap` allows for the way being drawn qualify.
     fn handle_add_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, ctrl_held: bool) {
         if self.refuse_edit_during_upload() {
             return;
@@ -4200,11 +4570,19 @@ impl MapViewer {
         // connecting to it. Skipped entirely when Ctrl is held.
         if !ctrl_held && self.add_progress.is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
+            let sources = self.add_snap_sources(layer_id);
+            let node_allowed = |id: i64| {
+                self.layer_manager
+                    .find_layer(layer_id)
+                    .and_then(|l| l.as_editable())
+                    .is_some_and(|e| snap_node_ok(e, layer_id, &sources, None, id))
+            };
             let hit_node = osm_gpui::selection::resolve_hits(per_layer)
                 .filter(|hit| {
                     hit.layer_id == layer_id && hit.kind == osm_gpui::selection::FeatureKind::Node
                 })
                 .map(|hit| hit.id)
+                .filter(|&id| node_allowed(id))
                 // Vertices that are not drawn (untagged ones, unless
                 // selected) are not hit targets, but still snap targets.
                 .or_else(|| {
@@ -4212,10 +4590,11 @@ impl MapViewer {
                         .find_layer(layer_id)
                         .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
                         .and_then(|osm_layer| {
-                            osm_layer.snap_to_node(
+                            osm_layer.snap_to_node_where(
                                 &self.viewport,
                                 screen_pt,
                                 osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                                node_allowed,
                             )
                         })
                 });
@@ -4242,10 +4621,17 @@ impl MapViewer {
         let snap_hit = if ctrl_held {
             None
         } else {
-            self.layer_manager
-                .find_layer(layer_id)
-                .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
-                .and_then(|osm_layer| osm_layer.snap_to_way(&self.viewport, screen_pt, 6.0))
+            let sources = self.add_snap_sources(layer_id);
+            self.layer_manager.find_layer(layer_id).and_then(|layer| {
+                let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+                let editable = layer.as_editable()?;
+                osm_layer.snap_to_way_where(
+                    &self.viewport,
+                    screen_pt,
+                    osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
+                    |w| snap_way_ok(editable, layer_id, &sources, None, w),
+                )
+            })
         };
 
         // With no OSM node or way to snap to (they win), a reference line or
@@ -6399,6 +6785,7 @@ impl Render for MapViewer {
                         if !*hovered {
                             this.hovered = None;
                             this.clear_vertex_preview();
+                            this.snap_preview = None;
                             this.last_mouse_pos = None;
                             cx.notify();
                         }
@@ -6921,6 +7308,15 @@ impl Render for MapViewer {
                                                     }
                                                 }
                                             }
+                                        }
+
+                                        if let Some(target) = &this.snap_preview {
+                                            paint_snap_target(
+                                                target,
+                                                &viewport_clone,
+                                                bounds.origin,
+                                                window,
+                                            );
                                         }
 
                                         if let Some(progress) = &this.add_progress {

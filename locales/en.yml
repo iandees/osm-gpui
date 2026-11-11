@@ -167,11 +167,11 @@ status:
   # One-line hint for what the mouse and keyboard do in each mode.
   hint:
     select_empty: "Click to select · Shift-click to add · drag to box-select · Space-drag to pan"
-    select_selection: "Drag the selection to move it · Delete to remove · Esc to deselect"
+    select_selection: "Drag the selection to move it (a single node snaps onto ways and nodes; hold Alt to not snap) · Delete to remove · Esc to deselect"
     select_relation: "Relation selected: its members are highlighted · Esc to deselect"
     select_member_way: "Drag to move · Delete to remove · Esc to deselect · pick its relation in the side panel"
-    add_idle: "Click to place a node or start a way · Ctrl-click to place without snapping · Esc to exit"
-    add_started: "Click to continue the way · Enter or Esc to finish"
+    add_idle: "Click to place a node or start a way · hold Alt to place without snapping · Esc to exit"
+    add_started: "Click to continue the way (snaps onto ways and nodes; hold Alt to not snap) · Enter or Esc to finish"
     building_idle: "Click to place the building's first corner · Esc to exit"
     building_started: "Click to place the second corner · Esc to cancel"
     building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
@@ -706,6 +706,12 @@ action:
     done:
       one: "Moved %{count} node"
       other: "Moved %{count} nodes"
+  join_node_way:
+    label: "Join Node to Way"
+    hint: "Select one node and one way (that does not contain the node) to join them"
+    done: "Joined a node to a way"
+    error:
+      in_way: "Can't join: the node is already part of that way"
   parallel:
     label: "Create Parallel Way…"
     hint: "Select one or more ways with at least two different nodes to copy them alongside"
