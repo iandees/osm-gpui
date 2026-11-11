@@ -230,6 +230,19 @@ pub trait EditableLayer {
     /// Backs Edit > Select All and View > Zoom to Data.
     fn all_features(&self) -> Vec<crate::selection::FeatureRef>;
 
+    /// Run a parsed search over this layer's data (Edit > Find). `selected`
+    /// answers the `selected` filter; with `only_selected` only selected
+    /// objects are reported. Same order as `all_features`. Default: no data.
+    fn search_features(
+        &self,
+        _query: &crate::search::Query,
+        _selected: &std::collections::HashSet<(crate::selection::FeatureKind, i64)>,
+        _only_selected: bool,
+        _view: Option<crate::search::GeoBounds>,
+    ) -> Vec<crate::selection::FeatureRef> {
+        Vec::new()
+    }
+
     /// Return closed-way ("area") candidates whose *interior* contains
     /// `screen_pt`, ignoring outline distance. Separate from `hit_test`
     /// (which only tests distance to a way's edges) so plain clicks keep

@@ -16,7 +16,7 @@ use crate::selection_actions;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
+    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
     RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
     Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
@@ -578,6 +578,7 @@ fn build_menus(
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
                     MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
+                    MenuItem::action(tr!("menu.edit.find"), Find),
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
                     MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),

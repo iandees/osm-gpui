@@ -77,6 +77,7 @@ actions!(
         ExportOsmFile,
         SelectAll,
         DeselectAll,
+        Find,
         DeleteSelection,
         ZoomIn,
         ZoomOut,
@@ -97,6 +98,9 @@ actions!(
 /// input rather than the last map edit. (A binding with no context at all
 /// would outrank the input's own.)
 const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
+
+/// Most selected features whose highlight is drawn each frame.
+const MAX_SELECTION_HIGHLIGHTS: usize = 10_000;
 
 /// Build the live `gpui::KeyBinding` list for the modifier-key actions from
 /// the current effective shortcut settings, plus the fixed macOS-standard
@@ -126,6 +130,7 @@ pub(crate) fn key_bindings_from_settings(
                 SelectAll,
                 Some(MAP_VIEWER_KEY_CONTEXT),
             )),
+            "find" => Some(KeyBinding::new(&spec, Find, Some(MAP_VIEWER_KEY_CONTEXT))),
             // Copy/Paste Tags run the same selection actions as the menus.
             // Scoped to the map like Select All, so they never steal the
             // keys from a focused text input.
@@ -608,6 +613,12 @@ struct MapViewer {
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     delete_layer_dialog: Option<gpui::Entity<osm_gpui::ui::delete_layer_dialog::DeleteLayerDialog>>,
+    /// Edit > Find, while open.
+    find_dialog: Option<gpui::Entity<osm_gpui::ui::find_dialog::FindDialog>>,
+    /// The last few queries run through Find this session, newest first.
+    find_history: osm_gpui::search::QueryHistory,
+    /// The mode Find was last used in; the dialog opens with it.
+    find_mode: osm_gpui::search::SearchMode,
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
@@ -868,6 +879,9 @@ impl MapViewer {
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             delete_layer_dialog: None,
+            find_dialog: None,
+            find_history: Default::default(),
+            find_mode: Default::default(),
             about_dialog: None,
             upload_dialog: None,
             upload_comment_draft: String::new(),
@@ -2394,6 +2408,138 @@ impl MapViewer {
             self.set_selection(Vec::new());
             cx.notify();
         }
+    }
+
+    /// Run `query` over the active data layer: every match, in `all_features`
+    /// order. `None` when there is no data layer to search.
+    fn search_active_layer(
+        &self,
+        query: &osm_gpui::search::Query,
+        only_selected: bool,
+    ) -> Option<Vec<osm_gpui::selection::FeatureRef>> {
+        let layer_id = self.active_layer?;
+        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
+        let selected: std::collections::HashSet<_> = self
+            .selected
+            .iter()
+            .filter(|f| f.layer_id == layer_id)
+            .map(|f| (f.kind, f.id))
+            .collect();
+        let view = Some(self.viewport.visible_bounds());
+        Some(editable.search_features(query, &selected, only_selected, view))
+    }
+
+    /// How many features `text` matches in the active layer, as the Find
+    /// dialog's live count (`None` if it does not parse or there is no layer).
+    fn find_match_count(&self, text: &str, mode: osm_gpui::search::SearchMode) -> Option<usize> {
+        let query = osm_gpui::search::parse(text).ok()?;
+        self.search_active_layer(
+            &query,
+            mode == osm_gpui::search::SearchMode::FindInSelection,
+        )
+        .map(|found| found.len())
+    }
+
+    /// Whether any selected feature is (partly) inside the map view.
+    fn selection_in_view(&self) -> bool {
+        let Ok(in_view) = osm_gpui::search::parse("inview") else {
+            return false;
+        };
+        self.search_active_layer(&in_view, true)
+            .is_some_and(|found| !found.is_empty())
+    }
+
+    /// Apply a Find query in `mode`: the selection becomes the result
+    /// combined with the old selection as the mode says, the status bar
+    /// reports it, and the view moves only if nothing selected is in view.
+    /// Returns how many features matched, or why the query did not parse.
+    fn apply_find(
+        &mut self,
+        text: &str,
+        mode: osm_gpui::search::SearchMode,
+    ) -> Result<usize, osm_gpui::search::ParseError> {
+        use osm_gpui::search::SearchMode;
+
+        let query = osm_gpui::search::parse(text)?;
+        let Some(found) = self.search_active_layer(&query, mode == SearchMode::FindInSelection)
+        else {
+            self.set_status(tr!("status.find_no_layer"));
+            return Ok(0);
+        };
+        let next = osm_gpui::search::combine(mode, &self.selected, &found);
+        self.set_selection(next);
+        if found.is_empty() {
+            self.set_status(tr!("status.find_no_matches"));
+        } else {
+            self.set_status(tr_count!("status.find_selected", self.selected.len()));
+            if !self.selected.is_empty() && !self.selection_in_view() {
+                let selected = self.selected.clone();
+                self.fit_to_features(&selected);
+            }
+        }
+        Ok(found.len())
+    }
+
+    /// Edit > Find: open the query dialog on the active data layer.
+    fn on_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find_dialog.is_some() {
+            return;
+        }
+        let other_dialog_open = self.quit_confirm_dialog.is_some()
+            || self.delete_layer_dialog.is_some()
+            || self.upload_dialog.is_some()
+            || self.sign_in_dialog.is_some()
+            || self.notice_dialog.is_some()
+            || self.preset_picker_dialog.is_some()
+            || self.nsi_dialog.is_some()
+            || self.relation_picker_dialog.is_some()
+            || self.about_dialog.is_some()
+            || self.custom_imagery_dialog.is_some();
+        if other_dialog_open {
+            return;
+        }
+        let has_data_layer = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .is_some_and(|layer| layer.as_editable().is_some());
+        if !has_data_layer {
+            self.set_status(tr!("status.find_no_layer"));
+            cx.notify();
+            return;
+        }
+
+        let history = self.find_history.entries().to_vec();
+        let mode = self.find_mode;
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::find_dialog::FindDialog::new(mode, history, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, entity, event: &osm_gpui::ui::find_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::find_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.find_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Preview { query, mode } => {
+                        if let Some(count) = this.find_match_count(query, *mode) {
+                            entity.update(cx, |dialog, cx| dialog.set_count(query, count, cx));
+                        }
+                    }
+                    DialogEvent::Submitted { query, mode } => {
+                        this.find_dialog = None;
+                        this.find_mode = *mode;
+                        this.find_history.push(query);
+                        // The dialog parsed it already; an error cannot happen.
+                        let _ = this.apply_find(query, *mode);
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+        self.find_dialog = Some(dialog);
+        cx.notify();
     }
 
     fn on_delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
@@ -5698,7 +5844,11 @@ impl Render for MapViewer {
                                                 window,
                                             );
                                         }
-                                        for sel in &selected {
+                                        // A selection of tens of thousands (Edit >
+                                        // Find) highlights only its first
+                                        // `MAX_SELECTION_HIGHLIGHTS`; features off
+                                        // screen cost almost nothing.
+                                        for sel in selected.iter().take(MAX_SELECTION_HIGHLIGHTS) {
                                             this.layer_manager.render_highlight(
                                                 sel,
                                                 HighlightKind::Selected,
@@ -6139,6 +6289,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_export_osm_file))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))
+            .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_delete_selection))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
@@ -6164,6 +6315,7 @@ impl Render for MapViewer {
             .children(self.custom_imagery_dialog.clone())
             .children(self.quit_confirm_dialog.clone())
             .children(self.delete_layer_dialog.clone())
+            .children(self.find_dialog.clone())
             .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
@@ -7039,6 +7191,190 @@ mod tests {
                 // Nothing left to undo: a further undo is a quiet no-op.
                 view.on_undo(&Undo, window, cx);
                 assert_eq!(view.undo_stack.cursor, 0);
+            })
+            .unwrap();
+    }
+
+    fn selected_kind_ids(view: &MapViewer) -> Vec<(osm_gpui::selection::FeatureKind, i64)> {
+        view.selected.iter().map(|f| (f.kind, f.id)).collect()
+    }
+
+    #[gpui::test]
+    fn find_applies_each_mode_to_the_selection(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert_eq!(view.apply_find("type:node", SearchMode::Replace), Ok(2));
+                assert_eq!(selected_kind_ids(view), vec![(Node, 1), (Node, 2)]);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("2 features selected")
+                );
+
+                assert_eq!(view.apply_find("type:way", SearchMode::Add), Ok(1));
+                assert_eq!(
+                    selected_kind_ids(view),
+                    vec![(Node, 1), (Node, 2), (Way, 10)]
+                );
+
+                assert_eq!(view.apply_find("id:1", SearchMode::Remove), Ok(1));
+                assert_eq!(selected_kind_ids(view), vec![(Node, 2), (Way, 10)]);
+
+                // Only what is selected is searched.
+                assert_eq!(
+                    view.apply_find("type:way", SearchMode::FindInSelection),
+                    Ok(1)
+                );
+                assert_eq!(selected_kind_ids(view), vec![(Way, 10)]);
+
+                assert_eq!(view.apply_find("type:node", SearchMode::Replace), Ok(2));
+                assert_eq!(
+                    view.apply_find("selected", SearchMode::FindInSelection),
+                    Ok(2)
+                );
+                assert_eq!(view.selected.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_with_no_match_says_so_and_a_bad_query_changes_nothing(cx: &mut TestAppContext) {
+        use osm_gpui::search::{ParseErrorKind, SearchMode};
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_eq!(view.apply_find("nothing=here", SearchMode::Replace), Ok(0));
+                assert!(view.selected.is_empty());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("No matches")
+                );
+
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                let err = view
+                    .apply_find("(type:node", SearchMode::Replace)
+                    .unwrap_err();
+                assert_eq!(err.kind, ParseErrorKind::UnclosedParen);
+                assert_eq!(view.selected.len(), 2, "a bad query leaves the selection");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_moves_the_view_only_when_nothing_selected_is_in_view(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let before = view.viewport.center();
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_eq!(view.viewport.center(), before, "already in view");
+
+                view.viewport.pan_to(CENTER_LAT + 5.0, CENTER_LON + 5.0);
+                let far = view.viewport.center();
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_ne!(view.viewport.center(), far);
+                let (lat, lon) = view.viewport.center();
+                assert!((lat - CENTER_LAT).abs() < 0.01 && (lon - CENTER_LON).abs() < 0.01);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_without_a_data_layer_explains_in_the_status_bar(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, window, cx| {
+                view.on_find(&Find, window, cx);
+                assert!(view.find_dialog.is_none());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("There is no data layer to search")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_dialog_applies_on_submit_and_leaves_the_selection_on_cancel(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.apply_find("type:way", SearchMode::Replace).unwrap();
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+                dialog.update(cx, |d, cx| d.set_query("type:node", window, cx));
+                dialog.update(cx, |d, cx| d.press_cancel(cx));
+            })
+            .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.find_dialog.is_none());
+                assert_eq!(view.selected.len(), 1, "cancel leaves the selection alone");
+                assert!(view.find_history.is_empty());
+
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().unwrap();
+                dialog.update(cx, |d, cx| {
+                    d.set_mode(SearchMode::Add, cx);
+                    d.set_query("type:node", window, cx);
+                    d.press_apply(cx);
+                });
+            })
+            .unwrap();
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.find_dialog.is_none());
+                assert_eq!(view.selected.len(), 3, "added to the way");
+                assert_eq!(view.find_history.entries(), ["type:node"]);
+                assert_eq!(view.find_mode, SearchMode::Add);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_dialog_stays_open_on_a_bad_query_and_counts_matches(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        use osm_gpui::ui::find_dialog::Preview;
+        let window = setup(cx);
+        // One update: a window with the dialog open can't be drawn in a
+        // test (its input needs the app's root view).
+        window
+            .update(cx, |view, window, cx| {
+                assert_eq!(
+                    view.find_match_count("type:node", SearchMode::Replace),
+                    Some(2)
+                );
+                assert_eq!(
+                    view.find_match_count("(type:node", SearchMode::Replace),
+                    None
+                );
+                assert_eq!(
+                    view.find_match_count("type:node", SearchMode::FindInSelection),
+                    Some(0),
+                    "nothing is selected to search in"
+                );
+
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().unwrap();
+                dialog.update(cx, |d, cx| {
+                    d.set_query("(type:node", window, cx);
+                    d.press_apply(cx);
+                    assert!(matches!(d.preview(), Preview::Error(_)));
+                    assert!(d.preview_text().starts_with("Position 1:"));
+                    d.set_query("type:node", window, cx);
+                    d.set_count("type:node", 2, cx);
+                    assert_eq!(d.preview_text().as_str(), "2 matches");
+                    // A stale answer is ignored.
+                    d.set_count("other", 9, cx);
+                    assert_eq!(d.preview_text().as_str(), "2 matches");
+                    d.press_cancel(cx);
+                });
             })
             .unwrap();
     }
