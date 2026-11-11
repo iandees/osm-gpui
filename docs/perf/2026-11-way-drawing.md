@@ -96,3 +96,41 @@ GPU time, 120 Hz, other machines. The background load on the machine varied betw
 launches (a screen-recording process was running), which made one launch unusable; the
 tables use quiet launches. Hover and click hit-testing read the unsimplified geometry and
 were not changed, but the GUI was not exercised by hand.
+
+## Line joins and end caps, 2026-11-10
+
+`src/layers/way_stroke.rs` builds the stroke geometry. From z16 (not in the coarse path,
+not for collapsed ways, not for ways under 12 px across) the bends of a stroke are mitered
+(limit 3, bevel beyond it; a miter costs no extra vertices because neighbouring segment
+quads share the miter edge) and open ways of 2 px or wider get round caps (2 triangles
+under 4 px half-width). Joins need a layer at least 1.5 px wide, so the casing is joined for
+nearly every way and the fill from 1.5 px. Casing, fill and route overlay are stroked in one
+pass over the same polyline.
+
+`examples/way_bench`, medians of 30 builds in ms, same machine, before and after run
+back to back (`before` is main at 762679a). Path vertices in thousands.
+
+| view | before ms | after ms | before verts | after verts |
+|---|---|---|---|---|
+| A z16 | 0.73 | 0.87 | 234 | 252 |
+| A z17 | 0.80 | 1.18 | 280 | 301 |
+| A z18 | 0.30 | 0.44 | 112 | 122 |
+| A z19 | 0.12 | 0.19 | 50 | 54 |
+| B z14 | 1.11 | 1.18 | 421 | 421 |
+| B z15.5 | 3.11 | 3.19 | 861 | 861 |
+| B z16 | 3.14 | 3.96 | 1205 | 1302 |
+| B z17 | 1.52 | 1.86 | 475 | 509 |
+| B z18 | 0.60 | 0.80 | 215 | 234 |
+| B z19 | 0.36 | 0.47 | 128 | 137 |
+| B z20 | 0.32 | 0.36 | 109 | 112 |
+
+Below z16 nothing changed (the differences are noise: the code path is the old one, 5 to
+10% run to run). From z16 the way pass costs 0.1 to 0.8 ms more (B z16 +26%, z17 +22%,
+z18 +33%), over the 10% target. The added vertices are bevels (where a miter does not fit) and
+caps; most of the time is the per-vertex join work rather than vertex volume: turning the
+caps off entirely changed B z16 by only 0.05 ms in an earlier run, and routing the same
+polyline through the new code with plain rectangles was already about 0.7 ms slower than
+the old loop. Thresholds already tightened for this:
+caps only for ways 2 px or wider, nothing for ways under 12 px across, the plain
+rectangle path for everything below z16. Not measured: GPU time, a harness run with
+`OSM_GPUI_FRAME_STATS`.

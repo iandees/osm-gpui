@@ -10,6 +10,7 @@ pub mod node_markers;
 pub mod osm_layer;
 pub mod resolve;
 pub mod tile_layer;
+pub mod way_stroke;
 
 /// Wash laid over the part of the map that was not downloaded (RGBA): a deep
 /// slate at moderate opacity. Dimming alone barely shows on dark aerial
