@@ -1,0 +1,37 @@
+# Settings > Appearance > Invert scroll zoom reverses which way a mouse-wheel
+# scroll zooms the map. SetInvertScrollZoom only changes this run's in-memory
+# setting (never the settings file). Run with:
+#
+#   cargo run -- --script docs/screenshots/invert-scroll-zoom.osmscript
+
+window 1200 800
+wait 3s
+wait_idle 5s
+
+viewport 40.7120 -74.0060 12
+wait 1s
+assert_zoom 12
+
+# Default direction: positive wheel lines zoom out by 0.05 level per line.
+scroll 600,400 dy=2
+wait 500ms
+assert_zoom 11.9 tol=0.005
+
+action SetInvertScrollZoom {"on":true}
+viewport 40.7120 -74.0060 12
+wait 1s
+assert_zoom 12
+
+# Inverted: the same scroll now zooms in.
+scroll 600,400 dy=2
+wait 500ms
+assert_zoom 12.1 tol=0.005
+
+action SetInvertScrollZoom {"on":false}
+viewport 40.7120 -74.0060 12
+wait 1s
+scroll 600,400 dy=2
+wait 500ms
+assert_zoom 11.9 tol=0.005
+
+log done

@@ -179,7 +179,16 @@ impl SettingsWindow {
         let live = settings_store::snapshot();
         self.app_settings.theme = live.theme;
         self.app_settings.welcome_dismissed = live.welcome_dismissed;
+        self.app_settings.invert_scroll_zoom = live.invert_scroll_zoom;
         settings_store::update_store(self.app_settings.clone());
+    }
+
+    /// Reverse (or restore) the scroll-zoom direction. Written straight to the
+    /// store, which the main window reads on every scroll.
+    fn set_invert_scroll_zoom(&mut self, invert: bool, cx: &mut Context<Self>) {
+        settings_store::set_invert_scroll_zoom(invert, true);
+        self.app_settings.invert_scroll_zoom = invert;
+        cx.notify();
     }
 
     fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
@@ -549,7 +558,18 @@ impl SettingsWindow {
         let theme_view = view.clone();
         let value_view = view.clone();
         let welcome_view = view.clone();
+        let invert_view = view.clone();
         let set_value_view = view;
+        let invert_item = SettingItem::new(
+            tr!("settings.appearance.invert_scroll_zoom"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().invert_scroll_zoom,
+                move |invert: bool, cx: &mut App| {
+                    invert_view.update(cx, |this, cx| this.set_invert_scroll_zoom(invert, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.invert_scroll_zoom_description"));
         // The store, not this window's copy: the card's close button changes it.
         let welcome_item = SettingItem::new(
             tr!("settings.appearance.welcome_card"),
@@ -609,6 +629,9 @@ impl SettingsWindow {
                     .title(tr!("settings.appearance.text_group"))
                     .item(item),
                 self.language_group(language_view),
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.scroll_group"))
+                    .item(invert_item),
                 SettingGroup::new()
                     .title(tr!("settings.appearance.welcome_group"))
                     .item(welcome_item),

@@ -106,6 +106,15 @@ pub enum AutosaveCmd {
     Crash,
 }
 
+/// Which validator finding `show_finding` clicks in the side panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingTarget {
+    /// The Nth finding in the list (0 is the first row).
+    Index(usize),
+    /// The first finding of the check with this id (e.g. `crossing_ways`).
+    Check(String),
+}
+
 /// What `assert_selection` expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionKind {
@@ -135,6 +144,17 @@ pub enum Check {
     /// The status bar's message contains the text.
     StatusContains(String),
     Dialog(DialogExpect),
+    /// The side panel's Validation section is showing (`true`) or not.
+    ValidationPanel(bool),
+    /// What the validator finds in the pending changes: the number of errors
+    /// and warnings (when given) and of findings per check id. Read from the
+    /// Validation section while it is showing (so this also tests that it
+    /// refreshes by itself), otherwise from a fresh run.
+    Validation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
     Selection(SelectionKind),
     NativeAppearance(NativeAppearanceWant),
     /// Exactly this many features are selected.
@@ -149,6 +169,11 @@ pub enum Check {
     /// This run's autosave directory holds a file for at least one layer
     /// (`None`) or for exactly this many.
     AutosaveFiles(Option<usize>),
+    /// The map zoom level is `level`, within `tolerance`.
+    Zoom {
+        level: f64,
+        tolerance: f64,
+    },
     /// The imagery offset (of the layer being adjusted, else the topmost
     /// visible imagery layer) is `east`/`north` metres, within `tolerance`.
     ImageryOffset {
@@ -283,6 +308,11 @@ pub enum Op {
     AssertStatusContains {
         text: String,
     },
+    /// `assert_zoom LEVEL [tol=N]`.
+    AssertZoom {
+        level: f64,
+        tolerance: f64,
+    },
     /// `assert_imagery_offset EAST NORTH [tol=METRES]`.
     AssertImageryOffset {
         east: f64,
@@ -298,6 +328,21 @@ pub enum Op {
     },
     AssertSelection {
         kind: SelectionKind,
+    },
+    /// Run the validator and compare its findings with what is expected
+    /// (see `Check::Validation`).
+    AssertValidation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
+    /// Click a finding's row in the side panel's Validation section.
+    ShowFinding {
+        target: FindingTarget,
+    },
+    /// Assert the Validation section is showing or hidden.
+    AssertValidationPanel {
+        shown: bool,
     },
     /// Assert the native app appearance (as read back from the OS after the
     /// app last set it) is forced to dark or light, or not forced (system).

@@ -135,6 +135,10 @@ pub struct AppSettings {
     /// meaning the card is shown.
     #[serde(default)]
     pub welcome_dismissed: bool,
+    /// Reverse the direction in which scrolling zooms the map. Missing in
+    /// older files, meaning the default direction.
+    #[serde(default)]
+    pub invert_scroll_zoom: bool,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -160,6 +164,7 @@ impl Default for AppSettings {
             theme: ThemePreference::default(),
             autosave: true,
             welcome_dismissed: false,
+            invert_scroll_zoom: false,
         }
     }
 }
@@ -208,6 +213,18 @@ pub fn update_store_in_memory(settings: AppSettings) {
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
     let mut settings = snapshot();
     settings.welcome_dismissed = dismissed;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the invert-scroll-zoom flag, on top of the store's current
+/// settings so nothing else is touched. Written to disk when `persist` is true.
+pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.invert_scroll_zoom = invert;
     if persist {
         update_store(settings);
     } else {
@@ -355,6 +372,7 @@ mod tests {
             theme: ThemePreference::Dark,
             autosave: false,
             welcome_dismissed: true,
+            invert_scroll_zoom: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -530,10 +548,19 @@ mod tests {
             theme: ThemePreference::default(),
             autosave: true,
             welcome_dismissed: false,
+            invert_scroll_zoom: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_invert_scroll_zoom_means_not_inverted() {
+        let dir = tmp_dir("legacy-no-invert-scroll");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(!load_from(&path).invert_scroll_zoom);
     }
 
     #[test]
