@@ -49,6 +49,8 @@ menu:
     unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
     # Eine empfohlene Bildquelle im Menü.
     best_entry: "★ %{name}"
+    adjust_offset: "Luftbildversatz anpassen"
+    reset_offset: "Luftbildversatz zurücksetzen"
   view:
     title: "Darstellung"
     zoom_in: "Vergrößern"
@@ -121,6 +123,20 @@ transfer:
   busy: "Es läuft bereits eine andere Übertragung"
   waiting_keychain: "Warte auf Zugriff auf die gespeicherte Anmeldung … (auf eine Schlüsselbund-Abfrage achten)"
 
+# Das Feld über der Karte beim Anpassen des Versatzes einer Bildebene. Werte
+# in Metern nach Osten und Norden, mit zwei Nachkommastellen.
+imagery_offset:
+  title: "Luftbildversatz anpassen"
+  value: "O %{east} m, N %{north} m"
+  east: "Ost"
+  north: "Nord"
+  metres: "m"
+  hint: "Die Karte ziehen, um das Luftbild zu verschieben. Pfeiltasten schieben um 1 px (Umschalt: 10 px). Esc bricht ab."
+  reset: "Zurücksetzen"
+  done: "Fertig"
+  no_layer: "Es gibt keine sichtbare Bildebene zum Anpassen"
+  reset_done: "Luftbildversatz zurückgesetzt"
+
 # Der Hinweiskasten über der Karte, solange keine OSM-Daten geladen sind.
 welcome:
   title: "Willkommen bei osm-gpui"
@@ -148,6 +164,7 @@ status:
     building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc beendet"
     building_oriented_started: "Klicken oder loslassen an der Gegenecke zum Abschließen · Esc bricht ab"
     extrude: "Ziehen formt um · Alt-Ziehen: neuer Weg · Cmd/Strg-Ziehen verschiebt · Esc beendet"
+    adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
@@ -233,6 +250,10 @@ panel:
     hide: "Ausblenden"
     show: "Einblenden"
     delete: "Löschen"
+    adjust_offset: "Luftbildversatz anpassen"
+    reset_offset: "Luftbildversatz zurücksetzen"
+    # Markierung an einer Bildebene, die verschoben gezeichnet wird; Werte in Metern.
+    offset_tag: "Versatz O %{east}, N %{north}"
   selection:
     title: "Auswahl"
     title_count:

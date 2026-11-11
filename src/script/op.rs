@@ -117,6 +117,15 @@ pub enum Check {
     FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
+    /// The imagery offset (of the layer being adjusted, else the topmost
+    /// visible imagery layer) is `east`/`north` metres, within `tolerance`.
+    ImageryOffset {
+        east: f64,
+        north: f64,
+        tolerance: f64,
+    },
+    /// Whether the Adjust imagery offset mode is active.
+    AdjustingOffset(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,6 +250,16 @@ pub enum Op {
     },
     AssertStatusContains {
         text: String,
+    },
+    /// `assert_imagery_offset EAST NORTH [tol=METRES]`.
+    AssertImageryOffset {
+        east: f64,
+        north: f64,
+        tolerance: f64,
+    },
+    /// `assert_adjusting_offset on|off`.
+    AssertAdjustingOffset {
+        on: bool,
     },
     AssertDialog {
         expect: DialogExpect,

@@ -159,6 +159,12 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 text: text.to_string(),
             })
         }
+        "assert_imagery_offset" => parse_assert_imagery_offset(line_no, &rest),
+        "assert_adjusting_offset" => match rest.as_slice() {
+            ["on"] => Ok(Op::AssertAdjustingOffset { on: true }),
+            ["off"] => Ok(Op::AssertAdjustingOffset { on: false }),
+            _ => Err(err(line_no, "assert_adjusting_offset: want on|off")),
+        },
         "assert_selected_count" => match rest.as_slice() {
             [n] => Ok(Op::AssertSelectedCount {
                 count: n.parse::<usize>().map_err(|e| {
@@ -370,6 +376,27 @@ fn parse_assert_selection(line_no: usize, rest: &[&str]) -> Result<Op, ParseErro
         }
     };
     Ok(Op::AssertSelection { kind })
+}
+
+/// `assert_imagery_offset EAST NORTH [tol=METRES]` (default tolerance 0.05 m).
+fn parse_assert_imagery_offset(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_imagery_offset: want EAST NORTH [tol=METRES]";
+    let (east, north, tolerance) = match rest {
+        [e, n] => (e, n, None),
+        [e, n, tol] => (e, n, tol.strip_prefix("tol=")),
+        _ => return Err(err(line_no, usage)),
+    };
+    if rest.len() == 3 && tolerance.is_none() {
+        return Err(err(line_no, usage));
+    }
+    Ok(Op::AssertImageryOffset {
+        east: parse_f64(line_no, east, "assert_imagery_offset east")?,
+        north: parse_f64(line_no, north, "assert_imagery_offset north")?,
+        tolerance: match tolerance {
+            Some(t) => parse_f64(line_no, t, "assert_imagery_offset tol")?,
+            None => 0.05,
+        },
+    })
 }
 
 fn parse_u32(line_no: usize, s: &str, field: &str) -> Result<u32, ParseError> {
@@ -1032,6 +1059,42 @@ mod tests {
     #[test]
     fn assert_mode_requires_arg() {
         assert!(parse("assert_mode").is_err());
+    }
+
+    #[test]
+    fn assert_imagery_offset_parses_with_and_without_tolerance() {
+        assert_eq!(
+            parse("assert_imagery_offset 3.2 -1.75").unwrap()[0].op,
+            Op::AssertImageryOffset {
+                east: 3.2,
+                north: -1.75,
+                tolerance: 0.05
+            }
+        );
+        assert_eq!(
+            parse("assert_imagery_offset 0 0 tol=0.2").unwrap()[0].op,
+            Op::AssertImageryOffset {
+                east: 0.0,
+                north: 0.0,
+                tolerance: 0.2
+            }
+        );
+        assert!(parse("assert_imagery_offset 1").is_err());
+        assert!(parse("assert_imagery_offset 1 2 0.2").is_err());
+        assert!(parse("assert_imagery_offset a b").is_err());
+    }
+
+    #[test]
+    fn assert_adjusting_offset_wants_on_or_off() {
+        assert_eq!(
+            parse("assert_adjusting_offset on").unwrap()[0].op,
+            Op::AssertAdjustingOffset { on: true }
+        );
+        assert_eq!(
+            parse("assert_adjusting_offset off").unwrap()[0].op,
+            Op::AssertAdjustingOffset { on: false }
+        );
+        assert!(parse("assert_adjusting_offset").is_err());
     }
 
     #[test]
