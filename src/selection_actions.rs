@@ -356,6 +356,24 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_straighten,
     },
     SelectionAction {
+        id: "align",
+        shortcut_id: Some("action_align"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_node_count() >= 3,
+        apply: apply_align,
+    },
+    SelectionAction {
+        id: "distribute",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_node_count() >= 3,
+        apply: apply_distribute,
+    },
+    SelectionAction {
         id: PARALLEL,
         shortcut_id: None,
         fixed_shortcut: None,
@@ -1666,6 +1684,91 @@ fn apply_delete(
         select: None,
         continue_way: None,
     })
+}
+
+/// Computes new positions for a list of nodes; see `reposition_nodes`.
+type RepositionFn = fn(&[LatLon]) -> Option<Vec<LatLon>>;
+
+/// Move the selected nodes of the active layer (at least three) by running
+/// `reposition` over their positions in selection order. Nodes shared with
+/// other ways move those ways too; tags and relation memberships are not
+/// touched. One `MoveNodes` undo step.
+fn reposition_nodes(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    reposition: RepositionFn,
+    done: fn(usize) -> SharedString,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let nodes = merge_nodes_in(editable, layer_id, selection);
+    if nodes.len() < 3 {
+        return Err(tr!("action.align.hint").to_string());
+    }
+    let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+    let before: Vec<LatLon> = ids
+        .iter()
+        .filter_map(|&id| editable.node_lat_lon(id))
+        .collect();
+    if before.len() != ids.len() {
+        return Err(tr!("action.align.hint").to_string());
+    }
+    let after =
+        reposition(&before).ok_or_else(|| tr!("action.align.error.same_place").to_string())?;
+    let entries: Vec<NodeMoveUndoEntry> = ids
+        .iter()
+        .zip(before.iter().zip(&after))
+        .filter(|(_, (b, a))| b != a)
+        .map(|(&id, (&b, &a))| (id, b, a))
+        .collect();
+    if entries.is_empty() {
+        return Err(tr!("action.align.none").to_string());
+    }
+    let moves: Vec<(i64, f64, f64)> = entries
+        .iter()
+        .map(|&(id, _, (lat, lon))| (id, lat, lon))
+        .collect();
+    editable.commit_node_moves(&moves);
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::MoveNodes {
+            per_layer: vec![(layer_id, entries.clone())],
+        }),
+        status: done(entries.len()).to_string(),
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// Align Nodes in Line: see `osm_gpui::align::align_in_line`. For a way
+/// rather than loose nodes, Straighten does the same job.
+fn apply_align(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    reposition_nodes(
+        layers,
+        selection,
+        active,
+        osm_gpui::align::align_in_line,
+        |n| tr_count!("action.align.done", n),
+    )
+}
+
+/// Distribute Nodes: see `osm_gpui::align::distribute`.
+fn apply_distribute(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    reposition_nodes(
+        layers,
+        selection,
+        active,
+        osm_gpui::align::distribute,
+        |n| tr_count!("action.distribute.done", n),
+    )
 }
 
 /// Create an offset copy of every selected way of the active layer (the
@@ -3741,5 +3844,84 @@ mod tests {
         let result = parallel(&mut n, &[102], Default::default());
         assert!(result.is_err());
         assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
+    }
+
+    fn nodes(n: &Net, ids: &[i64]) -> Vec<FeatureRef> {
+        ids.iter()
+            .map(|&id| n.feature(FeatureKind::Node, id))
+            .collect()
+    }
+
+    fn positions(n: &Net, ids: &[i64]) -> Vec<LatLon> {
+        ids.iter()
+            .map(|&id| n.editable().node_lat_lon(id).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn align_and_distribute_are_offered_for_three_or_more_nodes() {
+        let n = net();
+        assert!(!n.applicable(&nodes(&n, &[1, 2])).contains(&"align"));
+        assert!(n.applicable(&nodes(&n, &[1, 2, 4])).contains(&"align"));
+        assert!(n.applicable(&nodes(&n, &[1, 2, 4])).contains(&"distribute"));
+        // A way alone is Straighten's job.
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"align"));
+        assert!(n.applicable(&n.ways(&[100])).contains(&"straighten"));
+    }
+
+    #[test]
+    fn align_keeps_the_anchors_moves_the_rest_and_leaves_relations_alone() {
+        let mut n = net();
+        let ids = [7, 2, 6, 11, 5];
+        let relation = n.editable().relation(900).unwrap();
+        let before = positions(&n, &ids);
+        let out = n.run("align", &nodes(&n, &ids)).unwrap();
+        assert!(matches!(out.undo, Some(UndoableAction::MoveNodes { .. })));
+        let after = positions(&n, &ids);
+        assert_ne!(after, before);
+        // Collinear within a millimetre.
+        let proj = geometry::LocalProjection::new(after[0]);
+        let pts: Vec<(f64, f64)> = after.iter().map(|&p| proj.project(p)).collect();
+        let (a, b) = pts
+            .iter()
+            .flat_map(|p| pts.iter().map(move |q| (*p, *q)))
+            .max_by(|x, y| {
+                let d = |(p, q): &((f64, f64), (f64, f64))| (p.0 - q.0).hypot(p.1 - q.1);
+                d(x).total_cmp(&d(y))
+            })
+            .unwrap();
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        for p in &pts {
+            let off = ((p.0 - a.0) * dy - (p.1 - a.1) * dx).abs() / dx.hypot(dy);
+            assert!(off < 1e-3, "{off}");
+        }
+        // Exactly two nodes (the anchors) did not move.
+        let unmoved = before.iter().zip(&after).filter(|(b, a)| b == a).count();
+        assert_eq!(unmoved, 2);
+        assert_eq!(n.editable().relation(900).unwrap(), relation);
+        assert!(n.layer().is_modified());
+    }
+
+    #[test]
+    fn distribute_refuses_nodes_in_one_place_and_aligned_input_is_a_no_op() {
+        let mut n = net();
+        // Nodes 1, 2, 3 are already evenly spaced on a line.
+        let Err(message) = n.run("distribute", &nodes(&n, &[1, 2, 3])) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(message, "The selected nodes are already in place");
+        assert!(!n.layer().is_modified());
+        // Collapse three nodes onto one point.
+        let p = n.editable().node_lat_lon(1).unwrap();
+        n.layers
+            .find_layer_mut(n.layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap()
+            .commit_node_moves(&[(2, p.0, p.1), (3, p.0, p.1)]);
+        let Err(message) = n.run("align", &nodes(&n, &[1, 2, 3])) else {
+            panic!("expected a refusal");
+        };
+        assert!(message.starts_with("Can't align"), "{message}");
     }
 }
