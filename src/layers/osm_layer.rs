@@ -7,6 +7,7 @@ use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
 use crate::layers::resolve;
+use crate::layers::way_stroke::{self, Layer, PathSink};
 use crate::layers::{EditableLayer, HighlightKind, LayerId, MapLayer};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
@@ -981,100 +982,6 @@ fn decimate_into(pts: &[Point<Pixels>], min_px: f32, out: &mut Vec<(usize, usize
             anchor = i;
         }
     }
-}
-
-/// Push an oriented rectangle covering the segment `p0`-`p1` (as two raw
-/// triangles) into `path`, creating it lazily on first use. Skips
-/// degenerate (zero-length) segments.
-///
-/// Pushes vertices directly (`Path::vertices` is a public field) instead of
-/// going through `Path::push_triangle`, which recomputes `path.bounds` via
-/// three separate `Bounds::union` calls per triangle. `bounds_min_max`
-/// accumulates the same information as cheap float compares instead; the
-/// caller writes it into `path.bounds` once, after all segments in the
-/// group are pushed.
-fn push_segment_quad(
-    path: &mut Option<Path<Pixels>>,
-    bounds_min_max: &mut (f32, f32, f32, f32),
-    p0: Point<Pixels>,
-    p1: Point<Pixels>,
-    half_width: f32,
-) {
-    let x0 = f32::from(p0.x);
-    let y0 = f32::from(p0.y);
-    let x1 = f32::from(p1.x);
-    let y1 = f32::from(p1.y);
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < f32::EPSILON {
-        return;
-    }
-    let nx = -dy / len * half_width;
-    let ny = dx / len * half_width;
-
-    let ax = x0 + nx;
-    let ay = y0 + ny;
-    let bx = x0 - nx;
-    let by = y0 - ny;
-    let cx = x1 - nx;
-    let cy = y1 - ny;
-    let dxp = x1 + nx;
-    let dyp = y1 + ny;
-
-    let (min_x, max_x, min_y, max_y) = bounds_min_max;
-    for &(x, y) in &[(ax, ay), (bx, by), (cx, cy), (dxp, dyp)] {
-        if x < *min_x {
-            *min_x = x;
-        }
-        if x > *max_x {
-            *max_x = x;
-        }
-        if y < *min_y {
-            *min_y = y;
-        }
-        if y > *max_y {
-            *max_y = y;
-        }
-    }
-
-    let a = point(px(ax), px(ay));
-    let b = point(px(bx), px(by));
-    let c = point(px(cx), px(cy));
-    let d = point(px(dxp), px(dyp));
-    let st = point(0., 1.);
-
-    let p = path.get_or_insert_with(|| Path::new(a));
-    p.vertices.push(PathVertex {
-        xy_position: a,
-        st_position: st,
-        content_mask: Default::default(),
-    });
-    p.vertices.push(PathVertex {
-        xy_position: b,
-        st_position: st,
-        content_mask: Default::default(),
-    });
-    p.vertices.push(PathVertex {
-        xy_position: c,
-        st_position: st,
-        content_mask: Default::default(),
-    });
-    p.vertices.push(PathVertex {
-        xy_position: a,
-        st_position: st,
-        content_mask: Default::default(),
-    });
-    p.vertices.push(PathVertex {
-        xy_position: c,
-        st_position: st,
-        content_mask: Default::default(),
-    });
-    p.vertices.push(PathVertex {
-        xy_position: d,
-        st_position: st,
-        content_mask: Default::default(),
-    });
 }
 
 /// Push one solid triangle into `path`, creating the path on first use and
@@ -3398,7 +3305,7 @@ struct Batch {
     /// Key of this batch's `VertexHints` entry.
     key: u64,
     path: Option<Path<Pixels>>,
-    /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad` and
+    /// (min_x, max_x, min_y, max_y), accumulated by `PathSink` and
     /// `push_triangle`.
     bounds: (f32, f32, f32, f32),
 }
@@ -3743,9 +3650,9 @@ impl OsmLayer {
         // tessellator dominated frame time (~1.3-1.8ms for ~3800 visible
         // ways, measured under a synthetic 8k-node/4k-way dataset), since it
         // reruns from scratch every repaint (e.g. every mouse-move while
-        // panning). No mitered joins at segment corners; at typical way
-        // widths (2-6px) this isn't visible, and it mirrors the same
-        // tradeoff already made for node rendering.
+        // panning). Joins and end caps are built by hand in `way_stroke`
+        // (mitered where possible, which costs no extra vertices) for
+        // strokes wide enough to show them, at the editing zooms only.
         //
         // One path per stroke *colour*, whatever the width: every extra path
         // is rasterised and composited over its whole bounding box by the
@@ -3777,6 +3684,7 @@ impl OsmLayer {
         // visible ways of a frame don't each allocate.
         let mut scratch_pts: Vec<Point<Pixels>> = Vec::new();
         let mut segs: Vec<(usize, usize)> = Vec::new();
+        let mut polyline = way_stroke::Polyline::default();
 
         let mut ways_in_view = 0usize;
         let mut ways_skipped = 0usize;
@@ -3887,33 +3795,101 @@ impl OsmLayer {
             // `way_vertices` (read by hit-testing and selection highlight)
             // is untouched.
             decimate_into(&scratch_pts, min_segment_px, &mut segs);
+
+            // The merged polyline (the anchors of `segs`, in order), stroked
+            // as one: with joins at its bends and caps at its ends when the
+            // stroke is wide enough to show them (see `way_stroke`), never
+            // in the coarse zoom path or for a collapsed way.
+            // Ways a few pixels across (most buildings at zoom 16) are too
+            // small for a bend to show, and are the bulk of the cost.
+            let shaped_lod = !lod.coarse
+                && detail == WayDetail::Full
+                && (dragging
+                    || bbox_extent_px(bbox, ppm_x, ppm_y) >= way_stroke::SHAPE_MIN_EXTENT_PX);
+            let (casing_hw, overlay_hw) = (
+                half_width + CASING_WIDTH,
+                half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
+            );
+            let widest_hw = if overlay_idx.is_some() {
+                overlay_hw
+            } else if draw_casing {
+                casing_hw
+            } else {
+                half_width
+            };
+            let with_joins = shaped_lod && widest_hw * 2.0 >= way_stroke::JOIN_MIN_WIDTH_PX;
+            let caps = with_joins && style.width >= way_stroke::CAP_MIN_WIDTH_PX;
+            let shape_of = |hw: f32| way_stroke::Shape {
+                joins: with_joins && hw * 2.0 >= way_stroke::JOIN_MIN_WIDTH_PX,
+                caps,
+            };
+            if with_joins {
+                let anchors = std::iter::once(scratch_pts[segs[0].0])
+                    .chain(segs.iter().map(|&(_, b)| scratch_pts[b]))
+                    .map(|p| (f32::from(p.x), f32::from(p.y)));
+                polyline.set(anchors);
+                let overlay_layer = overlay_idx.map(|oi| {
+                    let og = &mut overlays[oi];
+                    Layer {
+                        sink: PathSink {
+                            path: &mut og.path,
+                            bounds: &mut og.bounds,
+                        },
+                        hw: overlay_hw,
+                        shape: shape_of(overlay_hw),
+                    }
+                });
+                let casing_layer = draw_casing.then(|| Layer {
+                    sink: PathSink {
+                        path: &mut casing.path,
+                        bounds: &mut casing.bounds,
+                    },
+                    hw: casing_hw,
+                    shape: shape_of(casing_hw),
+                });
+                let stroke_layer = Layer {
+                    sink: PathSink {
+                        path: &mut stroke.path,
+                        bounds: &mut stroke.bounds,
+                    },
+                    hw: half_width,
+                    shape: shape_of(half_width),
+                };
+                polyline.emit_layers(&mut [overlay_layer, casing_layer, Some(stroke_layer)]);
+            } else {
+                // Plain rectangles, as before joins existed.
+                for &(a, b) in &segs {
+                    let pa = (f32::from(scratch_pts[a].x), f32::from(scratch_pts[a].y));
+                    let pb = (f32::from(scratch_pts[b].x), f32::from(scratch_pts[b].y));
+                    if let Some(oi) = overlay_idx {
+                        let og = &mut overlays[oi];
+                        let mut sink = PathSink {
+                            path: &mut og.path,
+                            bounds: &mut og.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, overlay_hw);
+                    }
+                    if draw_casing {
+                        let mut sink = PathSink {
+                            path: &mut casing.path,
+                            bounds: &mut casing.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
+                    }
+                    let mut sink = PathSink {
+                        path: &mut stroke.path,
+                        bounds: &mut stroke.bounds,
+                    };
+                    way_stroke::emit_segment(&mut sink, pa, pb, half_width);
+                }
+            }
+
             let arrows = draw_arrows && style.direction != Direction::None;
             let reverse = style.direction == Direction::Reverse;
             // Start half a spacing in, so even a short way gets an arrow.
             let mut since_arrow = ARROW_SPACING_PX / 2.0;
             for &(a, b) in &segs {
                 let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
-                if let Some(oi) = overlay_idx {
-                    let og = &mut overlays[oi];
-                    push_segment_quad(
-                        &mut og.path,
-                        &mut og.bounds,
-                        p0,
-                        p1,
-                        half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
-                    );
-                }
-                if draw_casing {
-                    push_segment_quad(
-                        &mut casing.path,
-                        &mut casing.bounds,
-                        p0,
-                        p1,
-                        half_width + CASING_WIDTH,
-                    );
-                }
-                push_segment_quad(&mut stroke.path, &mut stroke.bounds, p0, p1, half_width);
-
                 if !arrows {
                     continue;
                 }
@@ -4852,16 +4828,33 @@ impl EditableLayer for OsmLayer {
 
                 // A wide halo stroke under a narrower core stroke.
                 let way_style = self.stylesheet.way_style(&way.tags, way.is_closed());
+                // Drawn with the way pass's own stroke geometry (mitered
+                // bends, round ends, a joined closing corner) rather than a
+                // tessellated stroke with square ends.
+                let mut polyline = way_stroke::Polyline::default();
+                polyline.set(pts.iter().map(|p| (p.x.as_f32(), p.y.as_f32())));
                 for (extra_width, color) in [(7.0, halo), (3.0, core)] {
-                    let mut builder = PathBuilder::stroke(px(way_style.width + extra_width));
-                    for (i, p) in pts.iter().enumerate() {
-                        if i == 0 {
-                            builder.move_to(*p);
-                        } else {
-                            builder.line_to(*p);
-                        }
-                    }
-                    if let Ok(path) = builder.build() {
+                    let mut path: Option<Path<Pixels>> = None;
+                    let mut bounds_min_max = (
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                        f32::INFINITY,
+                        f32::NEG_INFINITY,
+                    );
+                    polyline.emit(
+                        &mut PathSink {
+                            path: &mut path,
+                            bounds: &mut bounds_min_max,
+                        },
+                        (way_style.width + extra_width) / 2.0,
+                        way_stroke::Shape::FULL,
+                    );
+                    if let Some(mut path) = path {
+                        let (min_x, max_x, min_y, max_y) = bounds_min_max;
+                        path.bounds = Bounds {
+                            origin: point(px(min_x), px(min_y)),
+                            size: size(px(max_x - min_x), px(max_y - min_y)),
+                        };
                         window.paint_path(path, rgb(color));
                     }
                 }
