@@ -488,6 +488,25 @@ pub trait EditableLayer {
     /// Put a deleted (or, for redo, created) relation back with its original
     /// id, version, content and position. `false` if the id is taken.
     fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool;
+
+    /// Whether the object has a pending local edit: it was created here, or
+    /// differs from the server baseline. `false` for an unknown object.
+    fn has_pending_edit(&self, kind: crate::selection::FeatureKind, id: i64) -> bool;
+
+    /// Purge: drop these objects from the layer's data AND its server
+    /// baseline, as if they had never been downloaded. Nothing is marked
+    /// deleted and nothing is uploaded for them. The caller has checked that
+    /// they are unmodified and that no remaining way uses a purged node.
+    /// Relations that name them keep the members, now not downloaded.
+    fn purge_features(
+        &mut self,
+        nodes: &[i64],
+        ways: &[i64],
+        relations: &[i64],
+    ) -> crate::selection::PurgedFeatures;
+
+    /// Undo of `purge_features`: put the objects back in data and baseline.
+    fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures);
 }
 
 /// Manager for all map layers

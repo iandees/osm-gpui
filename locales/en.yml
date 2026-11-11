@@ -354,6 +354,7 @@ history:
   created_way: "Created 1 way"
   created_relation: "Created a relation"
   deleted_relation: "Deleted a relation"
+  purged: "Purged objects from the layer"
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"
@@ -623,6 +624,22 @@ action:
       other: "Separated a node into %{count} copies"
     error:
       restriction: "Can't separate: way %{way} is part of turn restriction %{relation}, which needs it to stay connected to the via node"
+  unjoin:
+    label: "Unjoin Node from Way"
+    hint: "Select a node and a way it belongs to (and that another way shares) to give that way its own copy of the node"
+    done: "Unjoined a node from a way"
+    error:
+      end_node: "Can't unjoin: the node is an end of the way, so there is nothing to pull it off (use Separate Node)"
+      not_shared: "Can't unjoin: no other way uses the node"
+  delete_segment:
+    label: "Delete Way Segment"
+    hint: "Select two nodes that are next to each other in a way to delete the segment between them"
+    done: "Deleted a way segment"
+    error:
+      several_ways: "Can't delete the segment: several ways run along it, select the way too"
+      twice: "Can't delete the segment: the way runs along it more than once"
+      whole_way: "Can't delete the segment: it is all the way has, delete the way instead"
+      restriction: "Can't delete the segment: way %{way} is part of turn restriction %{relation}, which needs it to stay connected to the via node"
   extend:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
@@ -765,6 +782,20 @@ action:
       relation_in_relation: "Can't delete relation %{relation}: it is a member of relation %{parent}"
       relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
       restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
+  purge:
+    label: "Purge"
+    hint: "Select something to purge from the layer"
+    done:
+      one: "Purged %{count} object from the layer"
+      other: "Purged %{count} objects from the layer"
+    kept: "%{done}; kept %{kept} node(s) that are still in use or edited"
+    kind:
+      node: "node"
+      way: "way"
+      relation: "relation"
+    error:
+      modified: "Can't purge %{what} %{id}: it has edits that are not uploaded. Upload or undo them first"
+      in_way: "Can't purge node %{id}: way %{way} still uses it"
 
 shortcut_category:
   general: "General"

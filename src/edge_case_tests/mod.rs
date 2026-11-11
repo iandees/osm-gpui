@@ -13,6 +13,7 @@ mod join_and_merge;
 mod limits_and_data;
 mod multipolygon_edits;
 mod parse_and_export;
+mod purge;
 mod reverse;
 mod shared_members;
 mod simplify_way;
@@ -20,6 +21,7 @@ mod snap_join_node;
 mod split;
 mod undo_interactions;
 mod undo_sequences;
+mod unjoin_and_segment;
 mod upload_failures;
 mod upload_order;
 

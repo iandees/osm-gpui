@@ -13,7 +13,7 @@ use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
     nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot,
-    DeletedRelationSnapshot, FeatureKind, FeatureRef, HitCandidate,
+    DeletedRelationSnapshot, FeatureKind, FeatureRef, HitCandidate, PurgedFeatures,
 };
 use crate::style::{Direction, NodeStyle, Stylesheet, WayStyle};
 use crate::viewport::Viewport;
@@ -1374,27 +1374,142 @@ impl OsmLayer {
     /// the server" baseline, whether it arrived via a fresh download/reload
     /// or via `apply_upload_result` reconciling a successful upload.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
-        self.node_cache = compute_node_cache(&osm_data, &self.stylesheet);
+        self.rebuild_caches(&osm_data);
+        self.osm_data = Some(osm_data.clone());
+        self.original_data = Some(osm_data);
+        self.modified = false;
+        self.revision += 1;
+    }
+
+    /// Recompute every derived cache and index from `osm_data`.
+    fn rebuild_caches(&mut self, osm_data: &Arc<OsmData>) {
+        self.node_cache = compute_node_cache(osm_data, &self.stylesheet);
         let (ids, bboxes, verts, styles, fill_tris) =
-            compute_way_tables(&osm_data, &self.node_cache, &self.stylesheet);
+            compute_way_tables(osm_data, &self.node_cache, &self.stylesheet);
         self.way_ids = ids;
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
         self.way_styles = styles;
         self.way_fill_tris = fill_tris;
         self.mp
-            .rebuild_all(&osm_data, &self.node_cache, &self.stylesheet);
+            .rebuild_all(osm_data, &self.node_cache, &self.stylesheet);
         self.layer_bbox = compute_layer_bbox(&self.node_cache);
         self.node_index = build_node_index(&self.node_cache);
-        let ways_sorted = sorted_ways(&osm_data);
+        let ways_sorted = sorted_ways(osm_data);
         self.way_index = build_way_index(&self.way_bboxes, &ways_sorted);
         self.way_id_to_index = build_way_id_index(&ways_sorted);
         self.node_to_ways = build_node_to_ways(&ways_sorted);
-        self.next_new_id = compute_next_new_id(&osm_data);
+        self.next_new_id = compute_next_new_id(osm_data);
         self.download_rects = crate::download_bounds::merc_rects(&osm_data.bounds);
-        self.osm_data = Some(osm_data.clone());
-        self.original_data = Some(osm_data);
-        self.modified = false;
+    }
+
+    /// Whether the object was created here or differs from the baseline.
+    pub fn has_pending_edit(&self, kind: FeatureKind, id: i64) -> bool {
+        let (Some(current), Some(original)) = (&self.osm_data, &self.original_data) else {
+            return self.osm_data.is_some();
+        };
+        match kind {
+            FeatureKind::Node => match (current.nodes.get(&id), original.nodes.get(&id)) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            FeatureKind::Way => match (current.ways.get(&id), original.ways.get(&id)) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            FeatureKind::Relation => {
+                let find = |d: &OsmData| d.relations.iter().find(|r| r.id == id).cloned();
+                match (find(current), find(original)) {
+                    (Some(a), Some(b)) => a != b,
+                    (Some(_), None) => true,
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    /// Purge: remove objects from the data and the baseline together, so the
+    /// diff never sees them. See `EditableLayer::purge_features`.
+    pub fn purge_features(
+        &mut self,
+        nodes: &[i64],
+        ways: &[i64],
+        relations: &[i64],
+    ) -> PurgedFeatures {
+        let mut purged = PurgedFeatures::default();
+        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
+        else {
+            return purged;
+        };
+        let mut data = (*current).clone();
+        let mut base = (*original).clone();
+        for &id in nodes {
+            base.nodes.remove(&id);
+            if let Some(n) = data.nodes.remove(&id) {
+                purged.nodes.push(n);
+            }
+        }
+        for &id in ways {
+            base.ways.remove(&id);
+            if let Some(w) = data.ways.remove(&id) {
+                purged.ways.push(w);
+            }
+        }
+        for &id in relations {
+            let base_index = base.relations.iter().position(|r| r.id == id);
+            if let Some(i) = base_index {
+                base.relations.remove(i);
+            }
+            if let Some(i) = data.relations.iter().position(|r| r.id == id) {
+                let r = data.relations.remove(i);
+                purged.relations.push((r, i, base_index.unwrap_or(i)));
+            }
+        }
+        if purged.is_empty() {
+            return purged;
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.osm_data = Some(data);
+        self.original_data = Some(Arc::new(base));
+        self.revision += 1;
+        purged
+    }
+
+    /// Undo of `purge_features`.
+    pub fn restore_purged(&mut self, purged: PurgedFeatures) {
+        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
+        else {
+            return;
+        };
+        let mut data = (*current).clone();
+        let mut base = (*original).clone();
+        for n in purged.nodes {
+            base.nodes.insert(n.id, n.clone());
+            data.nodes.insert(n.id, n);
+        }
+        for w in purged.ways {
+            base.ways.insert(w.id, w.clone());
+            data.ways.insert(w.id, w);
+        }
+        // Lowest index first, so each insert lands where it used to be.
+        let mut relations = purged.relations;
+        relations.sort_by_key(|(_, i, _)| *i);
+        for (r, i, _) in &relations {
+            let at = (*i).min(data.relations.len());
+            data.relations.insert(at, r.clone());
+        }
+        relations.sort_by_key(|(_, _, j)| *j);
+        for (r, _, j) in relations {
+            let at = j.min(base.relations.len());
+            base.relations.insert(at, r);
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.osm_data = Some(data);
+        self.original_data = Some(Arc::new(base));
         self.revision += 1;
     }
 
@@ -4536,6 +4651,23 @@ impl EditableLayer for OsmLayer {
 
     fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool {
         OsmLayer::restore_relation(self, snapshot)
+    }
+
+    fn has_pending_edit(&self, kind: FeatureKind, id: i64) -> bool {
+        OsmLayer::has_pending_edit(self, kind, id)
+    }
+
+    fn purge_features(
+        &mut self,
+        nodes: &[i64],
+        ways: &[i64],
+        relations: &[i64],
+    ) -> crate::selection::PurgedFeatures {
+        OsmLayer::purge_features(self, nodes, ways, relations)
+    }
+
+    fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures) {
+        OsmLayer::restore_purged(self, purged);
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {

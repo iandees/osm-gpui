@@ -105,7 +105,7 @@ in the bug list at the end.
 | D2 | Same way visits the node twice | Later visit gets the new node | iD "replaces later occurrences in a self-intersecting way" | pass `disconnect_replaces_a_later_visit_of_the_same_way` |
 | D3 | Closing node of a ring shared with another way | Ring stays closed, one new node | iD "disconnects the closing node of an area without breaking the area" | pass `disconnecting_a_ring_from_another_way_keeps_the_ring_closed` |
 | D4 | Node on one way only | Nothing to do | JOSM `testSingleNodeInSingleWay`; iD `not_connected` | pass `disconnect_of_a_node_used_once_is_refused` |
-| D5 | JOSM "UnJoinNodeWay" (pull a node off a way, ticket 10396) | | JOSM `UnJoinNodeWayActionTest` | absent |
+| D5 | JOSM "UnJoinNodeWay" (pull a node off a way, ticket 10396) | The named way gets a fresh untagged node, the other ways keep the original | JOSM `UnJoinNodeWayActionTest` | implemented as the Unjoin Node from Way action, see batch L |
 
 ## Delete
 
@@ -124,7 +124,7 @@ in the bug list at the end.
 | X11 | Node member not on any way | Removed from the relation | | pass `deleting_a_node_member_that_is_not_on_a_way_edits_the_relation` |
 | X12 | Members that are not downloaded | Kept, in place | JOSM #18863 flavour | pass `unknown_members_survive_edits_of_their_relation` |
 | X13 | Restriction role removal, relation member of relation | Refused | | existing |
-| X14 | Delete way segment (JOSM `DeleteCommandTest.testDeleteWaySegment*`) | | | absent |
+| X14 | Delete way segment (JOSM `DeleteCommandTest.testDeleteWaySegment*`) | Way cut at the segment, the segment thrown away | JOSM `DeleteCommandTest` | implemented as the Delete Way Segment action, see batch L |
 
 ## Relation ordering, multipolygons, restrictions, geometry, copy/paste
 
@@ -136,7 +136,7 @@ in the bug list at the end.
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
 | G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify implemented (batch K) |
 | C1 | Copy / paste / duplicate (JOSM `CopyActionTest`, `PasteAction`; PurgeAction #12038) | | existing in `feature_clipboard` and `main.rs` tests |
-| C2 | Purge | | absent |
+| C2 | Purge | | implemented, see batch N |
 | C3 | Conflict/merge of downloaded data (`DataSetMergerTest`, #7481, #12599, #12616) | | existing in `src/layers/merge.rs` |
 
 ## Upload diff and ordering
@@ -508,6 +508,102 @@ simplify" (no undo step). Tools menu and context menu, no shortcut.
 
 No bugs found in this batch.
 
+## Further situations (batch L)
+
+Unjoin Node from Way (D5) and Delete Way Segment (X14), both in
+`src/edge_case_tests/unjoin_and_segment.rs`; the planners are in
+`src/topology.rs` (`plan_unjoin`, `plan_delete_segment`). Neither has a default
+shortcut; both are in the Tools menu and the context menu, and when they do not
+apply the status bar says why (end node, no other way, segment shared, ...).
+
+Unjoin Node from Way: select a node and one way it belongs to. Every place that
+way uses the node gets one new untagged node at the same position (negative
+id); the other ways keep the original, which also keeps its tags and relation
+memberships (the same choice as Disconnect, D1). Decisions:
+the node must be a vertex of the way, so an end node of an open way is refused
+(there is nothing to pull it off; Disconnect handles that case), while the
+closing node of a ring is fine and both ring ends get the same new node; the
+node must be used by some other way, otherwise nothing would be unjoined. A
+turn restriction whose `from` or `to` way is the unjoined one, with the node as
+`via`, refuses it (same message as Disconnect). One undo step: new node, then
+the modified way.
+
+Delete Way Segment: the UI has no segment selection, so a segment is two
+selected nodes that are next to each other in a way (optionally with the way
+selected, which is needed when several ways run along the same two nodes). The
+way is cut at the segment and the segment is thrown away: an open way becomes
+the part before and the part after (the original keeps the longer one, the
+first on a tie, other part is a new way with a copy of the tags); a segment at
+an end just shortens the way; a closed way is opened at the segment and keeps
+its id. Relations go through the same `relations::split_members` logic as Split
+Way (so a restriction follows the part that holds its via node, or the action is
+refused when the via node is on the segment) and the thrown-away piece is then
+removed again. An end node left unused is deleted when untagged, in no other
+way and in no relation. Refused: nodes not adjacent, a way that runs along the
+segment twice, a two-node way (delete the way instead), a relation that would
+pass 32,000 members, a restriction that would lose its via node. One undo step.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| L1 | Unjoin a shared vertex | Selected way gets a bare copy at the same position; original keeps tags and relation membership; one step; new node then modified way | pass `unjoin_gives_only_the_selected_way_a_bare_copy_and_the_original_keeps_everything`, `which_way_is_unjoined_is_the_selected_one_even_if_it_is_the_older_way` |
+| L2 | No way selected, or node not in the way | Refused with the hint, nothing changes | pass `unjoin_without_a_way_selected_is_refused`, `unjoin_of_a_node_that_is_not_in_the_way_is_refused` |
+| L3 | End node of the way | Refused (use Separate Node) | pass `unjoin_of_an_end_node_is_refused_and_says_to_use_separate` |
+| L4 | Node no other way uses, also a way passing the node twice alone | Refused | pass `unjoin_of_a_node_nothing_else_uses_is_refused` |
+| L5 | Way visits the node twice, plus another way | Both visits get one shared new node | pass `unjoin_replaces_every_visit_of_the_way_with_one_new_node` |
+| L6 | Ring: closing node and another vertex | Ring stays closed, one new node | pass `unjoin_on_a_ring_keeps_it_closed_whichever_node_it_is` |
+| L7 | Turn restriction with the node as via | Refused for the from / to ways, allowed for others | pass `unjoin_is_refused_for_the_from_way_of_a_restriction_at_its_via_node` |
+| L8 | Way with 2,000 nodes; upload order | Node count unchanged; new node created before the modified way | pass `unjoin_keeps_the_way_node_count_so_a_full_way_stays_valid`, `unjoin_uploads_the_new_node_before_the_way_that_uses_it` |
+| L9 | Middle segment | Two parts, longer keeps the id, no way for the segment, one step, undo / redo | pass `a_middle_segment_splits_the_way_and_the_original_keeps_the_longer_part`, `the_left_part_stays_when_it_is_longer_or_ties`, `it_does_not_matter_which_node_was_selected_first_or_whether_the_way_is_too` |
+| L10 | Segment at an end | Way shortened; orphaned end node deleted unless tagged, shared or in a relation | pass `a_segment_at_the_end_shortens_the_way_and_deletes_the_orphaned_end_node`, `tagged_shared_or_member_end_nodes_survive_the_segment` |
+| L11 | Two-node way | Refused, delete the way instead | pass `deleting_the_only_segment_of_a_two_node_way_is_refused` |
+| L12 | Closed way, including the closing segment | Opened at the segment, same id, nothing created | pass `a_closed_way_is_opened_at_the_segment_without_creating_anything` |
+| L13 | Not adjacent, not two nodes, no nodes | Refused | pass `nodes_that_are_not_next_to_each_other_or_not_two_are_refused` |
+| L14 | Segment shared by two ways; way along it twice; node visited twice elsewhere | Select the way too; refused; node kept in both parts | pass `a_segment_shared_by_two_ways_needs_the_way_to_be_selected`, `a_way_that_runs_along_the_segment_twice_is_refused`, `a_way_that_passes_the_node_twice_elsewhere_keeps_it_in_both_parts` |
+| L15 | Way in routes | Both parts in order, segment piece absent, every relation edited; shortened way leaves relations alone | pass `a_route_gets_both_remaining_parts_in_order_and_not_the_segment`, `a_shortened_way_stays_in_its_relations_unchanged` |
+| L16 | Turn restriction | `from` follows the part with the via node; via on the segment refused; via lost at a shortened end refused | pass `a_restriction_whose_via_node_stays_with_one_part_follows_that_part`, `a_restriction_is_refused_when_the_segment_touches_the_via_node`, `a_restriction_that_would_lose_its_via_node_at_a_shortened_end_is_refused` |
+| L17 | Relation at the member limit | 32,000 allowed, 32,001 refused (a shortening still works) | pass `a_relation_may_grow_to_exactly_32000_members_but_not_past_it` |
+| L18 | Way node limit; upload order; undo | Both parts under the limit; new way created, old modified, nodes deleted last; tags copied at that moment | pass `both_parts_fit_the_way_node_limit_that_the_whole_way_exceeded`, `upload_creates_the_new_way_then_modifies_the_old_one_then_deletes_nodes`, `undoing_a_segment_deletion_after_other_edits_in_between_restores_each_step` |
+
+No bugs found in this batch.
+
+## Further situations (batch N)
+
+Purge (`src/edge_case_tests/purge.rs`): the
+selected objects are removed from the layer's downloaded data and from its
+server baseline together, so they are not deleted, not modified, and the upload
+diff never mentions them. Design (deliberately conservative):
+
+- An object with a pending local edit (created here, or different from the
+  baseline, including a relation whose member list was edited) is refused, with
+  the reason in the status; nothing changes. The user uploads or undoes the
+  edit first.
+- A selected node that a way outside the selection still uses is refused, naming
+  the way.
+- A way or relation that a remaining relation names is purged; the relation is
+  not touched and keeps the member, which is now a member that is not
+  downloaded (X12), never a deleted one. Relation members are never purged
+  along with the relation.
+- The nodes of a purged way go with it only if no remaining way or relation
+  uses them and they have no pending edit; the status says how many stayed.
+- One undo step (`UndoableAction::Purge`, restored into both data and
+  baseline, relations at their old positions); the selection is cleared.
+  Tools menu entry, no confirmation (Delete has none and purge is undoable).
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| N1 | Unmodified node | Gone from layer, nothing to upload, one undo step | pass `an_unmodified_node_is_purged_not_deleted` |
+| N2 | Way with unshared children | Way and nodes gone, no `<delete>` in the upload | pass `a_way_takes_its_unshared_nodes_with_it` |
+| N3 | Child shared with another way or in a relation | Stays | pass `a_node_shared_with_another_way_or_a_relation_stays` |
+| N4 | Node used by a remaining way | Refused, names the way, nothing changes | pass `a_node_that_a_remaining_way_uses_is_refused` |
+| N5 | Modified or locally created object | Refused; an edited child of a purged way stays | pass `objects_with_pending_edits_are_refused`, `a_relation_with_an_edited_member_list_is_refused` |
+| N6 | Purged relation members | Relation unchanged, member stays, not modified | pass `relation_members_that_are_purged_stay_as_members_not_downloaded`, `purging_a_way_leaves_the_relation_naming_it_unchanged` |
+| N7 | Undo / redo | Restored as downloaded and unmodified; redo repeats | pass (in the tests above) |
+| N8 | Upload diff | Empty | pass `upload_xml_is_empty_for_purged_objects` |
+| N9 | Selection after purge | Cleared | pass `the_selection_is_cleared_after_a_purge` |
+| N10 | Way over 2,000 nodes, relation over the member limit | Purged; limits apply to editing only | pass `node_and_relation_member_limits_do_not_apply` |
+
+No bugs found in this batch.
+
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
 - A closed way with one split node is turned to start there (JOSM); iD splits
@@ -520,7 +616,7 @@ No bugs found in this batch.
 - Two server nodes / ways merged or joined keep the first selected, not the
   oldest (J6, M2).
 - Disconnect leaves the new node untagged (D1).
-- No relation sorting, multipolygon creation, simplify, purge.
+- No relation sorting, multipolygon creation, simplify. (Purge exists, batch N.)
 - Join node to way never targets a way that already contains the node (JOSM can
   put a node into a closed way a second time); snapping also refuses it (H5).
 
