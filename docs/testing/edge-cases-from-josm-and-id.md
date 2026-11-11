@@ -209,10 +209,6 @@ Bugs from this batch:
 
 - LOW-MEDIUM. G5: distribute across the antimeridian (`LocalProjection`
   averages longitudes without wrapping).
-<<<<<<< HEAD
-- L4: same cause as X6 (vertices cannot be deleted).
-=======
-- LOW. K6: Reverse negates a numeric `direction` on a way.
 
 ## Further situations (batch B)
 
@@ -250,7 +246,6 @@ Undo / redo against refusals, autosave and several layers
 | D10 | Persisting undo history across a restart | absent |
 
 No bugs found in this batch.
->>>>>>> origin/edge-case-tests-limits-and-data
 
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
