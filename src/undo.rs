@@ -157,6 +157,12 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedRelationSnapshot,
     },
+    /// Purge: objects dropped from `layer`'s downloaded data without being
+    /// deleted. Undo puts them back as downloaded; redo purges them again.
+    Purge {
+        layer: LayerId,
+        purged: osm_gpui::selection::PurgedFeatures,
+    },
     /// Paste or Duplicate: a set of new nodes, ways and relations created in
     /// one layer at once. Undo removes all of them (and brings back the
     /// selection from before); redo recreates them under the same ids.
@@ -257,6 +263,7 @@ impl UndoableAction {
                 kind: FeatureKind::Relation,
                 id: snapshot.relation.id,
             }),
+            UndoableAction::Purge { layer, purged } => out.extend(purged.features(*layer)),
             UndoableAction::PasteFeatures { pasted } => out.extend(pasted.created()),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -312,7 +319,8 @@ impl UndoableAction {
             | UndoableAction::SetWayNodes { layer, .. }
             | UndoableAction::SetRelationMembers { layer, .. }
             | UndoableAction::CreateRelation { layer, .. }
-            | UndoableAction::DeleteRelation { layer, .. } => add(*layer),
+            | UndoableAction::DeleteRelation { layer, .. }
+            | UndoableAction::Purge { layer, .. } => add(*layer),
             UndoableAction::PasteFeatures { pasted } => add(pasted.layer),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -371,6 +379,7 @@ impl UndoableAction {
             UndoableAction::DeleteRelation { .. } => {
                 osm_gpui::tr!("history.deleted_relation").to_string()
             }
+            UndoableAction::Purge { .. } => osm_gpui::tr!("history.purged").to_string(),
             UndoableAction::PasteFeatures { pasted } => {
                 let key = if pasted.duplicate {
                     "history.duplicated_features"
