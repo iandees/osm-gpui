@@ -458,36 +458,17 @@ impl MapViewer {
 
         let feature = self.selected[0];
 
-        let change_type_button = Button::new("change-feature-type")
-            .label(tr!("panel.fields.change_type"))
-            .outline()
-            .small()
-            .on_click(cx.listener(move |_this, _ev, window, cx| {
-                window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
-            }));
-        // In its own row so it keeps its natural width, left-aligned.
-        let change_type_button = gpui::div().flex().flex_row().child(change_type_button);
-
-        // (The feature's name is the selection header above the sections.)
+        // (The feature's name and the change-type control are in the
+        // selection header above the sections.)
         let Some((preset, tags)) = self.matched_preset_for_field_editing(&feature) else {
-            let column = gpui::div().flex().flex_col().gap_2();
-            return column
-                .child(change_type_button)
-                .child(
-                    Label::new(tr!("panel.fields.no_preset"))
-                        .text_color(cx.theme().muted_foreground),
-                )
+            return Label::new(tr!("panel.fields.no_preset"))
+                .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         };
 
         if preset.fields.is_empty() {
-            let column = gpui::div().flex().flex_col().gap_2();
-            return column
-                .child(change_type_button)
-                .child(
-                    Label::new(tr!("panel.fields.no_fields"))
-                        .text_color(cx.theme().muted_foreground),
-                )
+            return Label::new(tr!("panel.fields.no_fields"))
+                .text_color(cx.theme().muted_foreground)
                 .into_any_element();
         }
 
@@ -512,7 +493,7 @@ impl MapViewer {
         }
 
         let mut column = gpui::div().flex().flex_col().gap_3();
-        column = column.child(change_type_button).children(field_elements);
+        column = column.children(field_elements);
 
         // "Add field" control: list `preset.more_fields` not already shown
         // (default fields or already-promoted more_fields).

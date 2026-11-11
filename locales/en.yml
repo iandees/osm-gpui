@@ -486,7 +486,6 @@ object_history:
   close: "Close"
   retry: "Retry"
   open_web: "Open on openstreetmap.org"
-  show_tooltip: "Show object history"
   unsaved: "Your unsaved changes"
   version: "Version %{version}"
   deleted: "Deleted"

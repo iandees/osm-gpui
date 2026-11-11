@@ -1,0 +1,48 @@
+# Selection header: a pencil icon button (change feature type) at the right of
+# the header, no history calendar button, and no "Change feature type..."
+# button at the top of the Fields section.
+#
+# Same fixture and coordinates as side-panel-polish.osmscript (window 1200x800,
+# default 280px panel): way 8301 at (340, 400), way 8202 at (520, 200); the
+# click on the Relations row selects relation 9101.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/side-panel-clarity.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# A road with a long name: the title truncates before the pencil is pushed out.
+click 340,400
+wait_idle 2s
+assert_selected way 8301
+set_tag name Extraordinarily Long Approach Road Name For Truncation
+wait_idle 1s
+capture out/selection-header-1-long-name.png
+
+# Hover the pencil for its tooltip.
+hover 1178,160
+wait_idle 2s
+capture out/selection-header-2-pencil-hover.png
+
+# A real click on the pencil opens the preset picker.
+click 1178,160
+wait_idle 2s
+capture out/selection-header-3-picker.png
+key escape
+wait_idle 1s
+
+# Several features: no header, so no pencil.
+drag 60,150 880,260 button=left
+wait_idle 2s
+capture out/selection-header-4-multi.png
+
+# A relation (via a member's Relations row).
+click 520,200
+wait_idle 2s
+capture out/selection-header-5a-member-way.png
+click 1000,604
+wait_idle 2s
+assert_selected relation 9101
+capture out/selection-header-5-relation.png
+
+log done
