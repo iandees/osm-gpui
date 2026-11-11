@@ -765,7 +765,7 @@ validator:
   title: "Validation"
   menu: "Validate"
   close: "Close"
-  show: "Show"
+  show_in_panel: "Show in side panel"
   severity:
     error: "Error"
     warning: "Warning"
@@ -783,7 +783,7 @@ validator:
   more:
     one: "…and %{count} more not shown"
     other: "…and %{count} more not shown"
-  blocked: "Fix the errors before uploading. Show finds each one."
+  blocked: "Fix the errors before uploading. The side panel lists each one."
   warnings_note: "Warnings do not block the upload, but check them first."
   upload_anyway: "Upload anyway"
   # Names of the objects a finding is about.

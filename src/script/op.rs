@@ -87,13 +87,11 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
-    /// The Tools > Validate dialog.
-    Validate,
     /// The Edit > Find dialog.
     Find,
 }
 
-/// Which validator finding `show_finding` presses Show on.
+/// Which validator finding `show_finding` clicks in the side panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FindingTarget {
     /// The Nth finding in the list (0 is the first row).
@@ -121,8 +119,12 @@ pub enum Check {
     /// The status bar's message contains the text.
     StatusContains(String),
     Dialog(DialogExpect),
-    /// What the validator finds in the pending changes right now: the number
-    /// of errors and warnings (when given) and of findings per check id.
+    /// The side panel's Validation section is showing (`true`) or not.
+    ValidationPanel(bool),
+    /// What the validator finds in the pending changes: the number of errors
+    /// and warnings (when given) and of findings per check id. Read from the
+    /// Validation section while it is showing (so this also tests that it
+    /// refreshes by itself), otherwise from a fresh run.
     Validation {
         errors: Option<usize>,
         warnings: Option<usize>,
@@ -273,9 +275,13 @@ pub enum Op {
         warnings: Option<usize>,
         checks: Vec<(String, usize)>,
     },
-    /// Press Show on a finding of the open Validate (or upload) dialog.
+    /// Click a finding's row in the side panel's Validation section.
     ShowFinding {
         target: FindingTarget,
+    },
+    /// Assert the Validation section is showing or hidden.
+    AssertValidationPanel {
+        shown: bool,
     },
     /// Assert exactly `count` features are selected.
     AssertSelectedCount {

@@ -754,7 +754,7 @@ validator:
   title: "Prüfung"
   menu: "Prüfen"
   close: "Schließen"
-  show: "Anzeigen"
+  show_in_panel: "In der Seitenleiste anzeigen"
   severity:
     error: "Fehler"
     warning: "Warnung"
@@ -770,7 +770,7 @@ validator:
   more:
     one: "… und %{count} weiteres nicht angezeigt"
     other: "… und %{count} weitere nicht angezeigt"
-  blocked: "Behebe die Fehler vor dem Hochladen. „Anzeigen“ findet jeden einzelnen."
+  blocked: "Behebe die Fehler vor dem Hochladen. Die Seitenleiste listet jeden einzelnen auf."
   warnings_note: "Warnungen verhindern das Hochladen nicht, sollten aber vorher geprüft werden."
   upload_anyway: "Trotzdem hochladen"
   feature:

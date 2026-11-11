@@ -19,6 +19,9 @@ use crate::{
     ToggleLayerVisibilityAction,
 };
 
+/// The least height the Selection zone keeps in a short window.
+const SELECTION_MIN_HEIGHT: f32 = 100.0;
+
 /// One membership of the selected feature in a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Membership {
@@ -68,6 +71,7 @@ impl MapViewer {
         let fields_section = self.render_fields_section(window, cx);
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
+        let validation_section = self.render_validation_section(window, cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
         let members_section = self.render_members_section(window, cx);
@@ -141,7 +145,14 @@ impl MapViewer {
                 div()
                     .id("side-panel-scroll")
                     .flex_1()
-                    .min_h(px(0.))
+                    // With Validation showing, a floor, so it and History
+                    // cannot squeeze the Selection out of a short window;
+                    // they shrink first. Otherwise the panel is as before.
+                    .min_h(px(if self.validation_shown() {
+                        SELECTION_MIN_HEIGHT
+                    } else {
+                        0.0
+                    }))
                     .overflow_y_scroll()
                     .bg(cx.theme().background)
                     .child(
@@ -218,9 +229,12 @@ impl MapViewer {
                             }),
                     ),
             )
+            // Validation, only after a validation was run: directly above
+            // History, and like it able to shrink to its header.
+            .children(validation_section)
             // Pinned to the bottom. It is the only zone besides the
-            // selection that may shrink (to its header) when the window is
-            // very short.
+            // selection and Validation that may shrink (to its header) when
+            // the window is very short.
             .child(
                 self.collapsible_section(
                     tr!("panel.history.title"),
@@ -739,11 +753,25 @@ impl MapViewer {
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        // Layers (0) and History (4) are zones of their own, like the
-        // selection: their headers are full-width tinted strips (see
+        self.collapsible_section_with(title, index, open, None, content, cx)
+    }
+
+    /// `collapsible_section` with `trailing` (if any) in the header after the
+    /// title; it should take the rest of the header's width (`flex_1`).
+    pub(crate) fn collapsible_section_with(
+        &self,
+        title: impl Into<gpui::SharedString>,
+        index: usize,
+        open: bool,
+        trailing: Option<gpui::AnyElement>,
+        content: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // Layers (0), History (4) and Validation (7) are zones of their own,
+        // like the selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
         // header and a hairline.
-        let document_level = index == 0 || index == 4;
+        let document_level = index == 0 || index == 4 || index == crate::validation_panel::SECTION;
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())
@@ -778,6 +806,7 @@ impl MapViewer {
                 .text_color(cx.theme().muted_foreground),
             )
             .child(title_label.font_weight(gpui::FontWeight::SEMIBOLD))
+            .children(trailing)
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
@@ -799,6 +828,11 @@ impl MapViewer {
                 // Members line up.
                 this.child(
                     div()
+                        // Validation may shrink in a short window: its body
+                        // gives up height too, and its list scrolls.
+                        .when(index == crate::validation_panel::SECTION, |this| {
+                            this.flex().flex_col().flex_shrink(1.).min_h(px(0.))
+                        })
                         .when(document_level, |this| this.px_2())
                         .when(!document_level, |this| this.px_3())
                         .pt_0p5()

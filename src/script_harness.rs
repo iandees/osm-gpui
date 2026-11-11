@@ -109,7 +109,7 @@ pub(crate) enum ScriptCommand {
     Export { path: std::path::PathBuf },
     /// Evaluate a read-only condition.
     Check(script::Check),
-    /// Press Show on a validator finding.
+    /// Click a validator finding's row in the side panel.
     ShowFinding(script::FindingTarget),
     /// Show a message in the status bar.
     Note(String),
@@ -623,49 +623,34 @@ impl MapViewer {
         Ok(())
     }
 
-    /// Press Show on a finding of the Validate dialog (or, failing that, the
-    /// upload dialog's list).
+    /// Click a finding's row in the side panel's Validation section (what a
+    /// click on it does: select the objects and zoom to them).
     fn script_show_finding(
         &mut self,
         target: &script::FindingTarget,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let find = |report: &osm_gpui::validator::Report| -> Result<usize, String> {
-            match target {
-                script::FindingTarget::Index(n) if *n < report.entries.len() => Ok(*n),
-                script::FindingTarget::Index(n) => Err(format!(
+        let Some(report) = self.shown_validation() else {
+            return Err("the Validation section is not showing (run `action Validate`)".into());
+        };
+        let index = match target {
+            script::FindingTarget::Index(n) if *n < report.entries.len() => *n,
+            script::FindingTarget::Index(n) => {
+                return Err(format!(
                     "there is no finding {n} (the list has {})",
                     report.entries.len()
-                )),
-                script::FindingTarget::Check(id) => report
-                    .entries
-                    .iter()
-                    .position(|e| e.finding.check.id() == id)
-                    .ok_or_else(|| format!("no finding of check {id}")),
+                ))
             }
+            script::FindingTarget::Check(id) => report
+                .entries
+                .iter()
+                .position(|e| e.finding.check.id() == id)
+                .ok_or_else(|| format!("no finding of check {id}"))?,
         };
-        // Deferred like the other dialog presses: the dialog's event is
-        // handled by this view, which is being rendered right now.
-        if let Some(dialog) = self.validate_dialog.clone() {
-            let index = find(dialog.read(cx).report())?;
-            window.defer(cx, move |_window, cx| {
-                dialog.update(cx, |dialog, cx| {
-                    dialog.press_show(index, cx);
-                });
-            });
-            return Ok(());
-        }
-        if let Some(dialog) = self.upload_dialog.clone() {
-            let index = find(dialog.read(cx).validation())?;
-            window.defer(cx, move |_window, cx| {
-                dialog.update(cx, |dialog, cx| {
-                    dialog.press_show_finding(index, cx);
-                });
-            });
-            return Ok(());
-        }
-        Err("neither the Validate dialog nor the upload dialog is open".into())
+        // Run from `render`, on this view itself: no deferral needed.
+        self.select_finding(index, cx);
+        Ok(())
     }
 
     fn script_resolve_conflict(
@@ -751,12 +736,26 @@ impl MapViewer {
                     ))
                 }
             }
+            Check::ValidationPanel(want) => {
+                if self.validation_shown() == *want {
+                    Ok(())
+                } else if *want {
+                    Err("the Validation section is not showing".into())
+                } else {
+                    Err("the Validation section is showing".into())
+                }
+            }
             Check::Validation {
                 errors,
                 warnings,
                 checks,
             } => {
-                let report = self.validation_report();
+                // The section's own list while it is showing, so that waiting
+                // for it to refresh after an edit is what is tested.
+                let report = self
+                    .shown_validation()
+                    .cloned()
+                    .unwrap_or_else(|| self.validation_report());
                 let mut wrong = Vec::new();
                 let mut compare = |what: &str, want: usize, got: usize| {
                     if want != got {
@@ -843,7 +842,6 @@ impl MapViewer {
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
-                    (DialogExpect::Validate, _) => self.validate_dialog.is_some(),
                     (DialogExpect::Find, _) => self.find_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
@@ -881,7 +879,6 @@ impl MapViewer {
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
-            None if self.validate_dialog.is_some() => "the Validate dialog".into(),
             None if self.find_dialog.is_some() => "the Find dialog".into(),
             None => "no dialog".into(),
         }

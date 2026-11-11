@@ -16,10 +16,9 @@ use gpui_component::{
 };
 
 use crate::osm_upload::{ConflictKind, UploadConflict};
-use crate::selection::FeatureRef;
 use crate::transfer::TransferHandle;
 use crate::ui::style::muted_text_size;
-use crate::ui::validation_list::{feature_refs, findings_list, summary_text};
+use crate::ui::validation_list::summary_text;
 use crate::validator::Report;
 use crate::{tr, tr_count};
 
@@ -81,9 +80,10 @@ pub enum DialogEvent {
         comment: String,
     },
     Cancelled,
-    /// User pressed Show on a validator finding: close the dialog, select
-    /// these objects and zoom to them.
-    ShowFindings(Vec<FeatureRef>),
+    /// User pressed "Show in side panel": close the dialog (keeping the
+    /// comment draft) and open the Validation section so the problems can be
+    /// fixed on the map.
+    ShowInSidePanel,
     /// User picked a way forward from a refused upload.
     Conflict {
         action: ConflictAction,
@@ -271,13 +271,13 @@ impl UploadDialog {
         &self.validation
     }
 
-    /// Press Show on finding `index` of the validation list (what a click
-    /// does). `false` when there is no such finding.
-    pub fn press_show_finding(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
-        let Some(entry) = self.validation.entries.get(index) else {
+    /// Press "Show in side panel" (what a click does). `false` when there is
+    /// nothing to show (the validator found no problems).
+    pub fn press_show_in_panel(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.validation.is_empty() {
             return false;
-        };
-        cx.emit(DialogEvent::ShowFindings(feature_refs(entry)));
+        }
+        cx.emit(DialogEvent::ShowInSidePanel);
         true
     }
 
@@ -485,7 +485,8 @@ impl Focusable for UploadDialog {
 impl UploadDialog {
     /// The validator's verdict: nothing at all when it has nothing to say
     /// about the changes, a discreet line when it found no problems, and
-    /// otherwise the counts, a note on what blocks and the scrolling list.
+    /// otherwise the counts, a note on what blocks and a button that opens
+    /// the list in the side panel (the list itself is not shown here).
     fn render_validation(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let muted = cx.theme().muted_foreground;
         let report = &self.validation;
@@ -507,24 +508,31 @@ impl UploadDialog {
         v_flex()
             .gap_1()
             .child(
-                Label::new(summary_text(report))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(headline_color),
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        Label::new(summary_text(report))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(headline_color),
+                    )
+                    .child(
+                        Button::new("upload-show-findings")
+                            .small()
+                            .label(tr!("validator.show_in_panel"))
+                            .on_click(cx.listener(|this, _, _w, cx| {
+                                this.press_show_in_panel(cx);
+                            })),
+                    ),
             )
             .child(
                 Label::new(note)
                     .text_size(muted_text_size())
                     .text_color(muted),
             )
-            .child(findings_list(
-                report,
-                "upload-findings",
-                gpui::px(180.0),
-                cx,
-                |this: &mut Self, index, cx| {
-                    this.press_show_finding(index, cx);
-                },
-            ))
             .into_any_element()
     }
 }
@@ -672,13 +680,8 @@ impl Render for UploadDialog {
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             );
 
-        let width = if self.validation.is_empty() {
-            420.0
-        } else {
-            520.0
-        };
         let frame = v_flex()
-            .w(gpui::px(width))
+            .w(gpui::px(420.0))
             .bg(cx.theme().popover)
             .border_1()
             .border_color(cx.theme().border)

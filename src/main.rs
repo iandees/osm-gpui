@@ -26,6 +26,7 @@ mod selection_actions;
 mod side_panel;
 mod status_bar;
 mod undo;
+mod validation_panel;
 mod welcome;
 
 use crate::menu::{
@@ -623,8 +624,9 @@ struct MapViewer {
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
-    /// Active Tools > Validate dialog, if open.
-    validate_dialog: Option<gpui::Entity<osm_gpui::ui::validate_dialog::ValidateDialog>>,
+    /// The side panel's Validation section, once Tools > Validate has run
+    /// (see `validation_panel.rs`).
+    validation: Option<validation_panel::ValidationPanel>,
     /// The changeset comment typed in the upload dialog, kept when the dialog
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
@@ -672,9 +674,9 @@ struct MapViewer {
     preset_picker_dialog:
         Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, by the indices `render_side_panel`
-    /// gives them) is expanded.
-    side_panel_open: [bool; 7],
+    /// Tags, History, Relations, Members, Validation, by the indices
+    /// `render_side_panel` gives them) is expanded.
+    side_panel_open: [bool; 8],
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
@@ -887,7 +889,7 @@ impl MapViewer {
             find_mode: Default::default(),
             about_dialog: None,
             upload_dialog: None,
-            validate_dialog: None,
+            validation: None,
             upload_comment_draft: String::new(),
             sign_in_dialog: None,
             notice_dialog: None,
@@ -910,7 +912,7 @@ impl MapViewer {
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true; 7],
+            side_panel_open: [true; 8],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -4616,45 +4618,11 @@ impl MapViewer {
     }
 
     /// Window-scoped handler for Tools > Validate.
-    fn on_validate(&mut self, _: &Validate, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_validate_dialog(window, cx);
+    fn on_validate(&mut self, _: &Validate, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_validation(cx);
     }
 
-    /// Tools > Validate: run the checks and list what they found, without
-    /// starting an upload.
-    pub(crate) fn open_validate_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.upload_dialog.is_some()
-            || self.validate_dialog.is_some()
-            || self.sign_in_dialog.is_some()
-            || self.notice_dialog.is_some()
-        {
-            return;
-        }
-        let report = self.validation_report();
-        self.set_status(if report.checked_changes {
-            osm_gpui::ui::validation_list::summary_text(&report)
-        } else {
-            tr!("validator.nothing_pending")
-        });
-        let dialog =
-            cx.new(|cx| osm_gpui::ui::validate_dialog::ValidateDialog::new(report, window, cx));
-        cx.subscribe(
-            &dialog,
-            |this, _entity, event: &osm_gpui::ui::validate_dialog::DialogEvent, cx| {
-                use osm_gpui::ui::validate_dialog::DialogEvent;
-                this.validate_dialog = None;
-                if let DialogEvent::Show(features) = event {
-                    this.show_features(features, cx);
-                }
-                cx.notify();
-            },
-        )
-        .detach();
-        self.validate_dialog = Some(dialog);
-        cx.notify();
-    }
-
-    /// Select `features` and zoom to them (a validator finding's Show).
+    /// Select `features` and zoom to them (a click on a validator finding).
     fn show_features(
         &mut self,
         features: &[osm_gpui::selection::FeatureRef],
@@ -4675,7 +4643,6 @@ impl MapViewer {
         cx: &mut Context<Self>,
     ) {
         if self.upload_dialog.is_some()
-            || self.validate_dialog.is_some()
             || self.sign_in_dialog.is_some()
             || self.notice_dialog.is_some()
         {
@@ -4774,9 +4741,9 @@ impl MapViewer {
                         // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
                     }
-                    DialogEvent::ShowFindings(features) => {
+                    DialogEvent::ShowInSidePanel => {
                         this.close_upload_dialog_keeping_draft(cx);
-                        this.show_features(features, cx);
+                        this.show_validation(cx);
                     }
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
@@ -5611,6 +5578,9 @@ impl Render for MapViewer {
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
+        // Re-run the validator (debounced) if the edits changed since the
+        // Validation section was last filled.
+        self.watch_validation(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
@@ -6404,7 +6374,6 @@ impl Render for MapViewer {
             .children(self.preset_picker_dialog.clone())
             .children(self.relation_picker_dialog.clone())
             .children(self.upload_dialog.clone())
-            .children(self.validate_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
             .children(self.render_context_menu(window, cx))
@@ -10358,59 +10327,255 @@ mod tests {
                     .is_some_and(|why| why.contains("validator")),
                 "an error blocks Upload"
             );
-            // Errors come first, so row 0 is the error on node 1.
-            dialog.update(cx, |d, cx| assert!(d.press_show_finding(0, cx)));
+            // The dialog shows a one-line summary, not the list; its button
+            // hands the list to the side panel.
+            assert!(!view.validation_shown());
+            dialog.update(cx, |d, cx| assert!(d.press_show_in_panel(cx)));
         });
-        // Show closes the dialog, selects the node and keeps the comment.
+        // "Show in side panel" closes the dialog (keeping the comment) and
+        // opens the Validation section with the same findings.
         view.update_in(vcx, |view, _window, _cx| {
             assert!(view.upload_dialog.is_none());
             assert_eq!(view.upload_comment_draft, "Add a node");
-            assert_eq!(view.selected.len(), 1);
-            assert_eq!(
-                (view.selected[0].kind, view.selected[0].id),
-                (osm_gpui::selection::FeatureKind::Node, 1)
-            );
+            let report = view.shown_validation().expect("the section opens");
+            assert_eq!((report.errors(), report.warnings()), (1, 1));
+            assert!(view.side_panel_open[validation_panel::SECTION]);
         });
     }
 
     #[gpui::test]
-    fn tools_validate_lists_findings_without_an_upload(cx: &mut TestAppContext) {
+    fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            // An old, untouched untagged way is not reported; a tagged new
+            // node is clean.
+            let id = view.active_layer.unwrap();
+            let layer = view
+                .layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap();
+            let node = layer.create_node(CENTER_LAT, CENTER_LON, None).unwrap();
+            layer.set_tag(
+                osm_gpui::selection::FeatureKind::Node,
+                node,
+                "amenity",
+                "cafe",
+            );
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            assert!(dialog.read(cx).validation().is_empty());
+            dialog.update(cx, |d, cx| assert!(!d.press_show_in_panel(cx)));
+            assert!(view.upload_dialog.is_some());
+            assert!(!view.validation_shown());
+        });
+    }
+
+    #[gpui::test]
+    fn tools_validate_shows_the_side_panel_section(cx: &mut TestAppContext) {
         use osm_gpui::selection::FeatureKind;
         let (view, vcx) = validation_view(cx);
-        // Nothing pending: the dialog says so.
-        view.update_in(vcx, |view, window, cx| {
-            view.open_validate_dialog(window, cx);
-            let dialog = view.validate_dialog.clone().expect("opens");
-            assert!(!dialog.read(cx).report().checked_changes);
+        // Never validated: no section, the panel is as before.
+        view.update_in(vcx, |view, _window, _cx| {
+            assert!(!view.validation_shown());
+        });
+        // Nothing pending: the section opens and says so (collapsed sections
+        // are expanded).
+        view.update_in(vcx, |view, _window, cx| {
+            view.side_panel_open[validation_panel::SECTION] = false;
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            let report = view.shown_validation().expect("shown");
+            assert!(!report.checked_changes);
             assert_eq!(
                 status_text(view),
                 Some("There are no pending changes to check.")
             );
-            dialog.update(cx, |d, cx| assert!(!d.press_show(0, cx)));
+            assert!(!view.select_finding(0, cx), "no such row");
         });
-        // A second request while it is open changes nothing.
-        view.update_in(vcx, |view, window, cx| {
-            let first = view.validate_dialog.clone().unwrap();
-            view.open_validate_dialog(window, cx);
-            assert_eq!(
-                view.validate_dialog.as_ref().unwrap().entity_id(),
-                first.entity_id()
-            );
-            view.validate_dialog = None;
+        // A pending change with a problem: counts, status, and a click on the
+        // row selects the node while the section stays.
+        view.update_in(vcx, |view, _window, cx| {
             make_pending_change(view);
-            view.open_validate_dialog(window, cx);
-            let dialog = view.validate_dialog.clone().unwrap();
-            assert_eq!(dialog.read(cx).report().warnings(), 1);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
             assert_eq!(status_text(view), Some("1 warning"));
-            // Show selects the new node and closes the dialog.
-            dialog.update(cx, |d, cx| assert!(d.press_show(0, cx)));
-        });
-        view.update_in(vcx, |view, _window, _cx| {
-            assert!(view.validate_dialog.is_none());
+            assert!(view.highlighted_finding().is_none());
+            assert!(view.select_finding(0, cx));
+            assert!(view.validation_shown());
             assert_eq!(view.selected.len(), 1);
             assert_eq!(view.selected[0].kind, FeatureKind::Node);
             assert!(view.selected[0].id < 0, "the new node");
+            assert_eq!(view.highlighted_finding(), Some(0));
+            // Selecting something else drops the highlight.
+            view.set_selection(vec![]);
+            assert_eq!(view.highlighted_finding(), None);
         });
+        // The close button removes it.
+        view.update_in(vcx, |view, _window, cx| {
+            view.close_validation(cx);
+            assert!(!view.validation_shown());
+        });
+    }
+
+    /// Stand-in for the bookkeeping every real edit does: the history step
+    /// bumps `undo_stack.revision`, which is what the watcher looks at.
+    fn record_edit(view: &mut MapViewer) {
+        view.undo_stack
+            .push(UndoableAction::SetTags { entries: vec![] });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_refreshes_itself_after_edits(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            record_edit(view);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            assert!(view.select_finding(0, cx));
+            assert_eq!(view.highlighted_finding(), Some(0));
+        });
+        vcx.run_until_parked();
+
+        // Fix the problem (tag the new node). Nothing happens at once: the
+        // refresh waits for the debounce.
+        let node = view.update_in(vcx, |view, _window, cx| {
+            let node = view.selected[0].id;
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            record_edit(view);
+            cx.notify();
+            node
+        });
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1, "not yet");
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY / 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(
+                view.shown_validation().unwrap().warnings(),
+                1,
+                "still waiting"
+            );
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            let report = view.shown_validation().unwrap();
+            assert_eq!(report.warnings(), 0, "the fixed problem is gone");
+            assert!(report.checked_changes);
+            assert_eq!(view.highlighted_finding(), None);
+        });
+
+        // A new problem appears by itself; a burst of edits is one refresh.
+        view.update_in(vcx, |view, _w, cx| {
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "note", "");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for _ in 0..3 {
+            vcx.executor()
+                .advance_clock(validation_panel::REFRESH_DELAY / 2);
+            vcx.run_until_parked();
+            view.update_in(vcx, |view, _w, cx| {
+                record_edit(view);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(
+                view.shown_validation().unwrap().errors(),
+                0,
+                "edits keep pushing the refresh back"
+            );
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().errors(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_ignores_changes_while_hidden_and_keeps_the_highlight(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            // Two warnings: a stray node and another.
+            make_pending_change(view);
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .create_node(CENTER_LAT + 0.0005, CENTER_LON, None)
+                .unwrap();
+            record_edit(view);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 2);
+            // Click the second row; the first is then fixed (deleted).
+            assert!(view.select_finding(1, cx));
+            assert_eq!(view.highlighted_finding(), Some(1));
+        });
+        view.update_in(vcx, |view, _w, cx| {
+            let first = view.shown_validation().unwrap().entries[0].finding.features[0];
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .delete_feature(FeatureKind::Node, first.1)
+                .expect("deleted");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            // The clicked finding moved up to row 0 and is still the
+            // highlighted one: findings are matched by check and objects.
+            assert_eq!(view.highlighted_finding(), Some(0));
+        });
+        // Closed: edits do not schedule anything.
+        view.update_in(vcx, |view, _w, cx| {
+            view.close_validation(cx);
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| assert!(!view.validation_shown()));
+    }
+
+    #[test]
+    fn the_findings_list_gets_a_bounded_share_of_the_window() {
+        use validation_panel::list_max_height;
+        assert_eq!(list_max_height(800.0), 224.0);
+        assert_eq!(list_max_height(300.0), 84.0);
+        assert_eq!(list_max_height(2000.0), 260.0);
     }
 
     #[gpui::test]

@@ -251,11 +251,18 @@ fn validation_ops() {
     assert!(parse("show_finding nope").is_err());
     assert!(parse("show_finding 1 2").is_err());
     assert_eq!(
-        op("assert_dialog validate"),
-        Op::AssertDialog {
-            expect: DialogExpect::Validate
-        }
+        op("assert_validation_panel shown"),
+        Op::AssertValidationPanel { shown: true }
     );
+    assert_eq!(
+        op("assert_validation_panel hidden"),
+        Op::AssertValidationPanel { shown: false }
+    );
+    assert!(parse("assert_validation_panel").is_err());
+    assert!(parse("assert_validation_panel open").is_err());
+    assert!(parse("assert_validation_panel shown hidden").is_err());
+    // The modal Validate dialog is gone.
+    assert!(parse("assert_dialog validate").is_err());
 }
 
 #[test]

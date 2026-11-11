@@ -183,6 +183,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "assert_selection" => parse_assert_selection(line_no, &rest),
         "assert_validation" => parse_assert_validation(line_no, &rest),
         "show_finding" => parse_show_finding(line_no, &rest),
+        "assert_validation_panel" => parse_assert_validation_panel(line_no, &rest),
         "export_layer" => match rest.as_slice() {
             [path] => Ok(Op::ExportLayer {
                 path: path.to_string(),
@@ -378,8 +379,20 @@ fn parse_show_finding(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     Ok(Op::ShowFinding { target })
 }
 
+/// `assert_validation_panel shown|hidden`.
+fn parse_assert_validation_panel(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    match rest {
+        ["shown"] => Ok(Op::AssertValidationPanel { shown: true }),
+        ["hidden"] => Ok(Op::AssertValidationPanel { shown: false }),
+        _ => Err(err(
+            line_no,
+            "assert_validation_panel: want shown or hidden",
+        )),
+    }
+}
+
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|validate|find|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|find|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -391,7 +404,6 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("sign_in", []) => DialogExpect::SignIn,
         ("notice", []) => DialogExpect::Notice,
         ("delete_layer", []) => DialogExpect::DeleteLayer,
-        ("validate", []) => DialogExpect::Validate,
         ("find", []) => DialogExpect::Find,
         ("conflict", words) => {
             let mut kind = None;

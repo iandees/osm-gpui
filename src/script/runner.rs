@@ -77,7 +77,7 @@ pub trait AppHandle {
     fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Evaluate a read-only condition on the app; `Err` says what it found.
     fn check(&mut self, check: &Check) -> Result<(), String>;
-    /// Press Show on a finding of the open Validate (or upload) dialog.
+    /// Click a finding's row in the side panel's Validation section.
     fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
     /// Show `message` in the status bar.
     fn note(&mut self, message: &str);
@@ -305,6 +305,9 @@ impl Runner {
             Op::ShowFinding { target } => app
                 .show_finding(target)
                 .map_err(|e| fail(format!("show_finding: {e}"))),
+            Op::AssertValidationPanel { shown } => app
+                .check(&Check::ValidationPanel(*shown))
+                .map_err(|e| fail(format!("assert_validation_panel: {e}"))),
             Op::AssertSelectedCount { count } => app
                 .check(&Check::SelectedCount(*count))
                 .map_err(|e| fail(format!("assert_selected_count: {e}"))),
@@ -518,6 +521,7 @@ fn describe(op: &Op) -> String {
             errors, warnings, checks
         ),
         Op::ShowFinding { target } => format!("show_finding {:?}", target),
+        Op::AssertValidationPanel { shown } => format!("assert_validation_panel {}", shown),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
         Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
         Op::ExportLayer { path } => format!("export_layer {}", path),

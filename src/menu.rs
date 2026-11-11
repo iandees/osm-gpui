@@ -156,7 +156,7 @@ pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
 // Global fallback for Tools > Validate, for the same reason as
 // `upload_to_osm`; the normal path is `MapViewer::on_validate`.
 pub(crate) fn validate(_: &Validate, cx: &mut App) {
-    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_validate_dialog(window, cx)));
+    cx.defer(|cx| with_map_viewer_in(cx, |v, _window, cx| v.show_validation(cx)));
 }
 
 // Global fallback for the `Quit` action, registered once at app startup
