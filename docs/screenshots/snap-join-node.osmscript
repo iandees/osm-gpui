@@ -1,5 +1,5 @@
-# Snapping a node onto a way: the highlight in Add mode. (The harness's drag
-# op cannot pause mid-drag, so the drag highlight is covered by unit tests.)
+# Snapping a node onto a way: the highlight in Add mode. The drag highlight,
+# Alt and joins are covered by snap-behaviour.osmscript.
 #
 # Coordinate model: the viewport center is at window (488, 388), see
 # select.osmscript. fixtures/snap-join-node.osm: a street along y = 388 from

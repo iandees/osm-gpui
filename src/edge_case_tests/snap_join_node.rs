@@ -427,3 +427,159 @@ fn add_mode_with_an_untagged_way_snaps_and_the_modifier_prevents_it(cx: &mut Tes
         assert_eq!(s.way_nodes(10).map(|n| n.len()), Some(3));
     });
 }
+
+// ---------------------------------------------------------------------------
+// Script support: positions, modifiers and the snap / topology checks
+
+fn held_move(to: gpui::Point<gpui::Pixels>, mods: Modifiers) -> MouseMoveEvent {
+    MouseMoveEvent {
+        position: win(to),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: mods,
+    }
+}
+
+#[gpui::test]
+fn script_positions_agree_with_the_map_transform(cx: &mut TestAppContext) {
+    use osm_gpui::script::{Point2, Where};
+    with_session(cx, scene(&road(), &[]), |s| {
+        let geo = s.view.script_window_point(Where::Geo {
+            lat: 40.0004,
+            lon: -74.0005,
+        });
+        // The same spot, as map-area pixels and as window pixels.
+        let map = screen(s, 40.0004, -74.0005);
+        let via_map = s.view.script_window_point(Where::Map(Point2 {
+            x: map.x.as_f32(),
+            y: map.y.as_f32(),
+        }));
+        let via_window = s.view.script_window_point(Where::Window(Point2 {
+            x: geo.x.as_f32(),
+            y: geo.y.as_f32(),
+        }));
+        for p in [via_map, via_window] {
+            assert!((p.x - geo.x).abs() < gpui::px(0.01), "{p:?} vs {geo:?}");
+            assert!((p.y - geo.y).abs() < gpui::px(0.01), "{p:?} vs {geo:?}");
+        }
+        // And the app's own window-to-map step undoes it.
+        let back = s.view.window_to_map(geo);
+        assert!((back.x - map.x).abs() < gpui::px(0.01));
+        assert!((back.y - map.y).abs() < gpui::px(0.01));
+    });
+}
+
+#[gpui::test]
+fn the_snap_check_reads_the_highlight(cx: &mut TestAppContext) {
+    use osm_gpui::script::SnapExpect;
+    with_session(cx, scene(&road(), &[]), |s| {
+        assert!(s.view.script_check_snap(SnapExpect::None).is_ok());
+        let from = screen(s, 40.0004, -74.0005);
+        let to = screen(s, 40.0, -74.0);
+        let on_node = screen(s, 40.0, -74.001);
+        s.view.set_selection(vec![s.feature(N, 3)]);
+        s.view.handle_map_mouse_down(from, Modifiers::none());
+        let cx = &mut *s.cx;
+        s.view
+            .handle_mouse_move(&held_move(to, Modifiers::none()), cx);
+        let way0 = SnapExpect::Way {
+            way: 10,
+            segment: 0,
+        };
+        assert!(s.view.script_check_snap(way0).is_ok());
+        let err = s.view.script_check_snap(SnapExpect::None).unwrap_err();
+        assert!(err.contains("Way"), "{err}");
+        assert!(s.view.script_check_snap(SnapExpect::Node(1)).is_err());
+        assert!(s
+            .view
+            .script_check_snap(SnapExpect::Way {
+                way: 10,
+                segment: 1
+            })
+            .is_err());
+
+        // Over a node of the way the highlight is that node.
+        s.view
+            .handle_mouse_move(&held_move(on_node, Modifiers::none()), cx);
+        assert!(s.view.script_check_snap(SnapExpect::Node(1)).is_ok());
+    });
+}
+
+#[gpui::test]
+fn pressing_and_releasing_alt_updates_the_highlight_without_a_mouse_move(cx: &mut TestAppContext) {
+    use osm_gpui::script::SnapExpect;
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::none()
+    };
+    // Hovering in Add mode.
+    with_session(cx, scene(&road(), &[]), move |s| {
+        s.view.mode = EditMode::Add;
+        let near = screen(s, 40.0, -74.0);
+        let at = point(near.x, near.y + gpui::px(2.0));
+        let cx = &mut *s.cx;
+        s.view.handle_mouse_move(
+            &MouseMoveEvent {
+                position: win(at),
+                pressed_button: None,
+                modifiers: Modifiers::none(),
+            },
+            cx,
+        );
+        let way0 = SnapExpect::Way {
+            way: 10,
+            segment: 0,
+        };
+        assert!(s.view.script_check_snap(way0).is_ok());
+        s.view.handle_modifiers_changed(alt, cx);
+        assert!(s.view.script_check_snap(SnapExpect::None).is_ok());
+        s.view.handle_modifiers_changed(Modifiers::none(), cx);
+        assert!(s.view.script_check_snap(way0).is_ok());
+    });
+}
+
+#[gpui::test]
+fn alt_during_a_node_drag_clears_and_restores_the_highlight(cx: &mut TestAppContext) {
+    use osm_gpui::script::SnapExpect;
+    with_session(cx, scene(&road(), &[]), |s| {
+        let from = screen(s, 40.0004, -74.0005);
+        let to = screen(s, 40.0, -74.0);
+        s.view.set_selection(vec![s.feature(N, 3)]);
+        s.view.handle_map_mouse_down(from, Modifiers::none());
+        let cx = &mut *s.cx;
+        s.view
+            .handle_mouse_move(&held_move(to, Modifiers::none()), cx);
+        let way0 = SnapExpect::Way {
+            way: 10,
+            segment: 0,
+        };
+        assert!(s.view.script_check_snap(way0).is_ok());
+        s.view.handle_modifiers_changed(
+            Modifiers {
+                alt: true,
+                ..Modifiers::none()
+            },
+            cx,
+        );
+        assert!(s.view.script_check_snap(SnapExpect::None).is_ok());
+        s.view.handle_modifiers_changed(Modifiers::none(), cx);
+        assert!(s.view.script_check_snap(way0).is_ok());
+    });
+}
+
+#[gpui::test]
+fn way_nodes_and_node_shared_checks_follow_a_drag_join(cx: &mut TestAppContext) {
+    with_session(cx, scene(&road(), &[]), |s| {
+        assert!(s.view.script_check_way_nodes(10, &[1, 2]).is_ok());
+        assert!(s.view.script_check_node_shared(3, &[]).is_ok());
+        let to = screen(s, 40.0, -74.0);
+        drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
+        assert!(s.view.script_check_way_nodes(10, &[1, 3, 2]).is_ok());
+        let err = s.view.script_check_way_nodes(10, &[1, 2]).unwrap_err();
+        assert!(err.contains("[1, 3, 2]"), "{err}");
+        assert!(s.view.script_check_node_shared(3, &[10]).is_ok());
+        assert!(s.view.script_check_node_shared(3, &[]).is_err());
+        assert!(s.view.script_check_node_shared(1, &[10]).is_ok());
+        assert!(s.view.script_check_way_nodes(99, &[1]).is_err());
+        assert!(s.view.script_check_node_shared(99, &[]).is_err());
+    });
+}

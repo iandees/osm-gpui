@@ -1,0 +1,176 @@
+# Snapping, end to end: a regression suite that drives the real pointer path
+# (hover, press, move, release, and Alt held on its own) and asserts what the
+# highlight targets (assert_snap) and what the data ends up as.
+#
+# Run it in one launch:
+#   cargo run --release -- --script docs/screenshots/snap-behaviour.osmscript
+# Screenshots go to out/snap-behaviour-*.png.
+#
+# fixtures/snap-behaviour.osm, around (40.7120, -74.0060) at zoom 18:
+#   road 8101  highway=residential along latitude 40.7120: 8001, 8002, 8003
+#   park 8102  leisure=park outline north of it (south edge at lat 40.7127)
+#   path 8103  highway=footway south of it: 8021 (west) .. 8022 (east)
+# Positions are written as geo:LAT,LON so nothing depends on pixel maths.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/snap-behaviour.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/snap-behaviour-01-start.png
+assert_mode select
+assert_snap none
+assert_way_nodes 8101 8001 8002 8003
+assert_way_nodes 8103 8021 8022
+assert_node_shared 8022 8103
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# 1. Dragging a footway end onto an incompatible way (a park outline): the
+#    highlight stays off, the release just moves the node, nothing is joined.
+drag_begin geo:40.7110,-74.0050
+drag_move geo:40.7127,-74.0060
+assert_snap none
+capture out/snap-behaviour-02-refused-on-park.png
+drag_end
+wait_idle 1s
+assert_way_nodes 8102 8011 8012 8013 8014 8011
+assert_node_shared 8022 8103
+assert_pending 1
+key cmd+z
+key escape
+wait_idle 1s
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# 2. Alt held during the drag turns the highlight off; letting go of Alt
+#    brings it back without moving the mouse (the Alt key refresh); a release
+#    with Alt held moves the node but does not join.
+drag_begin geo:40.7110,-74.0050
+drag_move geo:40.7120,-74.0050
+assert_snap way 8101 segment 1
+mod_down alt
+assert_snap none
+capture out/snap-behaviour-03-alt-held-mid-drag.png
+mod_up alt
+assert_snap way 8101 segment 1
+mod_down alt
+drag_end
+mod_up alt
+wait_idle 1s
+assert_way_nodes 8101 8001 8002 8003
+assert_node_shared 8022 8103
+key cmd+z
+key escape
+wait_idle 1s
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# 3. The mid-drag highlight, then the release joins the dragged node into the
+#    road at the right place: the footway end becomes a shared vertex.
+drag_begin geo:40.7110,-74.0050
+drag_move geo:40.7120,-74.0050
+assert_snap way 8101 segment 1
+capture out/snap-behaviour-04-mid-drag-highlight.png
+drag_end
+wait_idle 1s
+assert_snap none
+assert_way_nodes 8101 8001 8002 8022 8003
+assert_node_shared 8022 8101 8103
+assert_status_contains Joined
+capture out/snap-behaviour-05-joined.png
+key cmd+z
+key escape
+wait_idle 1s
+assert_way_nodes 8101 8001 8002 8003
+assert_node_shared 8022 8103
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# (Undo selects the nodes it touched, and dragging one of several selected
+# nodes moves them all without snapping, so each undo is followed by Escape.)
+# 4. The single-op drag (hover, press, move, release in one line) takes the
+#    same path and joins too. This is the form that used to do nothing.
+drag geo:40.7110,-74.0050 geo:40.7120,-74.0050 button=left
+wait_idle 1s
+assert_way_nodes 8101 8001 8002 8022 8003
+assert_node_shared 8022 8101 8103
+key cmd+z
+key escape
+wait_idle 1s
+assert_way_nodes 8101 8001 8002 8003
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# 5. Dragging a node onto another node merges them.
+drag_begin geo:40.7110,-74.0072
+drag_move geo:40.7120,-74.0080
+assert_snap node 8001
+capture out/snap-behaviour-06-mid-drag-node.png
+drag_end
+wait_idle 1s
+capture out/snap-behaviour-07-merged.png
+# The dropped node survives and takes the road's end node's place.
+assert_node_shared 8021 8101 8103
+assert_way_nodes 8101 8021 8002 8003
+key cmd+z
+key escape
+wait_idle 1s
+assert_way_nodes 8103 8021 8022
+assert_node_shared 8001 8101
+assert_pending 0
+
+# ---------------------------------------------------------------------------
+# 6. Add mode, nothing drawn yet: the hover highlights the segment under the
+#    pointer, ways of any kind, and nothing when no way is in reach.
+key a
+wait_idle 1s
+assert_mode add
+hover geo:40.7120,-74.0050
+assert_snap way 8101 segment 1
+capture out/snap-behaviour-08-add-hover-road.png
+hover geo:40.7120,-74.0070
+assert_snap way 8101 segment 0
+hover geo:40.7127,-74.0060
+assert_snap way 8102 segment 0
+hover geo:40.7116,-74.0060
+assert_snap none
+
+# Alt on its own, pointer standing still: off, and back on at release.
+hover geo:40.7120,-74.0050
+assert_snap way 8101 segment 1
+mod_down alt
+assert_snap none
+capture out/snap-behaviour-09-add-alt-held.png
+mod_up alt
+assert_snap way 8101 segment 1
+hover geo:40.7120,-74.0050 alt=true
+assert_snap none
+hover geo:40.7120,-74.0050
+assert_snap way 8101 segment 1
+
+# ---------------------------------------------------------------------------
+# 7. Creating a way in Add mode: the first click snaps onto the road (a new
+#    shared vertex), the second is free, and once the way is a footway it
+#    snaps to the road but no longer to the park outline.
+click geo:40.7120,-74.0050
+wait_idle 1s
+assert_pending 2
+click geo:40.7114,-74.0050
+wait_idle 1s
+assert_selection way
+set_tag highway footway
+hover geo:40.7120,-74.0060
+assert_snap node 8002
+hover geo:40.7127,-74.0060
+assert_snap none
+capture out/snap-behaviour-10-footway-refuses-park.png
+hover geo:40.7120,-74.0070
+assert_snap way 8101 segment 0
+capture out/snap-behaviour-11-footway-snaps-road.png
+key escape
+wait_idle 1s
+
+key s
+wait_idle 1s
+assert_mode select
+log snap-behaviour done

@@ -13,24 +13,30 @@ use crate::script::{AutosaveCmd, Check, Op, Step};
 pub trait AppHandle {
     fn set_window_size(&mut self, w: u32, h: u32);
     fn set_viewport(&mut self, lat: f64, lon: f64, zoom: f32);
-    fn dispatch_drag(
-        &mut self,
-        from: (f32, f32),
-        to: (f32, f32),
-        duration: Duration,
-        left: bool,
-        mods: crate::script::DragMods,
-    );
+    /// Pan the map by dragging with the right button from `from` to `to`.
+    fn dispatch_pan_drag(&mut self, from: crate::script::Where, to: crate::script::Where);
+    /// A press and release of one button. `mods` are added to any modifiers
+    /// held with `set_held_modifiers`.
     fn dispatch_click(
         &mut self,
-        at: (f32, f32),
+        at: crate::script::Where,
         button: crate::script::MouseButton,
         count: u8,
-        ctrl: bool,
+        mods: crate::script::Mods,
     );
     fn dispatch_scroll(&mut self, at: (f32, f32), dx: f32, dy: f32);
-    /// Move the mouse to `at` with no button held.
-    fn dispatch_hover(&mut self, at: (f32, f32));
+    /// One mouse event with the left button (a hover, the press, a move with
+    /// the button held, the release), the way the OS delivers it. `at` of
+    /// `None` is where the pointer last was.
+    fn dispatch_pointer(
+        &mut self,
+        kind: crate::script::PointerKind,
+        at: Option<crate::script::Where>,
+        mods: crate::script::Mods,
+    );
+    /// Press (`down`) or release modifier keys with no other input. They
+    /// count as held for every pointer event until released.
+    fn set_held_modifiers(&mut self, mods: crate::script::Mods, down: bool);
     fn dispatch_key(&mut self, chord: &crate::script::Chord);
     /// Dispatch the named action (as a native menu item would). Errors if
     /// the name is not a registered action.
@@ -204,28 +210,86 @@ impl Runner {
             Op::Drag {
                 from,
                 to,
-                duration,
-                left,
-                mods,
+                left: false,
+                ..
             } => {
-                app.dispatch_drag((from.x, from.y), (to.x, to.y), *duration, *left, *mods);
+                app.dispatch_pan_drag(*from, *to);
+                Ok(())
+            }
+            Op::Drag {
+                from,
+                to,
+                duration,
+                mods,
+                ..
+            } => {
+                // What a real mouse does: arrive (so hover state, such as the
+                // vertices a hovered way offers for grabbing, is up to date
+                // when the button goes down), press, move, release. Each event
+                // gets its own frame.
+                use crate::script::PointerKind::*;
+                let pause = (*duration / 2).min(Duration::from_millis(250));
+                let frame = |app: &mut A| {
+                    app.wait_frame();
+                    app.wait_frame();
+                };
+                app.dispatch_pointer(Hover, Some(*from), *mods);
+                frame(app);
+                app.dispatch_pointer(Press, Some(*from), *mods);
+                frame(app);
+                app.dispatch_pointer(HeldMove, Some(*to), *mods);
+                frame(app);
+                std::thread::sleep(pause);
+                app.dispatch_pointer(Release, Some(*to), *mods);
+                frame(app);
+                Ok(())
+            }
+            Op::Pointer { kind, at, mods } => {
+                // A person's pointer arrives before the button goes down, and
+                // arriving is what makes a way's vertices grabbable (hover
+                // state), so `drag_begin` does the same.
+                if let (crate::script::PointerKind::Press, Some(at)) = (kind, at) {
+                    app.dispatch_pointer(crate::script::PointerKind::Hover, Some(*at), *mods);
+                    app.wait_frame();
+                    app.wait_frame();
+                }
+                app.dispatch_pointer(*kind, *at, *mods);
+                app.wait_frame();
+                app.wait_frame();
+                Ok(())
+            }
+            Op::Modifiers { mods, down } => {
+                app.set_held_modifiers(*mods, *down);
+                app.wait_frame();
+                app.wait_frame();
                 Ok(())
             }
             Op::Click {
                 at,
                 button,
                 count,
-                ctrl,
+                mods,
             } => {
-                app.dispatch_click((at.x, at.y), *button, *count, *ctrl);
+                app.dispatch_click(*at, *button, *count, *mods);
                 Ok(())
             }
+            Op::AssertSnap { expect } => app
+                .check(&Check::Snap(*expect))
+                .map_err(|e| fail(format!("assert_snap: {e}"))),
+            Op::AssertWayNodes { way, nodes } => app
+                .check(&Check::WayNodes {
+                    way: *way,
+                    nodes: nodes.clone(),
+                })
+                .map_err(|e| fail(format!("assert_way_nodes: {e}"))),
+            Op::AssertNodeShared { node, ways } => app
+                .check(&Check::NodeShared {
+                    node: *node,
+                    ways: ways.clone(),
+                })
+                .map_err(|e| fail(format!("assert_node_shared: {e}"))),
             Op::Scroll { at, dx, dy } => {
                 app.dispatch_scroll((at.x, at.y), *dx, *dy);
-                Ok(())
-            }
-            Op::Hover { at } => {
-                app.dispatch_hover((at.x, at.y));
                 Ok(())
             }
             Op::Key { chord } => {
@@ -698,10 +762,19 @@ fn describe(op: &Op) -> String {
             at,
             button,
             count,
-            ctrl,
-        } => format!("click {:?} {:?} count={} ctrl={}", at, button, count, ctrl),
+            mods,
+        } => format!(
+            "click {:?} {:?} count={} mods={:?}",
+            at, button, count, mods
+        ),
+        Op::Pointer { kind, at, mods } => format!("pointer {:?} {:?} mods={:?}", kind, at, mods),
+        Op::Modifiers { mods, down } => {
+            format!("{} {:?}", if *down { "mod_down" } else { "mod_up" }, mods)
+        }
+        Op::AssertSnap { expect } => format!("assert_snap {:?}", expect),
+        Op::AssertWayNodes { way, nodes } => format!("assert_way_nodes {way} {nodes:?}"),
+        Op::AssertNodeShared { node, ways } => format!("assert_node_shared {node} {ways:?}"),
         Op::Scroll { at, dx, dy } => format!("scroll {:?} dx={} dy={}", at, dx, dy),
-        Op::Hover { at } => format!("hover {:?}", at),
         Op::Key { chord } => format!("key {:?}", chord),
         Op::Action { name } => format!("action {}", name),
         Op::Capture { path } => format!("capture {}", path),
@@ -798,18 +871,31 @@ mod tests {
     impl AppHandle for Fake {
         fn set_window_size(&mut self, _w: u32, _h: u32) {}
         fn set_viewport(&mut self, _lat: f64, _lon: f64, _zoom: f32) {}
-        fn dispatch_drag(
-            &mut self,
-            _: (f32, f32),
-            _: (f32, f32),
-            _: Duration,
-            _: bool,
-            _: crate::script::DragMods,
-        ) {
+        fn dispatch_pan_drag(&mut self, _: crate::script::Where, _: crate::script::Where) {
+            self.calls.push("pan".to_string());
         }
-        fn dispatch_click(&mut self, _: (f32, f32), _: MouseButton, _: u8, _: bool) {}
+        fn dispatch_click(
+            &mut self,
+            _: crate::script::Where,
+            _: MouseButton,
+            _: u8,
+            mods: crate::script::Mods,
+        ) {
+            self.calls.push(format!("click {mods:?}"));
+        }
         fn dispatch_scroll(&mut self, _: (f32, f32), _: f32, _: f32) {}
-        fn dispatch_hover(&mut self, _: (f32, f32)) {}
+        fn dispatch_pointer(
+            &mut self,
+            kind: crate::script::PointerKind,
+            at: Option<crate::script::Where>,
+            mods: crate::script::Mods,
+        ) {
+            self.calls
+                .push(format!("pointer {kind:?} {} {mods:?}", at.is_some()));
+        }
+        fn set_held_modifiers(&mut self, mods: crate::script::Mods, down: bool) {
+            self.calls.push(format!("held {down} {mods:?}"));
+        }
         fn dispatch_key(&mut self, _: &Chord) {}
         fn dispatch_action(&mut self, _: &str) -> Result<(), String> {
             Ok(())
@@ -1043,6 +1129,100 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_left_drag_arrives_presses_moves_and_releases_in_that_order() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps("drag 1,2 geo:40,-74 button=left alt=true"),
+            )
+            .unwrap();
+        let alt = "Mods { alt: true, ctrl: false, shift: false, cmd: false }";
+        assert_eq!(
+            fake.calls,
+            vec![
+                format!("pointer Hover true {alt}"),
+                format!("pointer Press true {alt}"),
+                format!("pointer HeldMove true {alt}"),
+                format!("pointer Release true {alt}"),
+            ]
+        );
+        // Every event had frames to take effect in.
+        assert!(fake.frames_waited >= 8, "{}", fake.frames_waited);
+    }
+
+    #[test]
+    fn a_pan_drag_is_one_call() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner.run(&mut fake, &steps("drag 1,2 3,4")).unwrap();
+        assert_eq!(fake.calls, vec!["pan".to_string()]);
+    }
+
+    #[test]
+    fn a_split_drag_can_be_checked_between_its_steps() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps(
+                    "drag_begin 1,2\ndrag_move 3,4\nassert_snap way 10 segment 0\n\
+                     capture x.png\ndrag_end alt=true",
+                ),
+            )
+            .unwrap();
+        let kinds: Vec<&str> = fake
+            .calls
+            .iter()
+            .map(|c| c.split_whitespace().next().unwrap())
+            .collect();
+        // The pointer arrives (hover), then the press, the move, the check,
+        // and the release.
+        assert_eq!(kinds, ["pointer", "pointer", "pointer", "check", "pointer"]);
+        assert!(fake.calls[0].starts_with("pointer Hover true"));
+        assert!(fake.calls[1].starts_with("pointer Press true"));
+        assert!(fake.calls[3].contains("Snap(Way { way: 10, segment: 0 })"));
+        // `drag_end` with no position releases where the pointer is.
+        assert!(fake.calls[4].starts_with("pointer Release false"));
+    }
+
+    #[test]
+    fn modifier_ops_and_inline_modifiers_reach_the_app() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps("mod_down alt\nhover 1,2\nclick 3,4 shift=true\nmod_up alt"),
+            )
+            .unwrap();
+        assert!(fake.calls[0].starts_with("held true Mods { alt: true"));
+        assert!(fake.calls[1].starts_with("pointer Hover true"));
+        assert!(fake.calls[2].contains("shift: true"));
+        assert!(fake.calls[3].starts_with("held false Mods { alt: true"));
+    }
+
+    #[test]
+    fn the_new_asserts_reach_the_app_and_a_failure_names_its_line() {
+        let (mut fake, runner) = fake_on(DEV);
+        runner
+            .run(
+                &mut fake,
+                &steps(
+                    "assert_snap none\nassert_snap node 5\nassert_way_nodes 10 1 2\n\
+                     assert_node_shared 2 10",
+                ),
+            )
+            .unwrap();
+        assert_eq!(fake.calls.len(), 4);
+        assert!(fake.calls[3].contains("NodeShared { node: 2, ways: [10] }"));
+        fake.check_result = Err("nope".into());
+        let e = runner
+            .run(&mut fake, &steps("log hi\nassert_way_nodes 10 1"))
+            .unwrap_err();
+        assert_eq!(e.line_no, 2);
+        assert!(e.message.starts_with("assert_way_nodes:"), "{}", e.message);
     }
 
     #[test]

@@ -163,6 +163,24 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and pull request gui
 cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
+**Pointer, modifier and snapping ops.** Where an op takes a position it is `X,Y` (window pixels), `map:X,Y` (pixels in the map area) or `geo:LAT,LON` (put on screen by the current viewport). Modifiers are `alt=true`, `ctrl=true`, `shift=true`, `cmd=true`.
+
+| Op | Meaning |
+|---|---|
+| `hover POS [mods]` | Move the pointer with no button held (updates hover and the snap highlight). |
+| `click POS [button=left\|right] [count=N] [mods]` | Press and release in the current edit mode. |
+| `drag POS POS button=left [mods]` | Hover, press, move, release, as a real mouse would. Without `button=left` it pans the map. |
+| `drag_begin POS [mods]` | Arrive at POS, then press the left button. |
+| `drag_move POS [mods]` | Move with the button held; a `capture` or assert may follow. |
+| `drag_end [POS] [mods]` | Release (at POS, or where the pointer is). |
+| `mod_down KEY...`, `mod_up KEY...` | Press or release `alt`, `ctrl`, `shift`, `cmd` or `all` on their own; held keys apply to every later pointer op. A key press refreshes the snap highlight without a mouse move. |
+| `assert_snap none\|node ID\|way ID segment N` | What the snap highlight targets now. |
+| `assert_way_nodes WAY ID...` | The way's nodes, in order. |
+| `assert_node_shared NODE [WAY...]` | Exactly these ways use the node. |
+| `assert_status_contains TEXT` | The status bar contains the text. |
+
+Dragging a node needs it to be the only thing moved: a press on an unselected vertex of a hovered way grabs just that node, but a press on one of several selected nodes moves them all (and never snaps). Undo selects what it touched, so press `escape` after `key cmd+z` before dragging again. `docs/screenshots/snap-behaviour.osmscript` is a regression suite for snapping built from these ops.
+
 Other flags are `--window-size WxH`, `--keep-open` (stay open after the last step), and `--language <tag>`. Windows release builds have no console, so run the harness from a debug build there to see its output.
 
 **In-window menu bar.** Windows and Linux have no native menu bar from GPUI, so the app draws one as the top row of the window there, built from the same menu definition as the macOS menu. To see it on macOS (in addition to the native menu), set `OSM_GPUI_IN_WINDOW_MENU=1`; `docs/screenshots/in-window-menu.osmscript` drives it:
