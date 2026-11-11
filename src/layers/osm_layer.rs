@@ -1055,21 +1055,32 @@ fn paint_node_marker(window: &mut Window, screen_point: Point<Pixels>, style: No
     ));
 }
 
-/// The simple form of a tagged node at low zoom: a small filled square, no
-/// casing, as two triangles of the frame's shared `path`.
+/// The simple form of a tagged node at low zoom: a tiny empty square of outer
+/// edge `edge` with a `SIMPLE_STROKE` outline, as four thin rectangles (eight
+/// triangles) of the frame's shared `path`. The corner is snapped to half a
+/// logical pixel, a whole device pixel on a 2x display, so the lines stay
+/// crisp.
 fn push_simple_node_marker(
     path: &mut Option<Path<Pixels>>,
     bounds_min_max: &mut (f32, f32, f32, f32),
     center: Point<Pixels>,
     edge: f32,
 ) {
-    let h = px(edge / 2.0);
-    let tl = point(center.x - h, center.y - h);
-    let tr = point(center.x + h, center.y - h);
-    let bl = point(center.x - h, center.y + h);
-    let br = point(center.x + h, center.y + h);
-    push_triangle(path, bounds_min_max, tl, tr, bl);
-    push_triangle(path, bounds_min_max, tr, br, bl);
+    let snap = |v: f32| (v * 2.0).round() / 2.0;
+    let x0 = snap(f32::from(center.x) - edge / 2.0);
+    let y0 = snap(f32::from(center.y) - edge / 2.0);
+    let (x1, y1) = (x0 + edge, y0 + edge);
+    let s = node_markers::SIMPLE_STROKE;
+    let mut rect = |l: f32, t: f32, r: f32, b: f32| {
+        let (tl, tr) = (point(px(l), px(t)), point(px(r), px(t)));
+        let (bl, br) = (point(px(l), px(b)), point(px(r), px(b)));
+        push_triangle(path, bounds_min_max, tl, tr, bl);
+        push_triangle(path, bounds_min_max, tr, br, bl);
+    };
+    rect(x0, y0, x1, y0 + s); // top
+    rect(x0, y1 - s, x1, y1); // bottom
+    rect(x0, y0 + s, x0 + s, y1 - s); // left
+    rect(x1 - s, y0 + s, x1, y1 - s); // right
 }
 
 /// Extra half-width of a route overlay line beyond the way's casing, in
@@ -7882,13 +7893,13 @@ mod tests {
     #[test]
     fn simple_tagged_node_is_a_target_at_low_zoom() {
         let layer = way_with_poi_layer(60);
-        for z in [12.0, 15.0] {
+        for z in [12.0, 16.0] {
             // Not drawn, so not a target.
             let vp = view_at(z);
             let hits = layer.hit_test(&vp, node_point(&layer, &vp, 1000));
             assert!(hits.iter().all(|h| h.feature.id != 1000), "z{z}");
         }
-        for z in [node_markers::TAGGED_MIN_ZOOM, 17.0] {
+        for z in [node_markers::TAGGED_MIN_ZOOM, 17.5] {
             let vp = view_at(z);
             let hits = layer.hit_test(&vp, node_point(&layer, &vp, 1000));
             assert_eq!(hits[0].kind, FeatureKind::Node, "z{z}");
