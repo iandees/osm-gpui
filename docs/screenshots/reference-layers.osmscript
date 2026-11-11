@@ -1,0 +1,54 @@
+# GPX and GeoJSON reference layers over the OSM Carto tiles, with OSM data.
+#
+# Map area in a 1200x800 window: origin (56, 0), 864x776, centre (488, 388).
+# At zoom 17 one degree of longitude is 93206 px and one degree of latitude
+# 122900 px at this latitude, centred on (40.7120, -74.0060):
+#   GPX vertex (40.7125, -74.0040)   -> window (674, 326)
+#   GPX segment midpoint ~(40.71175, -74.0050) -> window (581, 419)
+#   GeoJSON cafe (40.7135, -74.0095) -> window (162, 204)
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+action AddOsmCarto
+load_file docs/screenshots/fixtures/select.osm
+load_file docs/screenshots/fixtures/reference-track.gpx
+load_file docs/screenshots/fixtures/reference-places.geojson
+viewport 40.7120 -74.0060 17
+wait_idle 15s
+
+# Carto, the two reference layers, then the OSM data on top.
+assert_layer_count 4
+assert_layer gpx reference-track
+assert_layer geojson reference-places
+assert_layer osm select
+capture out/reference-1-layers.png
+
+# Click the GPX track: its name appears in the status bar.
+click 581,421
+wait_idle 1s
+assert_status_contains Morning walk
+capture out/reference-2-click-track.png
+
+# Click the GeoJSON cafe: name and properties.
+click 162,204
+wait_idle 1s
+assert_status_contains amenity=cafe
+capture out/reference-3-click-point.png
+
+# Hide the GeoJSON layer (index 2).
+action layers::ToggleLayerVisibilityAction {"index":2}
+wait_idle 1s
+capture out/reference-4-geojson-hidden.png
+action layers::ToggleLayerVisibilityAction {"index":2}
+wait_idle 1s
+
+# Add mode: a click 2 px from a GPX vertex creates an OSM node exactly on it.
+action mode::SetMode {"mode":"Add"}
+wait_idle 1s
+assert_mode add
+click 676,328
+wait_idle 1s
+assert_pending 1
+assert_selected_at 40.7125 -74.0040 tol=0.2
+capture out/reference-5-snapped.png

@@ -13,7 +13,7 @@ mod upload_op_tests;
 
 pub use op::{
     AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode,
-    FeatureKind, FindingTarget, MouseButton, NativeAppearanceWant, Op, Point2, SelectionKind, Step,
-    UploadDialogCmd,
+    FeatureKind, FindingTarget, LayerKind, MouseButton, NativeAppearanceWant, Op, Point2,
+    SelectionKind, Step, UploadDialogCmd,
 };
 pub use parser::{parse, ParseError};

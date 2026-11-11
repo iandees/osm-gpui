@@ -56,7 +56,7 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     (x, y)
 }
 
-fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
+pub fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
     let lon = x * 180.0 / 20037508.34;
     let lat = (2.0 * (y * PI / 20037508.34).exp().atan() - PI / 2.0) * 180.0 / PI;
 

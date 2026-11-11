@@ -244,6 +244,27 @@ impl Runner {
                 })?;
                 Ok(())
             }
+            // The live app routes by file type (see `LiveApp::load_osm`).
+            Op::LoadFile { path } => app
+                .load_osm(std::path::Path::new(path))
+                .map_err(|e| fail(format!("load_file: {e}"))),
+            Op::AssertLayer { kind, name } => app
+                .check(&Check::Layer {
+                    kind: *kind,
+                    name: name.clone(),
+                })
+                .map_err(|e| fail(format!("assert_layer: {e}"))),
+            Op::AssertSelectedAt {
+                lat,
+                lon,
+                tolerance_m,
+            } => app
+                .check(&Check::SelectedAt {
+                    lat: *lat,
+                    lon: *lon,
+                    tolerance_m: *tolerance_m,
+                })
+                .map_err(|e| fail(format!("assert_selected_at: {e}"))),
             Op::AssertMode { mode } => {
                 app.assert_mode(*mode).map_err(|e| RunError {
                     line_no: step.line_no,
@@ -591,6 +612,9 @@ fn describe(op: &Op) -> String {
         Op::Log { message } => format!("log {}", message),
         Op::FrameStats { label } => format!("frame_stats {}", label),
         Op::LoadOsm { path } => format!("load_osm {}", path),
+        Op::LoadFile { path } => format!("load_file {}", path),
+        Op::AssertLayer { kind, name } => format!("assert_layer {:?} {}", kind, name),
+        Op::AssertSelectedAt { lat, lon, .. } => format!("assert_selected_at {lat} {lon}"),
         Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
         Op::AssertSelected { feature } => format!("assert_selected {:?}", feature),
         Op::Type { text } => format!("type {}", text),
