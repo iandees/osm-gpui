@@ -1,5 +1,19 @@
 //! Shared styling constants and row builders for the app's side panels.
 //!
+//! The type scale (sizes follow the user's text-size setting, see
+//! [`TextScale`]; the window root sets the body size, so plain text inherits it):
+//! - dialog title: body, semibold ([`crate::ui::modal::dialog_frame`])
+//! - dialog and side-panel body text, control text (checkbox labels, links):
+//!   body ([`body_text_size`])
+//! - field labels, helper lines, counters, dates, captions: muted
+//!   ([`muted_text_size`]) in `muted_foreground`
+//! - side-panel section headers: body, semibold
+//! - buttons: dialog footers use the default size; inline buttons in dialog
+//!   and side-panel bodies are `.small()` (`.ghost()` for secondary actions,
+//!   left-aligned in a `div().flex().flex_row()`); per-row icon buttons are
+//!   `.xsmall()`
+//! - links: [`link`]
+//!
 //! Conventions enforced here (see docs/superpowers/specs/2026-07-07-ui-consistency-design.md):
 //! - Panel list rows are built with [`panel_row`] / [`interactive_row`] so
 //!   height, padding, rounding, and hover/selected states match across
@@ -16,7 +30,7 @@
 //!   `on_mouse_down` divs; they have not yet been converted.
 
 use crate::settings_store::{self, TextSizePreset};
-use gpui::{div, prelude::*, px, App, Div, ElementId, Pixels, Rgba, Stateful};
+use gpui::{div, prelude::*, px, App, Div, ElementId, Pixels, Rgba, SharedString, Stateful};
 use gpui_component::ActiveTheme as _;
 
 /// Default width of the right-hand side panel. The live width is
@@ -82,6 +96,29 @@ pub fn current_text_scale() -> TextScale {
 /// proportionally with the current text size setting.
 pub fn muted_text_size() -> Pixels {
     current_text_scale().muted
+}
+
+/// Size for normal body text: the window default, and what a control's own
+/// text (a checkbox label, a link) must use. `gpui-component` widgets pick
+/// their own fixed sizes (a default `Button` and `Checkbox` are 16px, `.small()`
+/// 14px, `.xsmall()` 12px), so they have to be pinned to it.
+pub fn body_text_size() -> Pixels {
+    current_text_scale().body
+}
+
+/// A text link that opens something on the website: link colour, underlined
+/// on hover, inline (so it sits left-aligned with the text around it and
+/// inherits that text's size). The caller adds `.on_click(...)`. Use this for
+/// every "open on openstreetmap.org", changeset and user link.
+pub fn link(id: impl Into<ElementId>, text: impl Into<SharedString>, cx: &App) -> Stateful<Div> {
+    let color = cx.theme().link;
+    let hover = cx.theme().link_hover;
+    div()
+        .id(id)
+        .cursor_pointer()
+        .text_color(color)
+        .hover(move |this| this.text_color(hover).underline())
+        .child(text.into())
 }
 
 /// The one semi-transparent black used behind every modal dialog.
