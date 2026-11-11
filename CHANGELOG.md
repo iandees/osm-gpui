@@ -7,6 +7,33 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.6.0
+
+### Fixes
+
+- Linux: the app no longer panics with "RefCell already borrowed" when the desktop reports its light or dark appearance, which could happen right after launch in 0.5.0. ([#167](https://github.com/iandees/osm-gpui/pull/167))
+- macOS: the window title bar and other system chrome follow the app's theme instead of staying light or dark with the system. ([#164](https://github.com/iandees/osm-gpui/pull/164))
+- Zoom to Selection on a single node or a perfectly straight horizontal or vertical way zooms in on it instead of out to about a kilometre. ([#160](https://github.com/iandees/osm-gpui/pull/160))
+- Newlines and tabs in tag values are escaped in exported files and uploads instead of being turned into spaces by readers. ([#161](https://github.com/iandees/osm-gpui/pull/161))
+
+### Editing
+
+- Edit > Find (Cmd/Ctrl+F) selects features with a query such as `highway=residential -name=*`, `type:way nodes:10-` or `modified`, with a live match count and replace, add, remove and find-in-selection modes. ([#162](https://github.com/iandees/osm-gpui/pull/162))
+- A validator checks the objects you created or changed before upload: errors block the upload, warnings can be uploaded anyway. Tools > Validate lists the problems in the side panel, where clicking one selects it and the list updates as you fix things. ([#160](https://github.com/iandees/osm-gpui/pull/160))
+- Layers with unsaved edits are autosaved, and the app offers to restore them at the next start after a crash or force quit. Autosave can be turned off in Settings. ([#161](https://github.com/iandees/osm-gpui/pull/161))
+- Imagery > Adjust imagery offset shifts an imagery layer by dragging, arrow keys or typed metres; the offset is shown in the Layers list and remembered near where it was set. ([#159](https://github.com/iandees/osm-gpui/pull/159))
+
+### Map drawing
+
+- Way vertices without tags are drawn only when the node or its way is selected, so select a way to see and move its vertices. Tagged nodes are hidden below zoom 17 and drawn as tiny empty squares at zoom 17. ([#158](https://github.com/iandees/osm-gpui/pull/158))
+- Ways are drawn with joined corners and rounded ends from zoom 16, so bends and roads split into several ways look continuous. ([#169](https://github.com/iandees/osm-gpui/pull/169))
+- Ways are drawn much faster on large downloads, with simplified geometry and fewer details when zoomed out. ([#157](https://github.com/iandees/osm-gpui/pull/157))
+
+### Interface
+
+- Settings > Appearance has an Invert scroll zoom switch for the mouse wheel. ([#166](https://github.com/iandees/osm-gpui/pull/166))
+- The welcome card has a close button; Settings > Appearance > Show welcome card brings it back. ([#163](https://github.com/iandees/osm-gpui/pull/163))
+
 ## 0.5.0
 
 ### Windows and Linux
