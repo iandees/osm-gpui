@@ -31,6 +31,7 @@ file.
 
 ### Interface
 
+- Settings > Appearance has a theme choice of System, Light or Dark. The default is System, so the app now follows the operating system's light or dark appearance instead of always being light. ([#155](https://github.com/iandees/osm-gpui/pull/155))
 - The preset picker lists recently used and common presets before you type a search. ([#142](https://github.com/iandees/osm-gpui/pull/142))
 - Untagged vertices are drawn only from zoom 18, and tagged nodes are small squares when zoomed out, which makes large downloads much faster to draw. ([#149](https://github.com/iandees/osm-gpui/pull/149))
 - Shorter mode hints in the status bar, a clearer downloaded-area wash, and coloured iD preset icons. ([#143](https://github.com/iandees/osm-gpui/pull/143))
