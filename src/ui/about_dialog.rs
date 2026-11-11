@@ -50,6 +50,8 @@ impl AboutDialog {
     }
 }
 
+impl modal::ModalDialog for AboutDialog {}
+
 impl Focusable for AboutDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

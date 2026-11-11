@@ -35,6 +35,12 @@ action Validate
 wait_idle 2s
 assert_validation_panel shown
 assert_validation errors=3 warnings=11 way_too_short=1 duplicate_way_node=1 tag_empty_value=1 crossing_ways=2 area_tags_on_open_way=1 duplicate_nodes=1 untagged_node=1 untagged_way=1 tag_whitespace=1 relation_empty=1 relation_no_type=1 deprecated_tag=1 fixme=1
+# The section appears collapsed: its header carries the counts. Expanding it
+# (what a click on the header does) shows the list.
+assert_panel validation collapsed
+capture out/validator-02-section-collapsed.png
+panel validation expand
+wait_idle 1s
 capture out/validator-02-section.png
 
 # A click on the one-node way: selected and centred at an editing zoom (not
@@ -55,21 +61,36 @@ assert_validation_panel shown
 assert_validation errors=3 warnings=10 untagged_node=0
 capture out/validator-04-after-fix.png
 
-# A real click on the second row (the duplicated way node): its way is
-# selected and shown, and the list stays where it was.
-click 1062,507
+# A click on the second row (the duplicated way node): its way is selected
+# and shown, and the list stays where it was. (`show_finding` is that click;
+# where the row sits depends on the panel's layout.)
+show_finding duplicate_way_node
 wait_idle 2s
 assert_selected way -208
 assert_validation_panel shown
 capture out/validator-05-row-clicked.png
 
+# The upload dialog's "Show in side panel" is an explicit request to see the
+# list, so it expands a collapsed section. (The preview never uploads; the
+# button sits at about 719,502 in a 1200x800 window.)
+panel validation collapse
+assert_panel validation collapsed
+open_upload_dialog_preview
+wait_idle 1s
+click 719,502
+wait_idle 1s
+assert_dialog none
+assert_panel validation expanded
+capture out/validator-05b-show-in-side-panel.png
+
 # A short window: Selection, Validation and History all stay usable.
 window 900 460
+panel history expand
 wait_idle 2s
 capture out/validator-06-small-window.png
 
 # The close button dismisses the section.
-click 882,238
+click 882,289
 wait_idle 1s
 assert_validation_panel hidden
 capture out/validator-07-closed.png

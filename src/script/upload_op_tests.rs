@@ -258,6 +258,30 @@ fn validation_ops() {
         op("assert_validation_panel hidden"),
         Op::AssertValidationPanel { shown: false }
     );
+    assert_eq!(
+        op("panel validation expand"),
+        Op::SetPanelOpen {
+            section: crate::script::PanelSection::Validation,
+            open: true
+        }
+    );
+    assert_eq!(
+        op("panel history collapse"),
+        Op::SetPanelOpen {
+            section: crate::script::PanelSection::History,
+            open: false
+        }
+    );
+    assert_eq!(
+        op("assert_panel validation collapsed"),
+        Op::AssertPanelOpen {
+            section: crate::script::PanelSection::Validation,
+            open: false
+        }
+    );
+    assert!(parse("panel layers expand").is_err());
+    assert!(parse("panel history").is_err());
+    assert!(parse("assert_panel history open").is_err());
     assert!(parse("assert_validation_panel").is_err());
     assert!(parse("assert_validation_panel open").is_err());
     assert!(parse("assert_validation_panel shown hidden").is_err());

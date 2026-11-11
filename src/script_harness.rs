@@ -122,6 +122,8 @@ pub(crate) enum ScriptCommand {
     Check(script::Check),
     /// Click a validator finding's row in the side panel.
     ShowFinding(script::FindingTarget),
+    /// Expand or collapse a side panel section.
+    SetPanelOpen(script::PanelSection, bool),
     /// Show a message in the status bar.
     Note(String),
     /// An OSM notes op (`show_notes`, `note_close`, ...).
@@ -370,7 +372,17 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                         touch_phase: gpui::TouchPhase::Moved,
                     };
-                    self.handle_scroll(&ev, cx);
+                    let over_side_panel =
+                        x >= window.viewport_size().width.as_f32() - self.side_panel_width;
+                    if over_side_panel {
+                        // Over the side panel: a real wheel event, so its
+                        // scroll areas scroll instead of the map zooming.
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_event(gpui::PlatformInput::ScrollWheel(ev), cx);
+                        });
+                    } else {
+                        self.handle_scroll(&ev, cx);
+                    }
                 }
                 ScriptCommand::Hover { x, y } => {
                     let ev = MouseMoveEvent {
@@ -574,6 +586,11 @@ impl MapViewer {
                 ScriptCommand::ShowFinding(target) => {
                     let result = self.script_show_finding(&target, window, cx);
                     bus.set_assert_result(result);
+                }
+                ScriptCommand::SetPanelOpen(section, open) => {
+                    self.side_panel_open[panel_section_index(section)] = open;
+                    cx.notify();
+                    bus.set_assert_result(Ok(()));
                 }
                 ScriptCommand::Note(message) => {
                     self.set_status(message);
@@ -946,6 +963,16 @@ impl MapViewer {
                     Err("the Validation section is showing".into())
                 }
             }
+            Check::PanelOpen(section, want) => {
+                let open = self.side_panel_open[panel_section_index(*section)];
+                if open == *want {
+                    Ok(())
+                } else if *want {
+                    Err(format!("the {section:?} section is collapsed"))
+                } else {
+                    Err(format!("the {section:?} section is expanded"))
+                }
+            }
             Check::Validation {
                 errors,
                 warnings,
@@ -1226,6 +1253,14 @@ pub(crate) fn keystroke_for_char(ch: char) -> Keystroke {
         modifiers: gpui::Modifiers::none(),
         key,
         key_char: Some(ch.to_string()),
+    }
+}
+
+/// The `side_panel_open` slot of a section a script can open or close.
+fn panel_section_index(section: script::PanelSection) -> usize {
+    match section {
+        script::PanelSection::Validation => crate::validation_panel::SECTION,
+        script::PanelSection::History => crate::side_panel::HISTORY_SECTION,
     }
 }
 
@@ -1563,6 +1598,13 @@ impl AppHandle for LiveApp {
         self.bus.submit(ScriptCommand::ShowFinding(target.clone()));
         let result = self.bus.take_assert_result();
         self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn set_panel_open(&mut self, section: script::PanelSection, open: bool) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::SetPanelOpen(section, open));
+        let result = self.bus.take_assert_result();
         self.bus.wait_frame();
         result
     }

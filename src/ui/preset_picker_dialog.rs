@@ -174,6 +174,12 @@ impl PresetPickerDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for PresetPickerDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.query.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for PresetPickerDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

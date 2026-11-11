@@ -29,6 +29,7 @@ use osm_gpui::notes::{
 use osm_gpui::script::{NoteCheck, NoteOp};
 use osm_gpui::settings_store;
 use osm_gpui::ui::note_dialog::{DialogEvent, NewNoteDialog};
+use osm_gpui::ui::sign_in_dialog::SignInPurpose;
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::{tr, tr_count};
 
@@ -425,7 +426,7 @@ impl MapViewer {
     pub(crate) fn on_new_note(&mut self, _: &NewNote, window: &mut Window, cx: &mut Context<Self>) {
         if !self.signed_in_for_notes() {
             // Notes are attributed to a user: offer the sign-in flow.
-            self.show_sign_in_dialog(window, cx);
+            self.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
             return;
         }
         self.set_show_notes(true, cx);
@@ -496,7 +497,7 @@ impl MapViewer {
             return Err(tr!("notes.panel.working").to_string());
         }
         if !self.signed_in_for_notes() {
-            return Err(tr!("notes.panel.needs_sign_in").to_string());
+            return Err(SignInPurpose::Notes.title());
         }
         self.notes.writing = true;
         if let Some(open) = &mut self.notes.open {
@@ -573,10 +574,12 @@ impl MapViewer {
 
     /// One of the panel's buttons: send the text box as a comment, a closing
     /// comment or a reopening comment. Failures to start show in the panel
-    /// too.
+    /// too. Signed out, nothing is sent: the sign-in prompt opens over the
+    /// panel (the typed text stays in the box) and `Err` says so for scripts.
     fn note_panel_action(
         &mut self,
         action: PanelAction,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let Some(open) = &self.notes.open else {
@@ -584,6 +587,10 @@ impl MapViewer {
         };
         let id = open.note.id;
         let text = open.input.read(cx).value().to_string();
+        if !self.signed_in_for_notes() {
+            self.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
+            return Err("not signed in: the sign-in prompt was opened".into());
+        }
         let write = match action {
             PanelAction::Comment => NoteWrite::Comment(id),
             PanelAction::Close => NoteWrite::Close(id),
@@ -603,25 +610,18 @@ impl MapViewer {
         outcome
     }
 
-    fn open_note_on_website(&self, id: i64) {
-        if script_harness::script_mode() {
-            return;
-        }
-        let _ = open::that(notes::website_url(&settings_store::api_base_url(), id));
-    }
-
     // -- Side panel ---------------------------------------------------------
 
-    /// The Note section, with its title, while a note is open.
+    /// The Note section while a note is open: its title, its status row
+    /// (pinned) and the rest (thread, comment box, buttons; scrolled).
     pub(crate) fn render_note_section(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> Option<(SharedString, AnyElement)> {
+    ) -> Option<(SharedString, AnyElement, AnyElement)> {
         let open = self.notes.open.as_ref()?;
         let note = &open.note;
         let id = note.id;
         let busy = self.notes.writing;
-        let signed_in = self.signed_in_for_notes();
         let theme = cx.theme();
         let (muted, border, foreground, danger) = (
             theme.muted_foreground,
@@ -733,8 +733,8 @@ impl MapViewer {
             .border_t_1()
             .border_color(border)
             .children(open.error.clone().map(|e| Label::new(e).text_color(danger)))
-            .child(Input::new(&open.input).disabled(busy || !signed_in))
-            .child(if signed_in {
+            .child(Input::new(&open.input).disabled(busy))
+            .child(
                 div()
                     .flex()
                     .flex_row()
@@ -743,66 +743,45 @@ impl MapViewer {
                     .gap_2()
                     .child(
                         Button::new("note-comment")
+                            .small()
                             .label(tr!("notes.panel.comment"))
                             .disabled(busy || !is_open)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.note_panel_action(PanelAction::Comment, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let _ = this.note_panel_action(PanelAction::Comment, window, cx);
                             })),
                     )
                     .child(if is_open {
                         Button::new("note-close")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.close_note"))
                             .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.note_panel_action(PanelAction::Close, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let _ = this.note_panel_action(PanelAction::Close, window, cx);
                             }))
                     } else {
                         Button::new("note-reopen")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.reopen_note"))
                             .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.note_panel_action(PanelAction::Reopen, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let _ = this.note_panel_action(PanelAction::Reopen, window, cx);
                             }))
                     })
                     .children(busy.then(|| {
                         Label::new(tr!("notes.panel.working"))
                             .text_size(muted_text_size())
                             .text_color(muted)
-                    }))
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        Label::new(tr!("notes.panel.needs_sign_in"))
-                            .text_size(muted_text_size())
-                            .text_color(muted),
-                    )
-                    .child(
-                        Button::new("note-sign-in")
-                            .label(tr!("notes.panel.sign_in"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_sign_in_dialog(window, cx);
-                            })),
-                    )
-                    .into_any_element()
-            })
-            .child(
-                Button::new("note-website")
-                    .ghost()
-                    .label(tr!("notes.panel.website"))
-                    .on_click(cx.listener(move |this, _, _, _| this.open_note_on_website(id))),
+                    })),
             );
 
         Some((
             tr!("notes.panel.title", id = id),
+            // The status row stays pinned; the side panel scrolls the rest.
+            header.into_any_element(),
             v_flex()
-                .child(header)
+                .flex_shrink_0()
                 .child(thread)
                 .child(controls)
                 .into_any_element(),
@@ -879,7 +858,19 @@ impl MapViewer {
                 state.set_value(text.to_string(), window, cx)
             });
         }
-        self.note_panel_action(action, cx)
+        self.note_panel_action(action, window, cx)
+    }
+
+    /// For tests: the open note's typed text, whether it shows an inline
+    /// error, and whether a write is running (`None` with no note open).
+    #[cfg(test)]
+    pub(crate) fn note_panel_state(&self, cx: &gpui::App) -> Option<(String, bool, bool)> {
+        let open = self.notes.open.as_ref()?;
+        Some((
+            open.input.read(cx).value().to_string(),
+            open.error.is_some(),
+            self.notes.writing,
+        ))
     }
 
     /// Evaluate a note assertion.

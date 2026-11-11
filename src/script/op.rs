@@ -148,6 +148,13 @@ pub enum FindingTarget {
     Check(String),
 }
 
+/// A collapsible side panel section a script can open or close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelSection {
+    Validation,
+    History,
+}
+
 /// What `assert_selection` expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionKind {
@@ -199,8 +206,11 @@ pub enum Check {
     /// The status bar's message contains the text.
     StatusContains(String),
     Dialog(DialogExpect),
-    /// The side panel's Validation section is showing (`true`) or not.
+    /// The side panel's Validation section is present (`true`), expanded or
+    /// collapsed, or not.
     ValidationPanel(bool),
+    /// A side panel section is expanded (`true`) or collapsed (`false`).
+    PanelOpen(PanelSection, bool),
     /// What the validator finds in the pending changes: the number of errors
     /// and warnings (when given) and of findings per check id. Read from the
     /// Validation section while it is showing (so this also tests that it
@@ -435,9 +445,21 @@ pub enum Op {
     ShowFinding {
         target: FindingTarget,
     },
-    /// Assert the Validation section is showing or hidden.
+    /// Assert the Validation section is present (expanded or collapsed) or
+    /// hidden.
     AssertValidationPanel {
         shown: bool,
+    },
+    /// Expand or collapse a side panel section (what a click on its header
+    /// does).
+    SetPanelOpen {
+        section: PanelSection,
+        open: bool,
+    },
+    /// Assert a side panel section is expanded or collapsed.
+    AssertPanelOpen {
+        section: PanelSection,
+        open: bool,
     },
     /// Assert the native app appearance (as read back from the OS after the
     /// app last set it) is forced to dark or light, or not forced (system).

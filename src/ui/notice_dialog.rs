@@ -61,6 +61,8 @@ impl NoticeDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for NoticeDialog {}
+
 impl Focusable for NoticeDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

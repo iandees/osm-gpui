@@ -85,6 +85,12 @@ impl ParallelDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for ParallelDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.offset.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for ParallelDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -110,6 +116,7 @@ impl Render for ParallelDialog {
                 Checkbox::new("parallel-copy-tags")
                     .checked(self.copy_tags)
                     .label(tr!("dialog.parallel.copy_tags"))
+                    .text_size(crate::ui::style::body_text_size())
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.copy_tags = *checked;
                         cx.notify();
@@ -119,6 +126,7 @@ impl Render for ParallelDialog {
                 Checkbox::new("parallel-reverse")
                     .checked(self.reverse)
                     .label(tr!("dialog.parallel.reverse"))
+                    .text_size(crate::ui::style::body_text_size())
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.reverse = *checked;
                         cx.notify();

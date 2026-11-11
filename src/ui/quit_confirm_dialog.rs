@@ -49,6 +49,8 @@ impl QuitConfirmDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for QuitConfirmDialog {}
+
 impl Focusable for QuitConfirmDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

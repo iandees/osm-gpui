@@ -511,14 +511,6 @@ pub fn write_note(
     write_note_with(&UreqClient::new(), base_url, token, write, text)
 }
 
-/// The notes page on the website that matches the API server.
-pub fn website_url(api_base_url: &str, id: i64) -> String {
-    format!(
-        "{}/note/{id}",
-        crate::auth::oauth_base_for(api_base_url).trim_end_matches('/')
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Fetch planning
 // ---------------------------------------------------------------------------
@@ -1006,18 +998,6 @@ second line</text>
         assert!(e
             .user_message()
             .contains("The note 9 was closed at 2024-01-01"));
-    }
-
-    #[test]
-    fn website_link_matches_the_api_server() {
-        assert_eq!(
-            website_url("https://api.openstreetmap.org", 5),
-            "https://www.openstreetmap.org/note/5"
-        );
-        assert_eq!(
-            website_url("https://master.apis.dev.openstreetmap.org/", 5),
-            "https://master.apis.dev.openstreetmap.org/note/5"
-        );
     }
 
     #[test]

@@ -20,8 +20,10 @@ use crate::{
     ToggleLayerVisibilityAction,
 };
 
-/// The least height the Selection zone keeps in a short window.
-const SELECTION_MIN_HEIGHT: f32 = 100.0;
+use crate::side_panel_layout as layout;
+
+/// Index of the History (undo) section in `MapViewer::side_panel_open`.
+pub(crate) const HISTORY_SECTION: usize = 4;
 
 /// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
 /// layer, and (imagery layers only) its imagery offset.
@@ -79,12 +81,33 @@ impl MapViewer {
             })
             .collect();
 
-        let layers_section = self.render_layers_section(&layer_info, cx);
+        // How tall Layers, Validation and History lists may be (see
+        // `side_panel_layout`); the middle zone gets the rest.
+        let panel_height = (window.viewport_size().height
+            - px(crate::status_bar::STATUS_BAR_HEIGHT)
+            - crate::menu::top_chrome_height())
+        .as_f32();
+        let rows = |n: usize| n.max(1) as f32 * (PANEL_ROW_HEIGHT + 4.0);
+        let plan = layout::plan(
+            panel_height,
+            layout::Want {
+                open: self.side_panel_open[0],
+                content: rows(layer_info.len()),
+            },
+            self.validation_want(),
+            layout::Want {
+                open: self.side_panel_open[HISTORY_SECTION],
+                content: self.undo_stack.actions.len().max(1) as f32 * PANEL_ROW_HEIGHT,
+            },
+        );
+
+        let layers_section = self.render_layers_section(&layer_info, plan.layers, cx);
         let selection_section = self.render_selection_section(cx);
         let fields_section = self.render_fields_section(window, cx);
         let tags_section = self.render_tags_section(cx);
-        let history_section = self.render_history_section(cx);
-        let validation_section = self.render_validation_section(window, cx);
+        let history_section = self.render_history_section(plan.history, cx);
+        let validation_section =
+            self.render_validation_section(plan.validation.unwrap_or_default(), cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
         let members_section = self.render_members_section(window, cx);
@@ -93,7 +116,19 @@ impl MapViewer {
         let open_layers = self.side_panel_open[0];
         let open_fields = self.side_panel_open[2];
         let open_tags = self.side_panel_open[3];
-        let open_history = self.side_panel_open[4];
+        let open_history = self.side_panel_open[HISTORY_SECTION];
+        // Collapsed, the header says how many steps are in it.
+        let steps = self.undo_stack.actions.len();
+        let history_steps = (!open_history && steps > 0).then(|| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(muted_text_size())
+                .text_color(cx.theme().muted_foreground)
+                .child(tr_count!("panel.history.steps", steps))
+                .into_any_element()
+        });
 
         let selected_count = self.selected.len();
         let muted = cx.theme().muted_foreground;
@@ -102,14 +137,23 @@ impl MapViewer {
         // An open note takes the Selection zone's place.
         let note_section = self.render_note_section(cx);
         let note_open = note_section.is_some();
-        let (note_title, note_body) = match note_section {
-            Some((title, body)) => (Some(title), Some(body)),
-            None => (None, None),
+        let (note_title, note_status, note_body) = match note_section {
+            Some((title, status, body)) => (Some(title), Some(status), Some(body)),
+            None => (None, None, None),
         };
         let selection_title = match (note_title, self.selected.len()) {
             (Some(title), _) => title,
             (None, 0 | 1) => tr!("panel.selection.title"),
             (None, n) => tr_count!("panel.selection.title_count", n),
+        };
+
+        // The selection header stays put while there is room for it and the
+        // scrolling part below; otherwise it scrolls with that part.
+        let header_shown = selected_count == 1 && !note_open;
+        let (pinned_header, scrolled_header) = match (header_shown, plan.pins_selection_header()) {
+            (true, true) => (Some(selection_header), None),
+            (true, false) => (None, Some(selection_header)),
+            (false, _) => (None, None),
         };
 
         // A thin strip along the panel's left edge that drags its width.
@@ -144,10 +188,10 @@ impl MapViewer {
             .flex()
             .flex_col()
             .overflow_hidden()
-            // Three stacked zones. Layers (top) and History (bottom) keep
-            // their own height; the Selection zone between them takes the
-            // rest and scrolls on its own, so it is the one that gives up
-            // space in a short window and History stays on screen.
+            // Stacked zones (see `side_panel_layout`): Layers keeps its
+            // height up to a cap; the middle zone takes the rest and
+            // scrolls; Validation and History are bounded lists under
+            // always-visible headers.
             .child(
                 self.collapsible_section(
                     tr!("panel.layers.title"),
@@ -158,97 +202,113 @@ impl MapViewer {
                 )
                 .flex_shrink_0(),
             )
-            // The selection zone: a title strip like the other two zones,
-            // then a lighter surface holding everything about the selected
-            // feature(s).
-            .child(self.zone_strip(selection_title, cx))
+            // The middle zone, the flexible one: a title strip and (for an
+            // open note, or one selected feature when there is room) its
+            // header, both pinned, then a lighter surface holding everything
+            // else, which scrolls.
             .child(
                 div()
-                    .id("side-panel-scroll")
+                    .id("side-panel-middle")
                     .flex_1()
-                    // With Validation showing, a floor, so it and History
-                    // cannot squeeze the Selection out of a short window;
-                    // they shrink first. Otherwise the panel is as before.
-                    .min_h(px(if self.validation_shown() {
-                        SELECTION_MIN_HEIGHT
-                    } else {
-                        0.0
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(self.zone_strip(selection_title, cx))
+                    .children(note_status.map(|status| div().flex_shrink_0().child(status)))
+                    .children(pinned_header.map(|header| {
+                        div()
+                            .flex_shrink_0()
+                            .bg(cx.theme().background)
+                            .child(header)
                     }))
-                    .overflow_y_scroll()
-                    .bg(cx.theme().background)
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .flex_shrink_0()
-                            // Nothing selected: one friendly message instead
-                            // of empty Fields and Tags sections.
-                            .children(note_body)
-                            .when(selected_count == 0 && !note_open, |group| {
-                                group.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_4()
-                                        .py_6()
-                                        .child(
-                                            Label::new(tr!("panel.selection.nothing"))
-                                                .text_color(muted),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(muted_text_size())
-                                                .text_color(muted)
-                                                .text_center()
-                                                .child(tr!("panel.selection.nothing_hint")),
-                                        ),
-                                )
+                            // A note and a selection keep separate scroll
+                            // positions.
+                            .id(if note_open {
+                                "side-panel-note-scroll"
+                            } else {
+                                "side-panel-scroll"
                             })
-                            .when(selected_count > 0 && !note_open, |group| {
-                                group
-                                    .when(selected_count == 1, |group| {
-                                        group.child(selection_header)
-                                    })
-                                    .when(selected_count > 1, |group| {
-                                        group.child(div().px_2().py_1().child(selection_section))
-                                    })
-                                    .when(selected_count == 1, |group| {
-                                        group.child(self.collapsible_section(
-                                            tr!("panel.fields.title"),
-                                            2,
-                                            open_fields,
-                                            fields_section,
-                                            cx,
-                                        ))
-                                    })
-                                    .child(self.collapsible_section(
-                                        tr!("panel.tags.title"),
-                                        3,
-                                        open_tags,
-                                        tags_section,
-                                        cx,
-                                    ))
-                                    .children(members_section.map(|(count, section)| {
-                                        self.collapsible_section(
-                                            tr_count!("panel.members.title_count", count),
-                                            6,
-                                            open_members,
-                                            section,
-                                            cx,
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .bg(cx.theme().background)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_shrink_0()
+                                    // Nothing selected: one friendly message instead
+                                    // of empty Fields and Tags sections.
+                                    .children(scrolled_header)
+                                    .children(note_body)
+                                    .when(selected_count == 0 && !note_open, |group| {
+                                        group.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .items_center()
+                                                .gap_1()
+                                                .px_4()
+                                                .py_6()
+                                                .child(
+                                                    Label::new(tr!("panel.selection.nothing"))
+                                                        .text_color(muted),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(muted_text_size())
+                                                        .text_color(muted)
+                                                        .text_center()
+                                                        .child(tr!("panel.selection.nothing_hint")),
+                                                ),
                                         )
-                                    }))
-                                    .children(relations_section.map(|section| {
-                                        self.collapsible_section(
-                                            tr!("panel.relations.title"),
-                                            5,
-                                            open_relations,
-                                            section,
-                                            cx,
-                                        )
-                                    }))
-                            }),
+                                    })
+                                    .when(selected_count > 0 && !note_open, |group| {
+                                        group
+                                            .when(selected_count > 1, |group| {
+                                                group.child(
+                                                    div().px_2().py_1().child(selection_section),
+                                                )
+                                            })
+                                            .when(selected_count == 1, |group| {
+                                                group.child(self.collapsible_section(
+                                                    tr!("panel.fields.title"),
+                                                    2,
+                                                    open_fields,
+                                                    fields_section,
+                                                    cx,
+                                                ))
+                                            })
+                                            .child(self.collapsible_section(
+                                                tr!("panel.tags.title"),
+                                                3,
+                                                open_tags,
+                                                tags_section,
+                                                cx,
+                                            ))
+                                            .children(members_section.map(|(count, section)| {
+                                                self.collapsible_section(
+                                                    tr_count!("panel.members.title_count", count),
+                                                    6,
+                                                    open_members,
+                                                    section,
+                                                    cx,
+                                                )
+                                            }))
+                                            .children(relations_section.map(|section| {
+                                                self.collapsible_section(
+                                                    tr!("panel.relations.title"),
+                                                    5,
+                                                    open_relations,
+                                                    section,
+                                                    cx,
+                                                )
+                                            }))
+                                    }),
+                            ),
                     ),
             )
             // Validation, only after a validation was run: directly above
@@ -258,10 +318,11 @@ impl MapViewer {
             // selection and Validation that may shrink (to its header) when
             // the window is very short.
             .child(
-                self.collapsible_section(
+                self.collapsible_section_with(
                     tr!("panel.history.title"),
-                    4,
+                    HISTORY_SECTION,
                     open_history,
+                    history_steps,
                     history_section,
                     cx,
                 )
@@ -701,7 +762,11 @@ impl MapViewer {
     /// action in order. The most recently applied action (the stack's
     /// current position) is highlighted; anything after it is available to
     /// redo but not currently applied, and renders dimmed.
-    fn render_history_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_history_section(&self, max_height: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Collapsed: the rows are not drawn, so they are not built either.
+        if !self.side_panel_open[HISTORY_SECTION] {
+            return div().into_any_element();
+        }
         if self.undo_stack.actions.is_empty() {
             return Label::new(tr!("panel.history.empty"))
                 .text_color(cx.theme().muted_foreground)
@@ -715,7 +780,7 @@ impl MapViewer {
             .flex_col()
             // A long history scrolls here rather than pushing everything
             // else off screen.
-            .max_h(px(200.))
+            .max_h(px(max_height))
             .overflow_y_scroll()
             .children(
                 self.undo_stack
@@ -793,7 +858,8 @@ impl MapViewer {
         // like the selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
         // header and a hairline.
-        let document_level = index == 0 || index == 4 || index == crate::validation_panel::SECTION;
+        let document_level =
+            index == 0 || index == HISTORY_SECTION || index == crate::validation_panel::SECTION;
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())
@@ -1119,6 +1185,7 @@ impl MapViewer {
     fn render_layers_section(
         &self,
         layer_info: &[LayerRowInfo],
+        max_height: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -1137,7 +1204,7 @@ impl MapViewer {
             .flex_col()
             .gap_1()
             // Many layers scroll here rather than crowding out the selection.
-            .max_h(px(160.))
+            .max_h(px(max_height))
             .overflow_y_scroll()
             .children(
                 layer_info

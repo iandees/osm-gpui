@@ -14,7 +14,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     label::Label,
-    v_flex, ActiveTheme as _, Selectable as _,
+    v_flex, ActiveTheme as _, Selectable as _, Sizable as _,
 };
 
 use crate::search::{ParseError, ParseErrorKind, SearchMode};
@@ -301,6 +301,12 @@ fn mode_label(mode: SearchMode) -> SharedString {
     }
 }
 
+impl modal::ModalDialog for FindDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.query.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for FindDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -320,6 +326,7 @@ impl Render for FindDialog {
                     let mode = *mode;
                     let selected = mode == self.mode;
                     let button = Button::new(("find-mode", i))
+                        .small()
                         .compact()
                         .label(mode_label(mode))
                         .selected(selected)
@@ -379,6 +386,7 @@ impl Render for FindDialog {
             ("modified OR new", tr!("dialog.find.hint.states")),
         ];
         let hint_toggle = Button::new("find-hint-toggle")
+            .small()
             .compact()
             .outline()
             .label(if self.hint_open {

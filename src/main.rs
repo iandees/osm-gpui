@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod add_click_tests;
 mod autosave_driver;
 mod clipboard_actions;
 mod fields_section;
@@ -31,6 +33,7 @@ mod reference_tests;
 mod script_harness;
 mod selection_actions;
 mod side_panel;
+mod side_panel_layout;
 mod status_bar;
 mod undo;
 mod validation_panel;
@@ -789,6 +792,9 @@ struct MapViewer {
     /// The left press now in progress began while an in-window menu was open
     /// (so it only closes the menu): the map ignores it and its release.
     menu_swallow_press: bool,
+    /// Whether the window has been drawn once, so there is a dispatch tree to
+    /// ask whether focus is inside a dialog (see `keep_dialog_focus`).
+    drawn_once: bool,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
     /// The "Adjust imagery offset" mode, while it is on (see
@@ -984,7 +990,14 @@ impl MapViewer {
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true; 8],
+            // Everything open except History and Validation, which keep to
+            // their headers until the user opens them.
+            side_panel_open: {
+                let mut open = [true; 8];
+                open[side_panel::HISTORY_SECTION] = false;
+                open[validation_panel::SECTION] = false;
+                open
+            },
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -1003,6 +1016,7 @@ impl MapViewer {
             extrude_drag: None,
             right_press: None,
             menu_swallow_press: false,
+            drawn_once: false,
             context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
@@ -1629,6 +1643,18 @@ impl MapViewer {
     /// state (undo). Both directions reuse the same commit path as a live
     /// drag, so caches rebuild exactly once per affected layer.
     fn apply_undo_action(&mut self, action: &UndoableAction, forward: bool) {
+        self.apply_undo_action_inner(action, forward);
+        // A layer undone back to its server baseline has an empty diff and
+        // must stop reporting itself as modified (layer dot, quit warning,
+        // delete-layer confirmation).
+        for id in action.layers() {
+            if let Some(layer) = self.layer_manager.find_layer_mut(id) {
+                layer.refresh_modified();
+            }
+        }
+    }
+
+    fn apply_undo_action_inner(&mut self, action: &UndoableAction, forward: bool) {
         match action {
             UndoableAction::MoveNodes { per_layer } => {
                 for (layer_id, entries) in per_layer {
@@ -1933,11 +1959,11 @@ impl MapViewer {
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
-                        self.apply_undo_action(action, true);
+                        self.apply_undo_action_inner(action, true);
                     }
                 } else {
                     for action in actions.iter().rev() {
-                        self.apply_undo_action(action, false);
+                        self.apply_undo_action_inner(action, false);
                     }
                 }
             }
@@ -3270,6 +3296,45 @@ impl MapViewer {
             }
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
+    }
+
+    /// The dialog host's focus rule: while a modal dialog is open, focus is
+    /// inside it. Called from `render`, after every action and effect of the
+    /// frame has run, so it also undoes a focus grab that came later than the
+    /// dialog's own (the in-window menu bar gives focus back to the element it
+    /// took it from once an item is chosen). Skipped while a menu is open,
+    /// which owns the keyboard then. Returns whether focus moved.
+    fn keep_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        use osm_gpui::ui::modal::open_modal;
+        // Asking the dispatch tree anything before the first frame is drawn
+        // trips an assertion; a dialog open at launch focused itself anyway.
+        if !std::mem::replace(&mut self.drawn_once, true) {
+            return false;
+        }
+        if menu::in_window_menu_open(window) {
+            return false;
+        }
+        // Mount order, so the last one is the one drawn on top.
+        let open: Vec<_> = [
+            open_modal(&self.custom_imagery_dialog, cx),
+            open_modal(&self.quit_confirm_dialog, cx),
+            open_modal(&self.delete_layer_dialog, cx),
+            open_modal(&self.restore_dialog, cx),
+            open_modal(&self.find_dialog, cx),
+            open_modal(&self.about_dialog, cx),
+            open_modal(&self.nsi_dialog, cx),
+            open_modal(&self.preset_picker_dialog, cx),
+            open_modal(&self.relation_picker_dialog, cx),
+            open_modal(&self.parallel_dialog, cx),
+            open_modal(&self.upload_dialog, cx),
+            open_modal(&self.sign_in_dialog, cx),
+            open_modal(&self.notice_dialog, cx),
+            open_modal(&self.new_note_dialog_element(), cx),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        osm_gpui::ui::modal::ensure_modal_focus(&open, window, cx)
     }
 
     /// Whether a modal dialog is open (the vertex preview is suppressed).
@@ -5176,7 +5241,11 @@ impl MapViewer {
                 // Uploading needs an OSM account; send signed-out users to
                 // Settings instead of letting the upload fail for lack of a
                 // token.
-                self.show_sign_in_dialog(window, cx);
+                self.show_sign_in_dialog(
+                    osm_gpui::ui::sign_in_dialog::SignInPurpose::Upload,
+                    window,
+                    cx,
+                );
                 return;
             }
             UploadPlan::NothingToUpload => {
@@ -5243,7 +5312,7 @@ impl MapViewer {
                     }
                     DialogEvent::ShowInSidePanel => {
                         this.close_upload_dialog_keeping_draft(cx);
-                        this.show_validation(cx);
+                        this.show_validation_expanded(cx);
                     }
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
@@ -5305,10 +5374,18 @@ impl MapViewer {
         cx.notify();
     }
 
-    /// Show the "sign in to upload" prompt. "Open Settings" closes it and
-    /// opens the Settings window; Cancel/Esc just closes it.
-    fn show_sign_in_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dialog = cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(window, cx));
+    /// Show the sign-in prompt, worded for `purpose` (upload or notes).
+    /// "Open Settings" closes it and opens the Settings window; Cancel/Esc
+    /// just closes it. Nothing continues after sign-in in either flow: the
+    /// user repeats the action once signed in.
+    pub(crate) fn show_sign_in_dialog(
+        &mut self,
+        purpose: osm_gpui::ui::sign_in_dialog::SignInPurpose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(purpose, window, cx));
         cx.subscribe(
             &dialog,
             |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
@@ -6156,6 +6233,8 @@ impl Render for MapViewer {
 
         self.expire_status();
         self.drop_stale_offset_adjust();
+
+        self.keep_dialog_focus(window, cx);
 
         // Keyboard shortcuts scoped to this view only match while focus is
         // somewhere inside it. With nothing focused at all — at launch, or
@@ -8503,6 +8582,90 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    /// Focus goes back to the map after the dialog took it, as the in-window
+    /// menu bar does when an item has been chosen.
+    fn focus_the_map_like_the_menu_bar_does(
+        window: gpui::WindowHandle<MapViewer>,
+        cx: &mut TestAppContext,
+    ) {
+        window
+            .update(cx, |view, window, cx| {
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_confirmation_opened_from_the_menu_is_focused_and_escape_closes_it(
+        cx: &mut TestAppContext,
+    ) {
+        let window = setup(cx);
+        let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+        focus_the_map_like_the_menu_bar_does(window, cx);
+        // The host puts focus back in the dialog when the frame is drawn.
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear();
+        })
+        .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                let dialog = view.delete_layer_dialog.clone().unwrap();
+                let handle = gpui::Focusable::focus_handle(dialog.read(cx), cx);
+                assert!(handle.contains_focused(window, cx));
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "escape");
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none(), "escape closes it");
+                assert!(view.layer_manager.find_layer(a).is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_opened_from_the_menu_gets_focus_in_its_query_field(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        // One update: a window with the dialog open can't be drawn in a test.
+        window
+            .update(cx, |view, window, cx| {
+                view.on_find(&Find, window, cx);
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+                let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+                let query = osm_gpui::ui::modal::ModalDialog::initial_focus(dialog.read(cx), cx);
+                assert!(!query.is_focused(window), "the map took focus");
+                // A window with the dialog open can't be drawn in a test (its
+                // input needs the app's root view), so the host's rule runs
+                // directly, as `render` does.
+                view.drawn_once = true;
+                assert!(view.keep_dialog_focus(window, cx));
+                assert!(query.is_focused(window), "typing reaches the query");
+                // Focus already inside: left alone.
+                assert!(!view.keep_dialog_focus(window, cx));
+                // Close it again so the window can be drawn at the end of
+                // this update. The Escape keystroke can't be sent either (it
+                // draws): the delete-layer test above covers the keystroke,
+                // the script run covers Find's.
+                view.find_dialog = None;
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn the_dialog_host_leaves_focus_alone_without_a_dialog(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+                assert!(!view.keep_dialog_focus(window, cx));
+                assert!(map.is_focused(window));
+            })
+            .unwrap();
     }
 
     #[gpui::test]
@@ -12137,12 +12300,13 @@ mod tests {
         view.update_in(vcx, |view, _window, _cx| {
             assert!(!view.validation_shown());
         });
-        // Nothing pending: the section opens and says so (collapsed sections
-        // are expanded).
+        // Nothing pending: the section appears (collapsed by default, like
+        // History) and says so.
         view.update_in(vcx, |view, _window, cx| {
-            view.side_panel_open[validation_panel::SECTION] = false;
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert!(!view.side_panel_open[side_panel::HISTORY_SECTION]);
             view.show_validation(cx);
-            assert!(view.side_panel_open[validation_panel::SECTION]);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
             let report = view.shown_validation().expect("shown");
             assert!(!report.checked_changes);
             assert_eq!(
@@ -12173,6 +12337,67 @@ mod tests {
         view.update_in(vcx, |view, _window, cx| {
             view.close_validation(cx);
             assert!(!view.validation_shown());
+        });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_keeps_the_users_choice_of_open_or_collapsed(cx: &mut TestAppContext) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            // The user expands it (what a click on its header does): later
+            // runs, and a close and reopen, leave it expanded.
+            view.side_panel_open[validation_panel::SECTION] = true;
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            view.close_validation(cx);
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            // Collapsed by the user: stays collapsed too.
+            view.side_panel_open[validation_panel::SECTION] = false;
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            // The explicit "Show in side panel" expands it.
+            view.show_validation_expanded(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+        });
+    }
+
+    #[gpui::test]
+    fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            record_edit(view);
+            view.show_validation(cx);
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            assert!(view.select_finding(0, cx));
+        });
+        vcx.run_until_parked();
+        // Fix the problem while the section is collapsed: the header's
+        // counts (read from the report) still refresh by themselves.
+        view.update_in(vcx, |view, _window, cx| {
+            let node = view.selected[0].id;
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert!(!view.side_panel_open[validation_panel::SECTION]);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 0);
         });
     }
 
@@ -12328,10 +12553,10 @@ mod tests {
 
     #[test]
     fn the_findings_list_gets_a_bounded_share_of_the_window() {
-        use validation_panel::list_max_height;
-        assert_eq!(list_max_height(800.0), 224.0);
-        assert_eq!(list_max_height(300.0), 84.0);
-        assert_eq!(list_max_height(2000.0), 260.0);
+        use side_panel_layout::validation_cap;
+        assert_eq!(validation_cap(800.0), 224.0);
+        assert_eq!(validation_cap(300.0), 84.0);
+        assert_eq!(validation_cap(2000.0), 260.0);
     }
 
     #[gpui::test]
@@ -12536,6 +12761,104 @@ mod tests {
                 make_pending_change(view);
                 view.open_upload_dialog_as(None, window, cx);
                 assert!(view.sign_in_dialog.is_some());
+                assert!(view.upload_dialog.is_none());
+                let dialog = view.sign_in_dialog.as_ref().unwrap().read(cx);
+                assert_eq!(
+                    dialog.purpose(),
+                    osm_gpui::ui::sign_in_dialog::SignInPurpose::Upload
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn new_note_signed_out_shows_the_notes_sign_in_wording(cx: &mut TestAppContext) {
+        use osm_gpui::ui::sign_in_dialog::SignInPurpose;
+        let stored =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if !osm_gpui::ui::sign_in_dialog::needs_sign_in(stored.as_deref()) {
+            return;
+        }
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.on_new_note(&crate::notes_ui::NewNote, window, cx);
+                let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                assert!(!view.notes_armed());
+                assert!(view.upload_dialog.is_none());
+            })
+            .unwrap();
+    }
+
+    /// Signed out, Comment, Close and Reopen in the note panel open the notes
+    /// sign-in prompt, send nothing and keep the typed text and the panel.
+    #[gpui::test]
+    fn signed_out_note_panel_actions_open_the_sign_in_prompt(cx: &mut TestAppContext) {
+        use osm_gpui::script::NoteOp;
+        use osm_gpui::ui::sign_in_dialog::{DialogEvent, SignInPurpose};
+        let stored =
+            auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
+        if !osm_gpui::ui::sign_in_dialog::needs_sign_in(stored.as_deref()) {
+            return;
+        }
+        let window = setup(cx);
+        let ops = [
+            NoteOp::Comment("hello there".to_string()),
+            NoteOp::Close(Some("hello there".to_string())),
+            NoteOp::Reopen(Some("hello there".to_string())),
+        ];
+        for op in ops {
+            window
+                .update(cx, |view, window, cx| {
+                    let load = NoteOp::LoadFile("docs/live-test/notes-sample.xml".to_string());
+                    view.script_note_op(&load, window, cx).unwrap();
+                    view.script_note_op(&NoteOp::Open(1001), window, cx)
+                        .unwrap();
+                    let result = view.script_note_op(&op, window, cx);
+                    assert!(result.unwrap_err().contains("not signed in"));
+                    // Nothing was started, the panel is still open and the
+                    // typed text is still in the box.
+                    let (text, has_error, writing) =
+                        view.note_panel_state(cx).expect("panel stays open");
+                    assert_eq!(text, "hello there");
+                    assert!(!has_error && !writing);
+                    let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                    assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                    assert!(view.upload_dialog.is_none());
+                    dialog.update(cx, |_, cx| cx.emit(DialogEvent::Cancelled));
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .update(cx, |view, _, cx| {
+                    assert!(view.sign_in_dialog.is_none());
+                    assert_eq!(view.note_panel_state(cx).unwrap().0, "hello there");
+                })
+                .unwrap();
+        }
+    }
+
+    /// A signed-out comment/close/reopen all go through `show_sign_in_dialog(Notes, ..)`; closing the prompt
+    /// (as after "Open Settings") leaves no upload dialog behind.
+    #[gpui::test]
+    fn note_panel_sign_in_uses_notes_wording_and_never_opens_upload(cx: &mut TestAppContext) {
+        use osm_gpui::ui::sign_in_dialog::SignInPurpose;
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
+                let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
+                dialog.update(cx, |_, cx| {
+                    cx.emit(osm_gpui::ui::sign_in_dialog::DialogEvent::Cancelled)
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.sign_in_dialog.is_none());
                 assert!(view.upload_dialog.is_none());
             })
             .unwrap();

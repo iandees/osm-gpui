@@ -159,6 +159,12 @@ pub fn error_message(e: &ValidationError) -> SharedString {
     }
 }
 
+impl crate::ui::modal::ModalDialog for CustomImageryDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        self.name.read(cx).focus_handle(cx)
+    }
+}
+
 impl Focusable for CustomImageryDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

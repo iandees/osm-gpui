@@ -123,6 +123,8 @@ impl RestoreDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for RestoreDialog {}
+
 impl Focusable for RestoreDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

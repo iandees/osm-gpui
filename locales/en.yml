@@ -336,6 +336,9 @@ panel:
   history:
     title: "History"
     empty: "No actions yet."
+    steps:
+      one: "%{count} step"
+      other: "%{count} steps"
 
 # Undo history entries.
 history:
@@ -515,10 +518,9 @@ object_history:
   revert_edits_blocked: "An upload is running; tags can't be changed until it finishes"
   new_object: "A new object has no history on the server yet"
   select_one: "Select one object to show its history"
-  # Selection header: "v7 · edited by Name · 3 months ago · changeset 123".
+  # Selection header: "v7 · Name · 3 months ago · changeset 123".
   last_edit:
     version: "v%{version}"
-    by: "edited by"
     changeset: "changeset"
   error:
     not_found: "The server has no history for this object. It was never uploaded to %{server}; it may come from a file or from another server."
@@ -788,6 +790,8 @@ dialog:
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
+    notes_title: "Sign in to work with notes"
+    notes_body: "You need to sign in to OpenStreetMap to create, comment on, close or reopen notes. If you signed in before notes were supported, sign in again to grant the extra permission. Open Settings to sign in."
     open_settings: "Open Settings"
   about:
     title: "About %{app}"
@@ -1074,10 +1078,7 @@ notes:
     comment: "Comment"
     close_note: "Close Note"
     reopen_note: "Reopen Note"
-    website: "Open on openstreetmap.org"
     working: "Working…"
-    needs_sign_in: "Sign in to comment on, close or reopen notes."
-    sign_in: "Sign In…"
     upload_running: "An upload is running. Try again when it has finished."
     comment_empty: "Type a comment first."
   new:

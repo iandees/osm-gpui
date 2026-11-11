@@ -19,6 +19,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     label::Label,
+    tooltip::Tooltip,
     v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
 };
 
@@ -29,7 +30,7 @@ use crate::object_history::{
 };
 use crate::selection::FeatureKind;
 use crate::ui::restore_dialog::age_phrase;
-use crate::ui::style::muted_text_size;
+use crate::ui::style::{body_text_size, muted_text_size};
 use crate::{tr, tr_count};
 
 pub enum ViewEvent {
@@ -89,77 +90,94 @@ fn link(
     url: String,
     cx: &App,
 ) -> AnyElement {
-    let color = cx.theme().link;
-    let hover = cx.theme().link_hover;
-    div()
-        .id(id)
-        .cursor_pointer()
-        .text_color(color)
-        .hover(move |this| this.text_color(hover).underline())
+    crate::ui::style::link(id, text, cx)
         .on_click(move |_, _, _| {
             let _ = open::that(&url);
         })
-        .child(text.into())
         .into_any_element()
 }
 
-/// The Selection header's muted "last edit" line: `v7 · edited by Name · 3
-/// months ago · changeset 123`, with the user and the changeset as links to
-/// the website.
+/// The widest the last-edit line's user name gets before it is cut short
+/// (the full name is in its tooltip).
+const LAST_EDIT_USER_MAX_WIDTH: f32 = 140.0;
+
+/// "changeset 123" as one unit: a no-break space keeps the word and its
+/// number on the same line.
+pub fn changeset_text(label: &str, changeset: i64) -> String {
+    format!("{label}\u{a0}{changeset}")
+}
+
+/// The Selection header's muted "last edit" line: `v7 · Name · 3 months ago
+/// · changeset 123`, with the user and the changeset as links to the
+/// website. Each part is a unit that never splits, so the line wraps between
+/// parts (two lines at most); a long user name is cut with its full text in a
+/// tooltip.
 pub fn last_edit_line(edit: &LastEdit, web_base: &str, now: i64, cx: &App) -> AnyElement {
     let muted = cx.theme().muted_foreground;
-    let dot = || div().child("·").into_any_element();
-    let mut parts: Vec<AnyElement> = vec![div()
+    let (link_color, link_hover) = (cx.theme().link, cx.theme().link_hover);
+    let mut units: Vec<AnyElement> = vec![div()
         .child(tr!(
             "object_history.last_edit.version",
             version = edit.version
         ))
         .into_any_element()];
-    parts.push(dot());
-    parts.push(
-        div()
-            .child(tr!("object_history.last_edit.by"))
-            .into_any_element(),
-    );
-    parts.push(match &edit.user {
-        Some(user) => link(
-            "last-edit-user",
-            user.clone(),
-            web_user_url(web_base, user),
-            cx,
-        ),
+    units.push(match &edit.user {
+        Some(user) => {
+            let url = web_user_url(web_base, user);
+            let full = SharedString::from(user.clone());
+            div()
+                .id("last-edit-user")
+                .max_w(px(LAST_EDIT_USER_MAX_WIDTH))
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .cursor_pointer()
+                .text_color(link_color)
+                .hover(move |this| this.text_color(link_hover).underline())
+                .tooltip({
+                    let full = full.clone();
+                    move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                })
+                .on_click(move |_, _, _| {
+                    let _ = open::that(&url);
+                })
+                .child(full)
+                .into_any_element()
+        }
         None => div()
             .child(tr!("object_history.unknown_user"))
             .into_any_element(),
     });
     if let Some(ts) = edit.timestamp {
-        parts.push(dot());
-        parts.push(
+        units.push(
             div()
                 .child(age_phrase(now.max(0) as u64, ts.max(0) as u64))
                 .into_any_element(),
         );
     }
     if let Some(changeset) = edit.changeset {
-        parts.push(dot());
-        parts.push(
-            div()
-                .child(tr!("object_history.last_edit.changeset"))
-                .into_any_element(),
-        );
-        parts.push(link(
+        units.push(link(
             "last-edit-changeset",
-            changeset.to_string(),
+            changeset_text(&tr!("object_history.last_edit.changeset"), changeset),
             web_changeset_url(web_base, changeset),
             cx,
         ));
     }
+    let last = units.len() - 1;
     h_flex()
         .flex_wrap()
         .gap_x_1()
         .text_size(muted_text_size())
         .text_color(muted)
-        .children(parts)
+        .children(units.into_iter().enumerate().map(|(i, unit)| {
+            h_flex()
+                .gap_x_1()
+                .whitespace_nowrap()
+                .min_w_0()
+                .child(unit)
+                .when(i != last, |this| this.child("·"))
+        }))
         .into_any_element()
 }
 
@@ -411,10 +429,10 @@ impl ObjectHistoryView {
                 .is_none_or(|local| local.tags != v.state.tags);
         if can_revert {
             col = col.child(
-                div().pt_1().child(
+                div().pt_1().flex().flex_row().child(
                     Button::new(("history-revert", index))
                         .ghost()
-                        .xsmall()
+                        .small()
                         .label(tr!("object_history.revert_tags"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.press_revert(version, cx);
@@ -552,6 +570,7 @@ impl Render for ObjectHistoryView {
                     col = col.child(
                         div().child(
                             Button::new("history-retry")
+                                .small()
                                 .label(tr!("object_history.retry"))
                                 .on_click(cx.listener(|this, _, _, cx| this.press_retry(cx))),
                         ),
@@ -567,7 +586,7 @@ impl Render for ObjectHistoryView {
             .py_2()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(div().text_size(muted_text_size()).child(link(
+            .child(div().text_size(body_text_size()).child(link(
                 "history-open-web",
                 tr!("object_history.open_web"),
                 web_history_url(&self.web_base, self.kind, self.id),
@@ -593,5 +612,17 @@ impl Render for ObjectHistoryView {
             .child(header)
             .child(body)
             .child(footer)
+    }
+}
+
+#[cfg(test)]
+mod last_edit_tests {
+    use super::changeset_text;
+
+    #[test]
+    fn the_changeset_word_and_number_cannot_be_split() {
+        let text = changeset_text("changeset", 134000005);
+        assert_eq!(text, "changeset\u{a0}134000005");
+        assert!(!text.contains(' '));
     }
 }
