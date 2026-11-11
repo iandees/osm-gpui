@@ -1,0 +1,74 @@
+# Create Parallel Way (Tools menu): a copy of the selected way offset to one
+# side, asked for in a dialog.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/parallel-way.osm is laid out
+# in window coordinates at zoom 18 (about 0.45 m per pixel), centered on
+# (40.7120, -74.0060):
+#   A  way 6101  a road with two 45 degree bends, (250,250) .. (750,350)
+#   B  way 6102  a hairpin: (250,500) -> (550,500) -> (300,540)
+#   C  way 6201  a closed fence drawn clockwise, (700,120) .. (850,230)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/parallel-way.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/parallel-01-start.png
+
+# Select the road and ask for a parallel way. The dialog starts at 5 m; the
+# offset is replaced with -15 (left of the direction of travel, so north).
+click 350,250
+wait_idle 2s
+assert_selected way 6101
+capture out/parallel-02-selected.png
+action selection::RunSelectionAction {"id":"parallel"}
+wait_idle 2s
+capture out/parallel-03-dialog.png
+key backspace
+type -15
+wait_idle 1s
+capture out/parallel-04-dialog-filled.png
+key enter
+wait_idle 2s
+assert_status_contains Created 1 parallel way
+assert_selected_count 1
+assert_pending 5
+capture out/parallel-05-created.png
+
+# One undo step removes the copy and its nodes; redo brings it back.
+key cmd+z
+wait_idle 2s
+assert_pending 0
+capture out/parallel-06-undone.png
+key cmd+shift+z
+wait_idle 2s
+assert_pending 5
+capture out/parallel-07-redone.png
+
+# The hairpin: the dialog offers the last value (-15). On the outside of the
+# turn the miter would be far too long, so the corner is bevelled.
+click 400,500
+wait_idle 2s
+assert_selected way 6102
+action selection::RunSelectionAction {"id":"parallel"}
+wait_idle 2s
+capture out/parallel-08-dialog-remembers.png
+key enter
+wait_idle 2s
+assert_status_contains Created 1 parallel way
+assert_pending 10
+capture out/parallel-09-hairpin.png
+
+# The closed fence gets a closed ring: with -15 on a clockwise ring, outside.
+click 775,120
+wait_idle 2s
+assert_selected way 6201
+action selection::RunSelectionAction {"id":"parallel"}
+wait_idle 2s
+key enter
+wait_idle 2s
+assert_status_contains Created 1 parallel way
+assert_pending 15
+capture out/parallel-10-ring.png
+
+log done
