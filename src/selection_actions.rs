@@ -311,6 +311,34 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_separate,
     },
     SelectionAction {
+        id: "unjoin",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            unjoin_problem(editable, layer_id, env.selection).is_none()
+        },
+        apply: apply_unjoin,
+    },
+    SelectionAction {
+        id: "delete_segment",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            segment_plan(editable, layer_id, env.selection).is_ok()
+        },
+        apply: apply_delete_segment,
+    },
+    SelectionAction {
         id: "extend",
         shortcut_id: Some("action_extend"),
         fixed_shortcut: None,
@@ -589,10 +617,19 @@ impl SelectionAction {
     /// Why this action can't run with `env`, for the status bar.
     pub(crate) fn why_not(&self, env: &ActionEnv) -> SharedString {
         if self.needs_active_layer && env.active_editable().is_none() {
-            tr!("action.no_data")
-        } else {
-            self.hint()
+            return tr!("action.no_data");
         }
+        // These two say what is wrong with the selection, not just what to select.
+        let specific = match (self.id, env.active_layer, env.active_editable()) {
+            ("unjoin", Some(layer), Some(editable)) => {
+                unjoin_problem(editable, layer, env.selection)
+            }
+            ("delete_segment", Some(layer), Some(editable)) => {
+                segment_plan(editable, layer, env.selection).err()
+            }
+            _ => None,
+        };
+        specific.map_or_else(|| self.hint(), SharedString::from)
     }
 
     /// The shortcut to show next to this action, under the user's settings.
@@ -1081,8 +1118,66 @@ fn apply_separate(
     selection: &[FeatureRef],
     active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
+    separate_node(layers, selection, active, false)
+}
+
+/// Unjoin Node from Way: the selected way gets
+/// a fresh untagged node at the same spot in place of the selected node (at
+/// every place the way uses it), so the other ways keep the original, which
+/// also keeps its tags and relation memberships. It is Disconnect with a way
+/// selected, with two differences: the way must be named, and the node must
+/// be a vertex of it, not an end node of an open way (an end node is where
+/// the way stops, so there is nothing to pull it away from; Disconnect
+/// still handles that case). A node only this way uses is refused as well.
+/// The turn restriction guard is Disconnect's. One undo step: the new node,
+/// then the modified way.
+fn apply_unjoin(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    separate_node(layers, selection, active, true)
+}
+
+/// Why Unjoin Node from Way doesn't apply to the selection (`None` when it
+/// does).
+fn unjoin_problem(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<String> {
+    let hint = || Some(tr!("action.unjoin.hint").to_string());
+    let Some((node, Some(way))) = separate_target(layer_id, selection) else {
+        return hint();
+    };
+    let Some(nodes) = editable.way_node_ids(way) else {
+        return hint();
+    };
+    if !nodes.contains(&node) {
+        return hint();
+    }
+    if !topology::is_unjoinable_vertex(&nodes, node) {
+        return Some(tr!("action.unjoin.error.end_node").to_string());
+    }
+    if !topology::can_unjoin(node, &ways_using(editable, node), way) {
+        return Some(tr!("action.unjoin.error.not_shared").to_string());
+    }
+    None
+}
+
+fn separate_node(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    unjoin: bool,
+) -> Result<ActionOutcome, String> {
     let hint = || tr!("action.separate.hint").to_string();
     let (layer_id, editable) = active_editable_mut(layers, active)?;
+    if unjoin {
+        if let Some(problem) = unjoin_problem(editable, layer_id, selection) {
+            return Err(problem);
+        }
+    }
     let (node, detach) = separate_target(layer_id, selection).ok_or_else(hint)?;
     let (lat, lon) = editable
         .node_lat_lon(node)
@@ -1093,7 +1188,11 @@ fn apply_separate(
     // node. Dry-run the plan with throwaway ids, and refuse before anything
     // is created if a way it detaches is such a member.
     let mut fake = i64::MIN;
-    let dry = topology::plan_separate(node, &ways, detach, || {
+    let plan = |alloc: &mut dyn FnMut() -> i64| match (unjoin, detach) {
+        (true, Some(way)) => topology::plan_unjoin(node, &ways, way, alloc),
+        _ => topology::plan_separate(node, &ways, detach, alloc),
+    };
+    let dry = plan(&mut || {
         fake += 1;
         fake
     })
@@ -1128,7 +1227,7 @@ fn apply_separate(
     }
 
     let mut created = Vec::new();
-    let edits = topology::plan_separate(node, &ways, detach, || {
+    let edits = plan(&mut || {
         let id = editable
             .create_node(lat, lon, None)
             .expect("the layer has data, since the node exists");
@@ -1156,7 +1255,11 @@ fn apply_separate(
         });
     }
 
-    let label = tr_count!("action.separate.done", created.len() + 1).to_string();
+    let label = if unjoin {
+        tr!("action.unjoin.done").to_string()
+    } else {
+        tr_count!("action.separate.done", created.len() + 1).to_string()
+    };
     Ok(ActionOutcome {
         undo: Some(UndoableAction::Batch {
             label: label.clone(),
@@ -1311,31 +1414,18 @@ fn split_plans(
     topology::plan_split(&nodes, selected_ways.first().copied(), &ways)
 }
 
-/// Split the ways at the selected node(s) (JOSM "Split Way"): the original
-/// keeps its id and the longest part, every other part is a new way with a
-/// copy of the tags, and neighbouring parts share the split node. A closed
-/// way with one node is only rewritten to start there. Relations that hold the way keep
-/// working: see `relations::split_members` for where the new way goes (and
-/// the turn restriction exception, which can refuse the split). One undo
-/// step: per way, the new way's creation, then the original's new nodes, and
-/// finally the relations' new member lists.
-fn apply_split(
-    layers: &mut LayerManager,
-    selection: &[FeatureRef],
-    active: Option<LayerId>,
-) -> Result<ActionOutcome, String> {
-    let (layer_id, editable) = active_editable_mut(layers, active)?;
-    let plans = split_plans(editable, layer_id, selection);
-    if plans.is_empty() {
-        return Err(tr!("action.split.hint").to_string());
-    }
-    // Work out every relation's new member list before changing anything, so
-    // a refusal leaves no trace. The new ways don't exist yet; each stands in
-    // under a placeholder id that is swapped for the real one below.
+/// Work out every relation's new member list for splitting `plans`, before
+/// anything changes, so a refusal leaves no trace. The new ways don't exist
+/// yet; each stands in under a placeholder id that is swapped for the real
+/// one afterwards. Returns the changed relations (only those holding a split
+/// way) and, per plan, the id each of its ways stands under (the original,
+/// then a placeholder per new way, in the order the cuts create them).
+fn split_relations(
+    editable: &dyn EditableLayer,
+    plans: &[topology::SplitPlan],
+) -> Result<(Vec<osm_gpui::osm::OsmRelation>, Vec<Vec<i64>>), String> {
     let mut relations: Vec<osm_gpui::osm::OsmRelation> = Vec::new();
     let mut way_nodes: HashMap<i64, Vec<i64>> = HashMap::new();
-    // Per plan: the id each of its ways stands under (the original, then a
-    // placeholder per new way, in the order the cuts create them).
     let mut placeholders: Vec<i64> = Vec::new();
     let mut ids_by_plan: Vec<Vec<i64>> = Vec::new();
     for plan in plans.iter() {
@@ -1384,6 +1474,28 @@ fn apply_split(
         }
         ids_by_plan.push(ids);
     }
+    Ok((relations, ids_by_plan))
+}
+
+/// Split the ways at the selected node(s): the original
+/// keeps its id and the longest part, every other part is a new way with a
+/// copy of the tags, and neighbouring parts share the split node. A closed
+/// way with one node is only rewritten to start there. Relations that hold the way keep
+/// working: see `relations::split_members` for where the new way goes (and
+/// the turn restriction exception, which can refuse the split). One undo
+/// step: per way, the new way's creation, then the original's new nodes, and
+/// finally the relations' new member lists.
+fn apply_split(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let plans = split_plans(editable, layer_id, selection);
+    if plans.is_empty() {
+        return Err(tr!("action.split.hint").to_string());
+    }
+    let (relations, ids_by_plan) = split_relations(editable, &plans)?;
 
     // The new halves are added to the relations the way is in; refuse if that
     // would push one past the server's member maximum (nothing is changed yet).
@@ -1472,6 +1584,274 @@ fn apply_split(
         }),
         status: label,
         clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// The selection read as "delete this segment": two nodes of the active layer
+/// and optionally one way. There is no segment selection in the UI, so a
+/// segment is two selected nodes that are next to each other in a way; when
+/// several ways run along the same two nodes, select the way too.
+struct SegmentTarget {
+    /// The ways in which the nodes are adjacent, with what deleting the
+    /// segment there would leave.
+    ways: Vec<(
+        i64,
+        Result<topology::SegmentDeletion, topology::SegmentError>,
+    )>,
+}
+
+fn segment_target(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<SegmentTarget> {
+    let mut nodes: Vec<i64> = Vec::new();
+    let mut named: Vec<i64> = Vec::new();
+    for f in selection.iter().filter(|f| f.layer_id == layer_id) {
+        let list = match f.kind {
+            FeatureKind::Node => &mut nodes,
+            FeatureKind::Way => &mut named,
+            FeatureKind::Relation => return None,
+        };
+        if !list.contains(&f.id) {
+            list.push(f.id);
+        }
+    }
+    let ([a, b], true) = (nodes.as_slice(), named.len() <= 1) else {
+        return None;
+    };
+    let ways: Vec<_> = ways_using(editable, *a)
+        .into_iter()
+        .filter(|(id, _)| named.is_empty() || named.contains(id))
+        .filter_map(
+            |(id, list)| match topology::plan_delete_segment(id, &list, *a, *b) {
+                Err(topology::SegmentError::NotAdjacent) => None,
+                result => Some((id, result)),
+            },
+        )
+        .collect();
+    (!ways.is_empty()).then_some(SegmentTarget { ways })
+}
+
+/// The way and what is left of it if the selection is a segment that can be
+/// deleted, otherwise the reason it can't (the status-bar text).
+fn segment_plan(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Result<(i64, topology::SegmentDeletion), String> {
+    let target = segment_target(editable, layer_id, selection)
+        .ok_or_else(|| tr!("action.delete_segment.hint").to_string())?;
+    let [(way_id, result)] = target.ways.as_slice() else {
+        return Err(tr!("action.delete_segment.error.several_ways").to_string());
+    };
+    match result {
+        Ok(d) => Ok((*way_id, d.clone())),
+        Err(topology::SegmentError::Ambiguous) => {
+            Err(tr!("action.delete_segment.error.twice").to_string())
+        }
+        Err(topology::SegmentError::WholeWay) => {
+            Err(tr!("action.delete_segment.error.whole_way").to_string())
+        }
+        Err(topology::SegmentError::NotAdjacent) => {
+            Err(tr!("action.delete_segment.hint").to_string())
+        }
+    }
+}
+
+/// Delete Way Segment: the way is cut
+/// at the segment between the two selected nodes and the segment is thrown
+/// away. An open way becomes the part before and the part after (the original
+/// way keeps the longer one and its id; the other becomes a new way with a
+/// copy of the tags); a segment at an end just shortens the way; a closed
+/// way is opened there. Relations follow `relations::split_members` exactly
+/// as for Split Way (the piece that is thrown away is removed from them
+/// again, and a turn restriction that can't tell which half to follow
+/// refuses). A node of the segment that no remaining piece uses is deleted
+/// when it is untagged, in no other way and no relation. Refused when the
+/// nodes are not adjacent in exactly one way, when the way runs along the
+/// segment twice, when nothing but the segment would be left (delete the
+/// way instead), when a relation would grow past the member limit, and when a
+/// turn restriction would lose its way. One undo step: new way, the original's
+/// nodes, relation members, deleted nodes.
+fn apply_delete_segment(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let (way_id, deletion) = segment_plan(editable, layer_id, selection)?;
+    let restriction_error = |relation: i64, way: i64| {
+        tr!(
+            "action.delete_segment.error.restriction",
+            way = way,
+            relation = relation
+        )
+        .to_string()
+    };
+    let is_end_role = |m: &osm_gpui::osm::OsmMember, way: i64| {
+        m.member_type == MemberType::Way
+            && m.reference == way
+            && matches!(m.role.as_str(), "from" | "to")
+    };
+
+    // Relations: as for a split, then without the piece that is thrown away.
+    let split = deletion.as_split();
+    let (mut relations, ids) = match &split {
+        Some(plan) => {
+            let (relations, mut ids) = split_relations(editable, std::slice::from_ref(plan))?;
+            (relations, ids.remove(0))
+        }
+        None => (Vec::new(), vec![way_id]),
+    };
+    let middle_idx = split.as_ref().map(|p| if p.keeper == 0 { 1 } else { 2 });
+    if let Some(middle_idx) = middle_idx {
+        let middle = ids[middle_idx];
+        for relation in &mut relations {
+            if osm_gpui::relations::is_restriction(relation)
+                && relation.members.iter().any(|m| is_end_role(m, middle))
+            {
+                return Err(restriction_error(relation.id, way_id));
+            }
+            relation
+                .members
+                .retain(|m| !(m.member_type == MemberType::Way && m.reference == middle));
+        }
+    } else {
+        // Only shortened or opened: a restriction needs its via node to stay
+        // on the from / to way.
+        let kept = &deletion.pieces[0];
+        for relation_id in editable.relations_containing_way(way_id) {
+            let Some(relation) = editable.relation(relation_id) else {
+                continue;
+            };
+            if !osm_gpui::relations::is_restriction(&relation)
+                || !relation.members.iter().any(|m| is_end_role(m, way_id))
+            {
+                continue;
+            }
+            let lost_via = relation.members.iter().any(|m| {
+                m.member_type == MemberType::Node
+                    && m.role == "via"
+                    && deletion.before.contains(&m.reference)
+                    && !kept.contains(&m.reference)
+            });
+            if lost_via {
+                return Err(restriction_error(relation_id, way_id));
+            }
+        }
+    }
+    for relation in &relations {
+        let grew = editable
+            .relation(relation.id)
+            .is_some_and(|r| relation.members.len() > r.members.len());
+        if grew {
+            if let Some(m) = osm_gpui::limits::relation_over_limit(
+                relation.members.len(),
+                osm_gpui::limits::relation_add_message,
+            ) {
+                return Err(m);
+            }
+        }
+    }
+
+    let way_ref = FeatureRef {
+        layer_id,
+        kind: FeatureKind::Way,
+        id: way_id,
+    };
+    let tags = editable.feature_tags(&way_ref).unwrap_or_default();
+    let mut actions = Vec::new();
+    let mut new_ids: Vec<(i64, i64)> = Vec::new();
+    let kept = match &split {
+        Some(plan) => {
+            // Where every way of the split ends up; the middle one is not made.
+            let mut finals = vec![plan.before.clone()];
+            for cut in plan.cuts() {
+                finals[cut.holder] = cut.keep;
+                finals.push(cut.new);
+            }
+            for (k, nodes) in finals.iter().enumerate().skip(1) {
+                if Some(k) == middle_idx {
+                    continue;
+                }
+                let new_id = editable.add_way(nodes.clone(), tags.clone());
+                new_ids.push((ids[k], new_id));
+                actions.push(UndoableAction::CreateWay {
+                    layer: layer_id,
+                    snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                        kind: FeatureKind::Way,
+                        id: new_id,
+                        tags: tags.clone(),
+                        way_nodes: nodes.clone(),
+                        node_lat_lon: None,
+                        version: 0,
+                    },
+                });
+            }
+            finals.swap_remove(0)
+        }
+        None => deletion.pieces[0].clone(),
+    };
+    editable.set_way_nodes(way_id, kept.clone());
+    actions.push(UndoableAction::SetWayNodes {
+        layer: layer_id,
+        way_id,
+        before: deletion.before.clone(),
+        after: kept,
+    });
+    for relation in relations {
+        let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
+            continue;
+        };
+        let mut after = relation.members;
+        for member in &mut after {
+            if let Some(&(_, real)) = new_ids.iter().find(|(p, _)| *p == member.reference) {
+                member.reference = real;
+            }
+        }
+        if after != before {
+            editable.set_relation_members(relation.id, after.clone());
+            actions.push(UndoableAction::SetRelationMembers {
+                layer: layer_id,
+                relation_id: relation.id,
+                before,
+                after,
+            });
+        }
+    }
+    for node_id in deletion.dropped_nodes() {
+        let node = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id: node_id,
+        };
+        if !editable.ways_using_node(node_id).is_empty()
+            || !editable.relations_containing_node(node_id).is_empty()
+            || editable
+                .feature_tags(&node)
+                .is_some_and(|tags| !tags.is_empty())
+        {
+            continue;
+        }
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, node_id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+
+    let label = tr!("action.delete_segment.done").to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: true,
         select: None,
         continue_way: None,
     })

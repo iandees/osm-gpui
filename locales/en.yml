@@ -620,6 +620,22 @@ action:
       other: "Separated a node into %{count} copies"
     error:
       restriction: "Can't separate: way %{way} is part of turn restriction %{relation}, which needs it to stay connected to the via node"
+  unjoin:
+    label: "Unjoin Node from Way"
+    hint: "Select a node and a way it belongs to (and that another way shares) to give that way its own copy of the node"
+    done: "Unjoined a node from a way"
+    error:
+      end_node: "Can't unjoin: the node is an end of the way, so there is nothing to pull it off (use Separate Node)"
+      not_shared: "Can't unjoin: no other way uses the node"
+  delete_segment:
+    label: "Delete Way Segment"
+    hint: "Select two nodes that are next to each other in a way to delete the segment between them"
+    done: "Deleted a way segment"
+    error:
+      several_ways: "Can't delete the segment: several ways run along it, select the way too"
+      twice: "Can't delete the segment: the way runs along it more than once"
+      whole_way: "Can't delete the segment: it is all the way has, delete the way instead"
+      restriction: "Can't delete the segment: way %{way} is part of turn restriction %{relation}, which needs it to stay connected to the via node"
   extend:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
