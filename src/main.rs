@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod add_click_tests;
 mod autosave_driver;
 mod clipboard_actions;
 mod fields_section;
@@ -1629,6 +1631,18 @@ impl MapViewer {
     /// state (undo). Both directions reuse the same commit path as a live
     /// drag, so caches rebuild exactly once per affected layer.
     fn apply_undo_action(&mut self, action: &UndoableAction, forward: bool) {
+        self.apply_undo_action_inner(action, forward);
+        // A layer undone back to its server baseline has an empty diff and
+        // must stop reporting itself as modified (layer dot, quit warning,
+        // delete-layer confirmation).
+        for id in action.layers() {
+            if let Some(layer) = self.layer_manager.find_layer_mut(id) {
+                layer.refresh_modified();
+            }
+        }
+    }
+
+    fn apply_undo_action_inner(&mut self, action: &UndoableAction, forward: bool) {
         match action {
             UndoableAction::MoveNodes { per_layer } => {
                 for (layer_id, entries) in per_layer {
@@ -1933,11 +1947,11 @@ impl MapViewer {
             UndoableAction::Batch { actions, .. } => {
                 if forward {
                     for action in actions {
-                        self.apply_undo_action(action, true);
+                        self.apply_undo_action_inner(action, true);
                     }
                 } else {
                     for action in actions.iter().rev() {
-                        self.apply_undo_action(action, false);
+                        self.apply_undo_action_inner(action, false);
                     }
                 }
             }
