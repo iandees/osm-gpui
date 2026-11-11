@@ -4,7 +4,7 @@ use gpui::{point, px, Pixels, Point};
 
 use crate::layers::LayerId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeatureKind {
     Node,
     Way,
@@ -15,7 +15,7 @@ pub enum FeatureKind {
     Relation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FeatureRef {
     pub layer_id: LayerId,
     pub kind: FeatureKind,

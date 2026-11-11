@@ -303,6 +303,12 @@ impl Runner {
             Op::AssertSelection { kind } => app
                 .check(&Check::Selection(*kind))
                 .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::AssertSelectedCount { count } => app
+                .check(&Check::SelectedCount(*count))
+                .map_err(|e| fail(format!("assert_selected_count: {e}"))),
+            Op::AssertFindPreview { text } => app
+                .check(&Check::FindPreview(text.clone()))
+                .map_err(|e| fail(format!("assert_find_preview: {e}"))),
             Op::ExportLayer { path } => {
                 app.export_layer(std::path::Path::new(path))
                     .map_err(|e| fail(format!("export_layer: {e}")))?;
@@ -505,6 +511,8 @@ fn describe(op: &Op) -> String {
         Op::AssertAdjustingOffset { on } => format!("assert_adjusting_offset {on}"),
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
+        Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
         Op::ExportLayer { path } => format!("export_layer {}", path),
         Op::SignIn => "sign_in".to_string(),
         Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),

@@ -37,8 +37,10 @@ const CASING_WIDTH: f32 = 1.0;
 /// Below this zoom the casing is skipped: ways are dense enough that it
 /// only adds clutter, and it doubles the way pass's vertex count exactly
 /// when the most ways are on screen (measured with `examples/perf_bench`:
-/// 2.8 ms -> 5.2 ms of CPU per frame for 8k ways all visible at z14).
-const CASING_MIN_ZOOM: f64 = 15.0;
+/// 2.8 ms -> 5.2 ms of CPU per frame for 8k ways all visible at z14). It is
+/// drawn from zoom 16, where editing starts (`COARSE_BELOW_ZOOM`): on a
+/// 290k-node extract at z15.5 it was about 40 percent of the vertices.
+const CASING_MIN_ZOOM: f64 = 16.0;
 
 /// Below this zoom turn-restriction markers aren't drawn or clickable.
 /// (Which node markers are shown is decided by `node_markers`.)
@@ -69,6 +71,44 @@ const ARROW_OVERHANG: f32 = 3.0;
 /// threshold, so endpoints/junctions and hit-testing (which reads the
 /// undecimated cached geometry, not this render-only path) are unaffected.
 const MIN_SEGMENT_PX: f32 = 1.0;
+
+/// Below this zoom the way pass draws coarser (see `WayLod`): a longer
+/// minimum segment, tiny ways collapsed to one stroke or left out, tiny area
+/// fills left out. At and above it (zoom 16, where editing starts) only the
+/// one-pixel segment merge applies.
+const COARSE_BELOW_ZOOM: f64 = 16.0;
+
+/// Below this zoom, ways drawn no wider than `MINOR_WAY_WIDTH` (footpaths,
+/// buildings' and land-use outlines, barriers: everything the default
+/// stylesheet draws at 1.5 px or less) get no outline. Areas keep their fill.
+/// At this scale they are far too small to pick out, and they are most of the
+/// vertices of a dense city.
+const MINOR_WAYS_BELOW_ZOOM: f64 = 15.0;
+
+/// Widest stroke, in pixels, that counts as a minor way.
+const MINOR_WAY_WIDTH: f32 = 1.5;
+
+/// Douglas-Peucker tolerance at and above `COARSE_BELOW_ZOOM`, in pixels: a
+/// vertex that moves the line by under a third of a pixel is not drawn.
+const TOLERANCE_PX: f32 = 0.35;
+
+/// Douglas-Peucker tolerance below `COARSE_BELOW_ZOOM`, in pixels.
+const COARSE_TOLERANCE_PX: f32 = 1.0;
+
+/// Minimum merged segment length below `COARSE_BELOW_ZOOM`, in pixels.
+const COARSE_MIN_SEGMENT_PX: f32 = 2.0;
+
+/// Below `COARSE_BELOW_ZOOM`, a way whose bounding box is under this many
+/// pixels across is drawn as a single stroke across the box.
+const COLLAPSE_BELOW_PX: f32 = 3.0;
+
+/// Below `COARSE_BELOW_ZOOM`, a way whose bounding box is under this many
+/// pixels across is not drawn at all.
+const SKIP_BELOW_PX: f32 = 0.75;
+
+/// Below `COARSE_BELOW_ZOOM`, an area under this many pixels across gets no
+/// fill (its outline covers it).
+const TINY_FILL_BELOW_PX: f32 = 2.0;
 
 /// Per-way axis-aligned bounding box in Web Mercator meters. Used to cull
 /// offscreen ways with a cheap min/max compare against the viewport's
@@ -164,7 +204,7 @@ pub struct OsmLayer {
     /// contiguous slice per way instead of doing a `HashMap::get` per node
     /// id. The node id is carried alongside the position so the render loop
     /// can match vertices against an active `drag_preview` set.
-    way_vertices: Vec<Vec<(i64, f64, f64)>>,
+    way_vertices: Vec<WayGeom>,
     /// Resolved per-way style, aligned with `osm_data.ways`/`way_vertices` by
     /// index. Resolved once (here) instead of every frame in the render
     /// loop.
@@ -212,6 +252,8 @@ pub struct OsmLayer {
     /// Transient screen-space offset applied to the given node ids while
     /// rendering, for live drag feedback. Never touches `osm_data`.
     drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
+    /// Sizes of last frame's way-pass batches (see `VertexHints`).
+    vertex_hints: VertexHints,
     /// Whether this layer has had a committed move since it was loaded.
     modified: bool,
     /// Next id to hand out to an auto-allocated new node (`create_node`
@@ -298,10 +340,7 @@ fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
 /// `compute_way_tables` (full rebuild), `commit_node_moves` (per-touched-way
 /// patch), and `restore_way` (single restored way) so the projection math
 /// lives in exactly one place.
-fn project_way_vertices(
-    way: &OsmWay,
-    node_cache: &NodeCache,
-) -> (Vec<(i64, f64, f64)>, Option<WayBbox>) {
+fn project_way_vertices(way: &OsmWay, node_cache: &NodeCache) -> (WayGeom, Option<WayBbox>) {
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
@@ -335,7 +374,91 @@ fn project_way_vertices(
             max_y,
         })
     };
-    (verts, bbox)
+    (WayGeom::new(verts), bbox)
+}
+
+/// A way's projected vertices (`(node id, x, y)`, Web Mercator meters) with
+/// each vertex's *significance*: the Douglas-Peucker deviation, in meters, at
+/// which the vertex first becomes necessary. Dropping every vertex whose
+/// significance is under a tolerance gives exactly the Douglas-Peucker
+/// simplification at that tolerance, so the renderer can simplify a way to
+/// any zoom with one compare per vertex (and project only the survivors).
+///
+/// Built only by [`WayGeom::new`], which every path that (re)projects a way
+/// goes through (`compute_way_tables`, `commit_node_moves`, `restore_way`,
+/// add/replace way), so the significance is always that of the current
+/// geometry: an edit replaces the whole `WayGeom` of each way it touches.
+/// Derefs to the vertex slice for everything that does not care.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct WayGeom {
+    verts: Vec<(i64, f64, f64)>,
+    sig: Vec<f32>,
+}
+
+impl std::ops::Deref for WayGeom {
+    type Target = [(i64, f64, f64)];
+    fn deref(&self) -> &Self::Target {
+        &self.verts
+    }
+}
+
+impl WayGeom {
+    fn new(verts: Vec<(i64, f64, f64)>) -> Self {
+        let sig = vertex_significance(&verts);
+        Self { verts, sig }
+    }
+}
+
+/// Douglas-Peucker significance of every vertex of a polyline or ring (see
+/// [`WayGeom`]): the end points get infinity; each other vertex gets the
+/// distance (meters) from the chord of the range that was split at it.
+/// Iterative (no recursion) so a long coastline cannot overflow the stack.
+fn vertex_significance(verts: &[(i64, f64, f64)]) -> Vec<f32> {
+    let n = verts.len();
+    let mut sig = vec![0.0f32; n];
+    if n == 0 {
+        return sig;
+    }
+    sig[0] = f32::INFINITY;
+    sig[n - 1] = f32::INFINITY;
+    let mut stack: Vec<(usize, usize)> = vec![(0, n - 1)];
+    while let Some((lo, hi)) = stack.pop() {
+        if hi <= lo + 1 {
+            continue;
+        }
+        let (_, ax, ay) = verts[lo];
+        let (_, bx, by) = verts[hi];
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let mut best = lo;
+        let mut best_d2 = -1.0f64;
+        for (k, &(_, px_, py_)) in verts.iter().enumerate().take(hi).skip(lo + 1) {
+            // Distance to the chord line; to the end point for a closed ring
+            // (zero-length chord).
+            let d2 = if len2 > 0.0 {
+                let cross = dx * (py_ - ay) - dy * (px_ - ax);
+                cross * cross / len2
+            } else {
+                (px_ - ax) * (px_ - ax) + (py_ - ay) * (py_ - ay)
+            };
+            if d2 > best_d2 {
+                best_d2 = d2;
+                best = k;
+            }
+        }
+        // Significance can only shrink along a branch of the split tree, so
+        // clamp to the parent's (the property that makes thresholding equal
+        // to running Douglas-Peucker at that tolerance).
+        let parent = {
+            let lo_s = sig[lo];
+            let hi_s = sig[hi];
+            lo_s.min(hi_s)
+        };
+        sig[best] = (best_d2.sqrt() as f32).min(parent);
+        stack.push((lo, best));
+        stack.push((best, hi));
+    }
+    sig
 }
 
 /// Per-way tables produced by [`compute_way_tables`]: parallel vectors of
@@ -344,7 +467,7 @@ fn project_way_vertices(
 type WayTables = (
     Vec<i64>,
     Vec<Option<WayBbox>>,
-    Vec<Vec<(i64, f64, f64)>>,
+    Vec<WayGeom>,
     Vec<WayStyle>,
     Vec<Option<Vec<u32>>>,
 );
@@ -752,7 +875,7 @@ fn apply_style_refresh(
     data: &OsmData,
     node_cache: &mut NodeCache,
     way_id_to_index: &HashMap<i64, usize>,
-    way_vertices: &[Vec<(i64, f64, f64)>],
+    way_vertices: &[WayGeom],
     way_styles: &mut [WayStyle],
     way_fill_tris: &mut [Option<Vec<u32>>],
     stylesheet: &Stylesheet,
@@ -827,10 +950,19 @@ fn build_way_id_index(ways: &[&OsmWay]) -> HashMap<i64, usize> {
 ///
 /// Pure/allocation-light and independent of `Window`/`Path` so it can be
 /// unit-tested directly.
+#[cfg(test)]
 fn decimate_segments(pts: &[Point<Pixels>], min_px: f32) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
+    decimate_into(pts, min_px, &mut out);
+    out
+}
+
+/// `decimate_segments` into a reused buffer (cleared first), so the per-way
+/// loop of a frame does not allocate.
+fn decimate_into(pts: &[Point<Pixels>], min_px: f32, out: &mut Vec<(usize, usize)>) {
+    out.clear();
     if pts.len() < 2 {
-        return out;
+        return;
     }
     let min_px2 = min_px * min_px;
     let mut anchor = 0usize;
@@ -844,7 +976,6 @@ fn decimate_segments(pts: &[Point<Pixels>], min_px: f32) -> Vec<(usize, usize)> 
             anchor = i;
         }
     }
-    out
 }
 
 /// Push an oriented rectangle covering the segment `p0`-`p1` (as two raw
@@ -1191,6 +1322,7 @@ impl OsmLayer {
             way_id_to_index: HashMap::new(),
             node_to_ways: HashMap::new(),
             drag_preview: None,
+            vertex_hints: VertexHints::default(),
             modified: false,
             next_new_id: -1,
             next_placeholder_way_id: -1,
@@ -1242,6 +1374,7 @@ impl OsmLayer {
             way_id_to_index,
             node_to_ways,
             drag_preview: None,
+            vertex_hints: VertexHints::default(),
             modified: false,
             next_new_id,
             next_placeholder_way_id: -1,
@@ -3189,6 +3322,615 @@ impl OsmLayer {
     }
 }
 
+/// What the previous frame's way pass ended up with: the vertex count of each
+/// batch, keyed by kind and colour/width. The next frame reserves that much
+/// up front, so the (up to millions of vertices, tens of MB) paths are not
+/// grown by doubling and copying while they are filled.
+#[derive(Default)]
+struct VertexHints(std::sync::Mutex<HashMap<u64, usize>>);
+
+impl VertexHints {
+    fn snapshot(&self) -> HashMap<u64, usize> {
+        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    fn replace(&self, hints: HashMap<u64, usize>) {
+        if let Ok(mut m) = self.0.lock() {
+            *m = hints;
+        }
+    }
+}
+
+/// Which kind of batch a hint key belongs to.
+#[derive(Clone, Copy)]
+enum BatchKind {
+    Fill = 1,
+    Overlay = 2,
+    Casing = 3,
+    Stroke = 4,
+}
+
+/// A batch of raw triangles painted in one colour, with the bounds of its
+/// vertices accumulated as it grows.
+struct Batch {
+    rgba: u32,
+    /// Key of this batch's `VertexHints` entry.
+    key: u64,
+    path: Option<Path<Pixels>>,
+    /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad` and
+    /// `push_triangle`.
+    bounds: (f32, f32, f32, f32),
+}
+
+impl Batch {
+    /// `variant` tells batches of one kind apart (the stroke width bits).
+    fn new(kind: BatchKind, rgba: u32, variant: u32, hints: &HashMap<u64, usize>) -> Self {
+        let key = ((kind as u64) << 60) ^ ((rgba as u64) << 24) ^ (variant as u64);
+        // The previous frame's size plus a margin, capped so that a stale
+        // hint (after zooming in from far out) cannot reserve gigabytes.
+        let path = hints.get(&key).map(|&n| {
+            let mut p = Path::new(point(px(0.0), px(0.0)));
+            p.vertices.reserve((n + n / 8).min(MAX_HINT_VERTICES));
+            p
+        });
+        Self {
+            rgba,
+            key,
+            path,
+            bounds: (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+        }
+    }
+
+    /// The finished path with its bounds set, or `None` if nothing was
+    /// pushed. Records the final size in `hints`.
+    fn finish(self, hints: &mut HashMap<u64, usize>) -> Option<(u32, Path<Pixels>)> {
+        let mut path = self.path?;
+        if path.vertices.is_empty() {
+            return None;
+        }
+        hints.insert(self.key, path.vertices.len());
+        let (min_x, max_x, min_y, max_y) = self.bounds;
+        path.bounds = Bounds {
+            origin: point(px(min_x), px(min_y)),
+            size: size(px(max_x - min_x), px(max_y - min_y)),
+        };
+        Some((self.rgba, path))
+    }
+}
+
+/// Upper bound of a reserved batch, in vertices (32 bytes each).
+const MAX_HINT_VERTICES: usize = 8 << 20;
+
+/// The index of the batch for `rgba` in `batches`, creating it on first
+/// use. First-encounter order, so paint order is deterministic across frames
+/// (a `HashMap`'s iteration order is randomized per process, which caused
+/// visible z-order flicker between overlapping fills of different colors).
+fn batch_index(
+    index: &mut HashMap<u32, usize>,
+    batches: &mut Vec<Batch>,
+    kind: BatchKind,
+    rgba: u32,
+    hints: &HashMap<u64, usize>,
+) -> usize {
+    *index.entry(rgba).or_insert_with(|| {
+        batches.push(Batch::new(kind, rgba, 0, hints));
+        batches.len() - 1
+    })
+}
+
+/// The way pass of one frame, recorded but not yet painted: area fills, route
+/// overlays, the casing and the strokes, each batched into as few paths as
+/// there are colours or widths. Building it needs no `Window`, so it can be
+/// timed and tested on its own (`examples/way_bench.rs`).
+pub struct WayScene {
+    fills: Vec<(u32, Path<Pixels>)>,
+    overlays: Vec<(u32, Path<Pixels>)>,
+    casing: Option<(u32, Path<Pixels>)>,
+    strokes: Vec<(u32, Path<Pixels>)>,
+}
+
+impl WayScene {
+    /// Total triangle-list vertices in the scene (6 per stroke segment).
+    pub fn vertex_count(&self) -> usize {
+        let sum =
+            |v: &[(u32, Path<Pixels>)]| -> usize { v.iter().map(|(_, p)| p.vertices.len()).sum() };
+        let casing = self.casing.as_ref().map_or(0, |(_, p)| p.vertices.len());
+        sum(&self.fills) + sum(&self.overlays) + casing + sum(&self.strokes)
+    }
+
+    /// Number of paths the scene hands to the GPU. Each is rasterised and
+    /// composited separately, over its own bounding box.
+    pub fn path_count(&self) -> usize {
+        self.fills.len() + self.overlays.len() + self.casing.is_some() as usize + self.strokes.len()
+    }
+
+    /// Hand the paths to the window: fills first so outlines stay on top,
+    /// then route overlays, the casing and the strokes.
+    fn paint(self, window: &mut Window) {
+        let fs_phase = crate::frame_stats::start();
+        for (rgba, path) in self.fills {
+            window.paint_path(path, gpui::rgba(rgba));
+        }
+        crate::frame_stats::lap("osm.fill_paint", fs_phase);
+        let fs_phase = crate::frame_stats::start();
+        for (rgba, path) in self.overlays {
+            window.paint_path(path, gpui::rgba(rgba));
+        }
+        if let Some((rgba, path)) = self.casing {
+            window.paint_path(path, gpui::rgba(rgba));
+        }
+        for (rgba, path) in self.strokes {
+            window.paint_path(path, gpui::rgba(rgba));
+        }
+        crate::frame_stats::lap("osm.ways_paint", fs_phase);
+    }
+}
+
+/// How much of a way is drawn at the current zoom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WayDetail {
+    /// Not drawn: under a pixel across.
+    Skip,
+    /// Drawn as one short stroke across its bounding box.
+    Collapse,
+    /// Every (merged) segment.
+    Full,
+}
+
+/// The level-of-detail rules of the way pass at one zoom. Pure, so the
+/// zoom rule is unit-tested. From `COARSE_BELOW_ZOOM` up (the editing
+/// zooms) nothing is simplified beyond the one-pixel segment merge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WayLod {
+    coarse: bool,
+    /// Whether minor ways (see `MINOR_WAYS_BELOW_ZOOM`) are left out.
+    drops_minor: bool,
+    /// Vertices that deviate less than this many pixels from the line
+    /// through their neighbours are dropped (Douglas-Peucker tolerance).
+    tolerance_px: f32,
+    min_segment_px: f32,
+}
+
+impl WayLod {
+    fn at(zoom: f64) -> Self {
+        if zoom >= COARSE_BELOW_ZOOM {
+            Self {
+                coarse: false,
+                drops_minor: false,
+                tolerance_px: TOLERANCE_PX,
+                min_segment_px: MIN_SEGMENT_PX,
+            }
+        } else {
+            Self {
+                coarse: true,
+                drops_minor: zoom < MINOR_WAYS_BELOW_ZOOM,
+                tolerance_px: COARSE_TOLERANCE_PX,
+                min_segment_px: COARSE_MIN_SEGMENT_PX,
+            }
+        }
+    }
+
+    /// Whether a way stroked `width` pixels wide is outlined at all.
+    fn strokes(&self, width: f32) -> bool {
+        !(self.drops_minor && width <= MINOR_WAY_WIDTH)
+    }
+
+    /// What to draw of a way whose bounding box is `extent_px` across at its
+    /// longest side.
+    fn detail(&self, extent_px: f32) -> WayDetail {
+        if !self.coarse || extent_px >= COLLAPSE_BELOW_PX {
+            WayDetail::Full
+        } else if extent_px < SKIP_BELOW_PX {
+            WayDetail::Skip
+        } else {
+            WayDetail::Collapse
+        }
+    }
+
+    /// Whether an area whose bounding box is `extent_px` across gets a fill:
+    /// a fill under two pixels across is hidden by its own outline.
+    fn fills(&self, extent_px: f32) -> bool {
+        !self.coarse || extent_px >= TINY_FILL_BELOW_PX
+    }
+}
+
+/// Longest side of a mercator bounding box in screen pixels.
+#[inline]
+fn bbox_extent_px(b: &WayBbox, ppm_x: f64, ppm_y: f64) -> f32 {
+    ((b.max_x - b.min_x) * ppm_x).max((b.max_y - b.min_y) * ppm_y) as f32
+}
+
+impl OsmLayer {
+    /// Record the way pass (fills, route overlays, casing, strokes) for this
+    /// frame: cull in Mercator space, project, merge sub-pixel segments and
+    /// batch everything into one path per colour/width. `bounds` is the
+    /// canvas rectangle.
+    ///
+    /// Nothing is cached across frames except what the edit paths already
+    /// maintain (`way_vertices`, `way_bboxes`, `way_styles`, `way_fill_tris`,
+    /// the `MpCache`), so no edit can leave this stale.
+    pub fn build_way_scene(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> WayScene {
+        let origin_x = bounds.origin.x;
+        let origin_y = bounds.origin.y;
+        let (ox, oy) = (f32::from(origin_x), f32::from(origin_y));
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let proj = viewport.projector();
+        let (ppm_x, ppm_y) = proj.pixels_per_meter();
+        let zoom = viewport.zoom_level();
+        let lod = WayLod::at(zoom);
+        // While nodes are being dragged the cached bounding boxes are stale,
+        // so draw every way in full.
+        let dragging = self.drag_preview.is_some();
+        let hints = self.vertex_hints.snapshot();
+        // The simplification tolerance in Web Mercator meters (nothing is
+        // dropped while dragging, for the same reason).
+        let tolerance_m = if dragging {
+            0.0
+        } else {
+            (lod.tolerance_px as f64 / ppm_x) as f32
+        };
+
+        // Area fills: painted before strokes so outlines and nodes stay on
+        // top. Triangulation is cached (`way_fill_tris`, computed at
+        // load/edit time); per-frame work is projection + batched
+        // raw-triangle emission, grouped by RGBA color.
+        let mut fill_index: HashMap<u32, usize> = HashMap::new();
+        let mut fills: Vec<Batch> = Vec::new();
+        let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
+
+        // Multipolygon relations first, so a closed way's own fill (an
+        // island, a building inside a forest) paints over them.
+        let screen_rect = (
+            ox,
+            oy,
+            f32::from(origin_x + bounds.size.width),
+            f32::from(origin_y + bounds.size.height),
+        );
+        let fs_phase = crate::frame_stats::start();
+        for entry in self.mp.entries.values() {
+            let Some(fill) = entry.style.fill else {
+                continue;
+            };
+            let b = &entry.bbox;
+            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+                continue;
+            }
+            let alpha = (fill.opacity * 255.0).round() as u32;
+            let group_idx = batch_index(
+                &mut fill_index,
+                &mut fills,
+                BatchKind::Fill,
+                (fill.color << 8) | alpha,
+                &hints,
+            );
+            let group = &mut fills[group_idx];
+            for polygon in &entry.polygons {
+                let pb = &polygon.bbox;
+                if pb.max_x < vmin_x || pb.min_x > vmax_x || pb.max_y < vmin_y || pb.min_y > vmax_y
+                {
+                    continue;
+                }
+                if !dragging && !lod.fills(bbox_extent_px(pb, ppm_x, ppm_y)) {
+                    continue;
+                }
+                self.push_polygon_fill(
+                    polygon,
+                    viewport,
+                    (origin_x, origin_y),
+                    screen_rect,
+                    &mut fill_pts,
+                    &mut group.path,
+                    &mut group.bounds,
+                );
+            }
+        }
+        crate::frame_stats::lap("osm.mp_fill_build", fs_phase);
+
+        let fs_phase = crate::frame_stats::start();
+        for (i, tris) in self.way_fill_tris.iter().enumerate() {
+            let Some(tris) = tris else { continue };
+            let Some(fill) = self.way_styles[i].fill else {
+                continue;
+            };
+            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
+                Some(b) => b,
+                None => continue,
+            };
+            if bbox.max_x < vmin_x
+                || bbox.min_x > vmax_x
+                || bbox.max_y < vmin_y
+                || bbox.min_y > vmax_y
+            {
+                continue;
+            }
+            if !dragging && !lod.fills(bbox_extent_px(bbox, ppm_x, ppm_y)) {
+                continue;
+            }
+
+            let verts = &self.way_vertices[i];
+            let ring_len = verts.len() - 1; // closing duplicate excluded
+            fill_pts.clear();
+            for &(node_id, mx, my) in &verts[..ring_len] {
+                let (x, y) = proj.to_screen(mx, my);
+                if !(x.is_finite() && y.is_finite()) {
+                    break;
+                }
+                let sp = point(px(x), px(y)) + self.drag_preview_offset(node_id);
+                fill_pts.push(point(sp.x + origin_x, sp.y + origin_y));
+            }
+            // Any invalid projection breaks index alignment with the cached
+            // triangle indices — skip the fill (the stroke still draws).
+            if fill_pts.len() != ring_len {
+                continue;
+            }
+
+            let alpha = (fill.opacity * 255.0).round() as u32;
+            let group_idx = batch_index(
+                &mut fill_index,
+                &mut fills,
+                BatchKind::Fill,
+                (fill.color << 8) | alpha,
+                &hints,
+            );
+            let group = &mut fills[group_idx];
+            for t in tris.as_chunks::<3>().0 {
+                push_triangle(
+                    &mut group.path,
+                    &mut group.bounds,
+                    fill_pts[t[0] as usize],
+                    fill_pts[t[1] as usize],
+                    fill_pts[t[2] as usize],
+                );
+            }
+        }
+        crate::frame_stats::lap("osm.way_fill_build", fs_phase);
+
+        // Ways: bbox-cull in Mercator space, then group visible ways by
+        // `(color, width)` style. Each group becomes one `paint_path` call,
+        // preserving the batching gains from PR #5 while honoring per-way
+        // style. Vertex lookup is a single contiguous slice per way
+        // (`way_vertices[i]`) — no HashMap indirection.
+        //
+        // Each segment is emitted as two raw triangles (an oriented quad)
+        // pushed directly into the group's `Path`, bypassing
+        // `PathBuilder::stroke`'s Lyon tessellation pass entirely — that
+        // tessellator dominated frame time (~1.3-1.8ms for ~3800 visible
+        // ways, measured under a synthetic 8k-node/4k-way dataset), since it
+        // reruns from scratch every repaint (e.g. every mouse-move while
+        // panning). No mitered joins at segment corners; at typical way
+        // widths (2-6px) this isn't visible, and it mirrors the same
+        // tradeoff already made for node rendering.
+        //
+        // One path per stroke *colour*, whatever the width: every extra path
+        // is rasterised and composited over its whole bounding box by the
+        // GPU (a dozen near-screen-sized paths cost more than a million
+        // vertices), and a width is only the half-width of each segment's
+        // quad.
+        let mut stroke_index: HashMap<u32, usize> = HashMap::new();
+        let mut strokes: Vec<Batch> = Vec::new();
+        // Consecutive ways mostly share a style, so remember the last lookup.
+        let mut last_stroke: Option<(u32, usize)> = None;
+
+        // Route overlays: a translucent line under each route member way,
+        // one path per colour. Looked up per visible way from the cache
+        // (`MpCache::route_ways`), never by scanning relations.
+        let has_routes = !self.mp.route_ways.is_empty();
+        let mut overlay_index: HashMap<u32, usize> = HashMap::new();
+        let mut overlays: Vec<Batch> = Vec::new();
+        let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
+
+        // The casing: one dark path under every way's stroke (and direction
+        // arrows), slightly wider than the stroke, so thin light lines stay
+        // readable over light imagery. Built in the same pass as the strokes
+        // from the same projected points, and painted before any of them.
+        let draw_casing = zoom >= CASING_MIN_ZOOM;
+        let draw_arrows = zoom >= ARROW_MIN_ZOOM;
+        let mut casing = Batch::new(BatchKind::Casing, (CASING_COLOR << 8) | 0xFF, 0, &hints);
+
+        // Reused scratch buffers, so the (potentially tens of thousands of)
+        // visible ways of a frame don't each allocate.
+        let mut scratch_pts: Vec<Point<Pixels>> = Vec::new();
+        let mut segs: Vec<(usize, usize)> = Vec::new();
+
+        let mut ways_in_view = 0usize;
+        let mut ways_skipped = 0usize;
+        let mut ways_collapsed = 0usize;
+
+        let fs_phase = crate::frame_stats::start();
+        for (i, verts) in self.way_vertices.iter().enumerate() {
+            if verts.len() < 2 {
+                continue;
+            }
+            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
+                Some(b) => b,
+                None => continue,
+            };
+            if bbox.max_x < vmin_x
+                || bbox.min_x > vmax_x
+                || bbox.max_y < vmin_y
+                || bbox.min_y > vmax_y
+            {
+                continue;
+            }
+            ways_in_view += 1;
+
+            let detail = if dragging {
+                WayDetail::Full
+            } else {
+                lod.detail(bbox_extent_px(bbox, ppm_x, ppm_y))
+            };
+            if detail == WayDetail::Skip {
+                ways_skipped += 1;
+                continue;
+            }
+
+            // Style is resolved once per way at data-load time
+            // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
+            // not here — no stylesheet lookup or tags HashMap access in this
+            // per-frame loop.
+            let style = self.way_styles[i];
+            if !dragging && !lod.strokes(style.width) {
+                ways_skipped += 1;
+                continue;
+            }
+            let half_width = style.width / 2.0;
+            let stroke_idx = match last_stroke {
+                Some((c, idx)) if c == style.color => idx,
+                _ => {
+                    let idx = batch_index(
+                        &mut stroke_index,
+                        &mut strokes,
+                        BatchKind::Stroke,
+                        (style.color << 8) | 0xFF,
+                        &hints,
+                    );
+                    last_stroke = Some((style.color, idx));
+                    idx
+                }
+            };
+            let stroke = &mut strokes[stroke_idx];
+
+            let overlay_idx = if has_routes {
+                self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
+                    batch_index(
+                        &mut overlay_index,
+                        &mut overlays,
+                        BatchKind::Overlay,
+                        (colour << 8) | overlay_alpha,
+                        &hints,
+                    )
+                })
+            } else {
+                None
+            };
+
+            scratch_pts.clear();
+            let min_segment_px = if detail == WayDetail::Collapse {
+                // Two corners of the bounding box: one stroke, whatever its
+                // length.
+                ways_collapsed += 1;
+                for (mx, my) in [(bbox.min_x, bbox.min_y), (bbox.max_x, bbox.max_y)] {
+                    let (x, y) = proj.to_screen(mx, my);
+                    scratch_pts.push(point(px(x + ox), px(y + oy)));
+                }
+                0.0
+            } else {
+                // Only the vertices significant at this zoom (Douglas-
+                // Peucker, see `WayGeom`) are projected at all.
+                for (&(node_id, mx, my), &sig) in verts.verts.iter().zip(&verts.sig) {
+                    if sig < tolerance_m {
+                        continue;
+                    }
+                    let (x, y) = proj.to_screen(mx, my);
+                    if !(x.is_finite() && y.is_finite()) {
+                        continue;
+                    }
+                    let sp = point(px(x), px(y)) + self.drag_preview_offset(node_id);
+                    scratch_pts.push(point(sp.x + origin_x, sp.y + origin_y));
+                }
+                lod.min_segment_px
+            };
+            if scratch_pts.len() < 2 {
+                continue;
+            }
+
+            // Decimate: skip segments under the minimum screen length while
+            // zoomed out, but always emit a segment ending at the way's
+            // final projected vertex so junctions/endpoints are never
+            // rounded away. This is purely a rendering optimization —
+            // `way_vertices` (read by hit-testing and selection highlight)
+            // is untouched.
+            decimate_into(&scratch_pts, min_segment_px, &mut segs);
+            let arrows = draw_arrows && style.direction != Direction::None;
+            let reverse = style.direction == Direction::Reverse;
+            // Start half a spacing in, so even a short way gets an arrow.
+            let mut since_arrow = ARROW_SPACING_PX / 2.0;
+            for &(a, b) in &segs {
+                let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
+                if let Some(oi) = overlay_idx {
+                    let og = &mut overlays[oi];
+                    push_segment_quad(
+                        &mut og.path,
+                        &mut og.bounds,
+                        p0,
+                        p1,
+                        half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
+                    );
+                }
+                if draw_casing {
+                    push_segment_quad(
+                        &mut casing.path,
+                        &mut casing.bounds,
+                        p0,
+                        p1,
+                        half_width + CASING_WIDTH,
+                    );
+                }
+                push_segment_quad(&mut stroke.path, &mut stroke.bounds, p0, p1, half_width);
+
+                if !arrows {
+                    continue;
+                }
+                let dx = f32::from(p1.x - p0.x);
+                let dy = f32::from(p1.y - p0.y);
+                let len = (dx * dx + dy * dy).sqrt();
+                since_arrow += len;
+                if since_arrow < ARROW_SPACING_PX || len < ARROW_MIN_SEGMENT_PX {
+                    continue;
+                }
+                since_arrow = 0.0;
+                let half_base = half_width + ARROW_OVERHANG;
+                if let Some([tip, left, right]) =
+                    arrow_triangle(p0, p1, reverse, ARROW_HALF_LENGTH, half_base)
+                {
+                    push_triangle(&mut stroke.path, &mut stroke.bounds, tip, left, right);
+                }
+                if draw_casing {
+                    if let Some([tip, left, right]) = arrow_triangle(
+                        p0,
+                        p1,
+                        reverse,
+                        ARROW_HALF_LENGTH + 2.0 * CASING_WIDTH,
+                        half_base + 1.5 * CASING_WIDTH,
+                    ) {
+                        push_triangle(&mut casing.path, &mut casing.bounds, tip, left, right);
+                    }
+                }
+            }
+        }
+        crate::frame_stats::count("count.ways_in_view", ways_in_view);
+        crate::frame_stats::count("count.ways_skipped", ways_skipped);
+        crate::frame_stats::count("count.ways_collapsed", ways_collapsed);
+        crate::frame_stats::lap("osm.ways_build", fs_phase);
+
+        let mut next_hints = HashMap::new();
+        let scene = WayScene {
+            fills: fills
+                .into_iter()
+                .filter_map(|b| b.finish(&mut next_hints))
+                .collect(),
+            overlays: overlays
+                .into_iter()
+                .filter_map(|b| b.finish(&mut next_hints))
+                .collect(),
+            casing: casing.finish(&mut next_hints),
+            strokes: strokes
+                .into_iter()
+                .filter_map(|b| b.finish(&mut next_hints))
+                .collect(),
+        };
+        self.vertex_hints.replace(next_hints);
+        crate::frame_stats::count("count.way_path_vertices", scene.vertex_count());
+        crate::frame_stats::count("count.way_paths", scene.path_count());
+        scene
+    }
+}
+
 impl MapLayer for OsmLayer {
     fn name(&self) -> &str {
         &self.name
@@ -3269,394 +4011,9 @@ impl MapLayer for OsmLayer {
             }
         }
 
-        // Area fills: paint before strokes so outlines and nodes stay on
-        // top. Triangulation is cached (`way_fill_tris`, computed at
-        // load/edit time); per-frame work is projection + batched
-        // raw-triangle emission, grouped by RGBA color — mirroring the
-        // stroke batching below.
-        struct FillGroup {
-            rgba: u32,
-            path: Option<Path<Pixels>>,
-            /// (min_x, max_x, min_y, max_y), accumulated by `push_triangle`.
-            bounds_min_max: (f32, f32, f32, f32),
-        }
-        // Insertion-ordered (first-encounter order) instead of a HashMap so
-        // flush order is deterministic across frames — HashMap iteration
-        // order is randomized per-process, which caused visible z-order
-        // flicker between overlapping fills of different colors.
-        let mut fill_group_index: HashMap<u32, usize> = HashMap::new();
-        let mut fill_groups: Vec<FillGroup> = Vec::new();
-        let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
-
-        // Multipolygon relations first, so a closed way's own fill (an
-        // island, a building inside a forest) paints over them.
-        let screen_rect = (
-            f32::from(origin_x),
-            f32::from(origin_y),
-            f32::from(origin_x + bounds.size.width),
-            f32::from(origin_y + bounds.size.height),
-        );
-        let fs_phase = crate::frame_stats::start();
-        for entry in self.mp.entries.values() {
-            let Some(fill) = entry.style.fill else {
-                continue;
-            };
-            let b = &entry.bbox;
-            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
-                continue;
-            }
-            let alpha = (fill.opacity * 255.0).round() as u32;
-            let rgba_key = (fill.color << 8) | alpha;
-            let group_idx = *fill_group_index.entry(rgba_key).or_insert_with(|| {
-                fill_groups.push(FillGroup {
-                    rgba: rgba_key,
-                    path: None,
-                    bounds_min_max: (
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                    ),
-                });
-                fill_groups.len() - 1
-            });
-            let group = &mut fill_groups[group_idx];
-            for polygon in &entry.polygons {
-                let pb = &polygon.bbox;
-                if pb.max_x < vmin_x || pb.min_x > vmax_x || pb.max_y < vmin_y || pb.min_y > vmax_y
-                {
-                    continue;
-                }
-                self.push_polygon_fill(
-                    polygon,
-                    viewport,
-                    (origin_x, origin_y),
-                    screen_rect,
-                    &mut fill_pts,
-                    &mut group.path,
-                    &mut group.bounds_min_max,
-                );
-            }
-        }
-
-        crate::frame_stats::lap("osm.mp_fill_build", fs_phase);
-
-        let fs_phase = crate::frame_stats::start();
-        for (i, tris) in self.way_fill_tris.iter().enumerate() {
-            let Some(tris) = tris else { continue };
-            let Some(fill) = self.way_styles[i].fill else {
-                continue;
-            };
-            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
-                Some(b) => b,
-                None => continue,
-            };
-            if bbox.max_x < vmin_x
-                || bbox.min_x > vmax_x
-                || bbox.max_y < vmin_y
-                || bbox.min_y > vmax_y
-            {
-                continue;
-            }
-
-            let verts = &self.way_vertices[i];
-            let ring_len = verts.len() - 1; // closing duplicate excluded
-            fill_pts.clear();
-            for &(node_id, mx, my) in &verts[..ring_len] {
-                let mut sp = viewport.mercator_to_screen(mx, my);
-                if !is_point_valid(sp) {
-                    break;
-                }
-                sp += self.drag_preview_offset(node_id);
-                fill_pts.push(point(sp.x + origin_x, sp.y + origin_y));
-            }
-            // Any invalid projection breaks index alignment with the cached
-            // triangle indices — skip the fill (the stroke still draws).
-            if fill_pts.len() != ring_len {
-                continue;
-            }
-
-            let alpha = (fill.opacity * 255.0).round() as u32;
-            let rgba_key = (fill.color << 8) | alpha;
-            let group_idx = *fill_group_index.entry(rgba_key).or_insert_with(|| {
-                fill_groups.push(FillGroup {
-                    rgba: rgba_key,
-                    path: None,
-                    bounds_min_max: (
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                    ),
-                });
-                fill_groups.len() - 1
-            });
-            let group = &mut fill_groups[group_idx];
-            for t in tris.as_chunks::<3>().0 {
-                push_triangle(
-                    &mut group.path,
-                    &mut group.bounds_min_max,
-                    fill_pts[t[0] as usize],
-                    fill_pts[t[1] as usize],
-                    fill_pts[t[2] as usize],
-                );
-            }
-        }
-
-        crate::frame_stats::lap("osm.way_fill_build", fs_phase);
-
-        let fs_phase = crate::frame_stats::start();
-        for g in fill_groups {
-            if let Some(mut path) = g.path {
-                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
-                path.bounds = Bounds {
-                    origin: point(px(min_x), px(min_y)),
-                    size: size(px(max_x - min_x), px(max_y - min_y)),
-                };
-                window.paint_path(path, rgba(g.rgba));
-            }
-        }
-
-        // Ways: bbox-cull in Mercator space, then group visible ways by
-        // `(color, width)` style. Each group becomes one `paint_path` call,
-        // preserving the batching gains from PR #5 while honoring per-way
-        // style. Vertex lookup is a single contiguous slice per way
-        // (`way_vertices[i]`) — no HashMap indirection.
-        //
-        // Group key uses `f32::to_bits` for width so we don't need a float-
-        // hashing crate.
-        //
-        // Each segment is emitted as two raw triangles (an oriented quad)
-        // pushed directly into the group's `Path`, bypassing
-        // `PathBuilder::stroke`'s Lyon tessellation pass entirely — that
-        // tessellator dominated frame time (~1.3-1.8ms for ~3800 visible
-        // ways, measured under a synthetic 8k-node/4k-way dataset), since it
-        // reruns from scratch every repaint (e.g. every mouse-move while
-        // panning). No mitered joins at segment corners; at typical way
-        // widths (2-6px) this isn't visible, and it mirrors the same
-        // tradeoff already made for node rendering below.
-        struct WayGroup {
-            color: u32,
-            half_width: f32,
-            path: Option<Path<Pixels>>,
-            /// (min_x, max_x, min_y, max_y), accumulated by `push_segment_quad`.
-            bounds_min_max: (f32, f32, f32, f32),
-        }
-        // Same insertion-ordered fix as `fill_groups` above, for the same
-        // reason: deterministic first-encounter flush order instead of
-        // HashMap's randomized iteration order.
-        let mut way_group_index: HashMap<(u32, u32), usize> = HashMap::new();
-        let mut way_groups: Vec<WayGroup> = Vec::new();
-
-        // Route overlays: a translucent line under each route member way,
-        // one path per colour. Looked up per visible way from the cache
-        // (`MpCache::route_ways`), never by scanning relations.
-        struct OverlayGroup {
-            rgba: u32,
-            path: Option<Path<Pixels>>,
-            bounds_min_max: (f32, f32, f32, f32),
-        }
-        let has_routes = !self.mp.route_ways.is_empty();
-        let mut overlay_index: HashMap<u32, usize> = HashMap::new();
-        let mut overlay_groups: Vec<OverlayGroup> = Vec::new();
-        let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
-
-        // The casing: one dark path under every way's stroke (and direction
-        // arrows), slightly wider than the stroke, so thin light lines stay
-        // readable over light imagery. Built in the same pass as the strokes
-        // from the same projected points, and painted before any of them.
+        // Fills, route overlays, casing and strokes: recorded, then painted.
+        self.build_way_scene(viewport, bounds).paint(window);
         let zoom = viewport.zoom_level();
-        let draw_casing = zoom >= CASING_MIN_ZOOM;
-        let draw_arrows = zoom >= ARROW_MIN_ZOOM;
-        let mut casing_path: Option<Path<Pixels>> = None;
-        let mut casing_bounds = (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        );
-
-        // Reused scratch buffer for each way's projected screen points, so
-        // decimation (below) can look ahead/behind without per-way
-        // allocation churn across the (potentially thousands of) visible
-        // ways in a frame.
-        let mut scratch_pts: Vec<Point<Pixels>> = Vec::new();
-
-        crate::frame_stats::lap("osm.fill_paint", fs_phase);
-        let fs_phase = crate::frame_stats::start();
-        for (i, verts) in self.way_vertices.iter().enumerate() {
-            if verts.len() < 2 {
-                continue;
-            }
-            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
-                Some(b) => b,
-                None => continue,
-            };
-            if bbox.max_x < vmin_x
-                || bbox.min_x > vmax_x
-                || bbox.max_y < vmin_y
-                || bbox.min_y > vmax_y
-            {
-                continue;
-            }
-
-            // Style is resolved once per way at data-load time
-            // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
-            // not here — no stylesheet lookup or tags HashMap access in this
-            // per-frame loop.
-            let style = self.way_styles[i];
-            let key = (style.color, style.width.to_bits());
-            let group_idx = *way_group_index.entry(key).or_insert_with(|| {
-                way_groups.push(WayGroup {
-                    color: style.color,
-                    half_width: style.width / 2.0,
-                    path: None,
-                    bounds_min_max: (
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                    ),
-                });
-                way_groups.len() - 1
-            });
-            let group = &mut way_groups[group_idx];
-
-            let overlay_idx = if has_routes {
-                self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
-                    *overlay_index.entry(colour).or_insert_with(|| {
-                        overlay_groups.push(OverlayGroup {
-                            rgba: (colour << 8) | overlay_alpha,
-                            path: None,
-                            bounds_min_max: (
-                                f32::INFINITY,
-                                f32::NEG_INFINITY,
-                                f32::INFINITY,
-                                f32::NEG_INFINITY,
-                            ),
-                        });
-                        overlay_groups.len() - 1
-                    })
-                })
-            } else {
-                None
-            };
-
-            scratch_pts.clear();
-            for &(node_id, mx, my) in verts {
-                let mut sp = viewport.mercator_to_screen(mx, my);
-                if !is_point_valid(sp) {
-                    continue;
-                }
-                sp += self.drag_preview_offset(node_id);
-                scratch_pts.push(point(sp.x + origin_x, sp.y + origin_y));
-            }
-            if scratch_pts.len() < 2 {
-                continue;
-            }
-
-            // Decimate: skip segments under ~1 screen pixel while zoomed
-            // out (no visible geometry change), but always emit a segment
-            // ending at the way's final projected vertex so junctions/
-            // endpoints are never rounded away. This is purely a rendering
-            // optimization — `way_vertices` (read by hit-testing and
-            // selection highlight) is untouched.
-            let arrows = draw_arrows && style.direction != Direction::None;
-            let reverse = style.direction == Direction::Reverse;
-            // Start half a spacing in, so even a short way gets an arrow.
-            let mut since_arrow = ARROW_SPACING_PX / 2.0;
-            for (a, b) in decimate_segments(&scratch_pts, MIN_SEGMENT_PX) {
-                let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
-                if let Some(oi) = overlay_idx {
-                    let og = &mut overlay_groups[oi];
-                    push_segment_quad(
-                        &mut og.path,
-                        &mut og.bounds_min_max,
-                        p0,
-                        p1,
-                        group.half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
-                    );
-                }
-                if draw_casing {
-                    push_segment_quad(
-                        &mut casing_path,
-                        &mut casing_bounds,
-                        p0,
-                        p1,
-                        group.half_width + CASING_WIDTH,
-                    );
-                }
-                push_segment_quad(
-                    &mut group.path,
-                    &mut group.bounds_min_max,
-                    p0,
-                    p1,
-                    group.half_width,
-                );
-
-                if !arrows {
-                    continue;
-                }
-                let dx = f32::from(p1.x - p0.x);
-                let dy = f32::from(p1.y - p0.y);
-                let len = (dx * dx + dy * dy).sqrt();
-                since_arrow += len;
-                if since_arrow < ARROW_SPACING_PX || len < ARROW_MIN_SEGMENT_PX {
-                    continue;
-                }
-                since_arrow = 0.0;
-                let half_base = group.half_width + ARROW_OVERHANG;
-                if let Some([tip, left, right]) =
-                    arrow_triangle(p0, p1, reverse, ARROW_HALF_LENGTH, half_base)
-                {
-                    push_triangle(&mut group.path, &mut group.bounds_min_max, tip, left, right);
-                }
-                if draw_casing {
-                    if let Some([tip, left, right]) = arrow_triangle(
-                        p0,
-                        p1,
-                        reverse,
-                        ARROW_HALF_LENGTH + 2.0 * CASING_WIDTH,
-                        half_base + 1.5 * CASING_WIDTH,
-                    ) {
-                        push_triangle(&mut casing_path, &mut casing_bounds, tip, left, right);
-                    }
-                }
-            }
-        }
-
-        crate::frame_stats::lap("osm.ways_build", fs_phase);
-        let fs_phase = crate::frame_stats::start();
-        for g in overlay_groups {
-            if let Some(mut path) = g.path {
-                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
-                path.bounds = Bounds {
-                    origin: point(px(min_x), px(min_y)),
-                    size: size(px(max_x - min_x), px(max_y - min_y)),
-                };
-                window.paint_path(path, rgba(g.rgba));
-            }
-        }
-
-        if let Some(mut path) = casing_path {
-            let (min_x, max_x, min_y, max_y) = casing_bounds;
-            path.bounds = Bounds {
-                origin: point(px(min_x), px(min_y)),
-                size: size(px(max_x - min_x), px(max_y - min_y)),
-            };
-            window.paint_path(path, rgb(CASING_COLOR));
-        }
-
-        for g in way_groups {
-            if let Some(mut path) = g.path {
-                let (min_x, max_x, min_y, max_y) = g.bounds_min_max;
-                path.bounds = Bounds {
-                    origin: point(px(min_x), px(min_y)),
-                    size: size(px(max_x - min_x), px(max_y - min_y)),
-                };
-                window.paint_path(path, rgb(g.color));
-            }
-        }
 
         // Nodes: iterate the flat cache (contiguous Vec) for better locality,
         // reject offscreen ones with a mercator-space AABB test, and paint
@@ -3671,7 +4028,6 @@ impl MapLayer for OsmLayer {
         // `compute_node_cache`/`commit_node_moves`/`set_stylesheet`) and
         // just read here — no stylesheet call or tags HashMap lookup per
         // node per frame.
-        crate::frame_stats::lap("osm.ways_paint", fs_phase);
         let fs_phase = crate::frame_stats::start();
         let show_vertices = zoom >= VERTEX_MIN_ZOOM;
         let mut nodes_in_view = 0usize;
@@ -4021,7 +4377,7 @@ impl EditableLayer for OsmLayer {
             }
             let mut best = f32::INFINITY;
             let mut prev: Option<Point<Pixels>> = None;
-            for &(_, mx, my) in verts {
+            for &(_, mx, my) in verts.iter() {
                 let sp = viewport.mercator_to_screen(mx, my);
                 if !is_point_valid(sp) {
                     continue;
@@ -4240,6 +4596,32 @@ impl EditableLayer for OsmLayer {
             .collect()
     }
 
+    fn search_features(
+        &self,
+        query: &crate::search::Query,
+        selected: &std::collections::HashSet<(FeatureKind, i64)>,
+        only_selected: bool,
+        view: Option<crate::search::GeoBounds>,
+    ) -> Vec<FeatureRef> {
+        let Some(data) = self.osm_data.as_deref() else {
+            return Vec::new();
+        };
+        let ctx = crate::search::SearchContext {
+            original: self.original_data.as_deref(),
+            selected: Some(selected),
+            view,
+            only_selected,
+        };
+        crate::search::search(query, data, &ctx)
+            .into_iter()
+            .map(|(kind, id)| FeatureRef {
+                layer_id: self.id,
+                kind,
+                id,
+            })
+            .collect()
+    }
+
     fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
         if feature.layer_id != self.id {
             return None;
@@ -4349,6 +4731,16 @@ impl EditableLayer for OsmLayer {
                     return;
                 }
                 sp += self.drag_preview_offset(feature.id);
+                // Off screen (a big selection mostly is): nothing to draw.
+                const MARGIN: f32 = 30.0;
+                if kind == HighlightKind::Selected
+                    && (sp.x.as_f32() < -MARGIN
+                        || sp.y.as_f32() < -MARGIN
+                        || sp.x.as_f32() > bounds.size.width.as_f32() + MARGIN
+                        || sp.y.as_f32() > bounds.size.height.as_f32() + MARGIN)
+                {
+                    return;
+                }
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
@@ -4393,7 +4785,8 @@ impl EditableLayer for OsmLayer {
                 }
                 // A relation can have hundreds of member ways, most of them
                 // off screen at any zoom that shows a few: skip those.
-                if kind == HighlightKind::Member {
+                // A selection of thousands (Edit > Find) does the same.
+                if matches!(kind, HighlightKind::Member | HighlightKind::Selected) {
                     let xs = pts.iter().map(|p| p.x.as_f32());
                     let ys = pts.iter().map(|p| p.y.as_f32());
                     let (min_x, max_x) =
@@ -8483,5 +8876,292 @@ mod relation_overlay_tests {
             ),
         );
         assert!(hit.iter().all(|h| h.kind != FeatureKind::Relation));
+    }
+}
+
+/// The level-of-detail rules and the data they depend on (`WayGeom`,
+/// the way scene), including that no edit leaves them stale.
+#[cfg(test)]
+mod way_lod_tests {
+    // Explicit imports: a glob of `super::*` brings gpui's `test` macro in
+    // and shadows `#[test]`.
+    use super::{
+        vertex_significance, WayDetail, WayLod, CASING_MIN_ZOOM, COARSE_BELOW_ZOOM,
+        COLLAPSE_BELOW_PX,
+    };
+    use crate::layers::osm_layer::OsmLayer;
+    use crate::layers::{EditableLayer, LayerId};
+    use crate::osm::{OsmData, OsmNode, OsmWay};
+    use crate::viewport::Viewport;
+    use gpui::{point, px, size, Bounds, Pixels};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    fn tags() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
+    fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
+        OsmNode {
+            id,
+            lat,
+            lon,
+            tags: tags(),
+            version: 1,
+        }
+    }
+
+    fn way(id: i64, nodes: Vec<i64>) -> OsmWay {
+        OsmWay {
+            id,
+            nodes,
+            tags: tags(),
+            version: 1,
+        }
+    }
+
+    fn vert(x: f64, y: f64) -> (i64, f64, f64) {
+        (0, x, y)
+    }
+
+    #[test]
+    fn significance_of_a_straight_line_is_zero_and_ends_are_infinite() {
+        let sig = vertex_significance(&[vert(0.0, 0.0), vert(1.0, 0.0), vert(2.0, 0.0)]);
+        assert_eq!(sig[0], f32::INFINITY);
+        assert_eq!(sig[2], f32::INFINITY);
+        assert_eq!(sig[1], 0.0);
+    }
+
+    #[test]
+    fn significance_is_the_distance_from_the_chord() {
+        let sig = vertex_significance(&[vert(0.0, 0.0), vert(5.0, 3.0), vert(10.0, 0.0)]);
+        assert!((sig[1] - 3.0).abs() < 1e-6, "{sig:?}");
+    }
+
+    #[test]
+    fn thresholding_the_significance_is_douglas_peucker() {
+        // A spike (10) followed by a bump (0.5) next to it, then a flat run.
+        let pts = [
+            vert(0.0, 0.0),
+            vert(2.0, 0.5),
+            vert(4.0, 10.0),
+            vert(6.0, 0.5),
+            vert(8.0, 0.0),
+            vert(10.0, 0.0),
+        ];
+        let sig = vertex_significance(&pts);
+        // Never larger than the split vertex's ancestors, which is what
+        // makes a threshold equal to running Douglas-Peucker.
+        assert!(sig[2] >= sig[1] && sig[2] >= sig[3], "{sig:?}");
+        let kept = |tol: f32| -> Vec<usize> { (0..pts.len()).filter(|&i| sig[i] >= tol).collect() };
+        assert_eq!(kept(0.0).len(), pts.len());
+        assert_eq!(kept(5.0), vec![0, 2, 5], "only the spike survives");
+        assert_eq!(kept(100.0), vec![0, 5], "ends are always kept");
+    }
+
+    #[test]
+    fn significance_of_a_closed_ring_keeps_its_far_corner() {
+        let ring = [
+            vert(0.0, 0.0),
+            vert(10.0, 0.0),
+            vert(10.0, 10.0),
+            vert(0.0, 10.0),
+            vert(0.0, 0.0),
+        ];
+        let sig = vertex_significance(&ring);
+        assert_eq!(sig[0], f32::INFINITY);
+        assert_eq!(sig[4], f32::INFINITY);
+        assert!(sig[1..4].iter().all(|&s| s > 5.0), "{sig:?}");
+    }
+
+    #[test]
+    fn significance_of_degenerate_input_does_not_panic() {
+        assert!(vertex_significance(&[]).is_empty());
+        assert_eq!(vertex_significance(&[vert(1.0, 1.0)]), vec![f32::INFINITY]);
+        let same = vertex_significance(&[vert(1.0, 1.0), vert(1.0, 1.0), vert(1.0, 1.0)]);
+        assert_eq!(same[1], 0.0);
+    }
+
+    #[test]
+    fn the_coarse_rules_start_below_zoom_16() {
+        assert!(WayLod::at(15.99).coarse);
+        assert!(!WayLod::at(16.0).coarse);
+        assert!(!WayLod::at(19.5).coarse);
+        assert!(WayLod::at(14.0).tolerance_px > WayLod::at(16.0).tolerance_px);
+        assert!(WayLod::at(14.0).min_segment_px > WayLod::at(16.0).min_segment_px);
+    }
+
+    #[test]
+    fn tiny_ways_are_skipped_or_collapsed_only_when_coarse() {
+        let coarse = WayLod::at(15.0);
+        assert_eq!(coarse.detail(0.1), WayDetail::Skip);
+        assert_eq!(coarse.detail(1.5), WayDetail::Collapse);
+        assert_eq!(coarse.detail(COLLAPSE_BELOW_PX), WayDetail::Full);
+        assert_eq!(coarse.detail(400.0), WayDetail::Full);
+        let editing = WayLod::at(16.0);
+        assert_eq!(editing.detail(0.1), WayDetail::Full);
+        assert_eq!(editing.detail(1.5), WayDetail::Full);
+    }
+
+    #[test]
+    fn tiny_fills_are_dropped_only_when_coarse() {
+        assert!(!WayLod::at(15.0).fills(1.0));
+        assert!(WayLod::at(15.0).fills(10.0));
+        assert!(WayLod::at(17.0).fills(0.1));
+    }
+
+    #[test]
+    fn minor_ways_are_dropped_only_below_zoom_15() {
+        assert!(!WayLod::at(14.0).strokes(1.5));
+        assert!(!WayLod::at(14.9).strokes(1.0));
+        assert!(WayLod::at(14.0).strokes(2.0));
+        assert!(WayLod::at(15.0).strokes(1.0));
+        assert!(WayLod::at(16.0).strokes(1.0));
+        assert!(WayLod::at(19.0).strokes(1.0));
+    }
+
+    #[test]
+    fn casing_starts_at_the_editing_zoom() {
+        assert_eq!(CASING_MIN_ZOOM, COARSE_BELOW_ZOOM);
+    }
+
+    // ---- the scene follows edits ---------------------------------------
+
+    const LAT: f64 = 40.0;
+    const LON: f64 = -74.0;
+
+    /// A straight 170 m way east, with a kink 0.2 m off the line (node 2) and
+    /// two vertices on it (nodes 3 and 4). At zoom 16 it simplifies to a
+    /// single segment; at zoom 19 the kink is a pixel and is kept.
+    fn layer() -> OsmLayer {
+        let nodes = vec![
+            node(1, LAT, LON),
+            node(2, LAT + 0.000002, LON + 0.0005),
+            node(3, LAT, LON + 0.001),
+            node(4, LAT, LON + 0.0015),
+            node(5, LAT, LON + 0.002),
+        ];
+        let data = OsmData {
+            nodes: nodes.into_iter().map(|n| (n.id, n)).collect(),
+            ways: HashMap::from([(10, way(10, vec![1, 2, 3, 4, 5]))]),
+            relations: Vec::new(),
+            bounds: Vec::new(),
+        };
+        OsmLayer::new_with_data(LayerId(1), "t", Arc::new(data))
+    }
+
+    fn view(zoom: f64) -> (Viewport, Bounds<Pixels>) {
+        let v = Viewport::new(LAT, LON + 0.001, zoom, size(px(800.0), px(600.0)));
+        let b = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(800.0), px(600.0)),
+        };
+        (v, b)
+    }
+
+    fn scene_vertices(layer: &OsmLayer, zoom: f64) -> usize {
+        let (v, b) = view(zoom);
+        layer.build_way_scene(&v, b).vertex_count()
+    }
+
+    /// The layer's cached geometry and its scene are what a layer freshly
+    /// built from the same data would have, at every zoom tried.
+    fn assert_same_as_fresh(layer: &OsmLayer) {
+        let data = layer.osm_data.clone().expect("data");
+        let fresh = OsmLayer::new_with_data(LayerId(9), "fresh", data);
+        for (i, id) in layer.way_ids.iter().enumerate() {
+            let j = fresh.way_ids.iter().position(|x| x == id).expect("way");
+            assert_eq!(layer.way_vertices[i], fresh.way_vertices[j], "way {id}");
+        }
+        for zoom in [12.0, 15.5, 16.0, 17.0, 19.0] {
+            assert_eq!(
+                scene_vertices(layer, zoom),
+                scene_vertices(&fresh, zoom),
+                "zoom {zoom}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_grows_with_zoom() {
+        let l = layer();
+        // z16 drops the kink 0.2 m off the line, z19 keeps it.
+        assert!(scene_vertices(&l, 19.0) > scene_vertices(&l, 16.0));
+        assert!(scene_vertices(&l, 16.0) > 0);
+    }
+
+    #[test]
+    fn a_minor_way_has_no_outline_at_zoom_14_but_does_at_15() {
+        // The test way is untagged: the default 1.5 px stroke.
+        let l = layer();
+        assert_eq!(scene_vertices(&l, 14.0), 0);
+        assert!(scene_vertices(&l, 15.0) > 0);
+    }
+
+    #[test]
+    fn moving_a_node_updates_the_simplification() {
+        let mut l = layer();
+        assert_same_as_fresh(&l);
+        let before = scene_vertices(&l, 17.0);
+        // Node 3 starts on the line and is simplified away. Pull it 55 m off
+        // the line: it becomes significant, so the way draws more segments.
+        l.commit_node_moves(&[(3, LAT + 0.0005, LON + 0.001)]);
+        assert_same_as_fresh(&l);
+        let bent = scene_vertices(&l, 17.0);
+        assert!(bent > before, "{bent} > {before}");
+        // And back (what undo does): it is simplified away again.
+        l.commit_node_moves(&[(3, LAT, LON + 0.001)]);
+        assert_same_as_fresh(&l);
+        assert_eq!(scene_vertices(&l, 17.0), before);
+    }
+
+    #[test]
+    fn adding_and_removing_ways_updates_the_scene() {
+        let mut l = layer();
+        let before = scene_vertices(&l, 17.0);
+        let a = l.add_node(LAT + 0.0002, LON);
+        let b = l.add_node(LAT + 0.0002, LON + 0.001);
+        let c = l.add_node(LAT + 0.0004, LON + 0.002);
+        let id = l.add_way(vec![a, b, c], Vec::new());
+        assert_same_as_fresh(&l);
+        assert!(scene_vertices(&l, 17.0) > before);
+        l.remove_way(id);
+        assert_same_as_fresh(&l);
+        assert_eq!(scene_vertices(&l, 17.0), before);
+    }
+
+    #[test]
+    fn changing_a_ways_nodes_updates_the_scene() {
+        let mut l = layer();
+        // Zoom 19 keeps the 0.2 m kink (node 2), so dropping it shows.
+        let before = scene_vertices(&l, 19.0);
+        assert!(l.set_way_nodes(10, vec![1, 5]));
+        assert_same_as_fresh(&l);
+        assert!(scene_vertices(&l, 19.0) < before);
+        l.remove_node_from_way(10, 0);
+        assert_same_as_fresh(&l);
+    }
+
+    #[test]
+    fn a_drag_in_progress_draws_every_vertex() {
+        let mut l = layer();
+        // z16 simplifies the 0.2 m kink away ...
+        let simplified = scene_vertices(&l, 16.0);
+        // ... but while nodes are dragged nothing is dropped, because the
+        // cached significance is of the geometry before the drag.
+        l.set_drag_preview(&HashSet::from([4]), point(px(3.0), px(0.0)));
+        assert!(scene_vertices(&l, 16.0) > simplified);
+        l.clear_drag_preview();
+        assert_eq!(scene_vertices(&l, 16.0), simplified);
+    }
+
+    #[test]
+    fn repeated_frames_build_identical_scenes() {
+        // The vertex-capacity hints carry over from frame to frame and must
+        // not change what is drawn.
+        let l = layer();
+        let first = scene_vertices(&l, 17.0);
+        assert_eq!(scene_vertices(&l, 17.0), first);
+        assert_eq!(scene_vertices(&l, 17.0), first);
     }
 }
