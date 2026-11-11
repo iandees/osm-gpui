@@ -56,12 +56,12 @@ in the bug list at the end.
 | R3 | `incline=up/down`, numeric incline sign, `direction=forward/backward` | Values flip | JOSM `testTagSwitch` (#19508); iD "reverses incline" | pass `incline_and_direction_values_flip` |
 | R4 | `name=forward`, `note=up`, `ref=left`, `type=drawdown` | Left alone | JOSM #8499; iD "skips ... for ignored tags" | pass `names_and_notes_that_look_directional_are_left_alone` |
 | R5 | `conveying=forward` | iD keeps it by default | iD "preserves conveying tags" | pass `conveying_is_kept_like_oneway` |
-| R6 | `sidewalk=left` / `right` value | iD swaps | iD "transforms *=right <=> *=left" | FAIL `sidewalk_value_left_becomes_right` |
-| R7 | Any key with `forward`/`backward` value (`priority`, `trolley_wire`, `railway:preferred_direction`) | Values swap | JOSM generic value rule; iD "transforms *=forward <=> *=backward" | FAIL `forward_backward_values_flip_for_any_key_except_free_text` |
-| R8 | `cycleway:left:oneway=-1` | Key side swaps and value flips (relative to the way) | JOSM #10977 | FAIL `side_specific_oneway_value_flips_with_the_side` |
-| R9 | Route role `forward` / `backward` of the reversed way | Swapped | JOSM and iD "reverses relation roles" | FAIL `route_roles_forward_and_backward_swap` |
+| R6 | `sidewalk=left` / `right` value | iD swaps | iD "transforms *=right <=> *=left" | pass `sidewalk_value_left_becomes_right` |
+| R7 | Any key with `forward`/`backward` value (`priority`, `trolley_wire`, `railway:preferred_direction`) | Values swap | JOSM generic value rule; iD "transforms *=forward <=> *=backward" | pass `forward_backward_values_flip_for_any_key_except_free_text` |
+| R8 | `cycleway:left:oneway=-1` | Key side swaps and value flips (relative to the way) | JOSM #10977 | pass `side_specific_oneway_value_flips_with_the_side` |
+| R9 | Route role `forward` / `backward` of the reversed way | Swapped | JOSM and iD "reverses relation roles" | pass `route_roles_forward_and_backward_swap` |
 | R10 | Restriction `from` / `to` | Not swapped | iD | pass `restriction_from_and_to_roles_are_not_swapped` |
-| R11 | Direction tags on the way's nodes (`direction=forward`, `traffic_signals:direction`, `traffic_sign:forward`) | Flipped; compass values stay (JOSM) / are mirrored (iD) | JOSM `testSwitchingWayNodes`, `testNotSwitchingWayNodes`, `testIsReversible` (#20013); iD "directional values on childnodes" | FAIL `direction_tags_on_the_ways_nodes_flip` |
+| R11 | Direction tags on the way's nodes (`direction=forward`, `traffic_signals:direction`, `traffic_sign:forward`) | Flipped; compass values stay (JOSM) / are mirrored (iD) | JOSM `testSwitchingWayNodes`, `testNotSwitchingWayNodes`, `testIsReversible` (#20013); iD "directional values on childnodes" | pass `direction_tags_on_the_ways_nodes_flip` |
 | R12 | Undo / redo | Nodes and tags in one step | | pass (all R tests) and `reversing_two_ways_is_one_undo_step...` |
 | R13 | `direction=clockwise/anticlockwise`, `forwards` (with s) | iD drops the s | iD "drops 's' from forwards/backwards" | not verified (not tested) |
 | R14 | Adding a `direction` to direction-less stop signs when reversing | iD field-dependent | iD "directionless nodes" | absent |
@@ -190,18 +190,9 @@ in the bug list at the end.
 
 Ordered by risk of corrupting data on upload.
 
-1. HIGH. R9 reverse does not swap `forward`/`backward` roles of routes the way
-   belongs to: the uploaded route silently changes meaning.
-   `route_roles_forward_and_backward_swap`.
-2. HIGH. R11 reverse does not flip `direction=forward/backward` (and
-   `*:direction`, `traffic_sign:forward`) on the way's nodes: stop signs and
-   signals face the wrong traffic. `direction_tags_on_the_ways_nodes_flip`.
-3. MEDIUM. R6/R7/R8 reverse flips values only for keys with a `direction`,
-   `incline` or `side` part: `sidewalk=left`, `priority=forward`,
-   `railway:preferred_direction` and `cycleway:left:oneway=-1` keep a
-   meaning that is wrong after the reversal. `sidewalk_value_left_becomes_right`,
-   `forward_backward_values_flip_for_any_key_except_free_text`,
-   `side_specific_oneway_value_flips_with_the_side`.
+1-3. FIXED. Reverse now swaps `forward`/`backward` route roles (R9), flips
+   direction tags on the way's nodes (R11) and flips `left`/`right`/
+   `forward`/`backward` values and side-specific oneways (R6-R8).
 4. MEDIUM. J9 join of two ways that are not adjacent in a shared route drops the
    second membership without asking, which can leave the route disconnected.
    `join_of_ways_that_are_not_adjacent_in_a_route_is_refused`.
