@@ -1,0 +1,77 @@
+# Key suggestions in an empty Tags row: taginfo's keys that go with the
+# feature's main tag (cafe), or its most popular keys on an untagged feature.
+# Scripted runs never touch the network, so canned taginfo answers are read
+# from a file named by OSM_GPUI_TAGINFO_FIXTURE:
+#
+#   OSM_GPUI_TAGINFO_FIXTURE=docs/screenshots/fixtures/taginfo-answers.json \
+#     cargo run -- --script docs/screenshots/tag-autocomplete-related.osmscript
+
+window 1200 800
+load_osm docs/screenshots/fixtures/tag-autocomplete.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# The cafe node (amenity=cafe): selected, panel visible.
+click 448,328
+wait_idle 2s
+assert_selected node 2001
+panel history collapse
+capture out/tag-related-00-cafe.png
+
+# The Tags table is below the Fields: scroll the panel down to it.
+scroll 1050,400 dy=-30
+wait_idle 1s
+capture out/tag-related-01-scrolled.png
+
+# Add tag on the cafe: before anything is typed, the key list offers the keys
+# taginfo says usually go with amenity=cafe (name is already there, so it is
+# left out).
+click 988,724
+wait 800ms
+capture out/tag-related-02-cafe-empty-key.png
+
+# One character filters those keys; two characters is the normal key search.
+type o
+wait 500ms
+capture out/tag-related-03-cafe-key-o.png
+key escape
+key escape
+wait 300ms
+
+# An untagged way has no main tag to go by: the most popular keys instead.
+click 188,553
+wait_idle 2s
+assert_selected way 3005
+panel history expand
+click 988,405
+wait 800ms
+capture out/tag-related-04-untagged-empty-key.png
+
+# Accept a key: the empty value box lists that key's common values.
+type highway
+wait 500ms
+key tab
+wait 800ms
+capture out/tag-related-05-empty-value.png
+key escape
+key escape
+wait 300ms
+
+log done
+
+# Keys that do not fit the feature are left out: this residential road is an
+# open way, so taginfo's "building" (a key only areas use) is not offered
+# even though taginfo lists it.
+click 388,339
+wait_idle 2s
+assert_selected way 3002
+capture out/tag-related-06-road-selected.png
+panel history collapse
+scroll 1050,400 dy=-60
+wait_idle 1s
+capture out/tag-related-07-road-scrolled.png
+click 988,724
+wait 800ms
+capture out/tag-related-08-road-empty-key.png
+key escape
+key escape

@@ -1,0 +1,121 @@
+{
+  "/tag/combinations?key=amenity&value=cafe": [
+    {
+      "other_key": "name",
+      "other_value": "",
+      "together_count": 900000
+    },
+    {
+      "other_key": "cuisine",
+      "other_value": "coffee_shop",
+      "together_count": 310000
+    },
+    {
+      "other_key": "outdoor_seating",
+      "other_value": "yes",
+      "together_count": 180000
+    },
+    {
+      "other_key": "outdoor_seating",
+      "other_value": "no",
+      "together_count": 60000
+    },
+    {
+      "other_key": "wheelchair",
+      "other_value": "yes",
+      "together_count": 150000
+    },
+    {
+      "other_key": "internet_access",
+      "other_value": "wlan",
+      "together_count": 90000
+    }
+  ],
+  "/tags/popular": [
+    {
+      "key": "building",
+      "value": "yes",
+      "count_all": 600000000
+    },
+    {
+      "key": "highway",
+      "value": "residential",
+      "count_all": 90000000
+    },
+    {
+      "key": "natural",
+      "value": "water",
+      "count_all": 40000000
+    },
+    {
+      "key": "amenity",
+      "value": "parking",
+      "count_all": 15000000
+    },
+    {
+      "key": "landuse",
+      "value": "residential",
+      "count_all": 14000000
+    },
+    {
+      "key": "highway",
+      "value": "service",
+      "count_all": 13000000
+    }
+  ],
+  "/key/values?key=highway": [
+    {
+      "value": "residential",
+      "count": 90000000
+    },
+    {
+      "value": "service",
+      "count": 13000000
+    },
+    {
+      "value": "footway",
+      "count": 12000000
+    }
+  ],
+  "/tag/combinations?key=highway&value=residential": [
+    {
+      "other_key": "name",
+      "other_value": "",
+      "together_count": 50000000
+    },
+    {
+      "other_key": "building",
+      "other_value": "yes",
+      "together_count": 900
+    },
+    {
+      "other_key": "surface",
+      "other_value": "asphalt",
+      "together_count": 30000000
+    },
+    {
+      "other_key": "lit",
+      "other_value": "yes",
+      "together_count": 9000000
+    },
+    {
+      "other_key": "sidewalk",
+      "other_value": "both",
+      "together_count": 8000000
+    }
+  ],
+  "/keys/all": [
+    {
+      "key": "highway",
+      "count_all": 250000000
+    },
+    {
+      "key": "height",
+      "count_all": 40000000
+    },
+    {
+      "key": "historic",
+      "count_all": 3000000
+    }
+  ]
+}

@@ -14,7 +14,16 @@
 //! * values: `GET /api/4/key/values?key=KEY&query=PREFIX&sortname=count_all&sortorder=desc&rp=20&page=1`
 //!   returning `data: [{"value": ..., "count": ...}]`
 //!
-//! `query` is a substring match on both.
+//! * related: `GET /api/4/tag/combinations?key=KEY&value=VALUE&sortname=together_count&sortorder=desc&rp=50&page=1`
+//!   returning `data: [{"other_key": ..., "other_value": ..., "together_count": ...}]`
+//!   (the keys that most often appear together with `KEY=VALUE`; one key
+//!   can occur with several values, so counts are summed per key)
+//!
+//! * popular: `GET /api/4/tags/popular?sortname=count_all&sortorder=desc&rp=100&page=1`
+//!   returning `data: [{"key": ..., "value": ..., "count_all": ...}]` (the
+//!   most used tags overall; for an untagged feature, counts summed per key)
+//!
+//! `query` is a substring match on keys and values.
 
 use crate::http::{HttpClient, HttpError, HttpRequest};
 use std::collections::VecDeque;
@@ -26,8 +35,6 @@ pub const API_BASE: &str = "https://taginfo.openstreetmap.org/api/4";
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
 /// Keys shorter than this (in characters) are never sent.
 pub const MIN_KEY_CHARS: usize = 2;
-/// Values shorter than this (in characters) are never sent.
-pub const MIN_VALUE_CHARS: usize = 1;
 /// Longest text ever sent.
 const MAX_QUERY_CHARS: usize = 64;
 const CACHE_CAPACITY: usize = 64;
@@ -109,11 +116,63 @@ pub fn is_free_text_key(key: &str) -> bool {
     FREE_TEXT_KEYS.contains(&key) || FREE_TEXT_PREFIXES.iter().any(|p| key.starts_with(p))
 }
 
+/// The kind of OSM object a lookup is for: taginfo then counts only the
+/// nodes, ways or relations that carry a tag (`filter=` in its API), so a
+/// way is not offered what only nodes use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectType {
+    Nodes,
+    Ways,
+    Relations,
+}
+
+impl ObjectType {
+    fn filter(self) -> &'static str {
+        match self {
+            ObjectType::Nodes => "nodes",
+            ObjectType::Ways => "ways",
+            ObjectType::Relations => "relations",
+        }
+    }
+
+    /// The count field of `tags/popular` for this type.
+    fn popular_count_field(self) -> &'static str {
+        match self {
+            ObjectType::Nodes => "count_nodes",
+            ObjectType::Ways => "count_ways",
+            ObjectType::Relations => "count_relations",
+        }
+    }
+}
+
+/// `&filter=...` for a lookup limited to one object type, or nothing.
+fn filter_param(object: Option<ObjectType>) -> String {
+    object
+        .map(|o| format!("&filter={}", o.filter()))
+        .unwrap_or_default()
+}
+
 /// A lookup to make.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TaginfoQuery {
-    Keys { prefix: String },
-    Values { key: String, prefix: String },
+    Keys {
+        prefix: String,
+    },
+    Values {
+        key: String,
+        prefix: String,
+        object: Option<ObjectType>,
+    },
+    /// Keys that commonly occur together with `key=value`.
+    Related {
+        key: String,
+        value: String,
+        object: Option<ObjectType>,
+    },
+    /// The most used keys overall (a feature with no tag to go by yet).
+    Popular {
+        object: Option<ObjectType>,
+    },
 }
 
 impl TaginfoQuery {
@@ -126,13 +185,65 @@ impl TaginfoQuery {
                 "{API_BASE}/keys/all?query={}&sortname=count_all&sortorder=desc&rp=20&page=1",
                 encode(prefix)
             ),
-            TaginfoQuery::Values { key, prefix } => format!(
-                "{API_BASE}/key/values?key={}&query={}&sortname=count_all&sortorder=desc&rp=20&page=1",
+            TaginfoQuery::Values {
+                key,
+                prefix,
+                object,
+            } => format!(
+                "{API_BASE}/key/values?key={}&query={}&sortname=count_all&sortorder=desc&rp=20&page=1{}",
                 encode(key),
-                encode(prefix)
+                encode(prefix),
+                filter_param(*object)
+            ),
+            TaginfoQuery::Popular { object } => format!(
+                "{API_BASE}/tags/popular?sortname={}&sortorder=desc&rp=100&page=1{}",
+                object.map_or("count_all", ObjectType::popular_count_field),
+                filter_param(*object)
+            ),
+            TaginfoQuery::Related { key, value, object } => format!(
+                "{API_BASE}/tag/combinations?key={}&value={}&sortname=together_count&sortorder=desc&rp=50&page=1{}",
+                encode(key),
+                encode(value),
+                filter_param(*object)
             ),
         }
     }
+}
+
+/// Keys whose value says what a feature is. Only these are used to look up
+/// related keys, so no free text or personal value is ever sent.
+const PRIMARY_KEYS: &[&str] = &[
+    "amenity",
+    "shop",
+    "highway",
+    "building",
+    "tourism",
+    "leisure",
+    "railway",
+    "waterway",
+    "natural",
+    "landuse",
+    "man_made",
+    "office",
+    "craft",
+    "emergency",
+    "healthcare",
+    "historic",
+    "power",
+    "public_transport",
+    "barrier",
+    "aeroway",
+    "place",
+];
+
+/// The tag of `tags` that best says what the feature is (the first of
+/// `PRIMARY_KEYS` it has), for `Target::Key` lookups of related keys.
+pub fn primary_tag(tags: &[(String, String)]) -> Option<(&str, &str)> {
+    PRIMARY_KEYS.iter().find_map(|pk| {
+        tags.iter()
+            .find(|(k, v)| k == pk && !v.is_empty() && v != "yes" && v.len() <= MAX_QUERY_CHARS)
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+    })
 }
 
 /// Which input a request is for.
@@ -146,9 +257,20 @@ pub enum Target {
 /// `None` when nothing may be sent: the setting is off, the text is too
 /// short or odd, or (for a value) the key holds free text.
 ///
-/// `key` is the row's key (only used for values). This is the single gate
-/// every request goes through.
-pub fn plan(enabled: bool, target: Target, key: &str, typed: &str) -> Option<TaginfoQuery> {
+/// `key` is the row's key (only used for values). `related` is the
+/// feature's `primary_tag`: while a key input holds too little text for a
+/// key lookup, the keys that go with that tag are looked up instead. This is
+/// the single gate every request goes through. `object` limits the lookups
+/// that support it (related and popular keys, values) to that kind of OSM
+/// object; the typed-key search cannot be limited.
+pub fn plan(
+    enabled: bool,
+    target: Target,
+    key: &str,
+    typed: &str,
+    related: Option<(&str, &str)>,
+    object: Option<ObjectType>,
+) -> Option<TaginfoQuery> {
     if !enabled {
         return None;
     }
@@ -158,8 +280,16 @@ pub fn plan(enabled: bool, target: Target, key: &str, typed: &str) -> Option<Tag
         return None;
     }
     match target {
-        Target::Key => (chars >= MIN_KEY_CHARS).then(|| TaginfoQuery::Keys {
+        Target::Key if chars >= MIN_KEY_CHARS => Some(TaginfoQuery::Keys {
             prefix: typed.to_string(),
+        }),
+        Target::Key => Some(match related {
+            Some((k, v)) => TaginfoQuery::Related {
+                key: k.to_string(),
+                value: v.to_string(),
+                object,
+            },
+            None => TaginfoQuery::Popular { object },
         }),
         Target::Value => {
             let key = key.trim();
@@ -167,13 +297,13 @@ pub fn plan(enabled: bool, target: Target, key: &str, typed: &str) -> Option<Tag
                 || key.chars().count() > MAX_QUERY_CHARS
                 || key.chars().any(char::is_control)
                 || is_free_text_key(key)
-                || chars < MIN_VALUE_CHARS
             {
                 return None;
             }
             Some(TaginfoQuery::Values {
                 key: key.to_string(),
                 prefix: typed.to_string(),
+                object,
             })
         }
     }
@@ -207,9 +337,42 @@ pub fn fetch(
 pub fn parse_response(query: &TaginfoQuery, body: &str) -> Option<Vec<TaginfoItem>> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let data = json.get("data")?.as_array()?;
+    let (other_field, count_field) = match query {
+        TaginfoQuery::Related { .. } => ("other_key", "together_count"),
+        TaginfoQuery::Popular { object } => (
+            "key",
+            object.map_or("count_all", ObjectType::popular_count_field),
+        ),
+        _ => ("key", "count_all"),
+    };
+    if matches!(
+        query,
+        TaginfoQuery::Related { .. } | TaginfoQuery::Popular { .. }
+    ) {
+        // One entry per key, counts summed over its values.
+        let mut items: Vec<TaginfoItem> = Vec::new();
+        for entry in data {
+            let Some(text) = entry.get(other_field).and_then(|t| t.as_str()) else {
+                continue;
+            };
+            if text.is_empty() || text.chars().count() > 255 || text.chars().any(char::is_control) {
+                continue;
+            }
+            let count = entry.get(count_field).and_then(|c| c.as_u64()).unwrap_or(0);
+            match items.iter_mut().find(|i| i.text == text) {
+                Some(i) => i.count += count,
+                None => items.push(TaginfoItem {
+                    text: text.to_string(),
+                    count,
+                }),
+            }
+        }
+        items.sort_by_key(|i| std::cmp::Reverse(i.count));
+        return Some(items);
+    }
     let (text_field, count_field) = match query {
         TaginfoQuery::Keys { .. } => ("key", "count_all"),
-        TaginfoQuery::Values { .. } => ("value", "count"),
+        _ => ("value", "count"),
     };
     let items = data
         .iter()
@@ -406,6 +569,7 @@ mod tests {
         let q = TaginfoQuery::Values {
             key: "addr:street".into(),
             prefix: "Straße & Co".into(),
+            object: None,
         };
         assert_eq!(
             q.url(),
@@ -426,6 +590,7 @@ mod tests {
         let q = TaginfoQuery::Values {
             key: "surface".into(),
             prefix: "a".into(),
+            object: None,
         };
         let body = r#"{"data":[{"value":"asphalt","count":99,"fraction":0.5},{"value":"x"}]}"#;
         assert_eq!(
@@ -463,21 +628,167 @@ mod tests {
         ));
     }
 
+    fn tags(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn related_url_and_parse_sum_per_key() {
+        let q = TaginfoQuery::Related {
+            key: "amenity".into(),
+            value: "bank".into(),
+            object: None,
+        };
+        assert_eq!(
+            q.url(),
+            "https://taginfo.openstreetmap.org/api/4/tag/combinations?key=amenity&value=bank&sortname=together_count&sortorder=desc&rp=50&page=1"
+        );
+        let body = r#"{"data":[
+            {"other_key":"name","other_value":"","together_count":900},
+            {"other_key":"atm","other_value":"yes","together_count":500},
+            {"other_key":"atm","other_value":"no","together_count":300},
+            {"other_key":"","together_count":1},
+            {"other_key":"operator","together_count":50}]}"#;
+        assert_eq!(
+            parse_response(&q, body),
+            Some(vec![
+                item("name", 900),
+                item("atm", 800),
+                item("operator", 50)
+            ])
+        );
+    }
+
+    #[test]
+    fn related_lookup_only_while_the_key_text_is_short() {
+        let rel = Some(("amenity", "bank"));
+        let want = TaginfoQuery::Related {
+            key: "amenity".into(),
+            value: "bank".into(),
+            object: None,
+        };
+        assert_eq!(
+            plan(true, Target::Key, "", "", rel, None),
+            Some(want.clone())
+        );
+        assert_eq!(plan(true, Target::Key, "", "a", rel, None), Some(want));
+        assert_eq!(
+            plan(true, Target::Key, "", "at", rel, None),
+            Some(keys("at"))
+        );
+        assert_eq!(
+            plan(true, Target::Key, "", "", None, None),
+            Some(TaginfoQuery::Popular { object: None })
+        );
+        assert_eq!(plan(false, Target::Key, "", "", rel, None), None);
+        assert!(matches!(
+            plan(true, Target::Value, "x", "", rel, None),
+            Some(TaginfoQuery::Values { .. })
+        ));
+    }
+
+    #[test]
+    fn popular_parses_keys_summed() {
+        let body = r#"{"data":[
+            {"key":"highway","value":"residential","count_all":10},
+            {"key":"building","value":"yes","count_all":30},
+            {"key":"highway","value":"service","count_all":5}]}"#;
+        assert_eq!(
+            parse_response(&TaginfoQuery::Popular { object: None }, body),
+            Some(vec![item("building", 30), item("highway", 15)])
+        );
+    }
+
+    #[test]
+    fn primary_tag_picks_a_what_it_is_tag() {
+        let t = tags(&[("name", "Bank"), ("amenity", "bank")]);
+        assert_eq!(primary_tag(&t), Some(("amenity", "bank")));
+        assert_eq!(primary_tag(&tags(&[("name", "x")])), None);
+        assert_eq!(primary_tag(&tags(&[("building", "yes")])), None);
+        let t = tags(&[("building", "retail"), ("shop", "bakery")]);
+        assert_eq!(primary_tag(&t), Some(("shop", "bakery")));
+    }
+
     #[test]
     fn plan_requires_the_setting_and_enough_text() {
-        assert_eq!(plan(false, Target::Key, "", "surface"), None);
-        assert_eq!(plan(false, Target::Value, "surface", "asp"), None);
-        assert_eq!(plan(true, Target::Key, "", "s"), None);
-        assert_eq!(plan(true, Target::Key, "", " s "), None);
-        assert_eq!(plan(true, Target::Key, "", "su"), Some(keys("su")));
-        assert_eq!(plan(true, Target::Value, "", "asp"), None);
-        assert_eq!(plan(true, Target::Value, "surface", ""), None);
+        assert_eq!(plan(false, Target::Key, "", "surface", None, None), None);
         assert_eq!(
-            plan(true, Target::Value, "surface", "asp"),
+            plan(false, Target::Value, "surface", "asp", None, None),
+            None
+        );
+        // Too little text for a key search: the popular keys instead.
+        assert_eq!(
+            plan(true, Target::Key, "", "s", None, None),
+            Some(TaginfoQuery::Popular { object: None })
+        );
+        assert_eq!(
+            plan(true, Target::Key, "", " s ", None, None),
+            Some(TaginfoQuery::Popular { object: None })
+        );
+        assert_eq!(
+            plan(true, Target::Key, "", "su", None, None),
+            Some(keys("su"))
+        );
+        assert_eq!(plan(true, Target::Value, "", "asp", None, None), None);
+        assert!(plan(true, Target::Value, "surface", "", None, None).is_some());
+        assert_eq!(
+            plan(true, Target::Value, "surface", "asp", None, None),
             Some(TaginfoQuery::Values {
                 key: "surface".into(),
-                prefix: "asp".into()
+                prefix: "asp".into(),
+                object: None,
             })
+        );
+    }
+
+    #[test]
+    fn object_type_filters_the_lookups_that_support_it() {
+        let w = Some(ObjectType::Ways);
+        let rel = TaginfoQuery::Related {
+            key: "amenity".into(),
+            value: "cafe".into(),
+            object: w,
+        };
+        assert!(rel.url().ends_with("&page=1&filter=ways"));
+        let vals = TaginfoQuery::Values {
+            key: "highway".into(),
+            prefix: "".into(),
+            object: Some(ObjectType::Nodes),
+        };
+        assert!(vals.url().ends_with("&filter=nodes"));
+        let pop = TaginfoQuery::Popular { object: w };
+        assert_eq!(
+            pop.url(),
+            "https://taginfo.openstreetmap.org/api/4/tags/popular?sortname=count_ways&sortorder=desc&rp=100&page=1&filter=ways"
+        );
+        // The typed-key search has no type filter and never gets one.
+        assert!(!plan(true, Target::Key, "", "su", None, w)
+            .unwrap()
+            .url()
+            .contains("filter="));
+        // The object type reaches the planned lookups.
+        assert_eq!(
+            plan(true, Target::Key, "", "", Some(("amenity", "cafe")), w),
+            Some(rel)
+        );
+        assert_eq!(plan(true, Target::Key, "", "", None, w), Some(pop));
+    }
+
+    #[test]
+    fn popular_counts_the_requested_object_type() {
+        let body = r#"{"data":[
+            {"key":"highway","value":"residential","count_all":10,"count_ways":9,"count_nodes":1},
+            {"key":"barrier","value":"gate","count_all":8,"count_ways":0,"count_nodes":8},
+            {"key":"highway","value":"service","count_all":5,"count_ways":5,"count_nodes":0}]}"#;
+        let q = TaginfoQuery::Popular {
+            object: Some(ObjectType::Nodes),
+        };
+        assert_eq!(
+            parse_response(&q, body),
+            Some(vec![item("barrier", 8), item("highway", 1)])
         );
     }
 
@@ -506,12 +817,16 @@ mod tests {
             "source:geometry",
         ] {
             assert!(is_free_text_key(key), "{key}");
-            assert_eq!(plan(true, Target::Value, key, "abc"), None, "{key}");
+            assert_eq!(
+                plan(true, Target::Value, key, "abc", None, None),
+                None,
+                "{key}"
+            );
         }
         assert!(!is_free_text_key("surface"));
         assert!(!is_free_text_key("highway"));
         // ...but typing such a key's name is a key lookup like any other.
-        assert!(plan(true, Target::Key, "", "name").is_some());
+        assert!(plan(true, Target::Key, "", "name", None, None).is_some());
     }
 
     #[test]
@@ -623,7 +938,7 @@ mod tests {
         let client = FakeClient::new(vec![]);
         let t0 = Instant::now();
         let mut s = TaginfoState::new();
-        let q = plan(false, Target::Key, "", "surface");
+        let q = plan(false, Target::Key, "", "surface", None, None);
         assert_eq!(s.request(t0, q), Lookup::Idle);
         assert!(s.poll(t0 + DEBOUNCE * 5).is_none());
         assert_eq!(client.request_count(), 0);

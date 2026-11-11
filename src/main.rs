@@ -2314,6 +2314,29 @@ impl MapViewer {
         // Have the layers' tag counts ready (in the background) for the
         // first keystroke.
         self.sync_tag_indexes(cx);
+        // A new row starts empty: offer suggestions right away. (The input's
+        // Focus event can fire before the edit above exists, so don't rely
+        // on it.)
+        if is_add {
+            let first = if select == TagEditField::Value {
+                TagEditField::Value
+            } else {
+                TagEditField::Key
+            };
+            // A moment after the first paint, so the input's position is
+            // known and the list is placed beside it, not over it.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.tag_inline_edit.is_some() {
+                        this.refresh_tag_suggestions(first, window, cx);
+                    }
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -2357,9 +2380,9 @@ impl MapViewer {
                 self.refresh_tag_suggestions(which, window, cx);
                 return;
             }
-            // Arriving in a new row's value input after its key: offer that
-            // key's values right away.
-            InputEvent::Focus if add_row && which == TagEditField::Value => {
+            // Arriving in a new row's key input: offer the keys that usually
+            // go with the feature's main tag (e.g. atm= for amenity=bank).
+            InputEvent::Focus if add_row => {
                 self.refresh_tag_suggestions(which, window, cx);
                 return;
             }
