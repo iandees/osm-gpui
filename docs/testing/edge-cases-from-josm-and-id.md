@@ -34,13 +34,13 @@ in the bug list at the end.
 | S8 | Boundary relation with admin_centre and several outer ways | Other members and order untouched | JOSM `testTicket18596` (boundary data) | pass `boundary_outer_ring_keeps_order_and_roles_of_the_other_members` |
 | S9 | Way's relation is itself a member of another relation | Parent untouched | iD `split.js` parent relations | pass `a_relation_that_is_a_member_of_another_relation_is_not_disturbed` |
 | S10 | Route with members that are not downloaded | JOSM warns/downloads when order is uncertain; iD refuses when too incomplete; unknown members must not be lost or reordered | JOSM `testOneMemberOrderedRelationShowsWarningTest`, `testTicket17400`, `testTicket18863`; iD "returns 'parent_incomplete'" | pass `incomplete_route_keeps_unknown_members_in_place` (unknown members safe; **design**: the app guesses "after" and does not warn, see gaps) |
-| S11 | Closed way, one split node | JOSM opens the ring at that node; iD splits at the node and its opposite | iD "splits a closed way at the given point and its antipode" | design `closed_way_needs_two_nodes_and_one_node_changes_nothing` (refuses, no change) |
+| S11 | Closed way, one split node | JOSM opens the ring at that node; iD splits at the node and its opposite | iD "splits a closed way at the given point and its antipode" | design `closed_way_with_one_node_is_turned_to_start_and_end_there` (JOSM behaviour: the way is rewritten to start and end at the node, same id/version/tags/relations; refused if the node already is the start). See batch I |
 | S12 | Closed way split at two nodes | Two open ways | iD "splits a closed way at the given points" | pass (`closed_area_split_gives_two_open_ways...`) |
 | S13 | Closed area (`building`, `area=yes`) split | JOSM copies tags to both halves; iD converts to a multipolygon | iD "splits an area by converting it to a multipolygon" | design `closed_area_split_gives_two_open_ways_that_both_keep_the_area_tags` (JOSM behaviour) |
 | S14 | Roundabout in a route | iD refuses to split; JOSM allows | iD `simple_roundabout` | design `roundabout_in_a_route_splits_and_both_halves_stay_members` (JOSM behaviour, relation stays whole) |
 | S15 | Split at an end node | Not possible | iD `not_eligible` | pass `splitting_at_an_end_node_is_refused_and_changes_nothing` |
-| S16 | Split at several nodes of an open way at once | Way cut into several parts | iD "splits an open way at multiple given points" | absent (refused, unchanged): `splitting_an_open_way_at_two_nodes_at_once_is_not_supported` |
-| S17 | Node the way passes through twice (figure eight, P shape) | Split at the interior occurrence | JOSM `SplitWayActionTest.testTicket11184`; iD "splits self-intersecting ways" | absent (refused, unchanged): `a_node_the_way_passes_through_twice_cannot_be_split_here` |
+| S16 | Split at several nodes of an open way at once | Way cut into several parts | iD "splits an open way at multiple given points" | pass `splitting_an_open_way_at_two_nodes_at_once_gives_three_parts` and the batch I tests (one undo step, longest part keeps the id) |
+| S17 | Node the way passes through twice (figure eight, P shape) | Split at the interior occurrence | JOSM `SplitWayActionTest.testTicket11184`; iD "splits self-intersecting ways" | pass `a_node_the_way_passes_through_twice_is_split_at_every_interior_pass`, `a_p_shaped_way_is_split_at_the_interior_pass_only` (JOSM: every interior pass is a cut). See batch I |
 | S18 | Node shared by several ways | Every way through it is split | JOSM `testTicket11184`, `testTicket18477`; iD "splits multiple ways at an intersection" | pass `split_at_a_shared_node_splits_every_way_through_it` |
 | S19 | Which part keeps the id/version | Longer part (iD); JOSM: chosen by strategy, default longest | iD "gives the previous id to the longest way" | pass `the_longer_part_keeps_the_original_id_and_version` (same as iD; ties keep the first part) |
 | S20 | Upload order after split | New way created before the relation that names it | upload API rule | pass `split_new_way_is_created_before_the_relation_that_names_it` |
@@ -186,7 +186,7 @@ Tests in `src/edge_case_tests/interactions_reverse_split.rs`.
 | A3 | Split a way that is a restriction `via` and a route member | Both halves `via` in travel order; route halves adjacent with the role; one undo | pass `splitting_a_way_that_is_a_restriction_via_and_a_route_member_updates_both` |
 | A4 | Split a way that is both `from` and `to` of a U-turn | Both roles follow the half touching the `via` | pass `splitting_the_way_that_is_both_from_and_to_of_a_u_turn_keeps_a_valid_restriction`, `splitting_a_u_turn_way_at_the_far_side_of_the_via_keeps_both_roles_on_the_original` |
 | A5 | Duplicate consecutive node `[1,1,2,3]`: reverse | Literal reverse | pass `reversing_a_way_with_a_duplicated_node_reverses_it_literally` |
-| A5b | Split at the doubled node `[1,2,2,3]` | Refused, unchanged (like S17) | design `a_node_listed_twice_in_a_row_cannot_be_split_at` |
+| A5b | Split at the doubled node `[1,2,2,3]` | Refused, unchanged (a one-node part would be left) | design `a_node_listed_twice_in_a_row_cannot_be_split_at` |
 | A5c | Split elsewhere in a way with a doubled node; join with it at the end | Duplicate kept, no dangling refs | pass `splitting_elsewhere_in_a_way_with_a_duplicated_node_keeps_the_duplicate`, `joining_a_way_with_a_duplicated_end_node_keeps_the_duplicate`, `joining_ways_that_both_end_on_the_duplicated_node_chains_them` |
 | A6 | One way listed under two roles (`forward`, `backward`) in a route: split | Each occurrence gets its own halves with its own role, in the right order | pass `split_gives_each_occurrence_of_a_member_its_own_role` |
 | A6b | Same, delete | Both memberships removed | pass `deleting_a_member_with_two_roles_removes_both_memberships` |
@@ -387,6 +387,50 @@ Bug found in this batch (fixed): E15, MEDIUM. Joining way 10 (only in lake
 changing its geometry. The join is now refused (`JoinError::SurvivorNotInArea`)
 when a removed way is in a multipolygon the survivor is not in.
 
+## Further situations (batch I)
+
+Split Way at several nodes, at a node visited twice, and a closed way at one
+node (S11, S16, S17), in `src/edge_case_tests/split.rs` and the planner tests
+in `src/topology.rs`. Rules, as in JOSM:
+
+- Every selected node is a cut at each of its interior occurrences in an open
+  way; an occurrence at the first or last position is not a cut, and a
+  selected node that is only an end node (or not on the way) is ignored. No
+  cut at all is refused.
+- The longest part (most nodes; the first of equals) keeps the original id,
+  version and (so) the modify; every other part is a new way with a copy of
+  the tags. Relations are updated one cut at a time with the same rules as a
+  single split, so each new part gets the route order / role, and a
+  restriction `from`/`to` follows the part touching `via`.
+- A closed way with two or more selected nodes (each once in the ring) is cut
+  into that many arcs. With exactly one selected node it is rewritten to start
+  and end at that node, but only when it is the only way using the node or
+  was selected too, so splitting a street at a junction does not also turn a
+  building. Nothing new is created, so id, version, tags and relations stay.
+- The selection is not changed by a split.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| I1 | Open way `[1..6]`, nodes 2 and 5 | Three parts, middle keeps id 10 and version 3, ends are created with copied tags, one undo step | pass `splitting_an_open_way_at_two_nodes_at_once_gives_three_parts` |
+| I2 | Which part keeps the id with three parts | Longest; first of equals | pass `open_way_several_cuts_keep_the_longest_part_and_the_first_of_equals` |
+| I3 | Selected end node or node of another way among the cuts | Ignored; only end nodes: refused, unchanged | pass `open_way_cut_ignores_a_selected_end_node_and_a_node_not_on_the_way` |
+| I4 | Two nodes shared by several ways | Every way through them is cut at the nodes it has | pass `two_selected_nodes_split_every_way_through_them` |
+| I5 | Route, several cuts, with the way running with / against the route | Parts in travel order next to the neighbours | pass `route_stays_in_travel_order_after_a_multi_node_split`, `route_driven_against_the_way_direction_stays_ordered_after_a_multi_node_split` |
+| I6 | Way listed twice in a route (out and back), two cuts | Parts in each pass in the right order | pass `way_used_twice_in_a_route_is_split_into_every_part_each_time` |
+| I7 | Restriction `from` way cut twice | Role goes to the part touching `via`; unknown `via` refuses the whole split | pass `restriction_from_way_follows_the_part_touching_the_via_after_a_multi_node_split`, `restriction_with_an_unknown_via_refuses_a_multi_node_split_whole` |
+| I8 | Multipolygon ring member cut at several nodes | Every part has the role | pass `multipolygon_ring_member_cut_at_several_nodes_keeps_the_role_on_every_part`, `closed_way_cut_at_three_nodes_gives_three_arcs` |
+| I9 | Upload order | Every new part is in `<create>` before the relation that names it | pass `every_new_part_is_created_before_the_relation_that_names_it_in_the_upload` |
+| I10 | Node limit | Parts are never longer than the way; an overlong offline way is valid again | pass `split_parts_stay_within_the_way_node_limit_of_the_server` |
+| I11 | Several cuts would push a relation past the member maximum | Refused whole, nothing changed | pass `split_that_adds_parts_to_a_full_relation_is_refused_whole` |
+| I12 | Closed way that visits a node twice | Refused, unchanged | pass `a_ring_node_visited_twice_still_cannot_be_split` |
+| I13 | Figure eight through node 3 (S17) | `[1,2,3]`, `[3,4,5,3]` (keeps id), `[3,6]`; in a route all three in order | pass `a_node_the_way_passes_through_twice_is_split_at_every_interior_pass`, `figure_eight_in_a_route_gets_all_three_parts_in_order` |
+| I14 | P shape, ending or starting on the node | Only the interior pass is a cut | pass `a_p_shaped_way_is_split_at_the_interior_pass_only` |
+| I15 | Closed way, one node (S11) | Rewritten to start and end there; same id/version/tags/relations; start node refused | pass `closed_way_with_one_node_is_turned_to_start_and_end_there`, `closed_way_one_node_without_selecting_the_way_and_at_the_start_node` |
+| I16 | Junction of a street and a building ring | Only the street is split unless the ring is selected | design `closed_way_one_node_leaves_a_ring_alone_when_a_street_is_split_at_the_junction` |
+
+Where the arcs of a multipolygon ring go when no neighbour decides (I8) is
+not specified: they follow the original, which is harmless for rings.
+
 ## Further situations (batch J)
 
 Create Multipolygon (`src/edge_case_tests/create_multipolygon.rs`, planner in
@@ -434,8 +478,9 @@ No bugs found in this batch.
 
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
-- Split at several nodes at once; split at a node the way visits twice (S16,
-  S17); closed way with one node (S11).
+- A closed way with one split node is turned to start there (JOSM); iD splits
+  at the node and its opposite (S11). A closed way that visits a node twice is
+  still not split (batch I, I12).
 - Split of an incomplete route guesses "after" instead of warning (S10).
 - iD converts a split area to a multipolygon; this app, like JOSM, leaves two
   open ways with the area tags (S13).

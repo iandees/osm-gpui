@@ -666,7 +666,7 @@ action:
     done: "Pasted %{tags} onto %{features}"
   split:
     label: "Split Way"
-    hint: "Select a node inside a way (or two nodes of a closed way) to split it"
+    hint: "Select one or more nodes inside a way (two or more nodes of a closed way) to split it"
     done:
       one: "Split %{count} way"
       other: "Split %{count} ways"
