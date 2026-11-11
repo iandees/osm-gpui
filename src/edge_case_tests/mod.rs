@@ -12,6 +12,7 @@ mod join_and_merge;
 mod limits_and_data;
 mod parse_and_export;
 mod reverse;
+mod shared_members;
 mod split;
 mod undo_interactions;
 mod undo_sequences;
