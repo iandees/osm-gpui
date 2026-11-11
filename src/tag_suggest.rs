@@ -601,6 +601,36 @@ mod tests {
     }
 
     #[test]
+    fn empty_key_text_lists_only_taginfo_keys_the_feature_lacks() {
+        // The Tags row's empty key input: no local keys (the caller passes
+        // none), just taginfo's, in its order, minus keys already present.
+        let exclude: HashSet<String> = ["name".to_string()].into();
+        let got = suggest_keys(
+            "",
+            &[],
+            &SchemaIndex::default(),
+            &ti(&[("name", 9), ("atm", 8), ("operator", 5)]),
+            &exclude,
+            10,
+        );
+        assert_eq!(texts(&got), ["atm", "operator"]);
+        assert!(got.iter().all(|s| s.source == Source::Taginfo));
+    }
+
+    #[test]
+    fn one_typed_character_filters_related_keys() {
+        let got = suggest_keys(
+            "o",
+            &[],
+            &SchemaIndex::default(),
+            &ti(&[("atm", 8), ("operator", 5), ("opening_hours", 4)]),
+            &HashSet::new(),
+            10,
+        );
+        assert_eq!(texts(&got), ["operator", "opening_hours"]);
+    }
+
+    #[test]
     fn data_index_counts_elements() {
         let d = data(
             &[

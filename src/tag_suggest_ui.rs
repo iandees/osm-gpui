@@ -50,9 +50,59 @@ fn schema() -> &'static SchemaIndex {
 /// neither a unit test nor a `--script` run (which never touch the network
 /// for suggestions).
 fn taginfo_enabled() -> bool {
-    !cfg!(test)
-        && !crate::script_harness::script_mode()
-        && settings_store::snapshot().suggest_from_taginfo
+    if crate::script_harness::script_mode() {
+        // Scripted runs never touch the network; they may be given canned
+        // answers (see `FixtureClient`).
+        return fixture_path().is_some();
+    }
+    !cfg!(test) && settings_store::snapshot().suggest_from_taginfo
+}
+
+/// Environment variable naming a JSON file of canned taginfo answers for a
+/// `--script` run: `{"<text in the request URL>": [<data entries>], ...}`.
+const FIXTURE_ENV: &str = "OSM_GPUI_TAGINFO_FIXTURE";
+
+fn fixture_path() -> Option<std::path::PathBuf> {
+    std::env::var_os(FIXTURE_ENV).map(Into::into)
+}
+
+/// Answers taginfo requests from the `FIXTURE_ENV` file: the first entry
+/// whose key occurs in the request URL supplies the `data` array.
+struct FixtureClient(serde_json::Value);
+
+impl osm_gpui::http::HttpClient for FixtureClient {
+    fn request(
+        &self,
+        req: osm_gpui::http::HttpRequest,
+    ) -> Result<osm_gpui::http::HttpResponse, osm_gpui::http::HttpError> {
+        let data = self
+            .0
+            .as_object()
+            .and_then(|m| m.iter().find(|(k, _)| req.url.contains(k.as_str())))
+            .map(|(_, v)| v.clone());
+        match data {
+            Some(data) => Ok(osm_gpui::http::HttpResponse {
+                status: 200,
+                body: serde_json::json!({ "data": data }).to_string().into_bytes(),
+            }),
+            None => Err(osm_gpui::http::HttpError::Status {
+                status: 404,
+                body: Vec::new(),
+            }),
+        }
+    }
+}
+
+/// Fetch `query` from taginfo, or from the fixture in a scripted run.
+fn fetch_taginfo(query: &taginfo::TaginfoQuery) -> Result<Vec<TaginfoItem>, taginfo::FetchError> {
+    if crate::script_harness::script_mode() {
+        let fixture = fixture_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(serde_json::Value::Null);
+        return taginfo::fetch(&FixtureClient(fixture), query);
+    }
+    taginfo::fetch(&osm_gpui::http::UreqClient::new(), query)
 }
 
 /// One layer's key/value counts and the edit revision they describe.
@@ -71,6 +121,9 @@ pub(crate) struct TagSuggestState {
     /// Where the key and the value input were last painted (window
     /// coordinates), to place the dropdown above or below.
     anchors: [Rc<Cell<Option<Bounds<Pixels>>>>; 2],
+    /// The window height when the dropdown was last placed, so it can be
+    /// placed again when a late taginfo answer changes the list's length.
+    viewport_height: Pixels,
 }
 
 impl TagSuggestState {
@@ -79,6 +132,7 @@ impl TagSuggestState {
             layers: HashMap::new(),
             taginfo: TaginfoState::new(),
             anchors: [Rc::new(Cell::new(None)), Rc::new(Cell::new(None))],
+            viewport_height: px(0.0),
         }
     }
 
@@ -298,9 +352,7 @@ impl MapViewer {
                 }
             }
             _ => {
-                if typed.trim().is_empty() {
-                    Vec::new()
-                } else {
+                {
                     // Keys every selected feature already has.
                     let mut exclude: HashSet<String> = HashSet::new();
                     if let Some((_, first)) = snapshots.first() {
@@ -309,14 +361,27 @@ impl MapViewer {
                             exclude.retain(|k| tags.iter().any(|(tk, _)| tk == k));
                         }
                     }
-                    suggest_keys(
-                        &typed,
-                        &refs,
-                        schema(),
-                        &edit.suggest.taginfo,
-                        &exclude,
-                        LIST_LIMIT,
-                    )
+                    if typed.trim().is_empty() {
+                        // Nothing typed: only taginfo's keys that go with
+                        // the feature's main tag, never the whole local list.
+                        suggest_keys(
+                            "",
+                            &[],
+                            &SchemaIndex::default(),
+                            &edit.suggest.taginfo,
+                            &exclude,
+                            LIST_LIMIT,
+                        )
+                    } else {
+                        suggest_keys(
+                            &typed,
+                            &refs,
+                            schema(),
+                            &edit.suggest.taginfo,
+                            &exclude,
+                            LIST_LIMIT,
+                        )
+                    }
                 }
             }
         };
@@ -337,6 +402,13 @@ impl MapViewer {
     /// Where the open list goes: under the input if it fits there or if
     /// there is more room below than above, else above.
     fn place_dropdown(&mut self, window: &Window) {
+        self.tag_suggest.viewport_height = window.viewport_size().height;
+        self.replace_dropdown();
+    }
+
+    /// `place_dropdown` for the window height it last saw.
+    fn replace_dropdown(&mut self) {
+        let viewport_height = self.tag_suggest.viewport_height;
         let Some(edit) = self.tag_inline_edit.as_mut() else {
             return;
         };
@@ -349,7 +421,7 @@ impl MapViewer {
         };
         let list_h = (edit.suggest.items.len() as f32 * ROW_HEIGHT + 8.0).min(MAX_LIST_HEIGHT);
         let margin = 8.0;
-        let below_room = f32::from(window.viewport_size().height - bounds.bottom()) - margin;
+        let below_room = f32::from(viewport_height - bounds.bottom()) - margin;
         let above_room = f32::from(bounds.top()) - margin;
         edit.suggest.below = list_h <= below_room || below_room >= above_room;
     }
@@ -383,7 +455,25 @@ impl MapViewer {
         } else {
             Target::Key
         };
-        let query = taginfo::plan(taginfo_enabled(), which, &key_text, &typed);
+        // The tag every selected feature shares that says what it is (e.g.
+        // amenity=bank): keys that usually go with it are suggested.
+        let related = {
+            let edit = self.tag_inline_edit.as_ref().expect("checked above");
+            let snapshots = self.feature_tag_snapshots(&edit.ctx.features);
+            snapshots.split_first().and_then(|((_, first), rest)| {
+                let (k, v) = taginfo::primary_tag(first)?;
+                rest.iter()
+                    .all(|(_, t)| t.iter().any(|(tk, tv)| tk == k && tv == v))
+                    .then(|| (k.to_string(), v.to_string()))
+            })
+        };
+        let query = taginfo::plan(
+            taginfo_enabled(),
+            which,
+            &key_text,
+            &typed,
+            related.as_ref().map(|(k, v)| (k.as_str(), v.as_str())),
+        );
         let lookup = self.tag_suggest.taginfo.request(Instant::now(), query);
 
         if let Some(edit) = self.tag_inline_edit.as_mut() {
@@ -442,7 +532,7 @@ impl MapViewer {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { taginfo::fetch(&osm_gpui::http::UreqClient::new(), &query) })
+                .spawn(async move { fetch_taginfo(&query) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let items = this.tag_suggest.taginfo.finish(Instant::now(), job, result);
@@ -451,6 +541,8 @@ impl MapViewer {
                     if edit.suggest.target.is_some() {
                         edit.suggest.taginfo = items;
                         this.rebuild_suggestions(cx);
+                        // The list may now be longer than when it was placed.
+                        this.replace_dropdown();
                         cx.notify();
                     }
                 }

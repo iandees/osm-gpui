@@ -157,6 +157,8 @@ cargo test
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and pull request guidance.
 
+**Scripted taginfo answers.** Scripted runs never touch the network, so tag suggestions from taginfo are off in them. Set `OSM_GPUI_TAGINFO_FIXTURE` to a JSON file (`{"<text in the request URL>": [<taginfo data entries>]}`, see `docs/screenshots/fixtures/taginfo-answers.json`) to answer taginfo lookups from it; `docs/screenshots/tag-autocomplete-related.osmscript` uses this.
+
 **Scripted screenshots.** `--script <file>` runs a line-oriented `.osmscript` file (viewport, click, drag, scroll, key, load_osm, wait_idle, capture, and so on) against the live app and writes PNGs, which is useful for checking UI changes without driving the app by hand. Examples are in `docs/screenshots/`; `docs/screenshots/smoke.osmscript` exercises every operation and the scripts under `tests/ui/` run as tests.
 
 ```bash
