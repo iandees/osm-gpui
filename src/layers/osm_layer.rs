@@ -3318,6 +3318,18 @@ impl OsmLayer {
         screen_pt: Point<Pixels>,
         tol_px: f32,
     ) -> Option<i64> {
+        self.snap_to_node_where(viewport, screen_pt, tol_px, |_| true)
+    }
+
+    /// Like `snap_to_node`, considering only nodes `accept` allows (the
+    /// dragged node itself, or a node of an incompatible way, are left out).
+    pub fn snap_to_node_where(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+        accept: impl Fn(i64) -> bool,
+    ) -> Option<i64> {
         self.osm_data.as_ref()?;
         let pad = px(tol_px * 2.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
@@ -3327,6 +3339,9 @@ impl OsmLayer {
         let mut best: Option<(f32, i64)> = None;
         for item in self.node_index.locate_in_envelope(envelope) {
             let id = item.data;
+            if !accept(id) {
+                continue;
+            }
             let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
                 continue;
             };
@@ -3414,6 +3429,18 @@ impl OsmLayer {
         screen_pt: Point<Pixels>,
         tol_px: f32,
     ) -> Option<(i64, i64, i64, usize, f64, f64)> {
+        self.snap_to_way_where(viewport, screen_pt, tol_px, |_| true)
+    }
+
+    /// Like `snap_to_way`, considering only ways `accept` allows (ways of an
+    /// incompatible kind, or one that already holds the node, are left out).
+    pub fn snap_to_way_where(
+        &self,
+        viewport: &Viewport,
+        screen_pt: Point<Pixels>,
+        tol_px: f32,
+        accept: impl Fn(i64) -> bool,
+    ) -> Option<(i64, i64, i64, usize, f64, f64)> {
         self.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
@@ -3424,6 +3451,9 @@ impl OsmLayer {
         let mut best: Option<(f32, i64, i64, i64, usize, Point<Pixels>)> = None;
         for item in self.way_index.locate_in_envelope_intersecting(envelope) {
             let way_id = item.data;
+            if !accept(way_id) {
+                continue;
+            }
             let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
                 continue;
             };

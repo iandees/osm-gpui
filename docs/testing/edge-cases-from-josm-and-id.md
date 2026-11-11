@@ -134,7 +134,7 @@ in the bug list at the end.
 | O2 | Multipolygon building from loose ways (MultipolygonBuilder tests, CreateMultipolygonActionTest #17767 ...) | JOSM | absent (no "create multipolygon" action; multipolygon rendering is covered by `src/multipolygon.rs` tests) |
 | O3 | Validator tests (DuplicateNode, CrossingWays, MultipolygonTest, TurnrestrictionTest, RelationChecker) | JOSM `data/validation/tests` | existing in `src/validator/` (not repeated) |
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
-| G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; simplify and join-node-to-way absent |
+| G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify absent |
 | C1 | Copy / paste / duplicate (JOSM `CopyActionTest`, `PasteAction`; PurgeAction #12038) | | existing in `feature_clipboard` and `main.rs` tests |
 | C2 | Purge | | absent |
 | C3 | Conflict/merge of downloaded data (`DataSetMergerTest`, #7481, #12599, #12616) | | existing in `src/layers/merge.rs` |
@@ -333,6 +333,30 @@ Nodes and ways shared by several relations, copy / paste of members, and
 
 Bugs found in this batch (fixed): G9 and G14.
 
+## Further situations (batch H)
+
+Join node to way: the `Join Node to Way` selection action and snapping while
+placing or dragging a node (`src/snap.rs`, `src/edge_case_tests/snap_join_node.rs`).
+Snapping is off while Alt (Option) or Ctrl is held; what may snap to what is the
+`CLASS_RULES` / `COMPAT` table in `src/snap.rs` (unit tested there).
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| H1 | Node joined to a way: which segment, which index | Nearest segment; inserted after its start; node moved onto the line; one undo step; undo / redo exact | pass `node_is_inserted_on_the_nearest_segment_and_moved_onto_the_line`, `insertion_index_follows_the_segment_for_every_position` |
+| H2 | Way passes the node's position twice (out and back over one line) | Deterministic: the lowest-indexed equally near segment | pass `a_way_that_passes_the_node_twice_takes_the_first_pass` |
+| H3 | Closed way, node nearest the closing segment | Inserted before the repeated first node; still closed | pass `a_closed_way_can_be_joined_on_its_closing_segment` |
+| H4 | Way already at 2,000 nodes | Refused with the limit message, nothing changed | pass `a_full_way_refuses_one_more_node` |
+| H5 | Node already in the way | Refused (no duplicate, no consecutive duplicate), nothing changed | pass `a_node_already_in_the_way_is_refused_without_a_duplicate` |
+| H6 | Node is a relation member; target way is in route and restriction relations | Memberships and roles untouched in both | pass `a_node_that_is_a_relation_member_stays_one_and_the_way_relations_are_unchanged` |
+| H7 | Upload of a node created this session joined to a way | Node created before the modified way, once, at its final position | pass `a_new_node_goes_up_before_the_modified_way` |
+| H8 | Selection is not exactly one node and one way | Action not applicable, nothing changed | pass `it_needs_exactly_one_node_and_one_way` |
+| H9 | Drag a node onto a way | Inserted on release, one undo step | pass `dragging_a_node_onto_a_way_inserts_it_as_one_undo_step` |
+| H10 | Same, with Alt or Ctrl held | Plain move, no snap | pass `the_disable_modifier_leaves_a_dragged_node_free` |
+| H11 | Drag a road node onto a building | No snap, no highlight | pass `a_node_does_not_snap_onto_a_way_of_an_incompatible_kind` |
+| H12 | Highlight while dragging | Target shown while it applies; Alt clears it | pass `the_snap_target_is_highlighted_while_dragging_and_cleared_after` |
+| H13 | Drag a node onto another node | Merged by the Merge Nodes planner, one undo step | pass `dragging_a_node_onto_another_node_merges_them` |
+| H14 | Add mode: way being drawn is tagged / untagged | Tagged: only compatible ways; untagged: any; the modifier always disables | pass `add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways`, `add_mode_with_an_untagged_way_snaps_and_the_modifier_prevents_it` |
+
 ## Further situations (batch E)
 
 Multipolygon-aware editing, in `src/edge_case_tests/multipolygon_edits.rs`.
@@ -374,7 +398,9 @@ when a removed way is in a multipolygon the survivor is not in.
 - Two server nodes / ways merged or joined keep the first selected, not the
   oldest (J6, M2).
 - Disconnect leaves the new node untagged (D1).
-- No relation sorting, multipolygon creation, simplify, purge, join-node-to-way.
+- No relation sorting, multipolygon creation, simplify, purge.
+- Join node to way never targets a way that already contains the node (JOSM can
+  put a node into a closed way a second time); snapping also refuses it (H5).
 
 ## Bugs found (ignored tests)
 

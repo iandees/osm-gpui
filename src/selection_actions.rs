@@ -404,6 +404,20 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_align,
     },
     SelectionAction {
+        id: "join_node_way",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            join_node_way_target(editable, layer_id, env.selection).is_some()
+        },
+        apply: apply_join_node_way,
+    },
+    SelectionAction {
         id: "distribute",
         shortcut_id: None,
         fixed_shortcut: None,
@@ -1433,7 +1447,7 @@ fn merge_nodes_in(
 /// instead (see `relations::merge_node_members`). One undo step: the
 /// survivor's added tags, the rewritten ways, the relations' new member lists,
 /// then the deletion of the other nodes.
-fn apply_merge(
+pub(crate) fn apply_merge(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
@@ -1522,6 +1536,106 @@ fn apply_merge(
         status: label,
         clear_selection: false,
         select: Some(vec![node_ref(plan.keep)]),
+        continue_way: None,
+    })
+}
+
+/// The node and the way to join: exactly one node and one way of the active
+/// layer selected, both present and the way having a segment. (A way that
+/// already contains the node is refused with its own message when run.)
+fn join_node_way_target(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<(i64, i64)> {
+    let (node, way) = separate_target(layer_id, selection)?;
+    let way = way?;
+    editable.node_lat_lon(node)?;
+    let nodes = editable.way_node_ids(way)?;
+    (nodes.len() >= 2).then_some((node, way))
+}
+
+/// Insert `node` into `way` as a new vertex, moving it onto the way's line.
+/// `segment` picks the segment (the one starting at that index); `None`
+/// takes the nearest. Used by Join Node to Way and by snapping on a drag.
+/// Checks the way-size limit and that the node is not already in the way, and
+/// changes nothing on refusal. Returns the undo steps (a move, then the way's
+/// new node list); relation memberships are not touched, so a node that is a
+/// relation member stays one and relations on the way are unchanged.
+pub(crate) fn join_node_into_way(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    node: i64,
+    way: i64,
+    segment: Option<usize>,
+) -> Result<Vec<UndoableAction>, String> {
+    use osm_gpui::snap::{plan_join_at_segment, plan_join_nearest, JoinError};
+    let position = editable
+        .node_lat_lon(node)
+        .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    let before = editable
+        .way_node_ids(way)
+        .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    let points: Vec<LatLon> = before
+        .iter()
+        .map(|&id| editable.node_lat_lon(id))
+        .collect::<Option<_>>()
+        .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    let plan = match segment {
+        Some(i) => plan_join_at_segment(node, position, &before, &points, i),
+        None => plan_join_nearest(node, position, &before, &points),
+    }
+    .map_err(|e| match e {
+        JoinError::AlreadyInWay => tr!("action.join_node_way.error.in_way").to_string(),
+        JoinError::NoSegment | JoinError::BadSegment => {
+            tr!("action.join_node_way.hint").to_string()
+        }
+    })?;
+    if let Some(message) =
+        osm_gpui::limits::way_over_limit(before.len() + 1, osm_gpui::limits::way_full_message)
+    {
+        return Err(message);
+    }
+    let mut actions = Vec::new();
+    if plan.point != position {
+        editable.commit_node_moves(&[(node, plan.point.0, plan.point.1)]);
+        actions.push(UndoableAction::MoveNodes {
+            per_layer: vec![(layer_id, vec![(node, position, plan.point)])],
+        });
+    }
+    let mut after = before.clone();
+    after.insert(plan.index, node);
+    editable.set_way_nodes(way, after.clone());
+    actions.push(UndoableAction::SetWayNodes {
+        layer: layer_id,
+        way_id: way,
+        before,
+        after,
+    });
+    Ok(actions)
+}
+
+/// Join Node to Way (JOSM "Join Node to Way"): put the selected node onto
+/// the nearest point of the selected way and make it a vertex of that way.
+/// Deliberate, so unlike snapping it ignores tag compatibility. One undo step.
+fn apply_join_node_way(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let (node, way) = join_node_way_target(editable, layer_id, selection)
+        .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    let actions = join_node_into_way(editable, layer_id, node, way, None)?;
+    let label = tr!("action.join_node_way.done").to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: false,
+        select: None,
         continue_way: None,
     })
 }

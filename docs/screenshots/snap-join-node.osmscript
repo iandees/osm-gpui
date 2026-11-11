@@ -1,0 +1,28 @@
+# Snapping a node onto a way: the highlight in Add mode. (The harness's drag
+# op cannot pause mid-drag, so the drag highlight is covered by unit tests.)
+#
+# Coordinate model: the viewport center is at window (488, 388), see
+# select.osmscript. fixtures/snap-join-node.osm: a street along y = 388 from
+# x = 208 to 768 with a middle node at x = 488, and a tree at about (376, 290).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/snap-join-node.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/snap-01-start.png
+
+# Add mode, pointer 3 px off the street: the street segment and the snap
+# point are highlighted.
+key a
+wait_idle 1s
+assert_mode add
+hover 350,391
+wait 300ms
+capture out/snap-02-add-hover.png
+
+# Far from the street: no highlight.
+hover 350,520
+wait 300ms
+capture out/snap-03-add-away.png
+
+log done
