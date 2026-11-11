@@ -16,6 +16,6 @@ pub use note_ops::{NoteCheck, NoteOp};
 pub use op::{
     AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode,
     FeatureKind, FindingTarget, HistoryCmd, LayerKind, MouseButton, NativeAppearanceWant, Op,
-    Point2, SelectionKind, Step, UploadDialogCmd,
+    PanelSection, Point2, SelectionKind, Step, UploadDialogCmd,
 };
 pub use parser::{parse, ParseError};
