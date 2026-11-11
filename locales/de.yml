@@ -28,6 +28,10 @@ menu:
     undo: "Widerrufen"
     redo: "Wiederholen"
     delete: "Löschen"
+    copy_features: "Kopieren"
+    paste_features: "Einsetzen"
+    paste_features_source: "An Ursprungsposition einsetzen"
+    duplicate_features: "Duplizieren"
     copy_tags: "Tags kopieren"
     paste_tags: "Tags einsetzen"
     select_all: "Alles auswählen"
@@ -239,6 +243,8 @@ limits:
     join: "Verbinden nicht möglich: der gemeinsame Weg hätte %{nodes} Knoten; der Server erlaubt %{max}"
     relation_add: "Hinzufügen nicht möglich: die Relation hätte %{members} Mitglieder; der Server erlaubt %{max}"
     relation_new: "Relation kann nicht erstellt werden: %{members} Mitglieder sind mehr als der Server erlaubt (%{max})"
+    paste_way: "Einsetzen nicht möglich: Ein kopierter Weg hat %{nodes} Knoten; der Server erlaubt %{max}"
+    paste_relation: "Einsetzen nicht möglich: Eine kopierte Relation hat %{members} Mitglieder; der Server erlaubt %{max}"
 
 # Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
 # aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
@@ -339,6 +345,8 @@ history:
   snapped_node: "Knoten an Weg eingerastet"
   changed_way_nodes: "Knoten eines Wegs geändert"
   changed_relation_members: "Mitglieder einer Relation geändert"
+  pasted_features: "Objekte eingesetzt"
+  duplicated_features: "Objekte dupliziert"
 
 # Allgemeine Objektbezeichnungen, wenn keine Vorlage passt.
 geometry:
@@ -463,6 +471,9 @@ shortcut:
   redo: "Wiederholen"
   select_all: "Alles auswählen"
   find: "Suchen…"
+  copy_features: "Kopieren"
+  paste_features: "Einsetzen"
+  duplicate_features: "Duplizieren"
   copy_tags: "Tags kopieren"
   paste_tags: "Tags einsetzen"
   zoom_in: "Vergrößern"
@@ -541,6 +552,27 @@ action:
   relation_count:
     one: "%{count} Relation"
     other: "%{count} Relationen"
+  copy_features:
+    label: "Kopieren"
+    hint: "Knoten, Wege oder Relationen zum Kopieren wählen"
+    done: "%{features} kopiert"
+  paste_features:
+    label: "Einsetzen"
+    hint: "Zuerst Objekte kopieren, dann in eine Datenebene einsetzen"
+    done: "%{features} eingesetzt"
+    done_dropped:
+      one: "%{features} eingesetzt; %{count} Relationsmitglied ausgelassen, das nicht in dieser Ebene ist"
+      other: "%{features} eingesetzt; %{count} Relationsmitglieder ausgelassen, die nicht in dieser Ebene sind"
+  paste_features_source:
+    label: "An Ursprungsposition einsetzen"
+    hint: "Zuerst Objekte kopieren, dann in eine Datenebene einsetzen"
+  duplicate_features:
+    label: "Duplizieren"
+    hint: "Knoten, Wege oder Relationen zum Duplizieren wählen"
+    done: "%{features} dupliziert"
+    done_dropped:
+      one: "%{features} dupliziert; %{count} Relationsmitglied ausgelassen, das nicht in dieser Ebene ist"
+      other: "%{features} dupliziert; %{count} Relationsmitglieder ausgelassen, die nicht in dieser Ebene sind"
   copy_tags:
     label: "Tags kopieren"
     hint: "Ein einzelnes Objekt mit Tags wählen, um sie zu kopieren"

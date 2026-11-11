@@ -583,6 +583,31 @@ fn build_menus(
                     MenuItem::action(tr!("menu.edit.redo"), Redo),
                     MenuItem::separator(),
                     MenuItem::action(
+                        tr!("menu.edit.copy_features"),
+                        RunSelectionAction {
+                            id: "copy_features".into(),
+                        },
+                    ),
+                    MenuItem::action(
+                        tr!("menu.edit.paste_features"),
+                        RunSelectionAction {
+                            id: "paste_features".into(),
+                        },
+                    ),
+                    MenuItem::action(
+                        tr!("menu.edit.paste_features_source"),
+                        RunSelectionAction {
+                            id: "paste_features_source".into(),
+                        },
+                    ),
+                    MenuItem::action(
+                        tr!("menu.edit.duplicate_features"),
+                        RunSelectionAction {
+                            id: "duplicate_features".into(),
+                        },
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action(
                         tr!("menu.edit.copy_tags"),
                         RunSelectionAction {
                             id: "copy_tags".into(),

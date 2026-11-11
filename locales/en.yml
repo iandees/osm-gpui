@@ -27,6 +27,10 @@ menu:
     title: "Edit"
     undo: "Undo"
     redo: "Redo"
+    copy_features: "Copy"
+    paste_features: "Paste"
+    paste_features_source: "Paste at Source Position"
+    duplicate_features: "Duplicate"
     copy_tags: "Copy Tags"
     paste_tags: "Paste Tags"
     delete: "Delete"
@@ -245,6 +249,8 @@ limits:
     join: "Can't join: the combined way would have %{nodes} nodes; the server allows %{max}"
     relation_add: "Can't add to the relation: it would have %{members} members; the server allows %{max}"
     relation_new: "Can't create the relation: %{members} members is more than the server allows (%{max})"
+    paste_way: "Can't paste: a copied way has %{nodes} nodes; the server allows %{max}"
+    paste_relation: "Can't paste: a copied relation has %{members} members; the server allows %{max}"
 
 # Side panel sections. Preset and field labels shown inside them come from
 # the bundled iD tagging schema and are not translated here.
@@ -345,6 +351,8 @@ history:
   snapped_node: "Snapped a node onto a way"
   changed_way_nodes: "Changed the nodes of a way"
   changed_relation_members: "Changed the members of a relation"
+  pasted_features: "Pasted features"
+  duplicated_features: "Duplicated features"
 
 # Generic feature names used when no preset matches.
 geometry:
@@ -469,6 +477,9 @@ shortcut:
   redo: "Redo"
   select_all: "Select All"
   find: "Find…"
+  copy_features: "Copy"
+  paste_features: "Paste"
+  duplicate_features: "Duplicate"
   copy_tags: "Copy Tags"
   paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
@@ -547,6 +558,28 @@ action:
   relation_count:
     one: "%{count} relation"
     other: "%{count} relations"
+  copy_features:
+    label: "Copy"
+    hint: "Select nodes, ways or relations to copy"
+    # `%{features}` is the count from `action.feature_count`.
+    done: "Copied %{features}"
+  paste_features:
+    label: "Paste"
+    hint: "Copy some features first, then paste them into a data layer"
+    done: "Pasted %{features}"
+    done_dropped:
+      one: "Pasted %{features}; left out %{count} relation member that is not in this layer"
+      other: "Pasted %{features}; left out %{count} relation members that are not in this layer"
+  paste_features_source:
+    label: "Paste at Source Position"
+    hint: "Copy some features first, then paste them into a data layer"
+  duplicate_features:
+    label: "Duplicate"
+    hint: "Select nodes, ways or relations to duplicate"
+    done: "Duplicated %{features}"
+    done_dropped:
+      one: "Duplicated %{features}; left out %{count} relation member that is not in this layer"
+      other: "Duplicated %{features}; left out %{count} relation members that are not in this layer"
   copy_tags:
     label: "Copy Tags"
     hint: "Select one feature that has tags to copy them"
