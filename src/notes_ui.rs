@@ -743,6 +743,7 @@ impl MapViewer {
                     .gap_2()
                     .child(
                         Button::new("note-comment")
+                            .small()
                             .label(tr!("notes.panel.comment"))
                             .disabled(busy || !is_open)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -751,6 +752,7 @@ impl MapViewer {
                     )
                     .child(if is_open {
                         Button::new("note-close")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.close_note"))
                             .disabled(busy)
@@ -759,6 +761,7 @@ impl MapViewer {
                             }))
                     } else {
                         Button::new("note-reopen")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.reopen_note"))
                             .disabled(busy)

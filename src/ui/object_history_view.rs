@@ -30,7 +30,7 @@ use crate::object_history::{
 };
 use crate::selection::FeatureKind;
 use crate::ui::restore_dialog::age_phrase;
-use crate::ui::style::muted_text_size;
+use crate::ui::style::{body_text_size, muted_text_size};
 use crate::{tr, tr_count};
 
 pub enum ViewEvent {
@@ -90,17 +90,10 @@ fn link(
     url: String,
     cx: &App,
 ) -> AnyElement {
-    let color = cx.theme().link;
-    let hover = cx.theme().link_hover;
-    div()
-        .id(id)
-        .cursor_pointer()
-        .text_color(color)
-        .hover(move |this| this.text_color(hover).underline())
+    crate::ui::style::link(id, text, cx)
         .on_click(move |_, _, _| {
             let _ = open::that(&url);
         })
-        .child(text.into())
         .into_any_element()
 }
 
@@ -436,10 +429,10 @@ impl ObjectHistoryView {
                 .is_none_or(|local| local.tags != v.state.tags);
         if can_revert {
             col = col.child(
-                div().pt_1().child(
+                div().pt_1().flex().flex_row().child(
                     Button::new(("history-revert", index))
                         .ghost()
-                        .xsmall()
+                        .small()
                         .label(tr!("object_history.revert_tags"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.press_revert(version, cx);
@@ -577,6 +570,7 @@ impl Render for ObjectHistoryView {
                     col = col.child(
                         div().child(
                             Button::new("history-retry")
+                                .small()
                                 .label(tr!("object_history.retry"))
                                 .on_click(cx.listener(|this, _, _, cx| this.press_retry(cx))),
                         ),
@@ -592,7 +586,7 @@ impl Render for ObjectHistoryView {
             .py_2()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(div().text_size(muted_text_size()).child(link(
+            .child(div().text_size(body_text_size()).child(link(
                 "history-open-web",
                 tr!("object_history.open_web"),
                 web_history_url(&self.web_base, self.kind, self.id),

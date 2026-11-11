@@ -922,6 +922,7 @@ impl UploadDialog {
         column = column.child(
             Checkbox::new("upload-review-requested")
                 .label(tr!("dialog.upload.review_requested"))
+                .text_size(crate::ui::style::body_text_size())
                 .checked(self.review_requested)
                 .on_click(cx.listener(|this, checked: &bool, _w, cx| {
                     this.set_review_requested(*checked, cx)
