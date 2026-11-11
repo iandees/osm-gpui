@@ -478,7 +478,6 @@ object_history:
   close: "Schließen"
   retry: "Erneut versuchen"
   open_web: "Auf openstreetmap.org öffnen"
-  show_tooltip: "Objektverlauf anzeigen"
   unsaved: "Deine ungespeicherten Änderungen"
   version: "Version %{version}"
   deleted: "Gelöscht"

@@ -47,6 +47,14 @@ pub(crate) struct Membership {
     pub index: usize,
 }
 
+/// Whether the Selection header offers the change-feature-type control, and
+/// if so whether it is enabled: shown for exactly one selected feature (the
+/// case the Fields section is shown for), disabled while an upload freezes
+/// the layers.
+pub(crate) fn header_change_type_control(selected: usize, edits_blocked: bool) -> Option<bool> {
+    (selected == 1).then_some(!edits_blocked)
+}
+
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
     /// A selection of tens of thousands (Edit > Select All, Edit > Find)
@@ -1013,23 +1021,23 @@ impl MapViewer {
         let last_edit = self.last_edit_for(feat).map(|edit| {
             osm_gpui::ui::object_history_view::last_edit_line(&edit, &self.web_base(), now, cx)
         });
-        let is_new = feat.id < 0;
-        let history_button = Button::new("show-object-history")
-            .ghost()
-            .xsmall()
-            .icon(Icon::new(IconName::Calendar))
-            .disabled(is_new)
-            .tooltip(if is_new {
-                tr!("object_history.new_object")
-            } else {
-                tr!("object_history.show_tooltip")
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                if let Err(why) = this.show_object_history(cx) {
-                    this.set_status(why);
-                    cx.notify();
-                }
-            }));
+        // Object History is in Edit > Show Object History and the feature's
+        // context menu; the header only offers changing the feature type.
+        let change_type_button = header_change_type_control(
+            self.selected.len(),
+            osm_gpui::transfer::blocks_edits(self.transfer.as_ref()),
+        )
+        .map(|enabled| {
+            Button::new("change-feature-type")
+                .ghost()
+                .xsmall()
+                .icon(Icon::empty().path(osm_gpui::assets::PENCIL_ICON_PATH))
+                .disabled(!enabled)
+                .tooltip(tr!("panel.fields.change_type"))
+                .on_click(cx.listener(|_this, _, window, cx| {
+                    window.dispatch_action(Box::new(crate::ChangeFeatureType), cx);
+                }))
+        });
 
         div()
             .flex()
@@ -1076,7 +1084,7 @@ impl MapViewer {
                     )
                     .children(last_edit),
             )
-            .child(history_button)
+            .children(change_type_button)
             .into_any_element()
     }
 
@@ -1700,6 +1708,24 @@ impl MapViewer {
             ),
         )
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod header_control_tests {
+    use super::header_change_type_control;
+
+    #[test]
+    fn change_type_is_offered_for_a_single_selection_only() {
+        assert_eq!(header_change_type_control(0, false), None);
+        assert_eq!(header_change_type_control(1, false), Some(true));
+        assert_eq!(header_change_type_control(2, false), None);
+    }
+
+    #[test]
+    fn change_type_is_disabled_while_an_upload_runs() {
+        assert_eq!(header_change_type_control(1, true), Some(false));
+        assert_eq!(header_change_type_control(3, true), None);
     }
 }
 
