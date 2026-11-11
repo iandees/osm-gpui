@@ -593,6 +593,12 @@ dialog:
     title: "Ungesicherte Änderungen"
     body: "Es gibt ungesicherte Änderungen. Trotzdem beenden?"
     confirm: "Beenden"
+  delete_layer:
+    title: "Ebene löschen"
+    body:
+      one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
+      other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
+    confirm: "Ebene löschen"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
     name: "Name"

@@ -85,6 +85,8 @@ pub enum DialogExpect {
     SignIn,
     /// The "can't do that" notice (e.g. an upload refused for a size limit).
     Notice,
+    /// The "delete this layer and its unsaved edits?" confirmation.
+    DeleteLayer,
 }
 
 /// What `assert_selection` expects.
@@ -210,6 +212,10 @@ pub enum Op {
     },
     /// Press the upload dialog's Cancel button.
     UploadCancel,
+    /// Press the delete-layer confirmation's destructive "Delete Layer" button.
+    ConfirmDeleteLayer,
+    /// Press the delete-layer confirmation's Cancel button.
+    CancelDeleteLayer,
     /// Press one of the conflict dialog's buttons.
     ResolveConflict {
         choice: ConflictChoice,

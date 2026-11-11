@@ -70,6 +70,8 @@ assert_pending 0
 pause 1s Opening the stale copy and editing the same node
 action layers::DeleteLayer {"index":1}
 wait_idle 2s
+# Nothing is pending (asserted above), so no confirmation opens.
+assert_dialog none
 load_osm out/live-02-stale.osm
 wait_idle 2s
 click 488,388
@@ -119,6 +121,8 @@ assert_pending 0
 pause 1s Opening the second stale copy and editing the same node
 action layers::DeleteLayer {"index":1}
 wait_idle 2s
+# Nothing is pending (asserted above), so no confirmation opens.
+assert_dialog none
 load_osm out/live-02-stale2.osm
 wait_idle 2s
 click 488,388
@@ -171,6 +175,8 @@ assert_pending 0
 pause 1s Opening the third stale copy and deleting the node again
 action layers::DeleteLayer {"index":1}
 wait_idle 2s
+# Nothing is pending (asserted above), so no confirmation opens.
+assert_dialog none
 load_osm out/live-02-stale3.osm
 wait_idle 2s
 click 488,388

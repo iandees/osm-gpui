@@ -601,6 +601,13 @@ dialog:
     title: "Unsaved Changes"
     body: "You have unsaved changes. Quit anyway?"
     confirm: "Quit"
+  delete_layer:
+    title: "Delete Layer"
+    # `%{layer}` is the layer's name; `%{count}` its unsaved edits (at least 1).
+    body:
+      one: "Layer \"%{layer}\" has %{count} unsaved edit. Deleting the layer discards it. This cannot be undone."
+      other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
+    confirm: "Delete Layer"
   custom_imagery:
     title: "Custom Imagery"
     name: "Name"

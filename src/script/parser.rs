@@ -119,6 +119,15 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         },
         "upload_confirm" => no_args(line_no, "upload_confirm", &rest, Op::UploadConfirm),
         "upload_cancel" => no_args(line_no, "upload_cancel", &rest, Op::UploadCancel),
+        "confirm_delete_layer" => no_args(
+            line_no,
+            "confirm_delete_layer",
+            &rest,
+            Op::ConfirmDeleteLayer,
+        ),
+        "cancel_delete_layer" => {
+            no_args(line_no, "cancel_delete_layer", &rest, Op::CancelDeleteLayer)
+        }
         "set_comment" => {
             let text = text_after(line, head, 0);
             if text.is_empty() {
@@ -284,7 +293,7 @@ fn parse_feature_kind_word(word: &str) -> Option<FeatureKind> {
 }
 
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -295,6 +304,7 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("failed", []) => DialogExpect::Failed,
         ("sign_in", []) => DialogExpect::SignIn,
         ("notice", []) => DialogExpect::Notice,
+        ("delete_layer", []) => DialogExpect::DeleteLayer,
         ("conflict", words) => {
             let mut kind = None;
             let mut object = None;

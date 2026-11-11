@@ -101,6 +101,8 @@ pub(crate) enum ScriptCommand {
     SetComment(String),
     /// Press the upload dialog's Cancel button.
     UploadCancel,
+    /// Press the delete-layer confirmation's Delete Layer (`true`) or Cancel.
+    DeleteLayerDialog { confirm: bool },
     /// Press one of the conflict dialog's buttons.
     Resolve(script::ConflictChoice),
     /// Write the active layer to this `.osm` path.
@@ -493,6 +495,27 @@ impl MapViewer {
                     };
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::DeleteLayerDialog { confirm } => {
+                    let result = match self.delete_layer_dialog.clone() {
+                        Some(dialog) => {
+                            // Deferred like the upload dialog's presses: the
+                            // dialog's event is handled by this view, which
+                            // is being rendered right now.
+                            window.defer(cx, move |_window, cx| {
+                                dialog.update(cx, |dialog, cx| {
+                                    if confirm {
+                                        dialog.press_confirm(cx)
+                                    } else {
+                                        dialog.press_cancel(cx)
+                                    }
+                                });
+                            });
+                            Ok(())
+                        }
+                        None => Err("the delete-layer confirmation is not open".to_string()),
+                    };
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Resolve(choice) => {
                     let result = self.script_resolve_conflict(choice, window, cx);
                     bus.set_assert_result(result);
@@ -706,6 +729,7 @@ impl MapViewer {
                     (DialogExpect::None, _) => found == "no dialog",
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
+                    (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -741,6 +765,7 @@ impl MapViewer {
             ),
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
+            None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
             None => "no dialog".into(),
         }
     }
@@ -1050,6 +1075,24 @@ impl AppHandle for LiveApp {
 
     fn upload_cancel(&mut self) -> Result<(), String> {
         self.bus.submit(ScriptCommand::UploadCancel);
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn confirm_delete_layer(&mut self) -> Result<(), String> {
+        self.bus
+            .submit(ScriptCommand::DeleteLayerDialog { confirm: true });
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn cancel_delete_layer(&mut self) -> Result<(), String> {
+        self.bus
+            .submit(ScriptCommand::DeleteLayerDialog { confirm: false });
         let result = self.bus.take_assert_result();
         self.bus.wait_frame();
         self.bus.wait_frame();

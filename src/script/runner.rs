@@ -67,6 +67,10 @@ pub trait AppHandle {
     fn set_comment(&mut self, text: &str) -> Result<(), String>;
     /// Press the upload dialog's Cancel button.
     fn upload_cancel(&mut self) -> Result<(), String>;
+    /// Press the delete-layer confirmation's "Delete Layer" button.
+    fn confirm_delete_layer(&mut self) -> Result<(), String>;
+    /// Press the delete-layer confirmation's Cancel button.
+    fn cancel_delete_layer(&mut self) -> Result<(), String>;
     /// Press one of the conflict dialog's buttons.
     fn resolve_conflict(&mut self, choice: crate::script::ConflictChoice) -> Result<(), String>;
     /// Write the active layer to a `.osm` file.
@@ -258,6 +262,12 @@ impl Runner {
             Op::UploadCancel => app
                 .upload_cancel()
                 .map_err(|e| fail(format!("upload_cancel: {e}"))),
+            Op::ConfirmDeleteLayer => app
+                .confirm_delete_layer()
+                .map_err(|e| fail(format!("confirm_delete_layer: {e}"))),
+            Op::CancelDeleteLayer => app
+                .cancel_delete_layer()
+                .map_err(|e| fail(format!("cancel_delete_layer: {e}"))),
             Op::ResolveConflict { choice } => app
                 .resolve_conflict(*choice)
                 .map_err(|e| fail(format!("resolve_conflict: {e}"))),
@@ -465,6 +475,8 @@ fn describe(op: &Op) -> String {
         Op::RemoveTag { key } => format!("remove_tag {}", key),
         Op::UploadConfirm => "upload_confirm".to_string(),
         Op::UploadCancel => "upload_cancel".to_string(),
+        Op::ConfirmDeleteLayer => "confirm_delete_layer".to_string(),
+        Op::CancelDeleteLayer => "cancel_delete_layer".to_string(),
         Op::SetComment { text } => format!("set_comment {}", text),
         Op::ResolveConflict { choice } => format!("resolve_conflict {:?}", choice),
         Op::WaitTransfer { timeout } => format!("wait_transfer {:?}", timeout),
@@ -582,6 +594,14 @@ mod tests {
         }
         fn upload_cancel(&mut self) -> Result<(), String> {
             self.calls.push("upload_cancel".into());
+            Ok(())
+        }
+        fn confirm_delete_layer(&mut self) -> Result<(), String> {
+            self.calls.push("confirm_delete_layer".into());
+            Ok(())
+        }
+        fn cancel_delete_layer(&mut self) -> Result<(), String> {
+            self.calls.push("cancel_delete_layer".into());
             Ok(())
         }
         fn resolve_conflict(
@@ -715,6 +735,21 @@ mod tests {
                 &steps("set_tag name x\nassert_pending 0\nassert_dialog none\naction UploadToOsm"),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn delete_layer_dialog_ops_reach_the_app_on_any_server() {
+        let (mut fake, runner) = fake_on("https://api.openstreetmap.org");
+        runner
+            .run(
+                &mut fake,
+                &steps("assert_dialog delete_layer\ncancel_delete_layer\nconfirm_delete_layer"),
+            )
+            .unwrap();
+        assert_eq!(
+            fake.calls[1..],
+            ["cancel_delete_layer", "confirm_delete_layer"]
+        );
     }
 
     #[test]

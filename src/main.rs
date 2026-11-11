@@ -587,6 +587,7 @@ struct MapViewer {
         Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
+    delete_layer_dialog: Option<gpui::Entity<osm_gpui::ui::delete_layer_dialog::DeleteLayerDialog>>,
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
@@ -846,6 +847,7 @@ impl MapViewer {
             show_downloaded_area: true,
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
+            delete_layer_dialog: None,
             about_dialog: None,
             upload_dialog: None,
             upload_comment_draft: String::new(),
@@ -1023,16 +1025,96 @@ impl MapViewer {
     /// Handle the `DeleteLayer` context-menu action. This handler already has
     /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
     /// than going through `LayerRequest`.
-    fn on_delete_layer(&mut self, action: &DeleteLayer, _: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// A layer with unsaved edits asks first (`show_delete_layer_dialog`);
+    /// one without (imagery, the grid, a data layer with nothing pending)
+    /// goes straight away.
+    fn on_delete_layer(
+        &mut self,
+        action: &DeleteLayer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.edits_blocked(cx) {
             return;
         }
-        // Deleting is not undoable: the layer (and its unsaved edits, with
-        // no confirmation) is gone for good, so its history goes with it.
-        if let Some(removed) = self.layer_manager.remove_at(action.index) {
+        let Some(layer) = self.layer_manager.layers().get(action.index) else {
+            return;
+        };
+        let (id, name) = (layer.id(), layer.name().to_string());
+        let pending = Self::unsaved_edit_count(layer.as_ref());
+        if pending == 0 {
+            self.delete_layer_now(id, cx);
+        } else {
+            self.show_delete_layer_dialog(id, name, pending, window, cx);
+        }
+    }
+
+    /// The layer's unsaved edits, counted as the status bar's "N unsaved
+    /// edits" does (and so the quit warning's `is_modified`).
+    fn unsaved_edit_count(layer: &dyn osm_gpui::layers::MapLayer) -> usize {
+        if !layer.is_modified() {
+            return 0;
+        }
+        let (created, modified, deleted) = layer.diff_for_upload().counts();
+        created + modified + deleted
+    }
+
+    /// Remove layer `id`, if it still exists, with everything that refers to
+    /// it. Deleting is not undoable: the layer and its unsaved edits are gone
+    /// for good, so its history goes with it. The layer is looked up by id,
+    /// not index, since the list may have changed since a dialog opened.
+    fn delete_layer_now(&mut self, id: LayerId, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .layer_manager
+            .layers()
+            .iter()
+            .position(|l| l.id() == id)
+        else {
+            return;
+        };
+        if let Some(removed) = self.layer_manager.remove_at(index) {
             self.forget_layer(removed.id());
         }
         self.data_generation += 1;
+        cx.notify();
+    }
+
+    /// Open the "delete layer with unsaved edits" confirmation, unless one is
+    /// already open. Cancel is the default; nothing happens until confirmed.
+    fn show_delete_layer_dialog(
+        &mut self,
+        id: LayerId,
+        name: String,
+        pending: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.delete_layer_dialog.is_some() {
+            return;
+        }
+        let dialog = cx.new(|cx| {
+            osm_gpui::ui::delete_layer_dialog::DeleteLayerDialog::new(id, name, pending, window, cx)
+        });
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::delete_layer_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::delete_layer_dialog::DialogEvent;
+                this.delete_layer_dialog = None;
+                match event {
+                    DialogEvent::Cancelled => cx.notify(),
+                    DialogEvent::Confirmed(id) => {
+                        // An upload may have started while the dialog was
+                        // open; the guard applies here as well.
+                        if !this.edits_blocked(cx) {
+                            this.delete_layer_now(*id, cx);
+                        }
+                    }
+                }
+            },
+        )
+        .detach();
+        self.delete_layer_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -6043,6 +6125,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_show_about))
             .children(self.custom_imagery_dialog.clone())
             .children(self.quit_confirm_dialog.clone())
+            .children(self.delete_layer_dialog.clone())
             .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
@@ -6863,7 +6946,9 @@ mod tests {
                 view.active_layer = Some(a);
                 let revision = view.undo_stack.revision;
 
-                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
+                // A has unsaved edits, so the action itself only asks; the
+                // confirmed deletion is what is under test here.
+                view.delete_layer_now(a, cx);
 
                 assert!(view.layer_manager.find_layer(a).is_none());
                 assert!(view.undo_stack.revision > revision);
@@ -6897,6 +6982,237 @@ mod tests {
                 // Nothing left to undo: a further undo is a quiet no-op.
                 view.on_undo(&Undo, window, cx);
                 assert_eq!(view.undo_stack.cursor, 0);
+            })
+            .unwrap();
+    }
+
+    /// Press Cancel (`false`) or Delete Layer (`true`) in the open
+    /// delete-layer confirmation. The dialog's event is handled when this
+    /// update ends, so callers inspect the result in a later `update`.
+    fn press_delete_layer_dialog(
+        window: gpui::WindowHandle<MapViewer>,
+        cx: &mut TestAppContext,
+        confirm: bool,
+    ) {
+        window
+            .update(cx, |view, _window, cx| {
+                let dialog = view.delete_layer_dialog.clone().expect("dialog is open");
+                dialog.update(cx, |dialog, cx| {
+                    if confirm {
+                        dialog.press_confirm(cx)
+                    } else {
+                        dialog.press_cancel(cx)
+                    }
+                });
+            })
+            .unwrap();
+    }
+
+    fn layer_count(view: &MapViewer) -> usize {
+        view.layer_manager.layers().len()
+    }
+
+    /// Layer A (index 0) has unsaved edits after `mixed_layer_history`.
+    fn open_delete_dialog_for_edited_layer(
+        window: gpui::WindowHandle<MapViewer>,
+        cx: &mut TestAppContext,
+    ) -> (LayerId, LayerId) {
+        window
+            .update(cx, |view, window, cx| {
+                let (a, b) = mixed_layer_history(view);
+                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
+                (a, b)
+            })
+            .unwrap()
+    }
+
+    #[gpui::test]
+    fn deleting_a_layer_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+        window
+            .update(cx, |view, _window, cx| {
+                assert_eq!(layer_count(view), 2);
+                assert!(view.layer_manager.find_layer(a).is_some());
+                let dialog = view.delete_layer_dialog.clone().expect("dialog opens");
+                let dialog = dialog.read(cx);
+                assert_eq!(dialog.layer(), a);
+                assert!(dialog.pending() > 0);
+                let message = dialog.message();
+                assert!(message.contains("unsaved edit"), "{message}");
+                assert!(message.contains("cannot be undone"), "{message}");
+                assert!(
+                    message.contains(&format!("{} unsaved edit", dialog.pending())),
+                    "{message}"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn cancelling_the_delete_keeps_the_layer_its_edits_and_history(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+        let before = window
+            .update(cx, |view, _w, _cx| {
+                (
+                    view.undo_stack.actions.len(),
+                    view.undo_stack.cursor,
+                    view.undo_stack.revision,
+                    MapViewer::unsaved_edit_count(view.layer_manager.find_layer(a).unwrap()),
+                )
+            })
+            .unwrap();
+        press_delete_layer_dialog(window, cx, false);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none());
+                assert_eq!(layer_count(view), 2);
+                let after = (
+                    view.undo_stack.actions.len(),
+                    view.undo_stack.cursor,
+                    view.undo_stack.revision,
+                    MapViewer::unsaved_edit_count(view.layer_manager.find_layer(a).unwrap()),
+                );
+                assert_eq!(before, after);
+                assert!(after.3 > 0);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn enter_and_escape_cancel_the_delete(cx: &mut TestAppContext) {
+        for key in ["enter", "escape"] {
+            let window = setup(cx);
+            let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+            cx.simulate_keystrokes(window.into(), key);
+            window
+                .update(cx, |view, _w, _cx| {
+                    assert!(view.delete_layer_dialog.is_none(), "{key} closes it");
+                    assert!(view.layer_manager.find_layer(a).is_some(), "{key} keeps it");
+                    assert_eq!(layer_count(view), 2);
+                })
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn confirming_the_delete_removes_the_layer_and_its_history(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        let (a, b) = open_delete_dialog_for_edited_layer(window, cx);
+        press_delete_layer_dialog(window, cx, true);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none());
+                assert!(view.layer_manager.find_layer(a).is_none());
+                assert!(view.layer_manager.find_layer(b).is_some());
+                assert!(!view.undo_stack.actions.is_empty());
+                assert!(view
+                    .undo_stack
+                    .actions
+                    .iter()
+                    .all(|s| s.layers() == vec![b]));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_layer_without_unsaved_edits_is_deleted_without_asking(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let b = add_second_layer(view);
+                assert_eq!(layer_count(view), 2);
+                view.on_delete_layer(&DeleteLayer { index: 1 }, window, cx);
+                assert!(view.delete_layer_dialog.is_none());
+                assert!(view.layer_manager.find_layer(b).is_none());
+                assert_eq!(layer_count(view), 1);
+                // An index past the end is ignored.
+                view.on_delete_layer(&DeleteLayer { index: 7 }, window, cx);
+                assert!(view.delete_layer_dialog.is_none());
+                assert_eq!(layer_count(view), 1);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn deleting_is_refused_during_an_upload_before_the_dialog_and_at_confirm(
+        cx: &mut TestAppContext,
+    ) {
+        let upload = || TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
+
+        // Before: no dialog opens, nothing is deleted.
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let (_a, _b) = mixed_layer_history(view);
+                view.transfer = Some(upload());
+                view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
+                assert!(view.delete_layer_dialog.is_none());
+                assert_eq!(layer_count(view), 2);
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+
+        // At confirm: the dialog was open, then an upload started.
+        let window = setup(cx);
+        let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_some());
+                view.transfer = Some(upload());
+                view.status_message = None;
+            })
+            .unwrap();
+        press_delete_layer_dialog(window, cx, true);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none());
+                assert!(view.layer_manager.find_layer(a).is_some());
+                assert_eq!(layer_count(view), 2);
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn confirming_after_the_layer_disappeared_does_not_panic(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        let (a, b) = open_delete_dialog_for_edited_layer(window, cx);
+        window
+            .update(cx, |view, _w, cx| {
+                // The layer goes away some other way while the dialog is up.
+                view.delete_layer_now(a, cx);
+                assert!(view.delete_layer_dialog.is_some());
+            })
+            .unwrap();
+        press_delete_layer_dialog(window, cx, true);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none());
+                // The other layer is untouched.
+                assert!(view.layer_manager.find_layer(b).is_some());
+                assert_eq!(layer_count(view), 1);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn the_delete_goes_by_layer_not_by_index_when_the_list_shifts(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        let (a, b) = open_delete_dialog_for_edited_layer(window, cx);
+        window
+            .update(cx, |view, _w, cx| {
+                // Reordering moves A to index 1 while the dialog is open.
+                view.reorder_layer(0, 1);
+                cx.notify();
+            })
+            .unwrap();
+        press_delete_layer_dialog(window, cx, true);
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.layer_manager.find_layer(a).is_none());
+                assert!(view.layer_manager.find_layer(b).is_some());
             })
             .unwrap();
     }
