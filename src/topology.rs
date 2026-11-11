@@ -926,7 +926,7 @@ pub fn plan_unjoin(
 /// Whether `node` can be unjoined from the way with these nodes: it is a
 /// vertex of the way, not one of its two ends. A closed way's closing node
 /// counts as a vertex (a ring has no ends), an open way's first and last
-/// nodes do not (JOSM leaves those alone: there is nothing to unjoin).
+/// nodes do not (there is nothing to pull them off).
 pub fn is_unjoinable_vertex(nodes: &[i64], node: i64) -> bool {
     if !nodes.contains(&node) {
         return false;
@@ -993,7 +993,7 @@ impl SegmentDeletion {
 
 /// Plan deleting the segment between the adjacent nodes `a` and `b` of the
 /// way `nodes`. The way is cut at the segment and the segment itself is
-/// removed (JOSM `DeleteCommand` for a way segment): an open way becomes the
+/// removed: an open way becomes the
 /// piece before and the piece after; a segment at an end just shortens it;
 /// a closed way is opened at the segment.
 pub fn plan_delete_segment(

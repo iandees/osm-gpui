@@ -1106,7 +1106,7 @@ fn apply_separate(
     separate_node(layers, selection, active, false)
 }
 
-/// Unjoin Node from Way (JOSM "Unjoin Node from Way"): the selected way gets
+/// Unjoin Node from Way: the selected way gets
 /// a fresh untagged node at the same spot in place of the selected node (at
 /// every place the way uses it), so the other ways keep the original, which
 /// also keeps its tags and relation memberships. It is Disconnect with a way
@@ -1462,7 +1462,7 @@ fn split_relations(
     Ok((relations, ids_by_plan))
 }
 
-/// Split the ways at the selected node(s) (JOSM "Split Way"): the original
+/// Split the ways at the selected node(s): the original
 /// keeps its id and the longest part, every other part is a new way with a
 /// copy of the tags, and neighbouring parts share the split node. A closed
 /// way with one node is only rewritten to start there. Relations that hold the way keep
@@ -1646,7 +1646,7 @@ fn segment_plan(
     }
 }
 
-/// Delete Way Segment (JOSM `DeleteCommand` on a way segment): the way is cut
+/// Delete Way Segment: the way is cut
 /// at the segment between the two selected nodes and the segment is thrown
 /// away. An open way becomes the part before and the part after (the original
 /// way keeps the longer one and its id; the other becomes a new way with a

@@ -1,6 +1,5 @@
-//! Further situations (batch L): "Unjoin Node from Way" (JOSM
-//! `UnJoinNodeWayActionTest`, ticket 10396) and "Delete Way Segment" (JOSM
-//! `DeleteCommandTest.testDeleteWaySegment*`).
+//! Further situations (batch L): "Unjoin Node from Way" and "Delete Way
+//! Segment".
 
 use super::*;
 

@@ -487,7 +487,7 @@ apply the status bar says why (end node, no other way, segment shared, ...).
 Unjoin Node from Way: select a node and one way it belongs to. Every place that
 way uses the node gets one new untagged node at the same position (negative
 id); the other ways keep the original, which also keeps its tags and relation
-memberships (the same design difference from iD as Disconnect, D1). Decisions:
+memberships (the same choice as Disconnect, D1). Decisions:
 the node must be a vertex of the way, so an end node of an open way is refused
 (there is nothing to pull it off; Disconnect handles that case), while the
 closing node of a ring is fine and both ring ends get the same new node; the
