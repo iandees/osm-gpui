@@ -372,7 +372,7 @@ settings:
     size_large: "Groß"
     scroll_group: "Scrollen"
     invert_scroll_zoom: "Scroll-Zoom umkehren"
-    invert_scroll_zoom_description: "Die Zoomrichtung des Mausrads auf der Karte umkehren: Was bisher hineingezoomt hat, zoomt jetzt heraus. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
+    invert_scroll_zoom_description: "Die Scrollrichtung zum Zoomen der Karte umkehren. Standardmäßig zoomt Hochscrollen (Mausrad vom Körper weg gedreht) hinein, wie in JOSM und auf der OpenStreetMap-Website; mit dieser Option zoomt es heraus. Cmd/Strg + Trackpad-Scrollen folgt derselben Richtung. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
     welcome_group: "Hinweiskasten"
     welcome_card: "Hinweiskasten anzeigen"
     welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."
@@ -577,6 +577,12 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  parallel:
+    label: "Parallelen Weg erstellen …"
+    hint: "Einen oder mehrere Wege mit mindestens zwei verschiedenen Knoten wählen, um sie daneben zu kopieren"
+    done:
+      one: "%{count} parallelen Weg erstellt"
+      other: "%{count} parallele Wege erstellt"
   add_to_relation:
     label: "Zu Relation hinzufügen …"
     hint: "Knoten oder Wege in einer Ebene mit Relationen wählen, um sie einer Relation hinzuzufügen"
@@ -752,6 +758,15 @@ dialog:
     members:
       one: "%{count} Mitglied"
       other: "%{count} Mitglieder"
+  parallel:
+    title: "Parallelen Weg erstellen"
+    offset: "Abstand (Meter)"
+    offset_hint: "Positiv liegt rechts von der Richtung des Wegs, negativ links."
+    copy_tags: "Tags kopieren"
+    reverse: "Richtung der Kopie umkehren"
+    confirm: "Erstellen"
+    error:
+      offset: "Einen Abstand in Metern eingeben, nicht null und höchstens %{max} in beide Richtungen."
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"

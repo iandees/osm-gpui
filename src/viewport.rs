@@ -81,6 +81,10 @@ impl Viewport {
     /// amount (lines for a wheel, pixels for a trackpad) and the "invert
     /// scroll zoom" setting. Inverting flips the sign, so what zoomed in now
     /// zooms out. Only scroll zoom uses this: pinch, keys and menus do not.
+    ///
+    /// The base convention matches Leaflet (OSM website), iD and JOSM: GPUI
+    /// reports positive vertical deltas when content is scrolled down (wheel
+    /// rolled up/away on a non-natural setup), and a positive step zooms in.
     pub fn scroll_zoom_step(raw: f32, invert: bool) -> f32 {
         if invert {
             -raw
@@ -92,7 +96,7 @@ impl Viewport {
     /// Zoom from a notched mouse wheel: `lines` is the vertical scroll
     /// amount in lines (`ScrollDelta::Lines`).
     pub fn zoom_by_wheel(&mut self, position: Point<Pixels>, lines: f32) -> bool {
-        self.zoom_at(position, -(lines as f64) * self.zoom_sensitivity)
+        self.zoom_at(position, (lines as f64) * self.zoom_sensitivity)
     }
 
     /// Zoom from a precise (trackpad) vertical scroll of `pixels`, used
@@ -100,7 +104,7 @@ impl Viewport {
     pub fn zoom_by_scroll_pixels(&mut self, position: Point<Pixels>, pixels: Pixels) -> bool {
         self.zoom_at(
             position,
-            -pixels.to_f64() * PIXEL_SCROLL_ZOOM_SCALE * self.zoom_sensitivity,
+            pixels.to_f64() * PIXEL_SCROLL_ZOOM_SCALE * self.zoom_sensitivity,
         )
     }
 
@@ -340,12 +344,12 @@ mod tests {
         let at = point(px(400.0), px(300.0));
         for invert in [false, true] {
             let mut viewport = test_viewport();
-            // Wheel up (positive lines) zooms out by default.
+            // Wheel up (positive lines) zooms in by default.
             assert!(viewport.zoom_by_wheel(at, Viewport::scroll_zoom_step(1.0, invert)));
             if invert {
-                assert!(viewport.zoom_level() > 10.0);
-            } else {
                 assert!(viewport.zoom_level() < 10.0);
+            } else {
+                assert!(viewport.zoom_level() > 10.0);
             }
         }
     }
@@ -358,9 +362,9 @@ mod tests {
             let step = Viewport::scroll_zoom_step(20.0, invert);
             assert!(viewport.zoom_by_scroll_pixels(at, px(step)));
             if invert {
-                assert!(viewport.zoom_level() > 10.0);
-            } else {
                 assert!(viewport.zoom_level() < 10.0);
+            } else {
+                assert!(viewport.zoom_level() > 10.0);
             }
         }
     }
@@ -400,8 +404,8 @@ mod tests {
         let mut trackpad = test_viewport();
         let at = point(px(400.0), px(300.0));
 
-        assert!(wheel.zoom_by_wheel(at, -2.0));
-        assert!(trackpad.zoom_by_scroll_pixels(at, px(-20.0)));
+        assert!(wheel.zoom_by_wheel(at, 2.0));
+        assert!(trackpad.zoom_by_scroll_pixels(at, px(20.0)));
 
         assert!(wheel.zoom_level() > 10.0);
         assert!((wheel.zoom_level() - trackpad.zoom_level()).abs() < 1e-9);

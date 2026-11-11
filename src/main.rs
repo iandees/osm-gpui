@@ -679,6 +679,13 @@ struct MapViewer {
     /// Active "add to relation" picker dialog, if open.
     relation_picker_dialog:
         Option<gpui::Entity<osm_gpui::ui::relation_picker_dialog::RelationPickerDialog>>,
+    /// Set by "Create Parallel Way…"; `render` opens the dialog and clears it.
+    pending_parallel_dialog: bool,
+    /// Active "create parallel way" dialog, if open.
+    parallel_dialog: Option<gpui::Entity<osm_gpui::ui::parallel_dialog::ParallelDialog>>,
+    /// What the parallel-way dialog was last submitted with, offered again
+    /// next time (this session only).
+    parallel_params: osm_gpui::parallel::ParallelParams,
     /// The feature whose Fields section has its "Add field" list expanded.
     /// Keyed by feature so the list is closed again for any other selection
     /// without every selection-changing path having to reset it.
@@ -935,6 +942,9 @@ impl MapViewer {
             role_edit: None,
             pending_relation_picker: false,
             relation_picker_dialog: None,
+            pending_parallel_dialog: false,
+            parallel_dialog: None,
+            parallel_params: osm_gpui::parallel::ParallelParams::default(),
             pending_role_edit_open: None,
             members_show_all: false,
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
@@ -2291,6 +2301,15 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        if action.id == selection_actions::PARALLEL {
+            // Same shape: ask for the offset first, then
+            // `create_parallel_ways` applies it.
+            if !self.refuse_edit_during_upload() {
+                self.pending_parallel_dialog = true;
+            }
+            cx.notify();
+            return;
+        }
         let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
         self.finish_selection_action(result);
         cx.notify();
@@ -2363,6 +2382,50 @@ impl MapViewer {
         .detach();
         self.relation_picker_dialog = Some(dialog);
         cx.notify();
+    }
+
+    /// Open the "Create Parallel Way" dialog if the action asked for it.
+    /// Called from `Render::render`, as the dialog needs the window.
+    fn check_for_pending_parallel_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::parallel_dialog::{DialogEvent, ParallelDialog};
+
+        if !std::mem::take(&mut self.pending_parallel_dialog) || self.parallel_dialog.is_some() {
+            return;
+        }
+        let initial = self.parallel_params;
+        let dialog = cx.new(|cx| ParallelDialog::new(initial, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, event: &DialogEvent, cx| {
+                match event {
+                    DialogEvent::Cancelled => {}
+                    DialogEvent::Submitted(params) => {
+                        this.parallel_params = *params;
+                        this.create_parallel_ways(*params);
+                    }
+                }
+                this.parallel_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.parallel_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Create the parallel copies of the selected ways as one undo step (the
+    /// dialog's answer).
+    fn create_parallel_ways(&mut self, params: osm_gpui::parallel::ParallelParams) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let result = selection_actions::create_parallel_ways(
+            &mut self.layer_manager,
+            &self.selected,
+            self.active_layer,
+            params,
+        );
+        self.finish_selection_action(result);
     }
 
     /// Append the selected nodes and ways to relation `relation_id` as one
@@ -2538,6 +2601,7 @@ impl MapViewer {
             || self.preset_picker_dialog.is_some()
             || self.nsi_dialog.is_some()
             || self.relation_picker_dialog.is_some()
+            || self.parallel_dialog.is_some()
             || self.about_dialog.is_some()
             || self.custom_imagery_dialog.is_some();
         if other_dialog_open {
@@ -5663,6 +5727,7 @@ impl Render for MapViewer {
         self.check_for_pending_tag_edit(window, cx);
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
+        self.check_for_pending_parallel_dialog(window, cx);
         self.check_for_pending_restore(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
@@ -6501,6 +6566,7 @@ impl Render for MapViewer {
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
             .children(self.relation_picker_dialog.clone())
+            .children(self.parallel_dialog.clone())
             .children(self.upload_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
@@ -9101,6 +9167,61 @@ mod tests {
                     view.status_message.as_ref().map(|(m, _)| m.as_str()),
                     Some("Can't straighten: the way bends more than 10% of its length")
                 );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn parallel_way_asks_first_then_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                let layer_id = view.active_layer.unwrap();
+                select(view, Way, &[100]);
+                // Running the action only asks for the offset.
+                view.run_selection_action("parallel", cx);
+                assert!(view.pending_parallel_dialog);
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
+                view.pending_parallel_dialog = false;
+
+                view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
+                assert_eq!(view.undo_stack.actions.len(), 1);
+                // Three new nodes and the new way; the copy is selected.
+                assert_eq!(pending(view), (4, 0, 0));
+                assert_eq!(view.selected.len(), 1);
+                let copy = view.selected[0].id;
+                assert!(copy < 0);
+                assert_eq!(way_nodes(view, layer_id, copy).len(), 3);
+                assert_eq!(way_nodes(view, layer_id, 100), vec![1, 2, 3]);
+
+                undo_step(view);
+                assert_eq!(pending(view), (0, 0, 0));
+                assert!(way_nodes(view, layer_id, copy).is_empty());
+                redo_step(view);
+                assert_eq!(pending(view), (4, 0, 0));
+                assert_eq!(way_nodes(view, layer_id, copy).len(), 3);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn parallel_way_is_refused_during_an_upload(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind::Way;
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                select(view, Way, &[100]);
+                view.transfer = Some(TransferHandle::new(
+                    TransferKind::Upload,
+                    TransferPhase::OpeningChangeset,
+                ));
+                view.run_selection_action("parallel", cx);
+                assert!(!view.pending_parallel_dialog);
+                view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
+                assert!(view.undo_stack.actions.is_empty());
+                assert_eq!(pending(view), (0, 0, 0));
             })
             .unwrap();
     }
