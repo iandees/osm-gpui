@@ -100,6 +100,16 @@ pub enum SelectionKind {
     Multiple,
 }
 
+/// What `assert_native_appearance` expects the native app appearance (title
+/// bar and other system chrome) to be forced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAppearanceWant {
+    /// Not forced: following the OS.
+    System,
+    Light,
+    Dark,
+}
+
 /// A read-only condition about the running app, evaluated on its main thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Check {
@@ -109,6 +119,7 @@ pub enum Check {
     StatusContains(String),
     Dialog(DialogExpect),
     Selection(SelectionKind),
+    NativeAppearance(NativeAppearanceWant),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
 }
@@ -241,6 +252,11 @@ pub enum Op {
     },
     AssertSelection {
         kind: SelectionKind,
+    },
+    /// Assert the native app appearance (as read back from the OS after the
+    /// app last set it) is forced to dark or light, or not forced (system).
+    AssertNativeAppearance {
+        expect: NativeAppearanceWant,
     },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.

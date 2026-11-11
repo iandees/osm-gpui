@@ -289,6 +289,9 @@ impl Runner {
             Op::AssertSelection { kind } => app
                 .check(&Check::Selection(*kind))
                 .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::AssertNativeAppearance { expect } => app
+                .check(&Check::NativeAppearance(*expect))
+                .map_err(|e| fail(format!("assert_native_appearance: {e}"))),
             Op::ExportLayer { path } => {
                 app.export_layer(std::path::Path::new(path))
                     .map_err(|e| fail(format!("export_layer: {e}")))?;
@@ -487,6 +490,7 @@ fn describe(op: &Op) -> String {
         Op::AssertStatusContains { text } => format!("assert_status_contains {}", text),
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::ExportLayer { path } => format!("export_layer {}", path),
         Op::SignIn => "sign_in".to_string(),
         Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),
