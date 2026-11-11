@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="handwritten" xmlns="http://www.topografix.com/GPX/1/1">
+  <wpt lat="40.7105" lon="-74.0085">
+    <ele>3.0</ele>
+    <name>Trailhead</name>
+    <desc>Start of the walk</desc>
+  </wpt>
+  <wpt lat="40.7150" lon="-74.0020">
+    <name>Viewpoint</name>
+    <sym>Flag</sym>
+  </wpt>
+  <rte>
+    <name>Planned detour</name>
+    <rtept lat="40.7092" lon="-74.0040"/>
+    <rtept lat="40.7100" lon="-74.0030"/>
+    <rtept lat="40.7102" lon="-74.0012"/>
+  </rte>
+  <trk>
+    <name>Morning walk</name>
+    <trkseg>
+      <trkpt lat="40.7105" lon="-74.0085"><ele>3.0</ele><time>2024-05-01T07:30:00Z</time></trkpt>
+      <trkpt lat="40.7110" lon="-74.0060"><ele>4.0</ele><time>2024-05-01T07:34:00Z</time></trkpt>
+      <trkpt lat="40.7125" lon="-74.0040"><ele>6.5</ele><time>2024-05-01T07:40:00Z</time></trkpt>
+      <trkpt lat="40.7140" lon="-74.0030"><ele>8.0</ele><time>2024-05-01T07:46:00Z</time></trkpt>
+      <trkpt lat="40.7150" lon="-74.0020"><ele>9.0</ele><time>2024-05-01T07:50:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

@@ -73,7 +73,8 @@ menu:
     map_features_wiki: "OpenStreetMap-Wiki: Map Features"
     project_page: "%{app} auf GitHub"
   open_dialog:
-    title: "OSM-Datei zum Öffnen auswählen"
+    title: "Datei zum Öffnen auswählen"
+    map_files: "OSM-, GPX- und GeoJSON-Dateien"
     osm_files: "OSM-Dateien"
     all_files: "Alle Dateien"
   export_dialog:
@@ -177,6 +178,7 @@ status:
   zoom_in_to_download: "Zum Herunterladen näher heranzoomen"
   api_offline: "Die OSM-API meldet, dass sie offline ist; bitte später erneut versuchen"
   open_failed: "%{path} konnte nicht geöffnet werden: %{error}"
+  opening: "%{name} wird geöffnet…"
   open_data_first: "Zum Zeichnen zuerst OSM-Daten öffnen oder herunterladen"
   tag_needs_key: "Ein Tag braucht einen Schlüssel; die Änderung wurde verworfen"
   # Das Entfernen eines Mitglieds aus einer Relation wurde abgelehnt.
@@ -832,6 +834,18 @@ upload_conflict:
   used_theirs: "%{object} wurde durch die Server-Version ersetzt; deine Änderung daran ist verworfen. Auf „Hochladen“ klicken, um fortzufahren."
   dropped: "Dein Löschen von %{object} wurde vergessen, der Server hatte es bereits gelöscht. Auf „Hochladen“ klicken, um fortzufahren."
   undo_trimmed: "Rückgängig-Schritte, die es betrafen, wurden entfernt."
+
+# Schreibgeschützte GPX- und GeoJSON-Ebenen (Vorlagen zum Nachzeichnen).
+reference:
+  error:
+    malformed: "keine gültige GPX- oder GeoJSON-Datei (%{detail})"
+    not_gpx: "das Dokument ist kein GPX"
+    not_geographic: "die Koordinaten (%{x}, %{y}) sind keine Längen- und Breitengrade in Grad (WGS84); projizierte Daten werden nicht unterstützt"
+    no_geometry: "die Datei enthält nichts zum Zeichnen"
+  kind:
+    track: "Track"
+    route: "Route"
+    waypoint: "Wegpunkt"
 
 error:
   network: "Netzwerkfehler: %{detail}"

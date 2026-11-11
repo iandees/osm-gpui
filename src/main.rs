@@ -23,6 +23,8 @@ mod fields_section;
 mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
+#[cfg(test)]
+mod reference_tests;
 mod script_harness;
 mod selection_actions;
 mod side_panel;
@@ -2815,7 +2817,23 @@ impl MapViewer {
             .filter(|feature| feature.kind == FeatureKind::Node)
             .collect();
         if !self.fit_to_features(&nodes) {
-            self.set_status(tr!("status.no_data_to_zoom"));
+            // No OSM data: fit the visible reference layers instead.
+            let extents = self
+                .layer_manager
+                .layers()
+                .iter()
+                .filter(|layer| layer.is_visible())
+                .filter_map(|layer| {
+                    layer
+                        .as_any()
+                        .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+                })
+                .filter_map(|layer| layer.data().extent())
+                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)));
+            match extents {
+                Some(extent) => self.fit_to_extent(extent),
+                None => self.set_status(tr!("status.no_data_to_zoom")),
+            }
         }
         cx.notify();
     }
@@ -3890,6 +3908,13 @@ impl MapViewer {
                 .hit_test_interior_all(&self.viewport, screen_pt);
             hit = osm_gpui::selection::resolve_hits(interior);
         }
+        // Data underneath always wins. A click on nothing but a read-only
+        // reference feature (GPX, GeoJSON) shows what it is in the status bar.
+        if hit.is_none() && !shift_held {
+            if let Some(text) = self.reference_feature_at(screen_pt) {
+                self.set_status(text);
+            }
+        }
         self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
@@ -3930,7 +3955,7 @@ impl MapViewer {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
+        let (mut lat, mut lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Every click after the first grows the way being drawn by a node.
         let drawing_way = self.add_progress.as_ref().and_then(|p| p.way_id);
@@ -3991,6 +4016,16 @@ impl MapViewer {
                 .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
                 .and_then(|osm_layer| osm_layer.snap_to_way(&self.viewport, screen_pt, 6.0))
         };
+
+        // With no OSM node or way to snap to (they win), a reference line or
+        // point (GPX, GeoJSON) under the cursor pulls the new, ordinary node
+        // onto itself: onto a vertex, else onto the nearest point of a segment.
+        if snap_hit.is_none() && !ctrl_held {
+            if let Some((snap_lat, snap_lon)) = self.reference_snap_at(screen_pt) {
+                lat = snap_lat;
+                lon = snap_lon;
+            }
+        }
 
         // Snapping splices a node into the way under the cursor.
         if let Some((snap_way, ..)) = snap_hit {
@@ -4458,6 +4493,92 @@ impl MapViewer {
         self.data_generation += 1;
         self.status_message = None;
         cx.notify();
+    }
+
+    /// Add a parsed GPX or GeoJSON file as a read-only reference layer (see
+    /// `layers::reference_layer`) above the imagery and below the data
+    /// layers, and zoom to its extent. It never becomes the active layer.
+    pub(crate) fn add_reference_dataset(
+        &mut self,
+        name: String,
+        data: osm_gpui::reference::ReferenceData,
+        cx: &mut Context<Self>,
+    ) {
+        let name = if name.is_empty() {
+            data.format.tag().to_string()
+        } else {
+            name
+        };
+        let candidate = self.layer_manager.unique_name(&name);
+        let extent = data.extent();
+        let layer_id = self.layer_manager.alloc_id();
+        let layer =
+            osm_gpui::layers::reference_layer::ReferenceLayer::new(layer_id, candidate, data);
+        self.layer_manager.add_reference_layer(Box::new(layer));
+        if let Some(extent) = extent {
+            self.fit_to_extent(extent);
+        }
+        self.status_message = None;
+        cx.notify();
+    }
+
+    /// Pan/zoom to a `(min_lat, max_lat, min_lon, max_lon)` extent; a single
+    /// point is centred at an editing zoom (see `fit_bounds_to_viewport`).
+    fn fit_to_extent(
+        &mut self,
+        (min_lat, max_lat, min_lon, max_lon): osm_gpui::reference::GeoExtent,
+    ) {
+        let size = self.viewport.transform.screen_size;
+        let (lat, lon, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+            size.width.to_f64(),
+            size.height.to_f64(),
+        );
+        self.viewport.pan_to(lat, lon);
+        self.viewport.set_zoom(zoom);
+    }
+
+    /// The topmost visible reference feature under `screen_pt`, described
+    /// for the status bar.
+    fn reference_feature_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<String> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .rev()
+            .filter(|layer| layer.is_visible())
+            .filter_map(|layer| {
+                layer
+                    .as_any()
+                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+            })
+            .find_map(|layer| layer.hit(&self.viewport, screen_pt))
+            .map(osm_gpui::reference::describe)
+    }
+
+    /// The point of a visible reference layer to snap a new node to: the
+    /// nearest vertex, marker or point on a segment within the snap
+    /// tolerance, as `(lat, lon)`. Topmost layer first.
+    fn reference_snap_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<(f64, f64)> {
+        self.layer_manager
+            .layers()
+            .iter()
+            .rev()
+            .filter(|layer| layer.is_visible())
+            .filter_map(|layer| {
+                layer
+                    .as_any()
+                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+            })
+            .find_map(|layer| {
+                layer.snap(
+                    &self.viewport,
+                    screen_pt,
+                    osm_gpui::layers::reference_layer::HIT_TOLERANCE_PX,
+                )
+            })
     }
 
     /// The `(name, .osm document)` of the layer File > Export… writes: the
