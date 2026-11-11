@@ -80,7 +80,10 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
         .to_string();
     cx.update(|cx| {
         with_map_viewer(cx, |v, cx| match result {
-            Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
+            Ok((osm_data, edits)) => {
+                v.add_osm_dataset(stem, osm_data, &edits, cx);
+                v.note_last_layer_source(&path);
+            }
             Err(e) => {
                 v.set_status(tr!("status.open_failed", path = path.display(), error = e));
                 cx.notify();

@@ -336,7 +336,12 @@ impl Session {
 
     /// Whether any layer's autosave is on disk.
     pub fn has_layers(&self) -> bool {
-        !list_manifests(&self.dir).is_empty()
+        self.layer_count() > 0
+    }
+
+    /// How many layers have an autosave on disk.
+    pub fn layer_count(&self) -> usize {
+        list_manifests(&self.dir).len()
     }
 
     /// The clean exit: remove the session's directory and everything in it.
@@ -417,6 +422,21 @@ impl CrashedSession {
         let CrashedSession { dir, lock, .. } = self;
         drop(lock);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Delete one layer's files once it has been safely taken over.
+    pub fn remove_layer(&self, layer: &RecoverableLayer) {
+        let _ = std::fs::remove_file(layer.osm_path.with_extension("json"));
+        let _ = std::fs::remove_file(&layer.osm_path);
+    }
+
+    /// Remove the session if every layer in it has been taken over; a
+    /// session that still holds a layer (one that could not be loaded) is
+    /// left for the next start.
+    pub fn discard_if_empty(self) {
+        if list_manifests(&self.dir).is_empty() {
+            self.discard();
+        }
     }
 }
 
@@ -612,6 +632,15 @@ impl Tracker {
     /// Stop tracking a layer (it was deleted).
     pub fn forget(&mut self, id: u64) {
         self.layers.remove(&id);
+    }
+
+    /// Whether the layer's autosave is up to date: nothing running, and
+    /// either written at this revision or nothing worth keeping.
+    pub fn is_settled(&self, id: u64, revision: u64, pending: bool) -> bool {
+        match self.layers.get(&id) {
+            None => !pending,
+            Some(s) => !s.in_flight && (s.saved == Some(revision) || (!pending && !s.has_file)),
+        }
     }
 
     /// Whether a write for this layer is running.

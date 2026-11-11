@@ -107,6 +107,8 @@ pub(crate) enum ScriptCommand {
     Resolve(script::ConflictChoice),
     /// Write the active layer to this `.osm` path.
     Export { path: std::path::PathBuf },
+    /// An autosave op (write now, press Restore or Discard).
+    Autosave(script::AutosaveCmd),
     /// Evaluate a read-only condition.
     Check(script::Check),
     /// Show a message in the status bar.
@@ -524,6 +526,10 @@ impl MapViewer {
                     let result = self.script_export_layer(&path);
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::Autosave(cmd) => {
+                    let result = self.script_autosave(cmd, window, cx);
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Check(check) => {
                     let result = self.script_check(&check, cx);
                     bus.set_assert_result(result);
@@ -707,6 +713,8 @@ impl MapViewer {
                     Ok(())
                 }
             }
+            Check::AutosaveIdle => self.script_autosave_idle(),
+            Check::AutosaveFiles(want) => self.script_autosave_files(*want),
             Check::Selection(want) => {
                 let got = match self.selected.as_slice() {
                     [] => SelectionKind::None,
@@ -730,6 +738,7 @@ impl MapViewer {
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
+                    (DialogExpect::Restore, _) => self.restore_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -766,6 +775,7 @@ impl MapViewer {
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
+            None if self.restore_dialog.is_some() => "the restore-autosave offer".into(),
             None => "no dialog".into(),
         }
     }
@@ -1117,6 +1127,20 @@ impl AppHandle for LiveApp {
     fn check(&mut self, check: &script::Check) -> Result<(), String> {
         self.bus.submit(ScriptCommand::Check(check.clone()));
         self.bus.take_assert_result()
+    }
+
+    fn autosave(&mut self, cmd: script::AutosaveCmd) -> Result<(), String> {
+        if cmd == script::AutosaveCmd::Crash {
+            // As a crash would: no destructors, no quit hooks, no clean-up.
+            // The OS drops the session's file lock, which is what marks the
+            // session as crashed for the next run.
+            eprintln!("crash: exiting without clean-up");
+            std::process::exit(3);
+        }
+        self.bus.submit(ScriptCommand::Autosave(cmd));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
     }
 
     fn note(&mut self, message: &str) {
