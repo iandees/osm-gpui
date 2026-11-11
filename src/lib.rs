@@ -31,6 +31,7 @@ pub mod osm;
 pub mod osm_api;
 pub mod osm_export;
 pub mod osm_upload;
+pub mod parallel;
 pub mod persist;
 pub mod preset_recents;
 pub mod preset_translations;
