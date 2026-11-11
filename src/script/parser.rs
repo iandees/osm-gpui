@@ -160,6 +160,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             })
         }
         "assert_imagery_offset" => parse_assert_imagery_offset(line_no, &rest),
+        "assert_zoom" => parse_assert_zoom(line_no, &rest),
         "assert_adjusting_offset" => match rest.as_slice() {
             ["on"] => Ok(Op::AssertAdjustingOffset { on: true }),
             ["off"] => Ok(Op::AssertAdjustingOffset { on: false }),
@@ -409,6 +410,29 @@ fn parse_assert_imagery_offset(line_no: usize, rest: &[&str]) -> Result<Op, Pars
         tolerance: match tolerance {
             Some(t) => parse_f64(line_no, t, "assert_imagery_offset tol")?,
             None => 0.05,
+        },
+    })
+}
+
+/// `assert_zoom LEVEL [tol=N]` (default tolerance 0.001 zoom levels).
+fn parse_assert_zoom(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_zoom: want LEVEL [tol=N]";
+    let (level, tolerance) = match rest {
+        [l] => (l, None),
+        [l, tol] => (
+            l,
+            Some(
+                tol.strip_prefix("tol=")
+                    .ok_or_else(|| err(line_no, usage))?,
+            ),
+        ),
+        _ => return Err(err(line_no, usage)),
+    };
+    Ok(Op::AssertZoom {
+        level: parse_f64(line_no, level, "assert_zoom level")?,
+        tolerance: match tolerance {
+            Some(t) => parse_f64(line_no, t, "assert_zoom tol")?,
+            None => 0.001,
         },
     })
 }
@@ -1112,6 +1136,27 @@ mod tests {
         assert!(parse("assert_imagery_offset 1").is_err());
         assert!(parse("assert_imagery_offset 1 2 0.2").is_err());
         assert!(parse("assert_imagery_offset a b").is_err());
+    }
+
+    #[test]
+    fn assert_zoom_parses_with_and_without_tolerance() {
+        assert_eq!(
+            parse("assert_zoom 12.05").unwrap()[0].op,
+            Op::AssertZoom {
+                level: 12.05,
+                tolerance: 0.001
+            }
+        );
+        assert_eq!(
+            parse("assert_zoom 12 tol=0.1").unwrap()[0].op,
+            Op::AssertZoom {
+                level: 12.0,
+                tolerance: 0.1
+            }
+        );
+        assert!(parse("assert_zoom").is_err());
+        assert!(parse("assert_zoom 12 0.1").is_err());
+        assert!(parse("assert_zoom x").is_err());
     }
 
     #[test]

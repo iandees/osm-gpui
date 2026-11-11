@@ -707,6 +707,16 @@ impl MapViewer {
                     Ok(())
                 }
             }
+            Check::Zoom { level, tolerance } => {
+                let got = self.viewport.zoom_level();
+                if (got - level).abs() <= *tolerance {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected zoom {level} (within {tolerance}), found {got:.4}"
+                    ))
+                }
+            }
             Check::ImageryOffset {
                 east,
                 north,

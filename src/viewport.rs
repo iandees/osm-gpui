@@ -77,6 +77,18 @@ impl Viewport {
         self.transform.zoom_level != before
     }
 
+    /// The scroll amount that drives zooming, given the raw vertical scroll
+    /// amount (lines for a wheel, pixels for a trackpad) and the "invert
+    /// scroll zoom" setting. Inverting flips the sign, so what zoomed in now
+    /// zooms out. Only scroll zoom uses this: pinch, keys and menus do not.
+    pub fn scroll_zoom_step(raw: f32, invert: bool) -> f32 {
+        if invert {
+            -raw
+        } else {
+            raw
+        }
+    }
+
     /// Zoom from a notched mouse wheel: `lines` is the vertical scroll
     /// amount in lines (`ScrollDelta::Lines`).
     pub fn zoom_by_wheel(&mut self, position: Point<Pixels>, lines: f32) -> bool {
@@ -312,6 +324,45 @@ mod tests {
         assert!((moved.x.as_f32() - 450.0).abs() < 0.5);
         assert!((moved.y.as_f32() - 330.0).abs() < 0.5);
         assert_eq!(viewport.zoom_level(), 10.0);
+    }
+
+    #[test]
+    fn scroll_zoom_step_keeps_or_flips_the_sign() {
+        assert_eq!(Viewport::scroll_zoom_step(2.0, false), 2.0);
+        assert_eq!(Viewport::scroll_zoom_step(-2.0, false), -2.0);
+        assert_eq!(Viewport::scroll_zoom_step(2.0, true), -2.0);
+        assert_eq!(Viewport::scroll_zoom_step(-2.0, true), 2.0);
+        assert_eq!(Viewport::scroll_zoom_step(0.0, true), 0.0);
+    }
+
+    #[test]
+    fn inverting_reverses_wheel_zoom_for_line_deltas() {
+        let at = point(px(400.0), px(300.0));
+        for invert in [false, true] {
+            let mut viewport = test_viewport();
+            // Wheel up (positive lines) zooms out by default.
+            assert!(viewport.zoom_by_wheel(at, Viewport::scroll_zoom_step(1.0, invert)));
+            if invert {
+                assert!(viewport.zoom_level() > 10.0);
+            } else {
+                assert!(viewport.zoom_level() < 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn inverting_reverses_zoom_for_pixel_deltas() {
+        let at = point(px(400.0), px(300.0));
+        for invert in [false, true] {
+            let mut viewport = test_viewport();
+            let step = Viewport::scroll_zoom_step(20.0, invert);
+            assert!(viewport.zoom_by_scroll_pixels(at, px(step)));
+            if invert {
+                assert!(viewport.zoom_level() > 10.0);
+            } else {
+                assert!(viewport.zoom_level() < 10.0);
+            }
+        }
     }
 
     #[test]

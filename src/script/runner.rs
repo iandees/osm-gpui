@@ -283,6 +283,12 @@ impl Runner {
             Op::AssertStatusContains { text } => app
                 .check(&Check::StatusContains(text.clone()))
                 .map_err(|e| fail(format!("assert_status_contains: {e}"))),
+            Op::AssertZoom { level, tolerance } => app
+                .check(&Check::Zoom {
+                    level: *level,
+                    tolerance: *tolerance,
+                })
+                .map_err(|e| fail(format!("assert_zoom: {e}"))),
             Op::AssertImageryOffset {
                 east,
                 north,
@@ -508,6 +514,7 @@ fn describe(op: &Op) -> String {
         }
         Op::AssertPending { count } => format!("assert_pending {}", count),
         Op::AssertStatusContains { text } => format!("assert_status_contains {}", text),
+        Op::AssertZoom { level, .. } => format!("assert_zoom {level}"),
         Op::AssertImageryOffset { east, north, .. } => {
             format!("assert_imagery_offset {east} {north}")
         }
