@@ -479,7 +479,7 @@ No bugs found in this batch.
 ## Further situations (batch K)
 
 Simplify Way (`src/edge_case_tests/simplify_way.rs`, geometry in
-`geometry::simplify_keep`), modelled on JOSM `SimplifyWayActionTest`. Design:
+`geometry::simplify_keep`). Design:
 Douglas-Peucker in the local metric plane (antimeridian-safe) with a
 tolerance, a persisted setting (Settings > Editing, `simplify_tolerance_m`,
 default 3 m, valid 0.1 to 100 m, anything else reads as the default) that is

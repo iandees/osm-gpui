@@ -1,4 +1,4 @@
-//! Simplify Way (JOSM `SimplifyWayActionTest`): redundant vertices of the
+//! Simplify Way: redundant vertices of the
 //! selected ways are dropped with a Douglas-Peucker pass (3 m tolerance), and
 //! the dropped nodes are deleted. Vertices that are ends, junctions, tagged or
 //! relation members stay. Positions here are given in metres from a base

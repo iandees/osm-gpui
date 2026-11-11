@@ -301,7 +301,9 @@ pub enum StraightenError {
 }
 
 /// How far (in metres) a vertex may sit off the simplified line before Simplify
-/// Way keeps it. JOSM's default for `simplify-way.max-error` is 3 m.
+/// Way keeps it. 3 m is about the scatter of consumer GPS tracks and of hand
+/// drawing at mapping zoom levels, so a vertex closer than that to the line
+/// through its neighbours carries no real information.
 pub const SIMPLIFY_TOLERANCE_M: f64 = 3.0;
 
 /// Which vertices of a polyline survive Douglas-Peucker simplification with

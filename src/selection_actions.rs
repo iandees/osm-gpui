@@ -806,7 +806,7 @@ fn simplify_pins(editable: &dyn EditableLayer, layer_id: LayerId, node_ids: &[i6
         .collect()
 }
 
-/// Simplify Way (JOSM "Simplify Way"): drop the vertices of each selected way
+/// Simplify Way: drop the vertices of each selected way
 /// that sit within the tolerance (default `geometry::SIMPLIFY_TOLERANCE_M`) of the line through their
 /// neighbours (Douglas-Peucker). A vertex stays if it is an end node, shared
 /// with another way, tagged, or a relation member, or if dropping it would
