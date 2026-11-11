@@ -196,7 +196,7 @@ relation). Big networks are built in code.
 | L12 | Merge two nodes that are members with different roles in a 32,000 member relation | Both kept, count stays 32,000 | pass `merging_two_members_of_a_full_relation_does_not_grow_it` |
 | G3 | Square / circularize at 179.9995 E, 179.9995 W, centred on 180, at 85 N / 85 S, 85 N on 180 | Finite, inside -90..90 / -180..180, nodes move a few metres | pass `square_and_circularize_stay_sane_*` |
 | G4 | Align / distribute near the antimeridian (not crossing) and near the poles; align across it | Same | pass `align_and_distribute_stay_sane_*`, `align_stays_sane_for_a_line_that_straddles_the_antimeridian` |
-| G5 | Distribute nodes on both sides of the antimeridian | Nodes stay within the span of the line | FAIL `distribute_stays_sane_for_a_line_that_straddles_the_antimeridian` (node moved about 13,000 km) |
+| G5 | Distribute nodes on both sides of the antimeridian | Nodes stay within the span of the line | pass `distribute_stays_sane_for_a_line_that_straddles_the_antimeridian` |
 | G6 | Extrude (reshape, move, new way) near the antimeridian, near the poles, and across 180 | Finite, valid range, near the ring | pass `extrude_stays_sane_near_the_antimeridian_and_the_poles`, `extrude_stays_sane_across_the_antimeridian` |
 | K1 | Reverse keys that only look directional: `lane:forward_x`, `:forwards`, trailing space, `:Forward`, `:BACKWARD`, Cyrillic look-alike letter, leading `forward` key | Left alone | pass `keys_that_only_look_like_forward_or_backward_are_not_swapped` |
 | K2 | Exact `forward` / `backward` parts in any position after the first, both halves of a pair, a look-alike next to them | Swapped, no tag lost or merged | pass `exact_forward_and_backward_parts_swap_in_any_position_after_the_first`, `swapping_keys_never_loses_or_merges_tags` |
@@ -207,8 +207,6 @@ relation). Big networks are built in code.
 
 Bugs from this batch:
 
-- LOW-MEDIUM. G5: distribute across the antimeridian (`LocalProjection`
-  averages longitudes without wrapping).
 - LOW. K6: Reverse negates a numeric `direction` on a way.
 - L4: same cause as X6 (vertices cannot be deleted).
 

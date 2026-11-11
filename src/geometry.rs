@@ -37,7 +37,7 @@ impl LocalProjection {
 
     pub fn project(&self, p: LatLon) -> (f64, f64) {
         (
-            (p.1 - self.lon0).to_radians() * self.cos_lat0 * EARTH_RADIUS_M,
+            wrap_delta_lon(p.1 - self.lon0).to_radians() * self.cos_lat0 * EARTH_RADIUS_M,
             (p.0 - self.lat0).to_radians() * EARTH_RADIUS_M,
         )
     }
@@ -45,17 +45,55 @@ impl LocalProjection {
     pub fn unproject(&self, xy: (f64, f64)) -> LatLon {
         (
             self.lat0 + (xy.1 / EARTH_RADIUS_M).to_degrees(),
-            self.lon0 + (xy.0 / (EARTH_RADIUS_M * self.cos_lat0)).to_degrees(),
+            wrap_lon(self.lon0 + (xy.0 / (EARTH_RADIUS_M * self.cos_lat0)).to_degrees()),
         )
     }
 }
 
+/// Fold a longitude difference into [-180, 180] so two points either side of
+/// the antimeridian are a short hop apart rather than almost 360 degrees.
+/// Differences already in range are returned untouched.
+fn wrap_delta_lon(d: f64) -> f64 {
+    if (-180.0..=180.0).contains(&d) {
+        d
+    } else {
+        d - 360.0 * (d / 360.0).round()
+    }
+}
+
+/// Wrap a longitude back into [-180, 180]; values already in range are
+/// returned untouched.
+fn wrap_lon(lon: f64) -> f64 {
+    wrap_delta_lon(lon)
+}
+
+/// Mean position of `points`. Longitudes are averaged relative to the first
+/// point, so a set straddling the antimeridian gives a centre near it (not near
+/// longitude 0). Ordinary data gives the plain arithmetic mean.
 pub fn mean_point(points: &[LatLon]) -> LatLon {
     let n = points.len() as f64;
-    (
-        points.iter().map(|p| p.0).sum::<f64>() / n,
-        points.iter().map(|p| p.1).sum::<f64>() / n,
-    )
+    let lat = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let Some(first) = points.first() else {
+        return (lat, points.iter().map(|p| p.1).sum::<f64>() / n);
+    };
+    let ref_lon = first.1;
+    let spread: f64 = points
+        .iter()
+        .map(|p| {
+            let d = p.1 - ref_lon;
+            if d.abs() > 180.0 {
+                wrap_delta_lon(d)
+            } else {
+                d
+            }
+        })
+        .sum::<f64>();
+    let lon = if points.iter().any(|p| (p.1 - ref_lon).abs() > 180.0) {
+        wrap_lon(ref_lon + spread / n)
+    } else {
+        points.iter().map(|p| p.1).sum::<f64>() / n
+    };
+    (lat, lon)
 }
 
 /// Drop the closing duplicate of a ring, if `points` ends where it starts.
@@ -325,6 +363,31 @@ pub fn reversed<T: Clone>(items: &[T]) -> Vec<T> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn projection_handles_longitudes_either_side_of_the_antimeridian() {
+        let pts = [(10.0, 179.9995), (10.0, -179.9995), (10.0, 180.0)];
+        let centre = mean_point(&pts);
+        assert!(
+            (centre.1.abs() - 180.0).abs() < 0.001,
+            "centre {centre:?} should sit near 180"
+        );
+        let proj = LocalProjection::new(centre);
+        for &p in &pts {
+            let xy = proj.project(p);
+            assert!(xy.0.abs() < 100.0, "{p:?} projected to {xy:?}");
+            let back = proj.unproject(xy);
+            assert!((back.0 - p.0).abs() < 1e-9);
+            let dlon = (back.1 - p.1).rem_euclid(360.0);
+            assert!(
+                dlon < 1e-9 || 360.0 - dlon < 1e-9,
+                "{p:?} came back {back:?}"
+            );
+            assert!((-180.0..=180.0).contains(&back.1));
+        }
+        // Ordinary data is the plain mean.
+        assert_eq!(mean_point(&[(1.0, 10.0), (3.0, 20.0)]), (2.0, 15.0));
+    }
+
     use super::*;
 
     /// Interior angle at `b` in degrees, measured in the local metric plane.
