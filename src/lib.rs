@@ -2,6 +2,7 @@
 //!
 //! A high-performance map rendering system built with Rust and the GPUI framework.
 
+pub mod appearance;
 pub mod assets;
 pub mod auth;
 pub mod building;

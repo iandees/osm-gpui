@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use gpui_component::menu::AppMenuBar;
-use gpui_component::{GlobalState, Theme, ThemeMode};
+use gpui_component::{GlobalState, ThemeMode};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
@@ -659,20 +659,34 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
-    cx.on_action(|_: &SetThemeLight, cx: &mut App| set_theme_mode(ThemeMode::Light, cx));
-    cx.on_action(|_: &SetThemeDark, cx: &mut App| set_theme_mode(ThemeMode::Dark, cx));
+    cx.on_action(|_: &SetThemeLight, cx: &mut App| {
+        osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
+    });
+    cx.on_action(|_: &SetThemeDark, cx: &mut App| {
+        osm_gpui::appearance::apply_run_override(ThemeMode::Dark, cx)
+    });
+    cx.on_action(|action: &SetAppearance, cx: &mut App| {
+        osm_gpui::appearance::set_preference(
+            action.mode,
+            !crate::script_harness::script_mode(),
+            cx,
+        );
+    });
 }
 
-// Debug-friendly theme switches with no menu item: reachable from the script
-// harness (`action SetThemeDark`) and mirrored by the `--theme` flag. The app
-// does not follow the system appearance; it starts in the light theme.
+// Run-only theme switches with no menu item: reachable from the script
+// harness (`action SetThemeDark`) and mirrored by the `--theme` flag. They
+// override the saved Appearance setting for this run and are never saved.
 actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
 
-/// Switch the gpui-component theme and repaint every window.
-pub(crate) fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
-    Theme::change(mode, None, cx);
-    Theme::sync_scrollbar_appearance(cx);
-    cx.refresh_windows();
+/// Script/harness action (`action SetAppearance {"mode":"Dark"}`; `mode` is
+/// `System`, `Light` or `Dark`), shown in no menu. The user-facing control is
+/// Settings > Appearance.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetAppearance {
+    pub mode: osm_gpui::settings_store::ThemePreference,
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.
