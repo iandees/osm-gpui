@@ -7,6 +7,38 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.7.0
+
+### Changed behaviour
+
+- Scrolling the mouse wheel up now zooms in by default, as in JOSM and on the OpenStreetMap website. If you turned on Settings > Appearance > Invert scroll zoom in 0.6.0 to get this direction, turn it off again. ([#170](https://github.com/iandees/osm-gpui/pull/170))
+- Signing in now also asks for permission to modify notes. An existing login keeps working for editing, but commenting on or closing notes needs a new sign-in. ([#179](https://github.com/iandees/osm-gpui/pull/179))
+
+### Editing
+
+- Copy (Cmd/Ctrl+C), Paste (Cmd/Ctrl+V) at the pointer, Paste at Source Position and Duplicate (Cmd/Ctrl+D) for features, within and across layers, each as one undo step. ([#175](https://github.com/iandees/osm-gpui/pull/175))
+- Hovering a way from zoom 18 shows its vertices; click one to select it, or press and drag to move it in one gesture. Any visible node can be dragged without selecting it first. ([#174](https://github.com/iandees/osm-gpui/pull/174))
+- Tools > Create Parallel Way makes an offset copy of the selected ways, for dual carriageways, sidewalks and fences. ([#171](https://github.com/iandees/osm-gpui/pull/171))
+- Align Nodes in Line (L) and Distribute Nodes for three or more selected nodes. ([#176](https://github.com/iandees/osm-gpui/pull/176))
+- Show Object History (Cmd/Ctrl+Shift+H) lists an object's versions with who changed what and when, compares your unsaved changes with the server, and can revert the tags to an earlier version. ([#177](https://github.com/iandees/osm-gpui/pull/177))
+
+### Layers and notes
+
+- File > Open reads GPX and GeoJSON files as read-only reference layers; clicking a feature shows its name and properties, and new nodes snap to them while drawing. ([#180](https://github.com/iandees/osm-gpui/pull/180))
+- View > Show Notes shows OpenStreetMap notes for the area; open one to read its thread, comment, close or reopen it, and create notes with Tools > New Note. ([#179](https://github.com/iandees/osm-gpui/pull/179))
+
+### Upload
+
+- The upload dialog has a Sources field with quick choices, a review request checkbox and a list of recent comments, and changesets record the imagery used, the interface language and hashtags from the comment. A comment or source over 255 characters is refused before uploading. ([#178](https://github.com/iandees/osm-gpui/pull/178))
+
+### Windows and Linux
+
+- Submenus work in the in-window menu bar: Imagery has Custom Imagery and Available Imagery submenus, where 0.6.0 could not open the custom imagery list. Clicking the map to close a menu no longer changes the selection. ([#172](https://github.com/iandees/osm-gpui/pull/172))
+
+### Development
+
+- Tests and scripted runs can no longer write the user's saved settings, logins or custom imagery; only the app's normal start-up enables saving. ([#173](https://github.com/iandees/osm-gpui/pull/173))
+
 ## 0.6.0
 
 ### Fixes
