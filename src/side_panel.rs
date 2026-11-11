@@ -1398,13 +1398,18 @@ impl MapViewer {
     /// The wrapper also turns Escape into "abandon the edit". (Enter and
     /// loss of focus commit; those arrive as `InputEvent`s — see
     /// `MapViewer::on_tag_input_event`.)
+    ///
+    /// `target` says which input this is, for the autocomplete list that
+    /// drops down from it (see `tag_suggest_ui`).
     fn tag_input_cell(
         &self,
         input: &gpui::Entity<gpui_component::input::InputState>,
         sizing_text: impl Into<SharedString>,
+        target: osm_gpui::ui::tag_edit::TagEditField,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        self.inline_input_cell(input, sizing_text, Self::cancel_tag_inline_edit, cx)
+        let cell = self.inline_input_cell(input, sizing_text, Self::cancel_tag_inline_edit, cx);
+        self.with_tag_suggest(cell, target, cx)
     }
 
     /// `tag_input_cell` for any inline edit: `cancel` is what Escape does.
@@ -1569,7 +1574,7 @@ impl MapViewer {
 
                 let key_element = match editing_field {
                     Some((TagEditField::Key, edit)) => self
-                        .tag_input_cell(&edit.key, k.clone(), cx)
+                        .tag_input_cell(&edit.key, k.clone(), TagEditField::Key, cx)
                         .into_any_element(),
                     _ => div()
                         .id(SharedString::from(format!("tag-key-{k}")))
@@ -1584,7 +1589,7 @@ impl MapViewer {
 
                 let value_cell = match editing_field {
                     Some((TagEditField::Value, edit)) => self
-                        .tag_input_cell(&edit.value, value_text.clone(), cx)
+                        .tag_input_cell(&edit.value, value_text.clone(), TagEditField::Value, cx)
                         .into_any_element(),
                     _ => div()
                         .id(SharedString::from(format!("tag-value-{k}")))
@@ -1653,8 +1658,13 @@ impl MapViewer {
                 // tag's row will have once committed.
                 description_list = description_list.child(
                     DescriptionItem::new(
-                        self.tag_input_cell(&edit.key, tr!("panel.tags.key_placeholder"), cx)
-                            .into_any_element(),
+                        self.tag_input_cell(
+                            &edit.key,
+                            tr!("panel.tags.key_placeholder"),
+                            TagEditField::Key,
+                            cx,
+                        )
+                        .into_any_element(),
                     )
                     .value(
                         div()
@@ -1664,6 +1674,7 @@ impl MapViewer {
                             .child(self.tag_input_cell(
                                 &edit.value,
                                 tr!("panel.tags.value_placeholder"),
+                                TagEditField::Value,
                                 cx,
                             ))
                             .into_any_element(),

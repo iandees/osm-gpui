@@ -35,6 +35,7 @@ mod selection_actions;
 mod side_panel;
 mod side_panel_layout;
 mod status_bar;
+mod tag_suggest_ui;
 mod undo;
 mod validation_panel;
 mod welcome;
@@ -689,6 +690,8 @@ struct MapViewer {
     /// click and acted on during the next `render()` — see
     /// `PendingTagEditOpen`'s doc comment.
     pending_tag_edit_open: Option<PendingTagEditOpen>,
+    /// Autocomplete for the tag inputs: layer indexes, taginfo bookkeeping.
+    tag_suggest: tag_suggest_ui::TagSuggestState,
     /// The role of a relation member being edited in place in the Members
     /// list, if any.
     role_edit: Option<RoleEdit>,
@@ -834,6 +837,8 @@ struct InlineTagEdit {
     field: osm_gpui::ui::tag_edit::TagEditField,
     key: gpui::Entity<gpui_component::input::InputState>,
     value: gpui::Entity<gpui_component::input::InputState>,
+    /// The autocomplete list under whichever input is being typed in.
+    suggest: tag_suggest_ui::Dropdown,
 }
 
 /// Recorded by a tag cell click or the "Add tag" button; consumed by
@@ -969,6 +974,7 @@ impl MapViewer {
             sign_in_dialog: None,
             notice_dialog: None,
             tag_inline_edit: None,
+            tag_suggest: tag_suggest_ui::TagSuggestState::new(),
             fields_more_open_for: None,
             // Scripted runs use the default width, not the user's saved one,
             // so scripts' click coordinates hold on every machine.
@@ -2066,7 +2072,11 @@ impl MapViewer {
             field: select,
             key,
             value,
+            suggest: Default::default(),
         });
+        // Have the layers' tag counts ready (in the background) for the
+        // first keystroke.
+        self.sync_tag_indexes(cx);
         cx.notify();
     }
 
@@ -2102,21 +2112,41 @@ impl MapViewer {
         }
         let add_row_key = edit.ctx.is_add && which == TagEditField::Key;
 
+        let add_row = edit.ctx.is_add;
+
         match event {
+            // Typing: show matching suggestions under the input.
+            InputEvent::Change => {
+                self.refresh_tag_suggestions(which, window, cx);
+                return;
+            }
+            // Arriving in a new row's value input after its key: offer that
+            // key's values right away.
+            InputEvent::Focus if add_row && which == TagEditField::Value => {
+                self.refresh_tag_suggestions(which, window, cx);
+                return;
+            }
             InputEvent::PressEnter { .. } if add_row_key => {
                 let value = edit.value.clone();
+                self.close_tag_suggestions();
                 value.update(cx, |state, cx| state.focus(window, cx));
             }
             InputEvent::PressEnter { .. } => {
+                self.close_tag_suggestions();
                 self.commit_tag_inline_edit(cx);
                 window.focus(&self.focus_handle, cx);
             }
             InputEvent::Blur if add_row_key => {
-                if edit.key.read(cx).value().trim().is_empty() {
+                let empty = edit.key.read(cx).value().trim().is_empty();
+                self.close_tag_suggestions();
+                if empty {
                     self.tag_inline_edit = None;
                 }
             }
-            InputEvent::Blur => self.commit_tag_inline_edit(cx),
+            InputEvent::Blur => {
+                self.close_tag_suggestions();
+                self.commit_tag_inline_edit(cx);
+            }
             _ => return,
         }
         cx.notify();
@@ -2171,6 +2201,7 @@ impl MapViewer {
             return;
         }
 
+        let indexed = self.current_tag_index_layers();
         for (feature, k, _before, after) in &entries {
             let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
                 continue;
@@ -2183,6 +2214,7 @@ impl MapViewer {
                 None => editable.remove_tag(feature.kind, feature.id, k),
             }
         }
+        self.note_tag_changes(&indexed, &entries);
         self.undo_stack.push(UndoableAction::SetTags { entries });
     }
 
@@ -2206,6 +2238,7 @@ impl MapViewer {
             return;
         }
 
+        let indexed = self.current_tag_index_layers();
         for (feature, k, _before, _after) in &entries {
             if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
                 if let Some(editable) = layer.as_editable_mut() {
@@ -2213,6 +2246,7 @@ impl MapViewer {
                 }
             }
         }
+        self.note_tag_changes(&indexed, &entries);
         self.undo_stack.push(UndoableAction::SetTags { entries });
         cx.notify();
     }
