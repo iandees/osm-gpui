@@ -165,6 +165,12 @@ cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 
 Other flags are `--window-size WxH`, `--keep-open` (stay open after the last step), and `--language <tag>`. Windows release builds have no console, so run the harness from a debug build there to see its output.
 
+**In-window menu bar.** Windows and Linux have no native menu bar from GPUI, so the app draws one as the top row of the window there, built from the same menu definition as the macOS menu. To see it on macOS (in addition to the native menu), set `OSM_GPUI_IN_WINDOW_MENU=1`; `docs/screenshots/in-window-menu.osmscript` drives it:
+
+```bash
+OSM_GPUI_IN_WINDOW_MENU=1 cargo run -- --script docs/screenshots/in-window-menu.osmscript
+```
+
 **Localization.** Interface text lives in `locales/<tag>.yml` (English is the source and fallback). To add a language, copy `locales/en.yml`, translate the values, and set `meta.language_name`. Preset translations are `assets/presets/translations/<locale>.json`; add one with `cargo run --example update_preset_translations -- <schema-version> <locale>`, using the version in `assets/presets/LICENSE`.
 
 **Presets.** The iD tagging schema data in `assets/presets/` is refreshed with `cargo run --example update_presets [-- <schema-version>]` (default: the version in `assets/presets/LICENSE`), which also fetches the referenced preset icons from the upstream releases pinned in the example. It is not part of CI; review the resulting diff by hand.

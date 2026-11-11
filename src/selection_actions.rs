@@ -492,40 +492,58 @@ impl SelectionAction {
 }
 
 /// Human-readable form of a keystroke spec: a bare letter shows uppercase,
-/// as in menus ("q" -> "Q").
+/// as in menus ("q" -> "Q"). Modifiers follow the running platform's
+/// conventions (see [`display_shortcut_for`]).
 pub(crate) fn display_shortcut(spec: &str) -> String {
-    // Modifier prefixes show as the macOS symbols, in the order macOS menus
-    // use: "cmd-shift-c" -> "⇧⌘C".
-    const MODIFIERS: [(&str, char); 4] = [
-        ("ctrl-", '⌃'),
-        ("alt-", '⌥'),
-        ("shift-", '⇧'),
-        ("cmd-", '⌘'),
+    display_shortcut_for(spec, cfg!(target_os = "macos"))
+}
+
+/// [`display_shortcut`] for an explicit platform. On macOS the modifiers show
+/// as symbols in the order macOS menus use ("cmd-shift-c" -> "⇧⌘C") and
+/// `secondary` is Cmd. Elsewhere they are spelled out in the usual
+/// Windows/Linux order ("secondary-shift-c" -> "Ctrl+Shift+C"), `secondary`
+/// is Ctrl, and `cmd` is the Windows/Super key.
+pub(crate) fn display_shortcut_for(spec: &str, mac: bool) -> String {
+    // Slots: ctrl, alt, shift, platform (Cmd / Win key).
+    const PREFIXES: [(&str, Option<usize>); 7] = [
+        ("ctrl-", Some(0)),
+        ("alt-", Some(1)),
+        ("shift-", Some(2)),
+        ("cmd-", Some(3)),
+        ("super-", Some(3)),
+        ("win-", Some(3)),
+        ("secondary-", None),
     ];
     let mut held = [false; 4];
     let mut key = spec;
     'strip: loop {
-        for (i, (prefix, _)) in MODIFIERS.iter().enumerate() {
+        for (prefix, slot) in PREFIXES {
             if let Some(rest) = key.strip_prefix(prefix) {
-                held[i] = true;
+                let slot = slot.unwrap_or(if mac { 3 } else { 0 });
+                held[slot] = true;
                 key = rest;
                 continue 'strip;
             }
         }
         break;
     }
-    let symbols: String = MODIFIERS
-        .iter()
-        .zip(held)
-        .filter(|(_, held)| *held)
-        .map(|((_, symbol), _)| *symbol)
-        .collect();
     let key = match key {
         "backspace" | "delete" => "⌫".to_string(),
         k if k.chars().count() == 1 => k.to_uppercase(),
         k => k.to_string(),
     };
-    format!("{symbols}{key}")
+    let labels: [&str; 4] = if mac {
+        ["⌃", "⌥", "⇧", "⌘"]
+    } else {
+        ["Ctrl+", "Alt+", "Shift+", "Win+"]
+    };
+    let modifiers: String = labels
+        .iter()
+        .zip(held)
+        .filter(|(_, held)| *held)
+        .map(|(label, _)| *label)
+        .collect();
+    format!("{modifiers}{key}")
 }
 
 fn active_editable_mut(
@@ -2675,11 +2693,24 @@ mod tests {
 
     #[test]
     fn shortcut_labels_show_modifier_symbols() {
-        assert_eq!(display_shortcut("cmd-shift-c"), "⇧⌘C");
-        assert_eq!(display_shortcut("cmd-alt-ctrl-z"), "⌃⌥⌘Z");
-        assert_eq!(display_shortcut("cmd--"), "⌘-");
-        assert_eq!(display_shortcut("q"), "Q");
-        assert_eq!(display_shortcut("backspace"), "⌫");
+        assert_eq!(display_shortcut_for("cmd-shift-c", true), "⇧⌘C");
+        assert_eq!(display_shortcut_for("cmd-alt-ctrl-z", true), "⌃⌥⌘Z");
+        assert_eq!(display_shortcut_for("cmd--", true), "⌘-");
+        assert_eq!(display_shortcut_for("secondary-shift-c", true), "⇧⌘C");
+        assert_eq!(display_shortcut_for("q", true), "Q");
+        assert_eq!(display_shortcut_for("backspace", true), "⌫");
+    }
+
+    #[test]
+    fn shortcut_labels_are_spelled_out_off_macos() {
+        assert_eq!(
+            display_shortcut_for("secondary-shift-c", false),
+            "Ctrl+Shift+C"
+        );
+        assert_eq!(display_shortcut_for("secondary--", false), "Ctrl+-");
+        assert_eq!(display_shortcut_for("ctrl-alt-z", false), "Ctrl+Alt+Z");
+        assert_eq!(display_shortcut_for("cmd-j", false), "Win+J");
+        assert_eq!(display_shortcut_for("q", false), "Q");
     }
 
     #[test]

@@ -5,7 +5,8 @@ use gpui::{
     SystemMenuType, WindowOptions,
 };
 
-use gpui_component::{Theme, ThemeMode};
+use gpui_component::menu::AppMenuBar;
+use gpui_component::{GlobalState, Theme, ThemeMode};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
@@ -281,6 +282,12 @@ fn apply_keybindings_change(cx: &mut App) {
 
 /// Build and install the menu bar, using the current viewport center to filter
 /// the Imagery menu to relevant ELI entries.
+///
+/// The one definition of the app's menus is [`build_menus`]. On macOS it
+/// becomes the native menu bar (`cx.set_menus`); where the in-window bar is
+/// shown (see [`in_window_menu_enabled`]) the same menus are also handed to
+/// it, so every rebuild (language change, shortcut change, imagery update,
+/// checkmark toggle) is reflected there too.
 pub(crate) fn rebuild_menus(
     cx: &mut App,
     center_lat: f64,
@@ -288,6 +295,94 @@ pub(crate) fn rebuild_menus(
     state: ImageryLoadState,
     show_downloaded_area: bool,
 ) {
+    cx.set_menus(build_menus(
+        center_lat,
+        center_lon,
+        state,
+        show_downloaded_area,
+    ));
+    if in_window_menu_enabled() {
+        // `Menu` is not `Clone`, so build the (cheap) list a second time for
+        // the bar's owned copy.
+        let owned = build_menus(center_lat, center_lon, state, show_downloaded_area)
+            .into_iter()
+            .map(Menu::owned)
+            .collect();
+        sync_in_window_menu(cx, owned);
+    }
+}
+
+/// Name of the environment variable that forces the in-window menu bar on
+/// macOS, where the native menu bar is normally the only one. Set it to `1`
+/// to draw the in-window bar in addition to the native menu (for testing the
+/// Windows/Linux bar without a Windows/Linux machine).
+pub(crate) const IN_WINDOW_MENU_ENV: &str = "OSM_GPUI_IN_WINDOW_MENU";
+
+/// Height of the in-window menu bar row, in pixels.
+pub(crate) const IN_WINDOW_MENU_BAR_HEIGHT: f32 = 30.0;
+
+/// Whether the in-window menu bar is wanted: always off macOS (GPUI draws no
+/// native menu bar on Windows, Linux or FreeBSD), and on macOS only when the
+/// test override is exactly `1`.
+pub(crate) fn in_window_menu_wanted(is_macos: bool, override_value: Option<&str>) -> bool {
+    !is_macos || override_value == Some("1")
+}
+
+/// [`in_window_menu_wanted`] for this process. Decided once. Always false in
+/// unit tests, so the layout tests see the same window on every platform.
+pub(crate) fn in_window_menu_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !cfg!(test)
+            && in_window_menu_wanted(
+                cfg!(target_os = "macos"),
+                std::env::var(IN_WINDOW_MENU_ENV).ok().as_deref(),
+            )
+    })
+}
+
+/// Height the in-window menu bar takes from the top of the window content
+/// (zero when it is not shown).
+pub(crate) fn top_chrome_height() -> gpui::Pixels {
+    if in_window_menu_enabled() {
+        px(IN_WINDOW_MENU_BAR_HEIGHT)
+    } else {
+        px(0.0)
+    }
+}
+
+struct InWindowMenuBar(gpui::Entity<AppMenuBar>);
+
+impl gpui::Global for InWindowMenuBar {}
+
+/// Give the in-window bar the latest menus, creating it on first use.
+fn sync_in_window_menu(cx: &mut App, menus: Vec<gpui::OwnedMenu>) {
+    GlobalState::global_mut(cx).set_app_menus(menus);
+    if let Some(bar) = cx.try_global::<InWindowMenuBar>().map(|g| g.0.clone()) {
+        bar.update(cx, |bar, cx| bar.reload(cx));
+    } else {
+        let bar = AppMenuBar::new(cx);
+        cx.set_global(InWindowMenuBar(bar));
+    }
+}
+
+/// The in-window menu bar entity, if it is enabled and the menus have been
+/// built.
+pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
+    if !in_window_menu_enabled() {
+        return None;
+    }
+    cx.try_global::<InWindowMenuBar>().map(|g| g.0.clone())
+}
+
+/// The app's menus: the single definition behind both the native macOS menu
+/// bar and the in-window bar.
+fn build_menus(
+    center_lat: f64,
+    center_lon: f64,
+    state: ImageryLoadState,
+    show_downloaded_area: bool,
+) -> Vec<Menu> {
     let custom = custom_imagery_snapshot();
     let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
         tr!("menu.imagery.custom_add"),
@@ -358,7 +453,7 @@ pub(crate) fn rebuild_menus(
     let mode_item =
         |label: SharedString, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
 
-    cx.set_menus(vec![
+    vec![
         Menu {
             name: APP_NAME.into(),
             items: vec![
@@ -476,7 +571,7 @@ pub(crate) fn rebuild_menus(
             ],
             disabled: false,
         },
-    ]);
+    ]
 }
 
 /// The app's user-visible name: the app menu title, its Hide/Quit items,
@@ -518,3 +613,51 @@ pub(crate) fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
 actions!(osm_gpui, [NoOpImageryInfo]);
 
 pub(crate) fn no_op_imagery_info(_: &NoOpImageryInfo, _cx: &mut App) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_window_menu_is_wanted_off_macos_regardless_of_override() {
+        assert!(in_window_menu_wanted(false, None));
+        assert!(in_window_menu_wanted(false, Some("0")));
+        assert!(in_window_menu_wanted(false, Some("1")));
+    }
+
+    #[test]
+    fn in_window_menu_on_macos_needs_the_override_set_to_one() {
+        assert!(!in_window_menu_wanted(true, None));
+        assert!(!in_window_menu_wanted(true, Some("")));
+        assert!(!in_window_menu_wanted(true, Some("0")));
+        assert!(!in_window_menu_wanted(true, Some("true")));
+        assert!(in_window_menu_wanted(true, Some("1")));
+    }
+
+    #[test]
+    fn in_window_menu_is_off_in_unit_tests() {
+        assert!(!in_window_menu_enabled());
+        assert_eq!(top_chrome_height(), px(0.0));
+    }
+
+    #[test]
+    fn menus_convert_to_owned_with_every_top_level_menu_and_the_file_items() {
+        let menus: Vec<gpui::OwnedMenu> = build_menus(40.0, -74.0, ImageryLoadState::Loading, true)
+            .into_iter()
+            .map(Menu::owned)
+            .collect();
+        let names: Vec<String> = menus.iter().map(|m| m.name.to_string()).collect();
+        assert_eq!(names.len(), 9, "{names:?}");
+        assert_eq!(names[0], APP_NAME);
+        let file = menus
+            .iter()
+            .find(|m| m.name.as_str() == tr!("menu.file.title").as_ref())
+            .expect("File menu");
+        let actions = file
+            .items
+            .iter()
+            .filter(|i| matches!(i, gpui::OwnedMenuItem::Action { .. }))
+            .count();
+        assert_eq!(actions, 4);
+    }
+}

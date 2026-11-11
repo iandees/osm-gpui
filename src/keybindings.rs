@@ -77,77 +77,77 @@ impl ShortcutCategory {
 pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "open_settings",
-        default_spec: "cmd-,",
+        default_spec: "secondary-,",
         category: ShortcutCategory::General,
     },
     ShortcutDef {
         id: "quit",
-        default_spec: "cmd-q",
+        default_spec: "secondary-q",
         category: ShortcutCategory::General,
     },
     ShortcutDef {
         id: "open_osm_file",
-        default_spec: "cmd-o",
+        default_spec: "secondary-o",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "download_osm",
-        default_spec: "cmd-shift-d",
+        default_spec: "secondary-shift-d",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "upload_osm",
-        default_spec: "cmd-shift-u",
+        default_spec: "secondary-shift-u",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "export_osm_file",
-        default_spec: "cmd-e",
+        default_spec: "secondary-e",
         category: ShortcutCategory::File,
     },
     ShortcutDef {
         id: "undo",
-        default_spec: "cmd-z",
+        default_spec: "secondary-z",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "redo",
-        default_spec: "cmd-shift-z",
+        default_spec: "secondary-shift-z",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "select_all",
-        default_spec: "cmd-a",
+        default_spec: "secondary-a",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "copy_tags",
-        default_spec: "cmd-shift-c",
+        default_spec: "secondary-shift-c",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "paste_tags",
-        default_spec: "cmd-shift-v",
+        default_spec: "secondary-shift-v",
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
         id: "zoom_in",
-        default_spec: "cmd-=",
+        default_spec: "secondary-=",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_out",
-        default_spec: "cmd--",
+        default_spec: "secondary--",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_to_data",
-        default_spec: "cmd-0",
+        default_spec: "secondary-0",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
         id: "zoom_to_selection",
-        default_spec: "cmd-j",
+        default_spec: "secondary-j",
         category: ShortcutCategory::View,
     },
     ShortcutDef {
@@ -318,9 +318,25 @@ mod tests {
     }
 
     #[test]
+    fn default_modifier_shortcuts_use_the_platform_primary_key() {
+        // `cmd` is the Windows/Super key off macOS, so a `cmd-` default would
+        // be unusable there; `secondary` is Cmd on macOS and Ctrl elsewhere.
+        for d in SHORTCUTS {
+            assert!(!d.default_spec.contains("cmd"), "{}", d.id);
+            if !is_bare_key(d.default_spec) {
+                assert!(d.default_spec.starts_with("secondary-"), "{}", d.id);
+            }
+            assert!(gpui::Keystroke::parse(d.default_spec).is_ok(), "{}", d.id);
+        }
+        let stroke = gpui::Keystroke::parse("secondary-z").unwrap();
+        assert_eq!(stroke.modifiers.platform, cfg!(target_os = "macos"));
+        assert_eq!(stroke.modifiers.control, !cfg!(target_os = "macos"));
+    }
+
+    #[test]
     fn effective_spec_falls_back_to_default() {
         let s = AppSettings::default();
-        assert_eq!(effective_spec(&s, "undo"), "cmd-z");
+        assert_eq!(effective_spec(&s, "undo"), "secondary-z");
     }
 
     #[test]
@@ -389,10 +405,10 @@ mod tests {
     #[test]
     fn conflict_detects_duplicate_and_ignores_self() {
         let s = AppSettings::default();
-        // "cmd-z" is undo's default spec; assigning it to redo conflicts.
-        assert_eq!(conflict(&s, "redo", "cmd-z").as_deref(), Some("Undo"));
+        // "secondary-z" is undo's default spec; assigning it to redo conflicts.
+        assert_eq!(conflict(&s, "redo", "secondary-z").as_deref(), Some("Undo"));
         // Assigning undo's own current spec to undo itself is not a conflict.
-        assert_eq!(conflict(&s, "undo", "cmd-z"), None);
+        assert_eq!(conflict(&s, "undo", "secondary-z"), None);
     }
 
     #[test]
