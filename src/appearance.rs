@@ -121,9 +121,23 @@ fn set_native_appearance(mode: Option<ThemeMode>) {
     *NATIVE_READBACK.lock().unwrap() = readback;
 }
 
-/// The OS appearance, preferably as seen by an open window (more reliable
-/// than the app-level query on Linux).
+/// The OS appearance.
+///
+/// On macOS this asks the application, never a window. A window's appearance
+/// is a value gpui caches and refreshes only when AppKit notifies it, and that
+/// notification can arrive (and be dropped) while we are still inside the
+/// update that cleared our forced appearance. Reading the cache then returned
+/// the appearance we had just stopped forcing, so going from Dark to System on
+/// a light system changed the title bar but left the UI dark. The app-level
+/// value is computed by AppKit on demand and is already the system's once the
+/// override is cleared.
+///
+/// Elsewhere an open window is preferred (more reliable than the app-level
+/// query on Linux).
 fn system_mode(cx: &mut App) -> ThemeMode {
+    if cfg!(target_os = "macos") {
+        return ThemeMode::from(cx.window_appearance());
+    }
     let from_window = cx
         .windows()
         .first()
