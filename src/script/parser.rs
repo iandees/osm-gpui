@@ -187,6 +187,20 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         }
         "assert_dialog" => parse_assert_dialog(line_no, &rest),
         "assert_selection" => parse_assert_selection(line_no, &rest),
+        "assert_native_appearance" => {
+            let expect = match rest.as_slice() {
+                ["system"] => NativeAppearanceWant::System,
+                ["light"] => NativeAppearanceWant::Light,
+                ["dark"] => NativeAppearanceWant::Dark,
+                _ => {
+                    return Err(err(
+                        line_no,
+                        "assert_native_appearance: want system|light|dark",
+                    ))
+                }
+            };
+            Ok(Op::AssertNativeAppearance { expect })
+        }
         "export_layer" => match rest.as_slice() {
             [path] => Ok(Op::ExportLayer {
                 path: path.to_string(),
@@ -865,6 +879,22 @@ mod tests {
             Op::Click { ctrl, .. } => assert!(!*ctrl),
             other => panic!("expected Op::Click, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn assert_native_appearance_parses() {
+        for (word, want) in [
+            ("system", NativeAppearanceWant::System),
+            ("light", NativeAppearanceWant::Light),
+            ("dark", NativeAppearanceWant::Dark),
+        ] {
+            assert_eq!(
+                parse(&format!("assert_native_appearance {word}")).unwrap()[0].op,
+                Op::AssertNativeAppearance { expect: want }
+            );
+        }
+        assert!(parse("assert_native_appearance").is_err());
+        assert!(parse("assert_native_appearance blue").is_err());
     }
 
     #[test]

@@ -102,6 +102,16 @@ pub enum SelectionKind {
     Multiple,
 }
 
+/// What `assert_native_appearance` expects the native app appearance (title
+/// bar and other system chrome) to be forced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAppearanceWant {
+    /// Not forced: following the OS.
+    System,
+    Light,
+    Dark,
+}
+
 /// A read-only condition about the running app, evaluated on its main thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Check {
@@ -111,6 +121,7 @@ pub enum Check {
     StatusContains(String),
     Dialog(DialogExpect),
     Selection(SelectionKind),
+    NativeAppearance(NativeAppearanceWant),
     /// Exactly this many features are selected.
     SelectedCount(usize),
     /// The open Find dialog's match-count line contains the text.
@@ -266,6 +277,11 @@ pub enum Op {
     },
     AssertSelection {
         kind: SelectionKind,
+    },
+    /// Assert the native app appearance (as read back from the OS after the
+    /// app last set it) is forced to dark or light, or not forced (system).
+    AssertNativeAppearance {
+        expect: NativeAppearanceWant,
     },
     /// Assert exactly `count` features are selected.
     AssertSelectedCount {

@@ -755,6 +755,21 @@ impl MapViewer {
                     Err(format!("expected selection {want:?}, found {got:?}"))
                 }
             }
+            Check::NativeAppearance(want) => {
+                use gpui_component::ThemeMode;
+                let got = match osm_gpui::appearance::native_readback() {
+                    None => script::NativeAppearanceWant::System,
+                    Some(ThemeMode::Light) => script::NativeAppearanceWant::Light,
+                    Some(ThemeMode::Dark) => script::NativeAppearanceWant::Dark,
+                };
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected native appearance {want:?}, found {got:?}"
+                    ))
+                }
+            }
             Check::SelectedCount(want) => {
                 if self.selected.len() == *want {
                     Ok(())
