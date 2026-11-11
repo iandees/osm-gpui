@@ -14,6 +14,7 @@ pub mod coordinates;
 pub mod custom_imagery_store;
 pub mod download_bounds;
 pub mod extrude;
+pub mod feature_clipboard;
 pub mod fields;
 pub mod frame_stats;
 pub mod geojson;
