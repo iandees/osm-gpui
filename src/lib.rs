@@ -24,6 +24,7 @@ pub mod interaction;
 pub mod keybindings;
 pub mod layers;
 pub mod limits;
+pub mod measure;
 pub mod multipolygon;
 pub mod nsi;
 pub mod open_files;
