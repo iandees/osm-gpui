@@ -104,12 +104,20 @@ const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
 /// deliberately excluded — see the comment where this is called.
 pub(crate) fn key_bindings_from_settings(
     settings: &osm_gpui::settings_store::AppSettings,
+    is_macos: bool,
 ) -> Vec<KeyBinding> {
-    let fixed = [
-        KeyBinding::new("cmd-m", MinimizeWindow, None),
-        KeyBinding::new("cmd-h", HideApp, None),
-        KeyBinding::new("alt-cmd-h", HideOtherApps, None),
-    ];
+    // Minimize and Hide are macOS conventions: off macOS `cmd` maps to the
+    // Windows/Super key, where `cmd-m`/`cmd-h` would clash with the OS, and
+    // Hide/Hide Others do nothing.
+    let fixed = if is_macos {
+        vec![
+            KeyBinding::new("cmd-m", MinimizeWindow, None),
+            KeyBinding::new("cmd-h", HideApp, None),
+            KeyBinding::new("alt-cmd-h", HideOtherApps, None),
+        ]
+    } else {
+        vec![]
+    };
     osm_gpui::keybindings::effective_bindings(settings)
         .into_iter()
         .filter_map(|(id, spec)| match id {
@@ -6398,6 +6406,7 @@ fn main() {
                     // see the `on_key_down` closure in `render()`.
                     cx.bind_keys(key_bindings_from_settings(
                         &osm_gpui::settings_store::snapshot(),
+                        cfg!(target_os = "macos"),
                     ));
                     // Follow live OS light/dark changes while on System.
                     osm_gpui::appearance::observe_system_appearance(window);
@@ -7917,13 +7926,32 @@ mod tests {
 
     #[test]
     fn tag_copy_and_paste_are_modifier_key_bindings_on_the_map_context() {
-        let bindings = key_bindings_from_settings(&settings_store::AppSettings::default());
+        let bindings = key_bindings_from_settings(&settings_store::AppSettings::default(), true);
         let ids: Vec<String> = bindings
             .iter()
             .filter_map(|b| b.action().as_any().downcast_ref::<RunSelectionAction>())
             .map(|a| a.id.to_string())
             .collect();
         assert_eq!(ids, ["copy_tags", "paste_tags"]);
+    }
+
+    #[test]
+    fn macos_only_fixed_bindings_are_registered_only_on_macos() {
+        let has = |bindings: &[KeyBinding], f: fn(&dyn gpui::Action) -> bool| {
+            bindings.iter().any(|b| f(b.action()))
+        };
+        let settings = settings_store::AppSettings::default();
+        let mac = key_bindings_from_settings(&settings, true);
+        let other = key_bindings_from_settings(&settings, false);
+        assert!(has(&mac, |a| a.as_any().is::<MinimizeWindow>()));
+        assert!(has(&mac, |a| a.as_any().is::<HideApp>()));
+        assert!(has(&mac, |a| a.as_any().is::<HideOtherApps>()));
+        assert!(!has(&other, |a| a.as_any().is::<MinimizeWindow>()));
+        assert!(!has(&other, |a| a.as_any().is::<HideApp>()));
+        assert!(!has(&other, |a| a.as_any().is::<HideOtherApps>()));
+        // The functional shortcuts are unaffected.
+        assert!(has(&other, |a| a.as_any().is::<Quit>()));
+        assert!(has(&other, |a| a.as_any().is::<OpenSettings>()));
     }
 
     #[gpui::test]
@@ -9274,6 +9302,7 @@ mod tests {
         cx.update(|cx| {
             cx.bind_keys(key_bindings_from_settings(
                 &osm_gpui::settings_store::snapshot(),
+                cfg!(target_os = "macos"),
             ))
         });
         let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);

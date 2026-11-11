@@ -262,12 +262,11 @@ pub(crate) fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
 fn apply_keybindings_change(cx: &mut App) {
     let settings = osm_gpui::settings_store::snapshot();
     cx.clear_key_bindings();
-    cx.bind_keys(crate::key_bindings_from_settings(&settings));
-    rebuild_menus_from_live_state(cx);
-}
+    cx.bind_keys(crate::key_bindings_from_settings(
+        &settings,
+        cfg!(target_os = "macos"),
+    ));
 
-/// Rebuild the menus from the live map viewer's state.
-pub(crate) fn rebuild_menus_from_live_state(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
@@ -300,6 +299,7 @@ pub(crate) fn rebuild_menus(
     show_downloaded_area: bool,
 ) {
     cx.set_menus(build_menus(
+        cfg!(target_os = "macos"),
         center_lat,
         center_lon,
         state,
@@ -308,10 +308,16 @@ pub(crate) fn rebuild_menus(
     if in_window_menu_enabled() {
         // `Menu` is not `Clone`, so build the (cheap) list a second time for
         // the bar's owned copy.
-        let owned = build_menus(center_lat, center_lon, state, show_downloaded_area)
-            .into_iter()
-            .map(Menu::owned)
-            .collect();
+        let owned = build_menus(
+            in_window_menu_is_macos_layout(),
+            center_lat,
+            center_lon,
+            state,
+            show_downloaded_area,
+        )
+        .into_iter()
+        .map(Menu::owned)
+        .collect();
         sync_in_window_menu(cx, owned);
     }
 }
@@ -329,7 +335,29 @@ pub(crate) const IN_WINDOW_MENU_BAR_HEIGHT: f32 = 30.0;
 /// native menu bar on Windows, Linux or FreeBSD), and on macOS only when the
 /// test override is exactly `1`.
 pub(crate) fn in_window_menu_wanted(is_macos: bool, override_value: Option<&str>) -> bool {
-    !is_macos || override_value == Some("1")
+    !is_macos || matches!(override_value, Some("1" | IN_WINDOW_MENU_OTHER))
+}
+
+/// Override value (`OSM_GPUI_IN_WINDOW_MENU=other`) that forces the in-window
+/// bar on macOS like `1` does, but fills it with the Windows/Linux menu
+/// contents instead of the macOS ones. The native menu stays the macOS one.
+/// A developer aid for seeing the non-macOS layout without that platform.
+pub(crate) const IN_WINDOW_MENU_OTHER: &str = "other";
+
+/// Whether the in-window bar shows the macOS menu layout: only on macOS, and
+/// not when the override asks for the `other` platform's contents.
+pub(crate) fn in_window_menu_uses_macos_layout(
+    is_macos: bool,
+    override_value: Option<&str>,
+) -> bool {
+    is_macos && override_value != Some(IN_WINDOW_MENU_OTHER)
+}
+
+fn in_window_menu_is_macos_layout() -> bool {
+    in_window_menu_uses_macos_layout(
+        cfg!(target_os = "macos"),
+        std::env::var(IN_WINDOW_MENU_ENV).ok().as_deref(),
+    )
 }
 
 /// [`in_window_menu_wanted`] for this process. Decided once. Always false in
@@ -381,7 +409,15 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 
 /// The app's menus: the single definition behind both the native macOS menu
 /// bar and the in-window bar.
+///
+/// `is_macos` selects the platform's layout. macOS gets the app-name menu with
+/// About, Settings, Services, Hide, Hide Others, Show All and Quit. Elsewhere
+/// that menu is dropped, because Hide/Hide Others/Show All/Services do nothing
+/// off macOS, and the rest moves to where Windows and Linux users look for it:
+/// Quit at the end of File, Settings at the end of Edit, About at the end of
+/// Help.
 fn build_menus(
+    is_macos: bool,
     center_lat: f64,
     center_lon: f64,
     state: ImageryLoadState,
@@ -457,8 +493,33 @@ fn build_menus(
     let mode_item =
         |label: SharedString, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
 
-    vec![
-        Menu {
+    // Off macOS there is no app-name menu (see `build_menus`): Quit goes at
+    // the end of File, Settings at the end of Edit, About at the end of Help.
+    let mut file_items = vec![
+        MenuItem::action(tr!("menu.file.open"), OpenOsmFile),
+        MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
+        MenuItem::separator(),
+        MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
+        MenuItem::action(tr!("menu.file.upload"), UploadToOsm),
+    ];
+    let mut edit_tail = vec![];
+    let mut help_items = vec![
+        MenuItem::action(tr!("menu.help.map_features_wiki"), OpenMapFeaturesWiki),
+        MenuItem::action(
+            tr!("menu.help.project_page", app = APP_NAME),
+            OpenProjectPage,
+        ),
+    ];
+    // Minimize and Zoom work on every platform (GPUI implements both for
+    // macOS, Windows and Linux/X11/Wayland), so the Window menu stays.
+    let window_items = vec![
+        MenuItem::action(tr!("menu.window.minimize"), MinimizeWindow),
+        MenuItem::action(tr!("menu.window.zoom"), ZoomWindow),
+    ];
+
+    let mut menus = vec![];
+    if is_macos {
+        menus.push(Menu {
             name: APP_NAME.into(),
             items: vec![
                 MenuItem::action(tr!("menu.app.about", app = APP_NAME), ShowAbout),
@@ -474,45 +535,55 @@ fn build_menus(
                 MenuItem::action(tr!("menu.app.quit", app = APP_NAME), Quit),
             ],
             disabled: false,
-        },
+        });
+    } else {
+        file_items.push(MenuItem::separator());
+        file_items.push(MenuItem::action(tr!("menu.app.quit", app = APP_NAME), Quit));
+        edit_tail.push(MenuItem::separator());
+        edit_tail.push(MenuItem::action(tr!("menu.app.settings"), OpenSettings));
+        help_items.push(MenuItem::separator());
+        help_items.push(MenuItem::action(
+            tr!("menu.app.about", app = APP_NAME),
+            ShowAbout,
+        ));
+    }
+
+    menus.extend([
         Menu {
             name: tr!("menu.file.title"),
-            items: vec![
-                MenuItem::action(tr!("menu.file.open"), OpenOsmFile),
-                MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
-                MenuItem::separator(),
-                MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
-                MenuItem::action(tr!("menu.file.upload"), UploadToOsm),
-            ],
+            items: file_items,
             disabled: false,
         },
         Menu {
             name: tr!("menu.edit.title"),
-            items: vec![
-                MenuItem::action(tr!("menu.edit.undo"), Undo),
-                MenuItem::action(tr!("menu.edit.redo"), Redo),
-                MenuItem::separator(),
-                MenuItem::action(
-                    tr!("menu.edit.copy_tags"),
-                    RunSelectionAction {
-                        id: "copy_tags".into(),
-                    },
-                ),
-                MenuItem::action(
-                    tr!("menu.edit.paste_tags"),
-                    RunSelectionAction {
-                        id: "paste_tags".into(),
-                    },
-                ),
-                MenuItem::separator(),
-                MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
-                MenuItem::separator(),
-                MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
-                MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
-                MenuItem::separator(),
-                MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
-                MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),
-            ],
+            items: std::iter::empty()
+                .chain(vec![
+                    MenuItem::action(tr!("menu.edit.undo"), Undo),
+                    MenuItem::action(tr!("menu.edit.redo"), Redo),
+                    MenuItem::separator(),
+                    MenuItem::action(
+                        tr!("menu.edit.copy_tags"),
+                        RunSelectionAction {
+                            id: "copy_tags".into(),
+                        },
+                    ),
+                    MenuItem::action(
+                        tr!("menu.edit.paste_tags"),
+                        RunSelectionAction {
+                            id: "paste_tags".into(),
+                        },
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
+                    MenuItem::separator(),
+                    MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
+                    MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
+                    MenuItem::separator(),
+                    MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
+                    MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),
+                ])
+                .chain(edit_tail)
+                .collect(),
             disabled: false,
         },
         Menu {
@@ -558,24 +629,16 @@ fn build_menus(
         },
         Menu {
             name: tr!("menu.window.title"),
-            items: vec![
-                MenuItem::action(tr!("menu.window.minimize"), MinimizeWindow),
-                MenuItem::action(tr!("menu.window.zoom"), ZoomWindow),
-            ],
+            items: window_items,
             disabled: false,
         },
         Menu {
             name: tr!("menu.help.title"),
-            items: vec![
-                MenuItem::action(tr!("menu.help.map_features_wiki"), OpenMapFeaturesWiki),
-                MenuItem::action(
-                    tr!("menu.help.project_page", app = APP_NAME),
-                    OpenProjectPage,
-                ),
-            ],
+            items: help_items,
             disabled: false,
         },
-    ]
+    ]);
+    menus
 }
 
 /// The app's user-visible name: the app menu title, its Hide/Quit items,
@@ -658,12 +721,117 @@ mod tests {
         assert_eq!(top_chrome_height(), px(0.0));
     }
 
-    #[test]
-    fn menus_convert_to_owned_with_every_top_level_menu_and_the_file_items() {
-        let menus: Vec<gpui::OwnedMenu> = build_menus(40.0, -74.0, ImageryLoadState::Loading, true)
+    fn menus_for(is_macos: bool) -> Vec<gpui::OwnedMenu> {
+        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Loading, true)
             .into_iter()
             .map(Menu::owned)
-            .collect();
+            .collect()
+    }
+
+    /// Every action and system-menu entry in the menus, submenus included.
+    fn walk(items: &[gpui::OwnedMenuItem], out: &mut Vec<Box<dyn gpui::Action>>, sys: &mut usize) {
+        for item in items {
+            match item {
+                gpui::OwnedMenuItem::Action { action, .. } => out.push(action.boxed_clone()),
+                gpui::OwnedMenuItem::Submenu(m) => walk(&m.items, out, sys),
+                gpui::OwnedMenuItem::SystemMenu(_) => *sys += 1,
+                gpui::OwnedMenuItem::Separator => {}
+            }
+        }
+    }
+
+    fn all_actions(menus: &[gpui::OwnedMenu]) -> (Vec<Box<dyn gpui::Action>>, usize) {
+        let (mut out, mut sys) = (vec![], 0);
+        for m in menus {
+            walk(&m.items, &mut out, &mut sys);
+        }
+        (out, sys)
+    }
+
+    fn has<T: gpui::Action>(actions: &[Box<dyn gpui::Action>]) -> bool {
+        actions.iter().any(|a| a.as_any().is::<T>())
+    }
+
+    #[test]
+    fn macos_menus_keep_the_app_menu_with_the_macos_only_items() {
+        let menus = menus_for(true);
+        assert_eq!(menus[0].name.as_str(), APP_NAME);
+        let (actions, system_menus) = all_actions(&menus);
+        assert!(has::<HideApp>(&actions));
+        assert!(has::<HideOtherApps>(&actions));
+        assert!(has::<ShowAllApps>(&actions));
+        assert_eq!(system_menus, 1, "the Services submenu");
+        assert!(has::<MinimizeWindow>(&actions));
+        assert!(has::<ZoomWindow>(&actions));
+    }
+
+    #[test]
+    fn other_platform_menus_drop_the_macos_only_items_and_keep_every_function() {
+        let menus = menus_for(false);
+        let (actions, system_menus) = all_actions(&menus);
+        assert!(!has::<HideApp>(&actions));
+        assert!(!has::<HideOtherApps>(&actions));
+        assert!(!has::<ShowAllApps>(&actions));
+        assert_eq!(system_menus, 0);
+        for menu in &menus {
+            assert!(
+                menu.items
+                    .iter()
+                    .any(|i| !matches!(i, gpui::OwnedMenuItem::Separator)),
+                "empty menu {:?}",
+                menu.name
+            );
+        }
+        assert!(
+            menus.iter().all(|m| m.name.as_str() != APP_NAME),
+            "no app-name menu off macOS"
+        );
+        assert!(has::<MinimizeWindow>(&actions));
+        assert!(has::<ZoomWindow>(&actions));
+        assert!(has::<Quit>(&actions));
+        assert!(has::<OpenSettings>(&actions));
+        assert!(has::<ShowAbout>(&actions));
+        assert!(has::<OpenOsmFile>(&actions));
+        assert!(has::<ExportOsmFile>(&actions));
+        assert!(has::<DownloadFromOsm>(&actions));
+        assert!(has::<UploadToOsm>(&actions));
+        assert!(has::<OpenMapFeaturesWiki>(&actions));
+        assert!(has::<OpenProjectPage>(&actions));
+        assert!(has::<Undo>(&actions));
+        assert!(has::<ToggleDebugOverlay>(&actions));
+    }
+
+    #[test]
+    fn every_macos_action_not_macos_only_is_in_the_other_menus_too() {
+        let (mac, _) = all_actions(&menus_for(true));
+        let (other, _) = all_actions(&menus_for(false));
+        for a in &mac {
+            let macos_only = a.as_any().is::<HideApp>()
+                || a.as_any().is::<HideOtherApps>()
+                || a.as_any().is::<ShowAllApps>();
+            if !macos_only {
+                assert!(
+                    other.iter().any(|o| o.partial_eq(a.as_ref())),
+                    "missing off macOS: {}",
+                    a.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn in_window_bar_layout_follows_the_platform_unless_overridden_to_other() {
+        assert!(in_window_menu_wanted(true, Some("other")));
+        assert!(in_window_menu_uses_macos_layout(true, None));
+        assert!(in_window_menu_uses_macos_layout(true, Some("1")));
+        assert!(!in_window_menu_uses_macos_layout(true, Some("other")));
+        assert!(!in_window_menu_uses_macos_layout(false, None));
+        assert!(!in_window_menu_uses_macos_layout(false, Some("1")));
+    }
+
+    #[test]
+    fn menus_convert_to_owned_with_every_top_level_menu_and_the_file_items() {
+        let menus = menus_for(true);
         let names: Vec<String> = menus.iter().map(|m| m.name.to_string()).collect();
         assert_eq!(names.len(), 9, "{names:?}");
         assert_eq!(names[0], APP_NAME);
