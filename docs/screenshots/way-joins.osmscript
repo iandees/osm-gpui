@@ -1,0 +1,46 @@
+# Line joins and end caps on ways: bends of thick roads, a road split into
+# several ways (at a straight point and at bends), a tertiary and a
+# residential road meeting the split points, hairpins, a dead end, a
+# roundabout (closed highway ring), and building and pond outlines.
+# fixtures/way-joins.osm is laid out on a 10 px grid at zoom 18 around
+# (40.7120, -74.0060); see the comment at its top.
+#
+# Captures: whole scene at 17 and 18, then 19 and 20 around the interesting
+# spots. Untagged vertex markers hide corners at zoom 18 and above on builds
+# that draw them there.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/way-joins.osm
+viewport 40.711920 -74.005838 17
+wait_idle 5s
+capture docs/screenshots/way-joins-1-z17.png
+
+viewport 40.711920 -74.005838 18
+wait_idle 5s
+capture docs/screenshots/way-joins-2-z18.png
+
+# The split point of the primary road with the tertiary road leaving it.
+viewport 40.712080 -74.006648 19
+wait_idle 5s
+capture docs/screenshots/way-joins-3-z19-junction.png
+
+# The roundabout, the minor road ending on it, and the hairpins.
+viewport 40.711800 -74.004380 19
+wait_idle 5s
+capture docs/screenshots/way-joins-4-z19-roundabout.png
+
+viewport 40.711400 -74.004812 20
+wait_idle 5s
+capture docs/screenshots/way-joins-5-z20-hairpins.png
+
+# Buildings: L shape and sliver.
+viewport 40.713200 -74.004920 20
+wait_idle 5s
+capture docs/screenshots/way-joins-6-z20-buildings.png
+
+# A residential road split at bends, ending in a dead end.
+viewport 40.711000 -74.007100 20
+wait_idle 5s
+capture docs/screenshots/way-joins-7-z20-split-dead-end.png
+
+log done
