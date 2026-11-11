@@ -4240,6 +4240,32 @@ impl EditableLayer for OsmLayer {
             .collect()
     }
 
+    fn search_features(
+        &self,
+        query: &crate::search::Query,
+        selected: &std::collections::HashSet<(FeatureKind, i64)>,
+        only_selected: bool,
+        view: Option<crate::search::GeoBounds>,
+    ) -> Vec<FeatureRef> {
+        let Some(data) = self.osm_data.as_deref() else {
+            return Vec::new();
+        };
+        let ctx = crate::search::SearchContext {
+            original: self.original_data.as_deref(),
+            selected: Some(selected),
+            view,
+            only_selected,
+        };
+        crate::search::search(query, data, &ctx)
+            .into_iter()
+            .map(|(kind, id)| FeatureRef {
+                layer_id: self.id,
+                kind,
+                id,
+            })
+            .collect()
+    }
+
     fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
         if feature.layer_id != self.id {
             return None;
@@ -4349,6 +4375,16 @@ impl EditableLayer for OsmLayer {
                     return;
                 }
                 sp += self.drag_preview_offset(feature.id);
+                // Off screen (a big selection mostly is): nothing to draw.
+                const MARGIN: f32 = 30.0;
+                if kind == HighlightKind::Selected
+                    && (sp.x.as_f32() < -MARGIN
+                        || sp.y.as_f32() < -MARGIN
+                        || sp.x.as_f32() > bounds.size.width.as_f32() + MARGIN
+                        || sp.y.as_f32() > bounds.size.height.as_f32() + MARGIN)
+                {
+                    return;
+                }
                 let node_style = self.stylesheet.node_style(&n.tags);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
@@ -4393,7 +4429,8 @@ impl EditableLayer for OsmLayer {
                 }
                 // A relation can have hundreds of member ways, most of them
                 // off screen at any zoom that shows a few: skip those.
-                if kind == HighlightKind::Member {
+                // A selection of thousands (Edit > Find) does the same.
+                if matches!(kind, HighlightKind::Member | HighlightKind::Selected) {
                     let xs = pts.iter().map(|p| p.x.as_f32());
                     let ys = pts.iter().map(|p| p.y.as_f32());
                     let (min_x, max_x) =

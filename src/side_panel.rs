@@ -32,6 +32,12 @@ pub(crate) struct Membership {
 
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
+    /// A selection of tens of thousands (Edit > Select All, Edit > Find)
+    /// lists only this many features; the rest are summarized.
+    const SELECTION_LIST_CAP: usize = 200;
+    /// Above this many selected features the Tags section stops combining
+    /// their tags (that work is repeated on every frame).
+    const TAGS_AGGREGATE_LIMIT: usize = 5000;
 
     /// The right pane: Layers, Selection, and Tags sections stacked
     /// top-to-bottom, each collapsible and sized to its content (the whole
@@ -936,6 +942,7 @@ impl MapViewer {
 
         let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
         let list_height = px(visible_rows as f32 * PANEL_ROW_HEIGHT);
+        let hidden = self.selected.len().saturating_sub(Self::SELECTION_LIST_CAP);
 
         div()
             .id("selection-list")
@@ -943,53 +950,73 @@ impl MapViewer {
             .flex_col()
             .h(list_height)
             .overflow_y_scroll()
-            .children(self.selected.iter().enumerate().map(|(i, feat)| {
-                let kind_label = match feat.kind {
-                    FeatureKind::Node => tr!("panel.selection.node"),
-                    FeatureKind::Way => tr!("panel.selection.way"),
-                    FeatureKind::Relation => tr!("panel.selection.relation"),
-                };
-                let row_feat = *feat;
-                let described = self.describe_selected_feature(feat);
-                let row_text = match &described {
-                    Some((name, _)) => tr!(
-                        "panel.selection.row_named",
-                        name = name,
-                        kind = kind_label,
-                        id = feat.id
-                    ),
-                    None => tr!("panel.selection.row", kind = kind_label, id = feat.id),
-                };
-                let icon_path = described.and_then(|(_, path)| path);
-
-                let mut row = interactive_row(("selection-row", i), false, cx)
-                    .text_color(cx.theme().foreground);
-
-                // Reserve the icon slot even without an icon so the row
-                // text lines up across rows.
-                row = row.child(div().size(px(14.0)).flex_shrink_0().children(icon_path.map(
-                    |path| {
-                        osm_gpui::presets::icon_element(
-                            path,
-                            14.0,
-                            cx.theme().foreground,
-                            cx.theme().is_dark(),
-                        )
-                    },
-                )));
-
-                row.child(row_text).on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                        this.selected = vec![row_feat];
-                        this.fields_text_inputs.clear();
-                        this.fields_text_subscribed.clear();
-                        this.fields_open_combo = None;
-                        this.fields_promoted_more_fields.clear();
-                        cx.notify();
-                    }),
+            .when(hidden > 0, |list| {
+                list.child(
+                    div()
+                        .px_2()
+                        .h(px(PANEL_ROW_HEIGHT))
+                        .flex_shrink_0()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr_count!(
+                            "panel.selection.more",
+                            hidden,
+                            shown = Self::SELECTION_LIST_CAP
+                        )),
                 )
-            }))
+            })
+            .children(
+                self.selected
+                    .iter()
+                    .take(Self::SELECTION_LIST_CAP)
+                    .enumerate()
+                    .map(|(i, feat)| {
+                        let kind_label = match feat.kind {
+                            FeatureKind::Node => tr!("panel.selection.node"),
+                            FeatureKind::Way => tr!("panel.selection.way"),
+                            FeatureKind::Relation => tr!("panel.selection.relation"),
+                        };
+                        let row_feat = *feat;
+                        let described = self.describe_selected_feature(feat);
+                        let row_text = match &described {
+                            Some((name, _)) => tr!(
+                                "panel.selection.row_named",
+                                name = name,
+                                kind = kind_label,
+                                id = feat.id
+                            ),
+                            None => tr!("panel.selection.row", kind = kind_label, id = feat.id),
+                        };
+                        let icon_path = described.and_then(|(_, path)| path);
+
+                        let mut row = interactive_row(("selection-row", i), false, cx)
+                            .text_color(cx.theme().foreground);
+
+                        // Reserve the icon slot even without an icon so the row
+                        // text lines up across rows.
+                        row = row.child(div().size(px(14.0)).flex_shrink_0().children(
+                            icon_path.map(|path| {
+                                osm_gpui::presets::icon_element(
+                                    path,
+                                    14.0,
+                                    cx.theme().foreground,
+                                    cx.theme().is_dark(),
+                                )
+                            }),
+                        ));
+
+                        row.child(row_text).on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                this.selected = vec![row_feat];
+                                this.fields_text_inputs.clear();
+                                this.fields_text_subscribed.clear();
+                                this.fields_open_combo = None;
+                                this.fields_promoted_more_fields.clear();
+                                cx.notify();
+                            }),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1240,6 +1267,19 @@ impl MapViewer {
         if self.selected.is_empty() {
             // Not shown at all when nothing is selected.
             return div().into_any_element();
+        }
+
+        if self.selected.len() > Self::TAGS_AGGREGATE_LIMIT {
+            return div()
+                .px_2()
+                .py_1()
+                .text_color(cx.theme().muted_foreground)
+                .child(tr_count!(
+                    "panel.tags.too_many",
+                    self.selected.len(),
+                    limit = Self::TAGS_AGGREGATE_LIMIT
+                ))
+                .into_any_element();
         }
 
         let per_feature: Vec<Vec<(String, String)>> = self
