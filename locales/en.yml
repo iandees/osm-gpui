@@ -360,6 +360,7 @@ history:
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"
+  rotated: "Rotated the selection"
   extruded_segment: "Extruded a segment"
   inserted_node: "Inserted a node into a way"
   snapped_node: "Snapped a node onto a way"
@@ -575,6 +576,7 @@ shortcut:
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
   action_align: "Align Nodes in Line"
+  action_rotate: "Rotate Selection"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
 # menu, the Tools menu, and their status-bar messages. Each action id has a
@@ -721,6 +723,11 @@ action:
     done:
       one: "Simplified: removed %{count} node (tolerance %{tolerance} m)"
       other: "Simplified: removed %{count} nodes (tolerance %{tolerance} m)"
+  rotate:
+    label: "Rotate"
+    hint: "Select a way, or two or more nodes, to rotate them around their center"
+    status: "Rotating %{degrees}° · move the pointer around the selection · Shift snaps to 15° · click or Enter to apply · Esc to cancel"
+    done: "Rotated %{degrees}°"
   align:
     label: "Align Nodes in Line"
     hint: "Select 3 or more nodes to put them on a straight line (select a way and use Straighten to align all of its nodes)"

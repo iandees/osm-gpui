@@ -1,0 +1,72 @@
+# Rotate the selection around its center: the right-click menu entry and the
+# W shortcut start it, the selection then turns with the pointer (Shift snaps
+# to 15 degrees), a click or Enter applies it as one undo step, Escape cancels.
+#
+# Coordinate model: see select.osmscript — viewport center is window (488, 388).
+#
+# Fixture layout at zoom 18, centered on (40.7120, -74.0060):
+#   way 5001  a 4-node rectangle, window x 120..280, y 200..300, so its
+#             center is at about window (200, 250).
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/extrude.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Select the rectangle by clicking its east wall.
+click 280,250
+wait_idle 1s
+assert_selected way 5001
+
+# The right-click menu offers Rotate.
+click 280,250 button=right
+wait_idle 1s
+capture out/01-context-menu.png
+key escape
+wait_idle 1s
+assert_selected way 5001
+
+# Start with the keyboard (the menu entry runs the same action). The pointer
+# starts east of the center and circles a quarter turn clockwise, to the south.
+hover 320,250
+action selection::RunSelectionAction {"id":"rotate"}
+wait_idle 1s
+hover 300,290
+hover 260,330
+hover 200,350
+wait_idle 1s
+assert_status_contains Rotating 90
+capture out/02-rotating-90.png
+
+# Shift snaps to 15 degree steps: this angle is about 49, so it snaps to 45.
+mod_down shift
+hover 260,320
+wait_idle 1s
+assert_status_contains Rotating 45
+capture out/03-snapped-45.png
+mod_up shift
+
+# A click applies it, as one undo step.
+click 260,320
+wait_idle 1s
+assert_status_contains Rotated
+capture out/04-applied.png
+
+key cmd+z
+wait_idle 1s
+capture out/05-undone.png
+
+# Escape cancels without leaving an undo step.
+hover 320,250
+key w
+wait_idle 1s
+hover 200,350
+wait_idle 1s
+capture out/06-before-cancel.png
+key escape
+wait_idle 1s
+capture out/07-cancelled.png
+
+log done

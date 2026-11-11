@@ -354,6 +354,7 @@ history:
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
+  rotated: "Auswahl gedreht"
   extruded_segment: "Segment ausgezogen"
   inserted_node: "Knoten in Weg eingefügt"
   snapped_node: "Knoten an Weg eingerastet"
@@ -569,6 +570,7 @@ shortcut:
   action_merge: "Knoten vereinigen"
   action_straighten: "Weg begradigen"
   action_align: "Knoten in einer Linie ausrichten"
+  action_rotate: "Auswahl drehen"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
 # und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
@@ -714,6 +716,11 @@ action:
     done:
       one: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
       other: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
+  rotate:
+    label: "Drehen"
+    hint: "Einen Weg oder zwei oder mehr Knoten wählen, um sie um ihren Mittelpunkt zu drehen"
+    status: "Drehen um %{degrees}° · Zeiger um die Auswahl bewegen · Umschalt rastet bei 15° ein · Klick oder Eingabe übernimmt · Esc bricht ab"
+    done: "Um %{degrees}° gedreht"
   align:
     label: "Knoten in einer Linie ausrichten"
     hint: "3 oder mehr Knoten wählen, um sie auf eine gerade Linie zu legen (für alle Knoten eines Wegs den Weg wählen und Begradigen verwenden)"
