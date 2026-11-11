@@ -4218,7 +4218,17 @@ impl MapViewer {
                         .map(|target| (dragged, target))
                 });
                 self.snap_preview = None;
-                if let Some(((layer_id, node), SnapTarget::Way { way_id, index, .. })) = &snap {
+                if let Some((
+                    (layer_id, node),
+                    SnapTarget::Way {
+                        way_id,
+                        index,
+                        lat,
+                        lon,
+                        ..
+                    },
+                )) = &snap
+                {
                     let joined = self
                         .layer_manager
                         .find_layer_mut(*layer_id)
@@ -4230,6 +4240,7 @@ impl MapViewer {
                                 *node,
                                 *way_id,
                                 Some(*index),
+                                Some((*lat, *lon)),
                             )
                         });
                     match joined {
