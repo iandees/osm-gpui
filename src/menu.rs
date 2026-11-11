@@ -864,17 +864,12 @@ pub(crate) fn register_app_actions(cx: &mut App) {
         osm_gpui::appearance::apply_run_override(ThemeMode::Dark, cx)
     });
     cx.on_action(|action: &SetAppearance, cx: &mut App| {
-        osm_gpui::appearance::set_preference(
-            action.mode,
-            !crate::script_harness::script_mode(),
-            cx,
-        );
+        // A scripted run is read-only (`persist::Policy`): this updates the
+        // in-memory setting and the file write is skipped.
+        osm_gpui::appearance::set_preference(action.mode, true, cx);
     });
     cx.on_action(|action: &SetInvertScrollZoom, _cx: &mut App| {
-        osm_gpui::settings_store::set_invert_scroll_zoom(
-            action.on,
-            !crate::script_harness::script_mode(),
-        );
+        osm_gpui::settings_store::set_invert_scroll_zoom(action.on, true);
     });
 }
 

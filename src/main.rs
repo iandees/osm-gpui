@@ -52,6 +52,7 @@ use osm_gpui::layers::{
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
 use osm_gpui::osm_upload;
+use osm_gpui::persist;
 use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
 use osm_gpui::tile_cache::TileCache;
@@ -6581,6 +6582,20 @@ fn main() {
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
     let cli_theme = args.theme;
+    // The one place the persistence policy is raised above its safe default
+    // (`Disabled`, which every test binary keeps). A normal run reads and
+    // writes the user's saved state; a scripted run reads it but never
+    // writes it. The single exception is the OAuth file, which auth narrows
+    // to the development server's login so the live-test sign-in persists
+    // and no production login can be touched.
+    if args.script.is_some() {
+        persist::set_policy(persist::Policy::ReadOnly);
+        if let Some(oauth_file) = auth::default_path() {
+            persist::allow_read_only_writes_to(oauth_file);
+        }
+    } else {
+        persist::set_policy(persist::Policy::Normal);
+    }
     // Where autosaves go (and are looked for): the app-data directory, except
     // in a scripted run, which has none unless `--autosave-dir` names one.
     let autosave_root = osm_gpui::autosave::resolve_root(
@@ -11995,5 +12010,54 @@ mod autosave_tests {
             ),
             None
         );
+    }
+
+    /// The binary's tests link the library without its `cfg(test)`, so this is
+    /// the guard that matters for them: the persistence policy is never raised
+    /// outside `main()`, and no save entry point reaches the real files.
+    #[test]
+    fn bin_tests_never_modify_the_real_saved_state() {
+        let state_dir = dirs::config_dir().map(|d| d.join("osm-gpui"));
+        let probe_paths: Vec<PathBuf> = state_dir
+            .iter()
+            .flat_map(|d| {
+                [
+                    "settings.json",
+                    "custom-imagery.json",
+                    "imagery-offsets.json",
+                    "oauth.json",
+                ]
+                .map(|f| d.join(f))
+            })
+            .collect();
+        // Preconditions first: if the guard were broken, fail before saving.
+        assert_eq!(persist::policy(), persist::Policy::Disabled);
+        assert_eq!(settings_store::default_path(), None);
+        assert_eq!(auth::default_path(), None);
+        assert_eq!(osm_gpui::autosave::default_root(), None);
+        for p in &probe_paths {
+            assert!(!persist::write_permitted(p), "{p:?} must be protected");
+        }
+        let mtimes = |paths: &[PathBuf]| -> Vec<Option<std::time::SystemTime>> {
+            paths
+                .iter()
+                .map(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()))
+                .collect()
+        };
+        let before = mtimes(&probe_paths);
+
+        let mut settings = settings_store::snapshot();
+        settings.welcome_dismissed = true;
+        settings_store::update_store(settings);
+        settings_store::set_welcome_dismissed(true, true);
+        settings_store::set_invert_scroll_zoom(true, true);
+        custom_imagery_store::update_store(Vec::new());
+
+        // The lowest write point reports the skip for the real settings file.
+        if let Some(real) = probe_paths.first() {
+            let outcome = persist::try_write_atomic(real, b"{}", persist::WriteOpts::default());
+            assert_eq!(outcome.unwrap(), persist::WriteOutcome::Skipped);
+        }
+        assert_eq!(before, mtimes(&probe_paths));
     }
 }
