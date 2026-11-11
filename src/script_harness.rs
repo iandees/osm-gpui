@@ -723,6 +723,29 @@ impl MapViewer {
                     Err(format!("expected selection {want:?}, found {got:?}"))
                 }
             }
+            Check::SelectedCount(want) => {
+                if self.selected.len() == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected {want} selected features, found {}",
+                        self.selected.len()
+                    ))
+                }
+            }
+            Check::FindPreview(text) => match &self.find_dialog {
+                None => Err("the Find dialog is not open".into()),
+                Some(dialog) => {
+                    let shown = dialog.read(cx).preview_text().to_string();
+                    if shown.contains(text.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "the Find dialog says {shown:?}, expected it to contain {text:?}"
+                        ))
+                    }
+                }
+            },
             Check::Dialog(want) => {
                 let found = self.describe_dialog(&phase);
                 let ok = match (want, &phase) {
@@ -730,6 +753,7 @@ impl MapViewer {
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
+                    (DialogExpect::Find, _) => self.find_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -766,6 +790,7 @@ impl MapViewer {
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
+            None if self.find_dialog.is_some() => "the Find dialog".into(),
             None => "no dialog".into(),
         }
     }

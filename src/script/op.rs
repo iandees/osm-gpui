@@ -87,6 +87,8 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
+    /// The Edit > Find dialog.
+    Find,
 }
 
 /// What `assert_selection` expects.
@@ -109,6 +111,10 @@ pub enum Check {
     StatusContains(String),
     Dialog(DialogExpect),
     Selection(SelectionKind),
+    /// Exactly this many features are selected.
+    SelectedCount(usize),
+    /// The open Find dialog's match-count line contains the text.
+    FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
 }
@@ -241,6 +247,14 @@ pub enum Op {
     },
     AssertSelection {
         kind: SelectionKind,
+    },
+    /// Assert exactly `count` features are selected.
+    AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert the Find dialog's match-count line contains `text`.
+    AssertFindPreview {
+        text: String,
     },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.
