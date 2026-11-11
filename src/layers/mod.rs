@@ -107,6 +107,22 @@ pub trait MapLayer: Send + Sync {
         None
     }
 
+    /// The imagery shift of a tile layer (`None` for every other kind of
+    /// layer). Only where imagery pixels are painted moves; see
+    /// `imagery_offset`.
+    fn imagery_offset(&self) -> Option<crate::imagery_offset::ImageryOffset> {
+        None
+    }
+
+    /// Set the imagery shift; ignored by layers that are not imagery.
+    fn set_imagery_offset(&mut self, _offset: crate::imagery_offset::ImageryOffset) {}
+
+    /// Stable identity of the imagery source (ELI id, `osm-carto`, or
+    /// `custom:<url template>`), the key under which offsets are remembered.
+    fn imagery_id(&self) -> Option<&str> {
+        None
+    }
+
     /// Compute the set of created/modified/deleted nodes/ways needed to
     /// bring the server up to date with this layer's current data, relative
     /// to whatever snapshot it was last loaded/synced from. Default: an

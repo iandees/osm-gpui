@@ -1,0 +1,88 @@
+# Imagery offset: shift the OSM Carto tiles under the data, in ground metres.
+#
+# Zoom 19 centred on (40.7125, -74.0056); one screen pixel there is
+# 0.2263 m east-west and north-south (the 0.7580 latitude factor included), so
+#   a drag of 120 px right / 60 px down  = E 27.16 m, N -13.58 m,
+#   three Right presses and one Shift+Up = +3 px east, +10 px north.
+#
+# Scripted runs never read or write the user's remembered-offsets file.
+# Captures go to out/ (not committed).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/extrude.osm
+viewport 40.7125 -74.0056 19
+wait_idle 10s
+assert_adjusting_offset off
+assert_imagery_offset 0 0
+capture out/imagery-offset-01-before.png
+
+# Enter the mode from the Imagery menu's action.
+action AdjustImageryOffset
+wait_idle 2s
+assert_adjusting_offset on
+capture out/imagery-offset-02-panel.png
+
+# Drag the imagery 120 px right and 60 px down: the data stays put.
+drag 500,350 620,410 button=left
+wait_idle 10s
+assert_imagery_offset 27.16 -13.58 tol=0.1
+capture out/imagery-offset-03-dragged.png
+
+# Nudge: 1 px per arrow press, 10 px with Shift.
+key right
+key right
+key right
+key shift+up
+wait_idle 10s
+assert_imagery_offset 27.84 -11.32 tol=0.1
+capture out/imagery-offset-04-nudged.png
+
+# Escape goes back to the offset at entry (none) and leaves the mode.
+key escape
+wait_idle 2s
+assert_adjusting_offset off
+assert_imagery_offset 0 0
+capture out/imagery-offset-05-cancelled.png
+
+# Set a value, keep it with the Done button, and see it flagged in the Layers
+# list. (Window coordinates of the panel's controls at 1200x800.)
+action AdjustImageryOffset
+wait_idle 1s
+action SetImageryOffset {"east":3.2,"north":-1.75}
+wait_idle 5s
+assert_imagery_offset 3.2 -1.75 tol=0.001
+capture out/imagery-offset-06-set.png
+click 629,176
+wait_idle 2s
+assert_adjusting_offset off
+assert_imagery_offset 3.2 -1.75 tol=0.001
+capture out/imagery-offset-07-kept.png
+
+# Numeric entry: type into the East field, Enter commits.
+action AdjustImageryOffset
+wait_idle 1s
+click 387,98
+key cmd+a
+type 5
+key enter
+wait_idle 3s
+assert_imagery_offset 5 -1.75 tol=0.001
+assert_adjusting_offset on
+capture out/imagery-offset-08-typed.png
+
+# Reset button zeroes the live offset; Escape still returns to the entry one.
+click 548,176
+wait_idle 3s
+assert_imagery_offset 0 0
+key escape
+wait_idle 2s
+assert_adjusting_offset off
+assert_imagery_offset 3.2 -1.75 tol=0.001
+
+# Reset from the Imagery menu's action.
+action ResetImageryOffset
+wait_idle 3s
+assert_imagery_offset 0 0
+capture out/imagery-offset-09-reset.png
+
+log done

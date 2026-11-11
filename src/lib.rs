@@ -19,6 +19,7 @@ pub mod http;
 pub mod i18n;
 pub mod idle_tracker;
 pub mod imagery;
+pub mod imagery_offset;
 pub mod interaction;
 pub mod keybindings;
 pub mod layers;

@@ -288,12 +288,29 @@ impl Runner {
             Op::AssertStatusContains { text } => app
                 .check(&Check::StatusContains(text.clone()))
                 .map_err(|e| fail(format!("assert_status_contains: {e}"))),
+            Op::AssertImageryOffset {
+                east,
+                north,
+                tolerance,
+            } => app
+                .check(&Check::ImageryOffset {
+                    east: *east,
+                    north: *north,
+                    tolerance: *tolerance,
+                })
+                .map_err(|e| fail(format!("assert_imagery_offset: {e}"))),
+            Op::AssertAdjustingOffset { on } => app
+                .check(&Check::AdjustingOffset(*on))
+                .map_err(|e| fail(format!("assert_adjusting_offset: {e}"))),
             Op::AssertDialog { expect } => app
                 .check(&Check::Dialog(*expect))
                 .map_err(|e| fail(format!("assert_dialog: {e}"))),
             Op::AssertSelection { kind } => app
                 .check(&Check::Selection(*kind))
                 .map_err(|e| fail(format!("assert_selection: {e}"))),
+            Op::AssertNativeAppearance { expect } => app
+                .check(&Check::NativeAppearance(*expect))
+                .map_err(|e| fail(format!("assert_native_appearance: {e}"))),
             Op::AssertSelectedCount { count } => app
                 .check(&Check::SelectedCount(*count))
                 .map_err(|e| fail(format!("assert_selected_count: {e}"))),
@@ -549,8 +566,13 @@ fn describe(op: &Op) -> String {
         }
         Op::AssertPending { count } => format!("assert_pending {}", count),
         Op::AssertStatusContains { text } => format!("assert_status_contains {}", text),
+        Op::AssertImageryOffset { east, north, .. } => {
+            format!("assert_imagery_offset {east} {north}")
+        }
+        Op::AssertAdjustingOffset { on } => format!("assert_adjusting_offset {on}"),
         Op::AssertDialog { expect } => format!("assert_dialog {:?}", expect),
         Op::AssertSelection { kind } => format!("assert_selection {:?}", kind),
+        Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
         Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
         Op::ExportLayer { path } => format!("export_layer {}", path),

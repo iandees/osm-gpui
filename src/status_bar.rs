@@ -156,6 +156,8 @@ impl MapViewer {
                 })
         } else if let Some((message, _)) = self.status_message.clone() {
             div().text_color(foreground).child(message)
+        } else if self.offset_adjust.is_some() {
+            div().child(tr!("status.hint.adjust_offset"))
         } else if self.mode == EditMode::Select
             && !self.selected.is_empty()
             && self

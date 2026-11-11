@@ -715,6 +715,38 @@ impl MapViewer {
             }
             Check::AutosaveIdle => self.script_autosave_idle(),
             Check::AutosaveFiles(want) => self.script_autosave_files(*want),
+            Check::ImageryOffset {
+                east,
+                north,
+                tolerance,
+            } => {
+                let got = self
+                    .current_imagery_offset()
+                    .ok_or_else(|| "there is no visible imagery layer".to_string())?;
+                if (got.east_m - east).abs() <= *tolerance
+                    && (got.north_m - north).abs() <= *tolerance
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected imagery offset E {east} N {north} (within {tolerance} m), \
+                         found E {:.3} N {:.3}",
+                        got.east_m, got.north_m
+                    ))
+                }
+            }
+            Check::AdjustingOffset(want) => {
+                let got = self.offset_adjust.is_some();
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected imagery offset adjusting to be {}, it is {}",
+                        if *want { "on" } else { "off" },
+                        if got { "on" } else { "off" },
+                    ))
+                }
+            }
             Check::Selection(want) => {
                 let got = match self.selected.as_slice() {
                     [] => SelectionKind::None,
@@ -729,6 +761,21 @@ impl MapViewer {
                     Ok(())
                 } else {
                     Err(format!("expected selection {want:?}, found {got:?}"))
+                }
+            }
+            Check::NativeAppearance(want) => {
+                use gpui_component::ThemeMode;
+                let got = match osm_gpui::appearance::native_readback() {
+                    None => script::NativeAppearanceWant::System,
+                    Some(ThemeMode::Light) => script::NativeAppearanceWant::Light,
+                    Some(ThemeMode::Dark) => script::NativeAppearanceWant::Dark,
+                };
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected native appearance {want:?}, found {got:?}"
+                    ))
                 }
             }
             Check::SelectedCount(want) => {
