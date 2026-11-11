@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-74.0000"/>
+
+  <!-- Positions are chosen for viewport 40.7120 -74.0060 zoom 18 in a
+       1200x800 window (map center at 488,388); see preset-fields.osmscript. -->
+
+  <!-- A tertiary road: Name and the road fields must show. -->
+  <node id="1" version="1" lat="40.712610" lon="-74.0076093"/>
+  <node id="2" version="1" lat="40.712610" lon="-74.0065364"/>
+  <way id="10" version="1">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Fixture Street"/>
+  </way>
+
+  <!-- A tree: leaf fields with real labels. -->
+  <node id="20" version="1" lat="40.711593" lon="-74.0060">
+    <tag k="natural" v="tree"/>
+  </node>
+
+  <!-- A cafe. -->
+  <node id="30" version="1" lat="40.711593" lon="-74.0051953">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Fixture Cafe"/>
+  </node>
+
+  <!-- A building. -->
+  <node id="41" version="1" lat="40.712814" lon="-74.0054636"/>
+  <node id="42" version="1" lat="40.712814" lon="-74.0049272"/>
+  <node id="43" version="1" lat="40.712407" lon="-74.0049272"/>
+  <node id="44" version="1" lat="40.712407" lon="-74.0054636"/>
+  <way id="40" version="1">
+    <nd ref="41"/>
+    <nd ref="42"/>
+    <nd ref="43"/>
+    <nd ref="44"/>
+    <nd ref="41"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>
