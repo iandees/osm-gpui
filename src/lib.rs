@@ -36,6 +36,7 @@ pub mod presets;
 pub mod relation_overlay;
 pub mod relations;
 pub mod script;
+pub mod search;
 pub mod selection;
 pub mod settings_store;
 pub mod style;
