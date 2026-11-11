@@ -179,12 +179,25 @@ pub fn set_preference(preference: ThemePreference, persist: bool, cx: &mut App) 
 /// Follow OS appearance changes seen by `window` while the preference is
 /// System and no per-run override is set. While a mode is forced, the window
 /// reports the forced appearance, so the notification is ignored then.
+///
+/// The theme is applied from a spawned task, not inside the notification. On
+/// Linux gpui delivers the notification while its Wayland/X11 client state is
+/// mutably borrowed, and applying the theme asks the platform a question
+/// (`should_auto_hide_scrollbars`) that borrows the same state again, which
+/// panicked with "RefCell already borrowed". Deferring within the same
+/// update is not enough: the borrow is held until the notification returns.
 pub fn observe_system_appearance(window: &mut gpui::Window) {
     window
         .observe_window_appearance(|window, cx| {
-            if native_override(settings_store::snapshot().theme, run_override()).is_none() {
-                apply_with_system(ThemeMode::from(window.appearance()), cx);
-            }
+            let system = ThemeMode::from(window.appearance());
+            cx.spawn(async move |cx| {
+                cx.update(|cx| {
+                    if native_override(settings_store::snapshot().theme, run_override()).is_none() {
+                        apply_with_system(system, cx);
+                    }
+                });
+            })
+            .detach();
         })
         .detach();
 }
