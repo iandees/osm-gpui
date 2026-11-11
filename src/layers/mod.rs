@@ -6,6 +6,7 @@ use crate::viewport::Viewport;
 pub mod diff;
 pub mod grid_layer;
 pub mod merge;
+pub mod node_markers;
 pub mod osm_layer;
 pub mod resolve;
 pub mod tile_layer;

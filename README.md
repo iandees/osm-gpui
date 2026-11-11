@@ -10,7 +10,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Pan and zoom with trackpad scroll and pinch, mouse wheel, drags, and the keyboard.
 - Raster imagery from OpenStreetMap Carto, the [Editor Layer Index](https://github.com/osmlab/editor-layer-index) (filtered to the current view), and custom tile URL templates you add yourself. Attribution is shown on the map, and tiles are cached on disk within a size limit you can set and clear in Settings > Imagery.
 - A lat/lon grid layer, and a layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
-- OSM data is drawn for tracing over imagery: thin cased ways, round node markers, direction arrows, area fills, and hover highlighting. Styling is a built-in subset of MapCSS; it is not user-configurable.
+- OSM data is drawn for tracing over imagery: thin cased ways, round node markers (untagged vertices only from zoom 18; tagged nodes always, as a small dot when zoomed out; selected nodes and the nodes of a selected way are always shown in full), direction arrows, area fills, and hover highlighting. Styling is a built-in subset of MapCSS; it is not user-configurable.
 
 **Editing modes** (Mode menu, toolbar, or the shortcut keys below)
 - Select: click, Shift-click, box-select, and double-click inside a closed way. Drag selected nodes to move them.

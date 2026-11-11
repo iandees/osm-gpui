@@ -70,6 +70,18 @@ pub fn record(name: &'static str, d: Duration) {
     }
 }
 
+/// Record a per-frame count (markers drawn, nodes in view). Stored like a
+/// duration of `n` milliseconds, so `report` prints it as a plain number in
+/// the min / med / p95 / max / mean columns.
+pub fn count(name: &'static str, n: usize) {
+    if enabled() {
+        record(
+            name,
+            Duration::from_millis(n.min(u32::MAX as usize / 1000) as u64),
+        );
+    }
+}
+
 /// Record the time since the previous call with the same `name` (the first
 /// call only arms the timer). Measures the interval between frames.
 pub fn interval(name: &'static str) {
