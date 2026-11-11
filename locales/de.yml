@@ -39,8 +39,13 @@ menu:
     title: "Werkzeuge"
   mode:
     title: "Modus"
+  # Untermenü für die Einträge eines zu langen Menüs in der Menüleiste im
+  # Fenster (Windows und Linux).
+  more: "Mehr"
   imagery:
     title: "Hintergrundbild"
+    # Die lange Liste der Bildquellen für das Gebiet, als Untermenü.
+    available: "Verfügbare Hintergrundbilder"
     custom: "Eigenes Hintergrundbild"
     custom_add: "Hinzufügen …"
     osm_carto: "OpenStreetMap Carto"
@@ -374,7 +379,7 @@ settings:
     size_large: "Groß"
     scroll_group: "Scrollen"
     invert_scroll_zoom: "Scroll-Zoom umkehren"
-    invert_scroll_zoom_description: "Die Zoomrichtung des Mausrads auf der Karte umkehren: Was bisher hineingezoomt hat, zoomt jetzt heraus. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
+    invert_scroll_zoom_description: "Die Scrollrichtung zum Zoomen der Karte umkehren. Standardmäßig zoomt Hochscrollen (Mausrad vom Körper weg gedreht) hinein, wie in JOSM und auf der OpenStreetMap-Website; mit dieser Option zoomt es heraus. Cmd/Strg + Trackpad-Scrollen folgt derselben Richtung. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
     welcome_group: "Hinweiskasten"
     welcome_card: "Hinweiskasten anzeigen"
     welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."
@@ -484,6 +489,7 @@ shortcut:
   action_split: "Weg teilen"
   action_merge: "Knoten vereinigen"
   action_straighten: "Weg begradigen"
+  action_align: "Knoten in einer Linie ausrichten"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü
 # und ihre Statusmeldungen. Jede Aktion hat ein `label` (Menüeintrag) und
@@ -579,6 +585,27 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  align:
+    label: "Knoten in einer Linie ausrichten"
+    hint: "3 oder mehr Knoten wählen, um sie auf eine gerade Linie zu legen (für alle Knoten eines Wegs den Weg wählen und Begradigen verwenden)"
+    none: "Die gewählten Knoten liegen bereits richtig"
+    done:
+      one: "%{count} Knoten verschoben"
+      other: "%{count} Knoten verschoben"
+    error:
+      same_place: "Ausrichten nicht möglich: Die äußersten Knoten liegen an derselben Stelle"
+  distribute:
+    label: "Knoten gleichmäßig verteilen"
+    hint: "3 oder mehr Knoten wählen, um sie gleichmäßig zwischen den äußersten beiden zu verteilen"
+    done:
+      one: "%{count} Knoten verschoben"
+      other: "%{count} Knoten verschoben"
+  parallel:
+    label: "Parallelen Weg erstellen …"
+    hint: "Einen oder mehrere Wege mit mindestens zwei verschiedenen Knoten wählen, um sie daneben zu kopieren"
+    done:
+      one: "%{count} parallelen Weg erstellt"
+      other: "%{count} parallele Wege erstellt"
   add_to_relation:
     label: "Zu Relation hinzufügen …"
     hint: "Knoten oder Wege in einer Ebene mit Relationen wählen, um sie einer Relation hinzuzufügen"
@@ -621,6 +648,18 @@ dialog:
     layer_summary: "%{layer}: %{created} erstellt, %{modified} geändert, %{deleted} gelöscht"
     comment_label: "Kommentar zum Änderungssatz"
     comment_placeholder: "Änderungen beschreiben (erforderlich)"
+    recent: "Zuletzt"
+    recent_tooltip: "Einen deiner letzten Kommentare zum Änderungssatz wiederverwenden"
+    source_label: "Quellen"
+    source_placeholder: "Woher die Informationen stammen, z. B. survey"
+    too_long: "Zu lang: %{count} von %{max} Zeichen. Zum Hochladen kürzen."
+    chars_used: "%{count} / %{max}"
+    imagery_used: "Verwendete Luftbilder: %{names}"
+    imagery_cleared: "Verwendete Luftbilder: für diesen Upload nicht erfasst"
+    imagery_clear: "Entfernen"
+    imagery_include: "Aufnehmen"
+    review_requested: "Ich möchte, dass jemand meine Änderungen prüft"
+    preview_note: "Nur Vorschau: Hochladen ist deaktiviert."
     failed: "Hochladen fehlgeschlagen"
     refused_title: "Hochladen noch nicht möglich"
     retry: "Erneut versuchen"
@@ -754,6 +793,15 @@ dialog:
     members:
       one: "%{count} Mitglied"
       other: "%{count} Mitglieder"
+  parallel:
+    title: "Parallelen Weg erstellen"
+    offset: "Abstand (Meter)"
+    offset_hint: "Positiv liegt rechts von der Richtung des Wegs, negativ links."
+    copy_tags: "Tags kopieren"
+    reverse: "Richtung der Kopie umkehren"
+    confirm: "Erstellen"
+    error:
+      offset: "Einen Abstand in Metern eingeben, nicht null und höchstens %{max} in beide Richtungen."
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"

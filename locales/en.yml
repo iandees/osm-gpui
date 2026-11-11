@@ -39,8 +39,13 @@ menu:
     title: "Tools"
   mode:
     title: "Mode"
+  # Submenu that takes the entries of a menu too long for the in-window menu
+  # bar (Windows and Linux).
+  more: "More"
   imagery:
     title: "Imagery"
+    # The long list of imagery sources for the area, as a submenu.
+    available: "Available Imagery"
     custom: "Custom Imagery"
     custom_add: "Add…"
     osm_carto: "OpenStreetMap Carto"
@@ -380,7 +385,7 @@ settings:
     size_large: "Large"
     scroll_group: "Scrolling"
     invert_scroll_zoom: "Invert scroll zoom"
-    invert_scroll_zoom_description: "Reverse the direction the mouse wheel zooms the map: what zoomed in now zooms out. Panning, pinch and keyboard zoom are not affected."
+    invert_scroll_zoom_description: "Reverse the scroll direction that zooms the map. By default, scrolling up (the wheel rolled away from you) zooms in, as in JOSM and on the OpenStreetMap website; turn this on to zoom out instead. Cmd/Ctrl + trackpad scroll follows the same direction. Panning, pinch and keyboard zoom are not affected."
     welcome_group: "Welcome card"
     welcome_card: "Show welcome card"
     welcome_card_description: "Show the welcome card over the map while no OpenStreetMap data is loaded."
@@ -490,6 +495,7 @@ shortcut:
   action_split: "Split Way"
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
+  action_align: "Align Nodes in Line"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
 # menu, the Tools menu, and their status-bar messages. Each action id has a
@@ -585,6 +591,27 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  align:
+    label: "Align Nodes in Line"
+    hint: "Select 3 or more nodes to put them on a straight line (select a way and use Straighten to align all of its nodes)"
+    none: "The selected nodes are already in place"
+    done:
+      one: "Moved %{count} node"
+      other: "Moved %{count} nodes"
+    error:
+      same_place: "Can't align: the outermost nodes are in the same place"
+  distribute:
+    label: "Distribute Nodes"
+    hint: "Select 3 or more nodes to space them evenly between the outermost two"
+    done:
+      one: "Moved %{count} node"
+      other: "Moved %{count} nodes"
+  parallel:
+    label: "Create Parallel Way…"
+    hint: "Select one or more ways with at least two different nodes to copy them alongside"
+    done:
+      one: "Created %{count} parallel way"
+      other: "Created %{count} parallel ways"
   add_to_relation:
     label: "Add to Relation…"
     hint: "Select nodes or ways in a layer that has relations to add them to one"
@@ -627,6 +654,22 @@ dialog:
     layer_summary: "%{layer}: %{created} created, %{modified} modified, %{deleted} deleted"
     comment_label: "Changeset comment"
     comment_placeholder: "Describe your changes (required)"
+    # Recent changeset comments, offered from a button beside the comment field.
+    recent: "Recent"
+    recent_tooltip: "Reuse one of your recent changeset comments"
+    # The changeset `source` tag: where the information came from.
+    source_label: "Sources"
+    source_placeholder: "Where the information came from, e.g. survey"
+    # Under a text field whose value would be longer than OSM allows.
+    too_long: "Too long: %{count} of %{max} characters. Shorten it to upload."
+    chars_used: "%{count} / %{max}"
+    # The changeset `imagery_used` tag: the visible imagery layers.
+    imagery_used: "Imagery used: %{names}"
+    imagery_cleared: "Imagery used: not recorded for this upload"
+    imagery_clear: "Clear"
+    imagery_include: "Include"
+    review_requested: "I would like someone to review my edits"
+    preview_note: "Preview only: uploading is disabled."
     failed: "Upload failed"
     # Title when the pending changes break a server size limit (the body is
     # one of `limits.upload.*`).
@@ -771,6 +814,15 @@ dialog:
     members:
       one: "%{count} member"
       other: "%{count} members"
+  parallel:
+    title: "Create Parallel Way"
+    offset: "Offset (metres)"
+    offset_hint: "Positive is to the right of the way's direction, negative to the left."
+    copy_tags: "Copy tags"
+    reverse: "Reverse the copy's direction"
+    confirm: "Create"
+    error:
+      offset: "Enter a distance in metres, not zero and at most %{max} either way."
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"

@@ -296,6 +296,20 @@ pub trait EditableLayer {
     /// Tell the layer which features are currently selected.
     fn set_highlight(&mut self, features: &[crate::selection::FeatureRef]);
 
+    /// After a pointer move to `pt`: choose the way whose vertices to preview
+    /// (shown small, hoverable, clickable and draggable), given what the
+    /// hover hit test picked. `enabled` is false when previews are
+    /// suppressed. Returns whether the preview changed. Default: none.
+    fn update_vertex_preview(
+        &mut self,
+        _viewport: &Viewport,
+        _pt: Point<Pixels>,
+        _hovered: Option<&crate::selection::FeatureRef>,
+        _enabled: bool,
+    ) -> bool {
+        false
+    }
+
     /// Return key/value tags for the given feature if this layer owns it.
     fn feature_tags(&self, feature: &crate::selection::FeatureRef)
         -> Option<Vec<(String, String)>>;
@@ -756,6 +770,25 @@ impl LayerManager {
             .collect();
         crate::frame_stats::lap("hit_test", fs_phase);
         hits
+    }
+
+    /// Tell every editable layer where the pointer is and what it hovers, so
+    /// each can update which way's vertices it previews. Returns whether any
+    /// layer's preview changed.
+    pub fn update_vertex_preview(
+        &mut self,
+        viewport: &Viewport,
+        pt: Point<Pixels>,
+        hovered: Option<&crate::selection::FeatureRef>,
+        enabled: bool,
+    ) -> bool {
+        let mut changed = false;
+        for layer in &mut self.layers {
+            if let Some(editable) = layer.as_editable_mut() {
+                changed |= editable.update_vertex_preview(viewport, pt, hovered, enabled);
+            }
+        }
+        changed
     }
 
     /// Run hit_test_interior against every visible layer, returning results in draw order.

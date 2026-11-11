@@ -139,6 +139,15 @@ pub struct AppSettings {
     /// older files, meaning the default direction.
     #[serde(default)]
     pub invert_scroll_zoom: bool,
+    /// The `source` text of the last upload, prefilled in the next upload
+    /// dialog. Missing in older files, meaning empty.
+    #[serde(default)]
+    pub last_source: String,
+    /// The last distinct changeset comments, most recent first (see
+    /// `crate::changeset_tags::push_recent_comment`). Missing in older files,
+    /// meaning none.
+    #[serde(default)]
+    pub recent_comments: Vec<String>,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -165,6 +174,8 @@ impl Default for AppSettings {
             autosave: true,
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            last_source: String::new(),
+            recent_comments: Vec::new(),
         }
     }
 }
@@ -225,6 +236,21 @@ pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
     let mut settings = snapshot();
     settings.invert_scroll_zoom = invert;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Remember the source text and the comment of an upload that went through:
+/// the source is prefilled next time and the comment joins the recent list.
+/// Applied on top of the store's current settings so nothing else is touched.
+/// Written to disk when `persist` is true.
+pub fn remember_upload_text(source: &str, comment: &str, persist: bool) {
+    let mut settings = snapshot();
+    settings.last_source = source.trim().to_string();
+    crate::changeset_tags::push_recent_comment(&mut settings.recent_comments, comment);
     if persist {
         update_store(settings);
     } else {
@@ -317,9 +343,11 @@ pub fn save_to(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
     persist::save_json(path, settings, WriteOpts::default())
 }
 
-/// Default on-disk location: `<config_dir>/osm-gpui/settings.json`.
+/// Default on-disk location: `<config_dir>/osm-gpui/settings.json`. `None`
+/// where the persistence policy forbids touching real state (see
+/// `persist::Policy`; the default, so tests never reach the real file).
 pub fn default_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("osm-gpui").join("settings.json"))
+    persist::config_file("settings.json")
 }
 
 /// Load from the default path. Defaults if unavailable.
@@ -356,6 +384,27 @@ mod tests {
     }
 
     #[test]
+    fn default_save_entry_points_never_reach_the_real_file() {
+        // The precondition is checked before anything is saved.
+        assert_eq!(default_path(), None);
+        let real = dirs::config_dir().map(|d| d.join("osm-gpui").join("settings.json"));
+        if let Some(real) = &real {
+            assert!(!persist::write_permitted(real));
+        }
+        let before = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        update_store(AppSettings::default());
+        save(&AppSettings::default());
+        set_welcome_dismissed(true, true);
+        set_invert_scroll_zoom(true, true);
+        let after = real
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok());
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn round_trip() {
         let dir = tmp_dir("round-trip");
         let path = dir.join("settings.json");
@@ -373,6 +422,8 @@ mod tests {
             autosave: false,
             welcome_dismissed: true,
             invert_scroll_zoom: true,
+            last_source: "survey; GPS".into(),
+            recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -549,10 +600,23 @@ mod tests {
             autosave: true,
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            last_source: String::new(),
+            recent_comments: Vec::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_changeset_memory_means_no_source_and_no_recent_comments() {
+        let dir = tmp_dir("legacy-no-changeset-memory");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.last_source, "");
+        assert!(loaded.recent_comments.is_empty());
+        assert_eq!(AppSettings::default().last_source, "");
     }
 
     #[test]

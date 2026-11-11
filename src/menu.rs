@@ -18,9 +18,9 @@ use crate::{
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
     DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
-    Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow,
-    IMAGERY_INDEX,
+    RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
+    ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
+    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -325,7 +325,29 @@ fn apply_keybindings_change(cx: &mut App) {
         &settings,
         cfg!(target_os = "macos"),
     ));
+    rebuild_menus_for_live_viewer(cx);
+}
 
+/// Scripted runs only (a no-op otherwise): add two sample entries to the
+/// custom imagery list (which starts empty in a scripted run) in memory, never
+/// to the user's file, and rebuild the menus so Imagery > Custom has something
+/// in it.
+fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
+    if !crate::script_harness::script_mode() {
+        return;
+    }
+    for name in ["Sample Imagery A", "Sample Imagery B"] {
+        custom_imagery_store::append_in_memory(CustomImageryEntry {
+            name: name.into(),
+            url_template: "https://tile.example.invalid/{z}/{x}/{y}.png".into(),
+            min_zoom: 0,
+            max_zoom: 19,
+        });
+    }
+    rebuild_menus_for_live_viewer(cx);
+}
+
+fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
@@ -375,10 +397,124 @@ pub(crate) fn rebuild_menus(
             show_downloaded_area,
         )
         .into_iter()
-        .map(Menu::owned)
+        .map(|menu| fit_owned_menu(menu.owned()))
         .collect();
         sync_in_window_menu(cx, owned);
     }
+}
+
+/// Most entries (separators and submenu rows included) a menu of the
+/// in-window bar may have for its submenus to work.
+///
+/// gpui-component's popup menu draws a submenu inside its parent's element
+/// tree, and makes a parent scrollable once it has MORE than 20 entries
+/// (`PopupMenu::with_menu_items`); a scrollable parent clips the submenu away
+/// (documented on `PopupMenuItem::Submenu`: only supported when the parent is
+/// not `scrollable`). A long menu is therefore kept at or under the limit by
+/// moving its longest run of plain items into a submenu; that submenu is
+/// itself the scrollable leaf. The native macOS menu is not touched.
+pub(crate) const IN_WINDOW_MENU_MAX_ITEMS: usize = 20;
+
+/// [`fit_owned_items`] for a top-level menu. The Imagery menu's long list gets
+/// a name of its own; anything else that overflows goes under "More".
+fn fit_owned_menu(mut menu: gpui::OwnedMenu) -> gpui::OwnedMenu {
+    let label = if menu.name.as_str() == tr!("menu.imagery.title").as_str() {
+        tr!("menu.imagery.available").to_string()
+    } else {
+        tr!("menu.more").to_string()
+    };
+    menu.items = fit_owned_items(menu.items, IN_WINDOW_MENU_MAX_ITEMS, &label);
+    menu
+}
+
+/// Make `items` work as a menu of the in-window bar: at most `limit` entries,
+/// by moving the longest run of consecutive action items into a submenu named
+/// `label` (further groups are named "More") until it fits. Submenus already in
+/// the list are fitted the same way, and one that still ends up over the limit
+/// (so it scrolls) has any submenu inside it flattened away, since a scrolling
+/// menu cannot show those. If no run of two or more actions is left to group,
+/// the submenus of the list are flattened instead: a menu that scrolls never
+/// keeps a submenu that cannot open.
+fn fit_owned_items(
+    items: Vec<gpui::OwnedMenuItem>,
+    limit: usize,
+    label: &str,
+) -> Vec<gpui::OwnedMenuItem> {
+    let mut items: Vec<gpui::OwnedMenuItem> = items
+        .into_iter()
+        .map(|item| match item {
+            gpui::OwnedMenuItem::Submenu(mut sub) => {
+                sub.items = fit_owned_items(sub.items, limit, &tr!("menu.more"));
+                if sub.items.len() > limit {
+                    sub.items = flatten_owned_items(sub.items);
+                }
+                gpui::OwnedMenuItem::Submenu(sub)
+            }
+            other => other,
+        })
+        .collect();
+    let mut name = label.to_string();
+    while items.len() > limit {
+        let Some((start, len)) = longest_action_run(&items) else {
+            return flatten_owned_items(items);
+        };
+        let run: Vec<_> = items.drain(start..start + len).collect();
+        items.insert(
+            start,
+            gpui::OwnedMenuItem::Submenu(gpui::OwnedMenu {
+                name: name.clone().into(),
+                items: run,
+                disabled: false,
+            }),
+        );
+        name = tr!("menu.more").to_string();
+    }
+    items
+}
+
+/// Start and length of the longest run of two or more consecutive action
+/// items (the first such run when there is a tie).
+fn longest_action_run(items: &[gpui::OwnedMenuItem]) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    let mut start = 0;
+    while start < items.len() {
+        let len = items[start..]
+            .iter()
+            .take_while(|i| matches!(i, gpui::OwnedMenuItem::Action { .. }))
+            .count();
+        if len >= 2 && best.is_none_or(|(_, b)| len > b) {
+            best = Some((start, len));
+        }
+        start += len.max(1);
+    }
+    best
+}
+
+/// Replace every submenu in `items` by a disabled header line followed by its
+/// own (recursively flattened) items. Order is kept, no action is dropped, and
+/// a submenu with nothing in it is omitted altogether.
+fn flatten_owned_items(items: Vec<gpui::OwnedMenuItem>) -> Vec<gpui::OwnedMenuItem> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            gpui::OwnedMenuItem::Submenu(sub) => {
+                let inner = flatten_owned_items(sub.items);
+                if inner.is_empty() {
+                    continue;
+                }
+                out.push(gpui::OwnedMenuItem::Action {
+                    name: sub.name.to_string(),
+                    action: Box::new(NoOpImageryInfo),
+                    os_action: None,
+                    checked: false,
+                    disabled: true,
+                });
+                out.extend(inner);
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Name of the environment variable that forces the in-window menu bar on
@@ -442,6 +578,24 @@ pub(crate) fn top_chrome_height() -> gpui::Pixels {
     }
 }
 
+/// Whether a dropdown of the in-window bar is open: the popup holds the focus
+/// then, and the bar's key context is above it.
+pub(crate) fn in_window_menu_open(window: &gpui::Window) -> bool {
+    in_window_menu_enabled()
+        && window
+            .context_stack()
+            .iter()
+            .any(|c| c.contains("AppMenuBar"))
+}
+
+/// Close whatever dropdown of the in-window bar is open (reloading the bar
+/// drops its selection and popups).
+pub(crate) fn close_in_window_menu(cx: &mut App) {
+    if let Some(bar) = in_window_menu_bar(cx) {
+        bar.update(cx, |bar, cx| bar.reload(cx));
+    }
+}
+
 struct InWindowMenuBar(gpui::Entity<AppMenuBar>);
 
 impl gpui::Global for InWindowMenuBar {}
@@ -454,6 +608,20 @@ fn sync_in_window_menu(cx: &mut App, menus: Vec<gpui::OwnedMenu>) {
     } else {
         let bar = AppMenuBar::new(cx);
         cx.set_global(InWindowMenuBar(bar));
+        // Escape closes the whole menu. The popup's own Escape does nothing
+        // while a submenu row of it is selected (it keeps the submenu), so
+        // the bar is closed here, before the keystroke reaches any action.
+        cx.intercept_keystrokes(|event, window, cx| {
+            if event.keystroke.key == "escape" && in_window_menu_open(window) {
+                close_in_window_menu(cx);
+                if let Some(view) = crate::MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
+                    let focus = view.read(cx).focus_handle.clone();
+                    window.focus(&focus, cx);
+                }
+                cx.stop_propagation();
+            }
+        })
+        .detach();
     }
 }
 
@@ -735,6 +903,7 @@ pub(crate) fn register_app_actions(cx: &mut App) {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
     cx.on_action(crate::welcome::dismiss_welcome_action);
+    cx.on_action(script_seed_custom_imagery);
     cx.on_action(|_: &SetThemeLight, cx: &mut App| {
         osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
     });
@@ -742,17 +911,12 @@ pub(crate) fn register_app_actions(cx: &mut App) {
         osm_gpui::appearance::apply_run_override(ThemeMode::Dark, cx)
     });
     cx.on_action(|action: &SetAppearance, cx: &mut App| {
-        osm_gpui::appearance::set_preference(
-            action.mode,
-            !crate::script_harness::script_mode(),
-            cx,
-        );
+        // A scripted run is read-only (`persist::Policy`): this updates the
+        // in-memory setting and the file write is skipped.
+        osm_gpui::appearance::set_preference(action.mode, true, cx);
     });
     cx.on_action(|action: &SetInvertScrollZoom, _cx: &mut App| {
-        osm_gpui::settings_store::set_invert_scroll_zoom(
-            action.on,
-            !crate::script_harness::script_mode(),
-        );
+        osm_gpui::settings_store::set_invert_scroll_zoom(action.on, true);
     });
 }
 
@@ -842,6 +1006,216 @@ mod tests {
 
     fn has<T: gpui::Action>(actions: &[Box<dyn gpui::Action>]) -> bool {
         actions.iter().any(|a| a.as_any().is::<T>())
+    }
+
+    fn act(name: &str, action: impl gpui::Action) -> gpui::OwnedMenuItem {
+        MenuItem::action(name.to_string(), action).owned()
+    }
+
+    fn sub(name: &str, items: Vec<gpui::OwnedMenuItem>) -> gpui::OwnedMenuItem {
+        gpui::OwnedMenuItem::Submenu(gpui::OwnedMenu {
+            name: name.to_string().into(),
+            items,
+            disabled: false,
+        })
+    }
+
+    /// Item names in order, `-` for a separator, `?` for anything else.
+    fn shape(items: &[gpui::OwnedMenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                gpui::OwnedMenuItem::Action { name, .. } => name.clone(),
+                gpui::OwnedMenuItem::Separator => "-".into(),
+                _ => "?".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flattening_puts_submenu_items_inline_under_a_disabled_header() {
+        let items = vec![
+            act("Before", Undo),
+            sub(
+                "Custom",
+                vec![act("Add", AddCustomImagery), act("One", Redo)],
+            ),
+            gpui::OwnedMenuItem::Separator,
+            act("After", Quit),
+        ];
+        let flat = flatten_owned_items(items);
+        assert_eq!(
+            shape(&flat),
+            ["Before", "Custom", "Add", "One", "-", "After"]
+        );
+        match &flat[1] {
+            gpui::OwnedMenuItem::Action { disabled, .. } => assert!(*disabled),
+            _ => panic!("header is an action line"),
+        }
+        let (actions, _) = {
+            let (mut out, mut sys) = (vec![], 0);
+            walk(&flat, &mut out, &mut sys);
+            (out, sys)
+        };
+        assert!(has::<AddCustomImagery>(&actions));
+        assert!(has::<Redo>(&actions));
+        assert!(has::<Quit>(&actions));
+    }
+
+    #[test]
+    fn flattening_handles_nested_submenus_and_omits_empty_ones() {
+        let items = vec![
+            sub("Empty", vec![]),
+            sub(
+                "Outer",
+                vec![
+                    sub("Inner", vec![act("Leaf", Undo)]),
+                    sub("Nothing", vec![]),
+                ],
+            ),
+        ];
+        let flat = flatten_owned_items(items);
+        assert_eq!(shape(&flat), ["Outer", "Inner", "Leaf"]);
+    }
+
+    /// Menus as the in-window bar gets them, with a large fake imagery list
+    /// loaded, for either platform's contents.
+    fn in_window_menus_with_big_imagery_list(is_macos: bool) -> Vec<gpui::OwnedMenu> {
+        let index = crate::IMAGERY_INDEX.get_or_init(Default::default);
+        *index.lock().unwrap() = (0..500)
+            .map(|i| osm_gpui::imagery::ImageryEntry {
+                id: format!("fake-{i}"),
+                name: format!("Fake imagery {i:03}"),
+                url_template: "https://example.invalid/{z}/{x}/{y}.png".into(),
+                min_zoom: None,
+                max_zoom: None,
+                bbox: None,
+                polygon: None,
+                best: i < 3,
+                country_code: None,
+                icon_url: None,
+                attribution: None,
+            })
+            .collect();
+        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Ready, true)
+            .into_iter()
+            .map(|m| fit_owned_menu(m.owned()))
+            .collect()
+    }
+
+    /// No menu is over the limit unless it is a leaf without submenus.
+    fn check_menu_fits(name: &str, items: &[gpui::OwnedMenuItem]) {
+        let has_submenu = items
+            .iter()
+            .any(|i| matches!(i, gpui::OwnedMenuItem::Submenu(_)));
+        if items.len() > IN_WINDOW_MENU_MAX_ITEMS {
+            assert!(!has_submenu, "{name}: a scrolling menu holds a submenu");
+        }
+        for item in items {
+            if let gpui::OwnedMenuItem::Submenu(sub) = item {
+                check_menu_fits(sub.name.as_str(), &sub.items);
+            }
+        }
+    }
+
+    #[test]
+    fn in_window_menus_with_submenus_stay_within_the_limit_on_both_layouts() {
+        for is_macos in [true, false] {
+            let menus = in_window_menus_with_big_imagery_list(is_macos);
+            for menu in &menus {
+                let has_submenu = menu
+                    .items
+                    .iter()
+                    .any(|i| matches!(i, gpui::OwnedMenuItem::Submenu(_)));
+                if has_submenu {
+                    assert!(
+                        menu.items.len() <= IN_WINDOW_MENU_MAX_ITEMS,
+                        "{} has {} entries and submenus",
+                        menu.name,
+                        menu.items.len()
+                    );
+                }
+                check_menu_fits(menu.name.as_str(), &menu.items);
+            }
+            // The Imagery menu keeps Custom Imagery and gains the long list
+            // as submenus, with no imagery lost.
+            let imagery = menus
+                .iter()
+                .find(|m| m.name.as_str() == tr!("menu.imagery.title").as_str())
+                .expect("Imagery menu");
+            let subs: Vec<_> = imagery
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    gpui::OwnedMenuItem::Submenu(s) => Some(s),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(subs.len(), 2, "Custom Imagery and Available Imagery");
+            assert_eq!(subs[0].name.as_str(), tr!("menu.imagery.custom").as_str());
+            assert_eq!(
+                subs[1].name.as_str(),
+                tr!("menu.imagery.available").as_str()
+            );
+            assert!(subs[1].items.len() > IN_WINDOW_MENU_MAX_ITEMS);
+            let (actions, _) = all_actions(&menus);
+            assert!(has::<AddCustomImagery>(&actions));
+            assert!(has::<AddImageryLayer>(&actions));
+            assert!(has::<AddOsmCarto>(&actions));
+        }
+    }
+
+    #[test]
+    fn fitting_moves_the_longest_run_into_a_labelled_submenu_and_keeps_order() {
+        let mut items = vec![act("A", Undo), gpui::OwnedMenuItem::Separator];
+        items.extend((0..30).map(|i| act(&format!("L{i}"), Redo)));
+        items.push(gpui::OwnedMenuItem::Separator);
+        items.push(act("Z", Quit));
+        let fit = fit_owned_items(items, 20, "Lots");
+        assert_eq!(shape(&fit), ["A", "-", "?", "-", "Z"]);
+        match &fit[2] {
+            gpui::OwnedMenuItem::Submenu(s) => {
+                assert_eq!(s.name.as_str(), "Lots");
+                assert_eq!(s.items.len(), 30);
+                assert_eq!(shape(&s.items)[0], "L0");
+                assert_eq!(shape(&s.items)[29], "L29");
+            }
+            _ => panic!("the run became a submenu"),
+        }
+    }
+
+    #[test]
+    fn fitting_leaves_short_menus_alone_and_flattens_what_cannot_be_grouped() {
+        let short = vec![act("A", Undo), sub("S", vec![act("B", Redo)])];
+        assert_eq!(shape(&fit_owned_items(short, 20, "More")), ["A", "?"]);
+        // Alternating action/separator: no run to group, so submenus go.
+        let mut odd = vec![sub("S", vec![act("In", Redo)])];
+        for i in 0..12 {
+            odd.push(act(&format!("A{i}"), Undo));
+            odd.push(gpui::OwnedMenuItem::Separator);
+        }
+        let fit = fit_owned_items(odd, 20, "More");
+        assert!(fit
+            .iter()
+            .all(|i| !matches!(i, gpui::OwnedMenuItem::Submenu(_))));
+        assert!(shape(&fit).contains(&"In".to_string()));
+    }
+
+    #[test]
+    fn a_long_submenu_never_holds_a_submenu() {
+        let mut inner: Vec<_> = (0..25).map(|i| act(&format!("I{i}"), Redo)).collect();
+        inner.push(sub("Deep", vec![act("Leaf", Undo)]));
+        let fit = fit_owned_items(vec![sub("Outer", inner)], 20, "More");
+        match &fit[0] {
+            gpui::OwnedMenuItem::Submenu(s) => {
+                check_menu_fits("Outer", &s.items);
+                let (mut out, mut sys) = (vec![], 0);
+                walk(&s.items, &mut out, &mut sys);
+                assert!(has::<Undo>(&out), "the leaf action is kept");
+                assert_eq!(out.len(), 26);
+            }
+            _ => panic!("still a submenu"),
+        }
     }
 
     #[test]

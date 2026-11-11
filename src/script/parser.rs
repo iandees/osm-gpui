@@ -21,21 +21,27 @@ pub fn parse(source: &str) -> Result<Vec<Step>, ParseError> {
     let mut steps = Vec::new();
     for (i, raw) in source.lines().enumerate() {
         let line_no = i + 1;
-        let line = strip_comment(raw).trim();
+        let line = strip_comment(raw).trim().replace("\\#", "#");
         if line.is_empty() {
             continue;
         }
-        let op = parse_line(line_no, line)?;
+        let op = parse_line(line_no, &line)?;
         steps.push(Step { line_no, op });
     }
     Ok(steps)
 }
 
+/// The part of `s` before a `#` comment. A `\#` is a literal `#` (needed for
+/// hashtags in `set_comment`) and is unescaped by the caller.
 fn strip_comment(s: &str) -> &str {
-    match s.find('#') {
-        Some(i) => &s[..i],
-        None => s,
+    let mut prev = None;
+    for (i, c) in s.char_indices() {
+        if c == '#' && prev != Some('\\') {
+            return &s[..i];
+        }
+        prev = Some(c);
     }
+    s
 }
 
 fn err(line_no: usize, msg: impl Into<String>) -> ParseError {
@@ -95,14 +101,6 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             }),
             _ => Err(err(line_no, "load_file: want PATH")),
         },
-        "assert_layer_count" => match rest.as_slice() {
-            [n] => Ok(Op::AssertLayerCount {
-                count: n.parse::<usize>().map_err(|e| {
-                    err(line_no, format!("assert_layer_count: bad count '{n}': {e}"))
-                })?,
-            }),
-            _ => Err(err(line_no, "assert_layer_count: want COUNT")),
-        },
         "assert_layer" => parse_assert_layer(line_no, line, &rest),
         "assert_selected_at" => parse_assert_selected_at(line_no, &rest),
         "assert_mode" => parse_assert_mode(line_no, &rest),
@@ -153,6 +151,71 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 text: text.to_string(),
             })
         }
+        "open_upload_dialog_preview" => no_args(
+            line_no,
+            "open_upload_dialog_preview",
+            &rest,
+            Op::UploadDialog(UploadDialogCmd::OpenPreview),
+        ),
+        "toggle_recent_comments" => no_args(
+            line_no,
+            "toggle_recent_comments",
+            &rest,
+            Op::UploadDialog(UploadDialogCmd::ToggleRecentComments),
+        ),
+        "set_source" | "press_source_chip" | "add_recent_comment" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() && head != "set_source" {
+                return Err(err(line_no, format!("{head}: want TEXT")));
+            }
+            let text = text.to_string();
+            Ok(Op::UploadDialog(match head {
+                "set_source" => UploadDialogCmd::SetSource(text),
+                "press_source_chip" => UploadDialogCmd::PressSourceChip(text),
+                _ => UploadDialogCmd::AddRecentComment(text),
+            }))
+        }
+        "set_review_requested" | "clear_imagery_used" => {
+            let on = match rest.as_slice() {
+                ["on"] => true,
+                ["off"] => false,
+                _ => return Err(err(line_no, format!("{head}: want on|off"))),
+            };
+            Ok(Op::UploadDialog(if head == "set_review_requested" {
+                UploadDialogCmd::SetReviewRequested(on)
+            } else {
+                UploadDialogCmd::SetImageryCleared(on)
+            }))
+        }
+        "pick_recent_comment" => match rest.as_slice() {
+            [n] => Ok(Op::UploadDialog(UploadDialogCmd::PickRecentComment(
+                n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("pick_recent_comment: bad index '{n}': {e}"),
+                    )
+                })?,
+            ))),
+            _ => Err(err(line_no, "pick_recent_comment: want INDEX")),
+        },
+        "assert_changeset_tag" => {
+            let key = rest.first().copied().unwrap_or("");
+            let value = text_after(line, head, 1);
+            if key.is_empty() || value.is_empty() {
+                return Err(err(line_no, "assert_changeset_tag: want KEY VALUE"));
+            }
+            Ok(Op::AssertChangesetTag {
+                key: key.to_string(),
+                value: Some(value.to_string()),
+            })
+        }
+        "assert_no_changeset_tag" => match rest.as_slice() {
+            [key] => Ok(Op::AssertChangesetTag {
+                key: key.to_string(),
+                value: None,
+            }),
+            _ => Err(err(line_no, "assert_no_changeset_tag: want KEY")),
+        },
         "resolve_conflict" => parse_resolve_conflict(line_no, &rest),
         "wait_transfer" => Ok(Op::WaitTransfer {
             timeout: optional_duration(line_no, "wait_transfer", &rest, Duration::from_secs(120))?,
@@ -192,6 +255,17 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 })?,
             }),
             _ => Err(err(line_no, "assert_selected_count: want COUNT")),
+        },
+        "assert_layer_count" => match rest.as_slice() {
+            [n] => Ok(Op::AssertLayerCount {
+                count: n.parse().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_layer_count: bad count '{}': {}", n, e),
+                    )
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_layer_count: want COUNT")),
         },
         "assert_find_preview" => {
             let text = text_after(line, head, 0);
@@ -1239,11 +1313,6 @@ mod tests {
             }
         );
         assert!(parse("load_file").is_err());
-        assert_eq!(
-            parse("assert_layer_count 3").unwrap()[0].op,
-            Op::AssertLayerCount { count: 3 }
-        );
-        assert!(parse("assert_layer_count x").is_err());
         assert_eq!(
             parse("assert_layer geojson My Places").unwrap()[0].op,
             Op::AssertLayer {

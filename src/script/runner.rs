@@ -67,6 +67,11 @@ pub trait AppHandle {
     fn set_comment(&mut self, text: &str) -> Result<(), String>;
     /// Press the upload dialog's Cancel button.
     fn upload_cancel(&mut self) -> Result<(), String>;
+    /// One of the upload dialog's changeset-extras ops. None of them can
+    /// start an upload.
+    fn upload_dialog(&mut self, _cmd: &crate::script::UploadDialogCmd) -> Result<(), String> {
+        Err("this app has no upload dialog".to_string())
+    }
     /// Press the delete-layer confirmation's "Delete Layer" button.
     fn confirm_delete_layer(&mut self) -> Result<(), String>;
     /// Press the delete-layer confirmation's Cancel button.
@@ -243,9 +248,6 @@ impl Runner {
             Op::LoadFile { path } => app
                 .load_osm(std::path::Path::new(path))
                 .map_err(|e| fail(format!("load_file: {e}"))),
-            Op::AssertLayerCount { count } => app
-                .check(&Check::LayerCount(*count))
-                .map_err(|e| fail(format!("assert_layer_count: {e}"))),
             Op::AssertLayer { kind, name } => app
                 .check(&Check::Layer {
                     kind: *kind,
@@ -293,6 +295,15 @@ impl Runner {
             Op::UploadCancel => app
                 .upload_cancel()
                 .map_err(|e| fail(format!("upload_cancel: {e}"))),
+            Op::UploadDialog(cmd) => app
+                .upload_dialog(cmd)
+                .map_err(|e| fail(format!("{}: {e}", describe(&step.op)))),
+            Op::AssertChangesetTag { key, value } => app
+                .check(&Check::ChangesetTag {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .map_err(|e| fail(format!("assert_changeset_tag: {e}"))),
             Op::ConfirmDeleteLayer => app
                 .confirm_delete_layer()
                 .map_err(|e| fail(format!("confirm_delete_layer: {e}"))),
@@ -360,6 +371,9 @@ impl Runner {
             Op::AssertNativeAppearance { expect } => app
                 .check(&Check::NativeAppearance(*expect))
                 .map_err(|e| fail(format!("assert_native_appearance: {e}"))),
+            Op::AssertLayerCount { count } => app
+                .check(&Check::LayerCount(*count))
+                .map_err(|e| fail(format!("assert_layer_count: {e}"))),
             Op::AssertSelectedCount { count } => app
                 .check(&Check::SelectedCount(*count))
                 .map_err(|e| fail(format!("assert_selected_count: {e}"))),
@@ -599,7 +613,6 @@ fn describe(op: &Op) -> String {
         Op::FrameStats { label } => format!("frame_stats {}", label),
         Op::LoadOsm { path } => format!("load_osm {}", path),
         Op::LoadFile { path } => format!("load_file {}", path),
-        Op::AssertLayerCount { count } => format!("assert_layer_count {}", count),
         Op::AssertLayer { kind, name } => format!("assert_layer {:?} {}", kind, name),
         Op::AssertSelectedAt { lat, lon, .. } => format!("assert_selected_at {lat} {lon}"),
         Op::AssertMode { mode } => format!("assert_mode {:?}", mode),
@@ -612,6 +625,10 @@ fn describe(op: &Op) -> String {
         Op::ConfirmDeleteLayer => "confirm_delete_layer".to_string(),
         Op::CancelDeleteLayer => "cancel_delete_layer".to_string(),
         Op::SetComment { text } => format!("set_comment {}", text),
+        Op::UploadDialog(cmd) => format!("upload dialog {:?}", cmd),
+        Op::AssertChangesetTag { key, value } => {
+            format!("assert_changeset_tag {} {:?}", key, value)
+        }
         Op::ResolveConflict { choice } => format!("resolve_conflict {:?}", choice),
         Op::WaitTransfer { timeout } => format!("wait_transfer {:?}", timeout),
         Op::CaptureWhileTransferring { prefix, .. } => {
@@ -638,6 +655,7 @@ fn describe(op: &Op) -> String {
         Op::AssertValidationPanel { shown } => format!("assert_validation_panel {}", shown),
         Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
+        Op::AssertLayerCount { count } => format!("assert_layer_count {}", count),
         Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
         Op::ExportLayer { path } => format!("export_layer {}", path),
         Op::AutosaveNow => "autosave_now".to_string(),
@@ -751,6 +769,10 @@ mod tests {
         }
         fn upload_cancel(&mut self) -> Result<(), String> {
             self.calls.push("upload_cancel".into());
+            Ok(())
+        }
+        fn upload_dialog(&mut self, cmd: &crate::script::UploadDialogCmd) -> Result<(), String> {
+            self.calls.push(format!("upload_dialog {cmd:?}"));
             Ok(())
         }
         fn confirm_delete_layer(&mut self) -> Result<(), String> {

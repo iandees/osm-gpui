@@ -14,7 +14,121 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// What the process may do with the user's real saved state (settings, custom
+/// imagery, imagery offsets, OAuth logins, autosaves: everything under the
+/// app's config and data directories).
+///
+/// The policy is process-wide and starts as [`Policy::Disabled`]. Only the real
+/// binary's `main()` raises it (to `Normal`, or `ReadOnly` for a scripted run),
+/// so every test binary, whether it is the library's or the binary crate's,
+/// stays at the safe default without any `cfg(test)` in the library (which
+/// would not be active when the binary's tests link the library).
+///
+/// Caches (tiles, imagery indexes) are regenerable and are not governed by the
+/// policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    /// The real saved state is neither read nor written.
+    Disabled,
+    /// The real saved state is read; writes to it are skipped (the in-memory
+    /// copy still updates). [`allow_read_only_writes_to`] names exceptions.
+    ReadOnly,
+    /// The real saved state is read and written.
+    Normal,
+}
+
+static POLICY: AtomicU8 = AtomicU8::new(0);
+static READ_ONLY_EXCEPTIONS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static SKIPPED_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the process-wide policy. Only `main()` should call this.
+pub fn set_policy(policy: Policy) {
+    let v = match policy {
+        Policy::Disabled => 0,
+        Policy::ReadOnly => 1,
+        Policy::Normal => 2,
+    };
+    POLICY.store(v, Ordering::SeqCst);
+}
+
+/// The current process-wide policy.
+pub fn policy() -> Policy {
+    match POLICY.load(Ordering::SeqCst) {
+        1 => Policy::ReadOnly,
+        2 => Policy::Normal,
+        _ => Policy::Disabled,
+    }
+}
+
+/// Under `ReadOnly`, let writes to exactly `path` through (the one explicit
+/// exception mechanism; has no effect under `Disabled`).
+pub fn allow_read_only_writes_to(path: PathBuf) {
+    READ_ONLY_EXCEPTIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(path);
+}
+
+/// How many writes to real saved state the policy has skipped so far.
+pub fn skipped_writes() -> usize {
+    SKIPPED_WRITES.load(Ordering::SeqCst)
+}
+
+/// The directories that hold the user's real saved state.
+fn state_roots_from(config: Option<PathBuf>, data: Option<PathBuf>) -> Vec<PathBuf> {
+    [config, data]
+        .into_iter()
+        .flatten()
+        .map(|d| d.join("osm-gpui"))
+        .collect()
+}
+
+fn state_roots() -> Vec<PathBuf> {
+    state_roots_from(dirs::config_dir(), dirs::data_local_dir())
+}
+
+/// The path of the named file in the app's config directory, or `None` when the
+/// policy forbids touching real state (or the platform has no config dir).
+pub fn config_file(name: &str) -> Option<PathBuf> {
+    if policy() == Policy::Disabled {
+        return None;
+    }
+    Some(dirs::config_dir()?.join("osm-gpui").join(name))
+}
+
+/// The pure decision behind [`write_permitted`].
+fn decide_write(policy: Policy, exceptions: &[PathBuf], roots: &[PathBuf], path: &Path) -> bool {
+    if !roots.iter().any(|r| path.starts_with(r)) {
+        // Not the user's saved state (a test's temp dir, `--autosave-dir`, a
+        // cache, a file the user chose).
+        return true;
+    }
+    match policy {
+        Policy::Normal => true,
+        Policy::ReadOnly => exceptions.iter().any(|e| e == path),
+        Policy::Disabled => false,
+    }
+}
+
+/// Whether the policy lets `path` be written. Paths outside the user's saved
+/// state are always permitted.
+pub fn write_permitted(path: &Path) -> bool {
+    let exceptions = READ_ONLY_EXCEPTIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    decide_write(policy(), &exceptions, &state_roots(), path)
+}
+
+/// Whether a write happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    /// The policy forbade it; nothing on disk changed.
+    Skipped,
+}
 
 /// Options controlling how [`write_atomic`] writes a file.
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,7 +159,33 @@ impl WriteOpts {
 /// each other's temp files (the temp name is uniquified by pid + thread id).
 ///
 /// Creates `path`'s parent directory if it doesn't already exist.
+///
+/// Subject to the [`Policy`]: a write to the user's real saved state that the
+/// policy forbids is skipped (and reported as `Ok`).
 pub fn write_atomic(path: &Path, bytes: &[u8], opts: WriteOpts) -> std::io::Result<()> {
+    try_write_atomic(path, bytes, opts).map(|_| ())
+}
+
+/// [`write_atomic`], reporting whether the policy skipped the write.
+pub fn try_write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    opts: WriteOpts,
+) -> std::io::Result<WriteOutcome> {
+    write_if(write_permitted(path), path, bytes, opts)
+}
+
+/// The write itself, given the policy's verdict.
+fn write_if(
+    permitted: bool,
+    path: &Path,
+    bytes: &[u8],
+    opts: WriteOpts,
+) -> std::io::Result<WriteOutcome> {
+    if !permitted {
+        SKIPPED_WRITES.fetch_add(1, Ordering::SeqCst);
+        return Ok(WriteOutcome::Skipped);
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -61,7 +201,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8], opts: WriteOpts) -> std::io::Resu
         restrict_permissions(&tmp_path)?;
     }
     std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    Ok(WriteOutcome::Written)
 }
 
 /// Best-effort restriction of a file's permissions to owner-only read/write.
@@ -217,6 +357,99 @@ mod tests {
     struct Sample {
         name: String,
         count: u32,
+    }
+
+    #[test]
+    fn default_policy_is_disabled_and_hides_real_paths() {
+        // No test ever raises the policy: only the binary's `main()` does.
+        assert_eq!(policy(), Policy::Disabled);
+        assert_eq!(config_file("settings.json"), None);
+    }
+
+    #[test]
+    fn default_policy_skips_writes_to_the_real_state_directory() {
+        // The precondition comes first, so a broken guard fails the test
+        // before anything is written to the real directory.
+        let Some(config) = dirs::config_dir() else {
+            return;
+        };
+        let real = config.join("osm-gpui").join("persist-guard-probe.json");
+        assert!(!write_permitted(&real), "guard must forbid real state");
+        let before = skipped_writes();
+        let outcome = try_write_atomic(&real, b"{}", WriteOpts::default()).unwrap();
+        assert_eq!(outcome, WriteOutcome::Skipped);
+        assert!(skipped_writes() > before);
+        assert!(!real.exists());
+    }
+
+    #[test]
+    fn decisions_per_policy() {
+        let root = PathBuf::from("/home/u/.config/osm-gpui");
+        let roots = [root.clone()];
+        let settings = root.join("settings.json");
+        let oauth = root.join("oauth.json");
+        let outside = PathBuf::from("/tmp/elsewhere/settings.json");
+        let exceptions = [oauth.clone()];
+
+        for policy in [Policy::Disabled, Policy::ReadOnly, Policy::Normal] {
+            assert!(decide_write(policy, &exceptions, &roots, &outside));
+        }
+        assert!(!decide_write(
+            Policy::Disabled,
+            &exceptions,
+            &roots,
+            &settings
+        ));
+        assert!(!decide_write(Policy::Disabled, &exceptions, &roots, &oauth));
+        assert!(!decide_write(
+            Policy::ReadOnly,
+            &exceptions,
+            &roots,
+            &settings
+        ));
+        assert!(decide_write(Policy::ReadOnly, &exceptions, &roots, &oauth));
+        assert!(decide_write(Policy::Normal, &exceptions, &roots, &settings));
+    }
+
+    #[test]
+    fn state_roots_cover_config_and_data_directories() {
+        let roots = state_roots_from(Some("/c".into()), Some("/d".into()));
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/c/osm-gpui"), PathBuf::from("/d/osm-gpui")]
+        );
+        assert!(state_roots_from(None, None).is_empty());
+    }
+
+    #[test]
+    fn read_only_reads_but_does_not_write_and_normal_writes() {
+        let root = tmp_dir("policy-root");
+        let roots = [root.clone()];
+        let file = root.join("settings.json");
+        fs::write(&file, b"original").unwrap();
+
+        // ReadOnly: the existing file is readable, a write is skipped.
+        let allowed = decide_write(Policy::ReadOnly, &[], &roots, &file);
+        let outcome = write_if(allowed, &file, b"changed", WriteOpts::default()).unwrap();
+        assert_eq!(outcome, WriteOutcome::Skipped);
+        assert_eq!(fs::read(&file).unwrap(), b"original");
+
+        // Disabled: also skipped.
+        let allowed = decide_write(Policy::Disabled, &[], &roots, &file);
+        let outcome = write_if(allowed, &file, b"changed", WriteOpts::default()).unwrap();
+        assert_eq!(outcome, WriteOutcome::Skipped);
+        assert_eq!(fs::read(&file).unwrap(), b"original");
+
+        // Normal: written, even to a new file.
+        let allowed = decide_write(Policy::Normal, &[], &roots, &file);
+        let outcome = write_if(allowed, &file, b"changed", WriteOpts::default()).unwrap();
+        assert_eq!(outcome, WriteOutcome::Written);
+        assert_eq!(fs::read(&file).unwrap(), b"changed");
+        let fresh = root.join("new.json");
+        let allowed = decide_write(Policy::Normal, &[], &roots, &fresh);
+        write_if(allowed, &fresh, b"x", WriteOpts::default()).unwrap();
+        assert!(fresh.exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

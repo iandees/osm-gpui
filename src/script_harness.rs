@@ -106,6 +106,8 @@ pub(crate) enum ScriptCommand {
     SetComment(String),
     /// Press the upload dialog's Cancel button.
     UploadCancel,
+    /// A changeset-extras op on the upload dialog (never uploads).
+    UploadDialog(script::UploadDialogCmd),
     /// Press the delete-layer confirmation's Delete Layer (`true`) or Cancel.
     DeleteLayerDialog { confirm: bool },
     /// Press one of the conflict dialog's buttons.
@@ -373,6 +375,19 @@ impl MapViewer {
                         modifiers: gpui::Modifiers::none(),
                     };
                     self.handle_mouse_move(&ev, cx);
+                    // Also a real window-level move, so widgets that open on
+                    // hover (menu bar dropdowns, submenus, tooltips) see it.
+                    // Deferred for the same reason as `Click`.
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                                position: point(px(x), px(y)),
+                                pressed_button: None,
+                                modifiers: gpui::Modifiers::none(),
+                            }),
+                            cx,
+                        );
+                    });
                 }
                 ScriptCommand::Capture { path } => {
                     let result = (|| -> Result<(), String> {
@@ -492,6 +507,10 @@ impl MapViewer {
                     };
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::UploadDialog(cmd) => {
+                    let result = self.script_upload_dialog(&cmd, window, cx);
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::UploadCancel => {
                     let result = match self.upload_dialog.clone() {
                         Some(dialog) if matches!(dialog.read(cx).phase(), Phase::Busy) => {
@@ -556,6 +575,73 @@ impl MapViewer {
         }
 
         self.drain_keystrokes_and_animate(window, cx);
+    }
+
+    /// Run one of the upload dialog's changeset-extras ops. Nothing here
+    /// can upload; recent comments added here stay in memory only.
+    fn script_upload_dialog(
+        &mut self,
+        cmd: &script::UploadDialogCmd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use script::UploadDialogCmd as Cmd;
+        if matches!(cmd, Cmd::OpenPreview) {
+            if self.upload_dialog.is_some() {
+                return Err("the upload dialog is already open".to_string());
+            }
+            self.open_upload_dialog_preview(window, cx);
+            return if self.upload_dialog.is_some() {
+                Ok(())
+            } else {
+                Err("the preview did not open (a dialog is already showing)".to_string())
+            };
+        }
+        if let Cmd::AddRecentComment(text) = cmd {
+            // In memory only: this is a script run, never the settings file.
+            let mut settings = osm_gpui::settings_store::snapshot();
+            osm_gpui::changeset_tags::push_recent_comment(&mut settings.recent_comments, text);
+            osm_gpui::settings_store::update_store_in_memory(settings.clone());
+            if let Some(dialog) = self.upload_dialog.clone() {
+                dialog.update(cx, |d, cx| {
+                    d.set_recent_comments(settings.recent_comments, cx)
+                });
+            }
+            return Ok(());
+        }
+        let Some(dialog) = self.upload_dialog.clone() else {
+            return Err("the upload dialog is not open".to_string());
+        };
+        dialog.update(cx, |d, cx| match cmd {
+            Cmd::SetSource(text) => {
+                d.set_draft_source(text.clone(), window, cx);
+                Ok(())
+            }
+            Cmd::PressSourceChip(value) => {
+                d.press_source_chip(value, window, cx);
+                Ok(())
+            }
+            Cmd::SetReviewRequested(on) => {
+                d.set_review_requested(*on, cx);
+                Ok(())
+            }
+            Cmd::SetImageryCleared(cleared) => {
+                d.set_imagery_cleared(*cleared, cx);
+                Ok(())
+            }
+            Cmd::ToggleRecentComments => {
+                d.toggle_recent_comments(cx);
+                Ok(())
+            }
+            Cmd::PickRecentComment(index) => {
+                if d.pick_recent_comment(*index, window, cx) {
+                    Ok(())
+                } else {
+                    Err(format!("there is no recent comment number {index}"))
+                }
+            }
+            Cmd::OpenPreview | Cmd::AddRecentComment(_) => Ok(()),
+        })
     }
 
     /// Set a tag on every selected feature through the same code the side
@@ -731,14 +817,6 @@ impl MapViewer {
 
         let phase = self.upload_dialog.as_ref().map(|d| d.read(cx).phase());
         match check {
-            Check::LayerCount(want) => {
-                let got = self.layer_manager.layers().len();
-                if got == *want {
-                    Ok(())
-                } else {
-                    Err(format!("expected {want} layers, found {got}"))
-                }
-            }
             Check::Layer { kind, name } => {
                 let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
                     use osm_gpui::layers::reference_layer::ReferenceLayer;
@@ -806,6 +884,26 @@ impl MapViewer {
                          (tolerance {tolerance_m} m)",
                         pos.0, pos.1
                     ))
+                }
+            }
+            Check::ChangesetTag { key, value } => {
+                // The tags the dialog would send now; nothing is sent.
+                let Some(dialog) = &self.upload_dialog else {
+                    return Err("the upload dialog is not open".to_string());
+                };
+                let tags = dialog.read(cx).changeset_tags(cx);
+                match (tags.get(key), value) {
+                    (Some(got), Some(want)) if got == want => Ok(()),
+                    (Some(got), Some(want)) => {
+                        Err(format!("changeset tag {key} is {got:?}, expected {want:?}"))
+                    }
+                    (None, Some(want)) => Err(format!(
+                        "changeset tag {key} is not written, expected {want:?}"
+                    )),
+                    (Some(got), None) => Err(format!(
+                        "changeset tag {key} is written ({got:?}), expected none"
+                    )),
+                    (None, None) => Ok(()),
                 }
             }
             Check::Pending(want) => match self.active_layer_pending() {
@@ -960,6 +1058,14 @@ impl MapViewer {
                     Err(format!(
                         "expected native appearance {want:?}, found {got:?}"
                     ))
+                }
+            }
+            Check::LayerCount(want) => {
+                let have = self.layer_manager.layers().len();
+                if have == *want {
+                    Ok(())
+                } else {
+                    Err(format!("expected {want} layers, found {have}"))
                 }
             }
             Check::SelectedCount(want) => {
@@ -1348,6 +1454,13 @@ impl AppHandle for LiveApp {
 
     fn set_comment(&mut self, text: &str) -> Result<(), String> {
         self.bus.submit(ScriptCommand::SetComment(text.to_string()));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn upload_dialog(&mut self, cmd: &script::UploadDialogCmd) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::UploadDialog(cmd.clone()));
         let result = self.bus.take_assert_result();
         self.bus.wait_frame();
         result
