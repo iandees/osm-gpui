@@ -102,6 +102,12 @@ pub trait MapLayer: Send + Sync {
         false
     }
 
+    /// Re-derive `is_modified` from the layer's actual difference to its
+    /// server baseline. Edits (and the undo of one) set the flag without
+    /// looking at the diff, so after an undo back to the baseline this is
+    /// what clears it. Default: no-op.
+    fn refresh_modified(&mut self) {}
+
     /// Required source-credit (text and optional link) for this layer's
     /// content, if any (e.g. "© OpenStreetMap contributors"). Default:
     /// `None`. Layers that render tiles from a source requiring attribution
