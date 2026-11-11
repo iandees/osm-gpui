@@ -173,6 +173,26 @@ in the bug list at the end.
 | Z3 | Delete way in a route, undo restores way, version and slot | pass `delete_then_undo_restores_the_way_its_version_and_its_route_slot` |
 | Z4 | New edit after undo drops the redo branch | pass `a_new_edit_after_undo_discards_the_redo_branch` |
 
+## Further situations (batch D)
+
+Undo / redo against refusals, autosave and several layers
+(`src/edge_case_tests/undo_interactions.rs`).
+
+| # | Situation | Status |
+|---|-----------|--------|
+| D1 | Join refused (T junction) between two edits, with a live redo branch: stack, cursor and revision unchanged, redo still works | pass `a_refused_join_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D2 | Merge refused (would collapse a two-node way) in the same position | pass `a_refused_merge_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D3 | Delete refused by the last-relation-member check in the same position | pass `a_delete_refused_by_a_relation_check_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D4 | After restore from autosave, pending edits are back but undo history is not persisted: nothing to undo; new edits undo only back to the restored state | design `a_restored_layer_keeps_its_pending_edits_but_has_no_undo_history` |
+| D5 | Restoring a layer into a running view leaves existing steps and the redo branch untouched, and no step names the restored layer | pass `restoring_a_layer_into_a_running_view_leaves_the_existing_history_alone` |
+| D6 | Several layers: the undo stack is one global list; undo reverts the layer a step was recorded on, not the active layer, and the active layer then follows the undone feature | design `undo_reverts_the_layer_the_step_was_recorded_on_not_the_active_layer` |
+| D7 | Edits interleaved across two layers undo and redo in one shared order, restoring both layers exactly | pass `edits_interleaved_across_layers_undo_in_one_shared_order_and_redo_back` |
+| D8 | A new edit in one layer discards the redo branch of another layer (global history) | design `a_new_edit_in_one_layer_drops_the_redo_branch_of_the_other_layer` |
+| D9 | Per-layer undo stacks | absent (one global stack; deleting a layer prunes its steps, covered in `main.rs` tests) |
+| D10 | Persisting undo history across a restart | absent |
+
+No bugs found in this batch.
+
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
 - Split at several nodes at once; split at a node the way visits twice (S16,
