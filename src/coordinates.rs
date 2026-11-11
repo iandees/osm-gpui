@@ -170,6 +170,19 @@ impl CoordinateTransform {
         GpuiPoint { x, y }
     }
 
+    /// A copyable snapshot of the Mercator-to-screen mapping, for hot loops
+    /// that project hundreds of thousands of vertices per frame.
+    pub fn projector(&self) -> MercatorProjector {
+        MercatorProjector {
+            cx: self.mercator_center_x,
+            cy: self.mercator_center_y,
+            ppm_x: self.pixels_per_meter_x,
+            ppm_y: self.pixels_per_meter_y,
+            half_w: self.screen_size.width.as_f32() * 0.5,
+            half_h: self.screen_size.height.as_f32() * 0.5,
+        }
+    }
+
     /// Cheap visibility test in Mercator space (no trig, no GeoBounds conversion).
     #[inline]
     pub fn mercator_in_view(&self, mx: f64, my: f64) -> bool {
@@ -408,6 +421,37 @@ pub fn fit_bounds_to_viewport(
     let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0); // Clamp zoom to [1, 18]
 
     (center_lat, center_lon, zoom_level)
+}
+
+/// The Mercator-to-screen mapping of a [`CoordinateTransform`] as plain
+/// numbers: the same arithmetic as `mercator_to_screen`, without the
+/// `Pixels` wrapping and the per-call finite checks, so a hot loop can inline
+/// it and test finiteness once per point.
+#[derive(Debug, Clone, Copy)]
+pub struct MercatorProjector {
+    cx: f64,
+    cy: f64,
+    ppm_x: f64,
+    ppm_y: f64,
+    half_w: f32,
+    half_h: f32,
+}
+
+impl MercatorProjector {
+    /// Screen position (view-relative pixels) of a Web Mercator point. The
+    /// result is not finite only if the input is not.
+    #[inline(always)]
+    pub fn to_screen(&self, mx: f64, my: f64) -> (f32, f32) {
+        (
+            self.half_w + ((mx - self.cx) * self.ppm_x) as f32,
+            self.half_h - ((my - self.cy) * self.ppm_y) as f32,
+        )
+    }
+
+    /// Pixels per Web Mercator meter along x and y.
+    pub fn pixels_per_meter(&self) -> (f64, f64) {
+        (self.ppm_x, self.ppm_y.abs())
+    }
 }
 
 /// Validates that a point has finite coordinates
