@@ -5,6 +5,7 @@
 //! uses (`MapViewer::run_selection_action`, which records undo), and checks
 //! the data, the pending upload diff, and one undo / redo.
 
+mod create_multipolygon;
 mod delete_and_disconnect;
 mod interactions_reverse_split;
 mod interactions_topology;
@@ -14,6 +15,7 @@ mod multipolygon_edits;
 mod parse_and_export;
 mod reverse;
 mod shared_members;
+mod snap_join_node;
 mod split;
 mod undo_interactions;
 mod undo_sequences;

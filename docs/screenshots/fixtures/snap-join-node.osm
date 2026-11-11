@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="snap-join-node fixture">
+  <!-- A residential street across the middle and one street tree north of it. -->
+  <node id="7001" version="1" lat="40.7120000" lon="-74.0075000"/>
+  <node id="7002" version="1" lat="40.7120000" lon="-74.0060000"/>
+  <node id="7003" version="1" lat="40.7120000" lon="-74.0045000"/>
+  <node id="7004" version="1" lat="40.7124000" lon="-74.0066000"><tag k="natural" v="tree"/></node>
+  <way id="7101" version="1">
+    <nd ref="7001"/>
+    <nd ref="7002"/>
+    <nd ref="7003"/>
+    <tag k="highway" v="residential"/>
+  </way>
+</osm>
