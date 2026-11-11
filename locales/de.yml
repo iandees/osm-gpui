@@ -184,6 +184,10 @@ status:
   uploaded_many:
     one: "Änderungen in %{count} Änderungssatz hochgeladen (zuletzt: Änderungssatz %{changeset})"
     other: "Änderungen in %{count} Änderungssätzen hochgeladen (zuletzt: Änderungssatz %{changeset})"
+  restored_autosave:
+    one: "%{count} Ebene mit ungesicherten Änderungen wiederhergestellt"
+    other: "%{count} Ebenen mit ungesicherten Änderungen wiederhergestellt"
+  restore_failed: "„%{layer}“ konnte nicht wiederhergestellt werden: %{error}"
   downloaded: "OSM-Daten heruntergeladen: %{summary}"
   # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
   merge:
@@ -328,6 +332,11 @@ settings:
     size_small: "Klein"
     size_medium: "Mittel"
     size_large: "Groß"
+  editing:
+    title: "Bearbeiten"
+    autosave_group: "Wiederherstellung"
+    autosave: "Automatisch sichern"
+    autosave_description: "Ebenen mit ungesicherten Änderungen alle 30 Sekunden sichern, damit sie nach einem Absturz, einem erzwungenen Beenden oder einem Stromausfall wiederhergestellt werden können."
   account:
     title: "Konto"
     api_server_group: "API-Server"
@@ -605,6 +614,29 @@ dialog:
       one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
       other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
     confirm: "Ebene löschen"
+  restore:
+    title: "Ungesicherte Änderungen wiederherstellen?"
+    intro: "Die App wurde beim letzten Mal nicht ordnungsgemäß beendet. Diese Ebenen hatten Änderungen, die nicht hochgeladen wurden:"
+    layer: "%{layer}: %{edits}, %{when}"
+    edits:
+      one: "%{count} Änderung"
+      other: "%{count} Änderungen"
+    other_server: "Von %{server} heruntergeladen; der aktuelle Server ist %{current}."
+    footnote: "Der Verlauf für Rückgängig wird nicht wiederhergestellt. „Verwerfen“ löscht diese automatisch gesicherten Änderungen endgültig. Mit Esc bleiben sie erhalten und es wird beim nächsten Start erneut gefragt."
+    restore: "Wiederherstellen"
+    discard: "Verwerfen"
+    later: "Beim nächsten Mal fragen"
+  age:
+    just_now: "gerade eben"
+    minutes:
+      one: "vor %{count} Minute"
+      other: "vor %{count} Minuten"
+    hours:
+      one: "vor %{count} Stunde"
+      other: "vor %{count} Stunden"
+    days:
+      one: "vor %{count} Tag"
+      other: "vor %{count} Tagen"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
     name: "Name"

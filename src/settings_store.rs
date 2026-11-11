@@ -126,10 +126,19 @@ pub struct AppSettings {
     /// Light, dark, or follow the OS. Missing in older files, meaning System.
     #[serde(default)]
     pub theme: ThemePreference,
+    /// Whether layers with unsaved edits are autosaved for crash recovery
+    /// (see `crate::autosave`). On by default, including for settings files
+    /// written before this field existed.
+    #[serde(default = "default_autosave")]
+    pub autosave: bool,
 }
 
 fn default_cache_budget_mb() -> u64 {
     500
+}
+
+fn default_autosave() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -145,6 +154,7 @@ impl Default for AppSettings {
             language: None,
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
+            autosave: true,
         }
     }
 }
@@ -326,6 +336,7 @@ mod tests {
             language: Some("en".into()),
             recent_presets: vec!["building".into(), "natural/tree".into()],
             theme: ThemePreference::Dark,
+            autosave: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -499,6 +510,7 @@ mod tests {
             language: None,
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
+            autosave: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -511,6 +523,27 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
         assert_eq!(load_from(&path).theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn autosave_is_on_by_default_and_for_older_settings_files() {
+        assert!(AppSettings::default().autosave);
+        let dir = tmp_dir("legacy-no-autosave");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(load_from(&path).autosave);
+    }
+
+    #[test]
+    fn turning_autosave_off_is_saved() {
+        let dir = tmp_dir("autosave-off");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            autosave: false,
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert!(!load_from(&path).autosave);
     }
 
     #[test]

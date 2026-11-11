@@ -185,6 +185,12 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn set_autosave(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.app_settings.autosave = on;
+        self.save_settings();
+        cx.notify();
+    }
+
     fn set_text_size_preset(&mut self, preset: TextSizePreset, cx: &mut Context<Self>) {
         self.app_settings.text_size_preset = preset;
         self.save_settings();
@@ -480,6 +486,7 @@ impl SettingsWindow {
         vec![
             self.account_page(view.clone()),
             self.appearance_page(view.clone()),
+            self.editing_page(view.clone()),
             self.imagery_page(view.clone()),
             self.shortcuts_page(view),
         ]
@@ -578,6 +585,26 @@ impl SettingsWindow {
                     .item(item),
                 self.language_group(language_view),
             ])
+    }
+
+    /// The Editing page: for now the autosave switch.
+    fn editing_page(&self, view: Entity<Self>) -> SettingPage {
+        let value_view = view.clone();
+        let item = SettingItem::new(
+            tr!("settings.editing.autosave"),
+            SettingField::switch(
+                move |cx: &App| value_view.read(cx).app_settings.autosave,
+                move |on: bool, cx: &mut App| {
+                    view.update(cx, |this, cx| this.set_autosave(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.editing.autosave_description"));
+        SettingPage::new(tr!("settings.editing.title"))
+            .icon(Icon::new(IconName::Settings2))
+            .groups(vec![SettingGroup::new()
+                .title(tr!("settings.editing.autosave_group"))
+                .item(item)])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {
