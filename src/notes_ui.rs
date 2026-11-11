@@ -612,11 +612,12 @@ impl MapViewer {
 
     // -- Side panel ---------------------------------------------------------
 
-    /// The Note section, with its title, while a note is open.
+    /// The Note section while a note is open: its title, its status row
+    /// (pinned) and the rest (thread, comment box, buttons; scrolled).
     pub(crate) fn render_note_section(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> Option<(SharedString, AnyElement)> {
+    ) -> Option<(SharedString, AnyElement, AnyElement)> {
         let open = self.notes.open.as_ref()?;
         let note = &open.note;
         let id = note.id;
@@ -774,8 +775,10 @@ impl MapViewer {
 
         Some((
             tr!("notes.panel.title", id = id),
+            // The status row stays pinned; the side panel scrolls the rest.
+            header.into_any_element(),
             v_flex()
-                .child(header)
+                .flex_shrink_0()
                 .child(thread)
                 .child(controls)
                 .into_any_element(),

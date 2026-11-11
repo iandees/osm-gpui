@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use gpui::{div, prelude::*, px, Context, Window};
+use gpui::{div, prelude::*, px, Context};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     label::Label,
@@ -57,18 +57,20 @@ impl ValidationPanel {
     }
 }
 
-/// The smallest and largest height of the findings list, and the share of the
-/// window it may take: a few rows in a short window, about six in a tall one.
-const LIST_MIN_HEIGHT: f32 = 84.0;
-const LIST_MAX_HEIGHT: f32 = 260.0;
-const LIST_WINDOW_SHARE: f32 = 0.28;
-
-/// The tallest the findings list may be in a window `window_height` high.
-pub(crate) fn list_max_height(window_height: f32) -> f32 {
-    (window_height * LIST_WINDOW_SHARE).clamp(LIST_MIN_HEIGHT, LIST_MAX_HEIGHT)
-}
+/// About how tall one finding's row is (a title and a line of objects).
+const ROW_HEIGHT_ESTIMATE: f32 = 48.0;
 
 impl MapViewer {
+    /// What the Validation section asks of the side panel layout, or `None`
+    /// when it is not showing.
+    pub(crate) fn validation_want(&self) -> Option<crate::side_panel_layout::Want> {
+        let panel = self.validation.as_ref()?;
+        Some(crate::side_panel_layout::Want {
+            open: self.side_panel_open[SECTION],
+            content: panel.report.entries.len().max(1) as f32 * ROW_HEIGHT_ESTIMATE,
+        })
+    }
+
     fn validation_signal(&self) -> Signal {
         (
             self.undo_stack.revision,
@@ -87,8 +89,18 @@ impl MapViewer {
         self.validation.as_ref().map(|p| &p.report)
     }
 
-    /// Tools > Validate: run the checks and show the section (expanded),
-    /// whatever the result.
+    /// "Show in side panel": the explicit request to see the list, so the
+    /// section is shown expanded.
+    pub(crate) fn show_validation_expanded(&mut self, cx: &mut Context<Self>) {
+        self.show_validation(cx);
+        self.side_panel_open[SECTION] = true;
+        cx.notify();
+    }
+
+    /// Tools > Validate: run the checks and show the section, whatever the
+    /// result. It is collapsed (its header carries the counts) until the user
+    /// expands it, and stays as the user left it for the rest of the session
+    /// (a later Validate does not change it).
     pub(crate) fn show_validation(&mut self, cx: &mut Context<Self>) {
         let report = self.validation_report();
         self.set_status(if report.checked_changes {
@@ -105,7 +117,6 @@ impl MapViewer {
             generation: 0,
             current,
         });
-        self.side_panel_open[SECTION] = true;
         cx.notify();
     }
 
@@ -201,7 +212,7 @@ impl MapViewer {
     /// validation has been run.
     pub(crate) fn render_validation_section(
         &self,
-        window: &Window,
+        list_max_height: f32,
         cx: &mut Context<Self>,
     ) -> Option<gpui::Div> {
         let panel = self.validation.as_ref()?;
@@ -244,7 +255,11 @@ impl MapViewer {
                     })),
             );
 
-        let body = if !report.checked_changes {
+        // Collapsed, only the header (with the counts) is drawn, so the
+        // rows are not built.
+        let body = if !open {
+            div().into_any_element()
+        } else if !report.checked_changes {
             note_row(tr!("validator.nothing_pending"), cx).into_any_element()
         } else if report.is_empty() {
             note_row(tr!("validator.none"), cx).into_any_element()
@@ -262,7 +277,7 @@ impl MapViewer {
                 .id("validation-list")
                 .flex_shrink(1.)
                 .min_h(px(0.))
-                .max_h(px(list_max_height(window.viewport_size().height.as_f32())))
+                .max_h(px(list_max_height))
                 .overflow_y_scroll()
                 .child(rows)
                 .into_any_element()
