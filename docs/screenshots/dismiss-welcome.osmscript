@@ -1,0 +1,29 @@
+# The welcome card's close (x) button: the card with the x, its tooltip, and
+# the map after a real click on the x. In script mode the dismissal is kept in
+# memory only (the user's settings file is never written), and a saved
+# dismissal never hides the card here, so this always starts with the card.
+#
+# The card is 560 wide, centred on the map area (window x 56..920, centre 488),
+# so its right edge is x=768; the x button sits inside the 16px padding at the
+# top right of the card.
+
+window 1200 800
+wait 3s
+viewport 40.7128 -74.0060 16
+wait_idle 5s
+capture out/dismiss-1-card.png
+
+hover 742,606
+wait 2s
+capture out/dismiss-2-tooltip.png
+
+click 742,606
+wait_idle 3s
+capture out/dismiss-3-dismissed.png
+
+# Even after removing a data layer the card stays away. (A script could also
+# use `action DismissWelcome`.)
+load_osm docs/screenshots/fixtures/select.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/dismiss-4-data-loaded.png

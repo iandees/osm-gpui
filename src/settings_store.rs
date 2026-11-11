@@ -131,6 +131,10 @@ pub struct AppSettings {
     /// written before this field existed.
     #[serde(default = "default_autosave")]
     pub autosave: bool,
+    /// True once the user closed the welcome card. Missing in older files,
+    /// meaning the card is shown.
+    #[serde(default)]
+    pub welcome_dismissed: bool,
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -155,6 +159,7 @@ impl Default for AppSettings {
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
             autosave: true,
+            welcome_dismissed: false,
         }
     }
 }
@@ -196,6 +201,18 @@ pub fn update_store(settings: AppSettings) {
 /// Replace the in-memory settings only, without writing the settings file.
 pub fn update_store_in_memory(settings: AppSettings) {
     APP_SETTINGS.update("settings_store", |g| *g = settings);
+}
+
+/// Set only the welcome-card flag, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.welcome_dismissed = dismissed;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
 }
 
 /// Return a snapshot of the current in-memory settings.
@@ -337,6 +354,7 @@ mod tests {
             recent_presets: vec!["building".into(), "natural/tree".into()],
             theme: ThemePreference::Dark,
             autosave: false,
+            welcome_dismissed: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -511,10 +529,19 @@ mod tests {
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
             autosave: true,
+            welcome_dismissed: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_welcome_dismissed_means_show_the_card() {
+        let dir = tmp_dir("legacy-no-welcome");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(!load_from(&path).welcome_dismissed);
     }
 
     #[test]

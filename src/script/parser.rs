@@ -159,6 +159,26 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 text: text.to_string(),
             })
         }
+        "assert_selected_count" => match rest.as_slice() {
+            [n] => Ok(Op::AssertSelectedCount {
+                count: n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_selected_count: bad count '{}': {}", n, e),
+                    )
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_selected_count: want COUNT")),
+        },
+        "assert_find_preview" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() {
+                return Err(err(line_no, "assert_find_preview: want TEXT"));
+            }
+            Ok(Op::AssertFindPreview {
+                text: text.to_string(),
+            })
+        }
         "assert_dialog" => parse_assert_dialog(line_no, &rest),
         "assert_selection" => parse_assert_selection(line_no, &rest),
         "export_layer" => match rest.as_slice() {
@@ -309,7 +329,7 @@ fn parse_feature_kind_word(word: &str) -> Option<FeatureKind> {
 }
 
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|find|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -322,6 +342,7 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("notice", []) => DialogExpect::Notice,
         ("delete_layer", []) => DialogExpect::DeleteLayer,
         ("restore", []) => DialogExpect::Restore,
+        ("find", []) => DialogExpect::Find,
         ("conflict", words) => {
             let mut kind = None;
             let mut object = None;
