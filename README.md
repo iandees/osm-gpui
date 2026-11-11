@@ -171,6 +171,8 @@ Other flags are `--window-size WxH`, `--keep-open` (stay open after the last ste
 OSM_GPUI_IN_WINDOW_MENU=1 cargo run -- --script docs/screenshots/in-window-menu.osmscript
 ```
 
+Off macOS the menus drop the macOS-only items (Services, Hide, Hide Others, Show All) and the app-name menu: Quit moves to the end of File, Settings to the end of Edit, About to the end of Help. To preview that layout on macOS, set `OSM_GPUI_IN_WINDOW_MENU=other`: the in-window bar then shows the Windows/Linux contents while the native menu stays the macOS one (`docs/screenshots/in-window-menu-other.osmscript`).
+
 **Localization.** Interface text lives in `locales/<tag>.yml` (English is the source and fallback). To add a language, copy `locales/en.yml`, translate the values, and set `meta.language_name`. Preset translations are `assets/presets/translations/<locale>.json`; add one with `cargo run --example update_preset_translations -- <schema-version> <locale>`, using the version in `assets/presets/LICENSE`.
 
 **Presets.** The iD tagging schema data in `assets/presets/` is refreshed with `cargo run --example update_presets [-- <schema-version>]` (default: the version in `assets/presets/LICENSE`), which also fetches the referenced preset icons from the upstream releases pinned in the example. It is not part of CI; review the resulting diff by hand.
