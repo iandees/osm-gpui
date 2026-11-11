@@ -6309,7 +6309,12 @@ fn main() {
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value
         // before the cache does any work.
-        let app_settings = settings_store::load();
+        let mut app_settings = settings_store::load();
+        // Script runs always start with the welcome card showing, whatever
+        // the user saved, so captures are deterministic. (In memory only.)
+        if script_harness::script_mode() {
+            app_settings.welcome_dismissed = false;
+        }
         osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
         // Pick the UI language before any menu or window text is built.
         // `--language` overrides the saved setting for this run only.

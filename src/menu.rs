@@ -659,6 +659,7 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
+    cx.on_action(crate::welcome::dismiss_welcome_action);
     cx.on_action(|_: &SetThemeLight, cx: &mut App| {
         osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
     });

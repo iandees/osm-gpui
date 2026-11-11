@@ -129,6 +129,8 @@ welcome:
   # Ersetzt die Schaltfläche zum Herunterladen, solange der Ausschnitt zu groß ist.
   zoom_in: "Zum Herunterladen näher heranzoomen"
   open: "Datei öffnen …"
+  # Kurzinfo der Schließen-Schaltfläche; der Kasten bleibt aus, bis er in den Einstellungen wieder eingeschaltet wird.
+  dismiss: "Nicht mehr anzeigen (in den Einstellungen wieder einschaltbar)"
 
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
@@ -328,6 +330,9 @@ settings:
     size_small: "Klein"
     size_medium: "Mittel"
     size_large: "Groß"
+    welcome_group: "Hinweiskasten"
+    welcome_card: "Hinweiskasten anzeigen"
+    welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."
   account:
     title: "Konto"
     api_server_group: "API-Server"

@@ -132,6 +132,8 @@ welcome:
   # Shown in place of the download button while the view covers too large an area.
   zoom_in: "Zoom in to download"
   open: "Open file…"
+  # Tooltip of the close button; the card stays hidden until turned back on in Settings.
+  dismiss: "Don't show this again (can be turned back on in Settings)"
 
 status:
   # One-line hint for what the mouse and keyboard do in each mode.
@@ -332,6 +334,9 @@ settings:
     size_small: "Small"
     size_medium: "Medium"
     size_large: "Large"
+    welcome_group: "Welcome card"
+    welcome_card: "Show welcome card"
+    welcome_card_description: "Show the welcome card over the map while no OpenStreetMap data is loaded."
   account:
     title: "Account"
     api_server_group: "API Server"
