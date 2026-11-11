@@ -486,6 +486,22 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_new_relation,
     },
     SelectionAction {
+        id: "create_multipolygon",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        // A lone open way can never close into a ring.
+        is_applicable: |env| {
+            let ways = env.selected_ways();
+            ways.len() >= 2
+                || ways
+                    .iter()
+                    .any(|w| w.node_ids.len() >= 4 && w.node_ids.first() == w.node_ids.last())
+        },
+        apply: apply_create_multipolygon,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
@@ -1648,6 +1664,202 @@ fn apply_new_relation(
     })
 }
 
+/// Tag keys that describe what an area is. Create Multipolygon moves these
+/// (and `name`) from a lone outer way to the relation; everything else, such
+/// as `source`, `boundary` or `highway`, stays on the way.
+const AREA_TAG_KEYS: &[&str] = &[
+    "landuse",
+    "natural",
+    "leisure",
+    "amenity",
+    "building",
+    "water",
+    "wetland",
+    "place",
+    "tourism",
+    "shop",
+    "historic",
+    "military",
+    "aeroway",
+    "man_made",
+    "office",
+    "craft",
+    "healthcare",
+];
+
+/// Create a `type=multipolygon` relation from the selected ways (JOSM
+/// "Create Multipolygon"). See `multipolygon_create::plan` for how rings are
+/// chained and given roles. One relation holds every outer and inner ring.
+/// When there is exactly one outer ring and it is a single way, that way's
+/// area tags (`AREA_TAG_KEYS`, plus `name` if any of them moved) move to the
+/// relation; with several outers or a ring of several ways nothing moves.
+/// Relations the ways are already in are left alone. One undo step: the
+/// relation's creation and the tag moves. The new relation is selected.
+fn apply_create_multipolygon(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    use osm_gpui::multipolygon_create::{plan, Problem, Role};
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
+    for f in selection
+        .iter()
+        .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Way)
+    {
+        if ways.iter().any(|(id, _)| *id == f.id) {
+            continue;
+        }
+        if let Some(nodes) = editable.way_node_ids(f.id) {
+            ways.push((f.id, nodes));
+        }
+    }
+    // Planar coordinates: longitude scaled by the cosine of the first
+    // node's latitude, which is plenty for containment and crossing tests.
+    let scale = ways
+        .iter()
+        .find_map(|(_, nodes)| editable.node_lat_lon(*nodes.first()?))
+        .map_or(1.0, |(lat, _)| lat.to_radians().cos());
+    let coord = |id: i64| {
+        editable
+            .node_lat_lon(id)
+            .map(|(lat, lon)| (lon * scale, lat))
+    };
+    let plan = plan(&ways, &coord).map_err(|p| match p {
+        Problem::Nothing => tr!("action.create_multipolygon.hint").to_string(),
+        Problem::DegenerateWay(id) => {
+            tr!("action.create_multipolygon.degenerate", way = id).to_string()
+        }
+        Problem::MissingNode(id) => {
+            tr!("action.create_multipolygon.missing_node", node = id).to_string()
+        }
+        Problem::Branching(id) => {
+            tr!("action.create_multipolygon.branching", node = id).to_string()
+        }
+        Problem::Unclosed(id) => tr!("action.create_multipolygon.unclosed", way = id).to_string(),
+        Problem::SelfTouching(id) => {
+            tr!("action.create_multipolygon.self_touching", node = id).to_string()
+        }
+        Problem::ZeroArea => tr!("action.create_multipolygon.zero_area").to_string(),
+        Problem::Crossing(a, b) => {
+            tr!("action.create_multipolygon.crossing", first = a, second = b).to_string()
+        }
+    })?;
+
+    let members: Vec<osm_gpui::osm::OsmMember> = plan
+        .rings
+        .iter()
+        .flat_map(|ring| {
+            ring.ways.iter().map(move |&way| osm_gpui::osm::OsmMember {
+                member_type: MemberType::Way,
+                reference: way,
+                role: ring.role.as_str().to_string(),
+            })
+        })
+        .collect();
+    if let Some(m) =
+        osm_gpui::limits::relation_over_limit(members.len(), osm_gpui::limits::relation_new_message)
+    {
+        return Err(m);
+    }
+
+    let outers: Vec<_> = plan
+        .rings
+        .iter()
+        .filter(|r| r.role == Role::Outer)
+        .collect();
+    let mut relation_tags = vec![("type".to_string(), "multipolygon".to_string())];
+    let mut tag_entries = Vec::new();
+    if let [outer] = outers.as_slice() {
+        if let [way] = outer.ways.as_slice() {
+            let feature = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Way,
+                id: *way,
+            };
+            let tags = editable.feature_tags(&feature).unwrap_or_default();
+            if tags
+                .iter()
+                .any(|(k, _)| AREA_TAG_KEYS.contains(&k.as_str()))
+            {
+                for (k, v) in tags {
+                    if AREA_TAG_KEYS.contains(&k.as_str()) || k == "name" {
+                        tag_entries.push((feature, k.clone(), Some(v.clone()), None));
+                        relation_tags.push((k, v));
+                    }
+                }
+            }
+        }
+    }
+    // Ways that already belong to a multipolygon: allowed, but mentioned.
+    let shared = plan
+        .rings
+        .iter()
+        .flat_map(|r| r.ways.iter())
+        .filter(|&&way| {
+            editable.relations_containing_way(way).into_iter().any(|r| {
+                editable
+                    .relation(r)
+                    .is_some_and(|r| r.tags.get("type").is_some_and(|t| t == "multipolygon"))
+            })
+        })
+        .count();
+
+    for (f, key, _, _) in &tag_entries {
+        editable.remove_tag(f.kind, f.id, key);
+    }
+    let count = members.len();
+    let (n_outer, n_inner) = (outers.len(), plan.rings.len() - outers.len());
+    let id = editable
+        .create_relation(relation_tags, members)
+        .ok_or_else(|| tr!("action.no_data").to_string())?;
+    let relation = editable
+        .relation(id)
+        .ok_or_else(|| tr!("action.create_multipolygon.hint").to_string())?;
+    let index = editable.relation_ids().len().saturating_sub(1);
+    let create = UndoableAction::CreateRelation {
+        layer: layer_id,
+        snapshot: osm_gpui::selection::DeletedRelationSnapshot { relation, index },
+    };
+    let mut status = tr!(
+        "action.create_multipolygon.done",
+        members = tr_count!("action.feature_count", count),
+        outers = n_outer,
+        inners = n_inner
+    )
+    .to_string();
+    if shared > 0 {
+        status = format!(
+            "{status}. {}",
+            tr!("action.create_multipolygon.shared", count = shared)
+        );
+    }
+    let undo = if tag_entries.is_empty() {
+        create
+    } else {
+        UndoableAction::Batch {
+            label: status.clone(),
+            actions: vec![
+                create,
+                UndoableAction::SetTags {
+                    entries: tag_entries,
+                },
+            ],
+        }
+    };
+    Ok(ActionOutcome {
+        undo: Some(undo),
+        status,
+        clear_selection: false,
+        select: Some(vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Relation,
+            id,
+        }]),
+        continue_way: None,
+    })
+}
+
 /// Append the selected nodes and ways of the active layer to relation
 /// `relation_id` (the picker's choice), each with an empty role; those that
 /// are already members are skipped. One undo step.
@@ -2414,6 +2626,7 @@ mod tests {
                 "parallel",
                 "copy_tags",
                 "new_relation",
+                "create_multipolygon",
                 "delete"
             ]
         );

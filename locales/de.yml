@@ -716,6 +716,20 @@ action:
     hint: "Knoten, Wege oder Relationen wählen, die in eine neue Relation kommen sollen"
     # `%{members}` ist die Zahl aus `action.feature_count`.
     done: "Relation mit %{members} erstellt. Tags und Rollen im Seitenbereich ergänzen"
+  create_multipolygon:
+    label: "Multipolygon erstellen"
+    hint: "Geschlossene Wege oder offene Wege, die sich zu geschlossenen Ringen verbinden, wählen, um ein Multipolygon zu erstellen"
+    # `%{members}` ist die Zahl aus `action.feature_count`.
+    done: "Multipolygon mit %{members} erstellt (%{outers} außen, %{inners} innen)"
+    # `%{count}` Wege gehörten bereits zu einem anderen Multipolygon.
+    shared: "%{count} der Wege gehören bereits zu einem anderen Multipolygon"
+    degenerate: "Weg %{way} ist zu kurz für einen Ring"
+    missing_node: "Knoten %{node} ist nicht geladen, die Ringe können nicht geprüft werden"
+    branching: "Drei oder mehr gewählte Wege enden an Knoten %{node}; nur die Wege der Ringe wählen"
+    unclosed: "Die mit Weg %{way} verbundenen Wege schließen sich nicht zu einem Ring"
+    self_touching: "Ein Ring läuft zweimal durch Knoten %{node}"
+    zero_area: "Ein gewählter Ring hat keine Fläche"
+    crossing: "Die Wege %{first} und %{second} kreuzen oder überlappen sich, das ergibt ein ungültiges Multipolygon"
   delete:
     label: "Löschen"
     hint: "Etwas zum Löschen auswählen"

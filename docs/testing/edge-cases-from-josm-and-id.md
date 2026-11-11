@@ -131,7 +131,7 @@ in the bug list at the end.
 | # | Situation | Reference | Status |
 |---|-----------|-----------|--------|
 | O1 | Relation sorting (RelationSorterTest, WayConnectionTypeCalculatorTest: roundabouts, loops, oneway/forward/backward) | JOSM `gui/dialogs/relation/sort` | absent (no member sorting; app only edits member order manually) |
-| O2 | Multipolygon building from loose ways (MultipolygonBuilder tests, CreateMultipolygonActionTest #17767 ...) | JOSM | absent (no "create multipolygon" action; multipolygon rendering is covered by `src/multipolygon.rs` tests) |
+| O2 | Multipolygon building from loose ways (MultipolygonBuilder tests, CreateMultipolygonActionTest #17767 ...) | JOSM | implemented as the Create Multipolygon action, see batch J (rendering is covered by `src/multipolygon.rs` tests) |
 | O3 | Validator tests (DuplicateNode, CrossingWays, MultipolygonTest, TurnrestrictionTest, RelationChecker) | JOSM `data/validation/tests` | existing in `src/validator/` (not repeated) |
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
 | G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; simplify and join-node-to-way absent |
@@ -362,6 +362,51 @@ Bug found in this batch (fixed): E15, MEDIUM. Joining way 10 (only in lake
 901 then listed the whole ring `[1,2,3,4,1]` plus its other shore, silently
 changing its geometry. The join is now refused (`JoinError::SurvivorNotInArea`)
 when a removed way is in a multipolygon the survivor is not in.
+
+## Further situations (batch J)
+
+Create Multipolygon (`src/edge_case_tests/create_multipolygon.rs`, planner in
+`src/multipolygon_create.rs`), modelled on JOSM `CreateMultipolygonAction`.
+Design: one `type=multipolygon` relation holds every ring (several outers are
+allowed in one relation, as in JOSM); open ways are chained into rings; a ring
+nested inside an even number of other rings is `outer`, odd is `inner`; members
+are listed outers first, then inners, each group in the order the selection
+first names its ways. Tags move only in the conservative case: exactly one
+outer ring made of one way that carries an area key (`landuse`, `natural`,
+`building`, `water`, ...); then those keys and `name` move to the relation and
+everything else (`source`, `boundary`, `fixme`, ...) stays on the way. With
+several outers, a ring of several ways, or no area key, nothing moves.
+Relations the ways are already in are untouched (a way already in another
+multipolygon is allowed and mentioned in the status). One undo step; the
+relation is selected afterwards. Differences from JOSM: no dialog, no reuse of
+an existing multipolygon, no shortcut, and rings that merely touch at a node are
+accepted while rings that cross, overlap along an edge, or have a node on the
+other's edge are refused.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| J1 | Lake with an island | One relation, outer then inner, `natural=water` moved, `source` stays; relation selected; one step | pass `a_lake_with_an_island_becomes_one_relation_with_the_area_tags_moved` |
+| J2 | Undo / redo | Relation gone and tags back; redo identical; nothing left to upload after undo | pass `undo_removes_the_relation_and_puts_the_tags_back_and_redo_repeats_it` |
+| J3 | Two outers, an inner each | One relation, four members, tags stay on the ways | pass `two_outers_with_an_inner_each_share_one_relation_and_keep_their_tags` |
+| J4 | Ring from two open ways | Both `outer`, no tag move | pass `a_ring_made_of_two_open_ways_gets_both_as_outer_and_keeps_their_tags` |
+| J5 | Inner ring from two open ways | Both `inner` | pass `an_inner_ring_may_be_built_from_open_ways_too` |
+| J6 | Nested three deep | outer, inner, outer | pass `rings_nested_three_deep_alternate_outer_inner_outer` |
+| J7 | Inner touching the outer at a node | Accepted | pass `an_inner_touching_the_outer_at_a_shared_node_is_accepted` |
+| J8 | Inner running along the outer's edge from a shared node | Refused (overlap) | pass `an_inner_running_along_the_outer_from_a_shared_node_is_refused` |
+| J9 | Two outers meeting at a corner | Both `outer` | pass `two_outers_touching_at_one_corner_are_both_outer` |
+| J10 | Crossing rings; rings sharing an edge | Refused, nothing changes | pass `crossing_rings_are_refused_and_nothing_changes`, `rings_sharing_an_edge_are_refused` |
+| J11 | Chain that does not close; three open ways at one node; ring through a node twice | Refused with the node or way named | pass `a_chain_that_does_not_close_is_refused`, `three_open_ways_ending_at_one_node_are_refused_as_ambiguous`, `a_ring_that_touches_itself_is_refused` |
+| J12 | Nothing selected, or only nodes | Hint, no step | pass `nothing_selected_or_only_nodes_is_refused_with_the_hint` |
+| J13 | Tag move | Only area keys and `name` move; `source`, `boundary`, `fixme` stay; a `name` alone does not move; untagged ways stay untagged | pass `only_area_tags_and_the_name_move_everything_else_stays_on_the_way`, `a_name_alone_does_not_move_and_untagged_ways_stay_untagged`, `a_single_closed_way_makes_a_one_member_multipolygon` |
+| J14 | Ring with 3,000 nodes | Fine: the way node limit applies to editing ways, and no way changes here | pass `a_ring_with_thousands_of_nodes_is_fine_the_node_limit_belongs_to_editing_ways` |
+| J15 | Ways already in another multipolygon and a route | Their relations untouched, also after undo; the shared multipolygon is noted | pass `relations_the_ways_are_already_in_are_untouched_and_a_shared_multipolygon_is_noted` |
+| J16 | Upload order with new ways | Relation after the ways that it names | pass `new_ways_go_up_before_the_relation_that_names_them` |
+
+Member limit: the new relation is checked with `limits::relation_over_limit`
+like New Relation (covered by `new_relation_is_refused_past_the_member_limit`);
+no separate test.
+
+No bugs found in this batch.
 
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
