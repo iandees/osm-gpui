@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use gpui_component::menu::AppMenuBar;
-use gpui_component::{GlobalState, Theme, ThemeMode};
+use gpui_component::{GlobalState, ThemeMode};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
@@ -119,6 +119,9 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                     {
                         osm_gpui::ui::settings_window::SettingsEvent::KeybindingsChanged => {
                             apply_keybindings_change(cx);
+                        }
+                        osm_gpui::ui::settings_window::SettingsEvent::AppearanceChanged => {
+                            rebuild_menus_from_live_state(cx);
                         }
                     },
                 )
@@ -263,7 +266,11 @@ fn apply_keybindings_change(cx: &mut App) {
     let settings = osm_gpui::settings_store::snapshot();
     cx.clear_key_bindings();
     cx.bind_keys(crate::key_bindings_from_settings(&settings));
+    rebuild_menus_from_live_state(cx);
+}
 
+/// Rebuild the menus from the live map viewer's state.
+pub(crate) fn rebuild_menus_from_live_state(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
@@ -549,6 +556,12 @@ fn build_menus(
                 MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
                     .checked(show_downloaded_area),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu {
+                    name: tr!("menu.view.appearance"),
+                    items: appearance_menu_items(osm_gpui::settings_store::snapshot().theme),
+                    disabled: false,
+                }),
             ],
             disabled: false,
         },
@@ -592,20 +605,42 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
-    cx.on_action(|_: &SetThemeLight, cx: &mut App| set_theme_mode(ThemeMode::Light, cx));
-    cx.on_action(|_: &SetThemeDark, cx: &mut App| set_theme_mode(ThemeMode::Dark, cx));
+    cx.on_action(|_: &SetThemeLight, cx: &mut App| {
+        osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
+    });
+    cx.on_action(|_: &SetThemeDark, cx: &mut App| {
+        osm_gpui::appearance::apply_run_override(ThemeMode::Dark, cx)
+    });
+    cx.on_action(|action: &SetAppearance, cx: &mut App| {
+        osm_gpui::appearance::set_preference(
+            action.mode,
+            !crate::script_harness::script_mode(),
+            cx,
+        );
+        cx.defer(rebuild_menus_from_live_state);
+    });
 }
 
-// Debug-friendly theme switches with no menu item: reachable from the script
-// harness (`action SetThemeDark`) and mirrored by the `--theme` flag. The app
-// does not follow the system appearance; it starts in the light theme.
+// Run-only theme switches with no menu item: reachable from the script
+// harness (`action SetThemeDark`) and mirrored by the `--theme` flag. They
+// override the saved Appearance setting for this run and are never saved.
 actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
 
-/// Switch the gpui-component theme and repaint every window.
-pub(crate) fn set_theme_mode(mode: ThemeMode, cx: &mut App) {
-    Theme::change(mode, None, cx);
-    Theme::sync_scrollbar_appearance(cx);
-    cx.refresh_windows();
+/// Action behind View > Appearance (and `action SetAppearance {"mode":"dark"}`
+/// in scripts; `mode` is `System`, `Light` or `Dark`).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetAppearance {
+    pub mode: osm_gpui::settings_store::ThemePreference,
+}
+
+/// The items of the View > Appearance submenu, with a checkmark on `current`.
+fn appearance_menu_items(current: osm_gpui::settings_store::ThemePreference) -> Vec<MenuItem> {
+    osm_gpui::settings_store::ThemePreference::ALL
+        .into_iter()
+        .map(|mode| MenuItem::action(mode.label(), SetAppearance { mode }).checked(mode == current))
+        .collect()
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.
@@ -632,6 +667,39 @@ mod tests {
         assert!(!in_window_menu_wanted(true, Some("0")));
         assert!(!in_window_menu_wanted(true, Some("true")));
         assert!(in_window_menu_wanted(true, Some("1")));
+    }
+
+    #[test]
+    fn appearance_menu_checks_only_the_current_choice() {
+        use osm_gpui::settings_store::ThemePreference;
+        for current in ThemePreference::ALL {
+            let items = appearance_menu_items(current);
+            assert_eq!(items.len(), 3);
+            for (item, mode) in items.iter().zip(ThemePreference::ALL) {
+                assert_eq!(item.is_checked(), mode == current);
+            }
+        }
+    }
+
+    #[test]
+    fn view_menu_has_an_appearance_submenu_checking_system_by_default() {
+        let menus = build_menus(40.0, -74.0, ImageryLoadState::Loading, true);
+        let view = menus
+            .into_iter()
+            .find(|m| m.name.as_ref() == tr!("menu.view.title").as_ref())
+            .expect("View menu");
+        let sub = view
+            .items
+            .into_iter()
+            .find_map(|i| match i {
+                MenuItem::Submenu(m) if m.name.as_ref() == tr!("menu.view.appearance").as_ref() => {
+                    Some(m)
+                }
+                _ => None,
+            })
+            .expect("Appearance submenu");
+        let checked: Vec<bool> = sub.items.iter().map(|i| i.is_checked()).collect();
+        assert_eq!(checked, vec![true, false, false]);
     }
 
     #[test]

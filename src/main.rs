@@ -6273,9 +6273,8 @@ fn main() {
     }
     app.run(move |cx: &mut App| {
         gpui_component::init(cx);
-        if let Some(mode) = cli_theme {
-            menu::set_theme_mode(mode, cx);
-        }
+        // `--theme` overrides the saved appearance for this run only.
+        osm_gpui::appearance::set_run_override(cli_theme);
 
         // Bring the menu bar to the foreground
         cx.activate(true);
@@ -6308,6 +6307,8 @@ fn main() {
         // `--language` overrides the saved setting for this run only.
         osm_gpui::i18n::init(cli_language.as_deref().or(app_settings.language.as_deref()));
         settings_store::init_store(app_settings);
+        // Light, dark or the OS appearance, now that the saved choice is known.
+        osm_gpui::appearance::apply(cx);
         auth::init_store(auth::load());
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
@@ -6398,6 +6399,12 @@ fn main() {
                     cx.bind_keys(key_bindings_from_settings(
                         &osm_gpui::settings_store::snapshot(),
                     ));
+                    // Follow live OS light/dark changes while on System.
+                    osm_gpui::appearance::observe_system_appearance(window);
+                    osm_gpui::appearance::apply_with_system(
+                        gpui_component::ThemeMode::from(window.appearance()),
+                        cx,
+                    );
                     let view = cx.new(|cx| {
                         let mut viewer = MapViewer::new(window, cx);
                         // Start on the standard map, not a blank canvas.
