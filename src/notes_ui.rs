@@ -743,6 +743,7 @@ impl MapViewer {
                     .gap_2()
                     .child(
                         Button::new("note-comment")
+                            .small()
                             .label(tr!("notes.panel.comment"))
                             .disabled(busy || !is_open)
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -751,6 +752,7 @@ impl MapViewer {
                     )
                     .child(if is_open {
                         Button::new("note-close")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.close_note"))
                             .disabled(busy)
@@ -759,6 +761,7 @@ impl MapViewer {
                             }))
                     } else {
                         Button::new("note-reopen")
+                            .small()
                             .primary()
                             .label(tr!("notes.panel.reopen_note"))
                             .disabled(busy)
@@ -785,6 +788,7 @@ impl MapViewer {
                     )
                     .child(
                         Button::new("note-sign-in")
+                            .small()
                             .label(tr!("notes.panel.sign_in"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.show_sign_in_dialog(window, cx);
@@ -793,10 +797,10 @@ impl MapViewer {
                     .into_any_element()
             })
             .child(
-                Button::new("note-website")
-                    .ghost()
-                    .label(tr!("notes.panel.website"))
-                    .on_click(cx.listener(move |this, _, _, _| this.open_note_on_website(id))),
+                div().flex().flex_row().child(
+                    osm_gpui::ui::style::link("note-website", tr!("notes.panel.website"), cx)
+                        .on_click(cx.listener(move |this, _, _, _| this.open_note_on_website(id))),
+                ),
             );
 
         Some((
