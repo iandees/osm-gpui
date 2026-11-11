@@ -39,8 +39,13 @@ menu:
     title: "Werkzeuge"
   mode:
     title: "Modus"
+  # Untermenü für die Einträge eines zu langen Menüs in der Menüleiste im
+  # Fenster (Windows und Linux).
+  more: "Mehr"
   imagery:
     title: "Hintergrundbild"
+    # Die lange Liste der Bildquellen für das Gebiet, als Untermenü.
+    available: "Verfügbare Hintergrundbilder"
     custom: "Eigenes Hintergrundbild"
     custom_add: "Hinzufügen …"
     osm_carto: "OpenStreetMap Carto"

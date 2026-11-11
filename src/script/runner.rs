@@ -336,6 +336,9 @@ impl Runner {
             Op::AssertNativeAppearance { expect } => app
                 .check(&Check::NativeAppearance(*expect))
                 .map_err(|e| fail(format!("assert_native_appearance: {e}"))),
+            Op::AssertLayerCount { count } => app
+                .check(&Check::LayerCount(*count))
+                .map_err(|e| fail(format!("assert_layer_count: {e}"))),
             Op::AssertSelectedCount { count } => app
                 .check(&Check::SelectedCount(*count))
                 .map_err(|e| fail(format!("assert_selected_count: {e}"))),
@@ -610,6 +613,7 @@ fn describe(op: &Op) -> String {
         Op::AssertValidationPanel { shown } => format!("assert_validation_panel {}", shown),
         Op::AssertNativeAppearance { expect } => format!("assert_native_appearance {:?}", expect),
         Op::AssertSelectedCount { count } => format!("assert_selected_count {}", count),
+        Op::AssertLayerCount { count } => format!("assert_layer_count {}", count),
         Op::AssertFindPreview { text } => format!("assert_find_preview {}", text),
         Op::ExportLayer { path } => format!("export_layer {}", path),
         Op::AutosaveNow => "autosave_now".to_string(),

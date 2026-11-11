@@ -71,6 +71,7 @@ actions!(
         ToggleDebugOverlay,
         ToggleDownloadedArea,
         AddCustomImagery,
+        ScriptSeedCustomImagery,
         OpenSettings,
         Undo,
         Redo,
@@ -755,6 +756,9 @@ struct MapViewer {
     /// the button is released: a release within `CLICK_SLOP` of it is a click
     /// (opens the context menu), anything further was a pan.
     right_press: Option<gpui::Point<gpui::Pixels>>,
+    /// The left press now in progress began while an in-window menu was open
+    /// (so it only closes the menu): the map ignores it and its release.
+    menu_swallow_press: bool,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
     /// The "Adjust imagery offset" mode, while it is on (see
@@ -963,6 +967,7 @@ impl MapViewer {
             hovered: None,
             extrude_drag: None,
             right_press: None,
+            menu_swallow_press: false,
             context_menu: None,
             offset_adjust: None,
         }
@@ -5851,6 +5856,10 @@ impl Render for MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            if this.menu_swallow_press {
+                                // This press only closed an open menu.
+                                return;
+                            }
                             window.focus(&this.focus_handle, cx);
                             let position = this.window_to_map(ev.position);
                             if this.space_held {
@@ -5995,6 +6004,9 @@ impl Render for MapViewer {
                     .on_mouse_up(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                            if std::mem::take(&mut this.menu_swallow_press) {
+                                return;
+                            }
                             this.handle_mouse_up(ev, cx);
                         }),
                     )
@@ -6475,6 +6487,12 @@ impl Render for MapViewer {
             .text_size(osm_gpui::ui::style::current_text_scale().body)
             .flex()
             .flex_col()
+            // Seen in the capture phase, before the open menu dismisses
+            // itself on this same press.
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, _| {
+                this.menu_swallow_press =
+                    ev.button == gpui::MouseButton::Left && menu::in_window_menu_open(window);
+            }))
             // Windows/Linux (or macOS with OSM_GPUI_IN_WINDOW_MENU=1): the
             // menu bar is a row inside the window, above everything else.
             .children(menu::in_window_menu_bar(cx).map(|bar| {
@@ -6702,8 +6720,15 @@ fn main() {
         })
         .detach();
 
-        // Load persisted custom imagery entries.
-        let loaded = custom_imagery_store::load();
+        // Load persisted custom imagery entries. Scripted runs start with an
+        // empty list instead, so captures never show the user's own entries
+        // (the list is never written in a scripted run either: see
+        // `ScriptSeedCustomImagery`).
+        let loaded = if script_harness::script_mode() {
+            Vec::new()
+        } else {
+            custom_imagery_store::load()
+        };
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.

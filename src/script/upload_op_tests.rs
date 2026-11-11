@@ -280,6 +280,12 @@ fn find_dialog_ops() {
     assert!(parse("assert_selected_count").is_err());
     assert!(parse("assert_selected_count -1").is_err());
     assert_eq!(
+        op("assert_layer_count 2"),
+        Op::AssertLayerCount { count: 2 }
+    );
+    assert!(parse("assert_layer_count").is_err());
+    assert!(parse("assert_layer_count x").is_err());
+    assert_eq!(
         op("assert_find_preview 3 matches"),
         Op::AssertFindPreview {
             text: "3 matches".into()
