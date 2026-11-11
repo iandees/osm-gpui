@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="parallel-way fixture">
+  <!-- A: a road with two 45 degree bends (way 6101). -->
+  <node id="6001" version="1" lat="40.7125611" lon="-74.0072766"/>
+  <node id="6002" version="1" lat="40.7125611" lon="-74.0062038"/>
+  <node id="6003" version="1" lat="40.7121545" lon="-74.0056674"/>
+  <node id="6004" version="1" lat="40.7121545" lon="-74.0045946"/>
+  <!-- B: a hairpin, a turn of almost 180 degrees (way 6102). -->
+  <node id="6011" version="1" lat="40.7115446" lon="-74.0072766"/>
+  <node id="6012" version="1" lat="40.7115446" lon="-74.0056674"/>
+  <node id="6013" version="1" lat="40.7113820" lon="-74.0070084"/>
+  <!-- C: a closed fence, drawn clockwise (way 6201). -->
+  <node id="6021" version="1" lat="40.7130897" lon="-74.0048628"/>
+  <node id="6022" version="1" lat="40.7130897" lon="-74.0040582"/>
+  <node id="6023" version="1" lat="40.7126424" lon="-74.0040582"/>
+  <node id="6024" version="1" lat="40.7126424" lon="-74.0048628"/>
+  <way id="6101" version="1">
+    <nd ref="6001"/>
+    <nd ref="6002"/>
+    <nd ref="6003"/>
+    <nd ref="6004"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Bendy Street"/>
+  </way>
+  <way id="6102" version="1">
+    <nd ref="6011"/>
+    <nd ref="6012"/>
+    <nd ref="6013"/>
+    <tag k="highway" v="service"/>
+    <tag k="name" v="Hairpin Lane"/>
+  </way>
+  <way id="6201" version="1">
+    <nd ref="6021"/>
+    <nd ref="6022"/>
+    <nd ref="6023"/>
+    <nd ref="6024"/>
+    <nd ref="6021"/>
+    <tag k="barrier" v="fence"/>
+  </way>
+</osm>

@@ -573,21 +573,42 @@ fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
     // Keychain access prompt that blocks forever in a non-interactive test
     // run. Tests exercise the fallback-file path instead, which is what they
     // actually mean to cover.
+    //
+    // `cfg(test)` only covers the library's own tests; the binary's tests link
+    // the library without it, so the persistence policy (which only the real
+    // `main()` raises above `Disabled`) is what protects those.
     #[cfg(test)]
     {
         let _ = oauth_base_url;
         None
     }
     #[cfg(not(test))]
-    match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {
-        Ok(entry) => Some(entry),
-        Err(e) => {
-            eprintln!(
-                "auth: keyring unavailable ({}), falling back to file storage",
-                e
-            );
-            None
+    if crate::persist::policy() == crate::persist::Policy::Disabled {
+        None
+    } else {
+        match keyring::Entry::new(KEYRING_SERVICE, oauth_base_url) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                eprintln!(
+                    "auth: keyring unavailable ({}), falling back to file storage",
+                    e
+                );
+                None
+            }
         }
+    }
+}
+
+/// Whether a secret for `oauth_base_url` may be written to or deleted from the
+/// platform keyring under the persistence policy. A read-only (scripted) run may
+/// only touch the development server's login: that is how the live-test
+/// sign-in persists, and it can never reach a production login.
+fn secret_writes_allowed(oauth_base_url: &str) -> bool {
+    use crate::persist::Policy;
+    match crate::persist::policy() {
+        Policy::Normal => true,
+        Policy::ReadOnly => crate::settings_store::is_dev_server(oauth_base_url),
+        Policy::Disabled => false,
     }
 }
 
@@ -627,6 +648,9 @@ impl SecretBackend for SystemKeyring {
     }
 
     fn write(&self, oauth_base_url: &str, secret: &TokenSecret) -> bool {
+        if !secret_writes_allowed(oauth_base_url) {
+            return false;
+        }
         let Some(entry) = keyring_entry(oauth_base_url) else {
             return false;
         };
@@ -646,6 +670,9 @@ impl SecretBackend for SystemKeyring {
     }
 
     fn delete(&self, oauth_base_url: &str) {
+        if !secret_writes_allowed(oauth_base_url) {
+            return;
+        }
         if let Some(entry) = keyring_entry(oauth_base_url) {
             // NoEntry (nothing to delete) is fine; anything else is just logged.
             if let Err(e) = entry.delete_credential() {
@@ -838,14 +865,10 @@ fn save_to(path: &Path, store: &PersistedStore) -> std::io::Result<()> {
     )
 }
 
-fn default_path() -> Option<PathBuf> {
-    // Unit tests must never read or rewrite the real oauth.json.
-    #[cfg(test)]
-    {
-        None
-    }
-    #[cfg(not(test))]
-    Some(dirs::config_dir()?.join("osm-gpui").join("oauth.json"))
+/// The real `oauth.json`, or `None` where the persistence policy forbids
+/// touching real state (the default: tests never read or rewrite it).
+pub fn default_path() -> Option<PathBuf> {
+    crate::persist::config_file("oauth.json")
 }
 
 /// Load persisted OAuth bookkeeping into an in-memory `TokenStore`, without
@@ -899,14 +922,57 @@ fn build_token_store(persisted: PersistedStore) -> TokenStore {
 }
 
 fn save(store: &TokenStore) {
-    let persisted = build_persisted(store, &SystemKeyring);
+    use crate::persist::Policy;
+    let policy = crate::persist::policy();
+    if policy == Policy::Disabled {
+        return;
+    }
     let Some(p) = default_path() else {
         eprintln!("auth: no config dir, skipping save");
         return;
     };
+    let persisted = if policy == Policy::ReadOnly {
+        // A scripted run may only record the development server's login (the
+        // live-test sign-in). Everything else on disk, and every other
+        // server's keychain item, is left exactly as it is.
+        if !crate::persist::write_permitted(&p) {
+            return;
+        }
+        let dev_only = TokenStore {
+            tokens: store
+                .tokens
+                .iter()
+                .filter(|(url, _)| crate::settings_store::is_dev_server(url))
+                .map(|(url, t)| (url.clone(), t.clone()))
+                .collect(),
+            pending_keyring: store
+                .pending_keyring
+                .iter()
+                .filter(|url| crate::settings_store::is_dev_server(url))
+                .cloned()
+                .collect(),
+        };
+        merge_dev_logins(load_from(&p), build_persisted(&dev_only, &SystemKeyring))
+    } else {
+        build_persisted(store, &SystemKeyring)
+    };
     if let Err(e) = save_to(&p, &persisted) {
         eprintln!("auth: save {:?} failed: {}", p, e);
     }
+}
+
+/// `on_disk` with its development-server entries replaced by `dev` (so a
+/// development logout removes its entry); every other entry is kept as is.
+fn merge_dev_logins(mut on_disk: PersistedStore, dev: PersistedStore) -> PersistedStore {
+    on_disk
+        .tokens
+        .retain(|url, _| !crate::settings_store::is_dev_server(url));
+    on_disk.tokens.extend(
+        dev.tokens
+            .into_iter()
+            .filter(|(url, _)| crate::settings_store::is_dev_server(url)),
+    );
+    on_disk
 }
 
 /// The on-disk form of `store`, storing each resolved secret via `backend` (falling back
@@ -1067,6 +1133,41 @@ mod tests {
         assert_eq!(url_path("/callback?code=abc"), "/callback");
         assert_eq!(url_path("/callback"), "/callback");
         assert_eq!(url_path("/favicon.ico"), "/favicon.ico");
+    }
+
+    #[test]
+    fn default_policy_hides_the_real_login_file_and_keyring() {
+        assert_eq!(default_path(), None);
+        assert!(!secret_writes_allowed("https://www.openstreetmap.org"));
+        assert!(!secret_writes_allowed(crate::settings_store::DEV_API_URL));
+        // Saving with no policy raised is a no-op (no file, no keychain).
+        save(&TokenStore::default());
+    }
+
+    #[test]
+    fn read_only_merge_replaces_only_development_logins() {
+        let prod = "https://www.openstreetmap.org".to_string();
+        let dev = crate::settings_store::DEV_API_URL.to_string();
+        let token = |name: &str| PersistedToken {
+            display_name: name.to_string(),
+            ..PersistedToken::default()
+        };
+        let mut on_disk = PersistedStore::default();
+        on_disk.tokens.insert(prod.clone(), token("prod-user"));
+        on_disk.tokens.insert(dev.clone(), token("old-dev"));
+
+        let mut new_dev = PersistedStore::default();
+        new_dev.tokens.insert(dev.clone(), token("new-dev"));
+        // Even if a production entry sneaks into the dev-only set it is ignored.
+        new_dev.tokens.insert(prod.clone(), token("intruder"));
+        let merged = merge_dev_logins(on_disk.clone(), new_dev);
+        assert_eq!(merged.tokens[&prod].display_name, "prod-user");
+        assert_eq!(merged.tokens[&dev].display_name, "new-dev");
+
+        // A development logout removes only the development entry.
+        let merged = merge_dev_logins(on_disk, PersistedStore::default());
+        assert_eq!(merged.tokens[&prod].display_name, "prod-user");
+        assert!(!merged.tokens.contains_key(&dev));
     }
 
     #[test]

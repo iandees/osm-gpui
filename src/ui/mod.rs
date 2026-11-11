@@ -8,6 +8,7 @@ pub mod modal;
 pub mod note_dialog;
 pub mod notice_dialog;
 pub mod nsi_dialog;
+pub mod parallel_dialog;
 pub mod preset_picker_dialog;
 pub mod quit_confirm_dialog;
 pub mod relation_picker_dialog;
