@@ -132,6 +132,21 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
+        id: "copy_features",
+        default_spec: "secondary-c",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
+        id: "paste_features",
+        default_spec: "secondary-v",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
+        id: "duplicate_features",
+        default_spec: "secondary-d",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
         id: "copy_tags",
         default_spec: "secondary-shift-c",
         category: ShortcutCategory::Edit,

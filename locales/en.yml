@@ -27,6 +27,10 @@ menu:
     title: "Edit"
     undo: "Undo"
     redo: "Redo"
+    copy_features: "Copy"
+    paste_features: "Paste"
+    paste_features_source: "Paste at Source Position"
+    duplicate_features: "Duplicate"
     copy_tags: "Copy Tags"
     paste_tags: "Paste Tags"
     delete: "Delete"
@@ -74,7 +78,8 @@ menu:
     map_features_wiki: "OpenStreetMap Wiki: Map Features"
     project_page: "%{app} on GitHub"
   open_dialog:
-    title: "Select OSM file to open"
+    title: "Select a file to open"
+    map_files: "OSM, GPX and GeoJSON files"
     osm_files: "OSM files"
     all_files: "All files"
   export_dialog:
@@ -181,6 +186,7 @@ status:
   zoom_in_to_download: "Zoom in to download"
   api_offline: "The OSM API reports it is offline; try again later"
   open_failed: "Could not open %{path}: %{error}"
+  opening: "Opening %{name}…"
   open_data_first: "Open or download OSM data before drawing"
   tag_needs_key: "A tag needs a key; the edit was discarded"
   # Removing a member from a relation was refused.
@@ -251,6 +257,8 @@ limits:
     join: "Can't join: the combined way would have %{nodes} nodes; the server allows %{max}"
     relation_add: "Can't add to the relation: it would have %{members} members; the server allows %{max}"
     relation_new: "Can't create the relation: %{members} members is more than the server allows (%{max})"
+    paste_way: "Can't paste: a copied way has %{nodes} nodes; the server allows %{max}"
+    paste_relation: "Can't paste: a copied relation has %{members} members; the server allows %{max}"
 
 # Side panel sections. Preset and field labels shown inside them come from
 # the bundled iD tagging schema and are not translated here.
@@ -351,6 +359,8 @@ history:
   snapped_node: "Snapped a node onto a way"
   changed_way_nodes: "Changed the nodes of a way"
   changed_relation_members: "Changed the members of a relation"
+  pasted_features: "Pasted features"
+  duplicated_features: "Duplicated features"
 
 # Generic feature names used when no preset matches.
 geometry:
@@ -531,6 +541,9 @@ shortcut:
   select_all: "Select All"
   find: "Find…"
   show_history: "Show Object History"
+  copy_features: "Copy"
+  paste_features: "Paste"
+  duplicate_features: "Duplicate"
   copy_tags: "Copy Tags"
   paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
@@ -610,6 +623,28 @@ action:
   relation_count:
     one: "%{count} relation"
     other: "%{count} relations"
+  copy_features:
+    label: "Copy"
+    hint: "Select nodes, ways or relations to copy"
+    # `%{features}` is the count from `action.feature_count`.
+    done: "Copied %{features}"
+  paste_features:
+    label: "Paste"
+    hint: "Copy some features first, then paste them into a data layer"
+    done: "Pasted %{features}"
+    done_dropped:
+      one: "Pasted %{features}; left out %{count} relation member that is not in this layer"
+      other: "Pasted %{features}; left out %{count} relation members that are not in this layer"
+  paste_features_source:
+    label: "Paste at Source Position"
+    hint: "Copy some features first, then paste them into a data layer"
+  duplicate_features:
+    label: "Duplicate"
+    hint: "Select nodes, ways or relations to duplicate"
+    done: "Duplicated %{features}"
+    done_dropped:
+      one: "Duplicated %{features}; left out %{count} relation member that is not in this layer"
+      other: "Duplicated %{features}; left out %{count} relation members that are not in this layer"
   copy_tags:
     label: "Copy Tags"
     hint: "Select one feature that has tags to copy them"
@@ -916,6 +951,18 @@ upload_conflict:
   used_theirs: "Replaced %{object} with the server's version; your change to it is gone. Press Upload to continue."
   dropped: "Forgot your delete of %{object}, which the server had already done. Press Upload to continue."
   undo_trimmed: "Undo steps that involved it were removed."
+
+# Read-only GPX and GeoJSON layers (tracks and datasets traced from).
+reference:
+  error:
+    malformed: "not a valid GPX or GeoJSON file (%{detail})"
+    not_gpx: "the document is not GPX"
+    not_geographic: "coordinates (%{x}, %{y}) are not longitude and latitude in degrees (WGS84); projected data is not supported"
+    no_geometry: "the file has nothing to draw"
+  kind:
+    track: "Track"
+    route: "Route"
+    waypoint: "Waypoint"
 
 error:
   network: "Network error: %{detail}"

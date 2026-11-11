@@ -157,6 +157,12 @@ pub(crate) enum UndoableAction {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedRelationSnapshot,
     },
+    /// Paste or Duplicate: a set of new nodes, ways and relations created in
+    /// one layer at once. Undo removes all of them (and brings back the
+    /// selection from before); redo recreates them under the same ids.
+    PasteFeatures {
+        pasted: osm_gpui::feature_clipboard::PastedFeatures,
+    },
     /// Several actions recorded as one undo step (e.g. deleting a whole
     /// selection). Undo reverts them last-to-first; redo reapplies them in
     /// order. `label` is the history-list text.
@@ -251,6 +257,7 @@ impl UndoableAction {
                 kind: FeatureKind::Relation,
                 id: snapshot.relation.id,
             }),
+            UndoableAction::PasteFeatures { pasted } => out.extend(pasted.created()),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
                     out.extend(action.affected_features());
@@ -306,6 +313,7 @@ impl UndoableAction {
             | UndoableAction::SetRelationMembers { layer, .. }
             | UndoableAction::CreateRelation { layer, .. }
             | UndoableAction::DeleteRelation { layer, .. } => add(*layer),
+            UndoableAction::PasteFeatures { pasted } => add(pasted.layer),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
                     action.collect_layers(out);
@@ -362,6 +370,14 @@ impl UndoableAction {
             }
             UndoableAction::DeleteRelation { .. } => {
                 osm_gpui::tr!("history.deleted_relation").to_string()
+            }
+            UndoableAction::PasteFeatures { pasted } => {
+                let key = if pasted.duplicate {
+                    "history.duplicated_features"
+                } else {
+                    "history.pasted_features"
+                };
+                osm_gpui::i18n::tr_dynamic(key).to_string()
             }
             UndoableAction::Batch { label, .. } => label.clone(),
         }
@@ -931,6 +947,82 @@ mod undo_stack_tests {
             kind,
             id,
         }
+    }
+
+    #[test]
+    fn a_paste_names_everything_it_created_and_its_layer() {
+        use FeatureKind::{Node, Relation, Way};
+        let layer = LayerId(4);
+        let node = |id: i64| osm_gpui::selection::DeletedFeatureSnapshot {
+            kind: Node,
+            id,
+            tags: Vec::new(),
+            way_nodes: Vec::new(),
+            node_lat_lon: Some((0.0, 0.0)),
+            version: 0,
+        };
+        let paste = UndoableAction::PasteFeatures {
+            pasted: osm_gpui::feature_clipboard::PastedFeatures {
+                layer,
+                nodes: vec![node(-1), node(-2)],
+                ways: vec![way_snapshot(-3)],
+                relations: vec![osm_gpui::selection::DeletedRelationSnapshot {
+                    relation: osm_gpui::osm::OsmRelation {
+                        id: -4,
+                        members: Vec::new(),
+                        version: 0,
+                        tags: Default::default(),
+                    },
+                    index: 0,
+                }],
+                selection: vec![FeatureRef {
+                    layer_id: layer,
+                    kind: Way,
+                    id: -3,
+                }],
+                previous_selection: Vec::new(),
+                dropped_members: 0,
+                duplicate: false,
+            },
+        };
+        let on = |kind, id| FeatureRef {
+            layer_id: layer,
+            kind,
+            id,
+        };
+        assert_eq!(
+            paste.affected_features(),
+            vec![on(Node, -1), on(Node, -2), on(Way, -3), on(Relation, -4)]
+        );
+        assert_eq!(paste.layers(), vec![layer]);
+        assert_eq!(paste.description(), "Pasted features");
+
+        // Pruning by feature or by layer finds it, alone or inside a batch.
+        let mut stack = UndoStack::default();
+        stack.push(paste.clone());
+        stack.push(UndoableAction::Batch {
+            label: "b".into(),
+            actions: vec![paste],
+        });
+        assert_eq!(stack.remove_touching(&[on(Node, -2)]), 2);
+
+        let mut stack = UndoStack::default();
+        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(UndoableAction::PasteFeatures {
+            pasted: osm_gpui::feature_clipboard::PastedFeatures {
+                layer,
+                nodes: Vec::new(),
+                ways: Vec::new(),
+                relations: Vec::new(),
+                selection: Vec::new(),
+                previous_selection: Vec::new(),
+                dropped_members: 0,
+                duplicate: true,
+            },
+        });
+        assert_eq!(stack.actions[1].description(), "Duplicated features");
+        assert_eq!(stack.remove_layer(layer), 1);
+        assert_eq!(stack.actions.len(), 1);
     }
 
     #[test]

@@ -1201,9 +1201,30 @@ impl MapViewer {
                                 panel_row(("layer-row", index))
                             };
 
+                            // GPX / GeoJSON layers carry their format as a tag.
+                            let format_tag = self
+                                .layer_manager
+                                .layers()
+                                .get(index)
+                                .and_then(|l| {
+                                    l.as_any().downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
+                                })
+                                .map(|l| l.format().tag());
+
                             row.gap_2()
                                 .child(eye)
                                 .child(name_label)
+                                .children(format_tag.map(|tag| {
+                                    div()
+                                        .id(("layer-format-tag", index))
+                                        .flex_shrink_0()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_size(muted_text_size())
+                                        .bg(cx.theme().muted)
+                                        .text_color(muted)
+                                        .child(tag)
+                                }))
                                 .children(shifted.map(|offset| {
                                     div()
                                         .id(("layer-offset-tag", index))

@@ -355,6 +355,45 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         },
         apply: apply_straighten,
     },
+    // Copy, Paste, Paste at Source Position and Duplicate need the pointer
+    // position and the window's clipboard, so `MapViewer::run_selection_action`
+    // hands them to `clipboard_actions` instead of calling `apply`.
+    SelectionAction {
+        id: "copy_features",
+        shortcut_id: Some("copy_features"),
+        fixed_shortcut: None,
+        needs_active_layer: false,
+        in_tools_menu: false,
+        is_applicable: crate::clipboard_actions::can_copy,
+        apply: crate::clipboard_actions::apply_elsewhere,
+    },
+    SelectionAction {
+        id: "paste_features",
+        shortcut_id: Some("paste_features"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: crate::clipboard_actions::can_paste,
+        apply: crate::clipboard_actions::apply_elsewhere,
+    },
+    SelectionAction {
+        id: "paste_features_source",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: false,
+        is_applicable: crate::clipboard_actions::can_paste,
+        apply: crate::clipboard_actions::apply_elsewhere,
+    },
+    SelectionAction {
+        id: "duplicate_features",
+        shortcut_id: Some("duplicate_features"),
+        fixed_shortcut: None,
+        needs_active_layer: false,
+        in_tools_menu: false,
+        is_applicable: crate::clipboard_actions::can_copy,
+        apply: crate::clipboard_actions::apply_elsewhere,
+    },
     SelectionAction {
         id: "align",
         shortcut_id: Some("action_align"),
@@ -2040,6 +2079,8 @@ mod tests {
                 "square",
                 "circularize",
                 "reverse",
+                "copy_features",
+                "duplicate_features",
                 "parallel",
                 "copy_tags",
                 "new_relation",
@@ -2047,10 +2088,18 @@ mod tests {
             ]
         );
         // An open two-node way can only be reversed or copied alongside (or
-        // extended, put in a relation, or deleted).
+        // extended, copied, put in a relation, or deleted).
         assert_eq!(
             applicable_ids(&f, &[way_ref(&f, f.line)]),
-            ["reverse", "extend", "parallel", "new_relation", "delete"]
+            [
+                "reverse",
+                "extend",
+                "copy_features",
+                "duplicate_features",
+                "parallel",
+                "new_relation",
+                "delete"
+            ]
         );
     }
 
