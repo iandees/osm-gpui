@@ -65,11 +65,26 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "drag" => parse_drag(line_no, &rest),
         "click" => parse_click(line_no, &rest),
         "scroll" => parse_scroll(line_no, &rest),
-        "hover" => match rest.as_slice() {
-            [at] => Ok(Op::Hover {
-                at: parse_point(line_no, at)?,
+        "hover" => parse_pointer(line_no, "hover", PointerKind::Hover, true, &rest),
+        "drag_begin" => parse_pointer(line_no, "drag_begin", PointerKind::Press, true, &rest),
+        "drag_move" => parse_pointer(line_no, "drag_move", PointerKind::HeldMove, true, &rest),
+        "drag_end" => parse_pointer(line_no, "drag_end", PointerKind::Release, false, &rest),
+        "mod_down" => parse_modifiers(line_no, "mod_down", true, &rest),
+        "mod_up" => parse_modifiers(line_no, "mod_up", false, &rest),
+        "assert_snap" => parse_assert_snap(line_no, &rest),
+        "assert_way_nodes" => match rest.as_slice() {
+            [way, nodes @ ..] if !nodes.is_empty() => Ok(Op::AssertWayNodes {
+                way: parse_id(line_no, "assert_way_nodes", way)?,
+                nodes: parse_ids(line_no, "assert_way_nodes", nodes)?,
             }),
-            _ => Err(err(line_no, "hover: want X,Y")),
+            _ => Err(err(line_no, "assert_way_nodes: want WAY NODE...")),
+        },
+        "assert_node_shared" => match rest.as_slice() {
+            [node, ways @ ..] => Ok(Op::AssertNodeShared {
+                node: parse_id(line_no, "assert_node_shared", node)?,
+                ways: parse_ids(line_no, "assert_node_shared", ways)?,
+            }),
+            _ => Err(err(line_no, "assert_node_shared: want NODE [WAY...]")),
         },
         "key" => parse_key(line_no, &rest),
         "capture" => parse_capture(line_no, &rest),
@@ -762,6 +777,145 @@ fn parse_point(line_no: usize, s: &str) -> Result<Point2, ParseError> {
     })
 }
 
+/// `X,Y` (window pixels), `map:X,Y` (map-area pixels) or `geo:LAT,LON`.
+fn parse_where(line_no: usize, s: &str) -> Result<Where, ParseError> {
+    if let Some(rest) = s.strip_prefix("geo:") {
+        let (lat, lon) = rest
+            .split_once(',')
+            .ok_or_else(|| err(line_no, format!("bad position '{s}': want geo:LAT,LON")))?;
+        return Ok(Where::Geo {
+            lat: parse_f64(line_no, lat, "geo.lat")?,
+            lon: parse_f64(line_no, lon, "geo.lon")?,
+        });
+    }
+    if let Some(rest) = s.strip_prefix("map:") {
+        return Ok(Where::Map(parse_point(line_no, rest)?));
+    }
+    Ok(Where::Window(parse_point(line_no, s)?))
+}
+
+fn parse_bool(line_no: usize, op: &str, k: &str, v: &str) -> Result<bool, ParseError> {
+    match v {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(err(
+            line_no,
+            format!("{op}: bad {k} '{v}': want true|false"),
+        )),
+    }
+}
+
+/// Apply one `alt=true` / `ctrl=` / `shift=` / `cmd=` pair to `mods`; `false`
+/// when `k` is not a modifier name.
+fn set_mod(
+    line_no: usize,
+    op: &str,
+    mods: &mut Mods,
+    k: &str,
+    v: &str,
+) -> Result<bool, ParseError> {
+    let slot = match k {
+        "alt" => &mut mods.alt,
+        "ctrl" => &mut mods.ctrl,
+        "shift" => &mut mods.shift,
+        "cmd" => &mut mods.cmd,
+        _ => return Ok(false),
+    };
+    *slot = parse_bool(line_no, op, k, v)?;
+    Ok(true)
+}
+
+/// `hover|drag_begin|drag_move|drag_end [POS] [alt=true] [ctrl=true]
+/// [shift=true] [cmd=true]`. The position is optional only where
+/// `needs_pos` is false (`drag_end` releases where the pointer is).
+fn parse_pointer(
+    line_no: usize,
+    op: &str,
+    kind: PointerKind,
+    needs_pos: bool,
+    rest: &[&str],
+) -> Result<Op, ParseError> {
+    let usage = || {
+        let pos = if needs_pos { "POS" } else { "[POS]" };
+        err(
+            line_no,
+            format!(
+                "{op}: want {pos} [alt=true] [ctrl=true] [shift=true] [cmd=true] \
+                 (POS: X,Y | map:X,Y | geo:LAT,LON)"
+            ),
+        )
+    };
+    let (at, kvs) = match rest.split_first() {
+        Some((first, kvs)) if !first.contains('=') => (Some(parse_where(line_no, first)?), kvs),
+        _ if needs_pos => return Err(usage()),
+        _ => (None, rest),
+    };
+    let mut mods = Mods::default();
+    for kv in kvs {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| err(line_no, format!("{op}: bad kv '{kv}'")))?;
+        if !set_mod(line_no, op, &mut mods, k, v)? {
+            return Err(err(line_no, format!("{op}: unknown key '{k}'")));
+        }
+    }
+    Ok(Op::Pointer { kind, at, mods })
+}
+
+/// `mod_down|mod_up NAME...` where NAME is alt, ctrl, shift, cmd or `all`.
+fn parse_modifiers(line_no: usize, op: &str, down: bool, rest: &[&str]) -> Result<Op, ParseError> {
+    if rest.is_empty() {
+        return Err(err(
+            line_no,
+            format!("{op}: want alt|ctrl|shift|cmd|all ..."),
+        ));
+    }
+    let mut mods = Mods::default();
+    for name in rest {
+        match *name {
+            "alt" => mods.alt = true,
+            "ctrl" => mods.ctrl = true,
+            "shift" => mods.shift = true,
+            "cmd" => mods.cmd = true,
+            "all" => {
+                mods = Mods {
+                    alt: true,
+                    ctrl: true,
+                    shift: true,
+                    cmd: true,
+                }
+            }
+            other => return Err(err(line_no, format!("{op}: unknown modifier '{other}'"))),
+        }
+    }
+    Ok(Op::Modifiers { mods, down })
+}
+
+fn parse_id(line_no: usize, op: &str, s: &str) -> Result<i64, ParseError> {
+    s.parse::<i64>()
+        .map_err(|e| err(line_no, format!("{op}: bad id '{s}': {e}")))
+}
+
+fn parse_ids(line_no: usize, op: &str, items: &[&str]) -> Result<Vec<i64>, ParseError> {
+    items.iter().map(|s| parse_id(line_no, op, s)).collect()
+}
+
+fn parse_assert_snap(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_snap: want none | node ID | way ID segment N";
+    let expect = match rest {
+        ["none"] => SnapExpect::None,
+        ["node", id] => SnapExpect::Node(parse_id(line_no, "assert_snap", id)?),
+        ["way", id, "segment", n] => SnapExpect::Way {
+            way: parse_id(line_no, "assert_snap", id)?,
+            segment: n
+                .parse::<usize>()
+                .map_err(|e| err(line_no, format!("assert_snap: bad segment '{n}': {e}")))?,
+        },
+        _ => return Err(err(line_no, usage)),
+    };
+    Ok(Op::AssertSnap { expect })
+}
+
 fn parse_duration(line_no: usize, s: &str) -> Result<Duration, ParseError> {
     if let Some(ms) = s.strip_suffix("ms") {
         let n: u64 = ms
@@ -824,14 +978,15 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.len() < 2 {
         return Err(err(
             line_no,
-            "drag: want X1,Y1 X2,Y2 [duration=Nms] [button=left|pan] [alt=true] [cmd=true]",
+            "drag: want POS POS [duration=Nms] [button=left|pan] [alt=true] [ctrl=true] \
+             [shift=true] [cmd=true]",
         ));
     }
-    let from = parse_point(line_no, rest[0])?;
-    let to = parse_point(line_no, rest[1])?;
+    let from = parse_where(line_no, rest[0])?;
+    let to = parse_where(line_no, rest[1])?;
     let mut duration = Duration::from_millis(200);
     let mut left = false;
-    let mut mods = DragMods::default();
+    let mut mods = Mods::default();
     for kv in &rest[2..] {
         let (k, v) = kv
             .split_once('=')
@@ -843,19 +998,11 @@ fn parse_drag(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
                 "pan" => left = false,
                 _ => return Err(err(line_no, format!("drag: bad button '{}'", v))),
             },
-            "alt" | "cmd" => {
-                let on = match v {
-                    "true" => true,
-                    "false" => false,
-                    _ => return Err(err(line_no, format!("drag: bad {} '{}'", k, v))),
-                };
-                if k == "alt" {
-                    mods.alt = on;
-                } else {
-                    mods.cmd = on;
+            _ => {
+                if !set_mod(line_no, "drag", &mut mods, k, v)? {
+                    return Err(err(line_no, format!("drag: unknown key '{}'", k)));
                 }
             }
-            _ => return Err(err(line_no, format!("drag: unknown key '{}'", k))),
         }
     }
     Ok(Op::Drag {
@@ -871,13 +1018,14 @@ fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.is_empty() {
         return Err(err(
             line_no,
-            "click: want X,Y [button=left|right] [count=N] [ctrl=true]",
+            "click: want POS [button=left|right] [count=N] [alt=true] [ctrl=true] \
+             [shift=true] [cmd=true]",
         ));
     }
-    let at = parse_point(line_no, rest[0])?;
+    let at = parse_where(line_no, rest[0])?;
     let mut button = MouseButton::Left;
     let mut count: u8 = 1;
-    let mut ctrl = false;
+    let mut mods = Mods::default();
     for kv in &rest[1..] {
         let (k, v) = kv
             .split_once('=')
@@ -890,16 +1038,20 @@ fn parse_click(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
                     .parse::<u8>()
                     .map_err(|e| err(line_no, format!("click: bad count '{}': {}", n, e)))?;
             }
-            ("ctrl", "true") => ctrl = true,
-            ("ctrl", "false") => ctrl = false,
-            _ => return Err(err(line_no, format!("click: unknown {}={}", k, v))),
+            _ => {
+                if !set_mod(line_no, "click", &mut mods, k, v)
+                    .map_err(|_| err(line_no, format!("click: unknown {}={}", k, v)))?
+                {
+                    return Err(err(line_no, format!("click: unknown {}={}", k, v)));
+                }
+            }
         }
     }
     Ok(Op::Click {
         at,
         button,
         count,
-        ctrl,
+        mods,
     })
 }
 
@@ -1101,11 +1253,11 @@ mod tests {
         assert_eq!(
             s[0].op,
             Op::Drag {
-                from: Point2 { x: 10.0, y: 20.0 },
-                to: Point2 { x: 30.0, y: 40.0 },
+                from: Where::Window(Point2 { x: 10.0, y: 20.0 }),
+                to: Where::Window(Point2 { x: 30.0, y: 40.0 }),
                 duration: Duration::from_millis(200),
                 left: false,
-                mods: DragMods::default(),
+                mods: Mods::default(),
             }
         );
     }
@@ -1116,9 +1268,10 @@ mod tests {
         assert!(matches!(
             s[0].op,
             Op::Drag {
-                mods: DragMods {
+                mods: Mods {
                     alt: true,
-                    cmd: true
+                    cmd: true,
+                    ..
                 },
                 ..
             }
@@ -1149,10 +1302,10 @@ mod tests {
         assert_eq!(
             s[0].op,
             Op::Click {
-                at: Point2 { x: 5.0, y: 6.0 },
+                at: Where::Window(Point2 { x: 5.0, y: 6.0 }),
                 button: MouseButton::Left,
                 count: 1,
-                ctrl: false,
+                mods: Mods::default(),
             }
         );
     }
@@ -1163,10 +1316,10 @@ mod tests {
         assert_eq!(
             s[0].op,
             Op::Click {
-                at: Point2 { x: 5.0, y: 6.0 },
+                at: Where::Window(Point2 { x: 5.0, y: 6.0 }),
                 button: MouseButton::Right,
                 count: 1,
-                ctrl: false,
+                mods: Mods::default(),
             }
         );
     }
@@ -1177,10 +1330,10 @@ mod tests {
         assert_eq!(
             s[0].op,
             Op::Click {
-                at: Point2 { x: 5.0, y: 6.0 },
+                at: Where::Window(Point2 { x: 5.0, y: 6.0 }),
                 button: MouseButton::Left,
                 count: 2,
-                ctrl: false,
+                mods: Mods::default(),
             }
         );
     }
@@ -1190,9 +1343,9 @@ mod tests {
         let steps = parse("click 10,20 ctrl=true\n").unwrap();
         assert_eq!(steps.len(), 1);
         match &steps[0].op {
-            Op::Click { at, ctrl, .. } => {
-                assert_eq!(*at, Point2 { x: 10.0, y: 20.0 });
-                assert!(*ctrl);
+            Op::Click { at, mods, .. } => {
+                assert_eq!(*at, Where::Window(Point2 { x: 10.0, y: 20.0 }));
+                assert!(mods.ctrl);
             }
             other => panic!("expected Op::Click, got {:?}", other),
         }
@@ -1202,7 +1355,7 @@ mod tests {
     fn click_defaults_ctrl_to_false() {
         let steps = parse("click 10,20\n").unwrap();
         match &steps[0].op {
-            Op::Click { ctrl, .. } => assert!(!*ctrl),
+            Op::Click { mods, .. } => assert!(!mods.ctrl),
             other => panic!("expected Op::Click, got {:?}", other),
         }
     }
@@ -1269,7 +1422,14 @@ mod tests {
     #[test]
     fn hover_parses_a_point_and_rejects_anything_else() {
         let s = parse("hover 100,200").unwrap();
-        assert!(matches!(s[0].op, Op::Hover { at } if at.x == 100.0 && at.y == 200.0));
+        assert!(matches!(
+            s[0].op,
+            Op::Pointer {
+                kind: PointerKind::Hover,
+                at: Some(Where::Window(p)),
+                ..
+            } if p.x == 100.0 && p.y == 200.0
+        ));
         assert!(parse("hover").is_err());
         assert!(parse("hover 1,2 3,4").is_err());
     }
@@ -1507,5 +1667,168 @@ mod tests {
     fn error_reports_line_number() {
         let e = parse("\nwindow 1200\n").unwrap_err();
         assert_eq!(e.line_no, 2);
+    }
+    #[test]
+    fn positions_can_be_window_map_or_geo() {
+        let s = parse("hover 1,2\nhover map:3,4\nhover geo:40.5,-74.25").unwrap();
+        let ats: Vec<_> = s
+            .iter()
+            .map(|st| match &st.op {
+                Op::Pointer { at, .. } => at.unwrap(),
+                o => panic!("{o:?}"),
+            })
+            .collect();
+        assert_eq!(ats[0], Where::Window(Point2 { x: 1.0, y: 2.0 }));
+        assert_eq!(ats[1], Where::Map(Point2 { x: 3.0, y: 4.0 }));
+        assert_eq!(
+            ats[2],
+            Where::Geo {
+                lat: 40.5,
+                lon: -74.25
+            }
+        );
+        assert!(parse("hover geo:40.5").is_err());
+        assert!(parse("hover map:3").is_err());
+    }
+
+    #[test]
+    fn hover_takes_all_four_modifiers() {
+        let s = parse("hover 1,2 alt=true ctrl=true shift=true cmd=true").unwrap();
+        let all = Mods {
+            alt: true,
+            ctrl: true,
+            shift: true,
+            cmd: true,
+        };
+        assert!(matches!(&s[0].op, Op::Pointer { mods, .. } if *mods == all));
+        assert!(parse("hover 1,2 alt=1").is_err());
+        assert!(parse("hover 1,2 meta=true").is_err());
+        assert!(parse("hover alt=true").is_err());
+    }
+
+    #[test]
+    fn drag_is_split_into_begin_move_end() {
+        let s = parse(
+            "drag_begin geo:40,-74 shift=true\ndrag_move 5,6\ndrag_move 7,8 alt=true\ndrag_end\ndrag_end 9,9 alt=true",
+        )
+        .unwrap();
+        let kinds: Vec<_> = s
+            .iter()
+            .map(|st| match &st.op {
+                Op::Pointer { kind, at, mods } => (*kind, at.is_some(), mods.alt, mods.shift),
+                o => panic!("{o:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (PointerKind::Press, true, false, true),
+                (PointerKind::HeldMove, true, false, false),
+                (PointerKind::HeldMove, true, true, false),
+                (PointerKind::Release, false, false, false),
+                (PointerKind::Release, true, true, false),
+            ]
+        );
+        // Beginning and moving a drag need a position.
+        assert!(parse("drag_begin").is_err());
+        assert!(parse("drag_move alt=true").is_err());
+    }
+
+    #[test]
+    fn click_takes_every_modifier_and_a_geo_position() {
+        let s = parse("click geo:1.5,2.5 alt=true shift=true").unwrap();
+        assert!(matches!(
+            &s[0].op,
+            Op::Click {
+                at: Where::Geo { .. },
+                mods: Mods {
+                    alt: true,
+                    shift: true,
+                    ctrl: false,
+                    cmd: false
+                },
+                ..
+            }
+        ));
+        assert!(parse("click 1,2 bogus=true").is_err());
+        assert!(parse("click 1,2 alt=maybe").is_err());
+    }
+
+    #[test]
+    fn mod_down_and_up_name_the_keys() {
+        assert_eq!(
+            parse("mod_down alt cmd").unwrap()[0].op,
+            Op::Modifiers {
+                mods: Mods {
+                    alt: true,
+                    cmd: true,
+                    ..Mods::default()
+                },
+                down: true
+            }
+        );
+        assert!(matches!(
+            parse("mod_up all").unwrap()[0].op,
+            Op::Modifiers {
+                down: false,
+                mods: Mods {
+                    alt: true,
+                    ctrl: true,
+                    shift: true,
+                    cmd: true
+                }
+            }
+        ));
+        assert!(parse("mod_down").is_err());
+        assert!(parse("mod_down option").is_err());
+    }
+
+    #[test]
+    fn assert_snap_forms() {
+        let snap = |s: &str| match parse(s).unwrap().remove(0).op {
+            Op::AssertSnap { expect } => expect,
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(snap("assert_snap none"), SnapExpect::None);
+        assert_eq!(snap("assert_snap node -5"), SnapExpect::Node(-5));
+        assert_eq!(
+            snap("assert_snap way 10 segment 2"),
+            SnapExpect::Way {
+                way: 10,
+                segment: 2
+            }
+        );
+        assert!(parse("assert_snap").is_err());
+        assert!(parse("assert_snap way 10").is_err());
+        assert!(parse("assert_snap way x segment 1").is_err());
+        assert!(parse("assert_snap node").is_err());
+    }
+
+    #[test]
+    fn assert_way_nodes_and_node_shared() {
+        assert_eq!(
+            parse("assert_way_nodes 10 1 3 2").unwrap()[0].op,
+            Op::AssertWayNodes {
+                way: 10,
+                nodes: vec![1, 3, 2]
+            }
+        );
+        assert!(parse("assert_way_nodes 10").is_err());
+        assert_eq!(
+            parse("assert_node_shared 3 10 11").unwrap()[0].op,
+            Op::AssertNodeShared {
+                node: 3,
+                ways: vec![10, 11]
+            }
+        );
+        assert_eq!(
+            parse("assert_node_shared 3").unwrap()[0].op,
+            Op::AssertNodeShared {
+                node: 3,
+                ways: vec![]
+            }
+        );
+        assert!(parse("assert_node_shared").is_err());
+        assert!(parse("assert_node_shared a").is_err());
     }
 }

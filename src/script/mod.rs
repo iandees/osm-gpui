@@ -15,7 +15,7 @@ mod upload_op_tests;
 pub use note_ops::{NoteCheck, NoteOp};
 pub use op::{
     AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode,
-    FeatureKind, FindingTarget, HistoryCmd, LayerKind, MouseButton, NativeAppearanceWant, Op,
-    PanelSection, Point2, SelectionKind, Step, UploadDialogCmd,
+    FeatureKind, FindingTarget, HistoryCmd, LayerKind, Mods, MouseButton, NativeAppearanceWant, Op,
+    PanelSection, Point2, PointerKind, SelectionKind, SnapExpect, Step, UploadDialogCmd, Where,
 };
 pub use parser::{parse, ParseError};

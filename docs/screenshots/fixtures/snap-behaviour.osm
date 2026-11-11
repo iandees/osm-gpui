@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="snap-behaviour fixture">
+  <!--
+    Laid out around (40.7120, -74.0060) at zoom 18 (about 245 px per 0.001
+    degree of latitude and 187 px per 0.001 degree of longitude):
+
+      road 8101   residential street along latitude 40.7120, 8001 (west end),
+                  8002 (centre) and 8003 (east end)
+      park 8102   a closed leisure=park outline north of the street, its
+                  south edge along latitude 40.7127
+      path 8103   a footway south of the street along latitude 40.7110, from
+                  8021 (west) to 8022 (east)
+  -->
+  <node id="8001" version="1" lat="40.7120000" lon="-74.0080000"/>
+  <node id="8002" version="1" lat="40.7120000" lon="-74.0060000"/>
+  <node id="8003" version="1" lat="40.7120000" lon="-74.0040000"/>
+  <way id="8101" version="1">
+    <nd ref="8001"/>
+    <nd ref="8002"/>
+    <nd ref="8003"/>
+    <tag k="highway" v="residential"/>
+  </way>
+
+  <node id="8011" version="1" lat="40.7127000" lon="-74.0075000"/>
+  <node id="8012" version="1" lat="40.7127000" lon="-74.0045000"/>
+  <node id="8013" version="1" lat="40.7134000" lon="-74.0045000"/>
+  <node id="8014" version="1" lat="40.7134000" lon="-74.0075000"/>
+  <way id="8102" version="1">
+    <nd ref="8011"/>
+    <nd ref="8012"/>
+    <nd ref="8013"/>
+    <nd ref="8014"/>
+    <nd ref="8011"/>
+    <tag k="leisure" v="park"/>
+  </way>
+
+  <node id="8021" version="1" lat="40.7110000" lon="-74.0072000"/>
+  <node id="8022" version="1" lat="40.7110000" lon="-74.0050000"/>
+  <way id="8103" version="1">
+    <nd ref="8021"/>
+    <nd ref="8022"/>
+    <tag k="highway" v="footway"/>
+  </way>
+</osm>

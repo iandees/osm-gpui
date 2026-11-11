@@ -6,7 +6,6 @@ use gpui::{
     ScrollWheelEvent, Window,
 };
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::layers::tile_layer::TileLayer;
@@ -56,24 +55,28 @@ pub(crate) enum ScriptCommand {
     /// Resize the window
     SetWindowSize { w: u32, h: u32 },
     /// Synthesize a pan-drag of the map (from → to)
-    Drag {
-        from: (f32, f32),
-        to: (f32, f32),
-        left: bool,
-        mods: script::DragMods,
+    PanDrag {
+        from: script::Where,
+        to: script::Where,
     },
     /// Synthesize a mouse click
     Click {
-        x: f32,
-        y: f32,
+        at: script::Where,
         right: bool,
         count: u8,
-        ctrl: bool,
+        mods: script::Mods,
     },
     /// Synthesize a scroll event
     Scroll { x: f32, y: f32, dx: f32, dy: f32 },
-    /// Synthesize a mouse move with no button held
-    Hover { x: f32, y: f32 },
+    /// One left-button mouse event: a hover, the press, a move with the button
+    /// held, or the release (`at` of `None`: where the pointer is now)
+    Pointer {
+        kind: script::PointerKind,
+        at: Option<script::Where>,
+        mods: script::Mods,
+    },
+    /// Press or release modifier keys by themselves
+    Modifiers { mods: script::Mods, down: bool },
     /// Render the current frame in-process and save it as a PNG at `path`
     Capture { path: std::path::PathBuf },
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
@@ -229,6 +232,30 @@ impl ScriptBus {
     }
 }
 
+/// Modifier keys a script holds with `mod_down`. Every synthesized pointer
+/// event carries these along with the modifiers given on the op itself.
+static HELD_MODS: Mutex<script::Mods> = Mutex::new(script::Mods {
+    alt: false,
+    ctrl: false,
+    shift: false,
+    cmd: false,
+});
+
+/// Where the last scripted pointer event was, in window pixels.
+static LAST_POINTER: Mutex<Option<gpui::Point<gpui::Pixels>>> = Mutex::new(None);
+
+/// The modifiers an event is sent with: those held plus those given inline.
+fn script_modifiers(inline: script::Mods) -> gpui::Modifiers {
+    let m = HELD_MODS.lock().unwrap().union(inline);
+    gpui::Modifiers {
+        control: m.ctrl,
+        alt: m.alt,
+        shift: m.shift,
+        platform: m.cmd,
+        function: false,
+    }
+}
+
 pub(crate) static SCRIPT_BUS: std::sync::OnceLock<Arc<ScriptBus>> = std::sync::OnceLock::new();
 
 // Keystroke commands need a separate queue since gpui `Keystroke` is not Send-safe
@@ -238,6 +265,81 @@ pub(crate) static KEYSTROKE_QUEUE: std::sync::OnceLock<Arc<Mutex<Vec<Keystroke>>
     std::sync::OnceLock::new();
 
 impl MapViewer {
+    /// Window pixels for a script position (see `script::Where`).
+    pub(crate) fn script_window_point(&self, at: script::Where) -> gpui::Point<gpui::Pixels> {
+        let to_window = |p: gpui::Point<gpui::Pixels>| {
+            point(
+                p.x + px(MapViewer::MODE_PANEL_WIDTH),
+                p.y + crate::menu::top_chrome_height(),
+            )
+        };
+        match at {
+            script::Where::Window(p) => point(px(p.x), px(p.y)),
+            script::Where::Map(p) => to_window(point(px(p.x), px(p.y))),
+            script::Where::Geo { lat, lon } => to_window(self.viewport.geo_to_screen(lat, lon)),
+        }
+    }
+
+    /// `assert_snap`: what the snap highlight targets now.
+    pub(crate) fn script_check_snap(&self, want: script::SnapExpect) -> Result<(), String> {
+        use crate::SnapTarget;
+        use script::SnapExpect;
+        let got = match &self.snap_preview {
+            None => SnapExpect::None,
+            Some(SnapTarget::Node { id, .. }) => SnapExpect::Node(*id),
+            Some(SnapTarget::Way { way_id, index, .. }) => SnapExpect::Way {
+                way: *way_id,
+                segment: *index,
+            },
+        };
+        if got == want {
+            Ok(())
+        } else {
+            Err(format!("expected snap {want:?}, the highlight is {got:?}"))
+        }
+    }
+
+    fn script_active_editable(&self) -> Result<&dyn osm_gpui::layers::EditableLayer, String> {
+        self.active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .and_then(|l| l.as_editable())
+            .ok_or_else(|| "no editable layer is active".to_string())
+    }
+
+    /// `assert_way_nodes`: the way's nodes, in order, in the active layer.
+    pub(crate) fn script_check_way_nodes(&self, way: i64, want: &[i64]) -> Result<(), String> {
+        let got = self
+            .script_active_editable()?
+            .way_node_ids(way)
+            .ok_or_else(|| format!("way {way} does not exist"))?;
+        if got == want {
+            Ok(())
+        } else {
+            Err(format!("way {way} has nodes {got:?}, expected {want:?}"))
+        }
+    }
+
+    /// `assert_node_shared`: exactly these ways use the node.
+    pub(crate) fn script_check_node_shared(&self, node: i64, want: &[i64]) -> Result<(), String> {
+        let editable = self.script_active_editable()?;
+        if editable.node_lat_lon(node).is_none() {
+            return Err(format!("node {node} does not exist"));
+        }
+        let mut got = editable.ways_using_node(node);
+        got.sort_unstable();
+        got.dedup();
+        let mut want = want.to_vec();
+        want.sort_unstable();
+        want.dedup();
+        if got == want {
+            Ok(())
+        } else {
+            Err(format!(
+                "node {node} is used by ways {got:?}, expected {want:?}"
+            ))
+        }
+    }
+
     /// Process any pending script command from the background runner thread.
     /// Called at the start of each render frame.
     pub(crate) fn process_script_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -269,52 +371,14 @@ impl MapViewer {
                     window.resize(gpui::size(px(w as f32), px(h as f32)));
                     cx.notify();
                 }
-                ScriptCommand::Drag {
-                    from,
-                    to,
-                    left: true,
-                    mods,
-                } => {
-                    // A left-button press-drag-release, dispatched as real
-                    // events so the current edit mode's handlers see it.
-                    window.defer(cx, move |window, cx| {
-                        let (from, to) = (point(px(from.0), px(from.1)), point(px(to.0), px(to.1)));
-                        let modifiers = gpui::Modifiers {
-                            alt: mods.alt,
-                            platform: mods.cmd,
-                            ..gpui::Modifiers::none()
-                        };
-                        let button = gpui::MouseButton::Left;
-                        let down = MouseDownEvent {
-                            button,
-                            position: from,
-                            modifiers,
-                            click_count: 1,
-                            first_mouse: false,
-                        };
-                        window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
-                        let mv = MouseMoveEvent {
-                            position: to,
-                            pressed_button: Some(button),
-                            modifiers,
-                        };
-                        window.dispatch_event(gpui::PlatformInput::MouseMove(mv), cx);
-                        let up = MouseUpEvent {
-                            button,
-                            position: to,
-                            modifiers,
-                            click_count: 1,
-                        };
-                        window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
-                    });
-                }
-                ScriptCommand::Drag { from, to, .. } => {
+                ScriptCommand::PanDrag { from, to } => {
                     // A pan-drag (as with the right mouse button): down +
                     // single move + up, all in this one frame.
-                    let start = self.window_to_map(point(px(from.0), px(from.1)));
+                    let (from, to) = (self.script_window_point(from), self.script_window_point(to));
+                    let start = self.window_to_map(from);
                     self.start_pan_drag(start, cx);
                     let ev = MouseMoveEvent {
-                        position: point(px(to.0), px(to.1)),
+                        position: to,
                         pressed_button: Some(gpui::MouseButton::Right),
                         modifiers: gpui::Modifiers::none(),
                     };
@@ -322,11 +386,10 @@ impl MapViewer {
                     self.end_pan_drag(cx);
                 }
                 ScriptCommand::Click {
-                    x,
-                    y,
+                    at,
                     right,
                     count,
-                    ctrl,
+                    mods,
                 } => {
                     let btn = if right {
                         gpui::MouseButton::Right
@@ -334,10 +397,8 @@ impl MapViewer {
                         gpui::MouseButton::Left
                     };
                     let click_count = count as usize;
-                    let modifiers = gpui::Modifiers {
-                        control: ctrl,
-                        ..gpui::Modifiers::none()
-                    };
+                    let modifiers = script_modifiers(mods);
+                    let position = self.script_window_point(at);
                     // Dispatching synchronously here would double-lease `self`:
                     // we're already inside `MapViewer::render`'s entity update,
                     // and any `.on_mouse_down`/`.on_click` listener belonging to
@@ -349,7 +410,7 @@ impl MapViewer {
                     window.defer(cx, move |window, cx| {
                         let down = MouseDownEvent {
                             button: btn,
-                            position: point(px(x), px(y)),
+                            position,
                             modifiers,
                             click_count,
                             first_mouse: false,
@@ -357,11 +418,89 @@ impl MapViewer {
                         window.dispatch_event(gpui::PlatformInput::MouseDown(down), cx);
                         let up = MouseUpEvent {
                             button: btn,
-                            position: point(px(x), px(y)),
+                            position,
                             modifiers,
                             click_count,
                         };
                         window.dispatch_event(gpui::PlatformInput::MouseUp(up), cx);
+                    });
+                }
+                ScriptCommand::Pointer { kind, at, mods } => {
+                    use script::PointerKind;
+                    // Where the pointer last was, as this script left it (the
+                    // window's own record also moves with real mouse input).
+                    let position = match at {
+                        Some(at) => self.script_window_point(at),
+                        None => LAST_POINTER
+                            .lock()
+                            .unwrap()
+                            .unwrap_or_else(|| window.mouse_position()),
+                    };
+                    *LAST_POINTER.lock().unwrap() = Some(position);
+                    let modifiers = script_modifiers(mods);
+                    let left = gpui::MouseButton::Left;
+                    let event = match kind {
+                        PointerKind::Hover => gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers,
+                        }),
+                        PointerKind::HeldMove => gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: Some(left),
+                            modifiers,
+                        }),
+                        PointerKind::Press => gpui::PlatformInput::MouseDown(MouseDownEvent {
+                            button: left,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        PointerKind::Release => gpui::PlatformInput::MouseUp(MouseUpEvent {
+                            button: left,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                        }),
+                    };
+                    if kind == PointerKind::Hover {
+                        // Applied straight away as well, so the map's hover
+                        // state is current even if the window-level dispatch
+                        // finds something else under the pointer.
+                        let direct = MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers,
+                        };
+                        self.handle_mouse_move(&direct, cx);
+                    }
+                    // Dispatched as a real window event (deferred for the
+                    // same reason as `Click`), so a drag takes exactly the
+                    // path a person's mouse takes and widgets that open on
+                    // hover (menu bar dropdowns, tooltips) see it.
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(event, cx);
+                    });
+                }
+                ScriptCommand::Modifiers { mods, down } => {
+                    let held = {
+                        let mut held = HELD_MODS.lock().unwrap();
+                        *held = if down {
+                            held.union(mods)
+                        } else {
+                            held.without(mods)
+                        };
+                        *held
+                    };
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_event(
+                            gpui::PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent {
+                                modifiers: script_modifiers(held),
+                                capslock: gpui::Capslock::default(),
+                            }),
+                            cx,
+                        );
                     });
                 }
                 ScriptCommand::Scroll { x, y, dx, dy } => {
@@ -383,27 +522,6 @@ impl MapViewer {
                     } else {
                         self.handle_scroll(&ev, cx);
                     }
-                }
-                ScriptCommand::Hover { x, y } => {
-                    let ev = MouseMoveEvent {
-                        position: point(px(x), px(y)),
-                        pressed_button: None,
-                        modifiers: gpui::Modifiers::none(),
-                    };
-                    self.handle_mouse_move(&ev, cx);
-                    // Also a real window-level move, so widgets that open on
-                    // hover (menu bar dropdowns, submenus, tooltips) see it.
-                    // Deferred for the same reason as `Click`.
-                    window.defer(cx, move |window, cx| {
-                        window.dispatch_event(
-                            gpui::PlatformInput::MouseMove(MouseMoveEvent {
-                                position: point(px(x), px(y)),
-                                pressed_button: None,
-                                modifiers: gpui::Modifiers::none(),
-                            }),
-                            cx,
-                        );
-                    });
                 }
                 ScriptCommand::Capture { path } => {
                     let result = (|| -> Result<(), String> {
@@ -846,6 +964,9 @@ impl MapViewer {
 
         let phase = self.upload_dialog.as_ref().map(|d| d.read(cx).phase());
         match check {
+            Check::Snap(want) => self.script_check_snap(*want),
+            Check::WayNodes { way, nodes } => self.script_check_way_nodes(*way, nodes),
+            Check::NodeShared { node, ways } => self.script_check_node_shared(*node, ways),
             Check::Layer { kind, name } => {
                 let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
                     use osm_gpui::layers::reference_layer::ReferenceLayer;
@@ -1306,37 +1427,23 @@ impl AppHandle for LiveApp {
         });
     }
 
-    fn dispatch_drag(
-        &mut self,
-        from: (f32, f32),
-        to: (f32, f32),
-        _duration: Duration,
-        left: bool,
-        mods: script::DragMods,
-    ) {
-        // Submit as a single command; the render fn handles the full down/move/up.
-        self.bus.submit(ScriptCommand::Drag {
-            from,
-            to,
-            left,
-            mods,
-        });
+    fn dispatch_pan_drag(&mut self, from: script::Where, to: script::Where) {
+        self.bus.submit(ScriptCommand::PanDrag { from, to });
     }
 
     fn dispatch_click(
         &mut self,
-        at: (f32, f32),
+        at: script::Where,
         button: script::MouseButton,
         count: u8,
-        ctrl: bool,
+        mods: script::Mods,
     ) {
         let right = matches!(button, script::MouseButton::Right);
         self.bus.submit(ScriptCommand::Click {
-            x: at.0,
-            y: at.1,
+            at,
             right,
             count,
-            ctrl,
+            mods,
         });
     }
 
@@ -1349,8 +1456,17 @@ impl AppHandle for LiveApp {
         });
     }
 
-    fn dispatch_hover(&mut self, at: (f32, f32)) {
-        self.bus.submit(ScriptCommand::Hover { x: at.0, y: at.1 });
+    fn dispatch_pointer(
+        &mut self,
+        kind: script::PointerKind,
+        at: Option<script::Where>,
+        mods: script::Mods,
+    ) {
+        self.bus.submit(ScriptCommand::Pointer { kind, at, mods });
+    }
+
+    fn set_held_modifiers(&mut self, mods: script::Mods, down: bool) {
+        self.bus.submit(ScriptCommand::Modifiers { mods, down });
     }
 
     fn dispatch_key(&mut self, chord: &script::Chord) {

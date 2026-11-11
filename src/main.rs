@@ -3784,6 +3784,47 @@ impl MapViewer {
             .unwrap_or_default()
     }
 
+    /// Recompute the snap highlight for a pointer at `pos` (map-local):
+    /// while a single node is dragged with the left button, or while hovering
+    /// in Add mode; otherwise it is cleared.
+    fn refresh_snap_preview(
+        &mut self,
+        pos: gpui::Point<gpui::Pixels>,
+        modifiers: gpui::Modifiers,
+        left_pressed: bool,
+        no_button: bool,
+    ) {
+        let dragged = match &self.interaction {
+            Interaction::MoveDrag { targets, .. } if left_pressed => {
+                Self::single_dragged_node(targets)
+            }
+            _ => None,
+        };
+        if dragged.is_some() || (self.mode == EditMode::Add && no_button) {
+            self.update_snap_preview(pos, modifiers, dragged);
+        } else {
+            self.snap_preview = None;
+        }
+    }
+
+    /// A modifier key went down or up with the pointer standing still: the
+    /// snap highlight depends on Alt / Ctrl (they turn snapping off), so
+    /// refresh it from the last pointer position instead of waiting for the
+    /// next mouse move.
+    fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
+        let Some(pos) = self.last_mouse_pos else {
+            return;
+        };
+        // A held move-drag means the left button is down.
+        let dragging = matches!(self.interaction, Interaction::MoveDrag { .. });
+        let idle = matches!(self.interaction, Interaction::Idle);
+        let before = self.snap_preview.clone();
+        self.refresh_snap_preview(pos, modifiers, dragging, idle);
+        if self.snap_preview != before {
+            cx.notify();
+        }
+    }
+
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
@@ -3827,17 +3868,12 @@ impl MapViewer {
             }
         }
         // Highlight what a click / release here would snap onto.
-        let dragged = match &self.interaction {
-            Interaction::MoveDrag { targets, .. } if left_pressed => {
-                Self::single_dragged_node(targets)
-            }
-            _ => None,
-        };
-        if dragged.is_some() || (self.mode == EditMode::Add && event.pressed_button.is_none()) {
-            self.update_snap_preview(adjusted_position, event.modifiers, dragged);
-        } else {
-            self.snap_preview = None;
-        }
+        self.refresh_snap_preview(
+            adjusted_position,
+            event.modifiers,
+            left_pressed,
+            event.pressed_button.is_none(),
+        );
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
         cx.notify();
@@ -7566,6 +7602,13 @@ impl Render for MapViewer {
                         }),
                     )
             })
+            // Alt / Ctrl switch snapping off: update the highlight when one
+            // is pressed or released, without a mouse move.
+            .on_modifiers_changed(
+                cx.listener(|this, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                    this.handle_modifiers_changed(ev.modifiers, cx);
+                }),
+            )
             .on_action(cx.listener(Self::on_export_osm_file))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))

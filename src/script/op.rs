@@ -14,11 +14,79 @@ pub enum MouseButton {
     Right,
 }
 
-/// Modifier keys held during a left-button `drag`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct DragMods {
+/// Modifier keys, as given inline on a pointer op (`alt=true`) or held with
+/// `mod_down`. An event is sent with both combined.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods {
     pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
     pub cmd: bool,
+}
+
+impl Mods {
+    pub fn is_empty(&self) -> bool {
+        !(self.alt || self.ctrl || self.shift || self.cmd)
+    }
+
+    /// Every modifier held in either.
+    pub fn union(self, other: Mods) -> Mods {
+        Mods {
+            alt: self.alt || other.alt,
+            ctrl: self.ctrl || other.ctrl,
+            shift: self.shift || other.shift,
+            cmd: self.cmd || other.cmd,
+        }
+    }
+
+    /// `self` without the modifiers set in `other`.
+    pub fn without(self, other: Mods) -> Mods {
+        Mods {
+            alt: self.alt && !other.alt,
+            ctrl: self.ctrl && !other.ctrl,
+            shift: self.shift && !other.shift,
+            cmd: self.cmd && !other.cmd,
+        }
+    }
+}
+
+/// Kept for scripts and tests written when only `alt` and `cmd` could be held.
+pub type DragMods = Mods;
+
+/// Where a pointer op acts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Where {
+    /// Window pixels (`X,Y`), as the other ops use them.
+    Window(Point2),
+    /// Pixels in the map area, i.e. window pixels minus the toolbar and any
+    /// in-window menu bar (`map:X,Y`).
+    Map(Point2),
+    /// A coordinate, put on screen by the current viewport (`geo:LAT,LON`).
+    Geo { lat: f64, lon: f64 },
+}
+
+/// What a snap preview is targeting, for `assert_snap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapExpect {
+    /// No highlight.
+    None,
+    /// An existing node.
+    Node(i64),
+    /// Segment `segment` (0 is the one between a way's first two nodes).
+    Way { way: i64, segment: usize },
+}
+
+/// A kind of pointer event for the split-up drag and hover ops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerKind {
+    /// Move with no button held.
+    Hover,
+    /// Press the left button.
+    Press,
+    /// Move with the left button held.
+    HeldMove,
+    /// Release the left button.
+    Release,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,6 +273,18 @@ pub enum Check {
     Pending(usize),
     /// The status bar's message contains the text.
     StatusContains(String),
+    /// What the snap highlight is targeting.
+    Snap(SnapExpect),
+    /// A way's nodes, in order.
+    WayNodes {
+        way: i64,
+        nodes: Vec<i64>,
+    },
+    /// The ways that use a node are exactly these (in any order).
+    NodeShared {
+        node: i64,
+        ways: Vec<i64>,
+    },
     Dialog(DialogExpect),
     /// The side panel's Validation section is present (`true`), expanded or
     /// collapsed, or not.
@@ -283,32 +363,43 @@ pub enum Op {
         duration: Duration,
     },
     Drag {
-        from: Point2,
-        to: Point2,
+        from: Where,
+        to: Where,
         duration: Duration,
         /// Drag with the left button (a press-drag-release gesture handled by
         /// the current edit mode) instead of the default map pan.
         left: bool,
         /// Modifier keys held for the whole left-button drag.
-        mods: DragMods,
+        mods: Mods,
     },
     Click {
-        at: Point2,
+        at: Where,
         button: MouseButton,
         /// Number of clicks in the sequence (2 = double-click). Mirrors
         /// `MouseUpEvent::click_count`, which `handle_select_click` reads to
         /// decide whether to fall back to interior hit-testing.
         count: u8,
-        ctrl: bool,
+        mods: Mods,
+    },
+    /// One pointer event: `hover`, `drag_begin`, `drag_move`, `drag_end`.
+    /// `at` is `None` for `drag_end` without a target (release where the
+    /// pointer is).
+    Pointer {
+        kind: PointerKind,
+        at: Option<Where>,
+        mods: Mods,
+    },
+    /// `mod_down` / `mod_up`: press or release modifier keys by themselves,
+    /// like holding Alt without touching the mouse. They stay held, for the
+    /// pointer ops that follow, until released.
+    Modifiers {
+        mods: Mods,
+        down: bool,
     },
     Scroll {
         at: Point2,
         dx: f32,
         dy: f32,
-    },
-    /// Move the mouse to `at` with no button held.
-    Hover {
-        at: Point2,
     },
     Key {
         chord: Chord,
@@ -412,6 +503,21 @@ pub enum Op {
     },
     AssertStatusContains {
         text: String,
+    },
+    /// `assert_snap none|node ID|way ID segment N`: what the snap highlight
+    /// is targeting now.
+    AssertSnap {
+        expect: SnapExpect,
+    },
+    /// `assert_way_nodes WAY ID...`: the way's nodes, in order.
+    AssertWayNodes {
+        way: i64,
+        nodes: Vec<i64>,
+    },
+    /// `assert_node_shared NODE [WAY...]`: exactly these ways use the node.
+    AssertNodeShared {
+        node: i64,
+        ways: Vec<i64>,
     },
     /// `assert_zoom LEVEL [tol=N]`.
     AssertZoom {
