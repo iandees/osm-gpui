@@ -5904,6 +5904,16 @@ impl MapViewer {
         self.open_upload_dialog_as(signed_in_name.as_deref(), window, cx);
     }
 
+    /// Keep File > Upload to OSM disabled while no layer has changes. The
+    /// menus are rebuilt (deferred, as this runs during a render) only when
+    /// the answer flips.
+    fn sync_upload_menu(&self, cx: &mut Context<Self>) {
+        let can_upload = self.layer_manager.layers().iter().any(|l| l.is_modified());
+        if menu::set_menu_can_upload(can_upload) {
+            cx.defer(menu::rebuild_menus_for_live_viewer);
+        }
+    }
+
     /// Window-scoped handler for the `UploadToOsm` action (File > Upload to
     /// OSM and its shortcut). Registered on the render tree like `on_quit`:
     /// the global `menu::upload_to_osm` handler runs while this window is
@@ -6994,6 +7004,7 @@ impl Render for MapViewer {
             osm_gpui::frame_stats::Scoped::new("view.render", osm_gpui::frame_stats::start());
         // Consume any pending script command first.
         self.process_script_command(window, cx);
+        self.sync_upload_menu(cx);
 
         // Starting an inline tag edit is the one remaining case that must
         // happen inside a render pass (its deferred select-all-on-open

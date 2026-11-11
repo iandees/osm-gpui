@@ -195,6 +195,21 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.request_download(cx));
 }
 
+/// Whether any layer has changes to upload, for File > Upload to OSM (the
+/// menus are built outside the window, which owns the real state). The
+/// window keeps it current and rebuilds the menus when it flips.
+static MENU_CAN_UPLOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn menu_can_upload() -> bool {
+    MENU_CAN_UPLOAD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Record whether there is anything to upload; true if that changed (the
+/// caller then rebuilds the menus).
+pub(crate) fn set_menu_can_upload(on: bool) -> bool {
+    MENU_CAN_UPLOAD.swap(on, std::sync::atomic::Ordering::Relaxed) != on
+}
+
 // Global fallback for the File > Upload to OSM menu action; the normal path
 // is `MapViewer::on_upload_to_osm`, a window-scoped listener. A global
 // handler runs while the map window is still checked out for the dispatch, so
@@ -349,7 +364,7 @@ fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
     rebuild_menus_for_live_viewer(cx);
 }
 
-fn rebuild_menus_for_live_viewer(cx: &mut App) {
+pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
@@ -738,7 +753,7 @@ fn build_menus(
         MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
-        MenuItem::action(tr!("menu.file.upload"), UploadToOsm),
+        MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!menu_can_upload()),
     ];
     let mut edit_tail = vec![];
     let mut help_items = vec![
