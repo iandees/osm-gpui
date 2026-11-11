@@ -134,7 +134,7 @@ in the bug list at the end.
 | O2 | Multipolygon building from loose ways (MultipolygonBuilder tests, CreateMultipolygonActionTest #17767 ...) | JOSM | implemented as the Create Multipolygon action, see batch J (rendering is covered by `src/multipolygon.rs` tests) |
 | O3 | Validator tests (DuplicateNode, CrossingWays, MultipolygonTest, TurnrestrictionTest, RelationChecker) | JOSM `data/validation/tests` | existing in `src/validator/` (not repeated) |
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
-| G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify absent |
+| G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify implemented (batch K) |
 | C1 | Copy / paste / duplicate (JOSM `CopyActionTest`, `PasteAction`; PurgeAction #12038) | | existing in `feature_clipboard` and `main.rs` tests |
 | C2 | Purge | | implemented, see batch N |
 | C3 | Conflict/merge of downloaded data (`DataSetMergerTest`, #7481, #12599, #12616) | | existing in `src/layers/merge.rs` |
@@ -473,6 +473,38 @@ other's edge are refused.
 Member limit: the new relation is checked with `limits::relation_over_limit`
 like New Relation (covered by `new_relation_is_refused_past_the_member_limit`);
 no separate test.
+
+No bugs found in this batch.
+
+## Further situations (batch K)
+
+Simplify Way (`src/edge_case_tests/simplify_way.rs`, geometry in
+`geometry::simplify_keep`). Design:
+Douglas-Peucker in the local metric plane (antimeridian-safe) with a
+tolerance, a persisted setting (Settings > Editing, `simplify_tolerance_m`,
+default 3 m, valid 0.1 to 100 m, anything else reads as the default) that is
+read on every run and named in the status. Kept: both ends, any vertex
+used by another way or visited twice by the same way, tagged vertices, and
+relation members. A closed way that would drop under 4 entries is left alone.
+Dropped vertices are by construction used by nothing else, so they are
+deleted; the way edit is recorded before the node deletions, as one undo step.
+The selection stays; the status says how many nodes went, or "Nothing to
+simplify" (no undo step). Tools menu and context menu, no shortcut.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| K1 | Straight line with midpoints | Only the ends stay; midpoints deleted; one step; selection kept | pass `a_straight_line_with_midpoints_loses_them` |
+| K2 | Gentle curve beyond tolerance | Nothing changes, no step | pass `a_gentle_curve_is_kept` |
+| K3 | One kink among near-straight vertices | Only the in-tolerance vertices go | pass `only_the_vertices_within_tolerance_go` |
+| K4 | Junction, tagged, relation-member vertex | Kept | pass `a_junction_vertex_is_kept`, `a_tagged_vertex_is_kept`, `a_relation_member_vertex_is_kept` |
+| K5 | Two-node way; way whose middle is a junction | Nothing to simplify | pass `ends_and_a_way_that_cannot_shrink_are_left_alone` |
+| K6 | Closed way with midpoints | Corners stay, ring stays closed with 4+ entries | pass `a_closed_way_stays_a_valid_ring` |
+| K7 | Tiny closed way within tolerance | Untouched (would collapse) | pass `a_tiny_closed_way_that_would_collapse_is_not_touched` |
+| K8 | Node visited twice by one way | Kept | pass `a_node_visited_twice_by_one_way_is_kept` |
+| K9 | Several ways sharing vertices | Shared vertices stay in every way; only selected ways change | pass `several_ways_sharing_vertices_each_keep_the_shared_ones`, `a_vertex_in_the_middle_of_two_selected_ways_stays_in_both`, `a_way_that_is_not_selected_is_not_simplified` |
+| K10 | Way across the antimeridian | Simplified by ground distance, kink kept | pass `ways_across_the_antimeridian_simplify_by_ground_distance` |
+| K12 | Tolerance setting | Larger tolerance removes more on the same input; bad or out-of-range values fall back to 3 m; round-trips through `settings.json` | pass `a_larger_tolerance_removes_more_vertices_on_the_same_input`, `simplify_tolerance_defaults_when_missing_and_validates`, `round_trip` |
+| K11 | Undo / redo and upload | One step each way; way modified before nodes deleted; undo leaves nothing to upload | pass `upload_modifies_the_way_before_deleting_the_nodes` (undo/redo in K1, K4, K6, K9, K10) |
 
 No bugs found in this batch.
 

@@ -153,6 +153,30 @@ pub struct AppSettings {
     /// settings files written before this field existed.
     #[serde(default = "default_suggest_from_taginfo")]
     pub suggest_from_taginfo: bool,
+    /// Simplify Way's Douglas-Peucker tolerance in metres. Use
+    /// [`AppSettings::simplify_tolerance`] to read it: a value outside
+    /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
+    #[serde(default = "default_simplify_tolerance_m")]
+    pub simplify_tolerance_m: f64,
+}
+
+/// The allowed range of the Simplify Way tolerance, in metres (inclusive).
+pub const SIMPLIFY_TOLERANCE_RANGE_M: (f64, f64) = (0.1, 100.0);
+
+fn default_simplify_tolerance_m() -> f64 {
+    crate::geometry::SIMPLIFY_TOLERANCE_M
+}
+
+/// `value` if it is a usable Simplify Way tolerance (finite, within
+/// [`SIMPLIFY_TOLERANCE_RANGE_M`]).
+pub fn valid_simplify_tolerance(value: f64) -> Option<f64> {
+    let (lo, hi) = SIMPLIFY_TOLERANCE_RANGE_M;
+    (value.is_finite() && (lo..=hi).contains(&value)).then_some(value)
+}
+
+/// Parse the text of the tolerance field (a decimal point or comma is fine).
+pub fn parse_simplify_tolerance(text: &str) -> Option<f64> {
+    valid_simplify_tolerance(text.trim().replace(',', ".").parse::<f64>().ok()?)
 }
 
 fn default_cache_budget_mb() -> u64 {
@@ -186,11 +210,19 @@ impl Default for AppSettings {
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
+            simplify_tolerance_m: default_simplify_tolerance_m(),
         }
     }
 }
 
 impl AppSettings {
+    /// The Simplify Way tolerance in metres, the default if the stored value
+    /// is out of range.
+    pub fn simplify_tolerance(&self) -> f64 {
+        valid_simplify_tolerance(self.simplify_tolerance_m)
+            .unwrap_or_else(default_simplify_tolerance_m)
+    }
+
     /// The OSM API base URL implied by the current selection (no trailing slash).
     pub fn api_base_url(&self) -> String {
         match self.api_server {
@@ -263,6 +295,23 @@ pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     } else {
         update_store_in_memory(settings);
     }
+}
+
+/// Set only the Simplify Way tolerance (metres), on top of the store's current
+/// settings. Values outside the allowed range are ignored (`false`). Written
+/// to disk when `persist` is true.
+pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
+    let Some(metres) = valid_simplify_tolerance(metres) else {
+        return false;
+    };
+    let mut settings = snapshot();
+    settings.simplify_tolerance_m = metres;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+    true
 }
 
 /// Remember the source text and the comment of an upload that went through:
@@ -421,6 +470,7 @@ mod tests {
         set_welcome_dismissed(true, true);
         set_invert_scroll_zoom(true, true);
         set_suggest_from_taginfo(false, true);
+        set_simplify_tolerance(5.0, true);
         let after = real
             .as_ref()
             .and_then(|p| fs::metadata(p).ok()?.modified().ok());
@@ -448,10 +498,43 @@ mod tests {
             last_source: "survey; GPS".into(),
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
+            simplify_tolerance_m: 7.5,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+        assert_eq!(loaded.simplify_tolerance(), 7.5);
+    }
+
+    #[test]
+    fn simplify_tolerance_defaults_when_missing_and_validates() {
+        // A file written before the field existed.
+        let old: AppSettings =
+            serde_json::from_str(r#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(old.simplify_tolerance(), 3.0);
+        assert_eq!(AppSettings::default().simplify_tolerance(), 3.0);
+        for bad in [0.0, 0.05, -2.0, 100.5, 1e9, f64::NAN, f64::INFINITY] {
+            let s = AppSettings {
+                simplify_tolerance_m: bad,
+                ..AppSettings::default()
+            };
+            assert_eq!(s.simplify_tolerance(), 3.0, "{bad} falls back");
+            assert_eq!(valid_simplify_tolerance(bad), None);
+        }
+        for good in [0.1, 3.0, 100.0] {
+            assert_eq!(valid_simplify_tolerance(good), Some(good));
+        }
+        assert_eq!(parse_simplify_tolerance(" 2,5 "), Some(2.5));
+        assert_eq!(parse_simplify_tolerance("12"), Some(12.0));
+        for bad in ["", "abc", "0", "0.01", "101", "-1", "NaN", "inf"] {
+            assert_eq!(parse_simplify_tolerance(bad), None, "{bad:?}");
+        }
+        // An out-of-range value in the file is read back as the default.
+        let bad_file: AppSettings = serde_json::from_str(
+            r#"{"api_server":"Primary","custom_api_url":"","simplify_tolerance_m":5000}"#,
+        )
+        .unwrap();
+        assert_eq!(bad_file.simplify_tolerance(), 3.0);
     }
 
     #[test]
@@ -627,6 +710,7 @@ mod tests {
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
+            simplify_tolerance_m: 3.0,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);

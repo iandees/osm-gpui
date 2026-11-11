@@ -300,6 +300,67 @@ pub enum StraightenError {
     TooCurved,
 }
 
+/// How far (in metres) a vertex may sit off the simplified line before Simplify
+/// Way keeps it. 3 m is about the scatter of consumer GPS tracks and of hand
+/// drawing at mapping zoom levels, so a vertex closer than that to the line
+/// through its neighbours carries no real information.
+pub const SIMPLIFY_TOLERANCE_M: f64 = 3.0;
+
+/// Which vertices of a polyline survive Douglas-Peucker simplification with
+/// `tolerance_m` metres of allowed error. `pinned[i]` forces vertex `i` to be
+/// kept (junctions, tagged nodes, ...); the first and last vertex are always
+/// kept. Distances are measured in the local metric plane around the first
+/// point, so ways across the antimeridian work. A closed ring (first and last
+/// the same place) is handled by treating the distance to a zero-length
+/// segment as the distance to its point.
+///
+/// Returns one flag per input point. `pinned` should have the same length.
+pub fn simplify_keep(points: &[LatLon], pinned: &[bool], tolerance_m: f64) -> Vec<bool> {
+    let n = points.len();
+    let mut keep: Vec<bool> = (0..n)
+        .map(|i| i == 0 || i + 1 == n || pinned.get(i).copied().unwrap_or(false))
+        .collect();
+    if n < 3 {
+        return keep;
+    }
+    let proj = LocalProjection::new(points[0]);
+    let xy: Vec<(f64, f64)> = points.iter().map(|&p| proj.project(p)).collect();
+    let anchors: Vec<usize> = (0..n).filter(|&i| keep[i]).collect();
+    let mut stack: Vec<(usize, usize)> = anchors.windows(2).map(|w| (w[0], w[1])).collect();
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (mut far, mut far_d) = (a, -1.0f64);
+        for (i, &p) in xy.iter().enumerate().take(b).skip(a + 1) {
+            let d = point_segment_distance(p, xy[a], xy[b]);
+            if d > far_d {
+                far = i;
+                far_d = d;
+            }
+        }
+        if far_d > tolerance_m {
+            keep[far] = true;
+            stack.push((a, far));
+            stack.push((far, b));
+        }
+    }
+    keep
+}
+
+/// Distance from `p` to the segment `a`-`b` (to `a` if the segment has no
+/// length).
+fn point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+}
+
 /// Whether [`straighten`] applies to a way of this shape: open, with at least
 /// three nodes.
 pub fn can_straighten(points: &[LatLon]) -> bool {

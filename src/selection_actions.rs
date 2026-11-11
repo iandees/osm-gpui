@@ -383,6 +383,15 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         },
         apply: apply_straighten,
     },
+    SelectionAction {
+        id: "simplify",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 3),
+        apply: apply_simplify,
+    },
     // Copy, Paste, Paste at Source Position and Duplicate need the pointer
     // position and the window's clipboard, so `MapViewer::run_selection_action`
     // hands them to `clipboard_actions` instead of calling `apply`.
@@ -824,6 +833,123 @@ fn apply_straighten(
         || tr!("action.straighten.none"),
         |n| tr_count!("action.straighten.done", n),
     )
+}
+
+/// The vertices of `way_id` that Simplify Way must keep, one flag per entry
+/// of `node_ids`: shared with another way (or visited twice by this one),
+/// tagged, or a relation member. (The end nodes are always kept by
+/// `geometry::simplify_keep`.)
+fn simplify_pins(editable: &dyn EditableLayer, layer_id: LayerId, node_ids: &[i64]) -> Vec<bool> {
+    node_ids
+        .iter()
+        .map(|&id| {
+            let node = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id,
+            };
+            node_ids.iter().filter(|&&n| n == id).count() > 1
+                || editable.ways_using_node(id).len() > 1
+                || !editable.relations_containing_node(id).is_empty()
+                || editable
+                    .feature_tags(&node)
+                    .is_some_and(|tags| !tags.is_empty())
+        })
+        .collect()
+}
+
+/// Simplify Way: drop the vertices of each selected way
+/// that sit within the tolerance (default `geometry::SIMPLIFY_TOLERANCE_M`) of the line through their
+/// neighbours (Douglas-Peucker). A vertex stays if it is an end node, shared
+/// with another way, tagged, or a relation member, or if dropping it would
+/// leave a closed way under 4 entries. The dropped nodes were used by nothing
+/// else, so they are deleted. One undo step: the way edits come first, then
+/// the node deletions. The tolerance is the "Simplify Way tolerance" setting,
+/// read on every run.
+fn apply_simplify(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let tolerance = osm_gpui::settings_store::snapshot().simplify_tolerance();
+    simplify_ways(layers, selection, active, tolerance)
+}
+
+/// Simplify Way with an explicit tolerance in metres; see [`apply_simplify`].
+pub(crate) fn simplify_ways(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+    tolerance: f64,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let mut actions = Vec::new();
+    let mut dropped: Vec<i64> = Vec::new();
+    let mut done_ways: Vec<i64> = Vec::new();
+    for way in selected_ways_in(editable, layer_id, selection) {
+        if done_ways.contains(&way.way_id) {
+            continue;
+        }
+        done_ways.push(way.way_id);
+        let pins = simplify_pins(editable, layer_id, &way.node_ids);
+        let keep = geometry::simplify_keep(&way.points, &pins, tolerance);
+        let after: Vec<i64> = way
+            .node_ids
+            .iter()
+            .zip(&keep)
+            .filter(|(_, &k)| k)
+            .map(|(&id, _)| id)
+            .collect();
+        let closed = way.node_ids.len() > 1 && way.node_ids.first() == way.node_ids.last();
+        if after.len() == way.node_ids.len() || (closed && after.len() < 4) {
+            continue;
+        }
+        if editable.set_way_nodes(way.way_id, after.clone()) {
+            actions.push(UndoableAction::SetWayNodes {
+                layer: layer_id,
+                way_id: way.way_id,
+                before: way.node_ids.clone(),
+                after,
+            });
+            dropped.extend(
+                way.node_ids
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, &k)| !k)
+                    .map(|(&id, _)| id),
+            );
+        }
+    }
+    if dropped.is_empty() {
+        return Err(tr!("action.simplify.none", tolerance = tolerance).to_string());
+    }
+    for &id in &dropped {
+        if let Some(snapshot) = editable.delete_feature(FeatureKind::Node, id) {
+            actions.push(UndoableAction::DeleteFeature {
+                layer: layer_id,
+                snapshot,
+            });
+        }
+    }
+    let status =
+        tr_count!("action.simplify.done", dropped.len(), tolerance = tolerance).to_string();
+    let select = selection
+        .iter()
+        .filter(|f| {
+            !(f.layer_id == layer_id && f.kind == FeatureKind::Node && dropped.contains(&f.id))
+        })
+        .cloned()
+        .collect();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: status.clone(),
+            actions,
+        }),
+        status,
+        clear_selection: false,
+        select: Some(select),
+        continue_way: None,
+    })
 }
 
 fn apply_circularize(
@@ -3307,6 +3433,7 @@ mod tests {
                 "square",
                 "circularize",
                 "reverse",
+                "simplify",
                 "copy_features",
                 "duplicate_features",
                 "parallel",

@@ -57,6 +57,8 @@ pub struct SettingsWindow {
     client_id_input: Entity<InputState>,
     edit_cache_budget: Entity<InputState>,
     cache_budget_error: Option<SharedString>,
+    edit_simplify_tolerance: Entity<InputState>,
+    simplify_tolerance_error: Option<SharedString>,
     cache_clear_error: Option<SharedString>,
 
     login_state: LoginState,
@@ -90,6 +92,11 @@ impl SettingsWindow {
                 .placeholder("500")
                 .default_value(app_settings.cache_budget_mb.to_string())
         });
+        let edit_simplify_tolerance = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("3")
+                .default_value(app_settings.simplify_tolerance().to_string())
+        });
         let login_state = Self::current_login_state(&app_settings);
 
         Self {
@@ -109,6 +116,8 @@ impl SettingsWindow {
             client_id_input,
             edit_cache_budget,
             cache_budget_error: None,
+            edit_simplify_tolerance,
+            simplify_tolerance_error: None,
             cache_clear_error: None,
 
             login_state,
@@ -183,6 +192,7 @@ impl SettingsWindow {
         self.app_settings.last_source = live.last_source;
         self.app_settings.recent_comments = live.recent_comments;
         self.app_settings.suggest_from_taginfo = live.suggest_from_taginfo;
+        self.app_settings.simplify_tolerance_m = live.simplify_tolerance_m;
         settings_store::update_store(self.app_settings.clone());
     }
 
@@ -245,6 +255,23 @@ impl SettingsWindow {
             self.app_settings.client_ids.insert(oauth_base, client_id);
         }
         self.save_settings();
+        cx.notify();
+    }
+
+    /// Validate and store the Simplify Way tolerance typed into its field.
+    fn save_simplify_tolerance(&mut self, cx: &mut Context<Self>) {
+        let raw = self.edit_simplify_tolerance.read(cx).value().to_string();
+        match settings_store::parse_simplify_tolerance(&raw) {
+            Some(metres) => {
+                self.simplify_tolerance_error = None;
+                settings_store::set_simplify_tolerance(metres, true);
+                self.app_settings.simplify_tolerance_m = metres;
+            }
+            None => {
+                self.simplify_tolerance_error =
+                    Some(tr!("settings.editing.simplify_tolerance_error"));
+            }
+        }
         cx.notify();
     }
 
@@ -662,6 +689,23 @@ impl SettingsWindow {
             ),
         )
         .description(tr!("settings.editing.taginfo_description"));
+        let simplify_view = view.clone();
+        let simplify_input = self.edit_simplify_tolerance.clone();
+        let simplify_error = self.simplify_tolerance_error.clone();
+        let simplify_item = SettingItem::new(
+            tr!("settings.editing.simplify_tolerance"),
+            SettingField::render(move |_options, window, cx| {
+                render_simplify_tolerance(
+                    simplify_view.clone(),
+                    simplify_input.clone(),
+                    simplify_error.clone(),
+                    window,
+                    cx,
+                )
+            }),
+        )
+        .description(tr!("settings.editing.simplify_tolerance_description"))
+        .layout(Axis::Vertical);
         let value_view = view.clone();
         let item = SettingItem::new(
             tr!("settings.editing.autosave"),
@@ -682,6 +726,9 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .title(tr!("settings.editing.taginfo_group"))
                     .item(taginfo_item),
+                SettingGroup::new()
+                    .title(tr!("settings.editing.simplify_group"))
+                    .item(simplify_item),
             ])
     }
 
@@ -1106,6 +1153,35 @@ fn render_cache_usage_summary(
         col = col.child(Label::new(err).text_sm().text_color(danger));
     }
     col.into_any_element()
+}
+
+fn render_simplify_tolerance(
+    view: Entity<SettingsWindow>,
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+
+    let mut row = v_flex().gap_2().child(field_row(
+        tr!("settings.editing.simplify_tolerance"),
+        &input,
+        muted,
+    ));
+    if let Some(err) = error {
+        row = row.child(Label::new(err).text_sm().text_color(danger));
+    }
+    row.child(
+        Button::new("save-simplify-tolerance")
+            .label(tr!("settings.save"))
+            .primary()
+            .compact()
+            .on_click(move |_ev, _window, cx| {
+                view.update(cx, |this, cx| this.save_simplify_tolerance(cx));
+            }),
+    )
 }
 
 fn render_cache_budget(

@@ -16,6 +16,7 @@ mod parse_and_export;
 mod purge;
 mod reverse;
 mod shared_members;
+mod simplify_way;
 mod snap_join_node;
 mod split;
 mod undo_interactions;
