@@ -723,6 +723,20 @@ action:
     hint: "Select nodes, ways or relations to put into a new relation"
     # `%{members}` is the count from `action.feature_count`.
     done: "Created a relation with %{members}. Add its tags and roles in the side panel"
+  create_multipolygon:
+    label: "Create Multipolygon"
+    hint: "Select closed ways, or open ways that join into closed rings, to make a multipolygon"
+    # `%{members}` is the count from `action.feature_count`.
+    done: "Created a multipolygon with %{members} (%{outers} outer, %{inners} inner)"
+    # `%{count}` ways were already members of another multipolygon.
+    shared: "%{count} of the ways already belong to another multipolygon"
+    degenerate: "Way %{way} is too short to be part of a ring"
+    missing_node: "Node %{node} is not loaded, so the rings can't be checked"
+    branching: "Three or more selected ways end at node %{node}; select only the ways that make the rings"
+    unclosed: "The ways joined to way %{way} do not close into a ring"
+    self_touching: "A ring passes through node %{node} twice"
+    zero_area: "A selected ring has no area"
+    crossing: "Ways %{first} and %{second} cross or overlap, which makes an invalid multipolygon"
   delete:
     label: "Delete"
     hint: "Select something to delete"
