@@ -209,6 +209,7 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
                 min_zoom: entry.min_zoom,
                 max_zoom: entry.max_zoom,
                 attribution: entry.attribution,
+                imagery_id: Some(entry.id),
             },
             cx,
         );
@@ -241,6 +242,7 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
                 attribution: None,
+                imagery_id: None,
             },
             cx,
         );
@@ -448,6 +450,15 @@ fn build_menus(
         MenuItem::action(tr!("menu.imagery.osm_carto"), AddOsmCarto),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.imagery.coordinate_grid"), AddCoordinateGrid),
+        MenuItem::separator(),
+        MenuItem::action(
+            tr!("menu.imagery.adjust_offset"),
+            crate::imagery_offset_ui::AdjustImageryOffset,
+        ),
+        MenuItem::action(
+            tr!("menu.imagery.reset_offset"),
+            crate::imagery_offset_ui::ResetImageryOffset,
+        ),
     ];
 
     match state {

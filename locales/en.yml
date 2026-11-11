@@ -48,6 +48,8 @@ menu:
     unavailable: "(Imagery index unavailable)"
     # A recommended imagery source in the menu.
     best_entry: "★ %{name}"
+    adjust_offset: "Adjust Imagery Offset"
+    reset_offset: "Reset Imagery Offset"
   view:
     title: "View"
     zoom_in: "Zoom In"
@@ -123,6 +125,20 @@ transfer:
   # Shown while the app waits on the system keychain's access prompt for the saved login.
   waiting_keychain: "Waiting for access to your saved login… (check for a keychain prompt)"
 
+# The panel over the map while adjusting an imagery layer's offset. Values
+# are ground metres east and north, with two decimals.
+imagery_offset:
+  title: "Adjust imagery offset"
+  value: "E %{east} m, N %{north} m"
+  east: "East"
+  north: "North"
+  metres: "m"
+  hint: "Drag the map to move the imagery. Arrow keys nudge by 1 px (Shift: 10 px). Esc cancels."
+  reset: "Reset"
+  done: "Done"
+  no_layer: "There is no visible imagery layer to adjust"
+  reset_done: "Imagery offset reset"
+
 # The card over the map while no OSM data is loaded.
 welcome:
   title: "Welcome to osm-gpui"
@@ -148,6 +164,7 @@ status:
     building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
     building_oriented_started: "Click or release at the opposite corner to finish · Esc to cancel"
     extrude: "Drag to reshape · Alt-drag for a new way · Cmd/Ctrl-drag to move · Esc to exit"
+    adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
     other: "%{count} unsaved edits"
@@ -229,6 +246,10 @@ panel:
     hide: "Hide"
     show: "Show"
     delete: "Delete"
+    adjust_offset: "Adjust imagery offset"
+    reset_offset: "Reset imagery offset"
+    # Tag on an imagery layer that is drawn shifted; the values are metres.
+    offset_tag: "offset E %{east}, N %{north}"
   selection:
     title: "Selection"
     title_count:
