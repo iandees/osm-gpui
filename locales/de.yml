@@ -400,6 +400,10 @@ settings:
     autosave_group: "Wiederherstellung"
     autosave: "Automatisch sichern"
     autosave_description: "Ebenen mit ungesicherten Änderungen alle 30 Sekunden sichern, damit sie nach einem Absturz, einem erzwungenen Beenden oder einem Stromausfall wiederhergestellt werden können."
+    simplify_group: "Weg vereinfachen"
+    simplify_tolerance: "Toleranz beim Vereinfachen (Meter)"
+    simplify_tolerance_description: "Weg vereinfachen entfernt Knoten, die höchstens diesen Abstand von der Linie durch ihre Nachbarn haben. Erlaubt sind 0,1 bis 100 Meter; Standard ist 3."
+    simplify_tolerance_error: "Eine Zahl von 0,1 bis 100 eingeben"
     taginfo_group: "Tag-Vorschläge"
     taginfo: "Tags von taginfo vorschlagen"
     taginfo_description: "Während Sie in die Felder für Tag-Schlüssel und -Werte tippen, wird der Text an taginfo.openstreetmap.org gesendet, um Schlüssel und Werte vorzuschlagen, die andere verwenden. Werte von Freitext-Schlüsseln wie name oder addr:* werden nie gesendet. Vorschläge aus den geladenen Daten und dem Tagging-Schema funktionieren immer, auch ohne taginfo."
@@ -684,6 +688,13 @@ action:
     error:
       too_curved: "Begradigen nicht möglich: Der Weg weicht um mehr als %{percent} % seiner Länge ab"
       no_line: "Begradigen nicht möglich: Erster und letzter Knoten des Wegs liegen an derselben Stelle"
+  simplify:
+    label: "Weg vereinfachen"
+    hint: "Einen oder mehrere Wege mit 3 oder mehr Knoten wählen, um überflüssige Knoten zu entfernen"
+    none: "Nichts zu vereinfachen (Toleranz %{tolerance} m)"
+    done:
+      one: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
+      other: "Vereinfacht: %{count} Knoten entfernt (Toleranz %{tolerance} m)"
   align:
     label: "Knoten in einer Linie ausrichten"
     hint: "3 oder mehr Knoten wählen, um sie auf eine gerade Linie zu legen (für alle Knoten eines Wegs den Weg wählen und Begradigen verwenden)"

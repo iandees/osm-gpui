@@ -15,6 +15,7 @@ mod multipolygon_edits;
 mod parse_and_export;
 mod reverse;
 mod shared_members;
+mod simplify_way;
 mod snap_join_node;
 mod split;
 mod undo_interactions;

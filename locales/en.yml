@@ -406,6 +406,10 @@ settings:
     autosave_group: "Recovery"
     autosave: "Autosave"
     autosave_description: "Save layers with unsaved edits every 30 seconds, so they can be restored after a crash, a force quit or a power failure."
+    simplify_group: "Simplify Way"
+    simplify_tolerance: "Simplify tolerance (metres)"
+    simplify_tolerance_description: "Simplify Way removes nodes that lie within this distance of the line through their neighbours. Allowed range: 0.1 to 100 metres; the default is 3."
+    simplify_tolerance_error: "Enter a number from 0.1 to 100"
     taginfo_group: "Tag suggestions"
     taginfo: "Suggest tags from taginfo"
     taginfo_description: "While you type in the tag key and value fields, the text is sent to taginfo.openstreetmap.org to suggest keys and values that others use. Values of free-text keys such as name or addr:* are never sent. Suggestions from the loaded data and the tagging schema always work without it."
@@ -691,6 +695,13 @@ action:
     error:
       too_curved: "Can't straighten: the way bends more than %{percent}% of its length"
       no_line: "Can't straighten: the way's first and last node are in the same place"
+  simplify:
+    label: "Simplify Way"
+    hint: "Select one or more ways with 3 or more nodes to remove redundant nodes"
+    none: "Nothing to simplify (tolerance %{tolerance} m)"
+    done:
+      one: "Simplified: removed %{count} node (tolerance %{tolerance} m)"
+      other: "Simplified: removed %{count} nodes (tolerance %{tolerance} m)"
   align:
     label: "Align Nodes in Line"
     hint: "Select 3 or more nodes to put them on a straight line (select a way and use Straighten to align all of its nodes)"
