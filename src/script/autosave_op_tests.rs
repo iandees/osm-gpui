@@ -8,6 +8,35 @@ fn op(line: &str) -> Op {
 }
 
 #[test]
+fn object_history_ops_parse() {
+    assert_eq!(op("show_history"), Op::ShowHistory);
+    assert_eq!(
+        op("load_history_file a/b.xml"),
+        Op::LoadHistoryFile {
+            path: "a/b.xml".into()
+        }
+    );
+    assert_eq!(
+        op("assert_history_versions 4"),
+        Op::AssertHistoryVersions { count: 4 }
+    );
+    assert_eq!(
+        op("assert_dialog history"),
+        Op::AssertDialog {
+            expect: DialogExpect::History
+        }
+    );
+    for line in [
+        "show_history now",
+        "load_history_file",
+        "assert_history_versions",
+        "assert_history_versions x",
+    ] {
+        assert!(parse(line).is_err(), "{line}");
+    }
+}
+
+#[test]
 fn autosave_ops_parse() {
     assert_eq!(op("autosave_now"), Op::AutosaveNow);
     assert_eq!(op("restore_autosave"), Op::RestoreAutosave);

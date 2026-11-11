@@ -1,0 +1,27 @@
+# Object history: select a way, show the server's versions of it from a
+# canned /history response (no network), and capture the view.
+#
+# Viewport (zoom 18, centered on 40.7120, -74.0060): node 1003 is at the
+# window center (488, 388); the way runs 1001 -> 1003 -> 1002.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/object-history.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+click 675,240
+wait_idle 2s
+assert_selection way
+capture out/object-history-0-selected.png
+
+load_history_file docs/screenshots/fixtures/object-history-way-3001.history.xml
+show_history
+assert_dialog history
+assert_history_versions 4
+capture out/object-history-1-loaded.png
+
+# Local edits appear as "Your unsaved changes".
+set_tag lit yes
+set_tag surface gravel
+wait_idle 1s
+capture out/object-history-2-unsaved.png

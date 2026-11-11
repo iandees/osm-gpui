@@ -317,6 +317,24 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
         "restore_autosave" => no_args(line_no, "restore_autosave", &rest, Op::RestoreAutosave),
         "discard_autosave" => no_args(line_no, "discard_autosave", &rest, Op::DiscardAutosave),
         "crash" => no_args(line_no, "crash", &rest, Op::Crash),
+        "show_history" => no_args(line_no, "show_history", &rest, Op::ShowHistory),
+        "load_history_file" => match rest.as_slice() {
+            [path] => Ok(Op::LoadHistoryFile {
+                path: path.to_string(),
+            }),
+            _ => Err(err(line_no, "load_history_file: want PATH")),
+        },
+        "assert_history_versions" => match rest.as_slice() {
+            [n] => Ok(Op::AssertHistoryVersions {
+                count: n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_history_versions: bad count '{}': {}", n, e),
+                    )
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_history_versions: want COUNT")),
+        },
         "sign_in" => no_args(line_no, "sign_in", &rest, Op::SignIn),
         "wait_signed_in" => Ok(Op::WaitSignedIn {
             timeout: optional_duration(line_no, "wait_signed_in", &rest, Duration::from_secs(200))?,
@@ -520,7 +538,7 @@ fn parse_assert_validation_panel(line_no: usize, rest: &[&str]) -> Result<Op, Pa
 }
 
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|find|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|find|history|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -534,6 +552,7 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("delete_layer", []) => DialogExpect::DeleteLayer,
         ("restore", []) => DialogExpect::Restore,
         ("find", []) => DialogExpect::Find,
+        ("history", []) => DialogExpect::History,
         ("conflict", words) => {
             let mut kind = None;
             let mut object = None;

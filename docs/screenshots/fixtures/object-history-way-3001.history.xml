@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A canned answer to GET /api/0.6/way/3001/history for the object history
+     captures: version 2 is redacted (absent), version 3 is a deletion. -->
+<osm version="0.6" generator="CGImap 0.9.3 (handwritten)" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">
+  <way id="3001" visible="true" version="1" changeset="68000001" timestamp="2019-03-02T10:15:30Z" user="mapper_anna" uid="1001">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <tag k="highway" v="road"/>
+  </way>
+  <way id="3001" visible="false" version="3" changeset="85000007" timestamp="2020-05-17T08:00:12Z" user="cleanup_bot" uid="2002"/>
+  <way id="3001" visible="true" version="4" changeset="90000042" timestamp="2020-08-21T17:45:03Z" user="mapper_anna" uid="1001">
+    <nd ref="1001"/>
+    <nd ref="1002"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Fixture St"/>
+  </way>
+  <way id="3001" visible="true" version="5" changeset="134000005" timestamp="2023-04-09T12:30:45Z" user="Joe Mapper" uid="3003">
+    <nd ref="1001"/>
+    <nd ref="1003"/>
+    <nd ref="1002"/>
+    <tag k="highway" v="tertiary"/>
+    <tag k="name" v="Fixture Street"/>
+    <tag k="surface" v="asphalt"/>
+    <tag k="lanes" v="2"/>
+  </way>
+</osm>

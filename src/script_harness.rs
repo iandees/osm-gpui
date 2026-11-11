@@ -116,6 +116,8 @@ pub(crate) enum ScriptCommand {
     Export { path: std::path::PathBuf },
     /// An autosave op (write now, press Restore or Discard).
     Autosave(script::AutosaveCmd),
+    /// An object history op (open the view, feed it a canned response).
+    History(script::HistoryCmd),
     /// Evaluate a read-only condition.
     Check(script::Check),
     /// Click a validator finding's row in the side panel.
@@ -559,6 +561,10 @@ impl MapViewer {
                 }
                 ScriptCommand::Autosave(cmd) => {
                     let result = self.script_autosave(cmd, window, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::History(cmd) => {
+                    let result = self.script_history(cmd, window, cx);
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::Check(check) => {
@@ -1098,6 +1104,8 @@ impl MapViewer {
                     }
                 }
             },
+            Check::HistoryVersions(want) => self.script_history_versions(*want, cx),
+            Check::HistorySettled => self.script_history_settled(cx),
             Check::Dialog(want) => {
                 let found = self.describe_dialog(&phase);
                 let ok = match (want, &phase) {
@@ -1107,6 +1115,7 @@ impl MapViewer {
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
                     (DialogExpect::Restore, _) => self.restore_dialog.is_some(),
                     (DialogExpect::Find, _) => self.find_dialog.is_some(),
+                    (DialogExpect::History, _) => self.object_history.view.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -1145,6 +1154,7 @@ impl MapViewer {
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
             None if self.restore_dialog.is_some() => "the restore-autosave offer".into(),
             None if self.find_dialog.is_some() => "the Find dialog".into(),
+            None if self.object_history.view.is_some() => "the object history view".into(),
             None => "no dialog".into(),
         }
     }
@@ -1537,6 +1547,13 @@ impl AppHandle for LiveApp {
             std::process::exit(3);
         }
         self.bus.submit(ScriptCommand::Autosave(cmd));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn history(&mut self, cmd: script::HistoryCmd) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::History(cmd));
         let result = self.bus.take_assert_result();
         self.bus.wait_frame();
         result

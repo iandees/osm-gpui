@@ -91,6 +91,17 @@ pub enum DialogExpect {
     Restore,
     /// The Edit > Find dialog.
     Find,
+    /// The object history view.
+    History,
+}
+
+/// What the object history script ops ask the app to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistoryCmd {
+    /// Open the view for the selected object.
+    Show,
+    /// Answer the next request from this file.
+    LoadFile(std::path::PathBuf),
 }
 
 /// What the autosave script ops ask the app to do.
@@ -229,6 +240,11 @@ pub enum Check {
     },
     /// Whether the Adjust imagery offset mode is active.
     AdjustingOffset(bool),
+    /// The object history view is open and lists exactly this many versions.
+    HistoryVersions(usize),
+    /// The object history view is open and no longer loading (loaded or
+    /// failed).
+    HistorySettled,
     /// A condition about OSM notes (see `note_ops`).
     Note(super::note_ops::NoteCheck),
     /// The tags the upload dialog would write now include `key` with
@@ -460,6 +476,18 @@ pub enum Op {
     /// Exit at once without cleaning up, as a crash would (so the next run
     /// finds an unclean session). Scripted runs only.
     Crash,
+    /// Open the object history view for the selected object and wait for
+    /// its versions to arrive (or fail).
+    ShowHistory,
+    /// Script-only: answer the next object history request from this local
+    /// `/history` document instead of the server.
+    LoadHistoryFile {
+        path: String,
+    },
+    /// Assert the open object history view lists exactly `count` versions.
+    AssertHistoryVersions {
+        count: usize,
+    },
     /// Start the browser sign-in for the active API server.
     SignIn,
     /// Wait for the sign-in to finish (someone approves it in the browser).

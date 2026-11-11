@@ -37,6 +37,7 @@ menu:
     select_all: "Alles auswählen"
     deselect_all: "Auswahl aufheben"
     find: "Suchen…"
+    show_history: "Objektverlauf anzeigen"
     change_feature_type: "Objekttyp ändern …"
     apply_nsi_preset: "NSI-Vorlage anwenden …"
   tools:
@@ -465,6 +466,61 @@ settings:
       reserved: "Diese Taste ist reserviert."
       mode_modifier: "Dieses Kürzel darf keine Sondertasten enthalten."
 
+# Objektverlauf: die Versionen, die der Server vom gewählten Knoten, Weg oder
+# der Relation kennt. (Der Abschnitt „Verlauf“ im Seitenpanel ist der
+# Rückgängig-Verlauf; hier heißt es „Objektverlauf“.)
+object_history:
+  title: "Objektverlauf · %{kind} %{id}"
+  loading: "Verlauf wird geladen …"
+  close: "Schließen"
+  retry: "Erneut versuchen"
+  open_web: "Auf openstreetmap.org öffnen"
+  show_tooltip: "Objektverlauf anzeigen"
+  unsaved: "Deine ungespeicherten Änderungen"
+  version: "Version %{version}"
+  deleted: "Gelöscht"
+  unknown_user: "unbekannter Nutzer"
+  changeset: "Changeset %{id}"
+  no_changes: "Keine Änderungen an Tags, Geometrie oder Mitgliedern"
+  unchanged_tags:
+    one: "%{count} unveränderter Tag"
+    other: "%{count} unveränderte Tags"
+  moved: "%{distance} verschoben"
+  nodes_added:
+    one: "%{count} Knoten hinzugefügt"
+    other: "%{count} Knoten hinzugefügt"
+  nodes_removed:
+    one: "%{count} Knoten entfernt"
+    other: "%{count} Knoten entfernt"
+  nodes_reordered: "Knoten umsortiert"
+  members_count: "Mitglieder: %{before} → %{after}"
+  members_changed: "Mitglieder oder Rollen geändert"
+  redacted:
+    one: "Version %{range} ist ausgeblendet (redigiert)"
+    other: "Versionen %{range} sind ausgeblendet (redigiert)"
+  show_more:
+    one: "Mehr anzeigen (%{count} ältere Version)"
+    other: "Mehr anzeigen (%{count} ältere Versionen)"
+  revert_tags: "Tags auf diese Version zurücksetzen"
+  reverted: "Tags auf Version %{version} gesetzt"
+  revert_nothing: "Die Tags entsprechen bereits Version %{version}"
+  revert_edits_blocked: "Ein Upload läuft; Tags können erst danach geändert werden"
+  new_object: "Ein neues Objekt hat noch keinen Verlauf auf dem Server"
+  select_one: "Wähle ein Objekt, um seinen Verlauf anzuzeigen"
+  # Kopfzeile der Auswahl: „v7 · bearbeitet von Name · vor 3 Monaten · Changeset 123“.
+  last_edit:
+    version: "v%{version}"
+    by: "bearbeitet von"
+    changeset: "Changeset"
+  error:
+    not_found: "Der Server kennt keinen Verlauf für dieses Objekt. Es wurde nie auf %{server} hochgeladen; es stammt vielleicht aus einer Datei oder von einem anderen Server."
+    gone: "Dieses Objekt wurde dauerhaft vom Server entfernt."
+    network: "Der Verlauf konnte nicht geladen werden: %{detail}"
+    http: "Der Server hat die Anfrage abgelehnt (HTTP %{status})."
+    parse: "Die Antwort des Servers konnte nicht gelesen werden: %{detail}"
+    empty: "Der Server hat keine sichtbaren Versionen geliefert (vielleicht sind alle redigiert)."
+    cancelled: "Abgebrochen."
+
 # Anzeigenamen der Tastaturkürzel, einer pro Kürzel-ID in
 # `keybindings::SHORTCUTS`. Die IDs selbst sind stabil und nicht übersetzt.
 shortcut:
@@ -478,6 +534,7 @@ shortcut:
   redo: "Wiederholen"
   select_all: "Alles auswählen"
   find: "Suchen…"
+  show_history: "Objektverlauf anzeigen"
   copy_features: "Kopieren"
   paste_features: "Einsetzen"
   duplicate_features: "Duplizieren"
@@ -755,6 +812,12 @@ dialog:
     days:
       one: "vor %{count} Tag"
       other: "vor %{count} Tagen"
+    months:
+      one: "vor %{count} Monat"
+      other: "vor %{count} Monaten"
+    years:
+      one: "vor %{count} Jahr"
+      other: "vor %{count} Jahren"
   find:
     title: "Suchen"
     placeholder: "Tags, Typen und Zustände suchen, z. B. amenity=cafe"

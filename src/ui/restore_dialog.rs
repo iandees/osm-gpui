@@ -46,7 +46,9 @@ pub fn age_phrase(now: u64, saved_at: u64) -> String {
         0..=59 => tr!("dialog.age.just_now").to_string(),
         60..=3599 => tr_count!("dialog.age.minutes", secs / 60).to_string(),
         3600..=86_399 => tr_count!("dialog.age.hours", secs / 3600).to_string(),
-        _ => tr_count!("dialog.age.days", secs / 86_400).to_string(),
+        86_400..=2_591_999 => tr_count!("dialog.age.days", secs / 86_400).to_string(),
+        2_592_000..=31_535_999 => tr_count!("dialog.age.months", secs / 2_592_000).to_string(),
+        _ => tr_count!("dialog.age.years", secs / 31_536_000).to_string(),
     }
 }
 
@@ -216,6 +218,8 @@ mod tests {
         assert_eq!(age_phrase(now, now - 3600), "1 hour ago");
         assert_eq!(age_phrase(now, now - 7300), "2 hours ago");
         assert_eq!(age_phrase(now, now - 86_400 * 3), "3 days ago");
+        assert_eq!(age_phrase(now + 86_400 * 100, now), "3 months ago");
+        assert_eq!(age_phrase(now + 86_400 * 400, now), "1 year ago");
         // A clock that went backwards is not an error.
         assert_eq!(age_phrase(now, now + 500), "just now");
     }

@@ -4800,6 +4800,19 @@ impl EditableLayer for OsmLayer {
         known && !EditableLayer::has_feature(self, kind, id)
     }
 
+    fn feature_version(&self, kind: FeatureKind, id: i64) -> Option<i32> {
+        let data = self.osm_data.as_ref()?;
+        match kind {
+            FeatureKind::Node => data.nodes.get(&id).map(|n| n.version),
+            FeatureKind::Way => data.ways.get(&id).map(|w| w.version),
+            FeatureKind::Relation => data
+                .relations
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.version),
+        }
+    }
+
     fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
         OsmLayer::set_base_version(self, kind, id, version)
     }

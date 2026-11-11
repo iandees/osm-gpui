@@ -12,6 +12,7 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
 
+use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::selection_actions;
 use crate::{
@@ -841,6 +842,7 @@ fn build_menus(
                     MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
                     MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
                     MenuItem::action(tr!("menu.edit.find"), Find),
+                    MenuItem::action(tr!("menu.edit.show_history"), ShowObjectHistory),
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
                     MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),

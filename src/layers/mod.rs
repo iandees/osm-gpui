@@ -239,6 +239,12 @@ pub trait EditableLayer {
     /// deleted here: known to the layer's baseline, absent from its data.
     fn is_locally_deleted(&self, kind: crate::selection::FeatureKind, id: i64) -> bool;
 
+    /// The server version `(kind, id)` was downloaded at (the base version an
+    /// upload would be checked against), if the layer holds the object.
+    fn feature_version(&self, _kind: crate::selection::FeatureKind, _id: i64) -> Option<i32> {
+        None
+    }
+
     /// Upload-conflict resolution "keep mine": make `version` the base
     /// version of `(kind, id)` (see `resolve::set_base_version`). Returns
     /// whether the layer knew the object.

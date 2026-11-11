@@ -87,6 +87,11 @@ pub trait AppHandle {
     fn autosave(&mut self, _cmd: crate::script::AutosaveCmd) -> Result<(), String> {
         Err("this app has no autosave".to_string())
     }
+    /// Do one of the object history script ops (see `HistoryCmd`). Apps
+    /// without an object history refuse.
+    fn history(&mut self, _cmd: crate::script::HistoryCmd) -> Result<(), String> {
+        Err("this app has no object history".to_string())
+    }
     /// Click a finding's row in the side panel's Validation section.
     fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
     /// Show `message` in the status bar.
@@ -418,6 +423,35 @@ impl Runner {
             Op::AssertAutosaveExists { count } => app
                 .check(&Check::AutosaveFiles(*count))
                 .map_err(|e| fail(format!("assert_autosave_exists: {e}"))),
+            Op::ShowHistory => {
+                app.history(crate::script::HistoryCmd::Show)
+                    .map_err(|e| fail(format!("show_history: {e}")))?;
+                let deadline = Instant::now() + Duration::from_secs(30);
+                // Let the request start, then wait for it to settle.
+                for _ in 0..3 {
+                    app.wait_frame();
+                }
+                loop {
+                    match app.check(&Check::HistorySettled) {
+                        Ok(()) => {
+                            app.wait_frame();
+                            return Ok(());
+                        }
+                        Err(why) if Instant::now() >= deadline => {
+                            return Err(fail(format!(
+                                "show_history: still loading after 30s: {why}"
+                            )));
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(50)),
+                    }
+                }
+            }
+            Op::LoadHistoryFile { path } => app
+                .history(crate::script::HistoryCmd::LoadFile(path.into()))
+                .map_err(|e| fail(format!("load_history_file: {e}"))),
+            Op::AssertHistoryVersions { count } => app
+                .check(&Check::HistoryVersions(*count))
+                .map_err(|e| fail(format!("assert_history_versions: {e}"))),
             Op::SignIn => app.sign_in().map_err(|e| fail(format!("sign_in: {e}"))),
             Op::WaitSignedIn { timeout } => {
                 let deadline = Instant::now() + *timeout;
@@ -713,6 +747,9 @@ fn describe(op: &Op) -> String {
         Op::RestoreAutosave => "restore_autosave".to_string(),
         Op::DiscardAutosave => "discard_autosave".to_string(),
         Op::Crash => "crash".to_string(),
+        Op::ShowHistory => "show_history".to_string(),
+        Op::LoadHistoryFile { path } => format!("load_history_file {}", path),
+        Op::AssertHistoryVersions { count } => format!("assert_history_versions {}", count),
         Op::SignIn => "sign_in".to_string(),
         Op::WaitSignedIn { timeout } => format!("wait_signed_in {:?}", timeout),
         Op::AssertSignedIn => "assert_signed_in".to_string(),
