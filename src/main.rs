@@ -604,6 +604,37 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
     out
 }
 
+/// The features an accepted upload chunk created (their placeholder ids are
+/// replaced by server ids) or deleted. Undo steps that name any of them refer
+/// to objects that no longer exist under that id, so they are dropped from the
+/// history: replaying them would create objects with positive ids, leave a
+/// split's uploaded half behind or re-create a deleted object.
+pub(crate) fn uploaded_taint(
+    layers: &[LayerId],
+    chunk: &osm_gpui::layers::diff::LayerDiff,
+) -> Vec<osm_gpui::selection::FeatureRef> {
+    use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
+    let mut ids: Vec<(osm_gpui::selection::FeatureKind, i64)> = Vec::new();
+    ids.extend(chunk.created_nodes.iter().map(|n| (Node, n.id)));
+    ids.extend(chunk.created_ways.iter().map(|w| (Way, w.id)));
+    ids.extend(chunk.created_relations.iter().map(|r| (Relation, r.id)));
+    ids.extend(chunk.deleted_node_ids.iter().map(|&(id, _)| (Node, id)));
+    ids.extend(chunk.deleted_way_ids.iter().map(|&(id, _)| (Way, id)));
+    ids.extend(
+        chunk
+            .deleted_relation_ids
+            .iter()
+            .map(|&(id, _)| (Relation, id)),
+    );
+    layers
+        .iter()
+        .flat_map(|&layer_id| {
+            ids.iter()
+                .map(move |&(kind, id)| osm_gpui::selection::FeatureRef { layer_id, kind, id })
+        })
+        .collect()
+}
+
 /// Why a chunked upload stopped before the end.
 enum UploadStop {
     /// The server refused the diff (409/410/412); the changeset is closed.
@@ -5633,6 +5664,11 @@ impl MapViewer {
                                     osm_gpui::upload_chunks::apply_to_layer(layer, &done);
                                 }
                             }
+                            // History that names objects the server has now
+                            // created or deleted can't be replayed (it holds
+                            // placeholder ids or deleted objects).
+                            this.undo_stack
+                                .remove_touching(&uploaded_taint(&layer_ids, &done.chunk));
                             this.data_generation += 1;
                             // The autosave must reflect the chunk just
                             // applied, now: a crash from here on must not

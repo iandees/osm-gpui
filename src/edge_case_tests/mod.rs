@@ -17,6 +17,7 @@ mod shared_members;
 mod split;
 mod undo_interactions;
 mod undo_sequences;
+mod upload_failures;
 mod upload_order;
 
 use crate::{EditMode, MapViewer};

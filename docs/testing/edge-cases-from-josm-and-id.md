@@ -268,6 +268,46 @@ Undo / redo against refusals, autosave and several layers
 
 No bugs found in this batch.
 
+## Further situations (batch F)
+
+Upload failures (`src/edge_case_tests/upload_failures.rs`). The tests run
+`upload_chunks::run_chunked_upload` and `apply_to_layer` (what
+`MapViewer::upload_to_osm` does on a background task) against `Server`, an
+in-memory stand-in for the OSM API that applies a diff atomically and checks
+versions, references, objects in use, negative placeholder ids and the
+10,000 element cap, and can fail an upload before or after applying it.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| F1 | One element of a diff is rejected (409 on one of three nodes) | Whole diff rolled back, changeset closed, all three edits pending | pass `one_rejected_element_rolls_back_the_whole_diff_and_every_edit_stays_pending` |
+| F2 | Connection drops after the server applied the diff | `OutcomeUnknown` with the changeset url, diff sent once, changeset closed, edits still pending | pass `a_lost_response_after_the_server_applied_the_diff_is_reported_as_unknown_and_not_resent` |
+| F2b | User presses Upload again after F2 | Creates exist twice; the editor cannot tell, the message sends the user to the changeset first | design `sending_again_after_an_unknown_outcome_duplicates_creates_and_conflicts_on_modifies` |
+| F3 | Changeset 2 of 3 refused (429); retry | Chunk 1 kept in the layer, rest pending, retry sends only the rest, nothing created twice | pass `a_refusal_in_a_later_changeset_keeps_the_accepted_ones_and_retry_sends_only_the_rest` |
+| F3b | Response lost for changeset 2 of 3 | Chunk 3 never sent, chunk 2 stays pending (same hazard as F2b) | pass `a_lost_response_in_a_later_changeset_leaves_that_chunk_pending_and_the_rest_unsent` |
+| F3c | New way and its new nodes on either side of a changeset boundary | Way names server ids | pass `a_way_split_from_its_new_nodes_by_a_changeset_boundary_names_server_ids` |
+| F4 | 409 version mismatch | Names the node and both versions; retry fails the same way; "keep mine" then succeeds, undo history kept | pass `a_409_names_the_node_and_both_versions_and_a_retry_with_keep_mine_goes_through` |
+| F5 | 412 referenced node gone | `MissingDependency` naming the way; edits kept; retry safe | pass `a_412_for_a_node_that_is_gone_names_the_way_that_needs_it` |
+| F6 | 412 delete of an object another way now uses | `StillInUse` naming that way; delete still pending and undoable | pass `a_412_for_deleting_something_still_in_use_lists_the_user` |
+| F7 | 429 | Plain `Http` error with status and body shown, not retried by itself, retry works | pass `a_429_is_a_definite_refusal_with_the_status_shown_and_a_retry_sends_the_edit_once` |
+| F8 | 500/502/503/504 / 509 | Unknown outcome / definite refusal | pass `server_errors_are_unknown_outcomes_except_509_which_is_refused_before_any_work` |
+| F9 | Changeset closed under us (409) | Reported, edits kept | pass `a_changeset_closed_under_us_is_reported_as_a_refusal_with_the_edits_kept` |
+| F10 | Exactly 10,000 changes | One changeset | pass `exactly_10000_changes_go_in_one_changeset` |
+| F11 | 10,001 changes | Split 10,000 + 1 (the server refuses the single document) | pass `one_change_over_the_cap_is_split_into_two_changesets_and_the_whole_diff_would_be_refused` |
+| F12 | Failure in changeset 2 of an oversized upload | Exactly the rest pending; retry sends only it | pass `a_failure_in_the_second_changeset_of_an_oversized_upload_leaves_exactly_the_rest_pending` |
+| F13 | New relations that contain each other, more than a changeset | Refused before anything is sent (checked with a limit of 1) | design `a_cycle_of_new_relations_bigger_than_a_changeset_is_refused_before_anything_is_sent` |
+| F14 | Undo of a tag edit after upload, redo | A new edit on the new version; uploads cleanly | pass `undoing_a_tag_edit_after_it_was_uploaded_is_a_new_edit_on_the_new_version` |
+| F15 | Undo of a split after upload | Used to restore way 10 whole next to the uploaded half (two ways on the same nodes); now the step is dropped | pass (fixed) `undoing_a_split_after_it_was_uploaded_does_not_leave_the_uploaded_half_behind` |
+| F16 | Undo of a delete after upload | Used to re-create the objects with their old positive ids in `<create>`, which the server refuses; now the step is dropped | pass (fixed) `undoing_a_delete_after_it_was_uploaded_does_not_try_to_modify_a_deleted_object` |
+| F17 | Server changed an element we did not edit | Does not block the upload | pass `an_unrelated_change_on_the_server_does_not_block_uploading_other_edits` |
+| F18 | Edit then undo of an element the server changed | Nothing to upload, no conflict | pass `editing_then_undoing_an_element_the_server_changed_uploads_nothing_and_cannot_conflict` |
+
+Bugs found in this batch (both fixed): F15 and F16, MEDIUM. After an accepted
+changeset the undo history still named placeholder ids of objects the server
+had created and objects it had deleted. Undoing such a step corrupted the
+layer or produced an upload the server refuses. `uploaded_taint` in
+`main.rs` now removes the steps that name created or deleted objects after
+each accepted changeset, like conflict resolution already does.
+
 ## Further situations (batch G)
 
 Nodes and ways shared by several relations, copy / paste of members, and
