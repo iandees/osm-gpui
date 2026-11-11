@@ -173,6 +173,29 @@ in the bug list at the end.
 | Z3 | Delete way in a route, undo restores way, version and slot | pass `delete_then_undo_restores_the_way_its_version_and_its_route_slot` |
 | Z4 | New edit after undo drops the redo branch | pass `a_new_edit_after_undo_discards_the_redo_branch` |
 
+## Further situations (batch A)
+
+Tests in `src/edge_case_tests/interactions_reverse_split.rs`.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| A1 | Reverse a way whose node (stop sign `direction=forward`) is shared with a second way that is not reversed | The node still serves the other way, so its direction should not flip | FAIL `reversing_one_way_leaves_a_direction_tag_on_a_node_shared_with_another_way` (the tag is flipped to `backward`) |
+| A1b | Same node shared by two ways that are both reversed | Flipped once, not twice | pass `a_node_shared_by_two_reversed_ways_is_flipped_exactly_once` |
+| A2 | Reverse a roundabout (`junction=roundabout`) | Ring reversed, closing node kept, tags unchanged | pass `reversing_a_roundabout_reverses_the_ring_and_keeps_the_closing_node` |
+| A2b | Reverse a closed `area=yes` + `oneway=yes` way; closed building | Stays closed, oneway/area kept, side keys swapped | pass `reversing_a_oneway_area_keeps_the_area_and_oneway_tags_and_swaps_side_keys`, `reversing_a_closed_building_keeps_it_closed` |
+| A3 | Split a way that is a restriction `via` and a route member | Both halves `via` in travel order; route halves adjacent with the role; one undo | pass `splitting_a_way_that_is_a_restriction_via_and_a_route_member_updates_both` |
+| A4 | Split a way that is both `from` and `to` of a U-turn | Both roles follow the half touching the `via` | pass `splitting_the_way_that_is_both_from_and_to_of_a_u_turn_keeps_a_valid_restriction`, `splitting_a_u_turn_way_at_the_far_side_of_the_via_keeps_both_roles_on_the_original` |
+| A5 | Duplicate consecutive node `[1,1,2,3]`: reverse | Literal reverse | pass `reversing_a_way_with_a_duplicated_node_reverses_it_literally` |
+| A5b | Split at the doubled node `[1,2,2,3]` | Refused, unchanged (like S17) | design `a_node_listed_twice_in_a_row_cannot_be_split_at` |
+| A5c | Split elsewhere in a way with a doubled node; join with it at the end | Duplicate kept, no dangling refs | pass `splitting_elsewhere_in_a_way_with_a_duplicated_node_keeps_the_duplicate`, `joining_a_way_with_a_duplicated_end_node_keeps_the_duplicate`, `joining_ways_that_both_end_on_the_duplicated_node_chains_them` |
+| A6 | One way listed under two roles (`forward`, `backward`) in a route: split | Each occurrence gets its own halves with its own role, in the right order | pass `split_gives_each_occurrence_of_a_member_its_own_role` |
+| A6b | Same, delete | Both memberships removed | pass `deleting_a_member_with_two_roles_removes_both_memberships` |
+| A6c | Same, join | Refused with "different role" and nothing changes | design `join_is_refused_when_the_way_has_different_roles_in_one_relation` |
+
+Bug found in this batch: A1, LOW-MEDIUM. Reversing only one of two ways that
+share a tagged node flips the node's `direction`, which then faces the wrong
+way for the other way.
+
 ## Further situations (batch C)
 
 Tests in `src/edge_case_tests/limits_and_data.rs`: size limits, geometry near
