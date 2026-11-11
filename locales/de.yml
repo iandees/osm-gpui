@@ -601,6 +601,7 @@ action:
       restriction: "Verbinden nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}"
       role_mismatch: "Verbinden nicht möglich: Weg %{way} hat in Relation %{relation} eine andere Rolle als der Weg, in den er verbunden würde"
       not_adjacent: "Verbinden nicht möglich: Weg %{way} liegt in Relation %{relation} nicht neben dem Weg, in den er verbunden würde"
+      not_in_area: "Verbinden nicht möglich: Weg %{way} gehört zum Multipolygon %{relation}, das den Weg, in den er verbunden würde, nicht enthält"
   separate:
     label: "Knoten abtrennen"
     hint: "Einen Knoten wählen, der zu mehreren Wegen gehört, um ihn abzutrennen"

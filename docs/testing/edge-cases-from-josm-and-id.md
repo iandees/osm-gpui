@@ -268,6 +268,36 @@ Undo / redo against refusals, autosave and several layers
 
 No bugs found in this batch.
 
+## Further situations (batch E)
+
+Multipolygon-aware editing, in `src/edge_case_tests/multipolygon_edits.rs`.
+Outer ring `[1,2,3,4,1]` and inner triangle `[5,6,7,5]` unless noted.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| E1 | Merge an outer-ring node with an inner-ring node (rings touch) | Inner ring now uses the first selected node, relation untouched, one undo / redo | pass `merging_a_node_of_the_outer_ring_with_one_of_the_inner_ring_touches_the_rings`, `merging_the_inner_node_first_keeps_the_inner_ring_node` |
+| E2 | Merge nodes of two different multipolygons | Rings touch, both relations untouched | pass `merging_nodes_of_two_different_multipolygons_joins_their_rings` |
+| E3 | Reverse the outer ring, the inner ring, both at once, twice | Roles stay, only the way(s) uploaded (no relation modify), one undo step | pass `reversing_the_outer_ring_keeps_its_role_and_leaves_the_relation_alone`, `reversing_the_inner_ring_keeps_its_role`, `reversing_both_rings_at_once_is_one_undo_step`, `reversing_a_ring_twice_returns_to_the_original_and_uploads_nothing` |
+| E4 | Reverse a ring with `fence_type:left` and a node with `direction=forward` | Side key swapped, node flipped, relation tags and members untouched | pass `reversing_a_ring_flips_direction_tags_but_not_the_relation` |
+| E5 | Reverse a ring that is outer of one multipolygon and inner of another | Both relations untouched | pass `reversing_a_ring_shared_by_two_multipolygons_leaves_both_alone` |
+| E6 | Merge two nodes of the inner triangle (neighbours, or the closing node with its neighbour) | Refused, nothing recorded (M6) | design `merging_two_nodes_of_a_triangle_ring_is_refused`, `merging_the_closing_node_with_its_neighbour_in_a_triangle_is_refused` |
+| E7 | Merge two nodes of the square (leaves a triangle); merge across rings | Ring stays closed with 3 distinct points; across rings no ring shrinks | pass `merging_two_nodes_of_a_square_ring_leaves_a_valid_triangle`, `merging_across_the_rings_cannot_shrink_either_ring` |
+| E8 | Delete a node of the inner triangle | Degenerate ring is deleted and dropped from the relation, outer stays; one undo restores | pass `deleting_a_node_of_a_triangle_ring_deletes_the_ring_and_drops_it_from_the_relation` |
+| E9 | Same, but the triangle is the relation's only member | Refused (X3), nothing recorded | design `deleting_a_node_that_would_remove_the_only_ring_of_a_multipolygon_is_refused` |
+| E10 | Delete an ordinary or the closing node of the square | Ring stays closed, role and membership kept | pass `deleting_a_node_of_a_square_ring_keeps_it_a_member_with_its_role`, `deleting_the_closing_node_of_a_ring_keeps_it_closed` |
+| E11 | Split a closed ring that is outer of one multipolygon and inner of another | New half added to both relations with each one's own role; new way created before the relations that name it; undo / redo | pass `splitting_a_ring_shared_by_two_multipolygons_gives_each_its_own_role_on_both_halves`, `split_ring_upload_creates_the_new_way_before_both_relations_that_name_it` |
+| E12 | Join the two halves again | Both relations back to one member each (roles kept); two undos restore the start | pass `joining_the_halves_of_a_shared_ring_restores_both_multipolygons` |
+| E13 | Split an open shore way listed by two multipolygons | Both get the new half next to the original | pass `splitting_a_shared_shore_way_updates_both_multipolygons` |
+| E14 | Join two shore ways that both multipolygons list | Each relation ends with one member | pass `joining_two_shores_that_both_multipolygons_list_merges_each_relation` |
+| E15 | Join a shore listed by two multipolygons with a way only one of them lists | Should be refused: the other multipolygon would not be able to keep its shore | pass `joining_a_shore_with_a_way_only_one_multipolygon_has_is_refused` (fixed) |
+
+Bug found in this batch (fixed): E15, MEDIUM. Joining way 10 (only in lake
+900) with shore 11 (in lakes 900 and 901) removed 11 and, because the survivor
+10 was not in lake 901, `relations::join_members` renamed 11 to 10 there. Lake
+901 then listed the whole ring `[1,2,3,4,1]` plus its other shore, silently
+changing its geometry. The join is now refused (`JoinError::SurvivorNotInArea`)
+when a removed way is in a multipolygon the survivor is not in.
+
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
 - Split at several nodes at once; split at a node the way visits twice (S16,
