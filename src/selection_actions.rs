@@ -544,6 +544,21 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         apply: apply_create_multipolygon,
     },
     SelectionAction {
+        id: "purge",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: false,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            env.selection.iter().any(|f| {
+                env.layers
+                    .find_layer(f.layer_id)
+                    .is_some_and(|l| l.as_editable().is_some())
+            })
+        },
+        apply: apply_purge,
+    },
+    SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
@@ -2789,6 +2804,155 @@ fn apply_delete(
     })
 }
 
+/// Purge: drop the selected objects from the layer's
+/// downloaded data without deleting them. Nothing is uploaded for them; they
+/// are simply no longer loaded.
+///
+/// Conservative rules, checked before anything changes (a single refusal
+/// refuses the whole action, with the reason in the status):
+/// - an object with a pending local edit (created here or changed) is refused;
+///   the user uploads or undoes it first;
+/// - a selected node that a way outside the selection still uses is refused;
+/// - ways and relations named by a remaining relation are purged anyway: the
+///   relation keeps the member, which is then "not downloaded" (never deleted);
+/// - the nodes of a purged way go with it only when no remaining way or
+///   relation uses them and they have no pending edit; otherwise they stay.
+///
+/// Selected objects of several layers are purged per layer. One undo step.
+fn apply_purge(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    _active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    use std::collections::BTreeSet;
+    let mut layer_ids: Vec<LayerId> = Vec::new();
+    for f in selection {
+        if !layer_ids.contains(&f.layer_id) {
+            layer_ids.push(f.layer_id);
+        }
+    }
+    // (layer, nodes, ways, relations) to purge, and how many child nodes stay.
+    type Plan = (LayerId, Vec<i64>, Vec<i64>, Vec<i64>);
+    let mut plans: Vec<Plan> = Vec::new();
+    let mut kept = 0usize;
+    for layer_id in layer_ids {
+        let Some(editable) = layers.find_layer(layer_id).and_then(|l| l.as_editable()) else {
+            continue;
+        };
+        let ids_of = |kind| -> BTreeSet<i64> {
+            selection
+                .iter()
+                .filter(|f| f.layer_id == layer_id && f.kind == kind)
+                .map(|f| f.id)
+                .collect()
+        };
+        let nodes = ids_of(FeatureKind::Node);
+        let ways = ids_of(FeatureKind::Way);
+        let relations = ids_of(FeatureKind::Relation);
+        let named = [
+            (FeatureKind::Node, &nodes),
+            (FeatureKind::Way, &ways),
+            (FeatureKind::Relation, &relations),
+        ];
+        for (kind, ids) in &named {
+            for &id in ids.iter() {
+                if editable.has_pending_edit(*kind, id) {
+                    let what = match kind {
+                        FeatureKind::Node => tr!("action.purge.kind.node"),
+                        FeatureKind::Way => tr!("action.purge.kind.way"),
+                        FeatureKind::Relation => tr!("action.purge.kind.relation"),
+                    };
+                    return Err(tr!(
+                        "action.purge.error.modified",
+                        what = what,
+                        id = id.to_string()
+                    )
+                    .to_string());
+                }
+            }
+        }
+        for &id in &nodes {
+            if let Some(way) = editable
+                .ways_using_node(id)
+                .into_iter()
+                .find(|w| !ways.contains(w))
+            {
+                return Err(tr!(
+                    "action.purge.error.in_way",
+                    id = id.to_string(),
+                    way = way.to_string()
+                )
+                .to_string());
+            }
+        }
+        // Children of purged ways that nothing else needs.
+        let mut all_nodes = nodes.clone();
+        for &way in &ways {
+            for child in editable.way_node_ids(way).unwrap_or_default() {
+                if all_nodes.contains(&child) {
+                    continue;
+                }
+                let in_other_way = editable
+                    .ways_using_node(child)
+                    .iter()
+                    .any(|w| !ways.contains(w));
+                let in_relation = editable
+                    .relations_containing_node(child)
+                    .iter()
+                    .any(|r| !relations.contains(r));
+                if in_other_way
+                    || in_relation
+                    || editable.has_pending_edit(FeatureKind::Node, child)
+                {
+                    kept += 1;
+                } else {
+                    all_nodes.insert(child);
+                }
+            }
+        }
+        plans.push((
+            layer_id,
+            all_nodes.into_iter().collect(),
+            ways.into_iter().collect(),
+            relations.into_iter().collect(),
+        ));
+    }
+    let mut actions = Vec::new();
+    let mut total = 0usize;
+    for (layer_id, nodes, ways, relations) in plans {
+        let Some(editable) = layers
+            .find_layer_mut(layer_id)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            continue;
+        };
+        let purged = editable.purge_features(&nodes, &ways, &relations);
+        if purged.is_empty() {
+            continue;
+        }
+        total += purged.nodes.len() + purged.ways.len() + purged.relations.len();
+        actions.push(UndoableAction::Purge {
+            layer: layer_id,
+            purged,
+        });
+    }
+    if actions.is_empty() {
+        return Err(tr!("action.purge.hint").to_string());
+    }
+    let label = tr_count!("action.purge.done", total).to_string();
+    let mut status = label.clone();
+    if kept > 0 {
+        status = tr!("action.purge.kept", done = status, kept = kept.to_string()).to_string();
+    }
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch { label, actions }),
+        status,
+        clear_selection: true,
+        select: None,
+        continue_way: None,
+    })
+}
+
 /// Computes new positions for a list of nodes; see `reposition_nodes`.
 type RepositionFn = fn(&[LatLon]) -> Option<Vec<LatLon>>;
 
@@ -3149,6 +3313,7 @@ mod tests {
                 "copy_tags",
                 "new_relation",
                 "create_multipolygon",
+                "purge",
                 "delete"
             ]
         );
@@ -3163,6 +3328,7 @@ mod tests {
                 "duplicate_features",
                 "parallel",
                 "new_relation",
+                "purge",
                 "delete"
             ]
         );

@@ -136,7 +136,7 @@ in the bug list at the end.
 | G1 | Orthogonalize / circularize / straighten / align / distribute | JOSM `OrthogonalizeActionTest`, `CreateCircleActionTest`, `AlignIn*ActionTest`; iD `orthogonalize.js`, `circularize.js`, `straighten_*.js` | existing in `src/geometry.rs`, `src/align.rs` and `selection_actions` tests |
 | G2 | Simplify way, join node-way, extrude, parallel way | JOSM `SimplifyWayActionTest`, `JoinNodeWayActionTest`, `ExtrudeActionTest`, `ParallelWayActionTest` | extrude/parallel existing; join-node-to-way implemented (batch H: action plus snapping); simplify absent |
 | C1 | Copy / paste / duplicate (JOSM `CopyActionTest`, `PasteAction`; PurgeAction #12038) | | existing in `feature_clipboard` and `main.rs` tests |
-| C2 | Purge | | absent |
+| C2 | Purge | | implemented, see batch N |
 | C3 | Conflict/merge of downloaded data (`DataSetMergerTest`, #7481, #12599, #12616) | | existing in `src/layers/merge.rs` |
 
 ## Upload diff and ordering
@@ -534,6 +534,44 @@ pass 32,000 members, a restriction that would lose its via node. One undo step.
 
 No bugs found in this batch.
 
+## Further situations (batch N)
+
+Purge (`src/edge_case_tests/purge.rs`): the
+selected objects are removed from the layer's downloaded data and from its
+server baseline together, so they are not deleted, not modified, and the upload
+diff never mentions them. Design (deliberately conservative):
+
+- An object with a pending local edit (created here, or different from the
+  baseline, including a relation whose member list was edited) is refused, with
+  the reason in the status; nothing changes. The user uploads or undoes the
+  edit first.
+- A selected node that a way outside the selection still uses is refused, naming
+  the way.
+- A way or relation that a remaining relation names is purged; the relation is
+  not touched and keeps the member, which is now a member that is not
+  downloaded (X12), never a deleted one. Relation members are never purged
+  along with the relation.
+- The nodes of a purged way go with it only if no remaining way or relation
+  uses them and they have no pending edit; the status says how many stayed.
+- One undo step (`UndoableAction::Purge`, restored into both data and
+  baseline, relations at their old positions); the selection is cleared.
+  Tools menu entry, no confirmation (Delete has none and purge is undoable).
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| N1 | Unmodified node | Gone from layer, nothing to upload, one undo step | pass `an_unmodified_node_is_purged_not_deleted` |
+| N2 | Way with unshared children | Way and nodes gone, no `<delete>` in the upload | pass `a_way_takes_its_unshared_nodes_with_it` |
+| N3 | Child shared with another way or in a relation | Stays | pass `a_node_shared_with_another_way_or_a_relation_stays` |
+| N4 | Node used by a remaining way | Refused, names the way, nothing changes | pass `a_node_that_a_remaining_way_uses_is_refused` |
+| N5 | Modified or locally created object | Refused; an edited child of a purged way stays | pass `objects_with_pending_edits_are_refused`, `a_relation_with_an_edited_member_list_is_refused` |
+| N6 | Purged relation members | Relation unchanged, member stays, not modified | pass `relation_members_that_are_purged_stay_as_members_not_downloaded`, `purging_a_way_leaves_the_relation_naming_it_unchanged` |
+| N7 | Undo / redo | Restored as downloaded and unmodified; redo repeats | pass (in the tests above) |
+| N8 | Upload diff | Empty | pass `upload_xml_is_empty_for_purged_objects` |
+| N9 | Selection after purge | Cleared | pass `the_selection_is_cleared_after_a_purge` |
+| N10 | Way over 2,000 nodes, relation over the member limit | Purged; limits apply to editing only | pass `node_and_relation_member_limits_do_not_apply` |
+
+No bugs found in this batch.
+
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
 - A closed way with one split node is turned to start there (JOSM); iD splits
@@ -546,7 +584,7 @@ No bugs found in this batch.
 - Two server nodes / ways merged or joined keep the first selected, not the
   oldest (J6, M2).
 - Disconnect leaves the new node untagged (D1).
-- No relation sorting, multipolygon creation, simplify, purge.
+- No relation sorting, multipolygon creation, simplify. (Purge exists, batch N.)
 - Join node to way never targets a way that already contains the node (JOSM can
   put a node into a closed way a second time); snapping also refuses it (H5).
 

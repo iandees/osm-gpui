@@ -348,6 +348,7 @@ history:
   created_way: "1 Weg erstellt"
   created_relation: "Relation erstellt"
   deleted_relation: "Relation gelöscht"
+  purged: "Objekte aus der Ebene entfernt"
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
   extruded_way: "Weg ausgezogen"
@@ -763,6 +764,20 @@ action:
       relation_in_relation: "Relation %{relation} kann nicht gelöscht werden: Sie ist Mitglied der Relation %{parent}"
       relation_empty: "%{what} %{id} kann nicht gelöscht werden: Er ist das einzige Mitglied der Relation %{relation}"
       restriction_role: "%{what} %{id} kann nicht gelöscht werden: Der Abbiegebeschränkung %{relation} würde das Mitglied mit der Rolle „%{role}“ fehlen"
+  purge:
+    label: "Entfernen (Purge)"
+    hint: "Etwas auswählen, das aus der Ebene entfernt werden soll"
+    done:
+      one: "%{count} Objekt aus der Ebene entfernt"
+      other: "%{count} Objekte aus der Ebene entfernt"
+    kept: "%{done}; %{kept} Knoten behalten, die noch verwendet oder bearbeitet werden"
+    kind:
+      node: "Knoten"
+      way: "Weg"
+      relation: "Relation"
+    error:
+      modified: "%{what} %{id} kann nicht entfernt werden: Er hat nicht hochgeladene Änderungen. Zuerst hochladen oder rückgängig machen"
+      in_way: "Knoten %{id} kann nicht entfernt werden: Weg %{way} verwendet ihn noch"
 
 shortcut_category:
   general: "Allgemein"
