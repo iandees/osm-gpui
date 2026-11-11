@@ -1,0 +1,11 @@
+# A hovered vertex of a selected way: the hover circle draws above the way.
+#   cargo run --release -- --script docs/screenshots/vertex-hover-above-way.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/snap-behaviour.osm
+viewport 40.7120 -74.0060 19
+wait_idle 5s
+click geo:40.7120,-74.0050
+wait_idle 1s
+hover geo:40.7120,-74.0060
+wait_idle 1s
+capture out/vertex-hover-above-way.png
