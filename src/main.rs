@@ -791,6 +791,9 @@ struct MapViewer {
     /// The left press now in progress began while an in-window menu was open
     /// (so it only closes the menu): the map ignores it and its release.
     menu_swallow_press: bool,
+    /// Whether the window has been drawn once, so there is a dispatch tree to
+    /// ask whether focus is inside a dialog (see `keep_dialog_focus`).
+    drawn_once: bool,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
     /// The "Adjust imagery offset" mode, while it is on (see
@@ -1005,6 +1008,7 @@ impl MapViewer {
             extrude_drag: None,
             right_press: None,
             menu_swallow_press: false,
+            drawn_once: false,
             context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
@@ -3284,6 +3288,45 @@ impl MapViewer {
             }
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
+    }
+
+    /// The dialog host's focus rule: while a modal dialog is open, focus is
+    /// inside it. Called from `render`, after every action and effect of the
+    /// frame has run, so it also undoes a focus grab that came later than the
+    /// dialog's own (the in-window menu bar gives focus back to the element it
+    /// took it from once an item is chosen). Skipped while a menu is open,
+    /// which owns the keyboard then. Returns whether focus moved.
+    fn keep_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        use osm_gpui::ui::modal::open_modal;
+        // Asking the dispatch tree anything before the first frame is drawn
+        // trips an assertion; a dialog open at launch focused itself anyway.
+        if !std::mem::replace(&mut self.drawn_once, true) {
+            return false;
+        }
+        if menu::in_window_menu_open(window) {
+            return false;
+        }
+        // Mount order, so the last one is the one drawn on top.
+        let open: Vec<_> = [
+            open_modal(&self.custom_imagery_dialog, cx),
+            open_modal(&self.quit_confirm_dialog, cx),
+            open_modal(&self.delete_layer_dialog, cx),
+            open_modal(&self.restore_dialog, cx),
+            open_modal(&self.find_dialog, cx),
+            open_modal(&self.about_dialog, cx),
+            open_modal(&self.nsi_dialog, cx),
+            open_modal(&self.preset_picker_dialog, cx),
+            open_modal(&self.relation_picker_dialog, cx),
+            open_modal(&self.parallel_dialog, cx),
+            open_modal(&self.upload_dialog, cx),
+            open_modal(&self.sign_in_dialog, cx),
+            open_modal(&self.notice_dialog, cx),
+            open_modal(&self.new_note_dialog_element(), cx),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        osm_gpui::ui::modal::ensure_modal_focus(&open, window, cx)
     }
 
     /// Whether a modal dialog is open (the vertex preview is suppressed).
@@ -6183,6 +6226,8 @@ impl Render for MapViewer {
         self.expire_status();
         self.drop_stale_offset_adjust();
 
+        self.keep_dialog_focus(window, cx);
+
         // Keyboard shortcuts scoped to this view only match while focus is
         // somewhere inside it. With nothing focused at all — at launch, or
         // after a focused text input was removed — give focus to the map so
@@ -8529,6 +8574,90 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    /// Focus goes back to the map after the dialog took it, as the in-window
+    /// menu bar does when an item has been chosen.
+    fn focus_the_map_like_the_menu_bar_does(
+        window: gpui::WindowHandle<MapViewer>,
+        cx: &mut TestAppContext,
+    ) {
+        window
+            .update(cx, |view, window, cx| {
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn a_confirmation_opened_from_the_menu_is_focused_and_escape_closes_it(
+        cx: &mut TestAppContext,
+    ) {
+        let window = setup(cx);
+        let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
+        focus_the_map_like_the_menu_bar_does(window, cx);
+        // The host puts focus back in the dialog when the frame is drawn.
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear();
+        })
+        .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                let dialog = view.delete_layer_dialog.clone().unwrap();
+                let handle = gpui::Focusable::focus_handle(dialog.read(cx), cx);
+                assert!(handle.contains_focused(window, cx));
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "escape");
+        window
+            .update(cx, |view, _w, _cx| {
+                assert!(view.delete_layer_dialog.is_none(), "escape closes it");
+                assert!(view.layer_manager.find_layer(a).is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_opened_from_the_menu_gets_focus_in_its_query_field(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        // One update: a window with the dialog open can't be drawn in a test.
+        window
+            .update(cx, |view, window, cx| {
+                view.on_find(&Find, window, cx);
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+                let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+                let query = osm_gpui::ui::modal::ModalDialog::initial_focus(dialog.read(cx), cx);
+                assert!(!query.is_focused(window), "the map took focus");
+                // A window with the dialog open can't be drawn in a test (its
+                // input needs the app's root view), so the host's rule runs
+                // directly, as `render` does.
+                view.drawn_once = true;
+                assert!(view.keep_dialog_focus(window, cx));
+                assert!(query.is_focused(window), "typing reaches the query");
+                // Focus already inside: left alone.
+                assert!(!view.keep_dialog_focus(window, cx));
+                // Close it again so the window can be drawn at the end of
+                // this update. The Escape keystroke can't be sent either (it
+                // draws): the delete-layer test above covers the keystroke,
+                // the script run covers Find's.
+                view.find_dialog = None;
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn the_dialog_host_leaves_focus_alone_without_a_dialog(cx: &mut TestAppContext) {
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                let map = view.focus_handle.clone();
+                window.focus(&map, cx);
+                assert!(!view.keep_dialog_focus(window, cx));
+                assert!(map.is_focused(window));
+            })
+            .unwrap();
     }
 
     #[gpui::test]

@@ -666,6 +666,17 @@ impl UploadDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for UploadDialog {
+    fn initial_focus(&self, cx: &App) -> FocusHandle {
+        // The comment field is only on screen while reviewing the changes.
+        if matches!(self.state, UploadState::Editing) {
+            self.comment.read(cx).focus_handle(cx)
+        } else {
+            self.focus_handle.clone()
+        }
+    }
+}
+
 impl Focusable for UploadDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

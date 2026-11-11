@@ -86,6 +86,8 @@ impl SignInDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for SignInDialog {}
+
 impl Focusable for SignInDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()

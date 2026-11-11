@@ -89,6 +89,8 @@ impl DeleteLayerDialog {
     }
 }
 
+impl crate::ui::modal::ModalDialog for DeleteLayerDialog {}
+
 impl Focusable for DeleteLayerDialog {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
