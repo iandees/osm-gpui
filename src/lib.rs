@@ -5,6 +5,7 @@
 pub mod appearance;
 pub mod assets;
 pub mod auth;
+pub mod autosave;
 pub mod building;
 pub mod capabilities;
 pub mod coordinates;

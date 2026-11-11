@@ -509,7 +509,13 @@ mod tests {
     #[test]
     fn line_breaks_and_tabs_in_tag_values_survive_as_character_references() {
         let current = data(
-            vec![node(1, 1.0, 2.0, 1, &[("note", "line one\nline two\tend\r")])],
+            vec![node(
+                1,
+                1.0,
+                2.0,
+                1,
+                &[("note", "line one\nline two\tend\r")],
+            )],
             vec![],
         );
         let xml = to_osm_xml(&current, &current);

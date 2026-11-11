@@ -141,6 +141,25 @@ pub trait MapLayer: Send + Sync {
         None
     }
 
+    /// A counter that changes whenever the layer's data or baseline does
+    /// (see `OsmLayer`); the autosave uses it to skip layers that have not
+    /// changed since they were last written. Default: always 0.
+    fn edit_revision(&self) -> u64 {
+        0
+    }
+
+    /// The layer's current data and its server baseline, shared (not copied)
+    /// so a background thread can serialize them; see
+    /// `OsmLayer::autosave_snapshot`. Default: `None`.
+    fn autosave_snapshot(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<crate::osm::OsmData>,
+        std::sync::Arc<crate::osm::OsmData>,
+    )> {
+        None
+    }
+
     /// This layer's vector-editing surface, if it has one. Default: `None`.
     /// `OsmLayer` is the only implementation today; `TileLayer`/`GridLayer`
     /// have no features to hit-test, tag, move, or delete.
