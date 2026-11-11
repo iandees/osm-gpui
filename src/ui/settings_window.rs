@@ -120,7 +120,9 @@ impl SettingsWindow {
 
     fn current_login_state(settings: &AppSettings) -> LoginState {
         let oauth_base = auth::oauth_base_for(&settings.api_base_url());
-        match auth::current_token(&oauth_base) {
+        // Only the display name is shown, so use the metadata-only lookup: it never
+        // touches the keychain (this runs on the UI thread).
+        match auth::stored_login(&oauth_base) {
             Some(token) => LoginState::LoggedIn(token),
             None => LoginState::LoggedOut,
         }

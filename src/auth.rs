@@ -92,6 +92,13 @@ pub enum AuthError {
     /// The stored token is expired and there's no refresh token to renew it with; the
     /// user needs to log in again.
     NoRefreshToken,
+    /// The saved login exists but the system keychain would not give up its secret
+    /// (access denied, prompt cancelled or never answered, platform failure). The stored
+    /// login is kept untouched and the read can be retried; `detail` is the platform's
+    /// reason.
+    KeychainRead {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for AuthError {
@@ -115,6 +122,9 @@ impl std::fmt::Display for AuthError {
             }
             AuthError::NotLoggedIn => write!(f, "{}", tr!("error.auth.not_logged_in")),
             AuthError::NoRefreshToken => write!(f, "{}", tr!("error.auth.expired")),
+            AuthError::KeychainRead { detail } => {
+                write!(f, "{}", tr!("error.auth.keychain_read", detail = detail))
+            }
         }
     }
 }
@@ -329,7 +339,16 @@ pub(crate) fn refresh_with(
     client: &dyn HttpClient,
     oauth_base_url: &str,
 ) -> Result<StoredToken, AuthError> {
-    let existing = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
+    let existing = try_current_token(oauth_base_url)?.ok_or(AuthError::NotLoggedIn)?;
+    refresh_from(client, oauth_base_url, existing)
+}
+
+/// The refresh grant for an already-resolved stored token.
+fn refresh_from(
+    client: &dyn HttpClient,
+    oauth_base_url: &str,
+    existing: StoredToken,
+) -> Result<StoredToken, AuthError> {
     let refresh_token_value = existing
         .refresh_token
         .clone()
@@ -361,23 +380,68 @@ pub(crate) fn refresh_with(
 
 /// Return the current token for `oauth_base_url`, transparently refreshing it first if
 /// it's expired and a refresh token is available. Callers that need a valid bearer token
-/// (e.g. the OSM API download path in main.rs) should use this instead of
-/// `current_token` directly, which never refreshes.
+/// (e.g. the upload path in main.rs) should use this instead of `try_current_token`
+/// directly, which never refreshes. May block on the system keychain prompt the first
+/// time (see `keyring_read_pending`).
 pub fn ensure_fresh_token(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
-    ensure_fresh_token_with(&UreqClient::new(), oauth_base_url)
+    ensure_fresh_token_notify(oauth_base_url, &mut || {})
+}
+
+/// `ensure_fresh_token`, calling `on_keychain_wait` just before a blocking system
+/// keychain read starts (and only then), so the caller can tell the user why it waits.
+pub fn ensure_fresh_token_notify(
+    oauth_base_url: &str,
+    on_keychain_wait: &mut dyn FnMut(),
+) -> Result<StoredToken, AuthError> {
+    ensure_fresh_token_using(
+        &UreqClient::new(),
+        &SystemKeyring,
+        oauth_base_url,
+        on_keychain_wait,
+    )
+}
+
+/// A fresh token for `oauth_base_url` only if its secret is already in memory; `None`
+/// (so the caller goes anonymous) when there is no login, it is unusable, or its secret
+/// has not yet been read from the keychain. Never performs a keychain read, so it can
+/// never raise the OS prompt. Used by map downloads, which work without authentication.
+pub fn fresh_token_if_loaded(oauth_base_url: &str) -> Option<StoredToken> {
+    fresh_token_if_loaded_using(&UreqClient::new(), &SystemKeyring, oauth_base_url)
+}
+
+fn fresh_token_if_loaded_using(
+    client: &dyn HttpClient,
+    backend: &dyn SecretBackend,
+    oauth_base_url: &str,
+) -> Option<StoredToken> {
+    if keyring_read_pending(oauth_base_url) {
+        return None;
+    }
+    ensure_fresh_token_using(client, backend, oauth_base_url, &mut || {}).ok()
 }
 
 /// Same as `ensure_fresh_token`, but against an injected `HttpClient` so it's testable
-/// without a real network. Kept `pub(crate)` since tests are the only other caller.
+/// without a real network.
+#[cfg(test)]
 pub(crate) fn ensure_fresh_token_with(
     client: &dyn HttpClient,
     oauth_base_url: &str,
 ) -> Result<StoredToken, AuthError> {
-    let token = current_token(oauth_base_url).ok_or(AuthError::NotLoggedIn)?;
+    ensure_fresh_token_using(client, &SystemKeyring, oauth_base_url, &mut || {})
+}
+
+fn ensure_fresh_token_using(
+    client: &dyn HttpClient,
+    backend: &dyn SecretBackend,
+    oauth_base_url: &str,
+    on_keychain_wait: &mut dyn FnMut(),
+) -> Result<StoredToken, AuthError> {
+    let token = try_current_token_using(backend, oauth_base_url, on_keychain_wait)?
+        .ok_or(AuthError::NotLoggedIn)?;
     if !token.is_expired() {
         return Ok(token);
     }
-    refresh_with(client, oauth_base_url)
+    refresh_from(client, oauth_base_url, token)
 }
 
 /// POST a token-endpoint request (authorization_code or refresh_token grant) and parse
@@ -494,7 +558,7 @@ fn fetch_user_details_with(
 
 /// A secret payload for one OAuth base URL, as stored in the keyring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TokenSecret {
+pub(crate) struct TokenSecret {
     access_token: String,
     refresh_token: Option<String>,
 }
@@ -523,36 +587,66 @@ fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
     }
 }
 
-fn keyring_store_secret(oauth_base_url: &str, secret: &TokenSecret) -> bool {
-    let Some(entry) = keyring_entry(oauth_base_url) else {
-        return false;
-    };
-    let Ok(json) = serde_json::to_string(secret) else {
-        return false;
-    };
-    match entry.set_password(&json) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!(
-                "auth: keyring set_password failed ({}), falling back to file storage",
-                e
-            );
-            false
+/// Why a keychain read produced no secret. Only `NoEntry` means the keychain
+/// definitively holds nothing for this server; everything else (access denied, prompt
+/// cancelled, interaction not allowed, platform failure, unparsable payload) is
+/// ambiguous and must never be treated as "logged out".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SecretReadError {
+    NoEntry,
+    Failed(String),
+}
+
+/// Where secrets live. The real implementation is the platform keyring; tests inject a
+/// fake so they never touch it.
+pub(crate) trait SecretBackend {
+    fn read(&self, oauth_base_url: &str) -> Result<TokenSecret, SecretReadError>;
+    /// Whether the secret was stored; `false` means the caller falls back to the file.
+    fn write(&self, oauth_base_url: &str, secret: &TokenSecret) -> bool;
+    fn delete(&self, oauth_base_url: &str);
+}
+
+/// The platform keyring (inert under `cfg(test)`: see `keyring_entry`).
+struct SystemKeyring;
+
+impl SecretBackend for SystemKeyring {
+    fn read(&self, oauth_base_url: &str) -> Result<TokenSecret, SecretReadError> {
+        let Some(entry) = keyring_entry(oauth_base_url) else {
+            return Err(SecretReadError::Failed("keyring unavailable".to_string()));
+        };
+        match entry.get_password() {
+            Ok(json) => serde_json::from_str(&json)
+                .map_err(|e| SecretReadError::Failed(format!("unreadable keychain entry: {e}"))),
+            Err(keyring::Error::NoEntry) => Err(SecretReadError::NoEntry),
+            Err(e) => Err(SecretReadError::Failed(e.to_string())),
         }
     }
-}
 
-fn keyring_load_secret(oauth_base_url: &str) -> Option<TokenSecret> {
-    let entry = keyring_entry(oauth_base_url)?;
-    let json = entry.get_password().ok()?;
-    serde_json::from_str(&json).ok()
-}
+    fn write(&self, oauth_base_url: &str, secret: &TokenSecret) -> bool {
+        let Some(entry) = keyring_entry(oauth_base_url) else {
+            return false;
+        };
+        let Ok(json) = serde_json::to_string(secret) else {
+            return false;
+        };
+        match entry.set_password(&json) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!(
+                    "auth: keyring set_password failed ({}), falling back to file storage",
+                    e
+                );
+                false
+            }
+        }
+    }
 
-fn keyring_delete_secret(oauth_base_url: &str) {
-    if let Some(entry) = keyring_entry(oauth_base_url) {
-        // NoEntry (nothing to delete) is fine; anything else is just logged.
-        if let Err(e) = entry.delete_credential() {
-            eprintln!("auth: keyring delete failed: {}", e);
+    fn delete(&self, oauth_base_url: &str) {
+        if let Some(entry) = keyring_entry(oauth_base_url) {
+            // NoEntry (nothing to delete) is fine; anything else is just logged.
+            if let Err(e) = entry.delete_credential() {
+                eprintln!("auth: keyring delete failed: {}", e);
+            }
         }
     }
 }
@@ -599,6 +693,9 @@ pub fn init_store(store: TokenStore) {
 fn set_token(oauth_base_url: &str, token: StoredToken) {
     let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
         g.tokens.insert(oauth_base_url.to_string(), token);
+        // A token we were just handed supersedes whatever the keychain holds; there is
+        // nothing left to read lazily for this server.
+        g.pending_keyring.remove(oauth_base_url);
     }) else {
         return;
     };
@@ -609,10 +706,11 @@ fn set_token(oauth_base_url: &str, token: StoredToken) {
 pub fn logout(oauth_base_url: &str) {
     let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
         g.tokens.remove(oauth_base_url);
+        g.pending_keyring.remove(oauth_base_url);
     }) else {
         return;
     };
-    keyring_delete_secret(oauth_base_url);
+    SystemKeyring.delete(oauth_base_url);
     save(&snapshot);
 }
 
@@ -628,39 +726,98 @@ pub fn stored_display_name(oauth_base_url: &str) -> Option<String> {
         .flatten()
 }
 
-/// The stored token for the given OAuth base URL, if the user is logged in
-/// there. The first call for a URL whose secret lives only in the platform
-/// keyring (see `load()`) performs a one-time keyring read here, resolving
-/// and caching it in `TOKEN_STORE`; every later call (for that URL) is a
-/// plain in-memory lookup and never touches the keyring again this run.
-pub fn current_token(oauth_base_url: &str) -> Option<StoredToken> {
-    let needs_keyring = TOKEN_STORE
-        .read("auth", |g| g.pending_keyring.contains(oauth_base_url))
-        .unwrap_or(false);
-    if needs_keyring {
-        let secret = keyring_load_secret(oauth_base_url);
-        TOKEN_STORE.update("auth", |g| {
-            g.pending_keyring.remove(oauth_base_url);
-            match secret {
-                Some(secret) => {
-                    if let Some(entry) = g.tokens.get_mut(oauth_base_url) {
-                        entry.access_token = secret.access_token;
-                        entry.refresh_token = secret.refresh_token;
-                    }
-                }
-                // No secret available in the keyring after all; drop the stale
-                // metadata rather than surface a token-less "logged in" state
-                // (matches `load()`'s prior behavior for this case).
-                None => {
-                    g.tokens.remove(oauth_base_url);
-                }
-            }
-        });
-    }
-
+/// The non-secret login details (display name, user id, expiry) for the given OAuth
+/// base URL, if the user is logged in there. The token strings may be empty
+/// placeholders: this never touches the keyring, so it is safe on the UI thread.
+pub fn stored_login(oauth_base_url: &str) -> Option<StoredToken> {
     TOKEN_STORE
         .read("auth", |g| g.tokens.get(oauth_base_url).cloned())
         .flatten()
+}
+
+/// Whether the next `try_current_token`/`ensure_fresh_token` for this URL will have to
+/// read the secret from the platform keychain (which may raise an OS prompt and block).
+pub fn keyring_read_pending(oauth_base_url: &str) -> bool {
+    TOKEN_STORE
+        .read("auth", |g| g.pending_keyring.contains(oauth_base_url))
+        .unwrap_or(false)
+}
+
+/// Serializes keychain reads so two threads needing the same pending secret raise one
+/// prompt, not two.
+static KEYRING_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl TokenStore {
+    /// Fold the outcome of a keychain read into the store. Only `NoEntry` (the
+    /// keychain definitely holds nothing) drops the stored login; any other failure
+    /// leaves the entry and its pending flag alone so a later attempt can retry.
+    fn apply_read(
+        &mut self,
+        oauth_base_url: &str,
+        result: Result<TokenSecret, SecretReadError>,
+    ) -> Result<(), AuthError> {
+        match result {
+            Ok(secret) => {
+                self.pending_keyring.remove(oauth_base_url);
+                if let Some(entry) = self.tokens.get_mut(oauth_base_url) {
+                    entry.access_token = secret.access_token;
+                    entry.refresh_token = secret.refresh_token;
+                }
+                Ok(())
+            }
+            Err(SecretReadError::NoEntry) => {
+                self.pending_keyring.remove(oauth_base_url);
+                self.tokens.remove(oauth_base_url);
+                Ok(())
+            }
+            Err(SecretReadError::Failed(detail)) => {
+                eprintln!("auth: keychain read failed, keeping saved login: {detail}");
+                Err(AuthError::KeychainRead { detail })
+            }
+        }
+    }
+}
+
+/// Resolve a pending keychain-only secret, if any. `on_keychain_wait` runs just before
+/// the (possibly prompt-blocked) read, and only when a read is actually going to happen.
+/// Nothing is written to disk or the keychain here, so a process killed mid-read loses
+/// nothing.
+fn resolve_pending(
+    backend: &dyn SecretBackend,
+    oauth_base_url: &str,
+    on_keychain_wait: &mut dyn FnMut(),
+) -> Result<(), AuthError> {
+    if !keyring_read_pending(oauth_base_url) {
+        return Ok(());
+    }
+    on_keychain_wait();
+    let _guard = KEYRING_READ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have resolved it while we waited for the lock.
+    if !keyring_read_pending(oauth_base_url) {
+        return Ok(());
+    }
+    let result = backend.read(oauth_base_url);
+    let mut outcome = Ok(());
+    TOKEN_STORE.update("auth", |g| outcome = g.apply_read(oauth_base_url, result));
+    outcome
+}
+
+/// The stored token for the given OAuth base URL: `Ok(None)` if the user is not logged
+/// in there. The first call for a URL whose secret lives only in the platform keyring
+/// (see `load()`) performs a one-time keyring read, caching it in `TOKEN_STORE`. If the
+/// keychain refuses (denied, cancelled, ...) this returns `AuthError::KeychainRead` and
+/// the saved login stays in place, still pending, for a later retry.
+pub fn try_current_token(oauth_base_url: &str) -> Result<Option<StoredToken>, AuthError> {
+    try_current_token_using(&SystemKeyring, oauth_base_url, &mut || {})
+}
+
+fn try_current_token_using(
+    backend: &dyn SecretBackend,
+    oauth_base_url: &str,
+    on_keychain_wait: &mut dyn FnMut(),
+) -> Result<Option<StoredToken>, AuthError> {
+    resolve_pending(backend, oauth_base_url, on_keychain_wait)?;
+    Ok(stored_login(oauth_base_url))
 }
 
 fn load_from(path: &Path) -> PersistedStore {
@@ -678,6 +835,12 @@ fn save_to(path: &Path, store: &PersistedStore) -> std::io::Result<()> {
 }
 
 fn default_path() -> Option<PathBuf> {
+    // Unit tests must never read or rewrite the real oauth.json.
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
     Some(dirs::config_dir()?.join("osm-gpui").join("oauth.json"))
 }
 
@@ -732,13 +895,42 @@ fn build_token_store(persisted: PersistedStore) -> TokenStore {
 }
 
 fn save(store: &TokenStore) {
+    let persisted = build_persisted(store, &SystemKeyring);
+    let Some(p) = default_path() else {
+        eprintln!("auth: no config dir, skipping save");
+        return;
+    };
+    if let Err(e) = save_to(&p, &persisted) {
+        eprintln!("auth: save {:?} failed: {}", p, e);
+    }
+}
+
+/// The on-disk form of `store`, storing each resolved secret via `backend` (falling back
+/// to the file when it refuses). Entries still pending a keychain read hold only empty
+/// placeholders: they are written as metadata alone and their keychain item is left
+/// untouched, so saving one server's token can neither blank another server's real
+/// secret nor turn it into a fallback-less file entry that loses it.
+fn build_persisted(store: &TokenStore, backend: &dyn SecretBackend) -> PersistedStore {
     let mut persisted = PersistedStore::default();
     for (oauth_base_url, token) in &store.tokens {
+        if store.pending_keyring.contains(oauth_base_url) {
+            persisted.tokens.insert(
+                oauth_base_url.clone(),
+                PersistedToken {
+                    display_name: token.display_name.clone(),
+                    user_id: token.user_id,
+                    expires_at: token.expires_at,
+                    access_token_fallback: None,
+                    refresh_token_fallback: None,
+                },
+            );
+            continue;
+        }
         let secret = TokenSecret {
             access_token: token.access_token.clone(),
             refresh_token: token.refresh_token.clone(),
         };
-        let stored_in_keyring = keyring_store_secret(oauth_base_url, &secret);
+        let stored_in_keyring = backend.write(oauth_base_url, &secret);
         persisted.tokens.insert(
             oauth_base_url.clone(),
             PersistedToken {
@@ -758,14 +950,7 @@ fn save(store: &TokenStore) {
             },
         );
     }
-
-    let Some(p) = default_path() else {
-        eprintln!("auth: no config dir, skipping save");
-        return;
-    };
-    if let Err(e) = save_to(&p, &persisted) {
-        eprintln!("auth: save {:?} failed: {}", p, e);
-    }
+    persisted
 }
 
 #[cfg(test)]
@@ -1132,5 +1317,292 @@ mod tests {
         assert!(!store
             .pending_keyring
             .contains("https://www.openstreetmap.org"));
+    }
+
+    // --- Keychain seam tests: a fake backend stands in for the platform keyring. ---
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    struct FakeBackend {
+        read_result: Mutex<Result<TokenSecret, SecretReadError>>,
+        reads: AtomicUsize,
+        writes: Mutex<Vec<String>>,
+        write_ok: bool,
+    }
+
+    impl FakeBackend {
+        fn new(read_result: Result<TokenSecret, SecretReadError>) -> Self {
+            FakeBackend {
+                read_result: Mutex::new(read_result),
+                reads: AtomicUsize::new(0),
+                writes: Mutex::new(Vec::new()),
+                write_ok: true,
+            }
+        }
+        fn with_secret() -> Self {
+            Self::new(Ok(secret("kc-access", Some("kc-refresh"))))
+        }
+        fn set_result(&self, r: Result<TokenSecret, SecretReadError>) {
+            *self.read_result.lock().unwrap() = r;
+        }
+        fn read_count(&self) -> usize {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    impl SecretBackend for FakeBackend {
+        fn read(&self, _url: &str) -> Result<TokenSecret, SecretReadError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.read_result.lock().unwrap().clone()
+        }
+        fn write(&self, url: &str, _secret: &TokenSecret) -> bool {
+            self.writes.lock().unwrap().push(url.to_string());
+            self.write_ok
+        }
+        fn delete(&self, _url: &str) {}
+    }
+
+    fn secret(access: &str, refresh: Option<&str>) -> TokenSecret {
+        TokenSecret {
+            access_token: access.to_string(),
+            refresh_token: refresh.map(|s| s.to_string()),
+        }
+    }
+
+    /// Put a keychain-only (pending) login for `url` into the global store.
+    fn seed_pending(url: &str, name: &str) {
+        init_store(TokenStore::default());
+        TOKEN_STORE.update("auth", |g| {
+            g.tokens.insert(
+                url.to_string(),
+                StoredToken {
+                    access_token: String::new(),
+                    display_name: name.to_string(),
+                    user_id: 9,
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            );
+            g.pending_keyring.insert(url.to_string());
+        });
+    }
+
+    fn denied() -> Result<TokenSecret, SecretReadError> {
+        Err(SecretReadError::Failed("access denied".to_string()))
+    }
+
+    #[test]
+    fn keychain_read_success_resolves_the_secret_once() {
+        let url = "https://kc-ok.example";
+        seed_pending(url, "alice");
+        let backend = FakeBackend::with_secret();
+        let t = try_current_token_using(&backend, url, &mut || {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.access_token, "kc-access");
+        assert_eq!(t.refresh_token.as_deref(), Some("kc-refresh"));
+        assert!(!keyring_read_pending(url));
+        try_current_token_using(&backend, url, &mut || {}).unwrap();
+        assert_eq!(backend.read_count(), 1, "later lookups are in-memory");
+    }
+
+    #[test]
+    fn keychain_no_entry_drops_the_login() {
+        let url = "https://kc-noentry.example";
+        seed_pending(url, "alice");
+        let backend = FakeBackend::new(Err(SecretReadError::NoEntry));
+        let t = try_current_token_using(&backend, url, &mut || {}).unwrap();
+        assert!(t.is_none());
+        assert!(stored_display_name(url).is_none());
+        assert!(!keyring_read_pending(url));
+    }
+
+    #[test]
+    fn keychain_failure_keeps_the_login_and_a_retry_works() {
+        let url = "https://kc-denied.example";
+        seed_pending(url, "alice");
+        let backend = FakeBackend::new(denied());
+
+        let err = try_current_token_using(&backend, url, &mut || {}).unwrap_err();
+        assert!(matches!(err, AuthError::KeychainRead { .. }));
+        assert_eq!(
+            stored_display_name(url).as_deref(),
+            Some("alice"),
+            "still signed in after a failed read"
+        );
+        assert!(keyring_read_pending(url), "still pending so it can retry");
+
+        // Same again: still an error, still intact.
+        assert!(try_current_token_using(&backend, url, &mut || {}).is_err());
+        assert_eq!(backend.read_count(), 2);
+
+        // The user allows access this time.
+        backend.set_result(Ok(secret("kc-access", None)));
+        let t = try_current_token_using(&backend, url, &mut || {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.access_token, "kc-access");
+        assert!(!keyring_read_pending(url));
+    }
+
+    #[test]
+    fn ensure_fresh_token_stops_with_keychain_error_and_keeps_login() {
+        let url = "https://kc-upload-denied.example";
+        seed_pending(url, "alice");
+        let backend = FakeBackend::new(denied());
+        let client = crate::http::fake::FakeClient::new(vec![]);
+        let err = ensure_fresh_token_using(&client, &backend, url, &mut || {}).unwrap_err();
+        assert!(matches!(err, AuthError::KeychainRead { .. }));
+        assert_eq!(client.request_count(), 0);
+        assert!(stored_display_name(url).is_some());
+    }
+
+    #[test]
+    fn keychain_wait_callback_only_fires_when_a_read_happens() {
+        let pending = "https://kc-wait-pending.example";
+        seed_pending(pending, "alice");
+        let backend = FakeBackend::with_secret();
+        let mut waits = 0;
+        ensure_fresh_token_using(
+            &crate::http::fake::FakeClient::new(vec![]),
+            &backend,
+            pending,
+            &mut || waits += 1,
+        )
+        .unwrap();
+        assert_eq!(waits, 1);
+
+        // Already in memory: no read, no wait notification.
+        let loaded = "https://kc-wait-loaded.example";
+        set_token(
+            loaded,
+            StoredToken {
+                access_token: "t".into(),
+                display_name: "bob".into(),
+                user_id: 1,
+                refresh_token: None,
+                expires_at: None,
+            },
+        );
+        let mut waits = 0;
+        ensure_fresh_token_using(
+            &crate::http::fake::FakeClient::new(vec![]),
+            &backend,
+            loaded,
+            &mut || waits += 1,
+        )
+        .unwrap();
+        assert_eq!(waits, 0);
+        assert_eq!(backend.read_count(), 1);
+    }
+
+    #[test]
+    fn download_token_never_reads_the_keychain() {
+        let url = "https://kc-download.example";
+        seed_pending(url, "alice");
+        let backend = FakeBackend::with_secret();
+        let client = crate::http::fake::FakeClient::new(vec![]);
+        assert!(fresh_token_if_loaded_using(&client, &backend, url).is_none());
+        assert_eq!(
+            backend.read_count(),
+            0,
+            "download must not raise the prompt"
+        );
+        assert!(keyring_read_pending(url));
+
+        // Once the secret has been resolved (e.g. by an upload) downloads use it.
+        try_current_token_using(&backend, url, &mut || {}).unwrap();
+        let t = fresh_token_if_loaded_using(&client, &backend, url).unwrap();
+        assert_eq!(t.access_token, "kc-access");
+    }
+
+    #[test]
+    fn saving_keeps_pending_entries_and_does_not_write_their_keychain_item() {
+        let mut store = TokenStore::default();
+        let tok = |name: &str, access: &str| StoredToken {
+            access_token: access.to_string(),
+            display_name: name.to_string(),
+            user_id: 1,
+            refresh_token: Some("r".into()),
+            expires_at: Some(5),
+        };
+        store
+            .tokens
+            .insert("https://a.example".into(), tok("alice", "A"));
+        store
+            .tokens
+            .insert("https://b.example".into(), tok("bob", ""));
+        store.pending_keyring.insert("https://b.example".into());
+
+        let backend = FakeBackend::with_secret();
+        let persisted = build_persisted(&store, &backend);
+
+        assert_eq!(
+            *backend.writes.lock().unwrap(),
+            vec!["https://a.example".to_string()],
+            "the pending server's keychain item must not be overwritten with placeholders"
+        );
+        let b = &persisted.tokens["https://b.example"];
+        assert_eq!(b.display_name, "bob");
+        assert_eq!(b.expires_at, Some(5));
+        assert!(b.access_token_fallback.is_none() && b.refresh_token_fallback.is_none());
+        let a = &persisted.tokens["https://a.example"];
+        assert!(a.access_token_fallback.is_none(), "stored in keychain");
+
+        // Reloading the saved form still defers B to the keychain.
+        let reloaded = build_token_store(persisted);
+        assert!(reloaded.pending_keyring.contains("https://b.example"));
+        assert!(
+            reloaded.pending_keyring.contains("https://a.example"),
+            "keychain-stored secrets are read lazily after a reload"
+        );
+    }
+
+    #[test]
+    fn failed_keychain_write_falls_back_to_the_file_instead_of_losing_the_token() {
+        let mut store = TokenStore::default();
+        store.tokens.insert(
+            "https://a.example".into(),
+            StoredToken {
+                access_token: "A".into(),
+                display_name: "alice".into(),
+                user_id: 1,
+                refresh_token: Some("R".into()),
+                expires_at: None,
+            },
+        );
+        let mut backend = FakeBackend::with_secret();
+        backend.write_ok = false;
+        let persisted = build_persisted(&store, &backend);
+        let a = &persisted.tokens["https://a.example"];
+        assert_eq!(a.access_token_fallback.as_deref(), Some("A"));
+        assert_eq!(a.refresh_token_fallback.as_deref(), Some("R"));
+    }
+
+    #[test]
+    fn set_token_supersedes_a_pending_read() {
+        let url = "https://kc-relogin.example";
+        seed_pending(url, "alice");
+        set_token(
+            url,
+            StoredToken {
+                access_token: "fresh".into(),
+                display_name: "alice".into(),
+                user_id: 9,
+                refresh_token: None,
+                expires_at: None,
+            },
+        );
+        assert!(!keyring_read_pending(url));
+    }
+
+    #[test]
+    fn keychain_error_message_is_user_facing() {
+        let msg = AuthError::KeychainRead {
+            detail: "denied".into(),
+        }
+        .to_string();
+        assert!(msg.contains("keychain"), "{msg}");
     }
 }
