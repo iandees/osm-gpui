@@ -2135,6 +2135,24 @@ impl MapViewer {
                     editable.delete_relation(snapshot.relation.id);
                 }
             }
+            UndoableAction::Purge { layer, purged } => {
+                let Some(editable) = self
+                    .layer_manager
+                    .find_layer_mut(*layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                else {
+                    return;
+                };
+                if forward {
+                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
+                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
+                    let relation_ids: Vec<i64> =
+                        purged.relations.iter().map(|(r, ..)| r.id).collect();
+                    editable.purge_features(&ids, &way_ids, &relation_ids);
+                } else {
+                    editable.restore_purged(purged.clone());
+                }
+            }
             UndoableAction::PasteFeatures { pasted } => {
                 let Some(editable) = self
                     .layer_manager

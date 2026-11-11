@@ -354,6 +354,7 @@ history:
   created_way: "Created 1 way"
   created_relation: "Created a relation"
   deleted_relation: "Deleted a relation"
+  purged: "Purged objects from the layer"
   extended_way: "Extended a way"
   created_building: "Created a building"
   extruded_way: "Extruded a way"
@@ -754,6 +755,20 @@ action:
       relation_in_relation: "Can't delete relation %{relation}: it is a member of relation %{parent}"
       relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
       restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
+  purge:
+    label: "Purge"
+    hint: "Select something to purge from the layer"
+    done:
+      one: "Purged %{count} object from the layer"
+      other: "Purged %{count} objects from the layer"
+    kept: "%{done}; kept %{kept} node(s) that are still in use or edited"
+    kind:
+      node: "node"
+      way: "way"
+      relation: "relation"
+    error:
+      modified: "Can't purge %{what} %{id}: it has edits that are not uploaded. Upload or undo them first"
+      in_way: "Can't purge node %{id}: way %{way} still uses it"
 
 shortcut_category:
   general: "General"
