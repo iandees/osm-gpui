@@ -2491,6 +2491,31 @@ impl MapViewer {
         }
     }
 
+    /// Put the way members of a relation into connected order as one undo
+    /// step, or say in the status bar that there is nothing to change.
+    pub(crate) fn sort_relation_members(&mut self, layer_id: LayerId, relation_id: i64) {
+        let Some(relation) = self.relation_of(layer_id, relation_id) else {
+            return;
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer(layer_id)
+            .and_then(|layer| layer.as_editable())
+        else {
+            return;
+        };
+        let sorted = osm_gpui::relation_sort::sort_members(&relation.members, &|way| {
+            editable.way_node_ids(way)
+        });
+        if sorted.members == relation.members {
+            self.set_status(tr!("relation_sort.already"));
+            return;
+        }
+        let chains = sorted.chains;
+        self.change_relation_members(layer_id, relation_id, sorted.members);
+        self.set_status(tr_count!("relation_sort.done", chains));
+    }
+
     /// Remove member `member.index` from its relation, or say in the status
     /// bar why that is refused.
     pub(crate) fn remove_relation_member(&mut self, member: MemberRef) {

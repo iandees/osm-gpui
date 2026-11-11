@@ -323,6 +323,8 @@ panel:
     empty: "(keine Mitglieder)"
     # Platzhalter im Rolleneingabefeld.
     role: "Rolle"
+    sort: "Mitglieder sortieren"
+    sort_hint: "Wege in zusammenhängende Reihenfolge bringen; andere Mitglieder und alle Rollen bleiben unverändert"
     move_up: "Nach oben"
     move_down: "Nach unten"
     remove: "Aus Relation entfernen"
@@ -1109,3 +1111,9 @@ notes:
     rate_limited: "Zu viele Anfragen. Versuche es gleich noch einmal."
     http: "Der Server antwortete %{status}: %{detail}"
     parse: "Unlesbare Antwort des Hinweis-Servers: %{detail}"
+
+relation_sort:
+  done:
+    one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
+    other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
+  already: "Die Mitglieder sind bereits in Reihenfolge"

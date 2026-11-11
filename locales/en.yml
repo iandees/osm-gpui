@@ -329,6 +329,8 @@ panel:
     empty: "(no members)"
     # Placeholder in the role input.
     role: "role"
+    sort: "Sort members"
+    sort_hint: "Put the ways into connected order; other members and all roles stay as they are"
     move_up: "Move up"
     move_down: "Move down"
     remove: "Remove from relation"
@@ -1136,3 +1138,9 @@ notes:
     rate_limited: "Too many requests. Try again in a moment."
     http: "The server answered %{status}: %{detail}"
     parse: "Unreadable answer from the notes server: %{detail}"
+
+relation_sort:
+  done:
+    one: "Sorted the members into one connected chain"
+    other: "Sorted the members; the ways form %{count} separate chains"
+  already: "The members are already in order"
