@@ -358,6 +358,9 @@ pub enum JoinError {
     /// A way to be removed has a different role than the surviving way, which
     /// is already a member of the same relation.
     RoleMismatch { relation_id: i64, way_id: i64 },
+    /// A way to be removed is not next to the surviving way in a relation
+    /// where both are members, so folding it in would change the order.
+    NotAdjacent { relation_id: i64, way_id: i64 },
 }
 
 impl JoinError {
@@ -382,6 +385,15 @@ impl JoinError {
                 relation = relation_id
             )
             .to_string(),
+            JoinError::NotAdjacent {
+                relation_id,
+                way_id,
+            } => tr!(
+                "action.join.error.not_adjacent",
+                way = way_id,
+                relation = relation_id
+            )
+            .to_string(),
         }
     }
 }
@@ -392,7 +404,8 @@ impl JoinError {
 /// Per membership of a removed way: if `keep` is a member with the same role,
 /// the membership is dropped; if `keep` is not a member at all, the
 /// membership points at `keep` instead; if `keep` is a member only with other
-/// roles, or the relation is a turn restriction, the join is refused.
+/// roles, the removed membership is not next to one of the survivor's, or the
+/// relation is a turn restriction, the join is refused.
 pub fn join_members(
     relation: &OsmRelation,
     keep: i64,
@@ -414,6 +427,14 @@ pub fn join_members(
             if survivor_roles.is_empty() {
                 members[at].reference = keep;
             } else if survivor_roles.contains(&role) {
+                let next_to_survivor = (at > 0 && is_way_member(&members[at - 1], keep))
+                    || members.get(at + 1).is_some_and(|m| is_way_member(m, keep));
+                if !next_to_survivor {
+                    return Err(JoinError::NotAdjacent {
+                        relation_id: relation.id,
+                        way_id,
+                    });
+                }
                 members.remove(at);
             } else {
                 return Err(JoinError::RoleMismatch {

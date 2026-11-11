@@ -164,6 +164,16 @@ fn is_free_text_key(base: &str) -> bool {
 /// The new value of `key=value` when the way is reversed.
 fn reversed_value(key: &str, value: &str) -> String {
     if has_directional_value(key) {
+        // A numeric `direction` is a compass bearing, which is absolute and
+        // must not change sign; only a numeric incline is negated.
+        let is_incline = key.split(':').any(|p| p == "incline");
+        let is_word = matches!(
+            value,
+            "forward" | "backward" | "left" | "right" | "up" | "down"
+        );
+        if !is_incline && !is_word {
+            return value.to_string();
+        }
         return flip_value(value);
     }
     let mut parts = key.split(':');
@@ -477,7 +487,8 @@ pub struct MergePlan {
 /// otherwise the first selected. Tags are unioned (a conflict names its key).
 /// Ways use the survivor in place of each removed node, and consecutive
 /// repeats that creates collapse into one. Refused if a way would be left with
-/// fewer than two distinct nodes. (Relation memberships are the caller's
+/// fewer than two distinct nodes, or a way that was closed with fewer than three.
+/// (Relation memberships are the caller's
 /// business: see `relations::merge_node_members`.)
 pub fn plan_merge_nodes(
     nodes: &[MergeNode],
@@ -521,7 +532,8 @@ pub fn plan_merge_nodes(
         let mut distinct = after.clone();
         distinct.sort_unstable();
         distinct.dedup();
-        if distinct.len() < 2 {
+        let closed = before.len() >= 3 && before.first() == before.last();
+        if distinct.len() < if closed { 3 } else { 2 } {
             return Err(MergeError::DegenerateWay(*way_id));
         }
         way_edits.push(SeparateEdit {
@@ -1084,10 +1096,12 @@ mod tests {
             plan_merge_nodes(&[node(1, &[]), node(2, &[])], &w),
             Err(MergeError::DegenerateWay(10))
         );
-        // A ring squeezed to two nodes is still two distinct nodes.
+        // A ring squeezed to two distinct nodes is degenerate too.
         let ring = ways(&[(10, &[1, 2, 3, 1])]);
-        let plan = plan_merge_nodes(&[node(2, &[]), node(3, &[])], &ring).unwrap();
-        assert_eq!(plan.way_edits[0].after, vec![1, 2, 1]);
+        assert_eq!(
+            plan_merge_nodes(&[node(2, &[]), node(3, &[])], &ring),
+            Err(MergeError::DegenerateWay(10))
+        );
         // But three-way merge of a triangle leaves nothing.
         assert_eq!(
             plan_merge_nodes(&[node(1, &[]), node(2, &[]), node(3, &[])], &ring),

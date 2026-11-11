@@ -93,25 +93,6 @@ fn merging_the_ends_of_a_full_open_way_closes_it_without_growing(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn a_vertex_of_a_full_way_cannot_be_deleted_today(cx: &mut TestAppContext) {
-    // Pins today's behaviour (see X6): a node used by a way is not
-    // deletable at all, also not at the limit. The ignored test below says
-    // what should happen.
-    let ids: Vec<i64> = (1..=2000).collect();
-    let data = with_nodes(Build::new(), 1..=2000)
-        .way(10, &ids, &road())
-        .done();
-    with_session(cx, data, |s| {
-        let before = s.snap();
-        s.select(&[(N, 1000)]);
-        assert!(!s.act("delete"));
-        assert_eq!(s.snap(), before);
-        assert_eq!(s.steps(), 0);
-    });
-}
-
-#[gpui::test]
-#[ignore = "bug: a vertex cannot be deleted from a way (X6), so a way already over the 2,000 node limit cannot be shortened by deleting nodes; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn deleting_a_vertex_of_a_way_over_the_limit_shortens_it(cx: &mut TestAppContext) {
     let ids: Vec<i64> = (1..=2001).collect();
     let data = with_nodes(Build::new(), 1..=2001)
@@ -735,7 +716,6 @@ fn unicode_keys_and_values_survive_reverse_untouched(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: a numeric `direction` on a way (compass degrees such as direction=90) is treated like an incline and its sign flipped to -90 by Reverse"]
 fn numeric_compass_direction_on_a_way_is_not_negated(cx: &mut TestAppContext) {
     assert_eq!(
         reverse_tags(cx, &[("direction", "90")]),

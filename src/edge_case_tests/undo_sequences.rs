@@ -110,7 +110,8 @@ fn delete_then_undo_restores_the_way_its_version_and_its_route_slot(cx: &mut Tes
         assert_eq!(s.counts(), (0, 0, 0));
         s.redo();
         assert!(!s.has_way(10));
-        assert_eq!(s.counts(), (0, 1, 1));
+        // The way, its two untagged unshared nodes (3 and 4), and the route.
+        assert_eq!(s.counts(), (0, 1, 3));
     });
 }
 

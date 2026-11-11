@@ -78,7 +78,7 @@ in the bug list at the end.
 | J6 | Which way survives | iD / JOSM keep the oldest / the one on the server | iD "prefers to keep the oldest way" | design `join_of_two_server_ways_keeps_the_first_selected_id` (server way wins over a new one, else first selected) |
 | J7 | Both ways in the same route, adjacent | One membership remains | iD "merges relations", "preserves duplicate route segments" | pass `join_into_a_member_of_a_route_keeps_the_route_in_order` |
 | J8 | Only the removed way is a member | Membership moves to the survivor | iD "merges relations" | pass `join_where_only_the_removed_way_is_a_member_points_the_member_at_the_survivor` |
-| J9 | Both in a route but not adjacent | iD `conflicting_relations`; JOSM asks | iD join.js, JOSM combine dialog | FAIL `join_of_ways_that_are_not_adjacent_in_a_route_is_refused` |
+| J9 | Both in a route but not adjacent | iD `conflicting_relations`; JOSM asks | iD join.js, JOSM combine dialog | pass `join_of_ways_that_are_not_adjacent_in_a_route_is_refused` (refused with a status message) |
 | J10 | Restriction member / role clash | Refused | iD "relation would be damaged" | pass `join_refuses_a_turn_restriction_member_and_a_role_clash` |
 | J11 | Result beyond the node limit | Refused | OSM API limit | existing (`join_is_refused_when_the_result_would_pass_the_way_node_limit`) |
 | J12 | Join collapses a single-member multipolygon into an area | iD converts | iD join.js 710-781 | absent |
@@ -93,7 +93,7 @@ in the bug list at the end.
 | M3 | Neighbours in one way | No repeated node | iD "merges two nodes along a single way" | pass `merge_of_neighbours_in_one_way_does_not_repeat_the_node` |
 | M4 | Ends of an open way merged | Closed way | | pass `merge_of_the_two_ends_of_an_open_way_closes_it` |
 | M5 | Way would collapse to one node | Refused (JOSM) | | pass `merge_refuses_to_collapse_a_two_node_way_to_one_node` |
-| M6 | Triangle collapses to two distinct nodes | iD deletes the degenerate way | iD connect (degenerate ways) | FAIL `merge_must_not_leave_a_degenerate_closed_way` |
+| M6 | Triangle collapses to two distinct nodes | iD deletes the degenerate way | iD connect (degenerate ways) | pass `merge_must_not_leave_a_degenerate_closed_way` (refused rather than deleted) |
 | M7 | Same relation, different roles | Both memberships kept | | pass `merge_keeps_both_memberships_of_one_relation_when_the_roles_differ` |
 | M8 | Tag conflict | Refused, key named | iD / JOSM conflict dialog | pass `merge_with_conflicting_tags_names_the_key_and_changes_nothing` |
 
@@ -115,9 +115,9 @@ in the bug list at the end.
 | X2 | Way listed twice in a relation | Both memberships go | JOSM #19432 flavour | pass `a_way_listed_twice_in_a_route_loses_both_memberships` |
 | X3 | Last member of a relation | iD and JOSM delete the relation | iD "deletes parent relations that become empty" | design `deleting_the_last_member_of_a_relation_is_refused` |
 | X4 | Tagged or shared nodes of a deleted way | Kept | iD "does not delete member nodes with interesting tags / referenced by another parent" | pass `deleting_a_way_keeps_nodes_that_are_tagged_or_shared` |
-| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | FAIL `deleting_a_way_deletes_its_untagged_unshared_nodes` |
-| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | FAIL `deleting_a_vertex_removes_it_from_its_way` |
-| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | FAIL `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`; current behaviour pinned by `deleting_a_node_used_by_a_way_changes_nothing_today` |
+| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | pass `deleting_a_way_deletes_its_untagged_unshared_nodes` |
+| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | pass `deleting_a_vertex_removes_it_from_its_way` |
+| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | pass `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way` |
 | X8 | Way and its nodes selected together | One step, ways before nodes in the upload | | pass `deleting_a_way_with_its_nodes_in_one_selection_is_one_step` |
 | X9 | Delete a relation | Members stay | iD `delete_relation.js` (iD also deletes untagged member ways; JOSM does not) | pass `deleting_a_relation_keeps_its_members` (JOSM behaviour) |
 | X10 | Delete an inner ring of a multipolygon | Outer stays a member | | pass `deleting_an_inner_ring_leaves_the_outer_member` |
@@ -173,6 +173,30 @@ in the bug list at the end.
 | Z3 | Delete way in a route, undo restores way, version and slot | pass `delete_then_undo_restores_the_way_its_version_and_its_route_slot` |
 | Z4 | New edit after undo drops the redo branch | pass `a_new_edit_after_undo_discards_the_redo_branch` |
 
+## Further situations (batch A)
+
+Tests in `src/edge_case_tests/interactions_reverse_split.rs`.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| A1 | Reverse a way whose node (stop sign `direction=forward`) is shared with a second way that is not reversed | The node still serves the other way, so its direction should not flip | pass `reversing_one_way_leaves_a_direction_tag_on_a_node_shared_with_another_way` |
+| A1b | Same node shared by two ways that are both reversed | Flipped once, not twice | pass `a_node_shared_by_two_reversed_ways_is_flipped_exactly_once` |
+| A2 | Reverse a roundabout (`junction=roundabout`) | Ring reversed, closing node kept, tags unchanged | pass `reversing_a_roundabout_reverses_the_ring_and_keeps_the_closing_node` |
+| A2b | Reverse a closed `area=yes` + `oneway=yes` way; closed building | Stays closed, oneway/area kept, side keys swapped | pass `reversing_a_oneway_area_keeps_the_area_and_oneway_tags_and_swaps_side_keys`, `reversing_a_closed_building_keeps_it_closed` |
+| A3 | Split a way that is a restriction `via` and a route member | Both halves `via` in travel order; route halves adjacent with the role; one undo | pass `splitting_a_way_that_is_a_restriction_via_and_a_route_member_updates_both` |
+| A4 | Split a way that is both `from` and `to` of a U-turn | Both roles follow the half touching the `via` | pass `splitting_the_way_that_is_both_from_and_to_of_a_u_turn_keeps_a_valid_restriction`, `splitting_a_u_turn_way_at_the_far_side_of_the_via_keeps_both_roles_on_the_original` |
+| A5 | Duplicate consecutive node `[1,1,2,3]`: reverse | Literal reverse | pass `reversing_a_way_with_a_duplicated_node_reverses_it_literally` |
+| A5b | Split at the doubled node `[1,2,2,3]` | Refused, unchanged (like S17) | design `a_node_listed_twice_in_a_row_cannot_be_split_at` |
+| A5c | Split elsewhere in a way with a doubled node; join with it at the end | Duplicate kept, no dangling refs | pass `splitting_elsewhere_in_a_way_with_a_duplicated_node_keeps_the_duplicate`, `joining_a_way_with_a_duplicated_end_node_keeps_the_duplicate`, `joining_ways_that_both_end_on_the_duplicated_node_chains_them` |
+| A6 | One way listed under two roles (`forward`, `backward`) in a route: split | Each occurrence gets its own halves with its own role, in the right order | pass `split_gives_each_occurrence_of_a_member_its_own_role` |
+| A6b | Same, delete | Both memberships removed | pass `deleting_a_member_with_two_roles_removes_both_memberships` |
+| A6c | Same, join | Refused with "different role" and nothing changes | design `join_is_refused_when_the_way_has_different_roles_in_one_relation` |
+
+Bug found in this batch (fixed): A1, LOW-MEDIUM. Reversing only one of two
+ways that share a tagged node used to flip the node's `direction`, which then
+faced the wrong way for the other way. The node's tags are now left alone when
+a way that is not being reversed also uses it.
+
 ## Further situations (batch C)
 
 Tests in `src/edge_case_tests/limits_and_data.rs`: size limits, geometry near
@@ -185,7 +209,7 @@ relation). Big networks are built in code.
 | L1 | Merge nodes of two ways that both have 2,000 nodes | No way grows, nothing refused | pass `merge_between_two_full_ways_keeps_both_at_the_limit` |
 | L2 | Merge two nodes of one 2,000 node way (far apart, neighbours, the two ends) | Length stays 2,000 (1,999 for neighbours) | pass `merge_inside_a_full_way_never_grows_it`, `merging_the_ends_of_a_full_open_way_closes_it_without_growing` |
 | L3 | Delete a vertex of a 2,000 node way | Node removed (X6) | design `a_vertex_of_a_full_way_cannot_be_deleted_today` (refused, nothing changes) |
-| L4 | Delete a vertex to bring a 2,001 node way back to the limit | Way shortened | FAIL `deleting_a_vertex_of_a_way_over_the_limit_shortens_it` (same cause as X6) |
+| L4 | Delete a vertex to bring a 2,001 node way back to the limit | Way shortened | pass `deleting_a_vertex_of_a_way_over_the_limit_shortens_it` (X6 is fixed) |
 | L5 | Join to exactly 2,000 nodes (one way reversed), undo, redo; then one more node | One undo splits it back, redo repeats, 2,001 refused with no undo step recorded | pass `join_right_at_the_limit_then_undo_redo_and_one_more_node_is_refused` |
 | L6 | Split a way in a relation of 32,000 members | Refused with "32,001 ... 32,000", nothing changed | design `split_that_would_push_a_relation_past_32000_is_refused_and_changes_nothing` |
 | L7 | Same at 31,999 members | Goes through, exactly 32,000, undo/redo | pass `split_that_lands_exactly_on_32000_members_goes_through` |
@@ -203,12 +227,46 @@ relation). Big networks are built in code.
 | K3 | Values `Forward`, `forward `, `forwards`, `LEFT`, `right `, `backwards` (R13) | Only exact lower case flips; `forwards` is not read as legacy iD does | design `values_with_other_case_spaces_or_an_s_are_not_taken_for_directions`, `directional_values_of_directional_keys_follow_the_same_exact_rule` |
 | K4 | Unicode keys and values | Untouched except real `:forward` parts | pass `unicode_keys_and_values_survive_reverse_untouched` |
 | K5 | Node tags with the same odd keys / values on a reversed way | Same exact rule | pass `node_direction_tags_with_odd_keys_and_values_follow_the_exact_rule` |
-| K6 | `direction=90` (compass degrees) on a way | Unchanged | FAIL `numeric_compass_direction_on_a_way_is_not_negated` (becomes `-90`) |
+| K6 | `direction=90` (compass degrees) on a way | Unchanged | pass `numeric_compass_direction_on_a_way_is_not_negated` |
 
-Bugs from this batch:
+Bugs from this batch: none open (G5 and K6 are fixed).
 
-- LOW. K6: Reverse negates a numeric `direction` on a way.
-- L4: same cause as X6 (vertices cannot be deleted).
+## Further situations (batch B)
+
+Interactions between merge, disconnect, join and delete. Tests are in
+`src/edge_case_tests/interactions_topology.rs`. No bugs found in this batch.
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| B1 | Merge two nodes of one way that are not neighbours (`[1,2,3,4]`, merge 2 and 4) | Allowed: `[1,2,3,2]`, node 4 deleted, one undo / redo | design `merge_of_non_neighbours_in_one_way_makes_the_way_revisit_the_survivor`; first selected survives (`merge_of_non_neighbours_with_the_other_node_selected_first_keeps_that_node`) |
+| B2 | Disconnect: upload order | New node in `<create>`, the way that names it only in `<modify>` after it; undo / redo | pass `disconnect_creates_the_new_node_before_the_way_that_names_it` |
+| B3 | Two disconnects in a row | Both nodes created before the modified ways; one undo per step | pass `disconnect_of_a_ring_and_a_second_disconnect_create_nodes_before_both_ways` |
+| B4 | Join with one way selected | Refused, nothing recorded | pass `join_of_a_single_way_is_refused` |
+| B5 | Join a closed way and an open way touching it | Refused (a ring has no free end; iD refuses too) | design `join_of_a_closed_way_and_an_open_way_touching_it_is_refused` |
+| B6 | Join two closed ways sharing a node | Refused | pass `join_of_two_closed_ways_sharing_a_node_is_refused` |
+| B7 | Join a way with itself (same way selected twice) | Refused, nothing recorded | pass `join_of_a_way_with_itself_changes_nothing` |
+| B8 | Delete a way a relation lists twice (different roles, other members between), then undo | Both slots return at their original positions with their roles; redo removes both again | pass `deleting_a_way_listed_twice_then_undo_restores_both_slots_in_place` |
+| B9 | Delete a way that is every member of a relation (listed twice) | Refused, like X3 | design `deleting_a_way_that_is_the_only_two_entries_of_a_relation_is_refused` |
+
+## Further situations (batch D)
+
+Undo / redo against refusals, autosave and several layers
+(`src/edge_case_tests/undo_interactions.rs`).
+
+| # | Situation | Status |
+|---|-----------|--------|
+| D1 | Join refused (T junction) between two edits, with a live redo branch: stack, cursor and revision unchanged, redo still works | pass `a_refused_join_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D2 | Merge refused (would collapse a two-node way) in the same position | pass `a_refused_merge_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D3 | Delete refused by the last-relation-member check in the same position | pass `a_delete_refused_by_a_relation_check_between_two_edits_keeps_the_stack_and_the_redo_branch` |
+| D4 | After restore from autosave, pending edits are back but undo history is not persisted: nothing to undo; new edits undo only back to the restored state | design `a_restored_layer_keeps_its_pending_edits_but_has_no_undo_history` |
+| D5 | Restoring a layer into a running view leaves existing steps and the redo branch untouched, and no step names the restored layer | pass `restoring_a_layer_into_a_running_view_leaves_the_existing_history_alone` |
+| D6 | Several layers: the undo stack is one global list; undo reverts the layer a step was recorded on, not the active layer, and the active layer then follows the undone feature | design `undo_reverts_the_layer_the_step_was_recorded_on_not_the_active_layer` |
+| D7 | Edits interleaved across two layers undo and redo in one shared order, restoring both layers exactly | pass `edits_interleaved_across_layers_undo_in_one_shared_order_and_redo_back` |
+| D8 | A new edit in one layer discards the redo branch of another layer (global history) | design `a_new_edit_in_one_layer_drops_the_redo_branch_of_the_other_layer` |
+| D9 | Per-layer undo stacks | absent (one global stack; deleting a layer prunes its steps, covered in `main.rs` tests) |
+| D10 | Persisting undo history across a restart | absent |
+
+No bugs found in this batch.
 
 ## Gaps that are not bugs (feature absent or deliberate difference)
 
@@ -230,14 +288,13 @@ Ordered by risk of corrupting data on upload.
 1-3. FIXED. Reverse now swaps `forward`/`backward` route roles (R9), flips
    direction tags on the way's nodes (R11) and flips `left`/`right`/
    `forward`/`backward` values and side-specific oneways (R6-R8).
-4. MEDIUM. J9 join of two ways that are not adjacent in a shared route drops the
+4. FIXED (join is now refused). J9 join of two ways that are not adjacent in a shared route drops the
    second membership without asking, which can leave the route disconnected.
    `join_of_ways_that_are_not_adjacent_in_a_route_is_refused`.
-5. MEDIUM. X6/X7 a vertex cannot be deleted (the action refuses any node
-   used by a way), so the user cannot take a node out of a way.
-   `deleting_a_vertex_removes_it_from_its_way`,
+5. FIXED. X6/X7 a vertex can now be deleted: it is removed from its ways, and
+   a way left too short is deleted. `deleting_a_vertex_removes_it_from_its_way`,
    `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`.
-6. LOW-MEDIUM. X5 deleting a way leaves its untagged unshared nodes as orphans
-   that stay on the server. `deleting_a_way_deletes_its_untagged_unshared_nodes`.
-7. LOW. M6 merging two nodes of a triangle leaves a closed way with two
+6. FIXED. X5 deleting a way now also deletes its untagged unshared nodes.
+   `deleting_a_way_deletes_its_untagged_unshared_nodes`.
+7. FIXED (merge is now refused). M6 merging two nodes of a triangle leaves a closed way with two
    distinct nodes. `merge_must_not_leave_a_degenerate_closed_way`.
