@@ -896,7 +896,7 @@ impl UploadDialog {
 }
 
 impl Render for UploadDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let comment_empty = self.comment.read(cx).value().trim().is_empty();
         let in_flight = self.state.is_busy();
@@ -1054,7 +1054,16 @@ impl Render for UploadDialog {
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(tr!("dialog.upload.title")),
             )
-            .child(div().p_4().child(body))
+            // The body scrolls when the window is too short for it, so the
+            // title and the buttons stay on screen.
+            .child(
+                div()
+                    .id("upload-body")
+                    .p_4()
+                    .max_h(window.viewport_size().height - gpui::px(170.0))
+                    .overflow_y_scroll()
+                    .child(body),
+            )
             .child(
                 div()
                     .px_4()
