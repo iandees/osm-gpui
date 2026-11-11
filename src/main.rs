@@ -31,7 +31,7 @@ mod welcome;
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, ShowAbout,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
@@ -74,6 +74,7 @@ actions!(
         ApplyNsiPreset,
         ChangeFeatureType,
         UploadToOsm,
+        Validate,
         ExportOsmFile,
         SelectAll,
         DeselectAll,
@@ -611,6 +612,8 @@ struct MapViewer {
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
+    /// Active Tools > Validate dialog, if open.
+    validate_dialog: Option<gpui::Entity<osm_gpui::ui::validate_dialog::ValidateDialog>>,
     /// The changeset comment typed in the upload dialog, kept when the dialog
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
@@ -870,6 +873,7 @@ impl MapViewer {
             delete_layer_dialog: None,
             about_dialog: None,
             upload_dialog: None,
+            validate_dialog: None,
             upload_comment_draft: String::new(),
             sign_in_dialog: None,
             notice_dialog: None,
@@ -4445,6 +4449,76 @@ impl MapViewer {
         self.open_upload_dialog(window, cx);
     }
 
+    /// Run the validator on the pending changes of every modified layer.
+    /// Only created and modified objects (and what they affect) are checked.
+    pub(crate) fn validation_report(&self) -> osm_gpui::validator::Report {
+        let mut report = osm_gpui::validator::Report::default();
+        for layer in self.layer_manager.layers() {
+            if !layer.is_modified() {
+                continue;
+            }
+            let Some(data) = layer
+                .as_any()
+                .downcast_ref::<OsmLayer>()
+                .and_then(|l| l.get_osm_data())
+            else {
+                continue;
+            };
+            report.add_layer(layer.id(), &data, &layer.diff_for_upload());
+        }
+        report
+    }
+
+    /// Window-scoped handler for Tools > Validate.
+    fn on_validate(&mut self, _: &Validate, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_validate_dialog(window, cx);
+    }
+
+    /// Tools > Validate: run the checks and list what they found, without
+    /// starting an upload.
+    pub(crate) fn open_validate_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.upload_dialog.is_some()
+            || self.validate_dialog.is_some()
+            || self.sign_in_dialog.is_some()
+            || self.notice_dialog.is_some()
+        {
+            return;
+        }
+        let report = self.validation_report();
+        self.set_status(if report.checked_changes {
+            osm_gpui::ui::validation_list::summary_text(&report)
+        } else {
+            tr!("validator.nothing_pending")
+        });
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::validate_dialog::ValidateDialog::new(report, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &osm_gpui::ui::validate_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::validate_dialog::DialogEvent;
+                this.validate_dialog = None;
+                if let DialogEvent::Show(features) = event {
+                    this.show_features(features, cx);
+                }
+                cx.notify();
+            },
+        )
+        .detach();
+        self.validate_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Select `features` and zoom to them (a validator finding's Show).
+    fn show_features(
+        &mut self,
+        features: &[osm_gpui::selection::FeatureRef],
+        cx: &mut Context<Self>,
+    ) {
+        self.set_selection(features.to_vec());
+        self.fit_to_features(features);
+        cx.notify();
+    }
+
     /// `open_upload_dialog` with the signed-in account passed in (so tests
     /// don't depend on the on-disk token store). Always gives visible
     /// feedback: see `upload_dialog::plan_upload`.
@@ -4455,6 +4529,7 @@ impl MapViewer {
         cx: &mut Context<Self>,
     ) {
         if self.upload_dialog.is_some()
+            || self.validate_dialog.is_some()
             || self.sign_in_dialog.is_some()
             || self.notice_dialog.is_some()
         {
@@ -4532,6 +4607,9 @@ impl MapViewer {
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
+        // Validated once, before the first changeset is opened.
+        let report = self.validation_report();
+        dialog.update(cx, |dialog, cx| dialog.set_validation(report, cx));
         if !self.upload_comment_draft.is_empty() {
             let draft = self.upload_comment_draft.clone();
             dialog.update(cx, |dialog, cx| dialog.set_draft_comment(draft, window, cx));
@@ -4549,6 +4627,10 @@ impl MapViewer {
                         // The dialog stays open to show the upload's stage;
                         // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
+                    }
+                    DialogEvent::ShowFindings(features) => {
+                        this.close_upload_dialog_keeping_draft(cx);
+                        this.show_features(features, cx);
                     }
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
@@ -6159,6 +6241,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_change_feature_type))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_upload_to_osm))
+            .on_action(cx.listener(Self::on_validate))
             .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.custom_imagery_dialog.clone())
@@ -6169,6 +6252,7 @@ impl Render for MapViewer {
             .children(self.preset_picker_dialog.clone())
             .children(self.relation_picker_dialog.clone())
             .children(self.upload_dialog.clone())
+            .children(self.validate_dialog.clone())
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
             .children(self.render_context_menu(window, cx))
@@ -6299,6 +6383,7 @@ fn main() {
         cx.on_action(open_custom_imagery_dialog);
         cx.on_action(open_settings);
         cx.on_action(upload_to_osm);
+        cx.on_action(validate);
         cx.on_action(quit);
         menu::register_app_actions(cx);
 
@@ -9861,6 +9946,129 @@ mod tests {
             view.open_upload_dialog_as(Some("me"), window, cx);
             let dialog = view.upload_dialog.clone().expect("dialog reopens");
             assert_eq!(dialog.read(cx).draft_comment(cx), "Add a cafe");
+        });
+    }
+
+    /// A signed-in view with the one-way fixture (way 10 untagged, an old
+    /// problem nobody touched) in a headless window.
+    fn validation_view(
+        cx: &mut TestAppContext,
+    ) -> (gpui::Entity<MapViewer>, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        let vcx = gpui::VisualTestContext::from_window(window.into(), cx).into_mut();
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update_in(vcx, |view, _window, _cx| {
+            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(
+                layer_id,
+                "L".to_string(),
+                Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+            );
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+        });
+        (view, vcx)
+    }
+
+    #[gpui::test]
+    fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContext) {
+        use osm_gpui::validator::Check;
+        let (view, vcx) = validation_view(cx);
+        // A new, untagged, unconnected node: a warning. The fixture's own
+        // untagged way 10 is an old problem and is not reported.
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("Add a node".into(), window, cx)
+            });
+            let d = dialog.read(cx);
+            assert_eq!((d.validation().errors(), d.validation().warnings()), (0, 1));
+            assert_eq!(d.validation().count_of(Check::UntaggedNode), 1);
+            assert_eq!(d.validation().count_of(Check::UntaggedWay), 0);
+            assert_eq!(d.confirm_blocker(cx), None, "warnings do not block");
+            view.close_upload_dialog_keeping_draft(cx);
+        });
+        // Touch a node of way 10 so that it gets an empty tag value: an error.
+        view.update_in(vcx, |view, window, cx| {
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "");
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog reopens");
+            let d = dialog.read(cx);
+            assert_eq!(d.validation().errors(), 1);
+            assert_eq!(d.validation().count_of(Check::TagEmptyValue), 1);
+            assert!(
+                d.confirm_blocker(cx)
+                    .is_some_and(|why| why.contains("validator")),
+                "an error blocks Upload"
+            );
+            // Errors come first, so row 0 is the error on node 1.
+            dialog.update(cx, |d, cx| assert!(d.press_show_finding(0, cx)));
+        });
+        // Show closes the dialog, selects the node and keeps the comment.
+        view.update_in(vcx, |view, _window, _cx| {
+            assert!(view.upload_dialog.is_none());
+            assert_eq!(view.upload_comment_draft, "Add a node");
+            assert_eq!(view.selected.len(), 1);
+            assert_eq!(
+                (view.selected[0].kind, view.selected[0].id),
+                (osm_gpui::selection::FeatureKind::Node, 1)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn tools_validate_lists_findings_without_an_upload(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        // Nothing pending: the dialog says so.
+        view.update_in(vcx, |view, window, cx| {
+            view.open_validate_dialog(window, cx);
+            let dialog = view.validate_dialog.clone().expect("opens");
+            assert!(!dialog.read(cx).report().checked_changes);
+            assert_eq!(
+                status_text(view),
+                Some("There are no pending changes to check.")
+            );
+            dialog.update(cx, |d, cx| assert!(!d.press_show(0, cx)));
+        });
+        // A second request while it is open changes nothing.
+        view.update_in(vcx, |view, window, cx| {
+            let first = view.validate_dialog.clone().unwrap();
+            view.open_validate_dialog(window, cx);
+            assert_eq!(
+                view.validate_dialog.as_ref().unwrap().entity_id(),
+                first.entity_id()
+            );
+            view.validate_dialog = None;
+            make_pending_change(view);
+            view.open_validate_dialog(window, cx);
+            let dialog = view.validate_dialog.clone().unwrap();
+            assert_eq!(dialog.read(cx).report().warnings(), 1);
+            assert_eq!(status_text(view), Some("1 warning"));
+            // Show selects the new node and closes the dialog.
+            dialog.update(cx, |d, cx| assert!(d.press_show(0, cx)));
+        });
+        view.update_in(vcx, |view, _window, _cx| {
+            assert!(view.validate_dialog.is_none());
+            assert_eq!(view.selected.len(), 1);
+            assert_eq!(view.selected[0].kind, FeatureKind::Node);
+            assert!(view.selected[0].id < 0, "the new node");
         });
     }
 

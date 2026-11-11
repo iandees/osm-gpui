@@ -309,7 +309,6 @@ fn compare_findings(a: &Finding, b: &Finding) -> Ordering {
 /// What the checks need to know about how objects relate to each other,
 /// gathered in one pass over the ways and relations.
 struct Context<'a> {
-    data: &'a OsmData,
     changes: &'a Changes,
     /// Changed nodes that are part of some way.
     node_in_way: HashSet<i64>,
@@ -368,7 +367,6 @@ impl<'a> Context<'a> {
             }
         }
         Context {
-            data,
             changes,
             node_in_way,
             node_member,
