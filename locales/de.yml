@@ -372,7 +372,7 @@ settings:
     size_large: "Groß"
     scroll_group: "Scrollen"
     invert_scroll_zoom: "Scroll-Zoom umkehren"
-    invert_scroll_zoom_description: "Die Zoomrichtung des Mausrads auf der Karte umkehren: Was bisher hineingezoomt hat, zoomt jetzt heraus. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
+    invert_scroll_zoom_description: "Die Scrollrichtung zum Zoomen der Karte umkehren. Standardmäßig zoomt Hochscrollen (Mausrad vom Körper weg gedreht) hinein, wie in JOSM und auf der OpenStreetMap-Website; mit dieser Option zoomt es heraus. Cmd/Strg + Trackpad-Scrollen folgt derselben Richtung. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
     welcome_group: "Hinweiskasten"
     welcome_card: "Hinweiskasten anzeigen"
     welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."

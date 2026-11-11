@@ -12,26 +12,27 @@ viewport 40.7120 -74.0060 12
 wait 1s
 assert_zoom 12
 
-# Default direction: positive wheel lines zoom out by 0.05 level per line.
+# Default direction (as in JOSM and the OSM website): positive wheel lines
+# (wheel rolled up/away on a non-natural setup) zoom in by 0.05 level per line.
 scroll 600,400 dy=2
 wait 500ms
-assert_zoom 11.9 tol=0.005
+assert_zoom 12.1 tol=0.005
 
 action SetInvertScrollZoom {"on":true}
 viewport 40.7120 -74.0060 12
 wait 1s
 assert_zoom 12
 
-# Inverted: the same scroll now zooms in.
+# Inverted: the same scroll now zooms out.
 scroll 600,400 dy=2
 wait 500ms
-assert_zoom 12.1 tol=0.005
+assert_zoom 11.9 tol=0.005
 
 action SetInvertScrollZoom {"on":false}
 viewport 40.7120 -74.0060 12
 wait 1s
 scroll 600,400 dy=2
 wait 500ms
-assert_zoom 11.9 tol=0.005
+assert_zoom 12.1 tol=0.005
 
 log done

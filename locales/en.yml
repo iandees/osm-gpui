@@ -378,7 +378,7 @@ settings:
     size_large: "Large"
     scroll_group: "Scrolling"
     invert_scroll_zoom: "Invert scroll zoom"
-    invert_scroll_zoom_description: "Reverse the direction the mouse wheel zooms the map: what zoomed in now zooms out. Panning, pinch and keyboard zoom are not affected."
+    invert_scroll_zoom_description: "Reverse the scroll direction that zooms the map. By default, scrolling up (the wheel rolled away from you) zooms in, as in JOSM and on the OpenStreetMap website; turn this on to zoom out instead. Cmd/Ctrl + trackpad scroll follows the same direction. Panning, pinch and keyboard zoom are not affected."
     welcome_group: "Welcome card"
     welcome_card: "Show welcome card"
     welcome_card_description: "Show the welcome card over the map while no OpenStreetMap data is loaded."
