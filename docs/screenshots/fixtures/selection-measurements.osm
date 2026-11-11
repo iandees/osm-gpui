@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="selection-measurements fixture">
+  <!-- A: a small building, about 48 m x 36 m (way 7101). -->
+  <node id="7001" version="1" lat="40.7129677" lon="-74.0075448"/>
+  <node id="7002" version="1" lat="40.7129677" lon="-74.0070084"/>
+  <node id="7003" version="1" lat="40.7126424" lon="-74.0070084"/>
+  <node id="7004" version="1" lat="40.7126424" lon="-74.0075448"/>
+  <!-- B: an open road with one bend (way 7201). -->
+  <node id="7011" version="1" lat="40.7121545" lon="-74.0075448"/>
+  <node id="7012" version="1" lat="40.7121545" lon="-74.0059356"/>
+  <node id="7013" version="1" lat="40.7118699" lon="-74.0051310"/>
+  <!-- C: two trees. -->
+  <node id="7021" version="1" lat="40.7127644" lon="-74.0053992"><tag k="natural" v="tree"/></node>
+  <node id="7022" version="1" lat="40.7125204" lon="-74.0045946"><tag k="natural" v="tree"/></node>
+  <!-- D: a multipolygon, a park with a pond (relation 7301). -->
+  <node id="7031" version="1" lat="40.7131710" lon="-74.0067402"/>
+  <node id="7032" version="1" lat="40.7131710" lon="-74.0058284"/>
+  <node id="7033" version="1" lat="40.7125204" lon="-74.0058284"/>
+  <node id="7034" version="1" lat="40.7125204" lon="-74.0067402"/>
+  <node id="7041" version="1" lat="40.7129677" lon="-74.0064720"/>
+  <node id="7042" version="1" lat="40.7129677" lon="-74.0062038"/>
+  <node id="7043" version="1" lat="40.7127644" lon="-74.0062038"/>
+  <node id="7044" version="1" lat="40.7127644" lon="-74.0064720"/>
+  <way id="7101" version="1">
+    <nd ref="7001"/>
+    <nd ref="7002"/>
+    <nd ref="7003"/>
+    <nd ref="7004"/>
+    <nd ref="7001"/>
+    <tag k="building" v="yes"/>
+  </way>
+  <way id="7201" version="1">
+    <nd ref="7011"/>
+    <nd ref="7012"/>
+    <nd ref="7013"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Measure Street"/>
+  </way>
+  <way id="7211" version="1">
+    <nd ref="7031"/>
+    <nd ref="7032"/>
+    <nd ref="7033"/>
+    <nd ref="7034"/>
+    <nd ref="7031"/>
+  </way>
+  <way id="7212" version="1">
+    <nd ref="7041"/>
+    <nd ref="7042"/>
+    <nd ref="7043"/>
+    <nd ref="7044"/>
+    <nd ref="7041"/>
+  </way>
+  <relation id="7301" version="1">
+    <member type="way" ref="7211" role="outer"/>
+    <member type="way" ref="7212" role="inner"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="landuse" v="grass"/>
+    <tag k="name" v="Pond Park"/>
+  </relation>
+</osm>

@@ -1,0 +1,42 @@
+# Selection measurements: the muted line under the Selection header.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. fixtures/selection-measurements.osm is
+# laid out in window coordinates at zoom 18 (about 0.45 m per pixel):
+#   building 7101   (200,150) .. (300,230), closed
+#   road 7201       (200,350) -> (500,350) -> (650,420)
+#   trees           7021 at (600,200), 7022 at (750,260)
+#   park 7301       multipolygon: outer 7211 (350,100) .. (520,260), pond 7212 (400,150) .. (450,200)
+#                   (only its area is covered by unit tests: the harness cannot select a relation)
+
+window 1200 800
+load_osm docs/screenshots/fixtures/selection-measurements.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+capture out/measure-01-nothing.png
+
+# A closed way: area and perimeter.
+click 250,150
+wait_idle 2s
+assert_selected way 7101
+capture out/measure-02-building.png
+
+# An open way: length.
+click 350,350
+wait_idle 2s
+assert_selected way 7201
+capture out/measure-03-road.png
+
+# One node: coordinates (click the line to copy them).
+click 600,200
+wait_idle 2s
+assert_selected node 7021
+capture out/measure-05-node.png
+
+# Two nodes (box-select both trees): the distance between them.
+drag 560,160 800,300 button=left
+wait_idle 2s
+assert_selected_count 2
+capture out/measure-06-two-nodes.png
+
+log done
