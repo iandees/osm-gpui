@@ -588,6 +588,8 @@ action:
     done:
       one: "%{count} Weg umgekehrt"
       other: "%{count} Wege umgekehrt"
+    error:
+      tag_too_long: "Umkehren nicht möglich: Das Vertauschen der Tags von Weg %{way} ergäbe einen Schlüssel oder Wert mit mehr als 255 Zeichen"
   join:
     label: "Wege verbinden"
     hint: "Zwei oder mehr Wege wählen, die Ende an Ende anschließen"
@@ -609,6 +611,8 @@ action:
     done:
       one: "Knoten in %{count} Kopie aufgetrennt"
       other: "Knoten in %{count} Kopien aufgetrennt"
+    error:
+      restriction: "Abtrennen nicht möglich: Weg %{way} gehört zur Abbiegebeschränkung %{relation}, die ihn am Via-Knoten braucht"
   extend:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"

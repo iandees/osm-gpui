@@ -13,6 +13,7 @@ mod limits_and_data;
 mod multipolygon_edits;
 mod parse_and_export;
 mod reverse;
+mod shared_members;
 mod split;
 mod undo_interactions;
 mod undo_sequences;

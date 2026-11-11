@@ -268,6 +268,31 @@ Undo / redo against refusals, autosave and several layers
 
 No bugs found in this batch.
 
+## Further situations (batch G)
+
+Nodes and ways shared by several relations, copy / paste of members, and
+255-character tag limits (`src/edge_case_tests/shared_members.rs`).
+
+| # | Situation | Expectation | Status |
+|---|-----------|-------------|--------|
+| G1 | Merge two nodes that sit in 7 relations (via of two restrictions, route stops with different roles, same role far apart and adjacent, multipolygon label, one node under two roles) | Every membership moves to the survivor with its role and position; only an equal neighbour collapses; relations are edited before the node is deleted; one undo | pass `merging_nodes_in_many_relations_moves_every_membership_to_the_survivor`, `merging_in_the_other_order_keeps_the_same_memberships_on_the_other_node` |
+| G2 | Merge where only the removed node has memberships | They move to the survivor | pass `merging_into_a_survivor_that_is_in_no_relation_still_carries_the_other_nodes_memberships` |
+| G3 | Delete a node that is a stop and an admin centre | Removed from ways and both relations, one undo | pass `deleting_a_node_that_is_a_stop_and_an_admin_centre_cleans_up_both_relations` |
+| G4 | Delete the via node of a restriction that is also a stop and an admin centre | Refused, nothing half-done | design `deleting_a_restriction_via_node_is_refused_and_leaves_the_other_relations_alone` |
+| G5 | Delete a node that is the only member of one relation and a stop of another | Refused, the other relation keeps its stop | design `deleting_the_only_member_of_one_relation_is_refused_even_if_the_others_would_be_fine` |
+| G6 | Delete a vertex that shortens one way and would delete a restriction's `to` way | Refused before the first way is shortened | pass `deleting_a_vertex_whose_short_way_is_a_restriction_member_changes_nothing` |
+| G7 | Delete a refused node and an allowed node together | Only the allowed one goes, one step | design `deleting_a_refused_and_an_allowed_node_together_deletes_only_the_allowed_one_in_one_step` |
+| G8 | Disconnect a node that is a stop / admin centre / label | The original node keeps every membership, the copy is in none, no relation modified | design `disconnecting_a_stop_node_leaves_every_membership_on_the_original_node`, `the_membership_stays_with_the_original_node_even_when_its_own_way_is_the_one_detached` |
+| G9 | Disconnect the via node of a restriction so the from / to way loses it | Used to succeed and leave the restriction invalid; now refused naming the way and relation | pass (was FAIL, fixed) `disconnecting_a_restriction_via_node_must_not_silently_break_the_restriction`, `disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed` |
+| G10 | Copy a way that is in restrictions and routes | The copy is in no relation; relations unchanged; Duplicate of a stop node likewise | pass `a_pasted_way_is_not_a_member_of_the_relations_the_original_was_in`, `duplicating_a_stop_node_does_not_copy_its_memberships` |
+| G11 | Copy a relation with only some members | Copied members point at the copies, others at the originals | pass `a_pasted_relation_keeps_pointing_at_originals_that_were_not_copied` |
+| G12 | Paste a relation into another layer | Server ids stay, another layer's unsaved members are dropped | design `pasting_a_relation_into_another_layer_drops_unsaved_members_that_layer_cannot_have` |
+| G13 | Reverse swaps `lanes:forward` / `lanes:backward` (255-char values) | Both keys kept, values exchanged, nothing truncated | pass `reverse_swaps_a_pair_of_opposite_keys_without_losing_either_or_truncating` |
+| G14 | Reverse renames a 255-char key ending `:forward`, or negates a 255-char incline | Used to produce 256 characters; now refused, nothing changed | pass (was FAIL, fixed) `reverse_must_not_grow_a_key_past_255_characters`, `reverse_must_not_grow_a_value_past_255_characters` |
+| G15 | Merge nodes / join ways with equal or different 255-char values for one key | Equal: kept once, untruncated. Different: refused naming the key | pass `merge_nodes_unions_tags_with_255_character_keys_and_values_untouched`, `merge_nodes_with_different_255_character_values_for_one_key_is_refused`, `join_unions_tags_with_255_character_values_untouched`, `join_with_different_255_character_values_for_one_key_is_refused` |
+
+Bugs found in this batch (fixed): G9 and G14.
+
 ## Further situations (batch E)
 
 Multipolygon-aware editing, in `src/edge_case_tests/multipolygon_edits.rs`.
@@ -328,3 +353,7 @@ Ordered by risk of corrupting data on upload.
    `deleting_a_way_deletes_its_untagged_unshared_nodes`.
 7. FIXED (merge is now refused). M6 merging two nodes of a triangle leaves a closed way with two
    distinct nodes. `merge_must_not_leave_a_degenerate_closed_way`.
+8. FIXED. G9 disconnecting a restriction's via node could leave its from or to
+   way off the via node. Separate is now refused in that case.
+9. FIXED. G14 Reverse could push a key or value past 255 characters
+   (`:forward` to `:backward`, a negated incline); it is now refused.

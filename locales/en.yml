@@ -594,6 +594,8 @@ action:
     done:
       one: "Reversed %{count} way"
       other: "Reversed %{count} ways"
+    error:
+      tag_too_long: "Can't reverse: flipping the tags of way %{way} would make a key or value longer than 255 characters"
   join:
     label: "Join Ways"
     hint: "Select two or more ways that connect end to end to join them"
@@ -615,6 +617,8 @@ action:
     done:
       one: "Separated a node into %{count} copy"
       other: "Separated a node into %{count} copies"
+    error:
+      restriction: "Can't separate: way %{way} is part of turn restriction %{relation}, which needs it to stay connected to the via node"
   extend:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
