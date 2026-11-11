@@ -115,9 +115,9 @@ in the bug list at the end.
 | X2 | Way listed twice in a relation | Both memberships go | JOSM #19432 flavour | pass `a_way_listed_twice_in_a_route_loses_both_memberships` |
 | X3 | Last member of a relation | iD and JOSM delete the relation | iD "deletes parent relations that become empty" | design `deleting_the_last_member_of_a_relation_is_refused` |
 | X4 | Tagged or shared nodes of a deleted way | Kept | iD "does not delete member nodes with interesting tags / referenced by another parent" | pass `deleting_a_way_keeps_nodes_that_are_tagged_or_shared` |
-| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | FAIL `deleting_a_way_deletes_its_untagged_unshared_nodes` |
-| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | FAIL `deleting_a_vertex_removes_it_from_its_way` |
-| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | FAIL `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`; current behaviour pinned by `deleting_a_node_used_by_a_way_changes_nothing_today` |
+| X5 | Untagged, unshared nodes of a deleted way | Deleted with it | iD "deletes member nodes not referenced by another parent"; JOSM delete action | pass `deleting_a_way_deletes_its_untagged_unshared_nodes` |
+| X6 | Delete a vertex of a way | Removed from the way | iD `delete_node.js` "removes the node from parent ways"; JOSM `DeleteCommandTest.testDeleteNodesInWay` | pass `deleting_a_vertex_removes_it_from_its_way` |
+| X7 | Vertex delete leaves a way with fewer than two nodes | Way deleted too | iD "deletes parent ways that would otherwise have less than two nodes" | pass `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way` |
 | X8 | Way and its nodes selected together | One step, ways before nodes in the upload | | pass `deleting_a_way_with_its_nodes_in_one_selection_is_one_step` |
 | X9 | Delete a relation | Members stay | iD `delete_relation.js` (iD also deletes untagged member ways; JOSM does not) | pass `deleting_a_relation_keeps_its_members` (JOSM behaviour) |
 | X10 | Delete an inner ring of a multipolygon | Outer stays a member | | pass `deleting_an_inner_ring_leaves_the_outer_member` |
@@ -196,11 +196,10 @@ Ordered by risk of corrupting data on upload.
 4. FIXED (join is now refused). J9 join of two ways that are not adjacent in a shared route drops the
    second membership without asking, which can leave the route disconnected.
    `join_of_ways_that_are_not_adjacent_in_a_route_is_refused`.
-5. MEDIUM. X6/X7 a vertex cannot be deleted (the action refuses any node
-   used by a way), so the user cannot take a node out of a way.
-   `deleting_a_vertex_removes_it_from_its_way`,
+5. FIXED. X6/X7 a vertex can now be deleted: it is removed from its ways, and
+   a way left too short is deleted. `deleting_a_vertex_removes_it_from_its_way`,
    `deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way`.
-6. LOW-MEDIUM. X5 deleting a way leaves its untagged unshared nodes as orphans
-   that stay on the server. `deleting_a_way_deletes_its_untagged_unshared_nodes`.
+6. FIXED. X5 deleting a way now also deletes its untagged unshared nodes.
+   `deleting_a_way_deletes_its_untagged_unshared_nodes`.
 7. FIXED (merge is now refused). M6 merging two nodes of a triangle leaves a closed way with two
    distinct nodes. `merge_must_not_leave_a_degenerate_closed_way`.
