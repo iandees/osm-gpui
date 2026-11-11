@@ -195,7 +195,6 @@ fn deleting_a_way_keeps_nodes_that_are_tagged_or_shared(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-#[ignore = "bug: deleting a way leaves its untagged, unshared nodes behind as orphans (JOSM and iD delete them); see docs/testing/edge-cases-from-josm-and-id.md"]
 fn deleting_a_way_deletes_its_untagged_unshared_nodes(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 3, 4, 5])
@@ -215,7 +214,6 @@ fn deleting_a_way_deletes_its_untagged_unshared_nodes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: a vertex of a way cannot be deleted (delete refuses nodes used by a way); JOSM and iD remove it from the way; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn deleting_a_vertex_removes_it_from_its_way(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 2, 3, 4])
@@ -233,7 +231,6 @@ fn deleting_a_vertex_removes_it_from_its_way(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-#[ignore = "bug: deleting an end vertex of a two-node way is refused instead of deleting the way that would be too short; see docs/testing/edge-cases-from-josm-and-id.md"]
 fn deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way(cx: &mut TestAppContext) {
     let data = Build::new()
         .nodes(&[1, 2, 3])
@@ -249,18 +246,34 @@ fn deleting_a_vertex_that_leaves_a_way_too_short_deletes_that_way(cx: &mut TestA
 }
 
 #[gpui::test]
-fn deleting_a_node_used_by_a_way_changes_nothing_today(cx: &mut TestAppContext) {
-    // What the app does now (see the two ignored tests above for what it
-    // should do): the delete is refused and nothing is recorded.
+fn deleting_the_start_of_a_closed_way_keeps_it_closed(cx: &mut TestAppContext) {
     let data = Build::new()
-        .nodes(&[1, 2, 3])
-        .way(10, &[1, 2, 3], &road())
+        .nodes(&[1, 2, 3, 4])
+        .way(10, &[1, 2, 3, 4, 1], &road())
         .done();
     with_session(cx, data, |s| {
         let before = s.snap();
-        s.select(&[(N, 2)]);
-        assert!(!s.act("delete"));
-        assert_eq!(s.snap(), before);
+        s.select(&[(N, 1)]);
+        assert!(s.act("delete"));
+        assert_eq!(s.way_nodes(10), Some(vec![2, 3, 4, 2]));
+        assert_eq!(s.steps(), 1);
+        undo_redo(s, &before);
+    });
+}
+
+#[gpui::test]
+fn deleting_a_vertex_that_removes_a_short_way_undoes_in_one_step(cx: &mut TestAppContext) {
+    let data = Build::new()
+        .nodes(&[1, 2, 3])
+        .way(10, &[1, 2], &road())
+        .way(11, &[2, 3], &road())
+        .done();
+    with_session(cx, data, |s| {
+        let before = s.snap();
+        s.select(&[(N, 1)]);
+        assert!(s.act("delete"));
+        assert_eq!(s.steps(), 1);
+        undo_redo(s, &before);
     });
 }
 

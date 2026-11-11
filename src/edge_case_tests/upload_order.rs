@@ -89,7 +89,8 @@ fn deletions_go_relations_then_ways_then_nodes_after_all_modifications(cx: &mut 
 #[gpui::test]
 fn moving_a_node_and_deleting_its_way_uploads_both(cx: &mut TestAppContext) {
     let data = Build::new()
-        .nodes(&[1, 2, 3])
+        .nodes(&[1, 3])
+        .node(2, &[("highway", "crossing")])
         .way(10, &[1, 2, 3], &road())
         .done();
     with_session(cx, data, |s| {
