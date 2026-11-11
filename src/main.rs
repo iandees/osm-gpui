@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod autosave_driver;
 mod fields_section;
+mod imagery_offset_ui;
 mod menu;
 mod mode_panel;
 mod script_harness;
@@ -26,12 +28,13 @@ mod selection_actions;
 mod side_panel;
 mod status_bar;
 mod undo;
+mod validation_panel;
 mod welcome;
 
 use crate::menu::{
     add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
     download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, ShowAbout,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
@@ -74,9 +77,11 @@ actions!(
         ApplyNsiPreset,
         ChangeFeatureType,
         UploadToOsm,
+        Validate,
         ExportOsmFile,
         SelectAll,
         DeselectAll,
+        Find,
         DeleteSelection,
         ZoomIn,
         ZoomOut,
@@ -97,6 +102,9 @@ actions!(
 /// input rather than the last map edit. (A binding with no context at all
 /// would outrank the input's own.)
 const MAP_VIEWER_KEY_CONTEXT: &str = "MapViewer";
+
+/// Most selected features whose highlight is drawn each frame.
+const MAX_SELECTION_HIGHLIGHTS: usize = 10_000;
 
 /// Build the live `gpui::KeyBinding` list for the modifier-key actions from
 /// the current effective shortcut settings, plus the fixed macOS-standard
@@ -126,6 +134,7 @@ pub(crate) fn key_bindings_from_settings(
                 SelectAll,
                 Some(MAP_VIEWER_KEY_CONTEXT),
             )),
+            "find" => Some(KeyBinding::new(&spec, Find, Some(MAP_VIEWER_KEY_CONTEXT))),
             // Copy/Paste Tags run the same selection actions as the menus.
             // Scoped to the map like Select All, so they never steal the
             // keys from a focused text input.
@@ -395,6 +404,9 @@ enum LayerRequest {
         min_zoom: Option<u32>,
         max_zoom: Option<u32>,
         attribution: Option<imagery::AttributionInfo>,
+        /// Stable id of the source (the ELI id) that imagery offsets are
+        /// remembered under; `None` for a custom template.
+        imagery_id: Option<String>,
     },
 }
 
@@ -499,6 +511,10 @@ struct CliArgs {
     /// Pause between script ops (`--script-delay-ms N`), so a person can
     /// follow a scripted run on screen.
     script_delay: Option<Duration>,
+    /// Keep autosaves in this directory (`--autosave-dir PATH`) and look for
+    /// a crashed run's autosaves there. The only way to turn autosave on in
+    /// a scripted run, which otherwise never touches any autosave directory.
+    autosave_dir: Option<PathBuf>,
     /// `.osm` files to open as layers at startup (positional arguments).
     files: Vec<PathBuf>,
 }
@@ -534,6 +550,11 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
                     settings_store::parse_api_server_arg(&v)
                         .expect("--api-server needs dev, primary or an http(s) URL"),
                 );
+            }
+            "--autosave-dir" => {
+                out.autosave_dir = Some(PathBuf::from(
+                    args.next().expect("--autosave-dir needs a directory"),
+                ))
             }
             "--script-delay-ms" => {
                 let v = args.next().expect("--script-delay-ms needs a number");
@@ -608,9 +629,23 @@ struct MapViewer {
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
     delete_layer_dialog: Option<gpui::Entity<osm_gpui::ui::delete_layer_dialog::DeleteLayerDialog>>,
+    /// The startup offer to restore autosaved layers, if showing.
+    restore_dialog: Option<gpui::Entity<osm_gpui::ui::restore_dialog::RestoreDialog>>,
+    /// Autosave and crash recovery for this run; `None` when off (see
+    /// `autosave_driver`).
+    autosave: Option<autosave_driver::AutosaveState>,
+    /// Edit > Find, while open.
+    find_dialog: Option<gpui::Entity<osm_gpui::ui::find_dialog::FindDialog>>,
+    /// The last few queries run through Find this session, newest first.
+    find_history: osm_gpui::search::QueryHistory,
+    /// The mode Find was last used in; the dialog opens with it.
+    find_mode: osm_gpui::search::SearchMode,
     about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
     /// Active upload-review dialog, if open.
     upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
+    /// The side panel's Validation section, once Tools > Validate has run
+    /// (see `validation_panel.rs`).
+    validation: Option<validation_panel::ValidationPanel>,
     /// The changeset comment typed in the upload dialog, kept when the dialog
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
@@ -658,9 +693,9 @@ struct MapViewer {
     preset_picker_dialog:
         Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, by the indices `render_side_panel`
-    /// gives them) is expanded.
-    side_panel_open: [bool; 7],
+    /// Tags, History, Relations, Members, Validation, by the indices
+    /// `render_side_panel` gives them) is expanded.
+    side_panel_open: [bool; 8],
     /// Live `InputState` entities for the Fields section's text widgets,
     /// keyed by field id. Rebuilt whenever the selected feature changes so
     /// stale entities from a previous feature never leak into a new one.
@@ -715,6 +750,9 @@ struct MapViewer {
     right_press: Option<gpui::Point<gpui::Pixels>>,
     /// The open right-click context menu, if any.
     context_menu: Option<ContextMenuState>,
+    /// The "Adjust imagery offset" mode, while it is on (see
+    /// `imagery_offset_ui`).
+    offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -868,8 +906,14 @@ impl MapViewer {
             custom_imagery_dialog: None,
             quit_confirm_dialog: None,
             delete_layer_dialog: None,
+            restore_dialog: None,
+            autosave: None,
+            find_dialog: None,
+            find_history: Default::default(),
+            find_mode: Default::default(),
             about_dialog: None,
             upload_dialog: None,
+            validation: None,
             upload_comment_draft: String::new(),
             sign_in_dialog: None,
             notice_dialog: None,
@@ -892,7 +936,7 @@ impl MapViewer {
             member_controls_focus: std::cell::RefCell::new(Vec::new()),
             nsi_dialog: None,
             preset_picker_dialog: None,
-            side_panel_open: [true; 7],
+            side_panel_open: [true; 8],
             fields_text_inputs: std::collections::HashMap::new(),
             fields_text_subscribed: std::collections::HashSet::new(),
             fields_open_combo: None,
@@ -910,6 +954,7 @@ impl MapViewer {
             extrude_drag: None,
             right_press: None,
             context_menu: None,
+            offset_adjust: None,
         }
     }
 
@@ -1095,6 +1140,8 @@ impl MapViewer {
         };
         if let Some(removed) = self.layer_manager.remove_at(index) {
             self.forget_layer(removed.id());
+            // Its autosave goes with it: the layer's edits are discarded.
+            self.autosave_forget_layer(removed.id(), cx);
         }
         self.data_generation += 1;
         cx.notify();
@@ -1251,7 +1298,7 @@ impl MapViewer {
     /// 6-8 populate these fields; they don't exist until then, so this
     /// handler is added here as a no-op placeholder for those clears and
     /// extended in each later task).
-    fn on_set_mode(&mut self, action: &SetMode, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_set_mode(&mut self, action: &SetMode, window: &mut Window, cx: &mut Context<Self>) {
         let mode: EditMode = action.mode.into();
         // The drawing modes need a layer to write into. The toolbar buttons
         // are disabled in that state; this covers the keyboard and menu paths.
@@ -1260,6 +1307,8 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        // Picking a tool ends the imagery offset adjustment, keeping it.
+        self.finish_offset_adjust(true, window, cx);
         // Entering Building mode with one squared way selected borrows its
         // orientation; staying in Building mode keeps the existing one.
         self.building_reference = match mode {
@@ -1338,6 +1387,11 @@ impl MapViewer {
         position: gpui::Point<gpui::Pixels>,
         modifiers: gpui::Modifiers,
     ) {
+        // Adjusting the imagery offset: the press starts moving the imagery.
+        if self.offset_adjust_mouse_down(position) {
+            self.interaction = Interaction::Idle;
+            return;
+        }
         // Oriented Building mode owns the left button entirely (no
         // box-select, and no move-drag of the selected reference way): the
         // press places the first corner, the release decides click vs drag.
@@ -2396,6 +2450,138 @@ impl MapViewer {
         }
     }
 
+    /// Run `query` over the active data layer: every match, in `all_features`
+    /// order. `None` when there is no data layer to search.
+    fn search_active_layer(
+        &self,
+        query: &osm_gpui::search::Query,
+        only_selected: bool,
+    ) -> Option<Vec<osm_gpui::selection::FeatureRef>> {
+        let layer_id = self.active_layer?;
+        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
+        let selected: std::collections::HashSet<_> = self
+            .selected
+            .iter()
+            .filter(|f| f.layer_id == layer_id)
+            .map(|f| (f.kind, f.id))
+            .collect();
+        let view = Some(self.viewport.visible_bounds());
+        Some(editable.search_features(query, &selected, only_selected, view))
+    }
+
+    /// How many features `text` matches in the active layer, as the Find
+    /// dialog's live count (`None` if it does not parse or there is no layer).
+    fn find_match_count(&self, text: &str, mode: osm_gpui::search::SearchMode) -> Option<usize> {
+        let query = osm_gpui::search::parse(text).ok()?;
+        self.search_active_layer(
+            &query,
+            mode == osm_gpui::search::SearchMode::FindInSelection,
+        )
+        .map(|found| found.len())
+    }
+
+    /// Whether any selected feature is (partly) inside the map view.
+    fn selection_in_view(&self) -> bool {
+        let Ok(in_view) = osm_gpui::search::parse("inview") else {
+            return false;
+        };
+        self.search_active_layer(&in_view, true)
+            .is_some_and(|found| !found.is_empty())
+    }
+
+    /// Apply a Find query in `mode`: the selection becomes the result
+    /// combined with the old selection as the mode says, the status bar
+    /// reports it, and the view moves only if nothing selected is in view.
+    /// Returns how many features matched, or why the query did not parse.
+    fn apply_find(
+        &mut self,
+        text: &str,
+        mode: osm_gpui::search::SearchMode,
+    ) -> Result<usize, osm_gpui::search::ParseError> {
+        use osm_gpui::search::SearchMode;
+
+        let query = osm_gpui::search::parse(text)?;
+        let Some(found) = self.search_active_layer(&query, mode == SearchMode::FindInSelection)
+        else {
+            self.set_status(tr!("status.find_no_layer"));
+            return Ok(0);
+        };
+        let next = osm_gpui::search::combine(mode, &self.selected, &found);
+        self.set_selection(next);
+        if found.is_empty() {
+            self.set_status(tr!("status.find_no_matches"));
+        } else {
+            self.set_status(tr_count!("status.find_selected", self.selected.len()));
+            if !self.selected.is_empty() && !self.selection_in_view() {
+                let selected = self.selected.clone();
+                self.fit_to_features(&selected);
+            }
+        }
+        Ok(found.len())
+    }
+
+    /// Edit > Find: open the query dialog on the active data layer.
+    fn on_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find_dialog.is_some() {
+            return;
+        }
+        let other_dialog_open = self.quit_confirm_dialog.is_some()
+            || self.delete_layer_dialog.is_some()
+            || self.upload_dialog.is_some()
+            || self.sign_in_dialog.is_some()
+            || self.notice_dialog.is_some()
+            || self.preset_picker_dialog.is_some()
+            || self.nsi_dialog.is_some()
+            || self.relation_picker_dialog.is_some()
+            || self.about_dialog.is_some()
+            || self.custom_imagery_dialog.is_some();
+        if other_dialog_open {
+            return;
+        }
+        let has_data_layer = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .is_some_and(|layer| layer.as_editable().is_some());
+        if !has_data_layer {
+            self.set_status(tr!("status.find_no_layer"));
+            cx.notify();
+            return;
+        }
+
+        let history = self.find_history.entries().to_vec();
+        let mode = self.find_mode;
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::find_dialog::FindDialog::new(mode, history, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, entity, event: &osm_gpui::ui::find_dialog::DialogEvent, cx| {
+                use osm_gpui::ui::find_dialog::DialogEvent;
+                match event {
+                    DialogEvent::Cancelled => {
+                        this.find_dialog = None;
+                        cx.notify();
+                    }
+                    DialogEvent::Preview { query, mode } => {
+                        if let Some(count) = this.find_match_count(query, *mode) {
+                            entity.update(cx, |dialog, cx| dialog.set_count(query, count, cx));
+                        }
+                    }
+                    DialogEvent::Submitted { query, mode } => {
+                        this.find_dialog = None;
+                        this.find_mode = *mode;
+                        this.find_history.push(query);
+                        // The dialog parsed it already; an error cannot happen.
+                        let _ = this.apply_find(query, *mode);
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+        self.find_dialog = Some(dialog);
+        cx.notify();
+    }
+
     fn on_delete_selection(&mut self, _: &DeleteSelection, _: &mut Window, cx: &mut Context<Self>) {
         if self.edits_blocked(cx) {
             return;
@@ -2893,6 +3079,7 @@ impl MapViewer {
         self.hovered = if self.mode == EditMode::Select
             && event.pressed_button.is_none()
             && !self.space_held
+            && self.offset_adjust.is_none()
         {
             osm_gpui::selection::resolve_hits(
                 self.layer_manager
@@ -2904,6 +3091,11 @@ impl MapViewer {
         // Repaint on every move: the status bar shows the cursor's
         // coordinates, and Add/Building/Extrude draw a live preview to it.
         cx.notify();
+
+        // Adjusting the imagery offset: a left-drag moves the imagery.
+        if self.offset_adjust_mouse_move(adjusted_position, left_pressed, cx) {
+            return;
+        }
 
         if let Interaction::MoveDrag { down, targets } = &self.interaction {
             if let Some(delta_pt) =
@@ -2946,6 +3138,11 @@ impl MapViewer {
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = self.window_to_map(event.position);
         self.viewport.handle_mouse_up();
+
+        if self.offset_adjust_mouse_up() {
+            cx.notify();
+            return;
+        }
 
         if let Some(press) = self.building_press.take() {
             self.finish_oriented_building_press(press, up_pos);
@@ -3811,10 +4008,16 @@ impl MapViewer {
     fn handle_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let position = self.window_to_map(event.position);
         let zoom_modifier = event.modifiers.platform || event.modifiers.control;
+        // Read live so the Settings switch applies at once, without a restart.
+        // Only the zoom paths are inverted; panning and pinch are not.
+        let invert = osm_gpui::settings_store::snapshot().invert_scroll_zoom;
         let changed = match event.delta {
-            gpui::ScrollDelta::Lines(delta) => self.viewport.zoom_by_wheel(position, delta.y),
+            gpui::ScrollDelta::Lines(delta) => self
+                .viewport
+                .zoom_by_wheel(position, Viewport::scroll_zoom_step(delta.y, invert)),
             gpui::ScrollDelta::Pixels(delta) if zoom_modifier => {
-                self.viewport.zoom_by_scroll_pixels(position, delta.y)
+                let step = Viewport::scroll_zoom_step(delta.y.to_f64() as f32, invert);
+                self.viewport.zoom_by_scroll_pixels(position, px(step))
             }
             gpui::ScrollDelta::Pixels(delta) => self.viewport.pan_by_scroll(delta),
         };
@@ -4128,7 +4331,11 @@ impl MapViewer {
                     .is_none()
                 {
                     let layer_id = self.layer_manager.alloc_id();
-                    let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone());
+                    let tile_layer = TileLayer::new(layer_id, self.tile_cache.clone()).with_offset(
+                        self.saved_imagery_offset(
+                            osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID,
+                        ),
+                    );
                     self.layer_manager.add_layer(Box::new(tile_layer));
                 }
             }
@@ -4145,9 +4352,12 @@ impl MapViewer {
                 min_zoom,
                 max_zoom,
                 attribution,
+                imagery_id,
             } => {
                 let candidate = self.layer_manager.unique_name(&name);
                 let layer_id = self.layer_manager.alloc_id();
+                let imagery_id = imagery_id.unwrap_or_else(|| format!("custom:{url_template}"));
+                let offset = self.saved_imagery_offset(&imagery_id);
                 let layer = TileLayer::new_with_template(
                     layer_id,
                     candidate,
@@ -4156,7 +4366,9 @@ impl MapViewer {
                 )
                 .with_min_zoom(min_zoom)
                 .with_max_zoom(max_zoom)
-                .with_attribution(attribution);
+                .with_attribution(attribution)
+                .with_imagery_id(imagery_id)
+                .with_offset(offset);
                 self.layer_manager.add_layer(Box::new(layer));
             }
         }
@@ -4321,6 +4533,7 @@ impl MapViewer {
                                 min_zoom: Some(entry.min_zoom),
                                 max_zoom: Some(entry.max_zoom),
                                 attribution: None,
+                                imagery_id: None,
                             },
                             cx,
                         );
@@ -4445,6 +4658,42 @@ impl MapViewer {
         self.open_upload_dialog(window, cx);
     }
 
+    /// Run the validator on the pending changes of every modified layer.
+    /// Only created and modified objects (and what they affect) are checked.
+    pub(crate) fn validation_report(&self) -> osm_gpui::validator::Report {
+        let mut report = osm_gpui::validator::Report::default();
+        for layer in self.layer_manager.layers() {
+            if !layer.is_modified() {
+                continue;
+            }
+            let Some(data) = layer
+                .as_any()
+                .downcast_ref::<OsmLayer>()
+                .and_then(|l| l.get_osm_data())
+            else {
+                continue;
+            };
+            report.add_layer(layer.id(), &data, &layer.diff_for_upload());
+        }
+        report
+    }
+
+    /// Window-scoped handler for Tools > Validate.
+    fn on_validate(&mut self, _: &Validate, _window: &mut Window, cx: &mut Context<Self>) {
+        self.show_validation(cx);
+    }
+
+    /// Select `features` and zoom to them (a click on a validator finding).
+    fn show_features(
+        &mut self,
+        features: &[osm_gpui::selection::FeatureRef],
+        cx: &mut Context<Self>,
+    ) {
+        self.set_selection(features.to_vec());
+        self.fit_to_features(features);
+        cx.notify();
+    }
+
     /// `open_upload_dialog` with the signed-in account passed in (so tests
     /// don't depend on the on-disk token store). Always gives visible
     /// feedback: see `upload_dialog::plan_upload`.
@@ -4532,6 +4781,9 @@ impl MapViewer {
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
+        // Validated once, before the first changeset is opened.
+        let report = self.validation_report();
+        dialog.update(cx, |dialog, cx| dialog.set_validation(report, cx));
         if !self.upload_comment_draft.is_empty() {
             let draft = self.upload_comment_draft.clone();
             dialog.update(cx, |dialog, cx| dialog.set_draft_comment(draft, window, cx));
@@ -4549,6 +4801,10 @@ impl MapViewer {
                         // The dialog stays open to show the upload's stage;
                         // `start_upload` closes it on success.
                         this.start_upload(comment.clone(), cx);
+                    }
+                    DialogEvent::ShowInSidePanel => {
+                        this.close_upload_dialog_keeping_draft(cx);
+                        this.show_validation(cx);
                     }
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
@@ -4780,6 +5036,10 @@ impl MapViewer {
                                 }
                             }
                             this.data_generation += 1;
+                            // The autosave must reflect the chunk just
+                            // applied, now: a crash from here on must not
+                            // offer the accepted objects for upload again.
+                            this.autosave_now(cx);
                             cx.notify();
                         });
                         if applied.is_err() {
@@ -5353,6 +5613,7 @@ impl MapViewer {
                 let layer_id = self.layer_manager.alloc_id();
                 let layer = OsmLayer::new_with_data(layer_id, name, Arc::new(data));
                 self.layer_manager.add_layer(Box::new(layer));
+                self.note_download_origin(layer_id);
                 self.active_layer = Some(layer_id);
                 self.status_message = None;
             }
@@ -5382,7 +5643,11 @@ impl Render for MapViewer {
         self.check_for_pending_tag_edit(window, cx);
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
+        self.check_for_pending_restore(window, cx);
         self.maybe_rebuild_imagery_menu(cx);
+        // Re-run the validator (debounced) if the edits changed since the
+        // Validation section was last filled.
+        self.watch_validation(cx);
 
         // Now it's safe to signal: the effects of this frame's commands
         // and pushes are visible.
@@ -5403,6 +5668,7 @@ impl Render for MapViewer {
         self.viewport.update_size(map_size);
 
         self.expire_status();
+        self.drop_stale_offset_adjust();
 
         // Keyboard shortcuts scoped to this view only match while focus is
         // somewhere inside it. With nothing focused at all — at launch, or
@@ -5435,12 +5701,22 @@ impl Render for MapViewer {
                     .flex_1()
                     .relative()
                     .track_focus(&self.focus_handle)
-                    .cursor(map_cursor(
-                        self.mode,
-                        self.viewport.is_dragging,
-                        self.space_held,
-                        self.hovered.is_some(),
-                    ))
+                    .cursor(match &self.offset_adjust {
+                        // Imagery is dragged with the left button: a hand.
+                        Some(adjust) if !self.viewport.is_dragging && !self.space_held => {
+                            if adjust.dragging() {
+                                gpui::CursorStyle::ClosedHand
+                            } else {
+                                gpui::CursorStyle::OpenHand
+                            }
+                        }
+                        _ => map_cursor(
+                            self.mode,
+                            self.viewport.is_dragging,
+                            self.space_held,
+                            self.hovered.is_some(),
+                        ),
+                    })
                     // When the pointer leaves the map, drop everything that
                     // tracks it: the hover highlight, the status bar's cursor
                     // coordinates, and the drawing modes' rubber bands.
@@ -5523,7 +5799,9 @@ impl Render for MapViewer {
                     }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                         let modifiers = ev.keystroke.modifiers;
-                        if modifiers.platform || modifiers.control || modifiers.alt {
+                        if this.offset_field_focused(window, cx) {
+                            // Typing in the imagery offset panel's fields.
+                        } else if modifiers.platform || modifiers.control || modifiers.alt {
                             // Modifier chords belong to the keymap (menu
                             // shortcuts), never to the bare-key handling below.
                         } else if ev.keystroke.key == "space" {
@@ -5532,6 +5810,14 @@ impl Render for MapViewer {
                                 this.space_held = true;
                                 cx.notify();
                             }
+                        } else if this.offset_adjust_key(
+                            &ev.keystroke.key,
+                            modifiers.shift,
+                            window,
+                            cx,
+                        ) {
+                            // Adjusting imagery offset: arrows nudge the
+                            // imagery, Escape cancels, Enter keeps.
                         } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
                             // Arrow keys pan; +/- zoom.
                         } else if ev.keystroke.key == "escape" {
@@ -5698,7 +5984,11 @@ impl Render for MapViewer {
                                                 window,
                                             );
                                         }
-                                        for sel in &selected {
+                                        // A selection of tens of thousands (Edit >
+                                        // Find) highlights only its first
+                                        // `MAX_SELECTION_HIGHLIGHTS`; features off
+                                        // screen cost almost nothing.
+                                        for sel in selected.iter().take(MAX_SELECTION_HIGHLIGHTS) {
                                             this.layer_manager.render_highlight(
                                                 sel,
                                                 HighlightKind::Selected,
@@ -6035,6 +6325,7 @@ impl Render for MapViewer {
                         }
                     })
                     .children(self.render_welcome(cx))
+                    .children(self.render_imagery_offset_panel(window, cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -6139,6 +6430,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_export_osm_file))
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_deselect_all))
+            .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_delete_selection))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
@@ -6151,6 +6443,11 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
+            .on_action(cx.listener(Self::on_adjust_imagery_offset))
+            .on_action(cx.listener(Self::on_adjust_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_reset_imagery_offset))
+            .on_action(cx.listener(Self::on_reset_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_set_imagery_offset))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_run_selection_action))
             .on_action(cx.listener(Self::on_undo))
@@ -6159,11 +6456,14 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_change_feature_type))
             .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_upload_to_osm))
+            .on_action(cx.listener(Self::on_validate))
             .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.custom_imagery_dialog.clone())
             .children(self.quit_confirm_dialog.clone())
             .children(self.delete_layer_dialog.clone())
+            .children(self.restore_dialog.clone())
+            .children(self.find_dialog.clone())
             .children(self.about_dialog.clone())
             .children(self.nsi_dialog.clone())
             .children(self.preset_picker_dialog.clone())
@@ -6182,6 +6482,13 @@ fn main() {
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
     let cli_theme = args.theme;
+    // Where autosaves go (and are looked for): the app-data directory, except
+    // in a scripted run, which has none unless `--autosave-dir` names one.
+    let autosave_root = osm_gpui::autosave::resolve_root(
+        args.script.is_some(),
+        args.autosave_dir.clone(),
+        osm_gpui::autosave::default_root(),
+    );
     // `--api-server` applies to this run only: it lives outside the settings
     // store, so nothing here is ever saved to settings.json.
     settings_store::set_run_override(args.api_server.clone());
@@ -6246,6 +6553,9 @@ fn main() {
                 Ok(()) => {
                     SCRIPT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
                     if !keep_open {
+                        // A script that ends normally is a clean exit (one
+                        // that ends with `crash` never gets here).
+                        autosave_driver::finish_clean();
                         std::process::exit(0);
                     }
                 }
@@ -6299,17 +6609,34 @@ fn main() {
         cx.on_action(open_custom_imagery_dialog);
         cx.on_action(open_settings);
         cx.on_action(upload_to_osm);
+        cx.on_action(validate);
         cx.on_action(quit);
         menu::register_app_actions(cx);
+        // Any normal quit (the user confirmed discarding unsaved edits, or
+        // there were none) removes this run's autosaves. A crash, a force
+        // quit or a power cut never gets here, which is what leaves them for
+        // the next start.
+        cx.on_app_quit(|_| async {
+            autosave_driver::finish_clean();
+        })
+        .detach();
 
         // Load persisted custom imagery entries.
         let loaded = custom_imagery_store::load();
         custom_imagery_store::init_store(loaded);
+        // Remembered imagery offsets. Scripted runs neither read nor write the
+        // user's file: their offsets live for the run only.
+        osm_gpui::imagery_offset::init_store(!script_harness::script_mode());
 
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value
         // before the cache does any work.
-        let app_settings = settings_store::load();
+        let mut app_settings = settings_store::load();
+        // Script runs always start with the welcome card showing, whatever
+        // the user saved, so captures are deterministic. (In memory only.)
+        if script_harness::script_mode() {
+            app_settings.welcome_dismissed = false;
+        }
         osm_gpui::tile_cache::set_budget_mb(app_settings.cache_budget_mb);
         // Pick the UI language before any menu or window text is built.
         // `--language` overrides the saved setting for this run only.
@@ -6418,6 +6745,7 @@ fn main() {
                         let mut viewer = MapViewer::new(window, cx);
                         // Start on the standard map, not a blank canvas.
                         viewer.add_default_layers();
+                        viewer.init_autosave(autosave_root.clone(), cx);
                         viewer
                     });
                     #[cfg(debug_assertions)]
@@ -7039,6 +7367,190 @@ mod tests {
                 // Nothing left to undo: a further undo is a quiet no-op.
                 view.on_undo(&Undo, window, cx);
                 assert_eq!(view.undo_stack.cursor, 0);
+            })
+            .unwrap();
+    }
+
+    fn selected_kind_ids(view: &MapViewer) -> Vec<(osm_gpui::selection::FeatureKind, i64)> {
+        view.selected.iter().map(|f| (f.kind, f.id)).collect()
+    }
+
+    #[gpui::test]
+    fn find_applies_each_mode_to_the_selection(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert_eq!(view.apply_find("type:node", SearchMode::Replace), Ok(2));
+                assert_eq!(selected_kind_ids(view), vec![(Node, 1), (Node, 2)]);
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("2 features selected")
+                );
+
+                assert_eq!(view.apply_find("type:way", SearchMode::Add), Ok(1));
+                assert_eq!(
+                    selected_kind_ids(view),
+                    vec![(Node, 1), (Node, 2), (Way, 10)]
+                );
+
+                assert_eq!(view.apply_find("id:1", SearchMode::Remove), Ok(1));
+                assert_eq!(selected_kind_ids(view), vec![(Node, 2), (Way, 10)]);
+
+                // Only what is selected is searched.
+                assert_eq!(
+                    view.apply_find("type:way", SearchMode::FindInSelection),
+                    Ok(1)
+                );
+                assert_eq!(selected_kind_ids(view), vec![(Way, 10)]);
+
+                assert_eq!(view.apply_find("type:node", SearchMode::Replace), Ok(2));
+                assert_eq!(
+                    view.apply_find("selected", SearchMode::FindInSelection),
+                    Ok(2)
+                );
+                assert_eq!(view.selected.len(), 2);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_with_no_match_says_so_and_a_bad_query_changes_nothing(cx: &mut TestAppContext) {
+        use osm_gpui::search::{ParseErrorKind, SearchMode};
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_eq!(view.apply_find("nothing=here", SearchMode::Replace), Ok(0));
+                assert!(view.selected.is_empty());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("No matches")
+                );
+
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                let err = view
+                    .apply_find("(type:node", SearchMode::Replace)
+                    .unwrap_err();
+                assert_eq!(err.kind, ParseErrorKind::UnclosedParen);
+                assert_eq!(view.selected.len(), 2, "a bad query leaves the selection");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_moves_the_view_only_when_nothing_selected_is_in_view(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        let window = setup(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let before = view.viewport.center();
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_eq!(view.viewport.center(), before, "already in view");
+
+                view.viewport.pan_to(CENTER_LAT + 5.0, CENTER_LON + 5.0);
+                let far = view.viewport.center();
+                view.apply_find("type:node", SearchMode::Replace).unwrap();
+                assert_ne!(view.viewport.center(), far);
+                let (lat, lon) = view.viewport.center();
+                assert!((lat - CENTER_LAT).abs() < 0.01 && (lon - CENTER_LON).abs() < 0.01);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_without_a_data_layer_explains_in_the_status_bar(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, window, cx| {
+                view.on_find(&Find, window, cx);
+                assert!(view.find_dialog.is_none());
+                assert_eq!(
+                    view.status_message.as_ref().map(|(m, _)| m.as_str()),
+                    Some("There is no data layer to search")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_dialog_applies_on_submit_and_leaves_the_selection_on_cancel(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        let window = setup(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.apply_find("type:way", SearchMode::Replace).unwrap();
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+                dialog.update(cx, |d, cx| d.set_query("type:node", window, cx));
+                dialog.update(cx, |d, cx| d.press_cancel(cx));
+            })
+            .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.find_dialog.is_none());
+                assert_eq!(view.selected.len(), 1, "cancel leaves the selection alone");
+                assert!(view.find_history.is_empty());
+
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().unwrap();
+                dialog.update(cx, |d, cx| {
+                    d.set_mode(SearchMode::Add, cx);
+                    d.set_query("type:node", window, cx);
+                    d.press_apply(cx);
+                });
+            })
+            .unwrap();
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.find_dialog.is_none());
+                assert_eq!(view.selected.len(), 3, "added to the way");
+                assert_eq!(view.find_history.entries(), ["type:node"]);
+                assert_eq!(view.find_mode, SearchMode::Add);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn find_dialog_stays_open_on_a_bad_query_and_counts_matches(cx: &mut TestAppContext) {
+        use osm_gpui::search::SearchMode;
+        use osm_gpui::ui::find_dialog::Preview;
+        let window = setup(cx);
+        // One update: a window with the dialog open can't be drawn in a
+        // test (its input needs the app's root view).
+        window
+            .update(cx, |view, window, cx| {
+                assert_eq!(
+                    view.find_match_count("type:node", SearchMode::Replace),
+                    Some(2)
+                );
+                assert_eq!(
+                    view.find_match_count("(type:node", SearchMode::Replace),
+                    None
+                );
+                assert_eq!(
+                    view.find_match_count("type:node", SearchMode::FindInSelection),
+                    Some(0),
+                    "nothing is selected to search in"
+                );
+
+                view.on_find(&Find, window, cx);
+                let dialog = view.find_dialog.clone().unwrap();
+                dialog.update(cx, |d, cx| {
+                    d.set_query("(type:node", window, cx);
+                    d.press_apply(cx);
+                    assert!(matches!(d.preview(), Preview::Error(_)));
+                    assert!(d.preview_text().starts_with("Position 1:"));
+                    d.set_query("type:node", window, cx);
+                    d.set_count("type:node", 2, cx);
+                    assert_eq!(d.preview_text().as_str(), "2 matches");
+                    // A stale answer is ignored.
+                    d.set_count("other", 9, cx);
+                    assert_eq!(d.preview_text().as_str(), "2 matches");
+                    d.press_cancel(cx);
+                });
             })
             .unwrap();
     }
@@ -9864,6 +10376,325 @@ mod tests {
         });
     }
 
+    /// A signed-in view with the one-way fixture (way 10 untagged, an old
+    /// problem nobody touched) in a headless window.
+    fn validation_view(
+        cx: &mut TestAppContext,
+    ) -> (gpui::Entity<MapViewer>, &mut gpui::VisualTestContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| MapViewer::new(window, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        let vcx = gpui::VisualTestContext::from_window(window.into(), cx).into_mut();
+        let root = window.root(vcx).unwrap();
+        let view: gpui::Entity<MapViewer> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<MapViewer>()
+            .unwrap();
+        view.update_in(vcx, |view, _window, _cx| {
+            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+            let layer_id = view.layer_manager.alloc_id();
+            let layer = OsmLayer::new_with_data(
+                layer_id,
+                "L".to_string(),
+                Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
+            );
+            view.layer_manager.add_layer(Box::new(layer));
+            view.active_layer = Some(layer_id);
+        });
+        (view, vcx)
+    }
+
+    #[gpui::test]
+    fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContext) {
+        use osm_gpui::validator::Check;
+        let (view, vcx) = validation_view(cx);
+        // A new, untagged, unconnected node: a warning. The fixture's own
+        // untagged way 10 is an old problem and is not reported.
+        view.update_in(vcx, |view, window, cx| {
+            make_pending_change(view);
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            dialog.update(cx, |d, cx| {
+                d.set_draft_comment("Add a node".into(), window, cx)
+            });
+            let d = dialog.read(cx);
+            assert_eq!((d.validation().errors(), d.validation().warnings()), (0, 1));
+            assert_eq!(d.validation().count_of(Check::UntaggedNode), 1);
+            assert_eq!(d.validation().count_of(Check::UntaggedWay), 0);
+            assert_eq!(d.confirm_blocker(cx), None, "warnings do not block");
+            view.close_upload_dialog_keeping_draft(cx);
+        });
+        // Touch a node of way 10 so that it gets an empty tag value: an error.
+        view.update_in(vcx, |view, window, cx| {
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "");
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog reopens");
+            let d = dialog.read(cx);
+            assert_eq!(d.validation().errors(), 1);
+            assert_eq!(d.validation().count_of(Check::TagEmptyValue), 1);
+            assert!(
+                d.confirm_blocker(cx)
+                    .is_some_and(|why| why.contains("validator")),
+                "an error blocks Upload"
+            );
+            // The dialog shows a one-line summary, not the list; its button
+            // hands the list to the side panel.
+            assert!(!view.validation_shown());
+            dialog.update(cx, |d, cx| assert!(d.press_show_in_panel(cx)));
+        });
+        // "Show in side panel" closes the dialog (keeping the comment) and
+        // opens the Validation section with the same findings.
+        view.update_in(vcx, |view, _window, _cx| {
+            assert!(view.upload_dialog.is_none());
+            assert_eq!(view.upload_comment_draft, "Add a node");
+            let report = view.shown_validation().expect("the section opens");
+            assert_eq!((report.errors(), report.warnings()), (1, 1));
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+        });
+    }
+
+    #[gpui::test]
+    fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, window, cx| {
+            // An old, untouched untagged way is not reported; a tagged new
+            // node is clean.
+            let id = view.active_layer.unwrap();
+            let layer = view
+                .layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap();
+            let node = layer.create_node(CENTER_LAT, CENTER_LON, None).unwrap();
+            layer.set_tag(
+                osm_gpui::selection::FeatureKind::Node,
+                node,
+                "amenity",
+                "cafe",
+            );
+            view.open_upload_dialog_as(Some("me"), window, cx);
+            let dialog = view.upload_dialog.clone().expect("dialog opens");
+            assert!(dialog.read(cx).validation().is_empty());
+            dialog.update(cx, |d, cx| assert!(!d.press_show_in_panel(cx)));
+            assert!(view.upload_dialog.is_some());
+            assert!(!view.validation_shown());
+        });
+    }
+
+    #[gpui::test]
+    fn tools_validate_shows_the_side_panel_section(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        // Never validated: no section, the panel is as before.
+        view.update_in(vcx, |view, _window, _cx| {
+            assert!(!view.validation_shown());
+        });
+        // Nothing pending: the section opens and says so (collapsed sections
+        // are expanded).
+        view.update_in(vcx, |view, _window, cx| {
+            view.side_panel_open[validation_panel::SECTION] = false;
+            view.show_validation(cx);
+            assert!(view.side_panel_open[validation_panel::SECTION]);
+            let report = view.shown_validation().expect("shown");
+            assert!(!report.checked_changes);
+            assert_eq!(
+                status_text(view),
+                Some("There are no pending changes to check.")
+            );
+            assert!(!view.select_finding(0, cx), "no such row");
+        });
+        // A pending change with a problem: counts, status, and a click on the
+        // row selects the node while the section stays.
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            assert_eq!(status_text(view), Some("1 warning"));
+            assert!(view.highlighted_finding().is_none());
+            assert!(view.select_finding(0, cx));
+            assert!(view.validation_shown());
+            assert_eq!(view.selected.len(), 1);
+            assert_eq!(view.selected[0].kind, FeatureKind::Node);
+            assert!(view.selected[0].id < 0, "the new node");
+            assert_eq!(view.highlighted_finding(), Some(0));
+            // Selecting something else drops the highlight.
+            view.set_selection(vec![]);
+            assert_eq!(view.highlighted_finding(), None);
+        });
+        // The close button removes it.
+        view.update_in(vcx, |view, _window, cx| {
+            view.close_validation(cx);
+            assert!(!view.validation_shown());
+        });
+    }
+
+    /// Stand-in for the bookkeeping every real edit does: the history step
+    /// bumps `undo_stack.revision`, which is what the watcher looks at.
+    fn record_edit(view: &mut MapViewer) {
+        view.undo_stack
+            .push(UndoableAction::SetTags { entries: vec![] });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_refreshes_itself_after_edits(cx: &mut TestAppContext) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            make_pending_change(view);
+            record_edit(view);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            assert!(view.select_finding(0, cx));
+            assert_eq!(view.highlighted_finding(), Some(0));
+        });
+        vcx.run_until_parked();
+
+        // Fix the problem (tag the new node). Nothing happens at once: the
+        // refresh waits for the debounce.
+        let node = view.update_in(vcx, |view, _window, cx| {
+            let node = view.selected[0].id;
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            record_edit(view);
+            cx.notify();
+            node
+        });
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1, "not yet");
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY / 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(
+                view.shown_validation().unwrap().warnings(),
+                1,
+                "still waiting"
+            );
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            let report = view.shown_validation().unwrap();
+            assert_eq!(report.warnings(), 0, "the fixed problem is gone");
+            assert!(report.checked_changes);
+            assert_eq!(view.highlighted_finding(), None);
+        });
+
+        // A new problem appears by itself; a burst of edits is one refresh.
+        view.update_in(vcx, |view, _w, cx| {
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .set_tag(FeatureKind::Node, node, "note", "");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        for _ in 0..3 {
+            vcx.executor()
+                .advance_clock(validation_panel::REFRESH_DELAY / 2);
+            vcx.run_until_parked();
+            view.update_in(vcx, |view, _w, cx| {
+                record_edit(view);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+        }
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(
+                view.shown_validation().unwrap().errors(),
+                0,
+                "edits keep pushing the refresh back"
+            );
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().errors(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn the_validation_section_ignores_changes_while_hidden_and_keeps_the_highlight(
+        cx: &mut TestAppContext,
+    ) {
+        use osm_gpui::selection::FeatureKind;
+        let (view, vcx) = validation_view(cx);
+        view.update_in(vcx, |view, _window, cx| {
+            // Two warnings: a stray node and another.
+            make_pending_change(view);
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .create_node(CENTER_LAT + 0.0005, CENTER_LON, None)
+                .unwrap();
+            record_edit(view);
+            view.show_validation(cx);
+            assert_eq!(view.shown_validation().unwrap().warnings(), 2);
+            // Click the second row; the first is then fixed (deleted).
+            assert!(view.select_finding(1, cx));
+            assert_eq!(view.highlighted_finding(), Some(1));
+        });
+        view.update_in(vcx, |view, _w, cx| {
+            let first = view.shown_validation().unwrap().entries[0].finding.features[0];
+            let id = view.active_layer.unwrap();
+            view.layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_editable_mut())
+                .unwrap()
+                .delete_feature(FeatureKind::Node, first.1)
+                .expect("deleted");
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.executor()
+            .advance_clock(validation_panel::REFRESH_DELAY * 2);
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| {
+            assert_eq!(view.shown_validation().unwrap().warnings(), 1);
+            // The clicked finding moved up to row 0 and is still the
+            // highlighted one: findings are matched by check and objects.
+            assert_eq!(view.highlighted_finding(), Some(0));
+        });
+        // Closed: edits do not schedule anything.
+        view.update_in(vcx, |view, _w, cx| {
+            view.close_validation(cx);
+            record_edit(view);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        view.update_in(vcx, |view, _w, _cx| assert!(!view.validation_shown()));
+    }
+
+    #[test]
+    fn the_findings_list_gets_a_bounded_share_of_the_window() {
+        use validation_panel::list_max_height;
+        assert_eq!(list_max_height(800.0), 224.0);
+        assert_eq!(list_max_height(300.0), 84.0);
+        assert_eq!(list_max_height(2000.0), 260.0);
+    }
+
     #[gpui::test]
     fn edits_and_undo_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
         let window = setup(cx);
@@ -10547,6 +11378,399 @@ mod tests {
         assert!(!script_harness::script_mode());
         assert_eq!(
             script_harness::scripted_upload_refusal("https://api.openstreetmap.org"),
+            None
+        );
+    }
+}
+
+/// Autosave and crash recovery as the running app drives them: the layers it
+/// writes, the offer it makes after a crash, and what Restore, Discard and
+/// Escape each leave on disk. (The store itself is tested in
+/// `osm_gpui::autosave`.) Every test keeps its autosaves in a temporary
+/// directory of its own; none touches the real app-data directory.
+#[cfg(test)]
+mod autosave_tests {
+    use super::*;
+    use gpui::{size, TestAppContext};
+    use osm_gpui::autosave::{self, Session, Snapshot};
+    use osm_gpui::layers::MapLayer;
+    use osm_gpui::osm::{OsmNode, OsmWay};
+    use osm_gpui::selection::FeatureKind;
+    use std::collections::HashMap;
+
+    fn tmp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-driver-{tag}-{}-{:08x}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fixture() -> OsmData {
+        let node = |id: i64, lon: f64| OsmNode {
+            id,
+            lat: 40.0,
+            lon,
+            version: 2,
+            tags: HashMap::new(),
+        };
+        OsmData {
+            nodes: HashMap::from([(1, node(1, -74.001)), (2, node(2, -73.999))]),
+            ways: HashMap::from([(
+                10,
+                OsmWay {
+                    id: 10,
+                    nodes: vec![1, 2],
+                    version: 3,
+                    tags: HashMap::new(),
+                },
+            )]),
+            relations: Vec::new(),
+            bounds: Vec::new(),
+        }
+    }
+
+    fn edited_layer(id: u64, name: &str, key: &str) -> OsmLayer {
+        let mut layer = OsmLayer::new_with_data(LayerId(id), name, Arc::new(fixture()));
+        layer
+            .as_editable_mut()
+            .unwrap()
+            .set_tag(FeatureKind::Way, 10, key, "yes");
+        layer
+    }
+
+    fn window(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _window, _cx| {
+                view.viewport = Viewport::new(40.0, -74.0, 18.0, size(px(800.0), px(600.0)));
+            })
+            .unwrap();
+        window
+    }
+
+    /// A session that crashed: it wrote `layer` and then its lock went away.
+    fn crashed_session(root: &std::path::Path, layer: &OsmLayer, api: Option<&str>) -> PathBuf {
+        let session = Session::start(root).unwrap();
+        let (current, original) = layer.autosave_snapshot().unwrap();
+        session
+            .write(&Snapshot {
+                layer_id: layer.id().0,
+                layer_name: layer.name().to_string(),
+                source_path: None,
+                api_server: api.map(str::to_string),
+                current,
+                original,
+            })
+            .unwrap();
+        let dir = session.dir().to_path_buf();
+        drop(session);
+        dir
+    }
+
+    fn session_dirs(root: &std::path::Path) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        dirs
+    }
+
+    fn layer_files(root: &std::path::Path) -> usize {
+        session_dirs(root)
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap())
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "osm"))
+            .count()
+    }
+
+    fn pending(view: &MapViewer, id: LayerId) -> usize {
+        MapViewer::unsaved_edit_count(view.layer_manager.find_layer(id).unwrap())
+    }
+
+    #[gpui::test]
+    fn an_edited_layer_is_written_and_its_file_goes_with_the_layer(cx: &mut TestAppContext) {
+        let root = tmp_root("write");
+        let window = window(cx);
+        let id = window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx);
+                let id = view.layer_manager.alloc_id();
+                view.layer_manager
+                    .add_layer(Box::new(edited_layer(id.0, "Mine", "building")));
+                // A layer with nothing pending is never written.
+                let clean = view.layer_manager.alloc_id();
+                view.layer_manager
+                    .add_layer(Box::new(OsmLayer::new_with_data(
+                        clean,
+                        "Clean",
+                        Arc::new(fixture()),
+                    )));
+                view.autosave_now(cx);
+                id
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(layer_files(&root), 1);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.script_autosave_idle().is_ok());
+                assert!(view.script_autosave_files(Some(1)).is_ok());
+                assert!(view.script_autosave_files(Some(2)).is_err());
+            })
+            .unwrap();
+
+        // Deleting the layer removes its autosave.
+        window
+            .update(cx, |view, _window, cx| view.delete_layer_now(id, cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(layer_files(&root), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn an_upload_that_leaves_nothing_pending_removes_the_autosave(cx: &mut TestAppContext) {
+        let root = tmp_root("uploaded");
+        let window = window(cx);
+        let id = window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx);
+                let id = view.layer_manager.alloc_id();
+                view.layer_manager
+                    .add_layer(Box::new(edited_layer(id.0, "Mine", "building")));
+                view.autosave_now(cx);
+                id
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(layer_files(&root), 1);
+
+        // The server accepts everything: the layer's data becomes the new
+        // baseline (what `apply_upload_result` does), and the app asks for
+        // an immediate write, as it does after each applied changeset.
+        window
+            .update(cx, |view, _window, cx| {
+                let layer = view.layer_manager.find_layer_mut(id).unwrap();
+                layer.apply_upload_result(&osm_gpui::osm_upload::UploadResult {
+                    node_id_remap: HashMap::new(),
+                    way_id_remap: HashMap::from([(10, (10, 4))]),
+                    relation_id_remap: HashMap::new(),
+                });
+                view.autosave_now(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(layer_files(&root), 0, "nothing left to recover");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_crashed_run_is_offered_and_restore_brings_the_edits_back(cx: &mut TestAppContext) {
+        let root = tmp_root("restore");
+        let layer = edited_layer(7, "Downtown", "building");
+        let before = layer.diff_for_upload().counts();
+        let crashed = crashed_session(&root, &layer, None);
+        assert!(crashed.exists());
+
+        let window = window(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                // (The window's own render may have shown it already.)
+                view.check_for_pending_restore(window, cx);
+                let dialog = view.restore_dialog.clone().expect("the offer is shown");
+                let items = dialog.read(cx).items().to_vec();
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].layer_name, "Downtown");
+                assert_eq!(items[0].edits, before.0 + before.1 + before.2);
+                assert_eq!(items[0].other_server, None);
+                dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.restore_dialog.is_none());
+                let restored = view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .find(|l| l.name() == "Downtown")
+                    .expect("the layer is back");
+                // Edits pending, and the layer counts as unsaved.
+                assert!(restored.is_modified());
+                assert_eq!(restored.diff_for_upload().counts(), before);
+                assert_eq!(pending(view, restored.id()), before.0 + before.1 + before.2);
+                assert_eq!(view.active_layer, Some(restored.id()));
+                assert!(view.script_autosave_idle().is_ok());
+                assert!(view.status_message.is_some());
+            })
+            .unwrap();
+        // The old session is gone and its layer lives on in this run's
+        // session, so a second crash would lose nothing.
+        assert!(!crashed.exists());
+        assert_eq!(layer_files(&root), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn escape_asks_again_next_time_and_discard_deletes(cx: &mut TestAppContext) {
+        let root = tmp_root("later");
+        let layer = edited_layer(7, "Downtown", "building");
+        let crashed = crashed_session(&root, &layer, None);
+
+        let window = window(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        // Escape: the dialog goes, the files stay.
+        window
+            .update(cx, |view, window, cx| {
+                view.check_for_pending_restore(window, cx);
+                let dialog = view.restore_dialog.clone().unwrap();
+                dialog.update(cx, |dialog, cx| dialog.press_later(cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.restore_dialog.is_none());
+                assert!(view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .all(|l| l.name() != "Downtown"));
+            })
+            .unwrap();
+        assert!(crashed.exists(), "Escape keeps the autosave");
+        assert_eq!(layer_files(&root), 1);
+
+        // The next start finds it again; this time the user discards it.
+        let window = self::window(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                view.check_for_pending_restore(window, cx);
+                let dialog = view.restore_dialog.clone().expect("offered again");
+                dialog.update(cx, |dialog, cx| dialog.press_discard(cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(!crashed.exists());
+        assert_eq!(layer_files(&root), 0);
+        window
+            .update(cx, |view, _window, _cx| {
+                assert!(view.restore_dialog.is_none());
+                assert!(view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .all(|l| l.name() != "Downtown"));
+            })
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn a_layer_from_another_server_is_flagged_in_the_offer(cx: &mut TestAppContext) {
+        let root = tmp_root("server");
+        let layer = edited_layer(7, "Dev data", "building");
+        crashed_session(
+            &root,
+            &layer,
+            Some("https://master.apis.dev.openstreetmap.org/api/0.6"),
+        );
+        let window = window(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(Some(root.clone()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                view.check_for_pending_restore(window, cx);
+                let dialog = view.restore_dialog.clone().unwrap();
+                let items = dialog.read(cx).items().to_vec();
+                let (from, current) = items[0].other_server.clone().expect("flagged");
+                assert!(from.contains("master.apis.dev"), "{from}");
+                assert_eq!(current, settings_store::api_base_url());
+                // Restoring keeps the layer's origin for the next autosave.
+                dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _window, _cx| {
+                let id = view
+                    .layer_manager
+                    .layers()
+                    .iter()
+                    .find(|l| l.name() == "Dev data")
+                    .unwrap()
+                    .id();
+                let origin = &view.autosave.as_ref().unwrap().origin_of(id);
+                assert_eq!(
+                    origin.api_server.as_deref(),
+                    Some("https://master.apis.dev.openstreetmap.org/api/0.6")
+                );
+            })
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[gpui::test]
+    fn autosave_is_off_without_a_directory(cx: &mut TestAppContext) {
+        let window = window(cx);
+        window
+            .update(cx, |view, _window, cx| {
+                view.init_autosave(None, cx);
+                assert!(view.autosave.is_none());
+                // The calls the rest of the app makes are harmless no-ops.
+                view.autosave_now(cx);
+                assert!(view.script_autosave_idle().is_err());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn autosave_dir_is_a_command_line_option() {
+        let parse = |list: &[&str]| parse_cli_args_from(list.iter().map(|s| s.to_string()));
+        assert_eq!(parse(&[]).autosave_dir, None);
+        assert_eq!(
+            parse(&["--autosave-dir", "/tmp/x", "--script", "s.osmscript"]).autosave_dir,
+            Some(PathBuf::from("/tmp/x"))
+        );
+        // A scripted run with no directory resolves to no autosave at all.
+        let args = parse(&["--script", "s.osmscript"]);
+        assert_eq!(
+            autosave::resolve_root(
+                args.script.is_some(),
+                args.autosave_dir,
+                Some(PathBuf::from("/real/app/data/autosave"))
+            ),
             None
         );
     }

@@ -1,0 +1,20 @@
+# Autosave and crash recovery, launch 3 of 4: offered again after Escape;
+# this time Restore. The layer comes back with its edit pending, and the
+# view zooms to its data. The script then crashes again, to show that the
+# restored layer is already safe in this run's autosave.
+# See autosave-1-edit-and-crash.osmscript for how to run the four launches.
+
+window 1200 800
+viewport 40.7120 -74.0060 12
+wait 1500ms
+assert_dialog restore
+
+restore_autosave
+assert_dialog none
+assert_pending 1
+assert_autosave_exists 1
+wait_idle 3s
+capture out/autosave-04-restored.png
+
+log restored and carried over; crashing again
+crash

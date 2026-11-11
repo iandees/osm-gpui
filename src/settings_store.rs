@@ -126,10 +126,27 @@ pub struct AppSettings {
     /// Light, dark, or follow the OS. Missing in older files, meaning System.
     #[serde(default)]
     pub theme: ThemePreference,
+    /// Whether layers with unsaved edits are autosaved for crash recovery
+    /// (see `crate::autosave`). On by default, including for settings files
+    /// written before this field existed.
+    #[serde(default = "default_autosave")]
+    pub autosave: bool,
+    /// True once the user closed the welcome card. Missing in older files,
+    /// meaning the card is shown.
+    #[serde(default)]
+    pub welcome_dismissed: bool,
+    /// Reverse the direction in which scrolling zooms the map. Missing in
+    /// older files, meaning the default direction.
+    #[serde(default)]
+    pub invert_scroll_zoom: bool,
 }
 
 fn default_cache_budget_mb() -> u64 {
     500
+}
+
+fn default_autosave() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -145,6 +162,9 @@ impl Default for AppSettings {
             language: None,
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
+            autosave: true,
+            welcome_dismissed: false,
+            invert_scroll_zoom: false,
         }
     }
 }
@@ -186,6 +206,30 @@ pub fn update_store(settings: AppSettings) {
 /// Replace the in-memory settings only, without writing the settings file.
 pub fn update_store_in_memory(settings: AppSettings) {
     APP_SETTINGS.update("settings_store", |g| *g = settings);
+}
+
+/// Set only the welcome-card flag, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.welcome_dismissed = dismissed;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the invert-scroll-zoom flag, on top of the store's current
+/// settings so nothing else is touched. Written to disk when `persist` is true.
+pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.invert_scroll_zoom = invert;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
 }
 
 /// Return a snapshot of the current in-memory settings.
@@ -326,6 +370,9 @@ mod tests {
             language: Some("en".into()),
             recent_presets: vec!["building".into(), "natural/tree".into()],
             theme: ThemePreference::Dark,
+            autosave: false,
+            welcome_dismissed: true,
+            invert_scroll_zoom: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -499,10 +546,29 @@ mod tests {
             language: None,
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
+            autosave: true,
+            welcome_dismissed: false,
+            invert_scroll_zoom: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn missing_invert_scroll_zoom_means_not_inverted() {
+        let dir = tmp_dir("legacy-no-invert-scroll");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(!load_from(&path).invert_scroll_zoom);
+    }
+
+    #[test]
+    fn missing_welcome_dismissed_means_show_the_card() {
+        let dir = tmp_dir("legacy-no-welcome");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(!load_from(&path).welcome_dismissed);
     }
 
     #[test]
@@ -511,6 +577,27 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
         assert_eq!(load_from(&path).theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn autosave_is_on_by_default_and_for_older_settings_files() {
+        assert!(AppSettings::default().autosave);
+        let dir = tmp_dir("legacy-no-autosave");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert!(load_from(&path).autosave);
+    }
+
+    #[test]
+    fn turning_autosave_off_is_saved() {
+        let dir = tmp_dir("autosave-off");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            autosave: false,
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert!(!load_from(&path).autosave);
     }
 
     #[test]

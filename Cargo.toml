@@ -49,6 +49,11 @@ sys-locale = "0.3.2"
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["wayland", "x11"] }
 
+# Same objc 0.2.7 gpui_macos uses; sets NSApplication.appearance so the native
+# title bar and other system chrome follow the app's theme.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
+
 [dev-dependencies]
 
 [target.'cfg(windows)'.build-dependencies]

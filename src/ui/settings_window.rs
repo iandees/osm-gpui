@@ -173,15 +173,43 @@ impl SettingsWindow {
 
     /// Persist `app_settings`. The appearance can also change from the View
     /// menu while this window is open, so the store's value wins over this
-    /// window's possibly stale copy.
+    /// window's possibly stale copy. The same goes for the welcome-card flag,
+    /// which the card's close button changes from the main window.
     fn save_settings(&mut self) {
-        self.app_settings.theme = settings_store::snapshot().theme;
+        let live = settings_store::snapshot();
+        self.app_settings.theme = live.theme;
+        self.app_settings.welcome_dismissed = live.welcome_dismissed;
+        self.app_settings.invert_scroll_zoom = live.invert_scroll_zoom;
         settings_store::update_store(self.app_settings.clone());
+    }
+
+    /// Reverse (or restore) the scroll-zoom direction. Written straight to the
+    /// store, which the main window reads on every scroll.
+    fn set_invert_scroll_zoom(&mut self, invert: bool, cx: &mut Context<Self>) {
+        settings_store::set_invert_scroll_zoom(invert, true);
+        self.app_settings.invert_scroll_zoom = invert;
+        cx.notify();
     }
 
     fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
         crate::appearance::set_preference(theme, true, cx);
         self.app_settings.theme = theme;
+        cx.notify();
+    }
+
+    fn set_autosave(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.app_settings.autosave = on;
+        self.save_settings();
+        cx.notify();
+    }
+
+    /// Turn the welcome card on or off. Written straight to the store (which
+    /// the main window reads on every render) and the windows are repainted,
+    /// so the card reappears at once when no data layer is open.
+    fn set_show_welcome(&mut self, show: bool, cx: &mut Context<Self>) {
+        settings_store::set_welcome_dismissed(!show, true);
+        self.app_settings.welcome_dismissed = !show;
+        cx.refresh_windows();
         cx.notify();
     }
 
@@ -480,6 +508,7 @@ impl SettingsWindow {
         vec![
             self.account_page(view.clone()),
             self.appearance_page(view.clone()),
+            self.editing_page(view.clone()),
             self.imagery_page(view.clone()),
             self.shortcuts_page(view),
         ]
@@ -528,7 +557,30 @@ impl SettingsWindow {
         let language_view = view.clone();
         let theme_view = view.clone();
         let value_view = view.clone();
+        let welcome_view = view.clone();
+        let invert_view = view.clone();
         let set_value_view = view;
+        let invert_item = SettingItem::new(
+            tr!("settings.appearance.invert_scroll_zoom"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().invert_scroll_zoom,
+                move |invert: bool, cx: &mut App| {
+                    invert_view.update(cx, |this, cx| this.set_invert_scroll_zoom(invert, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.invert_scroll_zoom_description"));
+        // The store, not this window's copy: the card's close button changes it.
+        let welcome_item = SettingItem::new(
+            tr!("settings.appearance.welcome_card"),
+            SettingField::switch(
+                |_cx: &App| !settings_store::snapshot().welcome_dismissed,
+                move |show: bool, cx: &mut App| {
+                    welcome_view.update(cx, |this, cx| this.set_show_welcome(show, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.welcome_card_description"));
         let theme_item = SettingItem::new(
             tr!("settings.appearance.theme"),
             SettingField::dropdown(
@@ -577,7 +629,33 @@ impl SettingsWindow {
                     .title(tr!("settings.appearance.text_group"))
                     .item(item),
                 self.language_group(language_view),
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.scroll_group"))
+                    .item(invert_item),
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.welcome_group"))
+                    .item(welcome_item),
             ])
+    }
+
+    /// The Editing page: for now the autosave switch.
+    fn editing_page(&self, view: Entity<Self>) -> SettingPage {
+        let value_view = view.clone();
+        let item = SettingItem::new(
+            tr!("settings.editing.autosave"),
+            SettingField::switch(
+                move |cx: &App| value_view.read(cx).app_settings.autosave,
+                move |on: bool, cx: &mut App| {
+                    view.update(cx, |this, cx| this.set_autosave(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.editing.autosave_description"));
+        SettingPage::new(tr!("settings.editing.title"))
+            .icon(Icon::new(IconName::Settings2))
+            .groups(vec![SettingGroup::new()
+                .title(tr!("settings.editing.autosave_group"))
+                .item(item)])
     }
 
     fn account_page(&self, view: Entity<Self>) -> SettingPage {

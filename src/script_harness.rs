@@ -107,8 +107,12 @@ pub(crate) enum ScriptCommand {
     Resolve(script::ConflictChoice),
     /// Write the active layer to this `.osm` path.
     Export { path: std::path::PathBuf },
+    /// An autosave op (write now, press Restore or Discard).
+    Autosave(script::AutosaveCmd),
     /// Evaluate a read-only condition.
     Check(script::Check),
+    /// Click a validator finding's row in the side panel.
+    ShowFinding(script::FindingTarget),
     /// Show a message in the status bar.
     Note(String),
 }
@@ -524,8 +528,16 @@ impl MapViewer {
                     let result = self.script_export_layer(&path);
                     bus.set_assert_result(result);
                 }
+                ScriptCommand::Autosave(cmd) => {
+                    let result = self.script_autosave(cmd, window, cx);
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Check(check) => {
                     let result = self.script_check(&check, cx);
+                    bus.set_assert_result(result);
+                }
+                ScriptCommand::ShowFinding(target) => {
+                    let result = self.script_show_finding(&target, window, cx);
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::Note(message) => {
@@ -617,6 +629,36 @@ impl MapViewer {
         Ok(())
     }
 
+    /// Click a finding's row in the side panel's Validation section (what a
+    /// click on it does: select the objects and zoom to them).
+    fn script_show_finding(
+        &mut self,
+        target: &script::FindingTarget,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(report) = self.shown_validation() else {
+            return Err("the Validation section is not showing (run `action Validate`)".into());
+        };
+        let index = match target {
+            script::FindingTarget::Index(n) if *n < report.entries.len() => *n,
+            script::FindingTarget::Index(n) => {
+                return Err(format!(
+                    "there is no finding {n} (the list has {})",
+                    report.entries.len()
+                ))
+            }
+            script::FindingTarget::Check(id) => report
+                .entries
+                .iter()
+                .position(|e| e.finding.check.id() == id)
+                .ok_or_else(|| format!("no finding of check {id}"))?,
+        };
+        // Run from `render`, on this view itself: no deferral needed.
+        self.select_finding(index, cx);
+        Ok(())
+    }
+
     fn script_resolve_conflict(
         &mut self,
         choice: script::ConflictChoice,
@@ -700,11 +742,108 @@ impl MapViewer {
                     ))
                 }
             }
+            Check::ValidationPanel(want) => {
+                if self.validation_shown() == *want {
+                    Ok(())
+                } else if *want {
+                    Err("the Validation section is not showing".into())
+                } else {
+                    Err("the Validation section is showing".into())
+                }
+            }
+            Check::Validation {
+                errors,
+                warnings,
+                checks,
+            } => {
+                // The section's own list while it is showing, so that waiting
+                // for it to refresh after an edit is what is tested.
+                let report = self
+                    .shown_validation()
+                    .cloned()
+                    .unwrap_or_else(|| self.validation_report());
+                let mut wrong = Vec::new();
+                let mut compare = |what: &str, want: usize, got: usize| {
+                    if want != got {
+                        wrong.push(format!("{what}: expected {want}, found {got}"));
+                    }
+                };
+                if let Some(want) = errors {
+                    compare("errors", *want, report.errors());
+                }
+                if let Some(want) = warnings {
+                    compare("warnings", *want, report.warnings());
+                }
+                for (id, want) in checks {
+                    let got = osm_gpui::validator::Check::from_id(id)
+                        .map(|c| report.count_of(c))
+                        .unwrap_or(0);
+                    compare(id, *want, got);
+                }
+                if wrong.is_empty() {
+                    Ok(())
+                } else {
+                    let found: Vec<String> = report
+                        .entries
+                        .iter()
+                        .map(|e| format!("{} ({})", e.finding.check.id(), e.label))
+                        .collect();
+                    Err(format!(
+                        "{}; findings: {}",
+                        wrong.join("; "),
+                        found.join(", ")
+                    ))
+                }
+            }
             Check::TransferIdle => {
                 if self.transfer.is_some() || matches!(phase, Some(Phase::Busy)) {
                     Err("a transfer is still running".into())
                 } else {
                     Ok(())
+                }
+            }
+            Check::AutosaveIdle => self.script_autosave_idle(),
+            Check::AutosaveFiles(want) => self.script_autosave_files(*want),
+            Check::Zoom { level, tolerance } => {
+                let got = self.viewport.zoom_level();
+                if (got - level).abs() <= *tolerance {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected zoom {level} (within {tolerance}), found {got:.4}"
+                    ))
+                }
+            }
+            Check::ImageryOffset {
+                east,
+                north,
+                tolerance,
+            } => {
+                let got = self
+                    .current_imagery_offset()
+                    .ok_or_else(|| "there is no visible imagery layer".to_string())?;
+                if (got.east_m - east).abs() <= *tolerance
+                    && (got.north_m - north).abs() <= *tolerance
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected imagery offset E {east} N {north} (within {tolerance} m), \
+                         found E {:.3} N {:.3}",
+                        got.east_m, got.north_m
+                    ))
+                }
+            }
+            Check::AdjustingOffset(want) => {
+                let got = self.offset_adjust.is_some();
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected imagery offset adjusting to be {}, it is {}",
+                        if *want { "on" } else { "off" },
+                        if got { "on" } else { "off" },
+                    ))
                 }
             }
             Check::Selection(want) => {
@@ -723,6 +862,44 @@ impl MapViewer {
                     Err(format!("expected selection {want:?}, found {got:?}"))
                 }
             }
+            Check::NativeAppearance(want) => {
+                use gpui_component::ThemeMode;
+                let got = match osm_gpui::appearance::native_readback() {
+                    None => script::NativeAppearanceWant::System,
+                    Some(ThemeMode::Light) => script::NativeAppearanceWant::Light,
+                    Some(ThemeMode::Dark) => script::NativeAppearanceWant::Dark,
+                };
+                if got == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected native appearance {want:?}, found {got:?}"
+                    ))
+                }
+            }
+            Check::SelectedCount(want) => {
+                if self.selected.len() == *want {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "expected {want} selected features, found {}",
+                        self.selected.len()
+                    ))
+                }
+            }
+            Check::FindPreview(text) => match &self.find_dialog {
+                None => Err("the Find dialog is not open".into()),
+                Some(dialog) => {
+                    let shown = dialog.read(cx).preview_text().to_string();
+                    if shown.contains(text.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "the Find dialog says {shown:?}, expected it to contain {text:?}"
+                        ))
+                    }
+                }
+            },
             Check::Dialog(want) => {
                 let found = self.describe_dialog(&phase);
                 let ok = match (want, &phase) {
@@ -730,6 +907,8 @@ impl MapViewer {
                     (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
                     (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
                     (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
+                    (DialogExpect::Restore, _) => self.restore_dialog.is_some(),
+                    (DialogExpect::Find, _) => self.find_dialog.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
                     (DialogExpect::Failed, Some(Phase::Failed(_))) => true,
@@ -766,6 +945,8 @@ impl MapViewer {
             None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
             None if self.notice_dialog.is_some() => "a notice dialog".into(),
             None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
+            None if self.restore_dialog.is_some() => "the restore-autosave offer".into(),
+            None if self.find_dialog.is_some() => "the Find dialog".into(),
             None => "no dialog".into(),
         }
     }
@@ -1117,6 +1298,28 @@ impl AppHandle for LiveApp {
     fn check(&mut self, check: &script::Check) -> Result<(), String> {
         self.bus.submit(ScriptCommand::Check(check.clone()));
         self.bus.take_assert_result()
+    }
+
+    fn autosave(&mut self, cmd: script::AutosaveCmd) -> Result<(), String> {
+        if cmd == script::AutosaveCmd::Crash {
+            // As a crash would: no destructors, no quit hooks, no clean-up.
+            // The OS drops the session's file lock, which is what marks the
+            // session as crashed for the next run.
+            eprintln!("crash: exiting without clean-up");
+            std::process::exit(3);
+        }
+        self.bus.submit(ScriptCommand::Autosave(cmd));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        result
+    }
+
+    fn show_finding(&mut self, target: &script::FindingTarget) -> Result<(), String> {
+        self.bus.submit(ScriptCommand::ShowFinding(target.clone()));
+        let result = self.bus.take_assert_result();
+        self.bus.wait_frame();
+        self.bus.wait_frame();
+        result
     }
 
     fn note(&mut self, message: &str) {

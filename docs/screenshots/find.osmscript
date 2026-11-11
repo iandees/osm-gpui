@@ -1,0 +1,93 @@
+# Edit > Find: select features by query. Never uploads.
+#
+# Fixture: relations.osm (12 nodes, 5 highway=residential ways, a bus route
+# and a turn restriction). The dialog's modes, in the order Cmd+1..4 pick
+# them: Replace selection, Add to selection, Remove from selection, Find in
+# selection. The dialog reopens in the mode it was last applied in.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/relations.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# Live count while typing; nothing is selected until Enter.
+action Find
+wait_idle 2s
+assert_dialog find
+type highway=residential
+wait 600ms
+assert_find_preview 5 matches
+assert_selected_count 0
+capture out/find-01-live-count.png
+
+# Enter applies and closes; the status bar reports it.
+key enter
+wait_idle 2s
+assert_dialog none
+assert_selected_count 5
+assert_status_contains 5 features selected
+capture out/find-02-applied.png
+
+# A query that does not parse shows why, with a position, in place of the
+# count. Escape leaves the selection alone.
+action Find
+wait_idle 2s
+type name="Route
+wait 600ms
+assert_find_preview Position
+capture out/find-03-parse-error.png
+key escape
+wait_idle 1s
+assert_dialog none
+assert_selected_count 5
+
+# Add to selection: Cmd+2 picks the mode (Cmd+1..4 = Replace, Add, Remove,
+# Find in selection; Ctrl on Windows and Linux).
+action Find
+wait_idle 2s
+key cmd+2
+type type:node highway=bus_stop
+wait 600ms
+assert_find_preview 1 match
+capture out/find-04-add-mode.png
+key enter
+wait_idle 2s
+assert_selected_count 6
+assert_status_contains 6 features selected
+capture out/find-05-added.png
+
+# The syntax hint (F1) and the recent searches (Up arrow recalls the last).
+action Find
+wait_idle 2s
+key f1
+key up
+wait 600ms
+assert_find_preview 1 match
+capture out/find-06-hint-and-history.png
+key escape
+wait_idle 1s
+
+# Remove from selection.
+action Find
+wait_idle 2s
+key cmd+3
+type type:way
+wait 600ms
+key enter
+wait_idle 2s
+assert_selected_count 1
+assert_selected node 8104
+capture out/find-07-removed.png
+
+# An unmatched query says "No matches" and clears a Replace selection.
+action Find
+wait_idle 2s
+key cmd+1
+type name=nothing like this
+wait 600ms
+assert_find_preview No matches
+key enter
+wait_idle 2s
+assert_selected_count 0
+assert_status_contains No matches
+capture out/find-08-no-matches.png

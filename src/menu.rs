@@ -16,10 +16,11 @@ use crate::selection_actions;
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, HideApp, HideOtherApps,
+    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
     RunSelectionAction, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay, ToggleDownloadedArea,
-    Undo, UploadToOsm, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData, ZoomToSelection, ZoomWindow,
+    IMAGERY_INDEX,
 };
 
 /// Guard to prevent opening multiple settings windows simultaneously.
@@ -80,7 +81,10 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
         .to_string();
     cx.update(|cx| {
         with_map_viewer(cx, |v, cx| match result {
-            Ok((osm_data, edits)) => v.add_osm_dataset(stem, osm_data, &edits, cx),
+            Ok((osm_data, edits)) => {
+                v.add_osm_dataset(stem, osm_data, &edits, cx);
+                v.note_last_layer_source(&path);
+            }
             Err(e) => {
                 v.set_status(tr!("status.open_failed", path = path.display(), error = e));
                 cx.notify();
@@ -152,6 +156,12 @@ pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx)));
 }
 
+// Global fallback for Tools > Validate, for the same reason as
+// `upload_to_osm`; the normal path is `MapViewer::on_validate`.
+pub(crate) fn validate(_: &Validate, cx: &mut App) {
+    cx.defer(|cx| with_map_viewer_in(cx, |v, _window, cx| v.show_validation(cx)));
+}
+
 // Global fallback for the `Quit` action, registered once at app startup
 // alongside the other `cx.on_action` handlers above. `MapViewer::on_quit` is
 // only reachable via the window/entity-scoped `.on_action(cx.listener(...))`
@@ -209,6 +219,7 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
                 min_zoom: entry.min_zoom,
                 max_zoom: entry.max_zoom,
                 attribution: entry.attribution,
+                imagery_id: Some(entry.id),
             },
             cx,
         );
@@ -241,6 +252,7 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
                 attribution: None,
+                imagery_id: None,
             },
             cx,
         );
@@ -448,6 +460,15 @@ fn build_menus(
         MenuItem::action(tr!("menu.imagery.osm_carto"), AddOsmCarto),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.imagery.coordinate_grid"), AddCoordinateGrid),
+        MenuItem::separator(),
+        MenuItem::action(
+            tr!("menu.imagery.adjust_offset"),
+            crate::imagery_offset_ui::AdjustImageryOffset,
+        ),
+        MenuItem::action(
+            tr!("menu.imagery.reset_offset"),
+            crate::imagery_offset_ui::ResetImageryOffset,
+        ),
     ];
 
     match state {
@@ -578,6 +599,7 @@ fn build_menus(
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.select_all"), SelectAll),
                     MenuItem::action(tr!("menu.edit.deselect_all"), DeselectAll),
+                    MenuItem::action(tr!("menu.edit.find"), Find),
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.change_feature_type"), ChangeFeatureType),
                     MenuItem::action(tr!("menu.edit.apply_nsi_preset"), ApplyNsiPreset),
@@ -590,10 +612,16 @@ fn build_menus(
             name: tr!("menu.tools.title"),
             // Every selection action, applicable or not: running one that
             // doesn't fit the selection explains why in the status bar.
-            items: selection_actions::ACTIONS
-                .iter()
-                .filter(|a| a.in_tools_menu)
-                .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
+            items: std::iter::once(MenuItem::action(tr!("validator.menu"), Validate))
+                .chain(std::iter::once(MenuItem::separator()))
+                .chain(
+                    selection_actions::ACTIONS
+                        .iter()
+                        .filter(|a| a.in_tools_menu)
+                        .map(|a| {
+                            MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() })
+                        }),
+                )
                 .collect(),
             disabled: false,
         },
@@ -659,6 +687,7 @@ pub(crate) fn register_app_actions(cx: &mut App) {
     cx.on_action(|_: &OpenProjectPage, _: &mut App| {
         let _ = open::that(env!("CARGO_PKG_REPOSITORY"));
     });
+    cx.on_action(crate::welcome::dismiss_welcome_action);
     cx.on_action(|_: &SetThemeLight, cx: &mut App| {
         osm_gpui::appearance::apply_run_override(ThemeMode::Light, cx)
     });
@@ -670,6 +699,12 @@ pub(crate) fn register_app_actions(cx: &mut App) {
             action.mode,
             !crate::script_harness::script_mode(),
             cx,
+        );
+    });
+    cx.on_action(|action: &SetInvertScrollZoom, _cx: &mut App| {
+        osm_gpui::settings_store::set_invert_scroll_zoom(
+            action.on,
+            !crate::script_harness::script_mode(),
         );
     });
 }
@@ -687,6 +722,16 @@ actions!(osm_gpui, [SetThemeLight, SetThemeDark]);
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetAppearance {
     pub mode: osm_gpui::settings_store::ThemePreference,
+}
+
+/// Script/harness action (`action SetInvertScrollZoom {"on":true}`), shown in
+/// no menu. The user-facing control is Settings > Appearance. In script mode
+/// it changes the in-memory setting only, never the settings file.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetInvertScrollZoom {
+    pub on: bool,
 }
 
 // Dummy action used for disabled-style "info" entries in the Imagery menu.
@@ -795,6 +840,7 @@ mod tests {
         assert!(has::<ExportOsmFile>(&actions));
         assert!(has::<DownloadFromOsm>(&actions));
         assert!(has::<UploadToOsm>(&actions));
+        assert!(has::<Validate>(&actions));
         assert!(has::<OpenMapFeaturesWiki>(&actions));
         assert!(has::<OpenProjectPage>(&actions));
         assert!(has::<Undo>(&actions));

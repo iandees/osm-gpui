@@ -1,0 +1,76 @@
+# The validator: Tools > Validate adds a Validation section to the side panel,
+# just above History, listing what is wrong with the objects an upload would
+# send, errors first. Clicking a row selects the objects and zooms to them; the
+# list stays put and refreshes by itself as problems are fixed. Never uploads,
+# and never signs in (the upload dialog shows a one-line summary with a "Show in
+# side panel" button but needs an account; that is covered by unit tests).
+#
+# Coordinates: fixtures/validator.osm is laid out in window coordinates at
+# zoom 18, centered on (40.7120, -74.0060), in a 1200x800 window. The fixture
+# holds deliberate problems in new objects (negative ids), plus old problems
+# in untouched objects that must NOT be reported (an untagged way 5001, an
+# untagged node 5103, a cafe 5104 with stray spaces, and two crossing roads).
+# The script edits node 2002 (a field) so that it counts as modified.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/validator.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+# An old object touched in this session is validated; the rest of the old data
+# is not.
+click 600,560
+wait_idle 2s
+assert_selected node 2002
+set_tag landuse farm
+set_tag fixme check the field boundary
+wait_idle 1s
+
+# Never validated: no Validation section, the side panel is as it always was.
+assert_validation_panel hidden
+capture out/validator-01-no-section.png
+
+# 3 errors and 11 warnings, and none of the old problems.
+action Validate
+wait_idle 2s
+assert_validation_panel shown
+assert_validation errors=3 warnings=11 way_too_short=1 duplicate_way_node=1 tag_empty_value=1 crossing_ways=2 area_tags_on_open_way=1 duplicate_nodes=1 untagged_node=1 untagged_way=1 tag_whitespace=1 relation_empty=1 relation_no_type=1 deprecated_tag=1 fixme=1
+capture out/validator-02-section.png
+
+# A click on the one-node way: selected and centred at an editing zoom (not
+# zoomed out), and the list is still there with its row highlighted.
+show_finding way_too_short
+wait_idle 2s
+assert_selected way -207
+wait 2s
+capture out/validator-03-error-shown.png
+
+# Fix the stray node by tagging it: the list refreshes by itself.
+show_finding untagged_node
+wait_idle 1s
+assert_selection node
+set_tag amenity bench
+wait 1s
+assert_validation_panel shown
+assert_validation errors=3 warnings=10 untagged_node=0
+capture out/validator-04-after-fix.png
+
+# A real click on the second row (the duplicated way node): its way is
+# selected and shown, and the list stays where it was.
+click 1062,507
+wait_idle 2s
+assert_selected way -208
+assert_validation_panel shown
+capture out/validator-05-row-clicked.png
+
+# A short window: Selection, Validation and History all stay usable.
+window 900 460
+wait_idle 2s
+capture out/validator-06-small-window.png
+
+# The close button dismisses the section.
+click 882,238
+wait_idle 1s
+assert_validation_panel hidden
+capture out/validator-07-closed.png
+log done

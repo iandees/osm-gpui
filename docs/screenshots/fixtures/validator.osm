@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="validator fixture">
+  <!-- Deliberate problems for the validator, laid out in window
+       coordinates at zoom 18, centered on (40.7120, -74.0060), in a 1200x800
+       window; see validator.osmscript.
+
+       Old data (positive ids, not edited, so never reported): an untagged
+       way 5001, an untagged node 5103, a cafe 5104 with stray spaces in its
+       name, and two roads 5002 and 5003 that cross without a node.
+
+       Objects the script edits: node 2002 (a field) and node 2003 (a bench).
+
+       New data (negative ids), by what it should be reported as:
+         crossing_ways       Elm Street -202 x Oak Lane -203, and Mill Road
+                             -206 through Fixture House -205
+         area_tags_on_open_way  Old Barn -204
+         duplicate_nodes     bench -31 on top of the old bench 2003
+         way_too_short       way -207 has one node
+         duplicate_way_node  Short Cut -208 lists node -43 twice
+         tag_empty_value     bench -45 has note=""
+         untagged_node       -46
+         untagged_way        -209
+         tag_whitespace      Corner Cafe -49 (trailing space)
+         relation_empty and relation_no_type  relation -301 -->
+  <bounds minlat="40.7080" minlon="-74.0100" maxlat="40.7160" maxlon="-74.0000"/>
+  <node id="5101" lat="40.7109734" lon="-74.0080812"/>
+  <node id="5102" lat="40.7109734" lon="-74.0072766"/>
+  <node id="5103" version="1" lat="40.7107289" lon="-74.0079740"/>
+  <node id="5104" version="1" lat="40.7107289" lon="-74.0068475">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="  Old Cafe "/>
+  </node>
+  <node id="5201" version="1" lat="40.7111363" lon="-74.0068475"/>
+  <node id="5202" version="1" lat="40.7111363" lon="-74.0060966"/>
+  <node id="5203" version="1" lat="40.7113808" lon="-74.0064720"/>
+  <node id="5204" version="1" lat="40.7108919" lon="-74.0064720"/>
+  <node id="2002" version="1" lat="40.7112993" lon="-74.0053992">
+    <tag k="landuse" v="farmland"/>
+    <tag k="name" v="North Field"/>
+  </node>
+  <node id="2003" version="1" lat="40.7117474" lon="-74.0043264">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="-11" lat="40.7129696" lon="-74.0080812"/>
+  <node id="-12" lat="40.7129696" lon="-74.0070084"/>
+  <node id="-13" lat="40.7132548" lon="-74.0075448"/>
+  <node id="-14" lat="40.7126437" lon="-74.0075448"/>
+  <node id="-21" lat="40.7130918" lon="-74.0056138"/>
+  <node id="-22" lat="40.7130918" lon="-74.0048628"/>
+  <node id="-23" lat="40.7126844" lon="-74.0048628"/>
+  <node id="-24" lat="40.7123585" lon="-74.0056138"/>
+  <node id="-25" lat="40.7123585" lon="-74.0050774"/>
+  <node id="-26" lat="40.7120326" lon="-74.0050774"/>
+  <node id="-27" lat="40.7120326" lon="-74.0056138"/>
+  <node id="-28" lat="40.7121956" lon="-74.0058284"/>
+  <node id="-29" lat="40.7121956" lon="-74.0048628"/>
+  <node id="-31" lat="40.7117474" lon="-74.0043264">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="-41" lat="40.7117474" lon="-74.0070084"/>
+  <node id="-42" lat="40.7118696" lon="-74.0078130"/>
+  <node id="-43" lat="40.7118696" lon="-74.0074376"/>
+  <node id="-44" lat="40.7118696" lon="-74.0070621"/>
+  <node id="-45" lat="40.7109326" lon="-74.0048628">
+    <tag k="amenity" v="bench"/>
+    <tag k="note" v=""/>
+  </node>
+  <node id="-46" lat="40.7123585" lon="-74.0078130"/>
+  <node id="-47" lat="40.7125622" lon="-74.0064720"/>
+  <node id="-48" lat="40.7125622" lon="-74.0060429"/>
+  <node id="-49" lat="40.7127659" lon="-74.0041119">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Corner Cafe "/>
+  </node>
+  <way id="5001" version="1">
+    <nd ref="5101"/>
+    <nd ref="5102"/>
+  </way>
+  <way id="5002" version="1">
+    <nd ref="5201"/>
+    <nd ref="5202"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Old East Road"/>
+  </way>
+  <way id="5003" version="1">
+    <nd ref="5203"/>
+    <nd ref="5204"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Old North Road"/>
+  </way>
+  <way id="-202">
+    <nd ref="-11"/>
+    <nd ref="-12"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Elm Street"/>
+  </way>
+  <way id="-203">
+    <nd ref="-13"/>
+    <nd ref="-14"/>
+    <tag k="highway" v="service"/>
+    <tag k="name" v="Oak Lane"/>
+  </way>
+  <way id="-204">
+    <nd ref="-21"/>
+    <nd ref="-22"/>
+    <nd ref="-23"/>
+    <tag k="building" v="yes"/>
+    <tag k="name" v="Old Barn"/>
+  </way>
+  <way id="-205">
+    <nd ref="-24"/>
+    <nd ref="-25"/>
+    <nd ref="-26"/>
+    <nd ref="-27"/>
+    <nd ref="-24"/>
+    <tag k="building" v="yes"/>
+    <tag k="name" v="Fixture House"/>
+  </way>
+  <way id="-206">
+    <nd ref="-28"/>
+    <nd ref="-29"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Mill Road"/>
+  </way>
+  <way id="-207">
+    <nd ref="-41"/>
+    <tag k="highway" v="path"/>
+  </way>
+  <way id="-208">
+    <nd ref="-42"/>
+    <nd ref="-43"/>
+    <nd ref="-43"/>
+    <nd ref="-44"/>
+    <tag k="highway" v="footway"/>
+    <tag k="name" v="Short Cut"/>
+  </way>
+  <way id="-209">
+    <nd ref="-47"/>
+    <nd ref="-48"/>
+  </way>
+  <relation id="-301"/>
+</osm>

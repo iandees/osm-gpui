@@ -14,10 +14,25 @@ use osm_gpui::layers::LayerId;
 use osm_gpui::ui::style::{interactive_row, muted_text_size, panel_row, PANEL_ROW_HEIGHT};
 use osm_gpui::{tr, tr_count};
 
+use crate::imagery_offset_ui::{AdjustLayerImageryOffset, ResetLayerImageryOffset};
 use crate::{
     DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
     ToggleLayerVisibilityAction,
 };
+
+/// The least height the Selection zone keeps in a short window.
+const SELECTION_MIN_HEIGHT: f32 = 100.0;
+
+/// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
+/// layer, and (imagery layers only) its imagery offset.
+type LayerRowInfo = (
+    LayerId,
+    String,
+    bool,
+    bool,
+    bool,
+    Option<osm_gpui::imagery_offset::ImageryOffset>,
+);
 
 /// One membership of the selected feature in a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +47,12 @@ pub(crate) struct Membership {
 
 impl MapViewer {
     const SELECTION_MAX_VISIBLE_ROWS: usize = 10;
+    /// A selection of tens of thousands (Edit > Select All, Edit > Find)
+    /// lists only this many features; the rest are summarized.
+    const SELECTION_LIST_CAP: usize = 200;
+    /// Above this many selected features the Tags section stops combining
+    /// their tags (that work is repeated on every frame).
+    const TAGS_AGGREGATE_LIMIT: usize = 5000;
 
     /// The right pane: Layers, Selection, and Tags sections stacked
     /// top-to-bottom, each collapsible and sized to its content (the whole
@@ -41,7 +62,7 @@ impl MapViewer {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let layer_info: Vec<(LayerId, String, bool, bool, bool)> = self
+        let layer_info: Vec<LayerRowInfo> = self
             .layer_manager
             .layers()
             .iter()
@@ -53,6 +74,7 @@ impl MapViewer {
                     layer.is_visible(),
                     layer.is_modified(),
                     is_osm,
+                    layer.imagery_offset(),
                 )
             })
             .collect();
@@ -62,6 +84,7 @@ impl MapViewer {
         let fields_section = self.render_fields_section(window, cx);
         let tags_section = self.render_tags_section(cx);
         let history_section = self.render_history_section(cx);
+        let validation_section = self.render_validation_section(window, cx);
         let relations_section = self.render_relations_section(cx);
         let open_relations = self.side_panel_open[5];
         let members_section = self.render_members_section(window, cx);
@@ -135,7 +158,14 @@ impl MapViewer {
                 div()
                     .id("side-panel-scroll")
                     .flex_1()
-                    .min_h(px(0.))
+                    // With Validation showing, a floor, so it and History
+                    // cannot squeeze the Selection out of a short window;
+                    // they shrink first. Otherwise the panel is as before.
+                    .min_h(px(if self.validation_shown() {
+                        SELECTION_MIN_HEIGHT
+                    } else {
+                        0.0
+                    }))
                     .overflow_y_scroll()
                     .bg(cx.theme().background)
                     .child(
@@ -212,9 +242,12 @@ impl MapViewer {
                             }),
                     ),
             )
+            // Validation, only after a validation was run: directly above
+            // History, and like it able to shrink to its header.
+            .children(validation_section)
             // Pinned to the bottom. It is the only zone besides the
-            // selection that may shrink (to its header) when the window is
-            // very short.
+            // selection and Validation that may shrink (to its header) when
+            // the window is very short.
             .child(
                 self.collapsible_section(
                     tr!("panel.history.title"),
@@ -733,11 +766,25 @@ impl MapViewer {
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        // Layers (0) and History (4) are zones of their own, like the
-        // selection: their headers are full-width tinted strips (see
+        self.collapsible_section_with(title, index, open, None, content, cx)
+    }
+
+    /// `collapsible_section` with `trailing` (if any) in the header after the
+    /// title; it should take the rest of the header's width (`flex_1`).
+    pub(crate) fn collapsible_section_with(
+        &self,
+        title: impl Into<gpui::SharedString>,
+        index: usize,
+        open: bool,
+        trailing: Option<gpui::AnyElement>,
+        content: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // Layers (0), History (4) and Validation (7) are zones of their own,
+        // like the selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
         // header and a hairline.
-        let document_level = index == 0 || index == 4;
+        let document_level = index == 0 || index == 4 || index == crate::validation_panel::SECTION;
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())
@@ -772,6 +819,7 @@ impl MapViewer {
                 .text_color(cx.theme().muted_foreground),
             )
             .child(title_label.font_weight(gpui::FontWeight::SEMIBOLD))
+            .children(trailing)
             .on_click(cx.listener(move |this, _ev, _window, cx| {
                 this.side_panel_open[index] = !this.side_panel_open[index];
                 cx.notify();
@@ -793,6 +841,11 @@ impl MapViewer {
                 // Members line up.
                 this.child(
                     div()
+                        // Validation may shrink in a short window: its body
+                        // gives up height too, and its list scrolls.
+                        .when(index == crate::validation_panel::SECTION, |this| {
+                            this.flex().flex_col().flex_shrink(1.).min_h(px(0.))
+                        })
                         .when(document_level, |this| this.px_2())
                         .when(!document_level, |this| this.px_3())
                         .pt_0p5()
@@ -936,6 +989,7 @@ impl MapViewer {
 
         let visible_rows = self.selected.len().min(Self::SELECTION_MAX_VISIBLE_ROWS);
         let list_height = px(visible_rows as f32 * PANEL_ROW_HEIGHT);
+        let hidden = self.selected.len().saturating_sub(Self::SELECTION_LIST_CAP);
 
         div()
             .id("selection-list")
@@ -943,53 +997,73 @@ impl MapViewer {
             .flex_col()
             .h(list_height)
             .overflow_y_scroll()
-            .children(self.selected.iter().enumerate().map(|(i, feat)| {
-                let kind_label = match feat.kind {
-                    FeatureKind::Node => tr!("panel.selection.node"),
-                    FeatureKind::Way => tr!("panel.selection.way"),
-                    FeatureKind::Relation => tr!("panel.selection.relation"),
-                };
-                let row_feat = *feat;
-                let described = self.describe_selected_feature(feat);
-                let row_text = match &described {
-                    Some((name, _)) => tr!(
-                        "panel.selection.row_named",
-                        name = name,
-                        kind = kind_label,
-                        id = feat.id
-                    ),
-                    None => tr!("panel.selection.row", kind = kind_label, id = feat.id),
-                };
-                let icon_path = described.and_then(|(_, path)| path);
-
-                let mut row = interactive_row(("selection-row", i), false, cx)
-                    .text_color(cx.theme().foreground);
-
-                // Reserve the icon slot even without an icon so the row
-                // text lines up across rows.
-                row = row.child(div().size(px(14.0)).flex_shrink_0().children(icon_path.map(
-                    |path| {
-                        osm_gpui::presets::icon_element(
-                            path,
-                            14.0,
-                            cx.theme().foreground,
-                            cx.theme().is_dark(),
-                        )
-                    },
-                )));
-
-                row.child(row_text).on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                        this.selected = vec![row_feat];
-                        this.fields_text_inputs.clear();
-                        this.fields_text_subscribed.clear();
-                        this.fields_open_combo = None;
-                        this.fields_promoted_more_fields.clear();
-                        cx.notify();
-                    }),
+            .when(hidden > 0, |list| {
+                list.child(
+                    div()
+                        .px_2()
+                        .h(px(PANEL_ROW_HEIGHT))
+                        .flex_shrink_0()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr_count!(
+                            "panel.selection.more",
+                            hidden,
+                            shown = Self::SELECTION_LIST_CAP
+                        )),
                 )
-            }))
+            })
+            .children(
+                self.selected
+                    .iter()
+                    .take(Self::SELECTION_LIST_CAP)
+                    .enumerate()
+                    .map(|(i, feat)| {
+                        let kind_label = match feat.kind {
+                            FeatureKind::Node => tr!("panel.selection.node"),
+                            FeatureKind::Way => tr!("panel.selection.way"),
+                            FeatureKind::Relation => tr!("panel.selection.relation"),
+                        };
+                        let row_feat = *feat;
+                        let described = self.describe_selected_feature(feat);
+                        let row_text = match &described {
+                            Some((name, _)) => tr!(
+                                "panel.selection.row_named",
+                                name = name,
+                                kind = kind_label,
+                                id = feat.id
+                            ),
+                            None => tr!("panel.selection.row", kind = kind_label, id = feat.id),
+                        };
+                        let icon_path = described.and_then(|(_, path)| path);
+
+                        let mut row = interactive_row(("selection-row", i), false, cx)
+                            .text_color(cx.theme().foreground);
+
+                        // Reserve the icon slot even without an icon so the row
+                        // text lines up across rows.
+                        row = row.child(div().size(px(14.0)).flex_shrink_0().children(
+                            icon_path.map(|path| {
+                                osm_gpui::presets::icon_element(
+                                    path,
+                                    14.0,
+                                    cx.theme().foreground,
+                                    cx.theme().is_dark(),
+                                )
+                            }),
+                        ));
+
+                        row.child(row_text).on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
+                                this.selected = vec![row_feat];
+                                this.fields_text_inputs.clear();
+                                this.fields_text_subscribed.clear();
+                                this.fields_open_combo = None;
+                                this.fields_promoted_more_fields.clear();
+                                cx.notify();
+                            }),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1007,7 +1081,7 @@ impl MapViewer {
     /// dismissing itself on mouse move).
     fn render_layers_section(
         &self,
-        layer_info: &[(LayerId, String, bool, bool, bool)],
+        layer_info: &[LayerRowInfo],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let total = layer_info.len();
@@ -1033,8 +1107,15 @@ impl MapViewer {
                     .iter()
                     .enumerate()
                     .map(
-                        |(index, (layer_id, name, is_visible, is_modified, is_osm))| {
+                        |(
+                            index,
+                            (layer_id, name, is_visible, is_modified, is_osm, imagery_offset),
+                        )| {
                             let layer_id = *layer_id;
+                            let is_imagery = imagery_offset.is_some();
+                            // Imagery drawn shifted says so, so nobody traces
+                            // on moved imagery without knowing.
+                            let shifted = imagery_offset.filter(|o| !o.is_zero());
                             let is_osm = *is_osm;
                             let is_active = self.active_layer == Some(layer_id);
                             let is_visible = *is_visible;
@@ -1095,6 +1176,25 @@ impl MapViewer {
                             row.gap_2()
                                 .child(eye)
                                 .child(name_label)
+                                .children(shifted.map(|offset| {
+                                    div()
+                                        .id(("layer-offset-tag", index))
+                                        .flex_shrink_0()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_size(muted_text_size())
+                                        .bg(cx.theme().warning.opacity(0.35))
+                                        .text_color(cx.theme().foreground)
+                                        .child(tr!(
+                                            "panel.layers.offset_tag",
+                                            east = osm_gpui::imagery_offset::format_metres(
+                                                offset.east_m
+                                            ),
+                                            north = osm_gpui::imagery_offset::format_metres(
+                                                offset.north_m
+                                            )
+                                        ))
+                                }))
                                 .when(is_active, |this| {
                                     this.child(
                                         div()
@@ -1123,6 +1223,18 @@ impl MapViewer {
                                             tr!("panel.layers.move_down"),
                                             Box::new(MoveLayer { index, delta: 1 }),
                                         );
+                                    }
+                                    if is_imagery {
+                                        menu = menu.separator().menu(
+                                            tr!("panel.layers.adjust_offset"),
+                                            Box::new(AdjustLayerImageryOffset { index }),
+                                        );
+                                        if shifted.is_some() {
+                                            menu = menu.menu(
+                                                tr!("panel.layers.reset_offset"),
+                                                Box::new(ResetLayerImageryOffset { index }),
+                                            );
+                                        }
                                     }
                                     menu.separator()
                                         .menu(
@@ -1240,6 +1352,19 @@ impl MapViewer {
         if self.selected.is_empty() {
             // Not shown at all when nothing is selected.
             return div().into_any_element();
+        }
+
+        if self.selected.len() > Self::TAGS_AGGREGATE_LIMIT {
+            return div()
+                .px_2()
+                .py_1()
+                .text_color(cx.theme().muted_foreground)
+                .child(tr_count!(
+                    "panel.tags.too_many",
+                    self.selected.len(),
+                    limit = Self::TAGS_AGGREGATE_LIMIT
+                ))
+                .into_any_element();
         }
 
         let per_feature: Vec<Vec<(String, String)>> = self

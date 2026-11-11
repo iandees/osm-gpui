@@ -87,6 +87,32 @@ pub enum DialogExpect {
     Notice,
     /// The "delete this layer and its unsaved edits?" confirmation.
     DeleteLayer,
+    /// The startup offer to restore autosaved layers.
+    Restore,
+    /// The Edit > Find dialog.
+    Find,
+}
+
+/// What the autosave script ops ask the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutosaveCmd {
+    /// Write every layer's autosave now.
+    Now,
+    /// Press Restore in the restore dialog.
+    Restore,
+    /// Press Discard in the restore dialog.
+    Discard,
+    /// Exit the process on the spot, without any clean-up, as a crash would.
+    Crash,
+}
+
+/// Which validator finding `show_finding` clicks in the side panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindingTarget {
+    /// The Nth finding in the list (0 is the first row).
+    Index(usize),
+    /// The first finding of the check with this id (e.g. `crossing_ways`).
+    Check(String),
 }
 
 /// What `assert_selection` expects.
@@ -100,6 +126,16 @@ pub enum SelectionKind {
     Multiple,
 }
 
+/// What `assert_native_appearance` expects the native app appearance (title
+/// bar and other system chrome) to be forced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAppearanceWant {
+    /// Not forced: following the OS.
+    System,
+    Light,
+    Dark,
+}
+
 /// A read-only condition about the running app, evaluated on its main thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Check {
@@ -108,9 +144,45 @@ pub enum Check {
     /// The status bar's message contains the text.
     StatusContains(String),
     Dialog(DialogExpect),
+    /// The side panel's Validation section is showing (`true`) or not.
+    ValidationPanel(bool),
+    /// What the validator finds in the pending changes: the number of errors
+    /// and warnings (when given) and of findings per check id. Read from the
+    /// Validation section while it is showing (so this also tests that it
+    /// refreshes by itself), otherwise from a fresh run.
+    Validation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
     Selection(SelectionKind),
+    NativeAppearance(NativeAppearanceWant),
+    /// Exactly this many features are selected.
+    SelectedCount(usize),
+    /// The open Find dialog's match-count line contains the text.
+    FindPreview(String),
     /// No download or upload is running and the upload dialog is not busy.
     TransferIdle,
+    /// Every layer's autosave is up to date and no autosave write or
+    /// restore is running.
+    AutosaveIdle,
+    /// This run's autosave directory holds a file for at least one layer
+    /// (`None`) or for exactly this many.
+    AutosaveFiles(Option<usize>),
+    /// The map zoom level is `level`, within `tolerance`.
+    Zoom {
+        level: f64,
+        tolerance: f64,
+    },
+    /// The imagery offset (of the layer being adjusted, else the topmost
+    /// visible imagery layer) is `east`/`north` metres, within `tolerance`.
+    ImageryOffset {
+        east: f64,
+        north: f64,
+        tolerance: f64,
+    },
+    /// Whether the Adjust imagery offset mode is active.
+    AdjustingOffset(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,17 +308,75 @@ pub enum Op {
     AssertStatusContains {
         text: String,
     },
+    /// `assert_zoom LEVEL [tol=N]`.
+    AssertZoom {
+        level: f64,
+        tolerance: f64,
+    },
+    /// `assert_imagery_offset EAST NORTH [tol=METRES]`.
+    AssertImageryOffset {
+        east: f64,
+        north: f64,
+        tolerance: f64,
+    },
+    /// `assert_adjusting_offset on|off`.
+    AssertAdjustingOffset {
+        on: bool,
+    },
     AssertDialog {
         expect: DialogExpect,
     },
     AssertSelection {
         kind: SelectionKind,
     },
+    /// Run the validator and compare its findings with what is expected
+    /// (see `Check::Validation`).
+    AssertValidation {
+        errors: Option<usize>,
+        warnings: Option<usize>,
+        checks: Vec<(String, usize)>,
+    },
+    /// Click a finding's row in the side panel's Validation section.
+    ShowFinding {
+        target: FindingTarget,
+    },
+    /// Assert the Validation section is showing or hidden.
+    AssertValidationPanel {
+        shown: bool,
+    },
+    /// Assert the native app appearance (as read back from the OS after the
+    /// app last set it) is forced to dark or light, or not forced (system).
+    AssertNativeAppearance {
+        expect: NativeAppearanceWant,
+    },
+    /// Assert exactly `count` features are selected.
+    AssertSelectedCount {
+        count: usize,
+    },
+    /// Assert the Find dialog's match-count line contains `text`.
+    AssertFindPreview {
+        text: String,
+    },
     /// Write the active layer (with its pending edits) to a `.osm` file, as
     /// File > Export does, without the native save dialog.
     ExportLayer {
         path: String,
     },
+    /// Write every layer's autosave now and wait until it is on disk. Needs
+    /// an autosave directory (`--autosave-dir`).
+    AutosaveNow,
+    /// Assert this run's autosave directory holds a layer file (any, or
+    /// exactly `count`).
+    AssertAutosaveExists {
+        count: Option<usize>,
+    },
+    /// Press Restore in the restore dialog and wait for the layers to load.
+    RestoreAutosave,
+    /// Press Discard in the restore dialog.
+    DiscardAutosave,
+    /// Exit at once without cleaning up, as a crash would (so the next run
+    /// finds an unclean session). Scripted runs only.
+    Crash,
     /// Start the browser sign-in for the active API server.
     SignIn,
     /// Wait for the sign-in to finish (someone approves it in the browser).

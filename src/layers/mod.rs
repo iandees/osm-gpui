@@ -107,6 +107,22 @@ pub trait MapLayer: Send + Sync {
         None
     }
 
+    /// The imagery shift of a tile layer (`None` for every other kind of
+    /// layer). Only where imagery pixels are painted moves; see
+    /// `imagery_offset`.
+    fn imagery_offset(&self) -> Option<crate::imagery_offset::ImageryOffset> {
+        None
+    }
+
+    /// Set the imagery shift; ignored by layers that are not imagery.
+    fn set_imagery_offset(&mut self, _offset: crate::imagery_offset::ImageryOffset) {}
+
+    /// Stable identity of the imagery source (ELI id, `osm-carto`, or
+    /// `custom:<url template>`), the key under which offsets are remembered.
+    fn imagery_id(&self) -> Option<&str> {
+        None
+    }
+
     /// Compute the set of created/modified/deleted nodes/ways needed to
     /// bring the server up to date with this layer's current data, relative
     /// to whatever snapshot it was last loaded/synced from. Default: an
@@ -138,6 +154,25 @@ pub trait MapLayer: Send + Sync {
     /// local edits, or `None` if it has nothing to export. Default: `None`.
     /// Only `OsmLayer` overrides this.
     fn export_xml(&self) -> Option<String> {
+        None
+    }
+
+    /// A counter that changes whenever the layer's data or baseline does
+    /// (see `OsmLayer`); the autosave uses it to skip layers that have not
+    /// changed since they were last written. Default: always 0.
+    fn edit_revision(&self) -> u64 {
+        0
+    }
+
+    /// The layer's current data and its server baseline, shared (not copied)
+    /// so a background thread can serialize them; see
+    /// `OsmLayer::autosave_snapshot`. Default: `None`.
+    fn autosave_snapshot(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<crate::osm::OsmData>,
+        std::sync::Arc<crate::osm::OsmData>,
+    )> {
         None
     }
 
@@ -229,6 +264,19 @@ pub trait EditableLayer {
     /// Every node and way this layer owns, nodes first, each sorted by id.
     /// Backs Edit > Select All and View > Zoom to Data.
     fn all_features(&self) -> Vec<crate::selection::FeatureRef>;
+
+    /// Run a parsed search over this layer's data (Edit > Find). `selected`
+    /// answers the `selected` filter; with `only_selected` only selected
+    /// objects are reported. Same order as `all_features`. Default: no data.
+    fn search_features(
+        &self,
+        _query: &crate::search::Query,
+        _selected: &std::collections::HashSet<(crate::selection::FeatureKind, i64)>,
+        _only_selected: bool,
+        _view: Option<crate::search::GeoBounds>,
+    ) -> Vec<crate::selection::FeatureRef> {
+        Vec::new()
+    }
 
     /// Return closed-way ("area") candidates whose *interior* contains
     /// `screen_pt`, ignoring outline distance. Separate from `hit_test`

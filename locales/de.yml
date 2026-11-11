@@ -32,6 +32,7 @@ menu:
     paste_tags: "Tags einsetzen"
     select_all: "Alles auswählen"
     deselect_all: "Auswahl aufheben"
+    find: "Suchen…"
     change_feature_type: "Objekttyp ändern …"
     apply_nsi_preset: "NSI-Vorlage anwenden …"
   tools:
@@ -48,6 +49,8 @@ menu:
     unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
     # Eine empfohlene Bildquelle im Menü.
     best_entry: "★ %{name}"
+    adjust_offset: "Luftbildversatz anpassen"
+    reset_offset: "Luftbildversatz zurücksetzen"
   view:
     title: "Darstellung"
     zoom_in: "Vergrößern"
@@ -120,6 +123,20 @@ transfer:
   busy: "Es läuft bereits eine andere Übertragung"
   waiting_keychain: "Warte auf Zugriff auf die gespeicherte Anmeldung … (auf eine Schlüsselbund-Abfrage achten)"
 
+# Das Feld über der Karte beim Anpassen des Versatzes einer Bildebene. Werte
+# in Metern nach Osten und Norden, mit zwei Nachkommastellen.
+imagery_offset:
+  title: "Luftbildversatz anpassen"
+  value: "O %{east} m, N %{north} m"
+  east: "Ost"
+  north: "Nord"
+  metres: "m"
+  hint: "Die Karte ziehen, um das Luftbild zu verschieben. Pfeiltasten schieben um 1 px (Umschalt: 10 px). Esc bricht ab."
+  reset: "Zurücksetzen"
+  done: "Fertig"
+  no_layer: "Es gibt keine sichtbare Bildebene zum Anpassen"
+  reset_done: "Luftbildversatz zurückgesetzt"
+
 # Der Hinweiskasten über der Karte, solange keine OSM-Daten geladen sind.
 welcome:
   title: "Willkommen bei osm-gpui"
@@ -129,6 +146,8 @@ welcome:
   # Ersetzt die Schaltfläche zum Herunterladen, solange der Ausschnitt zu groß ist.
   zoom_in: "Zum Herunterladen näher heranzoomen"
   open: "Datei öffnen …"
+  # Kurzinfo der Schließen-Schaltfläche; der Kasten bleibt aus, bis er in den Einstellungen wieder eingeschaltet wird.
+  dismiss: "Nicht mehr anzeigen (in den Einstellungen wieder einschaltbar)"
 
 status:
   # Einzeiliger Hinweis zu Maus und Tastatur im jeweiligen Modus.
@@ -145,6 +164,7 @@ status:
     building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc beendet"
     building_oriented_started: "Klicken oder loslassen an der Gegenecke zum Abschließen · Esc bricht ab"
     extrude: "Ziehen formt um · Alt-Ziehen: neuer Weg · Cmd/Strg-Ziehen verschiebt · Esc beendet"
+    adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
@@ -173,6 +193,11 @@ status:
   delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "Keine OSM-Daten zum Zoomen"
   nothing_selected: "Nichts ausgewählt"
+  find_no_layer: "Es gibt keine Datenebene zum Durchsuchen"
+  find_no_matches: "Keine Treffer"
+  find_selected:
+    one: "%{count} Objekt ausgewählt"
+    other: "%{count} Objekte ausgewählt"
   no_data_to_export: "Keine OSM-Daten zum Exportieren"
   exported: "Exportiert nach %{path}"
   export_failed: "Export fehlgeschlagen: %{error}"
@@ -184,6 +209,10 @@ status:
   uploaded_many:
     one: "Änderungen in %{count} Änderungssatz hochgeladen (zuletzt: Änderungssatz %{changeset})"
     other: "Änderungen in %{count} Änderungssätzen hochgeladen (zuletzt: Änderungssatz %{changeset})"
+  restored_autosave:
+    one: "%{count} Ebene mit ungesicherten Änderungen wiederhergestellt"
+    other: "%{count} Ebenen mit ungesicherten Änderungen wiederhergestellt"
+  restore_failed: "„%{layer}“ konnte nicht wiederhergestellt werden: %{error}"
   downloaded: "OSM-Daten heruntergeladen: %{summary}"
   # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
   merge:
@@ -225,6 +254,10 @@ panel:
     hide: "Ausblenden"
     show: "Einblenden"
     delete: "Löschen"
+    adjust_offset: "Luftbildversatz anpassen"
+    reset_offset: "Luftbildversatz zurücksetzen"
+    # Markierung an einer Bildebene, die verschoben gezeichnet wird; Werte in Metern.
+    offset_tag: "Versatz O %{east}, N %{north}"
   selection:
     title: "Auswahl"
     title_count:
@@ -238,6 +271,11 @@ panel:
     # `%{kind}` ist die Bezeichnung Knoten/Weg/Relation oben, `%{id}` die OSM-ID.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
+    # Eine sehr große Auswahl listet nur die ersten `%{shown}` Objekte auf;
+    # `%{count}` ist die Zahl der nicht aufgelisteten.
+    more:
+      one: "…und %{count} weiteres (die ersten %{shown} aufgelistet)"
+      other: "…und %{count} weitere (die ersten %{shown} aufgelistet)"
   fields:
     title: "Felder"
     change_type: "Objekttyp ändern …"
@@ -252,6 +290,10 @@ panel:
     title: "Tags"
     add: "Tag hinzufügen"
     empty: "(keine Tags)"
+    # Mehr als `%{limit}` Objekte ausgewählt: ihre Tags werden nicht zusammengeführt.
+    too_many:
+      one: "%{count} Objekt ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
+      other: "%{count} Objekte ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
   relations:
@@ -328,6 +370,17 @@ settings:
     size_small: "Klein"
     size_medium: "Mittel"
     size_large: "Groß"
+    scroll_group: "Scrollen"
+    invert_scroll_zoom: "Scroll-Zoom umkehren"
+    invert_scroll_zoom_description: "Die Zoomrichtung des Mausrads auf der Karte umkehren: Was bisher hineingezoomt hat, zoomt jetzt heraus. Verschieben, Pinch-Geste und Tastatur-Zoom bleiben unverändert."
+    welcome_group: "Hinweiskasten"
+    welcome_card: "Hinweiskasten anzeigen"
+    welcome_card_description: "Den Hinweiskasten über der Karte anzeigen, solange keine OpenStreetMap-Daten geladen sind."
+  editing:
+    title: "Bearbeiten"
+    autosave_group: "Wiederherstellung"
+    autosave: "Automatisch sichern"
+    autosave_description: "Ebenen mit ungesicherten Änderungen alle 30 Sekunden sichern, damit sie nach einem Absturz, einem erzwungenen Beenden oder einem Stromausfall wiederhergestellt werden können."
   account:
     title: "Konto"
     api_server_group: "API-Server"
@@ -409,6 +462,7 @@ shortcut:
   undo: "Widerrufen"
   redo: "Wiederholen"
   select_all: "Alles auswählen"
+  find: "Suchen…"
   copy_tags: "Tags kopieren"
   paste_tags: "Tags einsetzen"
   zoom_in: "Vergrößern"
@@ -605,6 +659,68 @@ dialog:
       one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
       other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
     confirm: "Ebene löschen"
+  restore:
+    title: "Ungesicherte Änderungen wiederherstellen?"
+    intro: "Die App wurde beim letzten Mal nicht ordnungsgemäß beendet. Diese Ebenen hatten Änderungen, die nicht hochgeladen wurden:"
+    layer: "%{layer}: %{edits}, %{when}"
+    edits:
+      one: "%{count} Änderung"
+      other: "%{count} Änderungen"
+    other_server: "Von %{server} heruntergeladen; der aktuelle Server ist %{current}."
+    footnote: "Der Verlauf für Rückgängig wird nicht wiederhergestellt. „Verwerfen“ löscht diese automatisch gesicherten Änderungen endgültig. Mit Esc bleiben sie erhalten und es wird beim nächsten Start erneut gefragt."
+    restore: "Wiederherstellen"
+    discard: "Verwerfen"
+    later: "Beim nächsten Mal fragen"
+  age:
+    just_now: "gerade eben"
+    minutes:
+      one: "vor %{count} Minute"
+      other: "vor %{count} Minuten"
+    hours:
+      one: "vor %{count} Stunde"
+      other: "vor %{count} Stunden"
+    days:
+      one: "vor %{count} Tag"
+      other: "vor %{count} Tagen"
+  find:
+    title: "Suchen"
+    placeholder: "Tags, Typen und Zustände suchen, z. B. amenity=cafe"
+    apply: "Suchen"
+    counting: "Zähle…"
+    no_matches: "Keine Treffer"
+    matches:
+      one: "%{count} Treffer"
+      other: "%{count} Treffer"
+    recent: "Letzte Suchen (↑ ↓ zum Abrufen)"
+    mode:
+      replace: "Auswahl ersetzen"
+      add: "Zur Auswahl hinzufügen"
+      remove: "Aus Auswahl entfernen"
+      in_selection: "In Auswahl suchen"
+    hint:
+      show: "Syntaxhilfe"
+      hide: "Syntaxhilfe ausblenden"
+      equals: "Tag hat genau diesen Wert"
+      wildcard: "* steht für beliebigen Text"
+      word: "ein Schlüssel oder Wert enthält das Wort"
+      negation: "Wege mit highway-Tag, aber ohne name"
+      counts: "Wege mit 10 oder mehr Knoten"
+      states: "neue oder geänderte Objekte"
+      keys: "Außerdem: child …, parent …, selected, inview, closed, untagged, id:N, tags:N. Cmd/Strg+1 bis 4 wählen den Modus, F1 blendet diese Hilfe ein oder aus."
+    # `%{position}` ist die Zeichenposition in der Suche, ab 1 gezählt.
+    error:
+      at: "Position %{position}: %{message}"
+      empty: "Die Suche ist leer."
+      expected_expression: "hier fehlt etwas, wonach gesucht werden soll"
+      unexpected_close_paren: "unerwartete schließende Klammer"
+      unclosed_paren: "diese Klammer wird nie geschlossen"
+      unterminated_quote: "dieses Anführungszeichen wird nie geschlossen"
+      empty_quotes: "leere Anführungszeichen"
+      missing_key: "davor wird ein Schlüssel benötigt"
+      invalid_number: "„%{text}“ ist keine Zahl"
+      invalid_range: "„%{text}“ ist kein gültiger Bereich"
+      unknown_type: "unbekannter Typ „%{text}“ (node, way oder relation verwenden)"
+      too_deep: "zu tief verschachtelt"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
     name: "Name"
@@ -688,3 +804,62 @@ error:
     not_logged_in: "Nicht angemeldet"
     expired: "Anmeldung abgelaufen und nicht erneuerbar; bitte erneut anmelden"
     keychain_read: "Die gespeicherte Anmeldung konnte nicht aus dem System-Schlüsselbund gelesen werden (%{detail}). Anmeldung und Änderungen bleiben erhalten; erneut versuchen und den Zugriff erlauben, wenn danach gefragt wird."
+
+# Die Prüfung: Probleme in den Objekten, die hochgeladen werden sollen.
+validator:
+  title: "Prüfung"
+  menu: "Prüfen"
+  close: "Schließen"
+  show_in_panel: "In der Seitenleiste anzeigen"
+  severity:
+    error: "Fehler"
+    warning: "Warnung"
+  none: "Keine Probleme gefunden."
+  nothing_pending: "Es gibt keine ausstehenden Änderungen zu prüfen."
+  errors:
+    one: "%{count} Fehler"
+    other: "%{count} Fehler"
+  warnings:
+    one: "%{count} Warnung"
+    other: "%{count} Warnungen"
+  summary_both: "%{errors}, %{warnings}"
+  more:
+    one: "… und %{count} weiteres nicht angezeigt"
+    other: "… und %{count} weitere nicht angezeigt"
+  blocked: "Behebe die Fehler vor dem Hochladen. Die Seitenleiste listet jeden einzelnen auf."
+  warnings_note: "Warnungen verhindern das Hochladen nicht, sollten aber vorher geprüft werden."
+  upload_anyway: "Trotzdem hochladen"
+  feature:
+    node: "Knoten"
+    way: "Weg"
+    relation: "Relation"
+    plain: "%{kind} %{id}"
+    named: "%{kind} %{id} (%{name})"
+    more: "%{count} weitere"
+  kind:
+    highway: "Straße"
+    railway: "Bahnstrecke"
+    waterway: "Gewässer"
+    building: "Gebäude"
+  msg:
+    untagged_way: "Der Weg hat keine Tags und gehört zu keiner Relation"
+    untagged_node: "Der Knoten hat keine Tags und gehört zu keinem Weg und keiner Relation"
+    way_too_short:
+      one: "Der Weg hat %{count} Knoten; ein Weg braucht mindestens 2"
+      other: "Der Weg hat %{count} Knoten; ein Weg braucht mindestens 2"
+    closed_way_too_short: "Der geschlossene Weg hat %{count} Knotenverweise; ein geschlossener Weg braucht mindestens 4"
+    duplicate_way_node: "Der Weg nennt den Knoten %{node} zweimal hintereinander"
+    duplicate_nodes: "%{count} Knoten liegen an derselben Position"
+    crossing_ways: "%{a} und %{b} kreuzen sich ohne gemeinsamen Knoten"
+    area_tags_on_open_way: "Mit %{tag} getaggt, was eine Fläche ergibt, aber der Weg ist nicht geschlossen"
+    multipolygon_no_outer: "Das Multipolygon hat kein äußeres Mitglied"
+    multipolygon_role: "Das Multipolygon hat Weg-Mitglieder, deren Rolle leer oder nicht outer oder inner ist"
+    multipolygon_open_ring: "Das Multipolygon hat Ringe, die nicht geschlossen sind"
+    relation_empty: "Die Relation hat keine Mitglieder"
+    relation_no_type: "Die Relation hat kein type-Tag"
+    tag_empty_key: "Tag mit leerem Schlüssel (Wert „%{value}“)"
+    tag_empty_value: "Das Tag „%{key}“ hat einen leeren Wert"
+    tag_too_long: "Das Tag „%{key}“ hat einen Schlüssel oder Wert mit mehr als %{max} Zeichen"
+    tag_whitespace: "Das Tag „%{key}“ hat führende oder abschließende Leerzeichen"
+    fixme: "Enthält einen Korrekturhinweis: %{key}=%{value}"
+    deprecated_tag: "Veraltetes Tag %{old}; stattdessen %{new} verwenden"

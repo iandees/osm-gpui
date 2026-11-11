@@ -159,14 +159,74 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
                 text: text.to_string(),
             })
         }
+        "assert_imagery_offset" => parse_assert_imagery_offset(line_no, &rest),
+        "assert_zoom" => parse_assert_zoom(line_no, &rest),
+        "assert_adjusting_offset" => match rest.as_slice() {
+            ["on"] => Ok(Op::AssertAdjustingOffset { on: true }),
+            ["off"] => Ok(Op::AssertAdjustingOffset { on: false }),
+            _ => Err(err(line_no, "assert_adjusting_offset: want on|off")),
+        },
+        "assert_selected_count" => match rest.as_slice() {
+            [n] => Ok(Op::AssertSelectedCount {
+                count: n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_selected_count: bad count '{}': {}", n, e),
+                    )
+                })?,
+            }),
+            _ => Err(err(line_no, "assert_selected_count: want COUNT")),
+        },
+        "assert_find_preview" => {
+            let text = text_after(line, head, 0);
+            if text.is_empty() {
+                return Err(err(line_no, "assert_find_preview: want TEXT"));
+            }
+            Ok(Op::AssertFindPreview {
+                text: text.to_string(),
+            })
+        }
         "assert_dialog" => parse_assert_dialog(line_no, &rest),
         "assert_selection" => parse_assert_selection(line_no, &rest),
+        "assert_validation" => parse_assert_validation(line_no, &rest),
+        "show_finding" => parse_show_finding(line_no, &rest),
+        "assert_validation_panel" => parse_assert_validation_panel(line_no, &rest),
+        "assert_native_appearance" => {
+            let expect = match rest.as_slice() {
+                ["system"] => NativeAppearanceWant::System,
+                ["light"] => NativeAppearanceWant::Light,
+                ["dark"] => NativeAppearanceWant::Dark,
+                _ => {
+                    return Err(err(
+                        line_no,
+                        "assert_native_appearance: want system|light|dark",
+                    ))
+                }
+            };
+            Ok(Op::AssertNativeAppearance { expect })
+        }
         "export_layer" => match rest.as_slice() {
             [path] => Ok(Op::ExportLayer {
                 path: path.to_string(),
             }),
             _ => Err(err(line_no, "export_layer: want PATH")),
         },
+        "autosave_now" => no_args(line_no, "autosave_now", &rest, Op::AutosaveNow),
+        "assert_autosave_exists" => match rest.as_slice() {
+            [] => Ok(Op::AssertAutosaveExists { count: None }),
+            [n] => Ok(Op::AssertAutosaveExists {
+                count: Some(n.parse::<usize>().map_err(|e| {
+                    err(
+                        line_no,
+                        format!("assert_autosave_exists: bad count '{}': {}", n, e),
+                    )
+                })?),
+            }),
+            _ => Err(err(line_no, "assert_autosave_exists: want [COUNT]")),
+        },
+        "restore_autosave" => no_args(line_no, "restore_autosave", &rest, Op::RestoreAutosave),
+        "discard_autosave" => no_args(line_no, "discard_autosave", &rest, Op::DiscardAutosave),
+        "crash" => no_args(line_no, "crash", &rest, Op::Crash),
         "sign_in" => no_args(line_no, "sign_in", &rest, Op::SignIn),
         "wait_signed_in" => Ok(Op::WaitSignedIn {
             timeout: optional_duration(line_no, "wait_signed_in", &rest, Duration::from_secs(200))?,
@@ -292,8 +352,84 @@ fn parse_feature_kind_word(word: &str) -> Option<FeatureKind> {
     }
 }
 
+/// `assert_validation errors=N warnings=M CHECK_ID=COUNT ...`: at least one
+/// pair; `CHECK_ID` is a validator check id such as `crossing_ways`.
+fn parse_assert_validation(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_validation: want errors=N and/or warnings=N and/or CHECK_ID=COUNT";
+    if rest.is_empty() {
+        return Err(err(line_no, usage));
+    }
+    let mut errors = None;
+    let mut warnings = None;
+    let mut checks = Vec::new();
+    for pair in rest {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(err(line_no, usage));
+        };
+        let count = value.parse::<usize>().map_err(|e| {
+            err(
+                line_no,
+                format!("assert_validation: bad count '{}': {}", value, e),
+            )
+        })?;
+        match key {
+            "errors" => errors = Some(count),
+            "warnings" => warnings = Some(count),
+            id if crate::validator::Check::from_id(id).is_some() => {
+                checks.push((id.to_string(), count))
+            }
+            other => {
+                return Err(err(
+                    line_no,
+                    format!("assert_validation: unknown check '{}'", other),
+                ))
+            }
+        }
+    }
+    Ok(Op::AssertValidation {
+        errors,
+        warnings,
+        checks,
+    })
+}
+
+/// `show_finding N` (0 is the first row) or `show_finding CHECK_ID`.
+fn parse_show_finding(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let target = match rest {
+        [word] => match word.parse::<usize>() {
+            Ok(n) => FindingTarget::Index(n),
+            Err(_) if crate::validator::Check::from_id(word).is_some() => {
+                FindingTarget::Check(word.to_string())
+            }
+            Err(_) => {
+                return Err(err(
+                    line_no,
+                    format!(
+                        "show_finding: '{}' is neither a row number nor a check id",
+                        word
+                    ),
+                ))
+            }
+        },
+        _ => return Err(err(line_no, "show_finding: want ROW or CHECK_ID")),
+    };
+    Ok(Op::ShowFinding { target })
+}
+
+/// `assert_validation_panel shown|hidden`.
+fn parse_assert_validation_panel(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    match rest {
+        ["shown"] => Ok(Op::AssertValidationPanel { shown: true }),
+        ["hidden"] => Ok(Op::AssertValidationPanel { shown: false }),
+        _ => Err(err(
+            line_no,
+            "assert_validation_panel: want shown or hidden",
+        )),
+    }
+}
+
 fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|conflict [KIND] [node|way|relation]";
+    let usage = "assert_dialog: want none|editing|in_flight|failed|sign_in|notice|delete_layer|restore|find|conflict [KIND] [node|way|relation]";
     let Some((head, tail)) = rest.split_first() else {
         return Err(err(line_no, usage));
     };
@@ -305,6 +441,8 @@ fn parse_assert_dialog(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> 
         ("sign_in", []) => DialogExpect::SignIn,
         ("notice", []) => DialogExpect::Notice,
         ("delete_layer", []) => DialogExpect::DeleteLayer,
+        ("restore", []) => DialogExpect::Restore,
+        ("find", []) => DialogExpect::Find,
         ("conflict", words) => {
             let mut kind = None;
             let mut object = None;
@@ -349,6 +487,50 @@ fn parse_assert_selection(line_no: usize, rest: &[&str]) -> Result<Op, ParseErro
         }
     };
     Ok(Op::AssertSelection { kind })
+}
+
+/// `assert_imagery_offset EAST NORTH [tol=METRES]` (default tolerance 0.05 m).
+fn parse_assert_imagery_offset(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_imagery_offset: want EAST NORTH [tol=METRES]";
+    let (east, north, tolerance) = match rest {
+        [e, n] => (e, n, None),
+        [e, n, tol] => (e, n, tol.strip_prefix("tol=")),
+        _ => return Err(err(line_no, usage)),
+    };
+    if rest.len() == 3 && tolerance.is_none() {
+        return Err(err(line_no, usage));
+    }
+    Ok(Op::AssertImageryOffset {
+        east: parse_f64(line_no, east, "assert_imagery_offset east")?,
+        north: parse_f64(line_no, north, "assert_imagery_offset north")?,
+        tolerance: match tolerance {
+            Some(t) => parse_f64(line_no, t, "assert_imagery_offset tol")?,
+            None => 0.05,
+        },
+    })
+}
+
+/// `assert_zoom LEVEL [tol=N]` (default tolerance 0.001 zoom levels).
+fn parse_assert_zoom(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
+    let usage = "assert_zoom: want LEVEL [tol=N]";
+    let (level, tolerance) = match rest {
+        [l] => (l, None),
+        [l, tol] => (
+            l,
+            Some(
+                tol.strip_prefix("tol=")
+                    .ok_or_else(|| err(line_no, usage))?,
+            ),
+        ),
+        _ => return Err(err(line_no, usage)),
+    };
+    Ok(Op::AssertZoom {
+        level: parse_f64(line_no, level, "assert_zoom level")?,
+        tolerance: match tolerance {
+            Some(t) => parse_f64(line_no, t, "assert_zoom tol")?,
+            None => 0.001,
+        },
+    })
 }
 
 fn parse_u32(line_no: usize, s: &str, field: &str) -> Result<u32, ParseError> {
@@ -820,6 +1002,22 @@ mod tests {
     }
 
     #[test]
+    fn assert_native_appearance_parses() {
+        for (word, want) in [
+            ("system", NativeAppearanceWant::System),
+            ("light", NativeAppearanceWant::Light),
+            ("dark", NativeAppearanceWant::Dark),
+        ] {
+            assert_eq!(
+                parse(&format!("assert_native_appearance {word}")).unwrap()[0].op,
+                Op::AssertNativeAppearance { expect: want }
+            );
+        }
+        assert!(parse("assert_native_appearance").is_err());
+        assert!(parse("assert_native_appearance blue").is_err());
+    }
+
+    #[test]
     fn assert_selected_none_parses() {
         assert_eq!(
             parse("assert_selected none").unwrap()[0].op,
@@ -1011,6 +1209,63 @@ mod tests {
     #[test]
     fn assert_mode_requires_arg() {
         assert!(parse("assert_mode").is_err());
+    }
+
+    #[test]
+    fn assert_imagery_offset_parses_with_and_without_tolerance() {
+        assert_eq!(
+            parse("assert_imagery_offset 3.2 -1.75").unwrap()[0].op,
+            Op::AssertImageryOffset {
+                east: 3.2,
+                north: -1.75,
+                tolerance: 0.05
+            }
+        );
+        assert_eq!(
+            parse("assert_imagery_offset 0 0 tol=0.2").unwrap()[0].op,
+            Op::AssertImageryOffset {
+                east: 0.0,
+                north: 0.0,
+                tolerance: 0.2
+            }
+        );
+        assert!(parse("assert_imagery_offset 1").is_err());
+        assert!(parse("assert_imagery_offset 1 2 0.2").is_err());
+        assert!(parse("assert_imagery_offset a b").is_err());
+    }
+
+    #[test]
+    fn assert_zoom_parses_with_and_without_tolerance() {
+        assert_eq!(
+            parse("assert_zoom 12.05").unwrap()[0].op,
+            Op::AssertZoom {
+                level: 12.05,
+                tolerance: 0.001
+            }
+        );
+        assert_eq!(
+            parse("assert_zoom 12 tol=0.1").unwrap()[0].op,
+            Op::AssertZoom {
+                level: 12.0,
+                tolerance: 0.1
+            }
+        );
+        assert!(parse("assert_zoom").is_err());
+        assert!(parse("assert_zoom 12 0.1").is_err());
+        assert!(parse("assert_zoom x").is_err());
+    }
+
+    #[test]
+    fn assert_adjusting_offset_wants_on_or_off() {
+        assert_eq!(
+            parse("assert_adjusting_offset on").unwrap()[0].op,
+            Op::AssertAdjustingOffset { on: true }
+        );
+        assert_eq!(
+            parse("assert_adjusting_offset off").unwrap()[0].op,
+            Op::AssertAdjustingOffset { on: false }
+        );
+        assert!(parse("assert_adjusting_offset").is_err());
     }
 
     #[test]

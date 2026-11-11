@@ -32,6 +32,7 @@ menu:
     delete: "Delete"
     select_all: "Select All"
     deselect_all: "Deselect All"
+    find: "Find…"
     change_feature_type: "Change Feature Type…"
     apply_nsi_preset: "Apply NSI Preset…"
   tools:
@@ -48,6 +49,8 @@ menu:
     unavailable: "(Imagery index unavailable)"
     # A recommended imagery source in the menu.
     best_entry: "★ %{name}"
+    adjust_offset: "Adjust Imagery Offset"
+    reset_offset: "Reset Imagery Offset"
   view:
     title: "View"
     zoom_in: "Zoom In"
@@ -123,6 +126,20 @@ transfer:
   # Shown while the app waits on the system keychain's access prompt for the saved login.
   waiting_keychain: "Waiting for access to your saved login… (check for a keychain prompt)"
 
+# The panel over the map while adjusting an imagery layer's offset. Values
+# are ground metres east and north, with two decimals.
+imagery_offset:
+  title: "Adjust imagery offset"
+  value: "E %{east} m, N %{north} m"
+  east: "East"
+  north: "North"
+  metres: "m"
+  hint: "Drag the map to move the imagery. Arrow keys nudge by 1 px (Shift: 10 px). Esc cancels."
+  reset: "Reset"
+  done: "Done"
+  no_layer: "There is no visible imagery layer to adjust"
+  reset_done: "Imagery offset reset"
+
 # The card over the map while no OSM data is loaded.
 welcome:
   title: "Welcome to osm-gpui"
@@ -132,6 +149,8 @@ welcome:
   # Shown in place of the download button while the view covers too large an area.
   zoom_in: "Zoom in to download"
   open: "Open file…"
+  # Tooltip of the close button; the card stays hidden until turned back on in Settings.
+  dismiss: "Don't show this again (can be turned back on in Settings)"
 
 status:
   # One-line hint for what the mouse and keyboard do in each mode.
@@ -148,6 +167,7 @@ status:
     building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
     building_oriented_started: "Click or release at the opposite corner to finish · Esc to cancel"
     extrude: "Drag to reshape · Alt-drag for a new way · Cmd/Ctrl-drag to move · Esc to exit"
+    adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
     other: "%{count} unsaved edits"
@@ -176,6 +196,11 @@ status:
   delete_skipped: "%{done}; %{reason}"
   no_data_to_zoom: "No OSM data to zoom to"
   nothing_selected: "Nothing selected"
+  find_no_layer: "There is no data layer to search"
+  find_no_matches: "No matches"
+  find_selected:
+    one: "%{count} feature selected"
+    other: "%{count} features selected"
   no_data_to_export: "No OSM data to export"
   exported: "Exported to %{path}"
   export_failed: "Export failed: %{error}"
@@ -188,6 +213,12 @@ status:
   uploaded_many:
     one: "Uploaded changes in %{count} changeset (last: changeset %{changeset})"
     other: "Uploaded changes in %{count} changesets (last: changeset %{changeset})"
+  # After restoring autosaved layers at startup.
+  restored_autosave:
+    one: "Restored %{count} layer with unsaved edits"
+    other: "Restored %{count} layers with unsaved edits"
+  # `%{layer}` is the layer's name, `%{error}` the reason.
+  restore_failed: "Could not restore \"%{layer}\": %{error}"
   downloaded: "Downloaded OSM data: %{summary}"
   # The parts of the download summary above, joined with `separator`.
   merge:
@@ -229,6 +260,10 @@ panel:
     hide: "Hide"
     show: "Show"
     delete: "Delete"
+    adjust_offset: "Adjust imagery offset"
+    reset_offset: "Reset imagery offset"
+    # Tag on an imagery layer that is drawn shifted; the values are metres.
+    offset_tag: "offset E %{east}, N %{north}"
   selection:
     title: "Selection"
     title_count:
@@ -242,6 +277,11 @@ panel:
     # `%{kind}` is the Node/Way/Relation label above, `%{id}` the OSM id.
     row: "%{kind} %{id}"
     row_named: "%{name} · %{kind} %{id}"
+    # A very large selection lists only its first `%{shown}` features;
+    # `%{count}` is how many are left out.
+    more:
+      one: "…and %{count} more (first %{shown} listed)"
+      other: "…and %{count} more (first %{shown} listed)"
   fields:
     title: "Fields"
     change_type: "Change feature type…"
@@ -256,6 +296,10 @@ panel:
     title: "Tags"
     add: "Add tag"
     empty: "(no tags)"
+    # More than `%{limit}` features selected: their tags are not combined.
+    too_many:
+      one: "%{count} feature selected: too many to show combined tags (limit %{limit})"
+      other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
   relations:
@@ -332,6 +376,17 @@ settings:
     size_small: "Small"
     size_medium: "Medium"
     size_large: "Large"
+    scroll_group: "Scrolling"
+    invert_scroll_zoom: "Invert scroll zoom"
+    invert_scroll_zoom_description: "Reverse the direction the mouse wheel zooms the map: what zoomed in now zooms out. Panning, pinch and keyboard zoom are not affected."
+    welcome_group: "Welcome card"
+    welcome_card: "Show welcome card"
+    welcome_card_description: "Show the welcome card over the map while no OpenStreetMap data is loaded."
+  editing:
+    title: "Editing"
+    autosave_group: "Recovery"
+    autosave: "Autosave"
+    autosave_description: "Save layers with unsaved edits every 30 seconds, so they can be restored after a crash, a force quit or a power failure."
   account:
     title: "Account"
     api_server_group: "API Server"
@@ -413,6 +468,7 @@ shortcut:
   undo: "Undo"
   redo: "Redo"
   select_all: "Select All"
+  find: "Find…"
   copy_tags: "Copy Tags"
   paste_tags: "Paste Tags"
   zoom_in: "Zoom In"
@@ -614,6 +670,73 @@ dialog:
       one: "Layer \"%{layer}\" has %{count} unsaved edit. Deleting the layer discards it. This cannot be undone."
       other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
     confirm: "Delete Layer"
+  # Offered at startup when the app did not exit normally last time.
+  restore:
+    title: "Restore Unsaved Edits?"
+    intro: "The app did not close normally last time. These layers had edits that were not uploaded:"
+    # `%{layer}` is the layer's name, `%{edits}` and `%{when}` the two
+    # phrases below.
+    layer: "%{layer}: %{edits}, %{when}"
+    edits:
+      one: "%{count} edit"
+      other: "%{count} edits"
+    # `%{server}` is the API server the layer was downloaded from,
+    # `%{current}` the server in use now.
+    other_server: "Downloaded from %{server}; the current server is %{current}."
+    footnote: "Undo history is not restored. Discard deletes these autosaved edits for good. Escape keeps them and asks again next time."
+    restore: "Restore"
+    discard: "Discard"
+    later: "Ask Me Next Time"
+  age:
+    just_now: "just now"
+    minutes:
+      one: "%{count} minute ago"
+      other: "%{count} minutes ago"
+    hours:
+      one: "%{count} hour ago"
+      other: "%{count} hours ago"
+    days:
+      one: "%{count} day ago"
+      other: "%{count} days ago"
+  find:
+    title: "Find"
+    placeholder: "Search tags, types and states, e.g. amenity=cafe"
+    apply: "Find"
+    counting: "Counting…"
+    no_matches: "No matches"
+    matches:
+      one: "%{count} match"
+      other: "%{count} matches"
+    recent: "Recent searches (↑ ↓ to recall)"
+    mode:
+      replace: "Replace selection"
+      add: "Add to selection"
+      remove: "Remove from selection"
+      in_selection: "Find in selection"
+    hint:
+      show: "Syntax help"
+      hide: "Hide syntax help"
+      equals: "tag equals value"
+      wildcard: "* matches any text"
+      word: "any key or value contains the word"
+      negation: "ways with a highway tag but no name"
+      counts: "ways with 10 or more nodes"
+      states: "new or changed objects"
+      keys: "Also: child …, parent …, selected, inview, closed, untagged, id:N, tags:N. Cmd/Ctrl+1 to 4 pick the mode, F1 toggles this help."
+    # `%{position}` is the 1-based character position in the query.
+    error:
+      at: "Position %{position}: %{message}"
+      empty: "The query is empty."
+      expected_expression: "something to search for is missing here"
+      unexpected_close_paren: "unexpected closing parenthesis"
+      unclosed_paren: "this parenthesis is never closed"
+      unterminated_quote: "this quotation mark is never closed"
+      empty_quotes: "empty quotes"
+      missing_key: "a key is needed before this"
+      invalid_number: "\"%{text}\" is not a number"
+      invalid_range: "\"%{text}\" is not a valid range"
+      unknown_type: "unknown type \"%{text}\" (use node, way or relation)"
+      too_deep: "nested too deeply"
   custom_imagery:
     title: "Custom Imagery"
     name: "Name"
@@ -699,3 +822,66 @@ error:
     expired: "Login expired and can't be refreshed; please sign in again"
     # `%{detail}` is the system's reason (e.g. "access denied").
     keychain_read: "Couldn't read your saved login from the system keychain (%{detail}). Your login and edits are kept; try again and allow access when asked."
+
+# The validator: problems found in the objects about to be uploaded.
+validator:
+  title: "Validation"
+  menu: "Validate"
+  close: "Close"
+  show_in_panel: "Show in side panel"
+  severity:
+    error: "Error"
+    warning: "Warning"
+  none: "No problems found."
+  nothing_pending: "There are no pending changes to check."
+  # `%{count}` problems of that severity.
+  errors:
+    one: "%{count} error"
+    other: "%{count} errors"
+  warnings:
+    one: "%{count} warning"
+    other: "%{count} warnings"
+  # `%{errors}` and `%{warnings}` are the two counts above.
+  summary_both: "%{errors}, %{warnings}"
+  more:
+    one: "…and %{count} more not shown"
+    other: "…and %{count} more not shown"
+  blocked: "Fix the errors before uploading. The side panel lists each one."
+  warnings_note: "Warnings do not block the upload, but check them first."
+  upload_anyway: "Upload anyway"
+  # Names of the objects a finding is about.
+  feature:
+    node: "Node"
+    way: "Way"
+    relation: "Relation"
+    plain: "%{kind} %{id}"
+    named: "%{kind} %{id} (%{name})"
+    more: "%{count} more"
+  # Kinds of way that can cross (lower case, in a sentence).
+  kind:
+    highway: "highway"
+    railway: "railway"
+    waterway: "waterway"
+    building: "building"
+  msg:
+    untagged_way: "Way has no tags and is not part of a relation"
+    untagged_node: "Node has no tags and is not part of a way or relation"
+    way_too_short:
+      one: "Way has %{count} node; a way needs at least 2"
+      other: "Way has %{count} nodes; a way needs at least 2"
+    closed_way_too_short: "Closed way has %{count} node references; a closed way needs at least 4"
+    duplicate_way_node: "Way lists node %{node} twice in a row"
+    duplicate_nodes: "%{count} nodes are at the same position"
+    crossing_ways: "A %{a} and a %{b} cross without a shared node"
+    area_tags_on_open_way: "Tagged %{tag}, which makes an area, but the way is not closed"
+    multipolygon_no_outer: "Multipolygon has no outer member"
+    multipolygon_role: "Multipolygon has way members whose role is empty or not outer or inner"
+    multipolygon_open_ring: "Multipolygon has rings that do not close"
+    relation_empty: "Relation has no members"
+    relation_no_type: "Relation has no type tag"
+    tag_empty_key: "Tag with an empty key (value \"%{value}\")"
+    tag_empty_value: "Tag \"%{key}\" has an empty value"
+    tag_too_long: "Tag \"%{key}\" has a key or value longer than %{max} characters"
+    tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
+    fixme: "Has a note to fix: %{key}=%{value}"
+    deprecated_tag: "Deprecated tag %{old}; use %{new}"

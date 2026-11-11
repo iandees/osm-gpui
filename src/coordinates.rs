@@ -170,6 +170,19 @@ impl CoordinateTransform {
         GpuiPoint { x, y }
     }
 
+    /// A copyable snapshot of the Mercator-to-screen mapping, for hot loops
+    /// that project hundreds of thousands of vertices per frame.
+    pub fn projector(&self) -> MercatorProjector {
+        MercatorProjector {
+            cx: self.mercator_center_x,
+            cy: self.mercator_center_y,
+            ppm_x: self.pixels_per_meter_x,
+            ppm_y: self.pixels_per_meter_y,
+            half_w: self.screen_size.width.as_f32() * 0.5,
+            half_h: self.screen_size.height.as_f32() * 0.5,
+        }
+    }
+
     /// Cheap visibility test in Mercator space (no trig, no GeoBounds conversion).
     #[inline]
     pub fn mercator_in_view(&self, mx: f64, my: f64) -> bool {
@@ -350,15 +363,16 @@ impl CoordinateTransform {
     }
 }
 
+/// The zoom [`fit_bounds_to_viewport`] uses for bounds with no extent.
+pub const POINT_ZOOM: f64 = 19.0;
+
 /// Compute the `(center_lat, center_lon, zoom_level)` that fits a
 /// geographic bounding box within a viewport of `screen_width`×
 /// `screen_height` pixels, with a 20% margin and zoom clamped to `[1, 18]`.
 ///
-/// Degenerate bounds (zero width and/or height — e.g. a single point, or
-/// all data at one latitude) are padded by a small fixed amount on the
-/// affected axis/axes before the Mercator conversion, so the zoom
-/// computation never divides by zero; the returned center still reflects
-/// the original (unpadded) point in that case.
+/// Degenerate bounds: with no extent on one axis (all data at one latitude)
+/// only the other axis decides the zoom; with none on either (a single
+/// point) the result is centred on it at [`POINT_ZOOM`].
 ///
 /// This is the pure computation extracted from `MapViewer::fit_to_osm_data`
 /// — the caller is still responsible for first reducing a dataset's nodes
@@ -371,24 +385,23 @@ pub fn fit_bounds_to_viewport(
     screen_width: f64,
     screen_height: f64,
 ) -> (f64, f64, f64) {
-    let mut min_lat = min_lat;
-    let mut max_lat = max_lat;
-    let mut min_lon = min_lon;
-    let mut max_lon = max_lon;
-
     let mut center_lat = (min_lat + max_lat) / 2.0;
     let mut center_lon = (min_lon + max_lon) / 2.0;
 
-    // If bounding box height is zero, set to a small value
-    if (max_lat - min_lat).abs() < 1e-6 {
-        center_lat = min_lat;
-        min_lat -= 0.005;
-        max_lat += 0.005;
+    // An axis with no extent does not constrain the zoom. (It used to be
+    // padded by 0.005 degrees, about a kilometre, which zoomed a point or a
+    // perfectly horizontal or vertical way out to about z16.) Both axes
+    // without extent is a single point: centre on it at an editing zoom.
+    let flat_lat = (max_lat - min_lat).abs() < 1e-6;
+    let flat_lon = (max_lon - min_lon).abs() < 1e-6;
+    if flat_lat && flat_lon {
+        return (center_lat, center_lon, POINT_ZOOM);
     }
-    if (max_lon - min_lon).abs() < 1e-6 {
+    if flat_lat {
+        center_lat = min_lat;
+    }
+    if flat_lon {
         center_lon = min_lon;
-        min_lon -= 0.005;
-        max_lon += 0.005;
     }
 
     // Calculate required zoom to fit bounding box
@@ -403,11 +416,50 @@ pub fn fit_bounds_to_viewport(
     // Calculate zoom to fit bbox in screen
     let world_width_meters = 40075016.686;
     let tile_size = 256.0;
-    let zoom_x = ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2();
-    let zoom_y = ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2();
+    let zoom_x = if flat_lon {
+        f64::INFINITY
+    } else {
+        ((screen_width * world_width_meters) / (bbox_width * tile_size * margin)).log2()
+    };
+    let zoom_y = if flat_lat {
+        f64::INFINITY
+    } else {
+        ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2()
+    };
     let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0); // Clamp zoom to [1, 18]
 
     (center_lat, center_lon, zoom_level)
+}
+
+/// The Mercator-to-screen mapping of a [`CoordinateTransform`] as plain
+/// numbers: the same arithmetic as `mercator_to_screen`, without the
+/// `Pixels` wrapping and the per-call finite checks, so a hot loop can inline
+/// it and test finiteness once per point.
+#[derive(Debug, Clone, Copy)]
+pub struct MercatorProjector {
+    cx: f64,
+    cy: f64,
+    ppm_x: f64,
+    ppm_y: f64,
+    half_w: f32,
+    half_h: f32,
+}
+
+impl MercatorProjector {
+    /// Screen position (view-relative pixels) of a Web Mercator point. The
+    /// result is not finite only if the input is not.
+    #[inline(always)]
+    pub fn to_screen(&self, mx: f64, my: f64) -> (f32, f32) {
+        (
+            self.half_w + ((mx - self.cx) * self.ppm_x) as f32,
+            self.half_h - ((my - self.cy) * self.ppm_y) as f32,
+        )
+    }
+
+    /// Pixels per Web Mercator meter along x and y.
+    pub fn pixels_per_meter(&self) -> (f64, f64) {
+        (self.ppm_x, self.ppm_y.abs())
+    }
 }
 
 /// Validates that a point has finite coordinates
@@ -520,7 +572,17 @@ mod tests {
         assert!((center_lat - 40.7128).abs() < 1e-9);
         assert!((center_lon - (-74.0060)).abs() < 1e-9);
         assert!(zoom.is_finite());
-        assert!((1.0..=18.0).contains(&zoom));
+        // Centred on the point at an editing zoom, not zoomed out to ~z16.
+        assert!((zoom - POINT_ZOOM).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fit_bounds_zero_extent_never_zooms_out_below_editing_zoom() {
+        // Whatever the window size, a point is centred at z19.
+        for (w, h) in [(300.0, 200.0), (800.0, 600.0), (3000.0, 2000.0)] {
+            let (_, _, zoom) = fit_bounds_to_viewport(10.0, 10.0, 20.0, 20.0, w, h);
+            assert!(zoom >= 19.0, "{w}x{h} gave z{zoom}");
+        }
     }
 
     #[test]
@@ -531,5 +593,16 @@ mod tests {
         assert!((center_lat - 40.0).abs() < 1e-9);
         assert!((center_lon - (-74.0)).abs() < 1e-9);
         assert!(zoom.is_finite());
+    }
+
+    #[test]
+    fn fit_bounds_a_flat_short_line_fits_by_its_length_not_a_padded_kilometre() {
+        // A way 20 m long and exactly horizontal (the "Short Cut" of the
+        // validator screenshots) used to be padded to 1 km tall: z16.
+        let (_, _, zoom) = fit_bounds_to_viewport(40.712, 40.712, -74.0062, -74.0060, 800.0, 600.0);
+        assert!((zoom - 18.0).abs() < 1e-9, "z{zoom}");
+        // Likewise exactly vertical.
+        let (_, _, zoom) = fit_bounds_to_viewport(40.7120, 40.7122, -74.006, -74.006, 800.0, 600.0);
+        assert!((zoom - 18.0).abs() < 1e-9, "z{zoom}");
     }
 }
