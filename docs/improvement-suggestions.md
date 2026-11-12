@@ -1,6 +1,6 @@
 # osm-gpui Improvement Suggestions
 
-Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06 and brought up to date against the merged PRs on 2026-11-11 (through PR #222). Each remaining item is scoped so an agent can implement it without re-doing the analysis. Done items are collapsed to one line with the PR that shipped them; file references for remaining items point at the current tree (line numbers are omitted because they drift quickly — grep for the named functions).
+Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06 and brought up to date against the merged PRs on 2026-11-11 (through PR #229). Each remaining item is scoped so an agent can implement it without re-doing the analysis. Done items are collapsed to one line with the PR that shipped them; file references for remaining items point at the current tree (line numbers are omitted because they drift quickly — grep for the named functions).
 
 ---
 
@@ -74,7 +74,7 @@ Consolidated from a four-dimension code review (architecture, editing UX, render
 ✅ Done — MapCSS `fill-color`/`fill-opacity` with an `area` selector and `assets/default.mapcss` entries (#70); area presets for closed ways (#131).
 
 ### 3.2 Nondeterministic way draw order (frame-to-frame z flicker)
-🚧 In progress — being worked on in a separate PR. Current state: ways are iterated in id-sorted order (`sorted_ways` in `src/layers/osm_layer.rs`) but there is still no `z-index` in MapCSS and no area < casing < line layering.
+✅ Done — MapCSS `z-index` plus a stable layered draw order (area fills < casings < lines per `z-index` layer, id-sorted within a layer) (#225). See `z_key` and the batch ordering in `src/layers/osm_layer.rs`.
 
 ### 3.3 Click hit-testing is O(dataset)
 ✅ Done — R-tree candidate query plus refinement (#57).
@@ -86,11 +86,7 @@ Consolidated from a four-dimension code review (architecture, editing UX, render
 ✅ Done — `decimate_segments()` (#57).
 
 ### 3.13 Tile layer: parent-fallback element built and asset-probed every frame
-Still open. `TileLayer::render_elements` (`src/layers/tile_layer.rs`) still builds the parent-fallback `img` (with its own `use_asset` lookup) for every visible tile unconditionally, even when the child tile is already loaded. Tile corners are still projected via `tile_screen_rect_shifted`, which does geo-to-screen math per tile. (Seam fixes #51, #62, #100 touched this code but did not change the per-frame cost.)
-
-**Implement:** probe the child asset first (`window.use_asset::<TileAsset>` returns `Option`) and only attach the parent fallback when the child isn't ready; use precomputed mercator tile bounds.
-
-✅ Done — the child asset is probed first and the parent fallback is only built while it is not ready (tile corners already use mercator bounds).
+✅ Done — the child asset is probed first and the parent fallback is only built while it is not ready; tile corners use mercator bounds (#224).
 
 ### 3.5 Per-frame synchronous `read_dir` on the UI thread
 ✅ Done — the cached-file count is recomputed at most once per second (`cached_file_count` / `STATS_TTL` in `src/tile_cache.rs`). (Stats are still gathered every frame by `get_layer_stats`, but that is now a cheap read.)
@@ -102,20 +98,51 @@ Still open. `TileLayer::render_elements` (`src/layers/tile_layer.rs`) still buil
 ✅ Done (partial) — two-pass halo, round markers and hover highlight shipped (#93), hover drawn above selection (#217). Remaining: the accent is still the `SELECTION_ACCENT` constant in `src/layers/osm_layer.rs` rather than sourced from `cx.theme()`, and box-select still uses a different color.
 
 ### 3.8 MapCSS subset is minimal
-🚧 In progress — being worked on in a separate PR. Current state: `fill-color`/`fill-opacity` added (#70); zoom selectors are still parsed-and-discarded and `casing-*`, `dashes`, `text`, `icon-image`, `z-index`, `rgb()`/`rgba()` are not supported (see the header of `src/style/mapcss.rs`).
+✅ Done — #225 added zoom-range selectors (`way|z12-16`, tested against `floor(zoom)`; ways use a per-signature zoom table, see the "Zoom and caching" header of `src/style/mapcss.rs`), `casing-width`/`casing-color`, `z-index`, `dashes`, `opacity`, `rgb()`/`rgba()` (alpha becomes opacity), and parsed label properties (`text`, `font-size`, `text-color`, `text-halo-color`/`-radius`, `text-offset`, `text-position`, `icon-image`, `icon-width`). Still unsupported: other pseudo-classes, `eval()`, and any `label-priority`-style property (see 3.14). Node *stroke/marker* styles are still resolved once at `NODE_STYLE_ZOOM = 18.0` (`src/layers/osm_layer.rs`), so a zoom selector on a node only affects its marker at zoom 18; node *labels and icons* do resolve at the real zoom (`resolve_node_label`).
 
 ### 3.9 No labels, POI icons, or one-way arrows
-🚧 In progress — being worked on in a separate PR. Current state: direction arrows on ways landed in #93 (and relations drawn via #139, #144), but there are no `name` labels and no POI icons on the map.
+✅ Done (mostly) — shipped in pieces:
+- Point labels and preset POI icons (`src/layers/labels.rs`): uniform-grid collision index, greedy priority placement with several anchors, placement recomputed when the camera settles (120 ms) with pans just re-projecting, hysteresis so winners stay put, text halo, MapCSS wiring (`text`, `icon-image`, `text-position`, ...) (#227).
+- Paint cost and polish: halo modes, translucent backing quad beyond 40 text labels, labels fade in and survive a one-level zoom change, halo alpha (#228).
+- Area labels at the pole of inaccessibility (`src/polylabel.rs`, `src/layers/area_labels.rs`), shown only where the text fits (#229).
+- Street names along ways with rotated glyphs (`src/layers/line_labels.rs`), `text-offset`, coarse halo (#226).
+- One-way arrows already existed before this work: triangles every 96 px of path from z16 (`ARROW_SPACING_PX`, `ARROW_MIN_ZOOM` in `src/layers/osm_layer.rs`, #93).
+
+Honest remainder (each is scoped under 3.14):
+- Arrows are fixed triangles; there is no chevron style and no MapCSS toggle (`Direction` is derived from tags in `src/style/mapcss.rs`, not from a property).
+- Area labels are one line only: no two-line wrapping, no italics.
+- Street names lose to every point label and icon (point items are passed to line labels as obstacles), and the 45-degree total-turn rule (`MAX_TOTAL_TURN_DEG`) skips long names on tight arcs.
+- No `label-priority` MapCSS property; priority is fixed in code (`node_priority`, area size bonus).
+- No settings toggle for labels or icons.
+- Collision is per layer (each `OsmLayer` owns its own `LabelCache` and line-label state), so labels from two layers can overlap.
+- Halo cost: the outline halo (4 or 8 glyph repaints) is used only up to `OUTLINE_MAX_LABELS = 40` text labels; beyond that a translucent backing quad is used. Paint was measured at about 1.27 ms for 300 labels against a 0.8 ms goal (release build). GPU frame time at 300+ labels was never cleanly re-measured on an unloaded machine, and the dark-imagery legibility case was only checked with a stand-in.
+- Street names do not use `labels::HaloMode`; they use their own coarse stroked-outline halo (`line_labels::HaloMode::StrokeCoarse`).
+- GPUI cannot rotate text (`paint_glyph` has an identity transform), so street names are triangulated glyph outlines drawn with the bundled IBM Plex Sans SemiBold (`assets/fonts`, SIL OFL), not the UI font.
 
 ### 3.10 Hi-DPI tiles
-🚧 In progress — being worked on in a separate PR. Current state: nothing in `src/` reads `scale_factor`, so 256px tiles are still stretched on Retina (edge-seam clipping, #100, does not address this).
-
-✅ Done — `hidpi_tile_zoom()` requests z+1 tiles at scale factor >= 1.5 (stretching when z+1 exceeds the source's max zoom).
+✅ Done — `hidpi_tile_zoom()` requests z+1 tiles at scale factor >= 1.5 (stretching when z+1 exceeds the source's max zoom) (#224).
 
 ### 3.11 Map-area colors bypass the theme; tile pop-in is abrupt
 Still open (partially mitigated by the theme work in #72, #143, #155). Hardcoded colors remain: grid `rgb(0x374151)` in `src/layers/grid_layer.rs`, tile placeholder `0x2d3748` and the full-tile crimson error block `0x9f1239` in `src/layers/tile_layer.rs`; tiles still appear with no fade.
 
 **Implement:** source map background/grid/overlay colors from `cx.theme()`; fade tile opacity 0→1; replace the crimson error tile with a corner badge.
+
+### 3.14 Label rendering follow-ups
+Concrete next steps after the label work (#226-#229). Each was re-checked against the code; grep for the named symbols.
+
+1. **`label-priority` property.** Add `label-priority` to the MapCSS parser (`src/style/mapcss.rs`, `TextStyle`) and use it in `labels::node_priority` and the area ranking in `osm_layer.rs` (`rank` closure near `area_labels::size_bonus`) instead of the hardcoded tiers. Also define priority between street names and icons: today `line_labels::LineLabelCache::place` takes point-label rectangles as `obstacles`, so a street name always loses to any point label or icon. Option: give line labels an `Item` priority in the same `labels::place` pass.
+2. **Area labels: wrapping and italics.** `area_labels::locate` fits a single line (see its module doc, "Limits"). Add two-line wrapping at a space (try 1 then 2 lines in `font_scales`/fit loop) and an italic option for natural/water classes (needs an italic face or a skew; the UI font via `ShapedLine` has no italic hook).
+3. **Settings toggles for labels and icons.** Nothing in `src/settings_store.rs` mentions labels. Add booleans (labels, POI icons, street names, area labels), pass them into the `OsmLayer` render (they gate `LABEL_MIN_ZOOM`/`ICON_MIN_ZOOM` paths and `line_labels::bench_knobs().labels`), and add a View menu item plus a settings row.
+4. **Cross-layer collision.** Each `OsmLayer` has its own `label_cache` and `line_placed`. Share one `CollisionGrid` across layers (owned by `LayerManager`, filled in layer z-order) so two downloaded layers do not overprint.
+5. **Text size by zoom or road class.** Font size is a fixed `font-size` per rule (area labels only shrink one step to fit). Add per-zoom `font-size` rules in `assets/default.mapcss` (the zoom selectors now allow it, e.g. `way|z18-[highway=primary]`), or a scale curve in `resolve_node_label`/`line_labels` `LabelStyle`.
+6. **Street-name halo through `HaloMode`.** `line_labels` has its own `HaloMode` enum and ignores `OSM_GPUI_LABEL_HALO` and the 40-label budget in `labels::halo_for`. Unify, or document why the stroked outline is kept.
+7. **Chevron and one-way styling via MapCSS.** Arrow geometry and spacing are constants in `osm_layer.rs` (`ARROW_*`). Add properties (e.g. `direction-style: arrow|chevron|none`, `direction-spacing`) read from `WayStyle`, and a chevron shape next to `arrow_triangle`.
+8. **Per-class offset for wide roads.** `line_labels::clear_offset` already pushes text off wide strokes, but `default.mapcss` uses one `text-offset: 6.2` for every highway. Tune per class (motorway/trunk vs residential) in the stylesheet.
+9. **Zoom selectors on nodes.** Node marker styles are cached once at `NODE_STYLE_ZOOM = 18.0`. Apply the per-signature `zoom_styles` approach used for ways to `NodeStyle` so `node|z16-` marker rules work at the real zoom.
+10. **Measure GPU frame time on a clean 60/120 Hz machine** with 300+ labels (script: `docs/perf/line-labels-gpu.osmscript`, plus `docs/perf/render-benchmark.osmscript`), and re-decide `OUTLINE_MAX_LABELS` and the quad fallback from real numbers (goal 0.8 ms paint; last measured about 1.27 ms for 300 labels).
+11. **Satellite-imagery legibility.** Only a stand-in background was used to judge halo contrast on dark imagery; check real Maxar/Esri tiles and adjust halo alpha/radius defaults in `assets/default.mapcss`.
+
+Note: labels already fade in (point, area and street labels share `labels::fade_alpha`), so no fade work is needed for line labels.
 
 ---
 
@@ -197,6 +224,7 @@ Major capabilities merged that were not in the original list:
 - **Relations and multipolygons:** relation-aware editing, create/delete and editor (#110, #111, #112, #114), multipolygon and route/restriction rendering (#139, #144), Create Multipolygon (#207), Sort members (#213).
 - **Data layers and reference data:** GPX and GeoJSON reference layers (#180), OSM notes show/read/comment/close/reopen/create (#179, #184), object history view with revert tags (#177), File > Export to .osm (#96), merge downloads into active layer (#95), downloaded-area display (#120, #126).
 - **Safety and quality:** validator with Tools > Validate before upload (#160), autosave and crash restore (#161), persistence policy guarding real state in tests (#173), upload hardening and chunking (#124, #128, #132, #136, #140, #145, #206), edge-case test catalogue for editing operations (#193-#205).
+- **Rendering, labels and MapCSS:** Hi-DPI tile requests (#224), MapCSS zoom ranges, casing, `z-index` and stable draw order, dashes, opacity, `rgba()` and parsed label properties (#225), point labels and preset POI icons with collision placement (#227), label paint cost, halo modes, zoom fade (#228), area labels at the pole of inaccessibility (#229), street names along ways with rotated glyphs (#226).
 - **Tooling:** scriptable screenshot/osmscript harness (#3, #64, #75, #147, #214), render-cost measurement and way-drawing speedups (#148, #157, docs/perf), live dev-server upload tests (`docs/live-test`).
 
 ---
@@ -205,7 +233,8 @@ Major capabilities merged that were not in the original list:
 
 The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upload), the security/robustness tier, and the measured perf wins (3.12, 3.3, 3.4) have all shipped. What remains:
 
-1. **In flight (separate PRs):** 3.8 MapCSS, 3.2 draw order, 3.9 labels/icons/one-way, 3.10 hi-DPI tiles. 3.2 and 3.9 depend on 3.8's `z-index`/`text`/`icon-image` support, so land 3.8 first.
-2. **Small rendering items:** 3.13 (tile parent-fallback only when the child isn't ready), 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
-3. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
-4. **Code health, safely parallelizable:** 5.3 (re-split `main.rs`), 5.7 typed layer stats, 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 leftovers (`IdleTracker` saturating decrement, `OsmParser` associated functions).
+1. **Label follow-ups (3.14):** start with the cheap, independent ones: settings toggles (3), `label-priority` and street-name vs icon priority (1), street-name halo unification (6). Then cross-layer collision (4) and area-label wrapping (2). The GPU frame-time measurement (10) and satellite legibility check (11) should precede any further halo-cost work.
+2. **MapCSS leftovers:** node zoom selectors beyond z18 (3.14 item 9), chevron/one-way properties (7).
+3. **Small rendering items:** 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
+4. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
+5. **Code health, safely parallelizable:** 5.3 (re-split `main.rs`), 5.7 typed layer stats, 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 leftovers (`IdleTracker` saturating decrement, `OsmParser` associated functions).
