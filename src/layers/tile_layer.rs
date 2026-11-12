@@ -137,13 +137,32 @@ impl TileLayer {
         compute_effective_tile_zoom(viewport_z, self.min_zoom, self.max_zoom)
     }
 
+    /// Whether requesting tiles one zoom deeper on Hi-DPI displays is
+    /// appropriate for this source. OSM Carto tiles are not designed as
+    /// "retina" tiles: their labels and symbols are sized for 256px at 1x, so
+    /// deeper tiles would render everything at half its intended logical
+    /// size. Such sources are instead stretched (slightly soft, right size).
+    fn hidpi_tiles(&self) -> bool {
+        template_supports_hidpi(&self.url_template)
+    }
+
     /// The tile zoom to actually request for a display with `scale_factor`
     /// device pixels per logical pixel: `effective_tile_zoom`, one level
     /// deeper on Hi-DPI displays when the source has tiles that deep.
     fn render_tile_zoom(&self, viewport_z: f64, scale_factor: f32) -> Option<u32> {
-        self.effective_tile_zoom(viewport_z)
-            .map(|z| hidpi_tile_zoom(z, scale_factor, self.max_zoom))
+        self.effective_tile_zoom(viewport_z).map(|z| {
+            if self.hidpi_tiles() {
+                hidpi_tile_zoom(z, scale_factor, self.max_zoom)
+            } else {
+                z
+            }
+        })
     }
+}
+
+/// See `TileLayer::hidpi_tiles`.
+fn template_supports_hidpi(url_template: &str) -> bool {
+    url_template != OSM_CARTO_TEMPLATE
 }
 
 /// Scale factor from which tiles are requested one zoom level deeper.
@@ -337,6 +356,19 @@ impl MapLayer for TileLayer {
         };
         let visible_tiles = self.visible_tiles(viewport, tile_zoom);
         let merc_offset = self.mercator_offset(viewport);
+
+        // Tell the tile cache which tiles are needed now (visible tiles and
+        // their parent fallbacks) so downloads for tiles that have scrolled
+        // off the map are cancelled, and re-request any that were cancelled
+        // but are visible again.
+        let wanted: std::collections::HashSet<String> = visible_tiles
+            .iter()
+            .flat_map(|t| std::iter::once(*t).chain(t.parent()))
+            .map(|t| url_from_template(&self.url_template, &t).to_string())
+            .collect();
+        for key in crate::tile_cache::set_wanted_tiles(&self.source_key, wanted) {
+            cx.remove_asset::<crate::tile_cache::TileAsset>(&key);
+        }
 
         for tile_coord in &visible_tiles {
             let (tile_x, tile_y, tile_width, tile_height) =
@@ -715,6 +747,14 @@ mod tests {
         assert_eq!(hidpi_tile_zoom(12, 2.0, Some(19)), 13);
         assert_eq!(hidpi_tile_zoom(12, 3.0, None), 13);
         assert_eq!(hidpi_tile_zoom(12, 1.5, None), 13);
+    }
+
+    #[test]
+    fn osm_carto_is_not_treated_as_hidpi() {
+        assert!(!super::template_supports_hidpi(super::OSM_CARTO_TEMPLATE));
+        assert!(super::template_supports_hidpi(
+            "https://example.com/{z}/{x}/{y}.png"
+        ));
     }
 
     #[test]

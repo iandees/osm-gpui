@@ -333,8 +333,26 @@ struct BuildingProgress {
 /// through. Both are geo (lat, lon) coordinates.
 #[derive(Clone, Copy)]
 struct ArcProgress {
-    start: (f64, f64),
-    end: Option<(f64, f64)>,
+    start: ArcPoint,
+    end: Option<ArcPoint>,
+}
+
+/// What an Arc-mode click snapped onto.
+#[derive(Clone, Copy)]
+enum ArcSnap {
+    /// An existing node, which the arc then uses as that endpoint.
+    Node(i64),
+    /// A way's segment (`way_id`, index of the segment's first node): the
+    /// endpoint is a new node spliced into the way.
+    Way(i64, usize),
+}
+
+/// A clicked Arc-mode point: its geo position (snapped onto a node or way
+/// when the click was near one) and what it snapped onto.
+#[derive(Clone, Copy)]
+struct ArcPoint {
+    geo: (f64, f64),
+    snap: Option<ArcSnap>,
 }
 
 /// What a click would do to Improve Way mode's target way: the way, its node
@@ -4539,7 +4557,7 @@ impl MapViewer {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
-            EditMode::Arc => self.handle_arc_click(screen_pt),
+            EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
             EditMode::Improve => self.handle_improve_click(screen_pt, cx),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
@@ -4586,24 +4604,25 @@ impl MapViewer {
     }
 
     /// Arc mode: click 1 sets the arc's start, click 2 its end, click 3 a
-    /// point the arc passes through and commits it.
-    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+    /// point the arc passes through and commits it. Each click snaps onto a
+    /// nearby way (unless Ctrl/Alt is held).
+    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, no_snap: bool) {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let geo = self.viewport.screen_to_geo(screen_pt);
+        let point = self.arc_point_at(layer_id, screen_pt, no_snap);
 
         match self.arc_progress.take() {
             None => {
                 self.arc_progress = Some(ArcProgress {
-                    start: geo,
+                    start: point,
                     end: None,
                 });
             }
             Some(ArcProgress { start, end: None }) => {
                 self.arc_progress = Some(ArcProgress {
                     start,
-                    end: Some(geo),
+                    end: Some(point),
                 });
             }
             Some(ArcProgress {
@@ -4612,8 +4631,8 @@ impl MapViewer {
             }) => {
                 // A third point in line with the first two defines no arc;
                 // keep waiting for a better one.
-                if self.arc_from_geo(start, end, geo).is_some() {
-                    self.commit_arc(layer_id, start, end, geo);
+                if self.arc_from_geo(start.geo, end.geo, point.geo).is_some() {
+                    self.commit_arc(layer_id, start, end, point.geo);
                 } else {
                     self.arc_progress = Some(ArcProgress {
                         start,
@@ -4771,6 +4790,59 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// The geo position for an Arc-mode click at `screen_pt`: snapped onto the
+    /// nearest way in `layer_id` when one is within tolerance.
+    fn arc_point_at(
+        &self,
+        layer_id: LayerId,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        no_snap: bool,
+    ) -> ArcPoint {
+        let plain = ArcPoint {
+            geo: self.viewport.screen_to_geo(screen_pt),
+            snap: None,
+        };
+        if no_snap {
+            return plain;
+        }
+        let sources: Vec<Tags> = Vec::new();
+        // An existing node close by wins over a way.
+        let node_hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
+            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let editable = layer.as_editable()?;
+            let id = osm_layer.snap_to_node_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                |id| snap_node_ok(editable, layer_id, &sources, None, id),
+            )?;
+            Some((id, editable.node_lat_lon(id)?))
+        });
+        if let Some((id, geo)) = node_hit {
+            return ArcPoint {
+                geo,
+                snap: Some(ArcSnap::Node(id)),
+            };
+        }
+        let hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
+            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let editable = layer.as_editable()?;
+            osm_layer.snap_to_way_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
+                |w| snap_way_ok(editable, layer_id, &sources, None, w),
+            )
+        });
+        match hit {
+            Some((way_id, _, _, idx, lat, lon)) => ArcPoint {
+                geo: (lat, lon),
+                snap: Some(ArcSnap::Way(way_id, idx)),
+            },
+            None => plain,
+        }
+    }
+
     /// The arc from `start` to `end` bending through `through` (all geo
     /// coordinates), as geo points including both ends. The circle is worked
     /// out in screen-pixel space, which is isotropic, so it is a true circle
@@ -4814,16 +4886,58 @@ impl MapViewer {
     fn commit_arc(
         &mut self,
         layer_id: LayerId,
-        start: (f64, f64),
-        end: (f64, f64),
+        start: ArcPoint,
+        end: ArcPoint,
         through: (f64, f64),
     ) {
         if self.refuse_edit_during_upload() {
             return;
         }
-        let Some(points) = self.arc_from_geo(start, end, through) else {
+        let Some(points) = self.arc_from_geo(start.geo, end.geo, through) else {
             return;
         };
+        // Endpoints snapped onto a node use that node; ones snapped onto a way
+        // get a new node spliced into it (so the arc joins that way), which
+        // grows the way.
+        let way_snap = |p: &ArcPoint| match p.snap {
+            Some(ArcSnap::Way(way_id, idx)) => Some((way_id, idx)),
+            _ => None,
+        };
+        let mut splices: Vec<(usize, ArcPoint)> = [(0, start), (points.len() - 1, end)]
+            .into_iter()
+            .filter(|(_, p)| way_snap(p).is_some())
+            .collect();
+        for (_, p) in &splices {
+            let (way_id, _) = way_snap(p).unwrap();
+            let by = splices
+                .iter()
+                .filter(|(_, q)| way_snap(q).map(|s| s.0) == Some(way_id))
+                .count();
+            if self.refuse_way_growth(layer_id, way_id, by) {
+                return;
+            }
+        }
+        // Splice in descending segment order within a way so earlier indices
+        // stay valid; on a shared segment, the point nearer its far end first.
+        let seg_start = |p: &ArcPoint| {
+            let (way_id, idx) = way_snap(p).unwrap();
+            let editable = self
+                .layer_manager
+                .find_layer(layer_id)
+                .and_then(|l| l.as_editable())?;
+            let id = *editable.way_node_ids(way_id)?.get(idx)?;
+            editable.node_lat_lon(id)
+        };
+        let along = |p: &ArcPoint| {
+            seg_start(p).map_or(0.0, |s| (p.geo.0 - s.0).powi(2) + (p.geo.1 - s.1).powi(2))
+        };
+        splices.sort_by(|(_, a), (_, b)| {
+            let (aw, ai) = way_snap(a).unwrap();
+            let (bw, bi) = way_snap(b).unwrap();
+            aw.cmp(&bw)
+                .then(bi.cmp(&ai))
+                .then_with(|| along(b).total_cmp(&along(a)))
+        });
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
             return;
         };
@@ -4831,16 +4945,47 @@ impl MapViewer {
             return;
         };
 
-        let node_ids: Vec<i64> = points
+        // Nodes the arc doesn't own: reused ones, and ones spliced into other
+        // ways (undone by their own entries).
+        let mut node_ids: Vec<Option<i64>> = vec![None; points.len()];
+        let mut actions = Vec::new();
+        for (i, p) in [(0, start), (points.len() - 1, end)] {
+            if let Some(ArcSnap::Node(id)) = p.snap {
+                node_ids[i] = Some(id);
+            }
+        }
+        for (i, p) in &splices {
+            let (way_id, idx) = way_snap(p).unwrap();
+            let id = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1);
+            actions.push(UndoableAction::InsertNodeIntoWay {
+                layer: layer_id,
+                way_id,
+                index: idx + 1,
+                node_id: id,
+            });
+            node_ids[*i] = Some(id);
+        }
+        let borrowed: Vec<i64> = node_ids.iter().flatten().copied().collect();
+        let all_ids: Vec<i64> = node_ids
             .iter()
-            .map(|&(lat, lon)| editable.add_node(lat, lon))
+            .zip(&points)
+            .map(|(id, &(lat, lon))| id.unwrap_or_else(|| editable.add_node(lat, lon)))
             .collect();
-        let way_id = editable.add_way(node_ids.clone(), Vec::new());
-
-        self.undo_stack.push(UndoableAction::CreateArc {
+        let way_id = editable.add_way(all_ids.clone(), Vec::new());
+        let created: Vec<i64> = all_ids
+            .into_iter()
+            .filter(|id| !borrowed.contains(id))
+            .collect();
+        // The whole arc, splices included, is one undo step: undoing removes
+        // the arc first, then the splices.
+        actions.push(UndoableAction::CreateArc {
             layer: layer_id,
             way_id,
-            node_ids,
+            node_ids: created,
+        });
+        self.undo_stack.push(UndoableAction::Batch {
+            label: tr!("history.created_arc").to_string(),
+            actions,
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,
@@ -5192,8 +5337,8 @@ impl MapViewer {
         self.fields_promoted_more_fields.clear();
     }
 
-    /// Double-click on a segment (no drag): insert a new node at the
-    /// double-click position, splitting that segment.
+    /// Double-click on a segment (no drag): insert a new node on that
+    /// segment, at the point nearest the double-click, splitting it.
     fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
         if self.refuse_edit_during_upload() {
             return;
@@ -5201,12 +5346,35 @@ impl MapViewer {
         if self.refuse_way_growth(drag.layer, drag.way_id, 1) {
             return;
         }
-        let (lat, lon) = self.viewport.screen_to_geo(up_pos);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
             return;
         };
         let Some(editable) = layer.as_editable_mut() else {
             return;
+        };
+        // Place the node on the segment itself (the point nearest the click),
+        // not under the cursor, so the way's shape is unchanged.
+        let (Some(a_geo), Some(b_geo)) = (
+            editable.node_lat_lon(drag.node_a),
+            editable.node_lat_lon(drag.node_b),
+        ) else {
+            return;
+        };
+        let (lat, lon) = {
+            let a = self.viewport.geo_to_screen(a_geo.0, a_geo.1);
+            let b = self.viewport.geo_to_screen(b_geo.0, b_geo.1);
+            let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
+            let len_sq = dx * dx + dy * dy;
+            let t = if len_sq <= f64::EPSILON {
+                0.0
+            } else {
+                (((up_pos.x - a.x).to_f64() * dx + (up_pos.y - a.y).to_f64() * dy) / len_sq)
+                    .clamp(0.0, 1.0)
+            };
+            self.viewport.screen_to_geo(gpui::point(
+                px((a.x.to_f64() + t * dx) as f32),
+                px((a.y.to_f64() + t * dy) as f32),
+            ))
         };
         // The segment's start index within the way's node list: `node_a`'s
         // position (the segment is node_a -> node_b, consecutive).
@@ -8077,10 +8245,16 @@ impl Render for MapViewer {
                                                     blue,
                                                 ));
                                             };
-                                            marker(window, progress.start);
-                                            let cursor_geo = this
-                                                .last_mouse_pos
-                                                .map(|p| viewport_clone.screen_to_geo(p));
+                                            marker(window, progress.start.geo);
+                                            // The cursor, snapped onto a way as a click would be.
+                                            let cursor_geo = this.last_mouse_pos.map(|p| {
+                                                match this.active_layer {
+                                                    Some(layer_id) => {
+                                                        this.arc_point_at(layer_id, p, false).geo
+                                                    }
+                                                    None => viewport_clone.screen_to_geo(p),
+                                                }
+                                            });
                                             // The path to draw: the start..cursor
                                             // rubber band before the end is placed,
                                             // then the arc through the cursor (a
@@ -8089,15 +8263,21 @@ impl Render for MapViewer {
                                                 progress.end,
                                                 cursor_geo,
                                             ) {
-                                                (None, Some(cursor)) => vec![progress.start, cursor],
+                                                (None, Some(cursor)) => vec![progress.start.geo, cursor],
                                                 (None, None) => Vec::new(),
                                                 (Some(end), cursor) => {
-                                                    marker(window, end);
+                                                    marker(window, end.geo);
                                                     cursor
                                                         .and_then(|c| {
-                                                            this.arc_from_geo(progress.start, end, c)
+                                                            this.arc_from_geo(
+                                                                progress.start.geo,
+                                                                end.geo,
+                                                                c,
+                                                            )
                                                         })
-                                                        .unwrap_or_else(|| vec![progress.start, end])
+                                                        .unwrap_or_else(|| {
+                                                            vec![progress.start.geo, end.geo]
+                                                        })
                                                 }
                                             };
                                             let mut builder = PathBuilder::stroke(px(2.0));
@@ -13533,6 +13713,56 @@ mod tests {
                 assert_eq!(way_nodes(view, layer_id, 100).len(), 2000);
                 assert_eq!(pending(view), before);
                 assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let (a_geo, b_geo) = {
+                    let e = view
+                        .layer_manager
+                        .find_layer(layer_id)
+                        .and_then(|l| l.as_editable())
+                        .unwrap();
+                    (e.node_lat_lon(1).unwrap(), e.node_lat_lon(2).unwrap())
+                };
+                let a = view.viewport.geo_to_screen(a_geo.0, a_geo.1);
+                let b = view.viewport.geo_to_screen(b_geo.0, b_geo.1);
+                // A click 30px off the middle of the segment.
+                let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
+                let len = (dx * dx + dy * dy).sqrt();
+                let click = point(
+                    px(((a.x + b.x).to_f64() / 2.0 - dy / len * 30.0) as f32),
+                    px(((a.y + b.y).to_f64() / 2.0 + dx / len * 30.0) as f32),
+                );
+                let drag = ExtrudeDrag {
+                    layer: layer_id,
+                    way_id: 100,
+                    node_a: 1,
+                    node_b: 2,
+                    segment: 0,
+                    style: ExtrudeStyle::Reshape,
+                    down: click,
+                };
+                view.insert_node_on_segment(&drag, click);
+                let nodes = way_nodes(view, layer_id, 100);
+                assert_eq!(nodes.len(), 4);
+                let new_geo = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .and_then(|l| l.as_editable())
+                    .unwrap()
+                    .node_lat_lon(nodes[1])
+                    .unwrap();
+                let n = view.viewport.geo_to_screen(new_geo.0, new_geo.1);
+                let dist = osm_gpui::selection::point_to_segment_distance(n, a, b);
+                assert!(dist < 0.5, "new node is {dist}px off the segment");
+                assert!((n.x - click.x).to_f64().hypot((n.y - click.y).to_f64()) > 20.0);
             })
             .unwrap();
     }
