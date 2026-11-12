@@ -3865,14 +3865,23 @@ mod tests {
                 .unwrap()
                 .shortcut_label(&settings)
                 .unwrap(),
-            "⇧⌘C"
+            // The label follows the running platform's conventions.
+            if cfg!(target_os = "macos") {
+                "⇧⌘C"
+            } else {
+                "Ctrl+Shift+C"
+            }
         );
         assert_eq!(
             find("paste_tags")
                 .unwrap()
                 .shortcut_label(&settings)
                 .unwrap(),
-            "⇧⌘V"
+            if cfg!(target_os = "macos") {
+                "⇧⌘V"
+            } else {
+                "Ctrl+Shift+V"
+            }
         );
         assert_eq!(
             find("square").unwrap().shortcut_label(&settings).unwrap(),

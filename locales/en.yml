@@ -104,6 +104,10 @@ mode:
     name: "Extrude"
     label: "Extr"
     tooltip: "Extrude a way segment"
+  arc:
+    name: "Arc"
+    label: "Arc"
+    tooltip: "Draw a circular arc"
   # `%{shortcut}` is the key that activates the mode, e.g. "A".
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
@@ -178,6 +182,9 @@ status:
     building_oriented_idle: "Click or drag to draw a building aligned to the selected way · Esc to exit"
     building_oriented_started: "Click or release at the opposite corner to finish · Esc to cancel"
     extrude: "Drag to reshape · Alt-drag for a new way · Cmd/Ctrl-drag to move · Esc to exit"
+    arc_idle: "Click to place the arc's start · Esc to exit"
+    arc_started: "Click to place the arc's end · Esc to cancel"
+    arc_end_placed: "Move to bend the arc, then click to finish · Esc to cancel"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
@@ -359,6 +366,7 @@ history:
   purged: "Purged objects from the layer"
   extended_way: "Extended a way"
   created_building: "Created a building"
+  created_arc: "Created an arc"
   extruded_way: "Extruded a way"
   rotated: "Rotated the selection"
   extruded_segment: "Extruded a segment"
@@ -581,6 +589,7 @@ shortcut:
   mode_add: "Switch to Add mode"
   mode_building: "Switch to Building mode"
   mode_extrude: "Switch to Extrude mode"
+  mode_arc: "Switch to Arc mode"
   action_square: "Square"
   action_circularize: "Circularize"
   action_reverse: "Reverse Way"

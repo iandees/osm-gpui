@@ -1,18 +1,11 @@
 name: Release
 
 # Tag pushes (v*) build all platforms and publish a GitHub Release.
-# Pull requests that touch the packaging, and manual runs, run the same
-# build-and-package jobs but upload only workflow artifacts (no release).
+# Manual runs (e.g. to test packaging changes) run the same build-and-package
+# jobs but upload only workflow artifacts (no release).
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    paths:
-      - ".github/workflows/release.yml"
-      - "scripts/**"
-      - "packaging/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
   workflow_dispatch:
 
 permissions:

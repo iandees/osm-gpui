@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 mod add_click_tests;
+#[cfg(test)]
+mod arc_click_tests;
 mod autosave_driver;
 mod clipboard_actions;
 #[cfg(test)]
@@ -248,6 +250,7 @@ enum EditMode {
     Add,
     Building,
     Extrude,
+    Arc,
 }
 
 /// Action to switch the current `EditMode`.
@@ -267,6 +270,7 @@ enum EditModeAction {
     Add,
     Building,
     Extrude,
+    Arc,
 }
 
 /// Undo of a node attached to an existing way's end: pull `node_id` out of
@@ -295,6 +299,7 @@ impl From<EditModeAction> for EditMode {
             EditModeAction::Add => EditMode::Add,
             EditModeAction::Building => EditMode::Building,
             EditModeAction::Extrude => EditMode::Extrude,
+            EditModeAction::Arc => EditMode::Arc,
         }
     }
 }
@@ -316,6 +321,15 @@ struct AddProgress {
 struct BuildingProgress {
     corner_a: (f64, f64),
     corner_b: Option<(f64, f64)>,
+}
+
+/// Arc mode's in-progress arc: the start point is fixed after click 1, the
+/// end point after click 2; the third click picks a point the arc passes
+/// through. Both are geo (lat, lon) coordinates.
+#[derive(Clone, Copy)]
+struct ArcProgress {
+    start: (f64, f64),
+    end: Option<(f64, f64)>,
 }
 
 /// The squared way whose orientation Building mode borrows: captured when
@@ -982,6 +996,8 @@ struct MapViewer {
     /// In-progress Building-mode rectangle state, or `None` between
     /// continuations (see `BuildingProgress`).
     building_progress: Option<BuildingProgress>,
+    /// In-progress Arc-mode state, or `None` between arcs (see `ArcProgress`).
+    arc_progress: Option<ArcProgress>,
     /// The squared way Building mode is aligned to, if any (see
     /// `BuildingReference`). When set, a building takes two corners instead
     /// of three clicks.
@@ -1103,7 +1119,7 @@ fn map_cursor(
         CursorStyle::OpenHand
     } else {
         match mode {
-            EditMode::Add | EditMode::Building => CursorStyle::Crosshair,
+            EditMode::Add | EditMode::Building | EditMode::Arc => CursorStyle::Crosshair,
             EditMode::Select if hovering => CursorStyle::PointingHand,
             EditMode::Select | EditMode::Extrude => CursorStyle::Arrow,
         }
@@ -1278,6 +1294,7 @@ impl MapViewer {
             add_progress: None,
             snap_preview: None,
             building_progress: None,
+            arc_progress: None,
             building_reference: None,
             building_press: None,
             last_mouse_pos: None,
@@ -1540,6 +1557,7 @@ impl MapViewer {
             // Add/Building progress is relative to the active layer.
             self.add_progress = None;
             self.building_progress = None;
+            self.arc_progress = None;
             self.building_press = None;
         }
         if self.building_reference.is_some_and(|r| r.layer_id == id) {
@@ -1668,6 +1686,7 @@ impl MapViewer {
         self.clear_vertex_preview();
         self.add_progress = None;
         self.building_progress = None;
+        self.arc_progress = None;
         self.extrude_drag = None;
         self.cancel_rotate();
         cx.notify();
@@ -2084,6 +2103,27 @@ impl MapViewer {
                 // redo-by-recreation isn't id-stable across a redo after
                 // other edits. Matches this plan's scope (see spec's "Out
                 // of scope": undo/redo depth beyond the immediate action).
+            }
+            UndoableAction::CreateArc {
+                layer,
+                way_id,
+                node_ids,
+            } => {
+                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if !forward {
+                    editable.remove_way(*way_id);
+                    for id in node_ids {
+                        editable.remove_node(*id);
+                    }
+                }
+                // Redo (forward) is intentionally a no-op, same as
+                // `CreateBuilding`: a redo-by-recreation would allocate fresh
+                // placeholder ids rather than reproducing these.
             }
             UndoableAction::ExtrudeWay {
                 layer,
@@ -3120,6 +3160,7 @@ impl MapViewer {
         self.clear_vertex_preview();
         self.building_press = None;
         self.building_progress = None;
+        self.arc_progress = None;
         self.building_reference = None;
         self.extrude_drag = None;
         self.add_progress = Some(AddProgress {
@@ -3536,7 +3577,10 @@ impl MapViewer {
         let UndoableAction::PasteFeatures { pasted } = action else {
             return;
         };
-        if self.add_progress.is_some() || self.building_progress.is_some() {
+        if self.add_progress.is_some()
+            || self.building_progress.is_some()
+            || self.arc_progress.is_some()
+        {
             return;
         }
         let wanted = if forward {
@@ -3589,7 +3633,9 @@ impl MapViewer {
     /// alone (apart from that pruning), so the drawing session isn't disturbed.
     /// Never moves the viewport.
     fn select_after_history_step(&mut self, action: &UndoableAction) {
-        let drawing = self.add_progress.is_some() || self.building_progress.is_some();
+        let drawing = self.add_progress.is_some()
+            || self.building_progress.is_some()
+            || self.arc_progress.is_some();
         let next: Vec<osm_gpui::selection::FeatureRef> = if drawing {
             self.selected.clone()
         } else {
@@ -4461,6 +4507,7 @@ impl MapViewer {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
+            EditMode::Arc => self.handle_arc_click(screen_pt),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
                 // mouse-down/mouse-move/mouse-up directly); a stray click
@@ -4503,6 +4550,127 @@ impl MapViewer {
                 self.building_progress = None;
             }
         }
+    }
+
+    /// Arc mode: click 1 sets the arc's start, click 2 its end, click 3 a
+    /// point the arc passes through and commits it.
+    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+        let Some(layer_id) = self.active_layer else {
+            return;
+        };
+        let geo = self.viewport.screen_to_geo(screen_pt);
+
+        match self.arc_progress.take() {
+            None => {
+                self.arc_progress = Some(ArcProgress {
+                    start: geo,
+                    end: None,
+                });
+            }
+            Some(ArcProgress { start, end: None }) => {
+                self.arc_progress = Some(ArcProgress {
+                    start,
+                    end: Some(geo),
+                });
+            }
+            Some(ArcProgress {
+                start,
+                end: Some(end),
+            }) => {
+                // A third point in line with the first two defines no arc;
+                // keep waiting for a better one.
+                if self.arc_from_geo(start, end, geo).is_some() {
+                    self.commit_arc(layer_id, start, end, geo);
+                } else {
+                    self.arc_progress = Some(ArcProgress {
+                        start,
+                        end: Some(end),
+                    });
+                }
+            }
+        }
+    }
+
+    /// The arc from `start` to `end` bending through `through` (all geo
+    /// coordinates), as geo points including both ends. The circle is worked
+    /// out in screen-pixel space, which is isotropic, so it is a true circle
+    /// on screen (see `rectangle_from_geo_edge`). `None` if the three points
+    /// are in a line.
+    fn arc_from_geo(
+        &self,
+        start: (f64, f64),
+        end: (f64, f64),
+        through: (f64, f64),
+    ) -> Option<Vec<(f64, f64)>> {
+        let to_screen = |g: (f64, f64)| {
+            let p = self.viewport.geo_to_screen(g.0, g.1);
+            (p.x.to_f64(), p.y.to_f64())
+        };
+        let points = osm_gpui::arc::arc_through(
+            to_screen(start),
+            to_screen(through),
+            to_screen(end),
+            osm_gpui::arc::DEFAULT_STEP_DEGREES,
+        )?;
+        let last = points.len() - 1;
+        Some(
+            points
+                .into_iter()
+                .enumerate()
+                .map(|(i, (x, y))| match i {
+                    // Keep the endpoints exact rather than round-tripping them.
+                    0 => start,
+                    i if i == last => end,
+                    _ => self
+                        .viewport
+                        .screen_to_geo(gpui::point(px(x as f32), px(y as f32))),
+                })
+                .collect(),
+        )
+    }
+
+    /// Create the arc's nodes and one open, untagged way through them as one
+    /// undo action, and select the new way.
+    fn commit_arc(
+        &mut self,
+        layer_id: LayerId,
+        start: (f64, f64),
+        end: (f64, f64),
+        through: (f64, f64),
+    ) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let Some(points) = self.arc_from_geo(start, end, through) else {
+            return;
+        };
+        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+            return;
+        };
+        let Some(editable) = layer.as_editable_mut() else {
+            return;
+        };
+
+        let node_ids: Vec<i64> = points
+            .iter()
+            .map(|&(lat, lon)| editable.add_node(lat, lon))
+            .collect();
+        let way_id = editable.add_way(node_ids.clone(), Vec::new());
+
+        self.undo_stack.push(UndoableAction::CreateArc {
+            layer: layer_id,
+            way_id,
+            node_ids,
+        });
+        self.selected = vec![osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
+        }];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
     }
 
     /// Release of an oriented-Building press. A release within a few pixels
@@ -7354,6 +7522,11 @@ impl Render for MapViewer {
                                         this.mode = EditMode::Select;
                                     }
                                 }
+                                EditMode::Arc => {
+                                    if this.arc_progress.take().is_none() {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
                                 EditMode::Select => {
                                     if !cancelled_drag {
                                         this.set_selection(Vec::new());
@@ -7410,6 +7583,16 @@ impl Render for MapViewer {
                                 this.on_set_mode(
                                     &SetMode {
                                         mode: EditModeAction::Extrude,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_arc")
+                            {
+                                this.on_set_mode(
+                                    &SetMode {
+                                        mode: EditModeAction::Arc,
                                     },
                                     window,
                                     cx,
@@ -7674,6 +7857,61 @@ impl Render for MapViewer {
                                                         window.paint_path(path, rgb(0x3b82f6));
                                                     }
                                                 }
+                                            }
+                                        }
+
+                                        if let Some(progress) = this.arc_progress {
+                                            // Screen position of a geo point, in window space.
+                                            let to_window = |g: (f64, f64)| {
+                                                let p = viewport_clone.geo_to_screen(g.0, g.1);
+                                                point(p.x + bounds.origin.x, p.y + bounds.origin.y)
+                                            };
+                                            let blue = rgb(0x3b82f6);
+                                            let half = px(4.0);
+                                            let marker = |window: &mut Window, g: (f64, f64)| {
+                                                let c = to_window(g);
+                                                window.paint_quad(fill(
+                                                    Bounds {
+                                                        origin: point(c.x - half, c.y - half),
+                                                        size: size(px(8.0), px(8.0)),
+                                                    },
+                                                    blue,
+                                                ));
+                                            };
+                                            marker(window, progress.start);
+                                            let cursor_geo = this
+                                                .last_mouse_pos
+                                                .map(|p| viewport_clone.screen_to_geo(p));
+                                            // The path to draw: the start..cursor
+                                            // rubber band before the end is placed,
+                                            // then the arc through the cursor (a
+                                            // straight chord while it is degenerate).
+                                            let path_points: Vec<(f64, f64)> = match (
+                                                progress.end,
+                                                cursor_geo,
+                                            ) {
+                                                (None, Some(cursor)) => vec![progress.start, cursor],
+                                                (None, None) => Vec::new(),
+                                                (Some(end), cursor) => {
+                                                    marker(window, end);
+                                                    cursor
+                                                        .and_then(|c| {
+                                                            this.arc_from_geo(progress.start, end, c)
+                                                        })
+                                                        .unwrap_or_else(|| vec![progress.start, end])
+                                                }
+                                            };
+                                            let mut builder = PathBuilder::stroke(px(2.0));
+                                            for (i, g) in path_points.iter().enumerate() {
+                                                let p = to_window(*g);
+                                                if i == 0 {
+                                                    builder.move_to(p);
+                                                } else {
+                                                    builder.line_to(p);
+                                                }
+                                            }
+                                            if let Ok(path) = builder.build() {
+                                                window.paint_path(path, blue);
                                             }
                                         }
 
@@ -12628,7 +12866,12 @@ mod tests {
                 assert!(selected_ids(view, Way).is_empty());
             })
             .unwrap();
-        vcx.simulate_keystrokes("cmd-z");
+        // Undo is bound to `secondary-z`: Cmd on macOS, Ctrl elsewhere.
+        vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
         window
             .update(vcx, |view, _, _| {
                 assert!(editable(view).way_node_ids(102).is_some());

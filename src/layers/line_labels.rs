@@ -606,11 +606,11 @@ pub fn window_ok(m: &Metrics, s0: f32, s1: f32, max_vertex: f32, max_total: f32)
     let lo = m.cum.partition_point(|&c| c <= s0 + 1e-3);
     let hi = m.cum.partition_point(|&c| c < s1 - 1e-3);
     let mut total = 0.0;
-    for i in lo..hi {
-        if m.turn[i] > max_vertex {
+    for &turn in m.turn.iter().take(hi).skip(lo) {
+        if turn > max_vertex {
             return false;
         }
-        total += m.turn[i];
+        total += turn;
         if total > max_total {
             return false;
         }
