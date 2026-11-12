@@ -5729,7 +5729,9 @@ impl MapViewer {
 
         // Calculate visible tiles
         let zoom_level = self.viewport.zoom_level();
-        let tile_zoom = zoom_level.round().clamp(0.0, 18.0) as u32;
+        let tile_zoom = zoom_level
+            .round()
+            .clamp(0.0, osm_gpui::coordinates::MAX_MAP_ZOOM) as u32;
         let bounds_geo = self.viewport.visible_bounds();
         let visible_tiles = tiles::get_tiles_for_bounds(
             bounds_geo.min_lat,
