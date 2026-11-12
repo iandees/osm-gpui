@@ -4,6 +4,7 @@
 
 pub mod align;
 pub mod appearance;
+pub mod arc;
 pub mod assets;
 pub mod auth;
 pub mod autosave;

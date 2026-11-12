@@ -197,6 +197,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
+        id: "mode_arc",
+        default_spec: "v",
+        category: ShortcutCategory::Modes,
+    },
+    ShortcutDef {
         id: "action_square",
         default_spec: "q",
         category: ShortcutCategory::Actions,

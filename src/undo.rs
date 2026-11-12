@@ -83,6 +83,14 @@ pub(crate) enum UndoableAction {
         way_id: i64,
         node_ids: [i64; 4],
     },
+    /// Arc mode's 3rd click: the arc's new nodes + one open, untagged way
+    /// through them, committed atomically. Undo deletes the way then every
+    /// node.
+    CreateArc {
+        layer: LayerId,
+        way_id: i64,
+        node_ids: Vec<i64>,
+    },
     /// Extrude mode's drag commit: 2 new nodes + one closed, untagged way
     /// off an existing segment. The segment's own 2 nodes are untouched.
     /// Undo deletes the way then the 2 new nodes.
@@ -229,6 +237,7 @@ impl UndoableAction {
             // The helper nodes of a building / extrusion are an
             // implementation detail; the way is what the user made.
             UndoableAction::CreateBuilding { layer, way_id, .. }
+            | UndoableAction::CreateArc { layer, way_id, .. }
             | UndoableAction::ExtrudeWay { layer, way_id, .. } => out.push(way(*layer, *way_id)),
             UndoableAction::InsertNodeIntoWay {
                 layer,
@@ -316,6 +325,7 @@ impl UndoableAction {
             | UndoableAction::CreateWay { layer, .. }
             | UndoableAction::ExtendWay { layer, .. }
             | UndoableAction::CreateBuilding { layer, .. }
+            | UndoableAction::CreateArc { layer, .. }
             | UndoableAction::ExtrudeWay { layer, .. }
             | UndoableAction::InsertNodeIntoWay { layer, .. }
             | UndoableAction::SnapExtendWay { layer, .. }
@@ -361,6 +371,7 @@ impl UndoableAction {
             UndoableAction::CreateBuilding { .. } => {
                 osm_gpui::tr!("history.created_building").to_string()
             }
+            UndoableAction::CreateArc { .. } => osm_gpui::tr!("history.created_arc").to_string(),
             UndoableAction::ExtrudeWay { .. } => osm_gpui::tr!("history.extruded_way").to_string(),
             UndoableAction::InsertNodeIntoWay { .. } => {
                 osm_gpui::tr!("history.inserted_node").to_string()

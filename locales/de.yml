@@ -104,6 +104,10 @@ mode:
     name: "Ausziehen"
     label: "Ausz."
     tooltip: "Wegsegment ausziehen"
+  arc:
+    name: "Bogen"
+    label: "Bogen"
+    tooltip: "Kreisbogen zeichnen"
   # `%{shortcut}` ist die Taste, die den Modus aktiviert, z. B. „A“.
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
@@ -175,6 +179,9 @@ status:
     building_oriented_idle: "Klicken oder ziehen, um ein Gebäude am gewählten Weg auszurichten · Esc beendet"
     building_oriented_started: "Klicken oder loslassen an der Gegenecke zum Abschließen · Esc bricht ab"
     extrude: "Ziehen formt um · Alt-Ziehen: neuer Weg · Cmd/Strg-Ziehen verschiebt · Esc beendet"
+    arc_idle: "Klicken, um den Bogenanfang zu setzen · Esc zum Beenden"
+    arc_started: "Klicken, um das Bogenende zu setzen · Esc zum Abbrechen"
+    arc_end_placed: "Bogen durch Bewegen formen, dann klicken zum Abschließen · Esc zum Abbrechen"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
@@ -353,6 +360,7 @@ history:
   purged: "Objekte aus der Ebene entfernt"
   extended_way: "Weg verlängert"
   created_building: "Gebäude erstellt"
+  created_arc: "Bogen erstellt"
   extruded_way: "Weg ausgezogen"
   rotated: "Auswahl gedreht"
   extruded_segment: "Segment ausgezogen"
@@ -575,6 +583,7 @@ shortcut:
   mode_add: "Zum Modus „Hinzufügen“ wechseln"
   mode_building: "Zum Modus „Gebäude“ wechseln"
   mode_extrude: "Zum Modus „Ausziehen“ wechseln"
+  mode_arc: "Zum Modus „Bogen“ wechseln"
   action_square: "Rechtwinklig machen"
   action_circularize: "Kreisförmig anordnen"
   action_reverse: "Weg umkehren"

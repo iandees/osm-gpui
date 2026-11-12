@@ -32,7 +32,8 @@ pub(crate) enum ModeProgress {
     Idle,
     /// Add: a way is being drawn. Building: the first corner is placed.
     Started,
-    /// Building only: both corners of the first edge are placed.
+    /// Building: both corners of the first edge are placed. Arc: start and
+    /// end are placed.
     EdgePlaced,
 }
 
@@ -56,6 +57,9 @@ pub(crate) fn mode_hint(
         (EditMode::Building, ModeProgress::Started) => tr!("status.hint.building_started"),
         (EditMode::Building, ModeProgress::EdgePlaced) => tr!("status.hint.building_edge_placed"),
         (EditMode::Extrude, _) => tr!("status.hint.extrude"),
+        (EditMode::Arc, ModeProgress::Idle) => tr!("status.hint.arc_idle"),
+        (EditMode::Arc, ModeProgress::Started) => tr!("status.hint.arc_started"),
+        (EditMode::Arc, ModeProgress::EdgePlaced) => tr!("status.hint.arc_end_placed"),
     }
 }
 
@@ -74,6 +78,11 @@ impl MapViewer {
             EditMode::Building => match self.building_progress {
                 None => ModeProgress::Idle,
                 Some(progress) if progress.corner_b.is_none() => ModeProgress::Started,
+                Some(_) => ModeProgress::EdgePlaced,
+            },
+            EditMode::Arc => match self.arc_progress {
+                None => ModeProgress::Idle,
+                Some(progress) if progress.end.is_none() => ModeProgress::Started,
                 Some(_) => ModeProgress::EdgePlaced,
             },
             _ => ModeProgress::Idle,
@@ -304,6 +313,7 @@ mod tests {
             EditMode::Add,
             EditMode::Building,
             EditMode::Extrude,
+            EditMode::Arc,
         ] {
             for progress in [
                 ModeProgress::Idle,
