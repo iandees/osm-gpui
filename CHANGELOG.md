@@ -14,6 +14,10 @@ file.
 - Settings > Appearance has a new Map style group. Choose the built-in style, Wireframe (like JOSM's wireframe view) or iD, or add your own MapCSS style from a local file or an http(s) URL; open layers restyle live. ([#238](https://github.com/iandees/osm-gpui/pull/238))
 - The Wireframe and iD styles are refined, and MapCSS gains `canvas` (background fill and hiding imagery), `symbol-shape` (circle, square, cross) and the `node:tagged`, `node:connection`, `node:unconnected`, `way:in-relation` and `area:in-relation` selectors. ([#239](https://github.com/iandees/osm-gpui/pull/239))
 
+### Editing
+
+- A new Arc mode (shortcut V) draws a circular arc from a start, an end and a bulge point, with a live preview; one undo removes the whole arc. ([#242](https://github.com/iandees/osm-gpui/pull/242))
+
 ### Map
 
 - The map zooms to z23, and imagery tiles are fetched up to each source's own maximum zoom, then over-zoomed (scaled) beyond it instead of disappearing. ([#237](https://github.com/iandees/osm-gpui/pull/237))
