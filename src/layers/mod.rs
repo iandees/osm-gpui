@@ -222,6 +222,10 @@ pub trait MapLayer: Send + Sync {
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         None
     }
+
+    /// Restyle the layer with `stylesheet` (the user changed their MapCSS
+    /// style). Default: ignored, for layers that aren't styled by MapCSS.
+    fn set_stylesheet(&mut self, _stylesheet: std::sync::Arc<crate::style::Stylesheet>) {}
 }
 
 /// Why a feature is being highlighted, which picks the overlay's colors.

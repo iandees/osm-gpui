@@ -1297,7 +1297,7 @@ impl OsmLayer {
                 flat: Vec::new(),
                 styles: Vec::new(),
             },
-            stylesheet: Arc::new(Stylesheet::load_default()),
+            stylesheet: crate::style::custom::active_stylesheet(),
             highlight: Vec::new(),
             preview_way: None,
             node_index: RTree::new(),
@@ -1316,7 +1316,7 @@ impl OsmLayer {
 
     pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
         let fs_load = crate::frame_stats::start();
-        let stylesheet = Arc::new(Stylesheet::load_default());
+        let stylesheet = crate::style::custom::active_stylesheet();
         let fs_phase = crate::frame_stats::start();
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         crate::frame_stats::lap("load.node_cache", fs_phase);
@@ -3127,6 +3127,7 @@ impl OsmLayer {
     /// per-frame or per-drag hot path).
     pub fn set_stylesheet(&mut self, stylesheet: Arc<Stylesheet>) {
         self.stylesheet = stylesheet;
+        self.revision += 1;
         if let Some(data) = self.osm_data.clone() {
             self.node_cache = compute_node_cache(&data, &self.stylesheet);
             let (ids, bboxes, verts, styles, fill_tris) =
@@ -5386,6 +5387,10 @@ impl MapLayer for OsmLayer {
 
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         Some(self)
+    }
+
+    fn set_stylesheet(&mut self, stylesheet: Arc<Stylesheet>) {
+        OsmLayer::set_stylesheet(self, stylesheet);
     }
 
     fn diff_for_upload(&self) -> LayerDiff {

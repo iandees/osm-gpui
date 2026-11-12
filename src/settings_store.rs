@@ -158,6 +158,14 @@ pub struct AppSettings {
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
     #[serde(default = "default_simplify_tolerance_m")]
     pub simplify_tolerance_m: f64,
+    /// Locations (local file paths or http(s) URLs) of the custom MapCSS
+    /// styles the user added. Missing in older files, meaning none.
+    #[serde(default)]
+    pub map_styles: Vec<String>,
+    /// The location in `map_styles` that is in use; `None` is the built-in
+    /// style. Missing in older files, meaning the built-in style.
+    #[serde(default)]
+    pub active_map_style: Option<String>,
 }
 
 /// The allowed range of the Simplify Way tolerance, in metres (inclusive).
@@ -211,6 +219,8 @@ impl Default for AppSettings {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: default_simplify_tolerance_m(),
+            map_styles: Vec::new(),
+            active_map_style: None,
         }
     }
 }
@@ -499,6 +509,8 @@ mod tests {
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
             simplify_tolerance_m: 7.5,
+            map_styles: vec!["/s/a.mapcss".into()],
+            active_map_style: Some("/s/a.mapcss".into()),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -711,6 +723,8 @@ mod tests {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: 3.0,
+            map_styles: Vec::new(),
+            active_map_style: None,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -759,6 +773,29 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
         assert_eq!(load_from(&path).theme, ThemePreference::System);
+    }
+
+    #[test]
+    fn older_settings_files_use_the_built_in_map_style() {
+        let dir = tmp_dir("legacy-no-map-style");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        let loaded = load_from(&path);
+        assert!(loaded.map_styles.is_empty());
+        assert_eq!(loaded.active_map_style, None);
+    }
+
+    #[test]
+    fn map_style_choice_round_trips() {
+        let dir = tmp_dir("map-style-round-trip");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            map_styles: vec!["/a/b.mapcss".into(), "https://x.example/c.mapcss".into()],
+            active_map_style: Some("/a/b.mapcss".into()),
+            ..AppSettings::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path), settings);
     }
 
     #[test]

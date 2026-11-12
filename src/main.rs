@@ -6945,6 +6945,16 @@ impl MapViewer {
     /// `with_map_viewer`) — replaces the old `DOWNLOAD_REQUESTS` queue (the
     /// queue only ever carried a trigger; the actual background-fetch and
     /// apply-on-completion logic already used `cx.spawn` and is unchanged).
+    /// Restyle every open layer with the active MapCSS style (the built-in
+    /// one when no custom style is active) and repaint.
+    pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
+        let sheet = osm_gpui::style::custom::active_stylesheet();
+        for layer in self.layer_manager.layers_mut() {
+            layer.set_stylesheet(sheet.clone());
+        }
+        cx.notify();
+    }
+
     pub(crate) fn request_download(&mut self, cx: &mut Context<Self>) {
         let bounds = self.viewport.visible_bounds();
 
@@ -8169,6 +8179,7 @@ fn main() {
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
         osm_gpui::capabilities::ensure_fetched(&settings_store::api_base_url());
+        load_saved_map_style(cx);
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
         // rebuild_menus again whenever the load state or viewport changes.
@@ -8351,6 +8362,35 @@ fn main() {
         })
         .detach();
     });
+}
+
+/// Load the saved custom MapCSS style in the background (a URL may be slow)
+/// and restyle open layers once it is in. Layers opened before then use the
+/// built-in style, as does everything when the style cannot be loaded.
+/// Scripted runs skip it so captures stay deterministic.
+fn load_saved_map_style(cx: &mut App) {
+    if script_harness::script_mode() {
+        return;
+    }
+    let Some(location) = settings_store::snapshot().active_map_style else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { osm_gpui::style::custom::load_blocking(&location) })
+            .await;
+        match result {
+            Ok(sheet) => {
+                cx.update(|cx| {
+                    osm_gpui::style::custom::set_active(Some(std::sync::Arc::new(sheet)));
+                    with_map_viewer(cx, |v, cx| v.apply_map_style(cx));
+                });
+            }
+            Err(e) => eprintln!("MapCSS style not used, falling back to the built-in one: {e}"),
+        }
+    })
+    .detach();
 }
 
 /// The main window's title: the app name, plus the API server's host when it

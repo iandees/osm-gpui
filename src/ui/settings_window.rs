@@ -4,6 +4,7 @@
 //! `Vec<SettingPage>` from `SettingsWindow`'s state.
 
 use gpui::*;
+use std::sync::Arc;
 
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -12,7 +13,7 @@ use gpui_component::{
     label::Label,
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
-    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 
 use crate::auth::{self, StoredToken};
@@ -38,6 +39,9 @@ enum LoginState {
 /// has access to.
 pub enum SettingsEvent {
     KeybindingsChanged,
+    /// The active MapCSS style changed (`style::custom::set_active` has
+    /// already run); open layers must be restyled.
+    MapStyleChanged,
 }
 
 pub struct SettingsWindow {
@@ -60,6 +64,9 @@ pub struct SettingsWindow {
     edit_simplify_tolerance: Entity<InputState>,
     simplify_tolerance_error: Option<SharedString>,
     cache_clear_error: Option<SharedString>,
+    map_style_input: Entity<InputState>,
+    map_style_error: Option<SharedString>,
+    map_style_loading: bool,
 
     login_state: LoginState,
 
@@ -97,6 +104,9 @@ impl SettingsWindow {
                 .placeholder("3")
                 .default_value(app_settings.simplify_tolerance().to_string())
         });
+        let map_style_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
+        });
         let login_state = Self::current_login_state(&app_settings);
 
         Self {
@@ -119,6 +129,9 @@ impl SettingsWindow {
             edit_simplify_tolerance,
             simplify_tolerance_error: None,
             cache_clear_error: None,
+            map_style_input,
+            map_style_error: None,
+            map_style_loading: false,
 
             login_state,
 
@@ -210,6 +223,77 @@ impl SettingsWindow {
         settings_store::set_invert_scroll_zoom(invert, true);
         self.app_settings.invert_scroll_zoom = invert;
         cx.notify();
+    }
+
+    /// Load the style at `location` (`None` is the built-in style) off the UI
+    /// thread and, if it parses, make it the active one. A style that cannot
+    /// be read or parsed is reported and the current style stays in use.
+    /// When `add` is set a successfully loaded style is also remembered in
+    /// the list.
+    fn activate_map_style(&mut self, location: Option<String>, add: bool, cx: &mut Context<Self>) {
+        self.map_style_error = None;
+        let Some(loc) = location else {
+            self.finish_map_style(None, None, cx);
+            return;
+        };
+        self.map_style_loading = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let loc2 = loc.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::style::custom::load_blocking(&loc2) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.map_style_loading = false;
+                match result {
+                    Ok(sheet) => {
+                        if add {
+                            crate::style::custom::add_location(
+                                &mut this.app_settings.map_styles,
+                                &loc,
+                            );
+                        }
+                        this.finish_map_style(Some(loc), Some(Arc::new(sheet)), cx);
+                    }
+                    Err(e) => {
+                        this.map_style_error = Some(tr!("settings.map_style.error", error = e));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn finish_map_style(
+        &mut self,
+        location: Option<String>,
+        sheet: Option<Arc<crate::style::Stylesheet>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.app_settings.active_map_style = location;
+        self.save_settings();
+        crate::style::custom::set_active(sheet);
+        cx.emit(SettingsEvent::MapStyleChanged);
+        cx.notify();
+    }
+
+    fn add_map_style(&mut self, cx: &mut Context<Self>) {
+        let location = self.map_style_input.read(cx).value().trim().to_string();
+        if location.is_empty() {
+            return;
+        }
+        self.activate_map_style(Some(location), true, cx);
+    }
+
+    /// Forget the active custom style and go back to the built-in one.
+    fn remove_active_map_style(&mut self, cx: &mut Context<Self>) {
+        if let Some(active) = self.app_settings.active_map_style.clone() {
+            self.app_settings.map_styles.retain(|s| *s != active);
+        }
+        self.map_style_error = None;
+        self.finish_map_style(None, None, cx);
     }
 
     fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
@@ -591,7 +675,69 @@ impl SettingsWindow {
             .item(item)
     }
 
+    /// The "Map style" group: a dropdown of the built-in style and the added
+    /// custom ones, then a field to add a file path or URL.
+    fn map_style_group(&self, view: Entity<Self>) -> SettingGroup {
+        const BUILT_IN: &str = "";
+        let mut options: Vec<(SharedString, SharedString)> =
+            vec![(BUILT_IN.into(), tr!("settings.map_style.built_in"))];
+        for loc in &self.app_settings.map_styles {
+            options.push((
+                loc.clone().into(),
+                crate::style::custom::display_name(loc).into(),
+            ));
+        }
+        let value_view = view.clone();
+        let select_view = view.clone();
+        let select_item = SettingItem::new(
+            tr!("settings.map_style.title"),
+            SettingField::dropdown(
+                options,
+                move |cx: &App| {
+                    value_view
+                        .read(cx)
+                        .app_settings
+                        .active_map_style
+                        .clone()
+                        .unwrap_or_default()
+                        .into()
+                },
+                move |val: SharedString, cx: &mut App| {
+                    let location = (!val.is_empty()).then(|| val.to_string());
+                    select_view.update(cx, |this, cx| this.activate_map_style(location, false, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.map_style.description"));
+
+        let input = self.map_style_input.clone();
+        let error = self.map_style_error.clone();
+        let loading = self.map_style_loading;
+        let can_remove = self.app_settings.active_map_style.is_some();
+        let add_item = SettingItem::new(
+            tr!("settings.map_style.add"),
+            SettingField::render(move |_options, window, cx| {
+                render_map_style_add(
+                    view.clone(),
+                    input.clone(),
+                    error.clone(),
+                    loading,
+                    can_remove,
+                    window,
+                    cx,
+                )
+            }),
+        )
+        .description(tr!("settings.map_style.add_description"))
+        .layout(Axis::Vertical);
+        SettingGroup::new()
+            .title(tr!("settings.map_style.group"))
+            .item(select_item)
+            .item(add_item)
+    }
+
     fn appearance_page(&self, view: Entity<Self>) -> SettingPage {
+        let map_style_view = view.clone();
         let language_view = view.clone();
         let theme_view = view.clone();
         let value_view = view.clone();
@@ -667,6 +813,7 @@ impl SettingsWindow {
                     .title(tr!("settings.appearance.text_group"))
                     .item(item),
                 self.language_group(language_view),
+                self.map_style_group(map_style_view),
                 SettingGroup::new()
                     .title(tr!("settings.appearance.scroll_group"))
                     .item(invert_item),
@@ -1153,6 +1300,56 @@ fn render_cache_usage_summary(
         col = col.child(Label::new(err).text_sm().text_color(danger));
     }
     col.into_any_element()
+}
+
+fn render_map_style_add(
+    view: Entity<SettingsWindow>,
+    input: Entity<InputState>,
+    error: Option<SharedString>,
+    loading: bool,
+    can_remove: bool,
+    _window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+
+    let mut col =
+        v_flex()
+            .gap_2()
+            .child(field_row(tr!("settings.map_style.location"), &input, muted));
+    if let Some(err) = error {
+        col = col.child(Label::new(err).text_sm().text_color(danger));
+    }
+    if loading {
+        col = col.child(
+            Label::new(tr!("settings.map_style.loading"))
+                .text_sm()
+                .text_color(muted),
+        );
+    }
+    let add_view = view.clone();
+    let mut buttons = h_flex().gap_2().child(
+        Button::new("add-map-style")
+            .label(tr!("settings.map_style.add_button"))
+            .primary()
+            .compact()
+            .disabled(loading)
+            .on_click(move |_ev, _window, cx| {
+                add_view.update(cx, |this, cx| this.add_map_style(cx));
+            }),
+    );
+    if can_remove {
+        buttons = buttons.child(
+            Button::new("remove-map-style")
+                .label(tr!("settings.map_style.remove_button"))
+                .compact()
+                .on_click(move |_ev, _window, cx| {
+                    view.update(cx, |this, cx| this.remove_active_map_style(cx));
+                }),
+        );
+    }
+    col.child(buttons)
 }
 
 fn render_simplify_tolerance(
