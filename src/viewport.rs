@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn zoom_at_the_limit_is_not_a_change() {
-        let mut viewport = Viewport::new(40.7128, -74.0060, 20.0, size(px(800.0), px(600.0)));
+        let mut viewport = Viewport::new(40.7128, -74.0060, 23.0, size(px(800.0), px(600.0)));
         assert!(!viewport.zoom_by_pinch(point(px(400.0), px(300.0)), 0.5));
     }
 
