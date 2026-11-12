@@ -823,6 +823,8 @@ struct MapViewer {
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
     first_dataset_fitted: bool,
+    /// The main window's bounds as last rendered, saved on quit.
+    window_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     status_message: Option<(SharedString, Instant)>,
     /// The running download or upload, shown with a spinner in the status
     /// bar until it completes. The worker thread updates the shared state;
@@ -1173,7 +1175,18 @@ impl MapViewer {
                 zoom: this.viewport.zoom_level(),
             };
             let persist = may_persist_settings();
+            let rect = this.window_bounds.map(|b| settings_store::WindowRect {
+                x: b.origin.x.as_f32(),
+                y: b.origin.y.as_f32(),
+                width: b.size.width.as_f32(),
+                height: b.size.height.as_f32(),
+            });
             async move {
+                if let Some(rect) = rect {
+                    if persist && rect.validated(&[]).is_some() {
+                        settings_store::set_window_bounds(rect, true);
+                    }
+                }
                 if view.validated().is_some() && persist {
                     settings_store::set_last_map_view(view, true);
                 }
@@ -1193,6 +1206,7 @@ impl MapViewer {
             layer_manager,
             tile_cache,
             first_dataset_fitted: false,
+            window_bounds: None,
             status_message: None,
             transfer: None,
             space_held: false,
@@ -7078,6 +7092,7 @@ const DOWNLOAD_LAYER_NAME: &str = "OSM data";
 
 impl Render for MapViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.window_bounds = Some(window.bounds());
         // Times building the element tree (not layout or paint).
         let _render_scope =
             osm_gpui::frame_stats::Scoped::new("view.render", osm_gpui::frame_stats::start());
@@ -8012,6 +8027,7 @@ fn main() {
     eprintln!("🚀 Starting OSM-GPUI Map Viewer with Tile Loading");
 
     let args = parse_cli_args();
+    let window_size_given = args.window_size.is_some();
     let (win_w, win_h) = args.window_size.unwrap_or((1200, 800));
     let cli_language = args.language.clone();
     let cli_theme = args.theme;
@@ -8261,13 +8277,42 @@ fn main() {
             })
             .detach();
 
+        // Reopen the window where it was left, unless the command line or a
+        // script sets the size, or the saved place is no longer on a screen.
+        let displays: Vec<(f32, f32, f32, f32)> = cx
+            .displays()
+            .iter()
+            .map(|d| {
+                let b = d.bounds();
+                (
+                    b.origin.x.as_f32(),
+                    b.origin.y.as_f32(),
+                    b.size.width.as_f32(),
+                    b.size.height.as_f32(),
+                )
+            })
+            .collect();
+        let saved_rect = if script_harness::script_mode() || window_size_given {
+            None
+        } else {
+            settings_store::snapshot()
+                .window_bounds
+                .and_then(|r| r.validated(&displays))
+        };
+        let initial_bounds = match saved_rect {
+            Some(r) => Bounds {
+                origin: point(px(r.x), px(r.y)),
+                size: size(px(r.width), px(r.height)),
+            },
+            None => Bounds {
+                origin: point(px(100.0), px(100.0)),
+                size: size(px(win_w as f32), px(win_h as f32)),
+            },
+        };
         let map_window = cx
             .open_window(
                 WindowOptions {
-                    window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                        origin: point(px(100.0), px(100.0)),
-                        size: size(px(win_w as f32), px(win_h as f32)),
-                    })),
+                    window_bounds: Some(gpui::WindowBounds::Windowed(initial_bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(window_title(&settings_store::api_base_url()).into()),
                         appears_transparent: false,
