@@ -338,6 +338,19 @@ impl MapLayer for TileLayer {
         let visible_tiles = self.visible_tiles(viewport, tile_zoom);
         let merc_offset = self.mercator_offset(viewport);
 
+        // Tell the tile cache which tiles are needed now (visible tiles and
+        // their parent fallbacks) so downloads for tiles that have scrolled
+        // off the map are cancelled, and re-request any that were cancelled
+        // but are visible again.
+        let wanted: std::collections::HashSet<String> = visible_tiles
+            .iter()
+            .flat_map(|t| std::iter::once(*t).chain(t.parent()))
+            .map(|t| url_from_template(&self.url_template, &t).to_string())
+            .collect();
+        for key in crate::tile_cache::set_wanted_tiles(&self.source_key, wanted) {
+            cx.remove_asset::<crate::tile_cache::TileAsset>(&key);
+        }
+
         for tile_coord in &visible_tiles {
             let (tile_x, tile_y, tile_width, tile_height) =
                 tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
