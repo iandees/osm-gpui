@@ -26,11 +26,10 @@ jobs:
         with:
           components: rustfmt
 
-      # Only main writes the cache; PRs restore it.
+      # Restores from this ref, else from main; saves when nothing matched.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-fmt
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -53,11 +52,10 @@ jobs:
         with:
           components: clippy
 
-      # Only main writes the cache; PRs restore it.
+      # Restores from this ref, else from main; saves when nothing matched.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-clippy
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy
         run: cargo clippy --locked --all-targets -- -D warnings
@@ -78,11 +76,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Only main writes the cache; PRs restore it.
+      # Restores from this ref, else from main; saves when nothing matched.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-test
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --locked
