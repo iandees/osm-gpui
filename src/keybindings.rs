@@ -202,6 +202,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
+        id: "mode_improve",
+        default_spec: "i",
+        category: ShortcutCategory::Modes,
+    },
+    ShortcutDef {
         id: "action_square",
         default_spec: "q",
         category: ShortcutCategory::Actions,

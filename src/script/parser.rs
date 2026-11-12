@@ -1124,7 +1124,7 @@ fn parse_assert_mode(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.len() != 1 {
         return Err(err(
             line_no,
-            "assert_mode: want select|add|building|extrude|arc",
+            "assert_mode: want select|add|building|extrude|arc|improve",
         ));
     }
     let mode = match rest[0] {
@@ -1133,6 +1133,7 @@ fn parse_assert_mode(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
         "building" => EditMode::Building,
         "extrude" => EditMode::Extrude,
         "arc" => EditMode::Arc,
+        "improve" => EditMode::Improve,
         other => {
             return Err(err(
                 line_no,

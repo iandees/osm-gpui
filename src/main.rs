@@ -29,6 +29,8 @@ mod edge_case_tests;
 mod fields_section;
 mod history_actions;
 mod imagery_offset_ui;
+#[cfg(test)]
+mod improve_click_tests;
 mod menu;
 mod mode_panel;
 mod notes_ui;
@@ -251,6 +253,7 @@ enum EditMode {
     Building,
     Extrude,
     Arc,
+    Improve,
 }
 
 /// Action to switch the current `EditMode`.
@@ -271,6 +274,7 @@ enum EditModeAction {
     Building,
     Extrude,
     Arc,
+    Improve,
 }
 
 /// Undo of a node attached to an existing way's end: pull `node_id` out of
@@ -300,6 +304,7 @@ impl From<EditModeAction> for EditMode {
             EditModeAction::Building => EditMode::Building,
             EditModeAction::Extrude => EditMode::Extrude,
             EditModeAction::Arc => EditMode::Arc,
+            EditModeAction::Improve => EditMode::Improve,
         }
     }
 }
@@ -330,6 +335,16 @@ struct BuildingProgress {
 struct ArcProgress {
     start: (f64, f64),
     end: Option<(f64, f64)>,
+}
+
+/// What a click would do to Improve Way mode's target way: the way, its node
+/// ids and their screen positions, and the planned edit (in screen space).
+struct ImprovePlan {
+    layer_id: LayerId,
+    way_id: i64,
+    ids: Vec<i64>,
+    points: Vec<osm_gpui::improve_way::Pt>,
+    plan: osm_gpui::improve_way::Plan,
 }
 
 /// The squared way whose orientation Building mode borrows: captured when
@@ -998,6 +1013,9 @@ struct MapViewer {
     building_progress: Option<BuildingProgress>,
     /// In-progress Arc-mode state, or `None` between arcs (see `ArcProgress`).
     arc_progress: Option<ArcProgress>,
+    /// The modifier keys as of the last mouse move, click or modifier change;
+    /// Improve Way mode reads it to preview and pick its operation.
+    last_modifiers: gpui::Modifiers,
     /// The squared way Building mode is aligned to, if any (see
     /// `BuildingReference`). When set, a building takes two corners instead
     /// of three clicks.
@@ -1119,7 +1137,9 @@ fn map_cursor(
         CursorStyle::OpenHand
     } else {
         match mode {
-            EditMode::Add | EditMode::Building | EditMode::Arc => CursorStyle::Crosshair,
+            EditMode::Add | EditMode::Building | EditMode::Arc | EditMode::Improve => {
+                CursorStyle::Crosshair
+            }
             EditMode::Select if hovering => CursorStyle::PointingHand,
             EditMode::Select | EditMode::Extrude => CursorStyle::Arrow,
         }
@@ -1295,6 +1315,7 @@ impl MapViewer {
             snap_preview: None,
             building_progress: None,
             arc_progress: None,
+            last_modifiers: gpui::Modifiers::none(),
             building_reference: None,
             building_press: None,
             last_mouse_pos: None,
@@ -4143,6 +4164,11 @@ impl MapViewer {
     /// refresh it from the last pointer position instead of waiting for the
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
+        self.last_modifiers = modifiers;
+        if self.mode == EditMode::Improve {
+            // The preview depends on the held keys.
+            cx.notify();
+        }
         let Some(pos) = self.last_mouse_pos else {
             return;
         };
@@ -4160,6 +4186,7 @@ impl MapViewer {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.last_mouse_pos = Some(adjusted_position);
+        self.last_modifiers = event.modifiers;
         // Rotating: the selection follows the pointer around its centre.
         if self.rotate_session.is_some() {
             self.update_rotate(adjusted_position, event.modifiers.shift);
@@ -4444,11 +4471,13 @@ impl MapViewer {
                         }
                     }
                 }
+                self.last_modifiers = event.modifiers;
                 self.handle_map_click(
                     from_pt(at),
                     event.modifiers.shift,
                     event.click_count,
                     osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
+                    cx,
                 );
                 // Always notify, regardless of whether the selection changed:
                 // `self.interaction` just transitioned back to `Idle` and the
@@ -4473,11 +4502,13 @@ impl MapViewer {
             }
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
+                self.last_modifiers = event.modifiers;
                 self.handle_map_click(
                     from_pt(at),
                     event.modifiers.shift,
                     event.click_count,
                     osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
+                    cx,
                 );
                 // Add mode re-selects the same way on every extend click (the
                 // way id doesn't change), so the before/after diff alone
@@ -4498,6 +4529,7 @@ impl MapViewer {
         shift_held: bool,
         click_count: usize,
         ctrl_held: bool,
+        cx: &mut Context<Self>,
     ) {
         // New Note placing its pin, or a click on a note's pin.
         if self.notes_click(screen_pt) {
@@ -4508,6 +4540,7 @@ impl MapViewer {
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
             EditMode::Arc => self.handle_arc_click(screen_pt),
+            EditMode::Improve => self.handle_improve_click(screen_pt, cx),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
                 // mouse-down/mouse-move/mouse-up directly); a stray click
@@ -4589,6 +4622,153 @@ impl MapViewer {
                 }
             }
         }
+    }
+
+    /// Improve Way mode's target: the one way that is selected, if any.
+    fn improve_target(&self) -> Option<(LayerId, i64)> {
+        match self.selected.as_slice() {
+            [f] if f.kind == osm_gpui::selection::FeatureKind::Way => Some((f.layer_id, f.id)),
+            _ => None,
+        }
+    }
+
+    /// The operation the held modifiers select in Improve Way mode: Shift
+    /// deletes, Ctrl/Cmd/Alt insert, none moves.
+    fn improve_op(&self) -> osm_gpui::improve_way::Op {
+        let m = self.last_modifiers;
+        osm_gpui::improve_way::Op::from_modifiers(m.shift, m.control || m.platform || m.alt)
+    }
+
+    /// What a click at `cursor` would do to the target way: its node ids,
+    /// their screen positions and the planned edit (in screen space).
+    fn improve_plan_at(&self, cursor: gpui::Point<gpui::Pixels>) -> Option<ImprovePlan> {
+        let (layer_id, way_id) = self.improve_target()?;
+        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
+        let ids = editable.way_node_ids(way_id)?;
+        let points: Vec<osm_gpui::improve_way::Pt> = ids
+            .iter()
+            .map(|&id| {
+                let (lat, lon) = editable.node_lat_lon(id)?;
+                let p = self.viewport.geo_to_screen(lat, lon);
+                Some((p.x.to_f64(), p.y.to_f64()))
+            })
+            .collect::<Option<_>>()?;
+        let plan = osm_gpui::improve_way::plan(
+            &points,
+            &ids,
+            (cursor.x.to_f64(), cursor.y.to_f64()),
+            self.improve_op(),
+        )?;
+        Some(ImprovePlan {
+            layer_id,
+            way_id,
+            ids,
+            points,
+            plan,
+        })
+    }
+
+    /// Improve Way mode: with no way chosen, a click picks the way under the
+    /// cursor; with one chosen, a click edits it (move the nearest node to
+    /// the cursor, insert a node along the way, or delete the nearest node).
+    fn handle_improve_click(
+        &mut self,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::improve_way::Plan;
+        use osm_gpui::selection::{FeatureKind, FeatureRef};
+
+        if self.improve_target().is_none() {
+            self.handle_select_click(screen_pt, false, 1);
+            if self.improve_target().is_none() {
+                self.set_selection(Vec::new());
+            }
+            return;
+        }
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let Some(ImprovePlan {
+            layer_id,
+            way_id,
+            plan,
+            ..
+        }) = self.improve_plan_at(screen_pt)
+        else {
+            return;
+        };
+        let viewport = self.viewport.clone();
+        let to_geo = move |p: osm_gpui::improve_way::Pt| {
+            viewport.screen_to_geo(gpui::point(px(p.0 as f32), px(p.1 as f32)))
+        };
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: way_id,
+        };
+        match plan {
+            Plan::Move { node, to } => {
+                let (lat, lon) = to_geo(to);
+                let Some(editable) = self
+                    .layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                else {
+                    return;
+                };
+                let Some(before) = editable.node_lat_lon(node) else {
+                    return;
+                };
+                editable.commit_node_moves(&[(node, lat, lon)]);
+                self.undo_stack.push(UndoableAction::MoveNodes {
+                    per_layer: vec![(layer_id, vec![(node, before, (lat, lon))])],
+                    select: Some(vec![way_ref]),
+                });
+            }
+            Plan::Insert { index, at } => {
+                if self.refuse_way_growth(layer_id, way_id, 1) {
+                    return;
+                }
+                let (lat, lon) = to_geo(at);
+                let Some(editable) = self
+                    .layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                else {
+                    return;
+                };
+                let node_id = editable.insert_node_into_way(way_id, index, lat, lon);
+                self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
+                    layer: layer_id,
+                    way_id,
+                    index,
+                    node_id,
+                });
+            }
+            Plan::Delete { node } => {
+                // The ordinary Delete action does the bookkeeping (other
+                // ways, relations, orphans) as one undo step.
+                self.set_selection(vec![FeatureRef {
+                    layer_id,
+                    kind: FeatureKind::Node,
+                    id: node,
+                }]);
+                self.run_selection_action("delete", cx);
+                // Keep working on the way if it survived.
+                let still_there = self
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .and_then(|l| l.as_editable())
+                    .is_some_and(|e| e.has_feature(FeatureKind::Way, way_id));
+                self.set_selection(if still_there {
+                    vec![way_ref]
+                } else {
+                    Vec::new()
+                });
+            }
+        }
+        cx.notify();
     }
 
     /// The arc from `start` to `end` bending through `through` (all geo
@@ -7527,6 +7707,15 @@ impl Render for MapViewer {
                                         this.mode = EditMode::Select;
                                     }
                                 }
+                                EditMode::Improve => {
+                                    // First Esc lets go of the way (to pick
+                                    // another), the second leaves the mode.
+                                    if this.improve_target().is_some() {
+                                        this.set_selection(Vec::new());
+                                    } else {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
                                 EditMode::Select => {
                                     if !cancelled_drag {
                                         this.set_selection(Vec::new());
@@ -7593,6 +7782,16 @@ impl Render for MapViewer {
                                 this.on_set_mode(
                                     &SetMode {
                                         mode: EditModeAction::Arc,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(&settings, "mode_improve")
+                            {
+                                this.on_set_mode(
+                                    &SetMode {
+                                        mode: EditModeAction::Improve,
                                     },
                                     window,
                                     cx,
@@ -7912,6 +8111,50 @@ impl Render for MapViewer {
                                             }
                                             if let Ok(path) = builder.build() {
                                                 window.paint_path(path, blue);
+                                            }
+                                        }
+
+                                        // Improve Way preview: the target way as it
+                                        // would look after a click at the cursor.
+                                        if this.mode == EditMode::Improve {
+                                            if let Some(ip) = this
+                                                .last_mouse_pos
+                                                .and_then(|c| this.improve_plan_at(c))
+                                            {
+                                                use osm_gpui::improve_way::{marker, preview, Plan};
+                                                let color = if matches!(ip.plan, Plan::Delete { .. }) {
+                                                    rgb(0xef4444)
+                                                } else {
+                                                    rgb(0x3b82f6)
+                                                };
+                                                let to_window = |p: (f64, f64)| {
+                                                    point(
+                                                        px(p.0 as f32) + bounds.origin.x,
+                                                        px(p.1 as f32) + bounds.origin.y,
+                                                    )
+                                                };
+                                                let outline = preview(&ip.points, &ip.ids, ip.plan);
+                                                let mut builder = PathBuilder::stroke(px(2.0));
+                                                for (i, p) in outline.iter().enumerate() {
+                                                    let p = to_window(*p);
+                                                    if i == 0 {
+                                                        builder.move_to(p);
+                                                    } else {
+                                                        builder.line_to(p);
+                                                    }
+                                                }
+                                                if let Ok(path) = builder.build() {
+                                                    window.paint_path(path, color);
+                                                }
+                                                let c = to_window(marker(&ip.points, &ip.ids, ip.plan));
+                                                let half = px(5.0);
+                                                window.paint_quad(fill(
+                                                    Bounds {
+                                                        origin: point(c.x - half, c.y - half),
+                                                        size: size(px(10.0), px(10.0)),
+                                                    },
+                                                    color,
+                                                ));
                                             }
                                         }
 
