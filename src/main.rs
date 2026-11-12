@@ -12628,7 +12628,12 @@ mod tests {
                 assert!(selected_ids(view, Way).is_empty());
             })
             .unwrap();
-        vcx.simulate_keystrokes("cmd-z");
+        // Undo is bound to `secondary-z`: Cmd on macOS, Ctrl elsewhere.
+        vcx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
         window
             .update(vcx, |view, _, _| {
                 assert!(editable(view).way_node_ids(102).is_some());
