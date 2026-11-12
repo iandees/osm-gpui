@@ -1,6 +1,6 @@
 use gpui::{Asset, BackgroundExecutor, ImageCacheError, RenderImage};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -245,6 +245,56 @@ fn cached_file_count() -> usize {
 /// Set once when TileCache is constructed with an IdleTracker.
 static TILE_IDLE_TRACKER: OnceLock<Arc<IdleTracker>> = OnceLock::new();
 
+/// Tile URLs each source's layer wanted on its most recent render, keyed by
+/// source key. A queued or in-flight download whose URL is no longer in its
+/// source's set (the tile scrolled or zoomed off the map) is cancelled.
+static WANTED_TILES: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
+
+/// Tiles whose download was cancelled. gpui caches the (failed) asset result
+/// forever, so these must be evicted before they are requested again.
+static CANCELLED_TILES: OnceLock<Mutex<HashSet<TileAssetKey>>> = OnceLock::new();
+
+fn wanted_tiles() -> &'static Mutex<HashMap<String, HashSet<String>>> {
+    WANTED_TILES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancelled_tiles() -> &'static Mutex<HashSet<TileAssetKey>> {
+    CANCELLED_TILES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Record the tile URLs a layer of `source_key` needs right now (replacing
+/// its previous set), and return the previously cancelled tiles among them,
+/// which the caller must evict from gpui's asset cache so they refetch.
+pub fn set_wanted_tiles(source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
+    let revived: Vec<TileAssetKey> = {
+        let mut cancelled = cancelled_tiles().lock().unwrap();
+        let revived: Vec<_> = cancelled
+            .iter()
+            .filter(|k| k.source_key == source_key && urls.contains(&k.url))
+            .cloned()
+            .collect();
+        for k in &revived {
+            cancelled.remove(k);
+        }
+        revived
+    };
+    wanted_tiles()
+        .lock()
+        .unwrap()
+        .insert(source_key.to_string(), urls);
+    revived
+}
+
+/// Whether a download for `url` is still wanted. Sources that have not
+/// reported a wanted set (nothing rendered yet) are never cancelled.
+fn is_tile_wanted(source_key: &str, url: &str) -> bool {
+    wanted_tiles()
+        .lock()
+        .unwrap()
+        .get(source_key)
+        .is_none_or(|set| set.contains(url))
+}
+
 /// Per-URL last-error map. Populated by `TileAsset::load` whenever a tile
 /// fails, and cleared when a tile subsequently loads successfully. Read by
 /// `TileLayer` when rendering the failure fallback.
@@ -303,6 +353,8 @@ pub enum TileFetchError {
     EmptyBody,
     NotImage,
     Io(String),
+    /// The tile was no longer wanted (scrolled off the map) before it finished.
+    Cancelled,
 }
 
 impl fmt::Display for TileFetchError {
@@ -321,6 +373,7 @@ impl fmt::Display for TileFetchError {
             TileFetchError::EmptyBody => write!(f, "Empty body"),
             TileFetchError::NotImage => write!(f, "Not an image"),
             TileFetchError::Io(msg) => write!(f, "Disk: {}", msg),
+            TileFetchError::Cancelled => write!(f, "Cancelled"),
         }
     }
 }
@@ -394,7 +447,25 @@ impl Asset for TileAsset {
                     }
 
                     // Use a simple synchronous HTTP request that doesn't require Tokio
-                    match download_file_sync(&url) {
+                    let keep = {
+                        let (source_key, url) = (source_key.clone(), url.clone());
+                        move || is_tile_wanted(&source_key, &url)
+                    };
+                    let downloaded = if keep() {
+                        download_file_cancellable(&crate::http::UreqClient::new(), &url, &keep)
+                    } else {
+                        Err(TileFetchError::Cancelled)
+                    };
+                    match downloaded {
+                        Err(TileFetchError::Cancelled) => {
+                            cancelled_tiles().lock().unwrap().insert(TileAssetKey {
+                                url: url.clone(),
+                                source_key: source_key.clone(),
+                            });
+                            Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
+                                "cancelled"
+                            ))))
+                        }
                         Ok(bytes) => {
                             // Check if the response actually contains image data
                             if bytes.is_empty() {
@@ -526,25 +597,41 @@ fn tile_download_semaphore() -> &'static Semaphore {
 /// for display inside a tile.
 const ERROR_SNIPPET_BYTES: usize = 120;
 
-fn download_file_sync(url: &str) -> Result<Vec<u8>, TileFetchError> {
-    download_file_sync_with(&crate::http::UreqClient::new(), url)
-}
-
 /// Same as `download_file_sync`, but against an injected `HttpClient` so it's
 /// testable without a real network. Kept `pub(crate)` since tests are the only
 /// other caller.
+#[cfg(test)]
 pub(crate) fn download_file_sync_with(
     client: &dyn crate::http::HttpClient,
     url: &str,
 ) -> Result<Vec<u8>, TileFetchError> {
+    download_file_cancellable(client, url, &|| true)
+}
+
+/// `download_file_sync_with`, abandoning the download (with
+/// `TileFetchError::Cancelled`) once `keep` returns false. `keep` is checked
+/// after waiting for a download slot and while the body is being read.
+pub(crate) fn download_file_cancellable(
+    client: &dyn crate::http::HttpClient,
+    url: &str,
+    keep: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, TileFetchError> {
     // Cap concurrent in-flight tile downloads (see MAX_CONCURRENT_TILE_DOWNLOADS).
     // Held for the duration of the request (including retries) below.
     let _permit = tile_download_semaphore().acquire();
+    if !keep() {
+        return Err(TileFetchError::Cancelled);
+    }
 
     let req =
         crate::http::HttpRequest::get(url).header("Referer", "https://github.com/iandees/osm-gpui");
 
-    match crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard()) {
+    match crate::http::fetch_with_retries_progress(
+        client,
+        &req,
+        &crate::http::RetryPolicy::standard(),
+        &mut |_, _| keep(),
+    ) {
         Ok(resp) => Ok(resp.body),
         Err(crate::http::HttpError::Status { status, body }) => {
             let snippet = sanitize_snippet(&body);
@@ -554,7 +641,7 @@ pub(crate) fn download_file_sync_with(
             })
         }
         Err(crate::http::HttpError::Transport(msg)) => Err(TileFetchError::Transport(msg)),
-        Err(e @ crate::http::HttpError::Cancelled) => Err(TileFetchError::Transport(e.to_string())),
+        Err(crate::http::HttpError::Cancelled) => Err(TileFetchError::Cancelled),
     }
 }
 
@@ -961,6 +1048,32 @@ mod tests {
         let err =
             download_file_sync_with(&client, "https://tile.example.test/1/2/3.png").unwrap_err();
         assert!(matches!(err, TileFetchError::Transport(_)));
+    }
+
+    #[test]
+    fn cancelled_download_makes_no_request() {
+        let client =
+            crate::http::fake::FakeClient::new(vec![crate::http::fake::ok(200, b"x".to_vec())]);
+        let err = download_file_cancellable(&client, "http://t/1.png", &|| false).unwrap_err();
+        assert!(matches!(err, TileFetchError::Cancelled));
+        assert_eq!(client.request_count(), 0);
+    }
+
+    #[test]
+    fn unwanted_tiles_are_cancelled_and_revived_when_wanted_again() {
+        let src = "test-src-cancel";
+        assert!(is_tile_wanted(src, "u1"));
+        set_wanted_tiles(src, HashSet::from(["u2".to_string()]));
+        assert!(!is_tile_wanted(src, "u1"));
+        assert!(is_tile_wanted(src, "u2"));
+        let key = TileAssetKey {
+            url: "u1".into(),
+            source_key: src.into(),
+        };
+        cancelled_tiles().lock().unwrap().insert(key.clone());
+        let revived = set_wanted_tiles(src, HashSet::from(["u1".to_string()]));
+        assert!(revived.contains(&key));
+        assert!(set_wanted_tiles(src, HashSet::from(["u1".to_string()])).is_empty());
     }
 
     #[test]
