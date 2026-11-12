@@ -1,0 +1,22 @@
+# Rotated street-name labels on curved ways (prototype).
+#   cargo run --release -- --script docs/screenshots/line-labels-curves.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels-curves.osm
+viewport 40.7120 -74.0060 17
+wait_idle 5s
+capture out/line-labels-curves-z17.png
+viewport 40.71290 -74.0060 18
+wait_idle 2s
+capture out/line-labels-curves-arc-z18.png
+viewport 40.71411 -74.0060 18
+wait_idle 2s
+capture out/line-labels-curves-top-z18.png
+viewport 40.71047 -74.00482 18
+wait_idle 2s
+capture out/line-labels-curves-corner-z18.png
+viewport 40.71010 -74.00700 19
+wait_idle 2s
+capture out/line-labels-curves-ramp-z19.png
+viewport 40.71146 -74.00849 19
+wait_idle 2s
+capture out/line-labels-curves-roundabout-z19.png
