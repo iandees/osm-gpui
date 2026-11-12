@@ -17,6 +17,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Add: draw nodes and ways, snapping new nodes onto existing ways.
 - Building: draw a rectangular building (three clicks), or align one to a selected squared way.
 - Extrude: drag a way segment to reshape the way (pull out an L, push in a notch); Cmd/Ctrl-drag moves the segment, Alt-drag makes a new way.
+- Arc: click the start, click the end, then move the mouse to bend the arc and click to finish; nodes are placed every 5° along the circle.
 
 **Selection actions**
 - Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete.
@@ -136,7 +137,7 @@ These are the defaults, written with macOS modifier symbols. Everything in the t
 | Edit | `⇧⌘C` / `⇧⌘V` | Copy Tags / Paste Tags |
 | View | `⌘=` / `⌘-` | Zoom In / Zoom Out |
 | View | `⌘0` / `⌘J` | Zoom to Data / Zoom to Selection |
-| Modes | `S` `A` `B` `X` | Select / Add / Building / Extrude |
+| Modes | `S` `A` `B` `X` `V` | Select / Add / Building / Extrude / Arc |
 | Selection actions | `Q` `O` | Square / Circularize |
 | Selection actions | `R` `C` | Reverse Way / Join Ways |
 | Selection actions | `G` `E` | Separate Node / Extend Way |

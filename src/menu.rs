@@ -898,6 +898,7 @@ fn build_menus(
                 mode_item(tr!("mode.add.name"), EditModeAction::Add),
                 mode_item(tr!("mode.building.name"), EditModeAction::Building),
                 mode_item(tr!("mode.extrude.name"), EditModeAction::Extrude),
+                mode_item(tr!("mode.arc.name"), EditModeAction::Arc),
             ],
             disabled: false,
         },

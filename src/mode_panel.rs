@@ -1,4 +1,4 @@
-//! The left-hand mode-selector toolbar: Select / Add / Building / Extrude.
+//! The left-hand mode-selector toolbar: Select / Add / Building / Extrude / Arc.
 
 use gpui::{div, prelude::*, px, Context, SharedString};
 use gpui_component::{
@@ -39,6 +39,7 @@ impl MapViewer {
             .child(self.mode_button("mode-add", EditMode::Add, has_active_layer, cx))
             .child(self.mode_button("mode-building", EditMode::Building, has_active_layer, cx))
             .child(self.mode_button("mode-extrude", EditMode::Extrude, has_active_layer, cx))
+            .child(self.mode_button("mode-arc", EditMode::Arc, has_active_layer, cx))
     }
 
     fn mode_button(
@@ -54,6 +55,7 @@ impl MapViewer {
             EditMode::Add => EditModeAction::Add,
             EditMode::Building => EditModeAction::Building,
             EditMode::Extrude => EditModeAction::Extrude,
+            EditMode::Arc => EditModeAction::Arc,
         };
         let mut button = Button::new(id).w(px(46.0)).h(px(46.0)).child(
             v_flex()
@@ -87,6 +89,7 @@ fn mode_label(mode: EditMode) -> SharedString {
         EditMode::Add => tr!("mode.add.label"),
         EditMode::Building => tr!("mode.building.label"),
         EditMode::Extrude => tr!("mode.extrude.label"),
+        EditMode::Arc => tr!("mode.arc.label"),
     }
 }
 
@@ -97,6 +100,7 @@ fn mode_shortcut_id(mode: EditMode) -> &'static str {
         EditMode::Add => "mode_add",
         EditMode::Building => "mode_building",
         EditMode::Extrude => "mode_extrude",
+        EditMode::Arc => "mode_arc",
     }
 }
 
@@ -108,6 +112,7 @@ fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> SharedString {
         EditMode::Add => tr!("mode.add.tooltip"),
         EditMode::Building => tr!("mode.building.tooltip"),
         EditMode::Extrude => tr!("mode.extrude.tooltip"),
+        EditMode::Arc => tr!("mode.arc.tooltip"),
     };
     let shortcut = shortcut.to_uppercase();
     if enabled {
@@ -123,6 +128,7 @@ fn mode_icon(mode: EditMode) -> IconName {
         EditMode::Add => IconName::Plus,
         EditMode::Building => IconName::Building2,
         EditMode::Extrude => IconName::LayoutDashboard,
+        EditMode::Arc => IconName::Redo2,
     }
 }
 
@@ -137,6 +143,7 @@ mod tests {
             mode_icon(EditMode::Add),
             mode_icon(EditMode::Building),
             mode_icon(EditMode::Extrude),
+            mode_icon(EditMode::Arc),
         ];
         // Assert the exact mode -> icon mapping so a change to any one
         // mode's icon is caught here.
@@ -144,6 +151,7 @@ mod tests {
         assert!(matches!(icons[1], IconName::Plus));
         assert!(matches!(icons[2], IconName::Building2));
         assert!(matches!(icons[3], IconName::LayoutDashboard));
+        assert!(matches!(icons[4], IconName::Redo2));
     }
 
     #[test]
@@ -162,6 +170,7 @@ mod tests {
             EditMode::Add,
             EditMode::Building,
             EditMode::Extrude,
+            EditMode::Arc,
         ] {
             // `def` panics on an unknown id.
             osm_gpui::keybindings::def(mode_shortcut_id(mode));
@@ -174,5 +183,6 @@ mod tests {
         assert_eq!(mode_label(EditMode::Add), "Add");
         assert_eq!(mode_label(EditMode::Building), "Bldg");
         assert_eq!(mode_label(EditMode::Extrude), "Extr");
+        assert_eq!(mode_label(EditMode::Arc), "Arc");
     }
 }
