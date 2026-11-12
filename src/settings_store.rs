@@ -158,6 +158,32 @@ pub struct AppSettings {
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
     #[serde(default = "default_simplify_tolerance_m")]
     pub simplify_tolerance_m: f64,
+    /// Where the map was when the app last quit, reopened there next time.
+    /// Missing in older files, meaning the built-in starting view.
+    #[serde(default)]
+    pub last_map_view: Option<MapView>,
+}
+
+/// A saved map position: the centre and zoom level of the viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MapView {
+    pub lat: f64,
+    pub lon: f64,
+    pub zoom: f64,
+}
+
+impl MapView {
+    /// The view to start at: `self` if it is usable (finite, on the map, a
+    /// sane zoom), so a hand-edited file can't leave the map unusable.
+    pub fn validated(self) -> Option<Self> {
+        let ok = self.lat.is_finite()
+            && self.lon.is_finite()
+            && self.zoom.is_finite()
+            && (-85.0..=85.0).contains(&self.lat)
+            && (-180.0..=180.0).contains(&self.lon)
+            && (0.0..=24.0).contains(&self.zoom);
+        ok.then_some(self)
+    }
 }
 
 /// The allowed range of the Simplify Way tolerance, in metres (inclusive).
@@ -211,6 +237,7 @@ impl Default for AppSettings {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: default_simplify_tolerance_m(),
+            last_map_view: None,
         }
     }
 }
@@ -312,6 +339,18 @@ pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
         update_store_in_memory(settings);
     }
     true
+}
+
+/// Set only the last map view, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_last_map_view(view: MapView, persist: bool) {
+    let mut settings = snapshot();
+    settings.last_map_view = Some(view);
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
 }
 
 /// Remember the source text and the comment of an upload that went through:
@@ -499,6 +538,11 @@ mod tests {
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
             simplify_tolerance_m: 7.5,
+            last_map_view: Some(MapView {
+                lat: 51.5,
+                lon: -0.12,
+                zoom: 14.25,
+            }),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -711,10 +755,55 @@ mod tests {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: 3.0,
+            last_map_view: None,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn map_view_is_absent_in_older_files_and_validated() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(old.last_map_view, None);
+        let good = MapView {
+            lat: 10.0,
+            lon: 20.0,
+            zoom: 12.5,
+        };
+        assert_eq!(good.validated(), Some(good));
+        for bad in [
+            MapView {
+                lat: f64::NAN,
+                ..good
+            },
+            MapView { lat: 90.0, ..good },
+            MapView { lon: 181.0, ..good },
+            MapView { zoom: -1.0, ..good },
+            MapView {
+                zoom: f64::INFINITY,
+                ..good
+            },
+        ] {
+            assert_eq!(bad.validated(), None);
+        }
+    }
+
+    #[test]
+    fn map_view_round_trips_through_the_file() {
+        let dir = tmp_dir("map-view");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            last_map_view: Some(MapView {
+                lat: -33.86,
+                lon: 151.2,
+                zoom: 9.0,
+            }),
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).last_map_view, settings.last_map_view);
     }
 
     #[test]

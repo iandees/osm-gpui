@@ -1146,7 +1146,40 @@ impl MapViewer {
             }
         })
         .detach();
-        let viewport = Viewport::new(40.7128, -74.0060, 11.0, gpui::size(px(800.0), px(600.0)));
+        // Reopen where the map was left; scripted runs always use the
+        // built-in view so captures are deterministic.
+        let start = if script_harness::script_mode() {
+            None
+        } else {
+            settings_store::snapshot()
+                .last_map_view
+                .and_then(|v| v.validated())
+        };
+        let (start_lat, start_lon, start_zoom) = start
+            .map(|v| (v.lat, v.lon, v.zoom))
+            .unwrap_or((40.7128, -74.0060, 11.0));
+        let viewport = Viewport::new(
+            start_lat,
+            start_lon,
+            start_zoom,
+            gpui::size(px(800.0), px(600.0)),
+        );
+        // Remember the view on any normal quit.
+        cx.on_app_quit(|this, _cx| {
+            let (lat, lon) = this.viewport.center();
+            let view = settings_store::MapView {
+                lat,
+                lon,
+                zoom: this.viewport.zoom_level(),
+            };
+            let persist = may_persist_settings();
+            async move {
+                if view.validated().is_some() && persist {
+                    settings_store::set_last_map_view(view, true);
+                }
+            }
+        })
+        .detach();
         let executor = cx.background_executor().clone();
         // Use the global idle tracker (set before Application::new().run(...))
         let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
