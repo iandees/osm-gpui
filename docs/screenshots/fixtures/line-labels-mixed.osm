@@ -249,6 +249,22 @@
  <node id="210" lat="40.7122246" lon="-74.0065926" version="1">
   <tag k="addr:housenumber" v="20"/>
  </node>
+ <node id="211" lat="40.7124042" lon="-74.0098516" version="1"/>
+ <node id="212" lat="40.7124042" lon="-74.0075999" version="1"/>
+ <node id="213" lat="40.7135720" lon="-74.0075999" version="1"/>
+ <node id="214" lat="40.7135720" lon="-74.0098516" version="1"/>
+ <node id="215" lat="40.7104729" lon="-74.0041038" version="1"/>
+ <node id="216" lat="40.7104729" lon="-74.0023262" version="1"/>
+ <node id="217" lat="40.7113712" lon="-74.0023262" version="1"/>
+ <node id="218" lat="40.7113712" lon="-74.0041038" version="1"/>
+ <node id="219" lat="40.7106076" lon="-74.0072444" version="1"/>
+ <node id="220" lat="40.7106076" lon="-74.0047556" version="1"/>
+ <node id="221" lat="40.7114161" lon="-74.0047556" version="1"/>
+ <node id="222" lat="40.7114161" lon="-74.0072444" version="1"/>
+ <node id="223" lat="40.7128759" lon="-74.0061778" version="1"/>
+ <node id="224" lat="40.7128759" lon="-74.0053482" version="1"/>
+ <node id="225" lat="40.7132801" lon="-74.0053482" version="1"/>
+ <node id="226" lat="40.7132801" lon="-74.0061778" version="1"/>
  <way id="1000" version="1">
   <nd ref="1"/>
   <nd ref="2"/>
@@ -503,5 +519,41 @@
   <nd ref="195"/>
   <tag k="highway" v="secondary"/>
   <tag k="name" v="Meridian Parkway"/>
+ </way>
+ <way id="1015" version="1">
+  <nd ref="211"/>
+  <nd ref="212"/>
+  <nd ref="213"/>
+  <nd ref="214"/>
+  <nd ref="211"/>
+  <tag k="leisure" v="park"/>
+  <tag k="name" v="Memorial Park"/>
+ </way>
+ <way id="1016" version="1">
+  <nd ref="215"/>
+  <nd ref="216"/>
+  <nd ref="217"/>
+  <nd ref="218"/>
+  <nd ref="215"/>
+  <tag k="natural" v="water"/>
+  <tag k="name" v="Mill Pond"/>
+ </way>
+ <way id="1017" version="1">
+  <nd ref="219"/>
+  <nd ref="220"/>
+  <nd ref="221"/>
+  <nd ref="222"/>
+  <nd ref="219"/>
+  <tag k="landuse" v="retail"/>
+  <tag k="name" v="Market Square"/>
+ </way>
+ <way id="1018" version="1">
+  <nd ref="223"/>
+  <nd ref="224"/>
+  <nd ref="225"/>
+  <nd ref="226"/>
+  <nd ref="223"/>
+  <tag k="building" v="yes"/>
+  <tag k="name" v="Town Hall"/>
  </way>
 </osm>

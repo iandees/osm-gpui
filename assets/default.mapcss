@@ -76,7 +76,7 @@ node[shop]      { color: #4cd964; symbol-size: 8; }
    places from z16 and house numbers from z18; POI icons from z17 use the
    node's preset icon (Maki/Temaki), `icon-image: maki-cafe` overrides it. */
 node|z17-[name]         { text: name; font-size: 12; text-color: #ffffff;
-                          text-halo-color: #000000; text-halo-radius: 1.5; }
+                          text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }
 node|z16-[place]        { text: name; font-size: 14; }
 node|z18-[addr:housenumber] { text: name, addr:housenumber; }
 node|z17-[amenity], node|z17-[shop], node|z17-[tourism], node|z17-[leisure],
@@ -89,6 +89,28 @@ node|z17-[public_transport]  { icon-image: preset; icon-width: 12; }
    Drawn from z16, where labels start. Add `way|z17-[railway]` or others the same
    way; ways without a name get no label. */
 way|z16-[highway]  { text: name; text-position: line; font-size: 12; text-color: #1f2937;
-                     text-halo-color: #ffffff; text-halo-radius: 1.5; text-offset: 6.2; }
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
 way|z16-[waterway] { text: name; text-position: line; font-size: 12; text-color: #1d4f91;
-                     text-halo-color: #ffffff; text-halo-radius: 1.5; text-offset: 6.2; }
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
+
+/* Area labels (closed ways and multipolygons). Placed at the area's pole of
+   inaccessibility and shown only where the text fits inside the shape (shrunk
+   one step if that helps); the same `text`, `font-size`, `text-color` and
+   `text-halo-*` keys as nodes. Rules go from general to specific, and the
+   colour follows the class: water blue, green space green, buildings pink. */
+area|z17-[landuse], area|z17-[amenity], area|z17-[tourism], area|z17-[shop],
+area|z17-[historic], area|z17-[office]
+                { text: name; font-size: 12; text-color: #d9d9d9;
+                  text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }
+area|z16-[leisure=park], area|z16-[leisure=nature_reserve], area|z16-[leisure=garden],
+area|z16-[landuse=forest], area|z16-[landuse=grass], area|z16-[landuse=recreation_ground],
+area|z16-[landuse=cemetery], area|z16-[natural=wood]
+                { text: name; font-size: 12; text-color: #8fe39a;
+                  text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }
+area|z16-[natural=water], area|z16-[waterway=riverbank]
+                { text: name; font-size: 12; text-color: #8ccbff;
+                  text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }
+area|z16-[place]    { text: name; font-size: 13; text-color: #ffffff;
+                  text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }
+area|z18-[building] { text: name; font-size: 11; text-color: #f5c0de;
+                  text-halo-color: rgba(0,0,0,0.9); text-halo-radius: 1.5; }

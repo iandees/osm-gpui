@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::layers::labels::{CollisionGrid, Rect, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER};
 use crate::layers::way_stroke::{Polyline, Shape};
@@ -61,6 +62,8 @@ pub struct LabelStyle {
     pub color: u32,
     /// Halo colour `0xRRGGBB`.
     pub halo_color: u32,
+    /// Halo opacity (`text-halo-color` alpha or `text-halo-opacity`).
+    pub halo_alpha: f32,
 }
 
 impl Default for LabelStyle {
@@ -72,6 +75,7 @@ impl Default for LabelStyle {
             offset_px: 0.35 * size_px + 2.0,
             color: 0x1f2937,
             halo_color: 0xffffff,
+            halo_alpha: crate::layers::labels::DEFAULT_HALO_ALPHA,
         }
     }
 }
@@ -713,6 +717,10 @@ pub struct PlacedLabel {
     /// reference point.
     pub boxes: Vec<[f32; 4]>,
     pub bbox: [f32; 4],
+    /// The point on the way at the middle of the window, relative to the
+    /// reference point: what a placed label is anchored to, so it keeps
+    /// following its way while the zoom changes.
+    pub anchor: Pt,
 }
 
 type LayoutSig = ((usize, u64, u64), [u32; 3]);
@@ -724,7 +732,8 @@ struct CacheEntry {
     labels: Vec<Arc<PlacedLabel>>,
 }
 
-/// Triangle vertex lists (3 per triangle) grouped by colour (`0xRRGGBB`).
+/// Triangle vertex lists (3 per triangle) grouped by colour and opacity
+/// (`0xRRGGBBAA`).
 pub type ColorBatches = Vec<(u32, Vec<Pt>)>;
 
 /// What `emit_frame` produces: screen-space triangles, halos to be painted
@@ -742,6 +751,13 @@ impl FrameOut {
         let n = |b: &ColorBatches| b.iter().map(|(_, v)| v.len()).sum();
         (n(&self.fill), n(&self.halo))
     }
+}
+
+/// `0xRRGGBB` and an opacity (quantised to sixteenths, so a fade-in makes at
+/// most sixteen batches) as `0xRRGGBBAA`.
+fn rgba(rgb: u32, alpha: f32) -> u32 {
+    let a = ((alpha.clamp(0.0, 1.0) * 16.0).round() as u32 * 16).min(255);
+    (rgb << 8) | a
 }
 
 fn batch(batches: &mut ColorBatches, color: u32) -> &mut Vec<Pt> {
@@ -766,9 +782,10 @@ pub struct Candidate<'a> {
     pub priority: i32,
 }
 
-/// A label that won placement. Positions are relative to the way's first
-/// vertex, whose Mercator position is `(mx, my)`, so a pan only re-projects
-/// that one point.
+/// A label that won placement. Its glyphs are relative to the way's first
+/// vertex; `(mx, my)` is the Mercator position of the label's anchor (the
+/// middle of its window on the way), so a pan or a zoom in progress only
+/// re-projects that one point and the label stays on its way.
 #[derive(Debug, Clone)]
 pub struct LinePlaced {
     pub way_id: i64,
@@ -780,6 +797,51 @@ pub struct LinePlaced {
     pub label: Arc<PlacedLabel>,
     pub color: u32,
     pub halo_color: u32,
+    pub halo_alpha: f32,
+    /// When it started fading in; `None` once it is fully opaque.
+    pub born: Option<Instant>,
+}
+
+/// The street labels chosen at the last settle.
+#[derive(Debug, Default)]
+pub struct LineState {
+    pub placed: Vec<LinePlaced>,
+    /// The zoom they were placed at.
+    pub zoom: f64,
+    /// When the last fade-in finishes.
+    pub fade_end: Option<Instant>,
+}
+
+impl LineState {
+    /// Replace the placement. Labels that were on screen at a comparable
+    /// zoom (`keep` zoom levels) stay opaque; new ones fade in from `now`
+    /// over `fade`.
+    pub fn store(
+        &mut self,
+        mut placed: Vec<LinePlaced>,
+        zoom: f64,
+        now: Instant,
+        keep: f64,
+        fade: std::time::Duration,
+    ) {
+        let kept: HashSet<(i64, usize)> = if (self.zoom - zoom).abs() <= keep {
+            self.placed.iter().map(|p| (p.way_id, p.slot)).collect()
+        } else {
+            HashSet::new()
+        };
+        let mut any = false;
+        for p in &mut placed {
+            if kept.contains(&(p.way_id, p.slot)) {
+                p.born = None;
+            } else {
+                p.born = Some(now);
+                any = true;
+            }
+        }
+        self.placed = placed;
+        self.zoom = zoom;
+        self.fade_end = any.then(|| now + fade);
+    }
 }
 
 /// Padding around line-label boxes when colliding, pixels.
@@ -973,10 +1035,12 @@ impl LineLabelCache {
                     ];
                 }
             }
+            let (anchor, _) = point_at(&pts, &m, s0 + length / 2.0);
             labels.push(PlacedLabel {
                 glyphs,
                 boxes,
                 bbox,
+                anchor,
             });
         }
         labels
@@ -1097,14 +1161,28 @@ impl LineLabelCache {
             for r in rects {
                 grid.insert(r, out.len() as u32);
             }
+            // Mercator position of the label's anchor: the way's first vertex
+            // plus the anchor's pixel offset (screen y points down).
+            let (x0, y0) = (c.verts[0].1, c.verts[0].2);
+            let px_per_m = (to_screen(x0 + 1.0, y0).0 - to_screen(x0, y0).0) as f64;
+            let (mx, my) = if px_per_m.abs() > 1e-9 {
+                (
+                    x0 + label.anchor.0 as f64 / px_per_m,
+                    y0 - label.anchor.1 as f64 / px_per_m,
+                )
+            } else {
+                (x0, y0)
+            };
             out.push(LinePlaced {
                 way_id: c.way_id,
                 slot,
-                mx: c.verts[0].1,
-                my: c.verts[0].2,
+                mx,
+                my,
                 label,
                 color: c.style.color,
                 halo_color: c.style.halo_color,
+                halo_alpha: c.style.halo_alpha,
+                born: None,
             });
         }
         (out, built)
@@ -1123,32 +1201,39 @@ impl LineLabelCache {
     ) {
         let (placed, built) = self.place(cands, zoom, &to_screen, view, &[], &HashSet::new());
         out.layouts_built += built;
-        emit_frame(&placed, to_screen, origin, view, out);
+        emit_frame(&placed, to_screen, origin, view, Instant::now(), out);
     }
 }
 
 /// Transform the placed labels' cached triangles onto the screen: the only
-/// per-frame work. Labels outside the view are skipped.
+/// per-frame work. Labels outside the view are skipped; a label still
+/// fading in (`born`) is drawn at the matching opacity.
 pub fn emit_frame(
     placed: &[LinePlaced],
     to_screen: impl Fn(f64, f64) -> Pt,
     origin: Pt,
     view: (f32, f32),
+    now: Instant,
     out: &mut FrameOut,
 ) {
     for p in placed {
-        let (rx, ry) = to_screen(p.mx, p.my);
+        let (sx, sy) = to_screen(p.mx, p.my);
+        // The reference point (the way's first vertex) at today's scale
+        // relative to the anchor.
+        let (rx, ry) = (sx - p.label.anchor.0, sy - p.label.anchor.1);
         let b = p.label.bbox;
         if rx + b[2] < 0.0 || ry + b[3] < 0.0 || rx + b[0] > view.0 || ry + b[1] > view.1 {
             continue;
         }
         out.labels += 1;
         let (ax, ay) = (rx + origin.0, ry + origin.1);
+        let fade = crate::layers::labels::fade_alpha(p.born, now);
+        let (fill_c, halo_c) = (rgba(p.color, fade), rgba(p.halo_color, p.halo_alpha * fade));
         for g in &p.label.glyphs {
             let (gx, gy) = (ax + g.x, ay + g.y);
             let xf = |&(vx, vy): &Pt| (gx + vx * g.cos - vy * g.sin, gy + vx * g.sin + vy * g.cos);
-            batch(&mut out.halo, p.halo_color).extend(g.mesh.halo.iter().map(xf));
-            batch(&mut out.fill, p.color).extend(g.mesh.fill.iter().map(xf));
+            batch(&mut out.halo, halo_c).extend(g.mesh.halo.iter().map(xf));
+            batch(&mut out.fill, fill_c).extend(g.mesh.fill.iter().map(xf));
         }
     }
 }
@@ -1564,6 +1649,96 @@ mod tests {
                 .position,
             Some(TextPosition::Line)
         );
+    }
+
+    #[test]
+    fn a_placed_label_stays_on_its_way_while_the_scale_changes() {
+        let mut cache = LineLabelCache::default();
+        let verts = east_way();
+        let cands = [cand(1, "Elm St", &verts)];
+        let (placed, _) = cache.place(
+            &cands,
+            17.0,
+            to_screen,
+            (800.0, 600.0),
+            &[],
+            &HashSet::new(),
+        );
+        assert_eq!(placed.len(), 1);
+        let p = &placed[0];
+        // The anchor is the middle of the window: on the way (y = 0).
+        assert!(p.my.abs() < 1e-3);
+        assert!(p.mx > 0.0 && p.mx < 200.0);
+        // Zoom in a little without re-placing: the label centre follows the
+        // way's own point to the new scale.
+        let zoomed = |x: f64, y: f64| (x as f32 * 1.8 + 100.0, -(y as f32) * 1.8 + 100.0);
+        let mut out = FrameOut::default();
+        emit_frame(
+            &placed,
+            zoomed,
+            (0.0, 0.0),
+            (800.0, 600.0),
+            Instant::now(),
+            &mut out,
+        );
+        let pts: Vec<Pt> = out
+            .fill
+            .iter()
+            .flat_map(|(_, v)| v.iter().copied())
+            .collect();
+        let cx = (pts.iter().map(|p| p.0).fold(f32::MAX, f32::min)
+            + pts.iter().map(|p| p.0).fold(f32::MIN, f32::max))
+            / 2.0;
+        assert!((cx - (p.mx as f32 * 1.8 + 100.0)).abs() < 4.0, "cx {cx}");
+        // And it sits just above the way line (y = 100 on screen).
+        let cy = pts.iter().map(|p| p.1).sum::<f32>() / pts.len() as f32;
+        assert!(cy < 100.0 && cy > 100.0 - 15.0, "cy {cy}");
+    }
+
+    #[test]
+    fn fade_in_only_for_labels_that_were_not_there_before() {
+        let verts = east_way();
+        let mut cache = LineLabelCache::default();
+        let cands = [cand(1, "Elm St", &verts)];
+        let place = |c: &mut LineLabelCache| {
+            c.place(
+                &cands,
+                17.0,
+                to_screen,
+                (800.0, 600.0),
+                &[],
+                &HashSet::new(),
+            )
+            .0
+        };
+        let fade = std::time::Duration::from_millis(140);
+        let t0 = Instant::now();
+        let mut st = LineState::default();
+        st.store(place(&mut cache), 17.0, t0, 1.0, fade);
+        assert!(st.placed[0].born.is_some());
+        assert_eq!(st.fade_end, Some(t0 + fade));
+        // Same labels again at a nearby zoom: already on screen, opaque.
+        st.store(place(&mut cache), 17.4, t0, 1.0, fade);
+        assert!(st.placed[0].born.is_none());
+        assert_eq!(st.fade_end, None);
+        // A big zoom jump counts as new.
+        st.store(place(&mut cache), 19.0, t0, 1.0, fade);
+        assert!(st.placed[0].born.is_some());
+    }
+
+    #[test]
+    fn halo_opacity_and_fade_set_the_batch_alpha() {
+        assert_eq!(rgba(0xffffff, 1.0), 0xffffffff);
+        assert_eq!(rgba(0xffffff, 0.9), 0xffffffe0);
+        assert_eq!(rgba(0x102030, 0.0), 0x10203000);
+        let mut cache = LineLabelCache::default();
+        let verts = east_way();
+        let mut c = cand(1, "Elm St", &verts);
+        c.style.halo_alpha = 0.5;
+        let mut out = FrameOut::default();
+        cache.frame(&[c], 17.0, to_screen, (0.0, 0.0), (800.0, 600.0), &mut out);
+        assert_eq!(out.halo[0].0 & 0xff, 0x80);
+        assert_eq!(out.fill[0].0 & 0xff, 0xff);
     }
 
     #[test]

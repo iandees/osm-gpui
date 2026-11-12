@@ -199,6 +199,8 @@ pub struct TextStyle {
     pub color: Option<u32>,
     pub halo_color: Option<u32>,
     pub halo_radius: Option<f32>,
+    /// Alpha of `text-halo-color` (`rgba(..)`), 0..=1.
+    pub halo_opacity: Option<f32>,
     pub position: Option<TextPosition>,
     /// `text-offset`: perpendicular shift of a line label from its way, in
     /// pixels. Positive is above the text, negative below it.
@@ -219,6 +221,7 @@ impl TextStyle {
             Declaration::FontSize(v) => self.font_size = Some(*v),
             Declaration::TextColor(c) => self.color = Some(*c),
             Declaration::TextHaloColor(c) => self.halo_color = Some(*c),
+            Declaration::TextHaloOpacity(a) => self.halo_opacity = Some(*a),
             Declaration::TextHaloRadius(v) => self.halo_radius = Some(*v),
             Declaration::TextPosition(p) => self.position = Some(*p),
             Declaration::TextOffset(v) => self.offset = Some(*v),
@@ -337,6 +340,7 @@ enum Declaration {
     FontSize(f32),
     TextColor(u32),
     TextHaloColor(u32),
+    TextHaloOpacity(f32),
     TextHaloRadius(f32),
     TextPosition(TextPosition),
     TextOffset(f32),
@@ -414,6 +418,7 @@ fn label_rule_indices(rules: &[Rule]) -> Vec<u32> {
                         | Declaration::FontSize(_)
                         | Declaration::TextColor(_)
                         | Declaration::TextHaloColor(_)
+                        | Declaration::TextHaloOpacity(_)
                         | Declaration::TextHaloRadius(_)
                         | Declaration::TextPosition(_)
                         | Declaration::TextOffset(_)
@@ -1074,7 +1079,12 @@ impl<'a> Parser<'a> {
                     None => warn_once(warned, "text-color", &value),
                 },
                 "text-halo-color" => match parse_color_alpha(&value) {
-                    Some((c, _)) => decls.push(Declaration::TextHaloColor(c)),
+                    Some((c, a)) => {
+                        decls.push(Declaration::TextHaloColor(c));
+                        if let Some(a) = a {
+                            decls.push(Declaration::TextHaloOpacity(a.clamp(0.0, 1.0)));
+                        }
+                    }
                     None => warn_once(warned, "text-halo-color", &value),
                 },
                 "text-halo-radius" => match value.trim().parse::<f32>() {
@@ -1601,6 +1611,7 @@ mod tests {
                 color: Some(0x112233),
                 halo_color: Some(0xFFFFFF),
                 halo_radius: Some(2.0),
+                halo_opacity: Some(0.8),
                 position: Some(TextPosition::Line),
                 offset: Some(-4.5),
                 icon_image: Some("icons/shield.svg".into()),
