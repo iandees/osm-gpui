@@ -12,10 +12,30 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
-  # Quick check for PRs (and main): fmt + clippy + tests on a cheap Linux runner.
-  check:
+  # fmt, clippy and test run as parallel jobs (they cannot share build artifacts).
+  fmt:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Only main writes the cache; PRs restore it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-fmt
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+  clippy:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -31,18 +51,38 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
-      # Only main writes the cache; PRs restore it (and fall back to it).
+      # Only main writes the cache; PRs restore it.
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ci-clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config \
+            libasound2-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Only main writes the cache; PRs restore it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --locked
