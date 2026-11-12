@@ -158,6 +158,75 @@ pub struct AppSettings {
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
     #[serde(default = "default_simplify_tolerance_m")]
     pub simplify_tolerance_m: f64,
+    /// Where the map was when the app last quit, reopened there next time.
+    /// Missing in older files, meaning the built-in starting view.
+    #[serde(default)]
+    pub last_map_view: Option<MapView>,
+    /// The main window's position and size when the app last quit. Missing
+    /// in older files, meaning the default placement.
+    #[serde(default)]
+    pub window_bounds: Option<WindowRect>,
+}
+
+/// A saved window placement in logical pixels (screen coordinates).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl WindowRect {
+    pub const MIN_SIZE: (f32, f32) = (400.0, 300.0);
+    pub const MAX_SIZE: (f32, f32) = (20000.0, 20000.0);
+    /// How much of the window must overlap a display (width, height) for the
+    /// user to be able to grab and move it.
+    const MIN_VISIBLE: (f32, f32) = (100.0, 50.0);
+
+    /// `self` if usable: finite, within the size limits, and visibly on at
+    /// least one of `displays` (each `(x, y, width, height)`), so a window
+    /// last seen on a disconnected monitor falls back to the default. With no
+    /// displays known the screen check is skipped.
+    pub fn validated(self, displays: &[(f32, f32, f32, f32)]) -> Option<Self> {
+        let finite = [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|v| v.is_finite());
+        let sized = (Self::MIN_SIZE.0..=Self::MAX_SIZE.0).contains(&self.width)
+            && (Self::MIN_SIZE.1..=Self::MAX_SIZE.1).contains(&self.height);
+        if !finite || !sized {
+            return None;
+        }
+        let visible = displays.is_empty()
+            || displays.iter().any(|&(dx, dy, dw, dh)| {
+                let w = (self.x + self.width).min(dx + dw) - self.x.max(dx);
+                let h = (self.y + self.height).min(dy + dh) - self.y.max(dy);
+                w >= Self::MIN_VISIBLE.0 && h >= Self::MIN_VISIBLE.1
+            });
+        visible.then_some(self)
+    }
+}
+
+/// A saved map position: the centre and zoom level of the viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MapView {
+    pub lat: f64,
+    pub lon: f64,
+    pub zoom: f64,
+}
+
+impl MapView {
+    /// The view to start at: `self` if it is usable (finite, on the map, a
+    /// sane zoom), so a hand-edited file can't leave the map unusable.
+    pub fn validated(self) -> Option<Self> {
+        let ok = self.lat.is_finite()
+            && self.lon.is_finite()
+            && self.zoom.is_finite()
+            && (-85.0..=85.0).contains(&self.lat)
+            && (-180.0..=180.0).contains(&self.lon)
+            && (0.0..=24.0).contains(&self.zoom);
+        ok.then_some(self)
+    }
 }
 
 /// The allowed range of the Simplify Way tolerance, in metres (inclusive).
@@ -211,6 +280,8 @@ impl Default for AppSettings {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: default_simplify_tolerance_m(),
+            last_map_view: None,
+            window_bounds: None,
         }
     }
 }
@@ -312,6 +383,30 @@ pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
         update_store_in_memory(settings);
     }
     true
+}
+
+/// Set only the last map view, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_last_map_view(view: MapView, persist: bool) {
+    let mut settings = snapshot();
+    settings.last_map_view = Some(view);
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the window bounds, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_window_bounds(rect: WindowRect, persist: bool) {
+    let mut settings = snapshot();
+    settings.window_bounds = Some(rect);
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
 }
 
 /// Remember the source text and the comment of an upload that went through:
@@ -499,6 +594,17 @@ mod tests {
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
             simplify_tolerance_m: 7.5,
+            last_map_view: Some(MapView {
+                lat: 51.5,
+                lon: -0.12,
+                zoom: 14.25,
+            }),
+            window_bounds: Some(WindowRect {
+                x: 10.0,
+                y: 20.0,
+                width: 900.0,
+                height: 700.0,
+            }),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -711,10 +817,125 @@ mod tests {
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
             simplify_tolerance_m: 3.0,
+            last_map_view: None,
+            window_bounds: None,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn map_view_is_absent_in_older_files_and_validated() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(old.last_map_view, None);
+        let good = MapView {
+            lat: 10.0,
+            lon: 20.0,
+            zoom: 12.5,
+        };
+        assert_eq!(good.validated(), Some(good));
+        for bad in [
+            MapView {
+                lat: f64::NAN,
+                ..good
+            },
+            MapView { lat: 90.0, ..good },
+            MapView { lon: 181.0, ..good },
+            MapView { zoom: -1.0, ..good },
+            MapView {
+                zoom: f64::INFINITY,
+                ..good
+            },
+        ] {
+            assert_eq!(bad.validated(), None);
+        }
+    }
+
+    #[test]
+    fn window_rect_validation() {
+        let screen = [(0.0, 0.0, 1920.0, 1080.0)];
+        let good = WindowRect {
+            x: 100.0,
+            y: 100.0,
+            width: 1200.0,
+            height: 800.0,
+        };
+        assert_eq!(good.validated(&screen), Some(good));
+        assert_eq!(good.validated(&[]), Some(good));
+        for bad in [
+            WindowRect {
+                x: f32::NAN,
+                ..good
+            },
+            WindowRect {
+                width: f32::INFINITY,
+                ..good
+            },
+            WindowRect {
+                width: 100.0,
+                ..good
+            },
+            WindowRect {
+                height: 50.0,
+                ..good
+            },
+            WindowRect {
+                width: 1.0e6,
+                ..good
+            },
+            // Last seen on a monitor that is no longer connected.
+            WindowRect { x: 3000.0, ..good },
+            WindowRect { y: -2000.0, ..good },
+            // Only a sliver still on screen.
+            WindowRect { x: 1900.0, ..good },
+        ] {
+            assert_eq!(bad.validated(&screen), None, "{bad:?}");
+        }
+        // Partly off-screen but still grabbable.
+        let partly = WindowRect { x: -600.0, ..good };
+        assert_eq!(partly.validated(&screen), Some(partly));
+        // On a second display.
+        let two = [(0.0, 0.0, 1920.0, 1080.0), (1920.0, 0.0, 1920.0, 1080.0)];
+        let right = WindowRect { x: 2200.0, ..good };
+        assert_eq!(right.validated(&two), Some(right));
+    }
+
+    #[test]
+    fn window_rect_round_trips_and_is_absent_in_older_files() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        assert_eq!(old.window_bounds, None);
+        let dir = tmp_dir("window-rect");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            window_bounds: Some(WindowRect {
+                x: -5.5,
+                y: 30.0,
+                width: 1000.0,
+                height: 640.0,
+            }),
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).window_bounds, settings.window_bounds);
+    }
+
+    #[test]
+    fn map_view_round_trips_through_the_file() {
+        let dir = tmp_dir("map-view");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            last_map_view: Some(MapView {
+                lat: -33.86,
+                lon: 151.2,
+                zoom: 9.0,
+            }),
+            ..Default::default()
+        };
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).last_map_view, settings.last_map_view);
     }
 
     #[test]
