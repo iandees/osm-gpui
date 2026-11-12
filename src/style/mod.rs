@@ -4,6 +4,7 @@
 //! to color ways/nodes and set line weight and node size per tag
 //! pattern. See `mapcss` submodule for the parser and evaluator.
 
+pub mod custom;
 pub mod mapcss;
 
 pub use mapcss::{

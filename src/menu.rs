@@ -173,6 +173,9 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                         osm_gpui::ui::settings_window::SettingsEvent::KeybindingsChanged => {
                             apply_keybindings_change(cx);
                         }
+                        osm_gpui::ui::settings_window::SettingsEvent::MapStyleChanged => {
+                            crate::with_map_viewer(cx, |v, cx| v.apply_map_style(cx));
+                        }
                     },
                 )
                 .detach();
