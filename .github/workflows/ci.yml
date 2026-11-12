@@ -5,8 +5,51 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same PR/branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build-and-test:
+  # Quick check for PRs (and main): fmt + clippy + tests on a cheap Linux runner.
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config \
+            libasound2-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Only main writes the cache; PRs restore it (and fall back to it).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+  # macOS is the primary platform; verify it after merge rather than on every PR push.
+  macos:
+    if: github.event_name == 'push'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,15 +57,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
+        with:
+          key: ci-macos
 
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: cargo build
-        run: cargo build --verbose
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --verbose
+        run: cargo test --locked
