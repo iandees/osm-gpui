@@ -332,13 +332,22 @@ struct ArcProgress {
     end: Option<ArcPoint>,
 }
 
-/// A clicked Arc-mode point: its geo position (snapped onto a way when the
-/// click was near one) and, when snapped, the way and segment index
-/// (`(way_id, index of the segment's first node)`) it lies on.
+/// What an Arc-mode click snapped onto.
+#[derive(Clone, Copy)]
+enum ArcSnap {
+    /// An existing node, which the arc then uses as that endpoint.
+    Node(i64),
+    /// A way's segment (`way_id`, index of the segment's first node): the
+    /// endpoint is a new node spliced into the way.
+    Way(i64, usize),
+}
+
+/// A clicked Arc-mode point: its geo position (snapped onto a node or way
+/// when the click was near one) and what it snapped onto.
 #[derive(Clone, Copy)]
 struct ArcPoint {
     geo: (f64, f64),
-    snap: Option<(i64, usize)>,
+    snap: Option<ArcSnap>,
 }
 
 /// The squared way whose orientation Building mode borrows: captured when
@@ -4617,6 +4626,24 @@ impl MapViewer {
             return plain;
         }
         let sources: Vec<Tags> = Vec::new();
+        // An existing node close by wins over a way.
+        let node_hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
+            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let editable = layer.as_editable()?;
+            let id = osm_layer.snap_to_node_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                |id| snap_node_ok(editable, layer_id, &sources, None, id),
+            )?;
+            Some((id, editable.node_lat_lon(id)?))
+        });
+        if let Some((id, geo)) = node_hit {
+            return ArcPoint {
+                geo,
+                snap: Some(ArcSnap::Node(id)),
+            };
+        }
         let hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
             let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
             let editable = layer.as_editable()?;
@@ -4630,7 +4657,7 @@ impl MapViewer {
         match hit {
             Some((way_id, _, _, idx, lat, lon)) => ArcPoint {
                 geo: (lat, lon),
-                snap: Some((way_id, idx)),
+                snap: Some(ArcSnap::Way(way_id, idx)),
             },
             None => plain,
         }
@@ -4689,17 +4716,22 @@ impl MapViewer {
         let Some(points) = self.arc_from_geo(start.geo, end.geo, through) else {
             return;
         };
-        // Endpoints snapped onto a way are spliced into it (so the arc joins
-        // that way); each splice grows its way.
+        // Endpoints snapped onto a node use that node; ones snapped onto a way
+        // get a new node spliced into it (so the arc joins that way), which
+        // grows the way.
+        let way_snap = |p: &ArcPoint| match p.snap {
+            Some(ArcSnap::Way(way_id, idx)) => Some((way_id, idx)),
+            _ => None,
+        };
         let mut splices: Vec<(usize, ArcPoint)> = [(0, start), (points.len() - 1, end)]
             .into_iter()
-            .filter(|(_, p)| p.snap.is_some())
+            .filter(|(_, p)| way_snap(p).is_some())
             .collect();
         for (_, p) in &splices {
-            let (way_id, _) = p.snap.unwrap();
+            let (way_id, _) = way_snap(p).unwrap();
             let by = splices
                 .iter()
-                .filter(|(_, q)| q.snap.map(|s| s.0) == Some(way_id))
+                .filter(|(_, q)| way_snap(q).map(|s| s.0) == Some(way_id))
                 .count();
             if self.refuse_way_growth(layer_id, way_id, by) {
                 return;
@@ -4708,25 +4740,20 @@ impl MapViewer {
         // Splice in descending segment order within a way so earlier indices
         // stay valid; on a shared segment, the point nearer its far end first.
         let seg_start = |p: &ArcPoint| {
-            let (way_id, idx) = p.snap.unwrap();
-            self.layer_manager
+            let (way_id, idx) = way_snap(p).unwrap();
+            let editable = self
+                .layer_manager
                 .find_layer(layer_id)
-                .and_then(|l| l.as_editable())
-                .and_then(|e| e.way_node_ids(way_id))
-                .and_then(|ids| ids.get(idx).copied())
-                .and_then(|id| {
-                    self.layer_manager
-                        .find_layer(layer_id)
-                        .and_then(|l| l.as_editable())
-                        .and_then(|e| e.node_lat_lon(id))
-                })
+                .and_then(|l| l.as_editable())?;
+            let id = *editable.way_node_ids(way_id)?.get(idx)?;
+            editable.node_lat_lon(id)
         };
         let along = |p: &ArcPoint| {
             seg_start(p).map_or(0.0, |s| (p.geo.0 - s.0).powi(2) + (p.geo.1 - s.1).powi(2))
         };
         splices.sort_by(|(_, a), (_, b)| {
-            let (aw, ai) = a.snap.unwrap();
-            let (bw, bi) = b.snap.unwrap();
+            let (aw, ai) = way_snap(a).unwrap();
+            let (bw, bi) = way_snap(b).unwrap();
             aw.cmp(&bw)
                 .then(bi.cmp(&ai))
                 .then_with(|| along(b).total_cmp(&along(a)))
@@ -4738,12 +4765,19 @@ impl MapViewer {
             return;
         };
 
+        // Nodes the arc doesn't own: reused ones, and ones spliced into other
+        // ways (undone by their own entries).
         let mut node_ids: Vec<Option<i64>> = vec![None; points.len()];
-        let mut splice_undos = Vec::new();
+        let mut actions = Vec::new();
+        for (i, p) in [(0, start), (points.len() - 1, end)] {
+            if let Some(ArcSnap::Node(id)) = p.snap {
+                node_ids[i] = Some(id);
+            }
+        }
         for (i, p) in &splices {
-            let (way_id, idx) = p.snap.unwrap();
+            let (way_id, idx) = way_snap(p).unwrap();
             let id = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1);
-            splice_undos.push(UndoableAction::InsertNodeIntoWay {
+            actions.push(UndoableAction::InsertNodeIntoWay {
                 layer: layer_id,
                 way_id,
                 index: idx + 1,
@@ -4751,27 +4785,27 @@ impl MapViewer {
             });
             node_ids[*i] = Some(id);
         }
-        let spliced: Vec<i64> = node_ids.iter().flatten().copied().collect();
+        let borrowed: Vec<i64> = node_ids.iter().flatten().copied().collect();
         let all_ids: Vec<i64> = node_ids
             .iter()
             .zip(&points)
             .map(|(id, &(lat, lon))| id.unwrap_or_else(|| editable.add_node(lat, lon)))
             .collect();
         let way_id = editable.add_way(all_ids.clone(), Vec::new());
-        // The spliced nodes belong to their snapped ways and are undone by
-        // their own entries, so the arc's undo only removes what it created.
-        let node_ids: Vec<i64> = all_ids
+        let created: Vec<i64> = all_ids
             .into_iter()
-            .filter(|id| !spliced.contains(id))
+            .filter(|id| !borrowed.contains(id))
             .collect();
-        for undo in splice_undos {
-            self.undo_stack.push(undo);
-        }
-
-        self.undo_stack.push(UndoableAction::CreateArc {
+        // The whole arc, splices included, is one undo step: undoing removes
+        // the arc first, then the splices.
+        actions.push(UndoableAction::CreateArc {
             layer: layer_id,
             way_id,
-            node_ids,
+            node_ids: created,
+        });
+        self.undo_stack.push(UndoableAction::Batch {
+            label: tr!("history.created_arc").to_string(),
+            actions,
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,

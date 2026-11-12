@@ -194,8 +194,7 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
             }
 
             // Ctrl/Alt turns snapping off: nothing is spliced.
-            view.on_undo(&Undo, w, cx);
-            view.on_undo(&Undo, w, cx);
+            assert_eq!(view.undo_stack.cursor, 1, "the whole arc is one undo step");
             view.on_undo(&Undo, w, cx);
             let host_len = |view: &MapViewer| {
                 view.layer_manager
@@ -212,6 +211,80 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
             view.handle_arc_click(c + point(px(100.0), px(-4.0)), true);
             view.handle_arc_click(c + point(px(0.0), px(-60.0)), true);
             assert_eq!(host_len(view), 2);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn endpoints_snap_onto_existing_vertices_and_reuse_them(cx: &mut TestAppContext) {
+    use osm_gpui::osm::{OsmNode, OsmWay};
+    let node = |id: i64, lon: f64| {
+        (
+            id,
+            OsmNode {
+                id,
+                lat: LAT,
+                lon,
+                version: 1,
+                tags: Default::default(),
+            },
+        )
+    };
+    let data = OsmData {
+        nodes: [node(1, LON - 0.0005), node(2, LON + 0.0005)]
+            .into_iter()
+            .collect(),
+        ways: [(
+            10,
+            OsmWay {
+                id: 10,
+                nodes: vec![1, 2],
+                version: 1,
+                tags: Default::default(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        relations: Vec::new(),
+        bounds: Vec::new(),
+    };
+    let (window, layer) = setup_with(cx, data);
+    window
+        .update(cx, |view, w, cx| {
+            let a = view.viewport.geo_to_screen(LAT, LON - 0.0005);
+            let b = view.viewport.geo_to_screen(LAT, LON + 0.0005);
+            let c = view.viewport.geo_to_screen(LAT, LON);
+            view.handle_arc_click(a + point(px(2.0), px(2.0)), false);
+            view.handle_arc_click(b + point(px(-2.0), px(1.0)), false);
+            view.handle_arc_click(c + point(px(0.0), px(-60.0)), false);
+
+            let editable = view
+                .layer_manager
+                .find_layer(layer)
+                .unwrap()
+                .as_editable()
+                .unwrap();
+            assert_eq!(editable.way_node_ids(10).unwrap(), vec![1, 2], "no splices");
+            let [sel] = view.selected.as_slice() else {
+                panic!("the new way should be selected");
+            };
+            let arc = editable.way_node_ids(sel.id).unwrap();
+            assert_eq!(
+                (arc[0], arc[arc.len() - 1]),
+                (1, 2),
+                "existing nodes reused"
+            );
+
+            view.on_undo(&Undo, w, cx);
+            assert!(view
+                .layer_manager
+                .find_layer(layer)
+                .unwrap()
+                .as_editable()
+                .unwrap()
+                .node_lat_lon(1)
+                .is_some());
+            assert_eq!(counts(view, layer), (2, 1), "only the arc's own nodes go");
         })
         .unwrap();
 }
