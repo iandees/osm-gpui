@@ -61,7 +61,12 @@ impl MapLayer for GridLayer {
         self.visible = visible;
     }
 
-    fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        _viewport: &Viewport,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Vec<AnyElement> {
         // Grid is rendered using canvas, not elements
         vec![]
     }

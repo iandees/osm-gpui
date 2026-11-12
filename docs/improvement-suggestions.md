@@ -90,6 +90,8 @@ Still open. `TileLayer::render_elements` (`src/layers/tile_layer.rs`) still buil
 
 **Implement:** probe the child asset first (`window.use_asset::<TileAsset>` returns `Option`) and only attach the parent fallback when the child isn't ready; use precomputed mercator tile bounds.
 
+✅ Done — the child asset is probed first and the parent fallback is only built while it is not ready (tile corners already use mercator bounds).
+
 ### 3.5 Per-frame synchronous `read_dir` on the UI thread
 ✅ Done — the cached-file count is recomputed at most once per second (`cached_file_count` / `STATS_TTL` in `src/tile_cache.rs`). (Stats are still gathered every frame by `get_layer_stats`, but that is now a cheap read.)
 
@@ -107,6 +109,8 @@ Still open. `TileLayer::render_elements` (`src/layers/tile_layer.rs`) still buil
 
 ### 3.10 Hi-DPI tiles
 🚧 In progress — being worked on in a separate PR. Current state: nothing in `src/` reads `scale_factor`, so 256px tiles are still stretched on Retina (edge-seam clipping, #100, does not address this).
+
+✅ Done — `hidpi_tile_zoom()` requests z+1 tiles at scale factor >= 1.5 (stretching when z+1 exceeds the source's max zoom).
 
 ### 3.11 Map-area colors bypass the theme; tile pop-in is abrupt
 Still open (partially mitigated by the theme work in #72, #143, #155). Hardcoded colors remain: grid `rgb(0x374151)` in `src/layers/grid_layer.rs`, tile placeholder `0x2d3748` and the full-tile crimson error block `0x9f1239` in `src/layers/tile_layer.rs`; tiles still appear with no fade.

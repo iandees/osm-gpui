@@ -306,7 +306,12 @@ impl MapLayer for ReferenceLayer {
         self.visible = visible;
     }
 
-    fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        _viewport: &Viewport,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Vec<AnyElement> {
         vec![]
     }
 

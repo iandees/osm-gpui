@@ -4336,7 +4336,12 @@ impl MapLayer for OsmLayer {
         OsmLayer::autosave_snapshot(self)
     }
 
-    fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        _viewport: &Viewport,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Vec<AnyElement> {
         // Node rendering moved to `render_canvas` (paint_quad) to avoid the
         // per-node GPUI element layout cost. The selection ring is drawn in
         // `render_highlight` as a canvas outline.
