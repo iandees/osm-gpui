@@ -1,0 +1,18 @@
+# The same area in the built-in default, Wireframe and iD map styles.
+#   cargo run --release -- --script docs/screenshots/map-styles.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels-mixed.osm
+viewport 40.7120 -74.0064 17
+action MapStyle:default
+wait_idle 5s
+wait 800ms
+capture docs/screenshots/map-style-default.png
+
+action MapStyle:wireframe
+wait 800ms
+capture docs/screenshots/map-style-wireframe.png
+
+action MapStyle:id
+wait 800ms
+capture docs/screenshots/map-style-id.png
+log done
