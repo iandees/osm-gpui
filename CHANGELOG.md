@@ -7,6 +7,18 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.10.0
+
+### Map styles
+
+- Settings > Appearance has a new Map style group. Choose the built-in style, Wireframe (like JOSM's wireframe view) or iD, or add your own MapCSS style from a local file or an http(s) URL; open layers restyle live. ([#238](https://github.com/iandees/osm-gpui/pull/238))
+- The Wireframe and iD styles are refined, and MapCSS gains `canvas` (background fill and hiding imagery), `symbol-shape` (circle, square, cross) and the `node:tagged`, `node:connection`, `node:unconnected`, `way:in-relation` and `area:in-relation` selectors. ([#239](https://github.com/iandees/osm-gpui/pull/239))
+
+### Map
+
+- The map zooms to z23, and imagery tiles are fetched up to each source's own maximum zoom, then over-zoomed (scaled) beyond it instead of disappearing. ([#237](https://github.com/iandees/osm-gpui/pull/237))
+- The last map position and the main window's size and position are remembered on quit, and restored on the next start. ([#236](https://github.com/iandees/osm-gpui/pull/236))
+
 ## 0.9.0
 
 ### Map labels and styling
