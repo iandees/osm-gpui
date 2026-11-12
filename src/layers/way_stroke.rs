@@ -191,6 +191,51 @@ pub fn emit_segment<S: TriSink>(sink: &mut S, a: Pt, b: Pt, hw: f32) {
     );
 }
 
+/// A dashed stroke along the polyline `pts`: `dash` pixels drawn, `gap`
+/// skipped, repeating from the first vertex and running on across bends.
+/// Each dash is a plain rectangle (no joins). A segment that would need an
+/// absurd number of dashes (a huge, mostly off-screen one) is drawn solid.
+pub fn emit_dashed<S: TriSink>(sink: &mut S, pts: &[Pt], dash: f32, gap: f32, hw: f32) {
+    const MAX_DASHES_PER_SEGMENT: f32 = 4000.0;
+    let period = dash + gap;
+    if !(dash > 0.0 && gap > 0.0) {
+        for w in pts.windows(2) {
+            emit_segment(sink, w[0], w[1], hw);
+        }
+        return;
+    }
+    let mut on = true;
+    let mut remaining = dash;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < f32::EPSILON {
+            continue;
+        }
+        if len / period > MAX_DASHES_PER_SEGMENT {
+            emit_segment(sink, a, b, hw);
+            continue;
+        }
+        let (ux, uy) = (dx / len, dy / len);
+        let mut pos = 0.0;
+        while pos < len {
+            let step = remaining.min(len - pos);
+            if on {
+                let from = (a.0 + ux * pos, a.1 + uy * pos);
+                let to = (a.0 + ux * (pos + step), a.1 + uy * (pos + step));
+                emit_segment(sink, from, to, hw);
+            }
+            pos += step;
+            remaining -= step;
+            if remaining <= 1e-4 {
+                on = !on;
+                remaining = if on { dash } else { gap };
+            }
+        }
+    }
+}
+
 /// A segment: unit direction and length.
 #[derive(Clone, Copy)]
 struct Seg {
@@ -481,6 +526,47 @@ mod tests {
                 assert!(p.0.is_finite() && p.1.is_finite(), "NaN in {t:?}");
             }
         }
+    }
+
+    #[test]
+    fn dashes_alternate_along_a_straight_line() {
+        let mut out: Vec<[Pt; 3]> = Vec::new();
+        emit_dashed(&mut out, &[(0.0, 0.0), (20.0, 0.0)], 4.0, 2.0, 1.0);
+        // On 0-4, 6-10, 12-16, 18-20: four dashes, two triangles each.
+        assert_eq!(out.len(), 8);
+        assert!(covers(&out, (2.0, 0.0)));
+        assert!(!covers(&out, (5.0, 0.0)));
+        assert!(covers(&out, (7.0, 0.0)));
+        assert!(!covers(&out, (11.0, 0.0)));
+        assert!(covers(&out, (19.0, 0.0)));
+        assert_sound(&out);
+    }
+
+    #[test]
+    fn dash_pattern_runs_on_across_a_bend() {
+        let mut out: Vec<[Pt; 3]> = Vec::new();
+        // 3 px along x, then up: the first dash (4 px) ends 1 px up.
+        emit_dashed(
+            &mut out,
+            &[(0.0, 0.0), (3.0, 0.0), (3.0, 10.0)],
+            4.0,
+            2.0,
+            0.5,
+        );
+        assert!(covers(&out, (3.0, 0.5)));
+        assert!(!covers(&out, (3.0, 2.0)));
+        assert!(covers(&out, (3.0, 3.5)));
+    }
+
+    #[test]
+    fn degenerate_dashes_fall_back_to_solid() {
+        let mut out: Vec<[Pt; 3]> = Vec::new();
+        emit_dashed(&mut out, &[(0.0, 0.0), (10.0, 0.0)], 0.0, 2.0, 1.0);
+        assert_eq!(out.len(), 2);
+        // A far-too-long segment is solid rather than millions of dashes.
+        let mut out: Vec<[Pt; 3]> = Vec::new();
+        emit_dashed(&mut out, &[(0.0, 0.0), (1.0e7, 0.0)], 1.0, 1.0, 1.0);
+        assert_eq!(out.len(), 2);
     }
 
     #[test]
