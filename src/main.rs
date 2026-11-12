@@ -3915,12 +3915,21 @@ impl MapViewer {
                 return Some(SnapTarget::Node { id, lat, lon });
             }
         }
-        let (way_id, a, b, index, lat, lon) = osm_layer.snap_to_way_where(
+        let (way_id, a, b, _loaded_index, lat, lon) = osm_layer.snap_to_way_where(
             &self.viewport,
             screen_pt,
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
             |w| snap_way_ok(editable, layer_id, sources, node, w),
         )?;
+        // `index` counts only the way's nodes that are loaded, so with some
+        // missing (a partial download) it is not a position in the node
+        // list. Find the segment by its two end nodes instead; if they are
+        // not neighbours there, the stretch between them is not loaded and
+        // nothing can be dropped on it.
+        let index = editable
+            .way_node_ids(way_id)?
+            .windows(2)
+            .position(|w| w[0] == a && w[1] == b)?;
         Some(SnapTarget::Way {
             way_id,
             a: editable.node_lat_lon(a)?,
@@ -4228,7 +4237,17 @@ impl MapViewer {
                         .map(|target| (dragged, target))
                 });
                 self.snap_preview = None;
-                if let Some(((layer_id, node), SnapTarget::Way { way_id, index, .. })) = &snap {
+                if let Some((
+                    (layer_id, node),
+                    SnapTarget::Way {
+                        way_id,
+                        index,
+                        lat,
+                        lon,
+                        ..
+                    },
+                )) = &snap
+                {
                     let joined = self
                         .layer_manager
                         .find_layer_mut(*layer_id)
@@ -4240,6 +4259,7 @@ impl MapViewer {
                                 *node,
                                 *way_id,
                                 Some(*index),
+                                Some((*lat, *lon)),
                             )
                         });
                     match joined {

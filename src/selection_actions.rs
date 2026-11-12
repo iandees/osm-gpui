@@ -2148,7 +2148,11 @@ fn join_node_way_target(
 
 /// Insert `node` into `way` as a new vertex, moving it onto the way's line.
 /// `segment` picks the segment (the one starting at that index); `None`
-/// takes the nearest. Used by Join Node to Way and by snapping on a drag.
+/// takes the nearest. `drop_at` is where the node is being put when that is not
+/// where the layer still has it (a drag is only a preview until it is
+/// released); the node goes to the nearest point of the segment to it, and the
+/// undo move starts from the node's stored position. Used by Join Node to Way
+/// and by snapping on a drag.
 /// Checks the way-size limit and that the node is not already in the way, and
 /// changes nothing on refusal. Returns the undo steps (a move, then the way's
 /// new node list); relation memberships are not touched, so a node that is a
@@ -2159,17 +2163,29 @@ pub(crate) fn join_node_into_way(
     node: i64,
     way: i64,
     segment: Option<usize>,
+    drop_at: Option<LatLon>,
 ) -> Result<Vec<UndoableAction>, String> {
     use osm_gpui::snap::{plan_join_at_segment, plan_join_nearest, JoinError};
-    let position = editable
+    let stored = editable
         .node_lat_lon(node)
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    let position = drop_at.unwrap_or(stored);
     let before = editable
         .way_node_ids(way)
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
+    // With a chosen segment only its two end nodes are looked at, so nodes
+    // that are not loaded (a partial download) elsewhere in the way do not
+    // matter and get a placeholder. Choosing the nearest segment needs them all.
     let points: Vec<LatLon> = before
         .iter()
-        .map(|&id| editable.node_lat_lon(id))
+        .map(|&id| {
+            let found = editable.node_lat_lon(id);
+            if segment.is_some() {
+                Some(found.unwrap_or(position))
+            } else {
+                found
+            }
+        })
         .collect::<Option<_>>()
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
     let plan = match segment {
@@ -2188,11 +2204,11 @@ pub(crate) fn join_node_into_way(
         return Err(message);
     }
     let mut actions = Vec::new();
-    if plan.point != position {
+    if plan.point != stored {
         editable.commit_node_moves(&[(node, plan.point.0, plan.point.1)]);
         actions.push(UndoableAction::MoveNodes {
             select: None,
-            per_layer: vec![(layer_id, vec![(node, position, plan.point)])],
+            per_layer: vec![(layer_id, vec![(node, stored, plan.point)])],
         });
     }
     let mut after = before.clone();
@@ -2218,7 +2234,7 @@ fn apply_join_node_way(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let (node, way) = join_node_way_target(editable, layer_id, selection)
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
-    let actions = join_node_into_way(editable, layer_id, node, way, None)?;
+    let actions = join_node_into_way(editable, layer_id, node, way, None, None)?;
     let label = tr!("action.join_node_way.done").to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::Batch {
@@ -4234,6 +4250,32 @@ mod tests {
                 .unwrap()
                 .commit_node_moves(&[(node, lat, lon)]);
         }
+    }
+
+    /// A dragged node is only previewed until release, so the join must use
+    /// the drop point, not the node's stored position (which projects onto
+    /// an end of the segment and looked like a merge into a way node).
+    #[test]
+    fn join_node_into_way_uses_the_drop_point_not_the_stored_position() {
+        let mut n = net();
+        let layer_id = n.layer_id;
+        let way = 100;
+        let ids = n.editable().way_node_ids(way).unwrap();
+        let a = n.editable().node_lat_lon(ids[0]).unwrap();
+        let b = n.editable().node_lat_lon(ids[1]).unwrap();
+        let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        // A node far from the way, as it is stored while being dragged.
+        let node = n
+            .editable_mut()
+            .create_node(a.0 + 1.0, a.1 + 1.0, None)
+            .unwrap();
+        let actions =
+            join_node_into_way(n.editable_mut(), layer_id, node, way, Some(0), Some(mid)).unwrap();
+        assert_eq!(actions.len(), 2);
+        let after = n.editable().way_node_ids(way).unwrap();
+        assert_eq!(after[1], node);
+        let (lat, lon) = n.editable().node_lat_lon(node).unwrap();
+        assert!((lat - mid.0).abs() < 1e-9 && (lon - mid.1).abs() < 1e-9);
     }
 
     impl Net {

@@ -277,6 +277,51 @@ fn dragging_a_node_onto_a_way_inserts_it_as_one_undo_step(cx: &mut TestAppContex
     });
 }
 
+/// Like `scene`, but way 10 is `[1, 99, 2, 4]` and node 99, which lies between
+/// 1 and 2, is not loaded (a partial download). Node 3 is free, north of 1.
+fn scene_with_unloaded_node() -> OsmData {
+    let mut data = Build::new()
+        .nodes(&[1, 2, 4])
+        .node(3, &[])
+        .way(10, &[1, 99, 2, 4], &road())
+        .done();
+    let place = |data: &mut OsmData, id: i64, lat: f64, lon: f64| {
+        let n = data.nodes.get_mut(&id).unwrap();
+        n.lat = lat;
+        n.lon = lon;
+    };
+    place(&mut data, 1, 40.0, -74.001);
+    place(&mut data, 2, 40.0, -73.999);
+    place(&mut data, 4, 40.0, -73.9985);
+    place(&mut data, 3, 40.0004, -74.0005);
+    data
+}
+
+#[gpui::test]
+fn a_node_does_not_snap_onto_a_stretch_of_a_way_that_is_not_loaded(cx: &mut TestAppContext) {
+    // 1 and 2 are drawn as a segment, but 99 lies between them in the way.
+    with_session(cx, scene_with_unloaded_node(), |s| {
+        let before = s.snap();
+        let to = screen(s, 40.0, -74.0);
+        drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
+        assert_eq!(s.way_nodes(10), Some(vec![1, 99, 2, 4]));
+        assert!(s.view.snap_preview.is_none());
+        assert_ne!(s.snap(), before, "the node was just moved");
+        assert_eq!(s.steps(), 1, "just the plain move");
+    });
+}
+
+#[gpui::test]
+fn snapping_after_an_unloaded_node_inserts_at_the_real_position(cx: &mut TestAppContext) {
+    // The loaded segment 2 - 4 is segment 1 of the drawn way but index 2 of
+    // the node list: the node must go between 2 and 4, not before 2.
+    with_session(cx, scene_with_unloaded_node(), |s| {
+        let to = screen(s, 40.0, -73.99875);
+        drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
+        assert_eq!(s.way_nodes(10), Some(vec![1, 99, 2, 3, 4]));
+    });
+}
+
 #[gpui::test]
 fn the_disable_modifier_leaves_a_dragged_node_free(cx: &mut TestAppContext) {
     for mods in [
