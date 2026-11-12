@@ -3,8 +3,9 @@
 //! look like afterwards.
 //!
 //! The plain click moves the vertex nearest the cursor onto the cursor; with
-//! the "add" modifier it inserts a new vertex at the point of the way nearest
-//! the cursor instead; with Shift it deletes the nearest vertex.
+//! the "add" modifier it puts a new vertex at the cursor instead, spliced into
+//! the way at the segment nearest the cursor; with Shift it deletes the
+//! nearest vertex.
 
 pub type Pt = (f64, f64);
 
@@ -58,11 +59,11 @@ fn nearest_vertex(points: &[Pt], cursor: Pt) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// The point of the way nearest `cursor` that lies strictly inside a segment,
-/// with the index a vertex inserted there takes. `None` if the way has no
-/// segment of positive length.
-fn nearest_segment_point(points: &[Pt], cursor: Pt) -> Option<(usize, Pt)> {
-    let mut best: Option<(f64, usize, Pt)> = None;
+/// The index a vertex placed at `cursor` takes in the way: the position
+/// after the start of the segment nearest the cursor. `None` if the way has
+/// no segment of positive length.
+fn insert_index(points: &[Pt], cursor: Pt) -> Option<usize> {
+    let mut best: Option<(f64, usize)> = None;
     for (i, pair) in points.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -71,15 +72,12 @@ fn nearest_segment_point(points: &[Pt], cursor: Pt) -> Option<(usize, Pt)> {
             continue;
         }
         let t = (((cursor.0 - a.0) * dx + (cursor.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0);
-        // A projection onto an end would duplicate an existing vertex.
-        let t = t.clamp(1e-6, 1.0 - 1e-6);
-        let at = (a.0 + t * dx, a.1 + t * dy);
-        let d = dist_sq(at, cursor);
-        if best.is_none_or(|(bd, ..)| d < bd) {
-            best = Some((d, i + 1, at));
+        let d = dist_sq((a.0 + t * dx, a.1 + t * dy), cursor);
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, i + 1));
         }
     }
-    best.map(|(_, index, at)| (index, at))
+    best.map(|(_, index)| index)
 }
 
 /// Whether deleting `node` leaves a usable way: an open way keeps at least
@@ -119,8 +117,8 @@ pub fn plan(points: &[Pt], ids: &[i64], cursor: Pt, op: Op) -> Option<Plan> {
             survives_delete(ids, ids[i]).then_some(Plan::Delete { node: ids[i] })
         }
         Op::Insert => {
-            let (index, at) = nearest_segment_point(points, cursor)?;
-            Some(Plan::Insert { index, at })
+            let index = insert_index(points, cursor)?;
+            Some(Plan::Insert { index, at: cursor })
         }
     }
 }
@@ -201,26 +199,29 @@ mod tests {
     }
 
     #[test]
-    fn insert_puts_a_vertex_on_the_nearest_segment() {
+    fn insert_puts_a_vertex_at_the_cursor_in_the_nearest_segment() {
         let p = plan(&LINE, &IDS, (150.0, 30.0), Op::Insert).unwrap();
         assert_eq!(
             p,
             Plan::Insert {
                 index: 2,
-                at: (150.0, 0.0)
+                at: (150.0, 30.0)
             }
         );
-        assert_eq!(preview(&LINE, &IDS, p).len(), 4);
-        assert_eq!(preview(&LINE, &IDS, p)[2], (150.0, 0.0));
+        let out = preview(&LINE, &IDS, p);
+        assert_eq!(
+            out,
+            vec![(0.0, 0.0), (100.0, 0.0), (150.0, 30.0), (200.0, 0.0)]
+        );
     }
 
     #[test]
-    fn insert_never_duplicates_an_existing_vertex() {
-        // Past the end of the way the projection clamps; it must stay inside.
-        let Plan::Insert { at, .. } = plan(&LINE, &IDS, (500.0, 10.0), Op::Insert).unwrap() else {
+    fn insert_beyond_the_end_goes_in_the_last_segment() {
+        let Plan::Insert { index, .. } = plan(&LINE, &IDS, (500.0, 10.0), Op::Insert).unwrap()
+        else {
             panic!("insert expected");
         };
-        assert!(at.0 < 200.0 && at.0 > 199.0);
+        assert_eq!(index, 2);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Improve Way mode: with a way selected, a click moves the nearest node to
-//! the cursor, a modifier-click inserts a node along the way, and a
+//! the cursor, a modifier-click inserts a node at the cursor into the way, and a
 //! Shift-click deletes the nearest node. Each is one undo step.
 
 use super::*;
@@ -129,14 +129,16 @@ fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
                 ..Default::default()
             };
             let c = view.viewport.geo_to_screen(LAT, LON);
-            view.handle_improve_click(c + point(px(0.0), px(40.0)), cx);
+            let click = c + point(px(0.0), px(40.0));
+            view.handle_improve_click(click, cx);
 
             let nodes = way_nodes(view, layer);
             assert_eq!(nodes.len(), 5);
-            // Between nodes 2 and 3, on the line (not under the cursor).
+            // Between nodes 2 and 3 in the way, at the cursor.
             assert_eq!((nodes[1], nodes[3]), (2, 3));
-            let (lat, _) = lat_lon(view, layer, nodes[2]).unwrap();
-            assert!((lat - LAT).abs() < 1e-9);
+            let (lat, lon) = lat_lon(view, layer, nodes[2]).unwrap();
+            let p = view.viewport.geo_to_screen(lat, lon);
+            assert!((p.x - click.x).to_f64().abs() < 0.5 && (p.y - click.y).to_f64().abs() < 0.5);
 
             view.on_undo(&Undo, w, cx);
             assert_eq!(way_nodes(view, layer), vec![1, 2, 3, 4]);
