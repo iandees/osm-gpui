@@ -108,6 +108,10 @@ mode:
     name: "Bogen"
     label: "Bogen"
     tooltip: "Kreisbogen zeichnen"
+  improve:
+    name: "Weg verbessern"
+    label: "Verb"
+    tooltip: "Form des ausgewählten Wegs verbessern"
   # `%{shortcut}` ist die Taste, die den Modus aktiviert, z. B. „A“.
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
@@ -182,6 +186,8 @@ status:
     arc_idle: "Klicken, um den Bogenanfang zu setzen · Esc zum Beenden"
     arc_started: "Klicken, um das Bogenende zu setzen · Esc zum Abbrechen"
     arc_end_placed: "Bogen durch Bewegen formen, dann klicken zum Abschließen · Esc zum Abbrechen"
+    improve_idle: "Weg zum Verbessern anklicken · Esc zum Beenden"
+    improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Umschalt-Klick löscht den nächsten Knoten · Esc, um einen anderen Weg zu wählen"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
@@ -584,6 +590,7 @@ shortcut:
   mode_building: "Zum Modus „Gebäude“ wechseln"
   mode_extrude: "Zum Modus „Ausziehen“ wechseln"
   mode_arc: "Zum Modus „Bogen“ wechseln"
+  mode_improve: "Zum Modus „Weg verbessern“ wechseln"
   action_square: "Rechtwinklig machen"
   action_circularize: "Kreisförmig anordnen"
   action_reverse: "Weg umkehren"

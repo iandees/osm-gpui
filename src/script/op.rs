@@ -105,6 +105,7 @@ pub enum EditMode {
     Building,
     Extrude,
     Arc,
+    Improve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

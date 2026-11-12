@@ -108,6 +108,10 @@ mode:
     name: "Arc"
     label: "Arc"
     tooltip: "Draw a circular arc"
+  improve:
+    name: "Improve Way"
+    label: "Impr"
+    tooltip: "Improve the shape of the selected way"
   # `%{shortcut}` is the key that activates the mode, e.g. "A".
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
@@ -185,6 +189,8 @@ status:
     arc_idle: "Click to place the arc's start · Esc to exit"
     arc_started: "Click to place the arc's end · Esc to cancel"
     arc_end_placed: "Move to bend the arc, then click to finish · Esc to cancel"
+    improve_idle: "Click a way to improve · Esc to exit"
+    improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Shift-click to delete the nearest node · Esc to pick another way"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
@@ -590,6 +596,7 @@ shortcut:
   mode_building: "Switch to Building mode"
   mode_extrude: "Switch to Extrude mode"
   mode_arc: "Switch to Arc mode"
+  mode_improve: "Switch to Improve Way mode"
   action_square: "Square"
   action_circularize: "Circularize"
   action_reverse: "Reverse Way"
