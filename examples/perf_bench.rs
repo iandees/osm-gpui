@@ -513,6 +513,7 @@ fn main() {
     });
 
     multipolygon_section(&data);
+    labels_section();
 }
 
 /// A circle of `n` nodes of radius `radius_deg` degrees around
@@ -737,5 +738,123 @@ fn multipolygon_section(base: &Arc<OsmData>) {
     bench("commit_node_moves, node in no relation: AFTER", 20, || {
         after.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]);
         after.is_modified() as u64
+    });
+}
+
+/// Point labels and POI icons: everything but shaping and painting, which
+/// need a window (see `OSM_GPUI_FRAME_STATS` laps `labels.place` /
+/// `labels.paint` for those, measured in the real app).
+fn labels_section() {
+    use osm_gpui::coordinates::lat_lon_to_mercator;
+    use osm_gpui::layers::labels::{self, Anchor, Config, IconCache, Item, KIND_NODE};
+    println!("\n-- labels (z17, 1600x1000, ~450 candidate nodes) --");
+    let stylesheet = Stylesheet::load_default();
+    let viewport = Viewport::new(CENTER_LAT, CENTER_LON, 17.0, size(px(1600.0), px(1000.0)));
+    let mut rng = Lcg(7);
+    let kinds = [
+        ("amenity", "cafe"),
+        ("amenity", "restaurant"),
+        ("shop", "convenience"),
+        ("shop", "bakery"),
+        ("tourism", "hotel"),
+        ("amenity", "bank"),
+        ("leisure", "playground"),
+    ];
+    let mut pois: Vec<(i64, f64, f64, HashMap<String, String>)> = Vec::new();
+    for id in 0..450i64 {
+        let lat = CENTER_LAT + (rng.f64() - 0.5) * 0.0105;
+        let lon = CENTER_LON + (rng.f64() - 0.5) * 0.0168;
+        let (k, v) = kinds[(rng.next() % kinds.len() as u64) as usize];
+        let mut t = tags(&[(k, v)]);
+        if rng.next() % 10 < 8 {
+            t.insert("name".into(), format!("Place number {id}"));
+        }
+        let (mx, my) = lat_lon_to_mercator(lat, lon);
+        pois.push((id, mx, my, t));
+    }
+    // Cold: resolve every node's label (stylesheet + preset icon, cached by
+    // tag signature) as the first placement after a zoom does.
+    bench("labels: resolve 450 nodes (cold icon cache)", 30, || {
+        let mut icons = IconCache::new();
+        let mut n = 0u64;
+        for (_, _, _, t) in &pois {
+            let st = stylesheet.node_text_style(t, 17.0);
+            n += labels::resolve_node_label(&st, t, &mut icons, 17.0).is_some() as u64;
+        }
+        n
+    });
+    let mut icons = IconCache::new();
+    let resolved: Vec<_> = pois
+        .iter()
+        .map(|(id, mx, my, t)| {
+            let st = stylesheet.node_text_style(t, 17.0);
+            (
+                *id,
+                *mx,
+                *my,
+                labels::resolve_node_label(&st, t, &mut icons, 17.0),
+            )
+        })
+        .collect();
+    let items: Vec<Item> = resolved
+        .iter()
+        .filter_map(|(id, mx, my, l)| {
+            let l = l.as_ref()?;
+            let sp = viewport.mercator_to_screen(*mx, *my);
+            Some(Item {
+                key: (KIND_NODE, *id),
+                center: (f32::from(sp.x), f32::from(sp.y)),
+                marker_r: 5.0,
+                icon_r: l.icon.as_ref().map(|i| i.backing() / 2.0),
+                text: l
+                    .text
+                    .as_ref()
+                    .map(|t| (t.chars().count() as f32 * 6.2, 14.0, Anchor::Right)),
+                priority: l.priority,
+                forced: false,
+            })
+        })
+        .collect();
+    println!("   ({} items with a label or icon)", items.len());
+    let cfg = Config::for_view(1600.0, 1000.0);
+    let prev = HashMap::new();
+    let mut placed_n = 0;
+    bench(
+        "labels: place (zoom / settle, cold hysteresis)",
+        100,
+        || {
+            let out = labels::place(&items, &[], &prev, &cfg);
+            placed_n = out.len();
+            out.len() as u64
+        },
+    );
+    println!("   ({placed_n} placed)");
+    let out = labels::place(&items, &[], &prev, &cfg);
+    let prev2: HashMap<_, _> = out
+        .iter()
+        .map(|p| {
+            (
+                items[p.item].key,
+                labels::Prev {
+                    icon: p.icon,
+                    anchor: p.text.map(|t| t.0),
+                },
+            )
+        })
+        .collect();
+    bench(
+        "labels: place with hysteresis (settle after pan)",
+        100,
+        || labels::place(&items, &[], &prev2, &cfg).len() as u64,
+    );
+    // Pan, warm: the placement is only re-projected.
+    bench("labels: pan frame (re-project placed labels)", 300, || {
+        let mut acc = 0f32;
+        for p in &out {
+            let (_, mx, my, _) = &resolved[items[p.item].key.1 as usize];
+            let sp = viewport.mercator_to_screen(*mx, *my);
+            acc += f32::from(sp.x) + f32::from(sp.y);
+        }
+        acc as u64
     });
 }

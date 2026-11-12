@@ -69,3 +69,16 @@ node[place], node[office], node[craft], node[emergency], node[public_transport]
                 { color: #5ac8fa; symbol-size: 8; }
 node[amenity]   { color: #ff5fa2; symbol-size: 8; }
 node[shop]      { color: #4cd964; symbol-size: 8; }
+
+/* Labels and icons (nodes). `text` names the tag shown; a list such as
+   `name, addr:housenumber` shows the first present. White text on a dark halo
+   reads over both imagery and a blank background. Names appear from z17,
+   places from z16 and house numbers from z18; POI icons from z17 use the
+   node's preset icon (Maki/Temaki), `icon-image: maki-cafe` overrides it. */
+node|z17-[name]         { text: name; font-size: 12; text-color: #ffffff;
+                          text-halo-color: #000000; text-halo-radius: 1.5; }
+node|z16-[place]        { text: name; font-size: 14; }
+node|z18-[addr:housenumber] { text: name, addr:housenumber; }
+node|z17-[amenity], node|z17-[shop], node|z17-[tourism], node|z17-[leisure],
+node|z17-[historic], node|z17-[office], node|z17-[craft], node|z17-[emergency],
+node|z17-[public_transport]  { icon-image: preset; icon-width: 12; }

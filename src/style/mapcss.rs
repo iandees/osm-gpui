@@ -17,10 +17,14 @@
 //!   (`dash,gap` in pixels, or `none`) and `opacity`.
 //! - Label properties for a later label-rendering pass: `text` (a tag key,
 //!   e.g. `name`, or `none`), `font-size`, `text-color`, `text-halo-color`,
-//!   `text-halo-radius`, `text-position` (`center` | `line`), `icon-image`
+//!   `text-halo-radius`, `text-position` (`center` | `line` | `right` | `left` | `above` | `below`), `icon-image`
 //!   and `icon-width`. They are parsed and resolved into [`TextStyle`] (see
-//!   [`Stylesheet::way_text_style`] / [`Stylesheet::node_text_style`]) but
-//!   nothing renders them yet.
+//!   [`Stylesheet::way_text_style`] / [`Stylesheet::node_text_style`]).
+//!   Node labels and POI icons render them; `text-position` for nodes is
+//!   `right` (default) | `left` | `above` | `below`. `text` may list several
+//!   tag keys (`name, ref`): the first present wins. `icon-image` is `preset`
+//!   (the node's preset icon), an embedded icon name such as `maki-cafe`, or
+//!   `none`.
 //! - Comments: `/* ... */` (non-nesting).
 //!
 //! - Zoom-range selectors after the type: `way|z12-`, `way|z-14`,
@@ -170,14 +174,21 @@ impl Default for WayStyle {
 /// Where a label sits relative to its feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextPosition {
-    /// Centered on the feature (the default for points and areas).
+    /// Centered on the feature (the default for areas).
     Center,
+    /// Beside a point feature, to its right (the default for points), left,
+    /// above or below. The placer tries the other sides when the preferred
+    /// one collides.
+    Right,
+    Left,
+    Above,
+    Below,
     /// Following the way's line.
     Line,
 }
 
 /// Label and icon properties resolved for one feature. Every field is
-/// `None` until a rule sets it. Not used by the renderer yet.
+/// `None` until a rule sets it. Node labels and icons render them (`layers::labels`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextStyle {
     /// Tag key whose value is the label (`text: name`).
@@ -378,7 +389,33 @@ pub struct Stylesheet {
     rules: Vec<Rule>,
     /// Whether any selector carries a zoom range.
     zoom_dependent: bool,
+    /// Indices of the rules that carry a label or icon declaration, so
+    /// resolving a node's [`TextStyle`] skips the (many) pure-stroke rules.
+    label_rules: Vec<u32>,
     sigs: Mutex<SigCache>,
+}
+
+fn label_rule_indices(rules: &[Rule]) -> Vec<u32> {
+    rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.declarations.iter().any(|d| {
+                matches!(
+                    d,
+                    Declaration::Text(_)
+                        | Declaration::FontSize(_)
+                        | Declaration::TextColor(_)
+                        | Declaration::TextHaloColor(_)
+                        | Declaration::TextHaloRadius(_)
+                        | Declaration::TextPosition(_)
+                        | Declaration::IconImage(_)
+                        | Declaration::IconWidth(_)
+                )
+            })
+        })
+        .map(|(i, _)| i as u32)
+        .collect()
 }
 
 impl Clone for Stylesheet {
@@ -386,6 +423,7 @@ impl Clone for Stylesheet {
         Self {
             rules: self.rules.clone(),
             zoom_dependent: self.zoom_dependent,
+            label_rules: self.label_rules.clone(),
             sigs: Mutex::default(),
         }
     }
@@ -431,9 +469,11 @@ impl Stylesheet {
         let zoom_dependent = rules
             .iter()
             .any(|r| r.selectors.iter().any(|s| !s.zoom.is_all()));
+        let label_rules = label_rule_indices(&rules);
         Ok(Self {
             rules,
             zoom_dependent,
+            label_rules,
             sigs: Mutex::default(),
         })
     }
@@ -558,7 +598,8 @@ impl Stylesheet {
     ) -> TextStyle {
         let bucket = zoom_bucket(zoom);
         let mut out = TextStyle::default();
-        for rule in &self.rules {
+        for &ri in &self.label_rules {
+            let rule = &self.rules[ri as usize];
             let mask = rule.tag_mask(kind, closed, tags);
             if mask == 0 || !rule.applies(mask, Some(bucket)) {
                 continue;
@@ -1037,6 +1078,10 @@ impl<'a> Parser<'a> {
                 "text-position" => match value.trim().to_ascii_lowercase().as_str() {
                     "center" => decls.push(Declaration::TextPosition(TextPosition::Center)),
                     "line" => decls.push(Declaration::TextPosition(TextPosition::Line)),
+                    "right" => decls.push(Declaration::TextPosition(TextPosition::Right)),
+                    "left" => decls.push(Declaration::TextPosition(TextPosition::Left)),
+                    "above" => decls.push(Declaration::TextPosition(TextPosition::Above)),
+                    "below" => decls.push(Declaration::TextPosition(TextPosition::Below)),
                     _ => warn_once(warned, "text-position", &value),
                 },
                 "icon-image" => {
@@ -1604,7 +1649,7 @@ mod tests {
     #[test]
     fn invalid_label_values_are_ignored() {
         let t = text_of(
-            "way { font-size: 0; text-color: nope; text-halo-radius: -1; text-position: top; \
+            "way { font-size: 0; text-color: nope; text-halo-radius: -1; text-position: sideways; \
              icon-width: big; text: ; icon-image: ; }",
         );
         assert!(t.is_empty());
