@@ -15,6 +15,12 @@
 //!   `color`) or `fill-opacity` (for `fill-color`).
 //! - Stroke styling: `casing-width`, `casing-color`, `z-index`, `dashes`
 //!   (`dash,gap` in pixels, or `none`) and `opacity`.
+//! - Label properties for a later label-rendering pass: `text` (a tag key,
+//!   e.g. `name`, or `none`), `font-size`, `text-color`, `text-halo-color`,
+//!   `text-halo-radius`, `text-position` (`center` | `line`), `icon-image`
+//!   and `icon-width`. They are parsed and resolved into [`TextStyle`] (see
+//!   [`Stylesheet::way_text_style`] / [`Stylesheet::node_text_style`]) but
+//!   nothing renders them yet.
 //! - Comments: `/* ... */` (non-nesting).
 //!
 //! - Zoom-range selectors after the type: `way|z12-`, `way|z-14`,
@@ -161,6 +167,51 @@ impl Default for WayStyle {
     }
 }
 
+/// Where a label sits relative to its feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextPosition {
+    /// Centered on the feature (the default for points and areas).
+    Center,
+    /// Following the way's line.
+    Line,
+}
+
+/// Label and icon properties resolved for one feature. Every field is
+/// `None` until a rule sets it. Not used by the renderer yet.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextStyle {
+    /// Tag key whose value is the label (`text: name`).
+    pub text: Option<String>,
+    pub font_size: Option<f32>,
+    pub color: Option<u32>,
+    pub halo_color: Option<u32>,
+    pub halo_radius: Option<f32>,
+    pub position: Option<TextPosition>,
+    pub icon_image: Option<String>,
+    pub icon_width: Option<f32>,
+}
+
+impl TextStyle {
+    /// Whether no label property is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn apply(&mut self, d: &Declaration) {
+        match d {
+            Declaration::Text(t) => self.text = t.clone(),
+            Declaration::FontSize(v) => self.font_size = Some(*v),
+            Declaration::TextColor(c) => self.color = Some(*c),
+            Declaration::TextHaloColor(c) => self.halo_color = Some(*c),
+            Declaration::TextHaloRadius(v) => self.halo_radius = Some(*v),
+            Declaration::TextPosition(p) => self.position = Some(*p),
+            Declaration::IconImage(i) => self.icon_image = i.clone(),
+            Declaration::IconWidth(v) => self.icon_width = Some(*v),
+            _ => {}
+        }
+    }
+}
+
 /// Inclusive range of integer zoom buckets a selector applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoomRange {
@@ -264,6 +315,16 @@ enum Declaration {
     Opacity(f32),
     /// `dashes: dash, gap`; `None` for `dashes: none`.
     Dashes(Option<(f32, f32)>),
+    /// `text: <tag key>`; `None` for `text: none`.
+    Text(Option<String>),
+    FontSize(f32),
+    TextColor(u32),
+    TextHaloColor(u32),
+    TextHaloRadius(f32),
+    TextPosition(TextPosition),
+    /// `icon-image: <path or url>`; `None` for `icon-image: none`.
+    IconImage(Option<String>),
+    IconWidth(f32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -472,6 +533,42 @@ impl Stylesheet {
         cache.bucket = bucket;
         cache.table = Some(table.clone());
         table
+    }
+
+    /// The label/icon properties that apply to a node at `zoom`.
+    pub fn node_text_style(&self, tags: &HashMap<String, String>, zoom: f64) -> TextStyle {
+        self.text_style(TargetKind::Node, false, tags, zoom)
+    }
+
+    /// The label/icon properties that apply to a way at `zoom`.
+    pub fn way_text_style(
+        &self,
+        tags: &HashMap<String, String>,
+        closed: bool,
+        zoom: f64,
+    ) -> TextStyle {
+        self.text_style(TargetKind::Way, closed, tags, zoom)
+    }
+
+    fn text_style(
+        &self,
+        kind: TargetKind,
+        closed: bool,
+        tags: &HashMap<String, String>,
+        zoom: f64,
+    ) -> TextStyle {
+        let bucket = zoom_bucket(zoom);
+        let mut out = TextStyle::default();
+        for rule in &self.rules {
+            let mask = rule.tag_mask(kind, closed, tags);
+            if mask == 0 || !rule.applies(mask, Some(bucket)) {
+                continue;
+            }
+            for d in &rule.declarations {
+                out.apply(d);
+            }
+        }
+        out
     }
 
     fn intern(&self, closed: bool, matches: Matches) -> u32 {
@@ -910,6 +1007,58 @@ impl<'a> Parser<'a> {
                         }
                     }
                 },
+                "text" => {
+                    let v = unquote(&value);
+                    if v.is_empty() {
+                        warn_once(warned, "text", &value);
+                    } else if v.eq_ignore_ascii_case("none") {
+                        decls.push(Declaration::Text(None));
+                    } else {
+                        decls.push(Declaration::Text(Some(v.to_string())));
+                    }
+                }
+                "font-size" => match parse_positive(&value) {
+                    Some(v) => decls.push(Declaration::FontSize(v)),
+                    None => warn_once(warned, "font-size", &value),
+                },
+                "text-color" => match parse_color_alpha(&value) {
+                    Some((c, _)) => decls.push(Declaration::TextColor(c)),
+                    None => warn_once(warned, "text-color", &value),
+                },
+                "text-halo-color" => match parse_color_alpha(&value) {
+                    Some((c, _)) => decls.push(Declaration::TextHaloColor(c)),
+                    None => warn_once(warned, "text-halo-color", &value),
+                },
+                "text-halo-radius" => match value.trim().parse::<f32>() {
+                    Ok(v) if v.is_finite() && v >= 0.0 => {
+                        decls.push(Declaration::TextHaloRadius(v))
+                    }
+                    _ => warn_once(warned, "text-halo-radius", &value),
+                },
+                "text-position" => match value.trim().to_ascii_lowercase().as_str() {
+                    "center" => decls.push(Declaration::TextPosition(TextPosition::Center)),
+                    "line" => decls.push(Declaration::TextPosition(TextPosition::Line)),
+                    _ => warn_once(warned, "text-position", &value),
+                },
+                "icon-image" => {
+                    let v = unquote(&value);
+                    let v = v
+                        .strip_prefix("url(")
+                        .and_then(|r| r.strip_suffix(')'))
+                        .map(unquote)
+                        .unwrap_or(v);
+                    if v.is_empty() {
+                        warn_once(warned, "icon-image", &value);
+                    } else if v.eq_ignore_ascii_case("none") {
+                        decls.push(Declaration::IconImage(None));
+                    } else {
+                        decls.push(Declaration::IconImage(Some(v.to_string())));
+                    }
+                }
+                "icon-width" => match parse_positive(&value) {
+                    Some(v) => decls.push(Declaration::IconWidth(v)),
+                    None => warn_once(warned, "icon-width", &value),
+                },
                 "z-index" => match value.trim().parse::<f32>() {
                     Ok(z) if z.is_finite() => decls.push(Declaration::ZIndex(z)),
                     _ => {
@@ -1002,6 +1151,31 @@ impl<'a> Parser<'a> {
         }
         self.src[start..self.pos].trim().to_string()
     }
+}
+
+/// Log a rejected property value, once per parse.
+fn warn_once(warned: &mut bool, prop: &str, value: &str) {
+    if !*warned {
+        eprintln!("mapcss: ignoring invalid {} '{}'", prop, value);
+        *warned = true;
+    }
+}
+
+/// A finite number greater than zero.
+fn parse_positive(s: &str) -> Option<f32> {
+    s.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && *v > 0.0)
+}
+
+/// `s` trimmed, without one pair of surrounding double quotes.
+fn unquote(s: &str) -> &str {
+    let t = s.trim();
+    t.strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(t)
+        .trim()
 }
 
 /// Parse a `dashes` value: `none`/`0`, or `dash, gap` (comma or space
@@ -1348,6 +1522,93 @@ mod tests {
             assert_eq!(w.dashes, None, "{bad:?}");
         }
         assert_eq!(WayStyle::default().dashes, None);
+    }
+
+    fn text_of(css: &str) -> TextStyle {
+        Stylesheet::parse(css)
+            .unwrap()
+            .way_text_style(&tags(&[("highway", "primary")]), false, Z)
+    }
+
+    #[test]
+    fn label_properties_are_parsed_and_resolved() {
+        let t = text_of(
+            "way[highway] { text: name; font-size: 11; text-color: #112233; \
+             text-halo-color: rgba(255,255,255,0.8); text-halo-radius: 2; \
+             text-position: line; icon-image: \"icons/shield.svg\"; icon-width: 16; }",
+        );
+        assert_eq!(
+            t,
+            TextStyle {
+                text: Some("name".into()),
+                font_size: Some(11.0),
+                color: Some(0x112233),
+                halo_color: Some(0xFFFFFF),
+                halo_radius: Some(2.0),
+                position: Some(TextPosition::Line),
+                icon_image: Some("icons/shield.svg".into()),
+                icon_width: Some(16.0),
+            }
+        );
+        assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn label_properties_do_not_disturb_stroke_styling() {
+        let s =
+            Stylesheet::parse("way { color: red; width: 3; text: name; font-size: 12; }").unwrap();
+        let w = s.way_style(&tags(&[]), false, Z);
+        assert_eq!((w.color, w.width), (0xFF0000, 3.0));
+        assert_eq!(s.node_style(&tags(&[]), Z), NodeStyle::default());
+    }
+
+    #[test]
+    fn label_rules_cascade_and_can_be_cleared() {
+        let t = text_of(
+            "way[highway] { text: ref; font-size: 9; } way[highway=primary] { text: name; } \
+             way { icon-image: url(\"a.png\"); } way[highway] { icon-image: none; }",
+        );
+        assert_eq!(t.text.as_deref(), Some("name"));
+        assert_eq!(t.font_size, Some(9.0));
+        assert_eq!(t.icon_image, None);
+        let t = text_of("way { text: name; } way { text: none; }");
+        assert_eq!(t.text, None);
+    }
+
+    #[test]
+    fn label_properties_follow_selectors_zoom_and_kind() {
+        let s = Stylesheet::parse(
+            "node[amenity] { text: name; } way|z15-[highway] { text: name; text-position: line; } \
+             area[building] { text: addr:housenumber; }",
+        )
+        .unwrap();
+        let hw = tags(&[("highway", "primary")]);
+        assert!(s.way_text_style(&hw, false, 14.0).is_empty());
+        assert_eq!(
+            s.way_text_style(&hw, false, 15.0).position,
+            Some(TextPosition::Line)
+        );
+        assert!(s.node_text_style(&hw, Z).is_empty());
+        assert_eq!(
+            s.node_text_style(&tags(&[("amenity", "cafe")]), Z).text,
+            Some("name".into())
+        );
+        // `area` only labels closed ways.
+        let b = tags(&[("building", "yes")]);
+        assert!(s.way_text_style(&b, false, Z).is_empty());
+        assert_eq!(
+            s.way_text_style(&b, true, Z).text.as_deref(),
+            Some("addr:housenumber")
+        );
+    }
+
+    #[test]
+    fn invalid_label_values_are_ignored() {
+        let t = text_of(
+            "way { font-size: 0; text-color: nope; text-halo-radius: -1; text-position: top; \
+             icon-width: big; text: ; icon-image: ; }",
+        );
+        assert!(t.is_empty());
     }
 
     #[test]
