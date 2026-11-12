@@ -7,6 +7,34 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.9.0
+
+### Map labels and styling
+
+- Named nodes now have text labels, and nodes that match a preset with an icon show that icon in a coloured circle from zoom 17. Labels try the right, left, above and below positions to avoid each other, are placed when the map stops moving, and fade in. The selected or hovered node always keeps its label. ([#227](https://github.com/iandees/osm-gpui/pull/227)) ([#228](https://github.com/iandees/osm-gpui/pull/228))
+- Named areas (buildings, parks, water, landuse and multipolygons) are labelled at the point farthest from their edges, and only where the text fits. ([#229](https://github.com/iandees/osm-gpui/pull/229))
+- Street and waterway names are drawn along the way, rotated to follow it and never upside down, with a halo and a small offset so they clear the line. ([#226](https://github.com/iandees/osm-gpui/pull/226))
+- With many labels on screen, the label outline is replaced by a translucent backing so drawing stays fast; labels stay on screen through a zoom instead of vanishing. ([#228](https://github.com/iandees/osm-gpui/pull/228))
+- The MapCSS stylesheet supports zoom ranges (`way|z12-[highway=primary]`), `casing-width` and `casing-color`, `z-index`, `dashes`, `opacity`, `rgb()` and `rgba()` colours, and the label properties `text`, `font-size`, `text-color`, `text-halo-color`, `text-halo-radius`, `text-position`, `text-offset`, `icon-image` and `icon-width`. The default stylesheet widens and cases major roads as you zoom in, and draws ways in a stable order. ([#225](https://github.com/iandees/osm-gpui/pull/225)) ([#226](https://github.com/iandees/osm-gpui/pull/226)) ([#227](https://github.com/iandees/osm-gpui/pull/227))
+- On Retina and other high-resolution displays, imagery tiles are requested one zoom level deeper so they look sharper, and the lower-zoom stand-in tile is only drawn while the real tile is loading. ([#224](https://github.com/iandees/osm-gpui/pull/224))
+
+### Editing
+
+- Tools > Rotate (also in the context menu, shortcut W) turns the selection around its centre by dragging; hold Shift to snap to 15 degrees. ([#218](https://github.com/iandees/osm-gpui/pull/218))
+- Adding a node by dropping it on a way's segment now inserts a snapped node at the drop point. ([#221](https://github.com/iandees/osm-gpui/pull/221))
+- An empty row in the Tags section suggests related and popular keys from taginfo. ([#216](https://github.com/iandees/osm-gpui/pull/216))
+
+### Fixes
+
+- A way you dragged stays selected after undo and redo. ([#220](https://github.com/iandees/osm-gpui/pull/220))
+- The hover highlight is drawn above the selection, so a hovered vertex of a selected way is no longer hidden by the way. ([#217](https://github.com/iandees/osm-gpui/pull/217))
+- Upload to OSM is disabled when there is nothing to upload. ([#222](https://github.com/iandees/osm-gpui/pull/222))
+
+### Development
+
+- `examples/perf_bench.rs` has label cases (`labels`, `line_labels` and `area_labels` sections), the scripting harness can drive label stress runs and force a halo mode, and new screenshot scripts cover labels, area labels, street names and curved ways. ([#226](https://github.com/iandees/osm-gpui/pull/226)) ([#227](https://github.com/iandees/osm-gpui/pull/227)) ([#228](https://github.com/iandees/osm-gpui/pull/228)) ([#229](https://github.com/iandees/osm-gpui/pull/229))
+- `docs/improvement-suggestions.md` is brought up to date with the shipped work and lists the remaining label follow-ups. ([#223](https://github.com/iandees/osm-gpui/pull/223)) ([#230](https://github.com/iandees/osm-gpui/pull/230))
+
 ## 0.8.0
 
 ### Changed behaviour
