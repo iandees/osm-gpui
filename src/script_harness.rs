@@ -554,6 +554,24 @@ impl MapViewer {
                     cx.notify();
                     bus.set_assert_result(result);
                 }
+                // Switch the MapCSS style, e.g. `action MapStyle:wireframe`
+                // (`default`, `wireframe` or `id`), in memory only.
+                ScriptCommand::Action { name } if name.starts_with("MapStyle:") => {
+                    let id = name.trim_start_matches("MapStyle:");
+                    let sheet = osm_gpui::style::custom::BUILT_IN_STYLES
+                        .iter()
+                        .find(|s| s.id == id)
+                        .and_then(|s| osm_gpui::style::Stylesheet::parse(s.source).ok());
+                    let result = match sheet {
+                        Some(sheet) => {
+                            osm_gpui::style::custom::set_active(Some(std::sync::Arc::new(sheet)));
+                            self.apply_map_style(cx);
+                            Ok(())
+                        }
+                        None => Err(format!("unknown built-in map style '{id}'")),
+                    };
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Action { name } => {
                     // `Name` or `Name {json}`; the JSON fills the action's fields.
                     let (action_name, data) = match name.split_once(char::is_whitespace) {

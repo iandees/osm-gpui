@@ -799,6 +799,26 @@ mod tests {
     }
 
     #[test]
+    fn built_in_map_style_choice_round_trips_beside_user_styles() {
+        let dir = tmp_dir("built-in-map-style");
+        let path = dir.join("settings.json");
+        let settings = AppSettings {
+            map_styles: vec!["/a/b.mapcss".into()],
+            active_map_style: crate::style::custom::built_in_location("wireframe"),
+            ..AppSettings::default()
+        };
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded, settings);
+        assert_eq!(
+            loaded.active_map_style.as_deref(),
+            Some("builtin:wireframe")
+        );
+        assert_eq!(loaded.map_styles, vec!["/a/b.mapcss".to_string()]);
+        assert!(crate::style::custom::built_in_for("builtin:wireframe").is_some());
+    }
+
+    #[test]
     fn autosave_is_on_by_default_and_for_older_settings_files() {
         assert!(AppSettings::default().autosave);
         let dir = tmp_dir("legacy-no-autosave");

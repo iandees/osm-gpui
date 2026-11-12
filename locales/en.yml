@@ -389,6 +389,8 @@ settings:
     group: "Map style"
     title: "Map paint style"
     built_in: "Built-in (default.mapcss)"
+    wireframe: "Wireframe"
+    id: "iD"
     description: "The MapCSS style that colors and labels features on the map. Pick a style you added, or the built-in one."
     add: "Add a style"
     add_description: "Add a MapCSS style from a file on this computer or from a web address. It is used right away and remembered. A style that cannot be loaded is not used; the current one stays."

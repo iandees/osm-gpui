@@ -1,0 +1,100 @@
+/* osm-gpui "iD" MapCSS stylesheet, after the default look of the iD editor.
+
+   Colours follow iD's palette: highways coloured and sized by class, green
+   landuse, blue water, grey-pink buildings, with outlined fills. Rules go
+   from general to specific; later rules override earlier ones. */
+
+way                  { color: #cccccc; width: 1.5; }
+
+/* Roads, by class (iD's road colours). */
+way[highway]                 { color: #ffffff; width: 2.5; casing-width: 1; casing-color: #9a9a9a; }
+way|z16-[highway]            { width: 3.5; }
+way|z18-[highway]            { width: 6; }
+way[highway=motorway], way[highway=motorway_link]   { color: #cf2081; width: 4; casing-color: #7d1049; }
+way[highway=trunk], way[highway=trunk_link]         { color: #db2777; width: 4; casing-color: #85174a; }
+way[highway=primary], way[highway=primary_link]     { color: #f99806; width: 3.5; casing-color: #9a5e04; }
+way[highway=secondary], way[highway=secondary_link] { color: #f3f312; width: 3.5; casing-color: #96960b; }
+way[highway=tertiary], way[highway=tertiary_link]   { color: #fff9b3; width: 3; casing-color: #9a966b; }
+way[highway=residential], way[highway=unclassified] { color: #ffffff; width: 2.5; }
+way[highway=living_street], way[highway=service]    { color: #ffffff; width: 1.5; casing-color: #9a9a9a; }
+way[highway=track]           { color: #c5b59f; width: 1.5; dashes: 6,3; casing-width: 0; }
+way[highway=footway], way[highway=path], way[highway=pedestrian],
+way[highway=steps], way[highway=bridleway]          { color: #fa8072; width: 1.5; dashes: 4,2; casing-width: 0; }
+way[highway=cycleway]        { color: #58a9ed; width: 1.5; dashes: 4,2; casing-width: 0; }
+way|z16-[highway=motorway], way|z16-[highway=trunk]       { width: 5; }
+way|z16-[highway=primary], way|z16-[highway=secondary]    { width: 4.5; }
+way|z18-[highway=motorway], way|z18-[highway=trunk]       { width: 8; }
+way|z18-[highway=primary], way|z18-[highway=secondary]    { width: 7; }
+
+/* Draw order: more important roads on top where they cross. */
+way[highway=tertiary], way[highway=tertiary_link]   { z-index: 1; }
+way[highway=secondary], way[highway=secondary_link] { z-index: 2; }
+way[highway=primary], way[highway=primary_link]     { z-index: 3; }
+way[highway=trunk], way[highway=trunk_link]         { z-index: 4; }
+way[highway=motorway], way[highway=motorway_link]   { z-index: 5; }
+
+way[railway]         { color: #6d6d6d; width: 2; casing-width: 0; }
+way[waterway]        { color: #77b0f0; width: 2.5; }
+way[barrier]         { color: #ddddde; width: 1.5; }
+way[power]           { color: #939393; width: 1; }
+
+/* Areas. Closed ways get an outline in the class colour and a translucent
+   fill. The generic landuse rule comes first so specific ones win. */
+way[landuse], way[leisure], way[natural] { color: #8cd05f; width: 1.5; }
+area[landuse]   { fill-color: #8cd05f; fill-opacity: 0.3; }
+way[landuse=residential]                       { color: #e60033; }
+area[landuse=residential]                      { fill-color: #e60033; fill-opacity: 0.15; }
+way[landuse=retail], way[landuse=commercial]   { color: #d99c36; }
+area[landuse=retail], area[landuse=commercial] { fill-color: #d99c36; fill-opacity: 0.3; }
+way[landuse=industrial]                        { color: #ebd5eb; }
+area[landuse=industrial]                       { fill-color: #ebd5eb; fill-opacity: 0.4; }
+way[leisure=park], way[landuse=grass], way[landuse=forest], way[natural=wood] { color: #8cd05f; }
+area[leisure=park], area[landuse=grass], area[landuse=forest], area[natural=wood]
+                { fill-color: #8cd05f; fill-opacity: 0.4; }
+way[natural=water], way[waterway=riverbank] { color: #77b0f0; width: 1.5; }
+area[natural=water], area[waterway=riverbank] { fill-color: #77b0f0; fill-opacity: 0.5; }
+way[building]   { color: #e06e5f; width: 1.5; }
+area[building]  { fill-color: #e06e5f; fill-opacity: 0.3; }
+
+/* Nodes. Untagged nodes are way vertices: small. Points get iD's pin-ish
+   category colours. */
+node            { color: #ffffff; symbol-size: 5; }
+node[highway], node[barrier], node[railway], node[power], node[entrance]
+                { color: #ffd60a; symbol-size: 7; }
+node[natural], node[leisure], node[tourism], node[historic], node[man_made],
+node[place], node[office], node[craft], node[emergency], node[public_transport]
+                { color: #7092ff; symbol-size: 8; }
+node[amenity]   { color: #ff5fa2; symbol-size: 8; }
+node[shop]      { color: #e8a13a; symbol-size: 8; }
+
+/* Labels and icons (nodes): dark text on a white halo, as in iD. */
+node|z17-[name]         { text: name; font-size: 12; text-color: #333333;
+                          text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
+node|z16-[place]        { text: name; font-size: 14; }
+node|z18-[addr:housenumber] { text: name, addr:housenumber; }
+node|z17-[amenity], node|z17-[shop], node|z17-[tourism], node|z17-[leisure],
+node|z17-[historic], node|z17-[office], node|z17-[craft], node|z17-[emergency],
+node|z17-[public_transport]  { icon-image: preset; icon-width: 12; }
+
+/* Street and waterway names along the way. */
+way|z16-[highway]  { text: name; text-position: line; font-size: 12; text-color: #333333;
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
+way|z16-[waterway] { text: name; text-position: line; font-size: 12; text-color: #1d4f91;
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
+
+/* Area labels, shown only where the text fits. */
+area|z17-[landuse], area|z17-[amenity], area|z17-[tourism], area|z17-[shop],
+area|z17-[historic], area|z17-[office]
+                { text: name; font-size: 12; text-color: #444444;
+                  text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
+area|z16-[leisure=park], area|z16-[landuse=forest], area|z16-[landuse=grass],
+area|z16-[natural=wood]
+                { text: name; font-size: 12; text-color: #2f6b1c;
+                  text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
+area|z16-[natural=water], area|z16-[waterway=riverbank]
+                { text: name; font-size: 12; text-color: #1d4f91;
+                  text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
+area|z16-[place]    { text: name; font-size: 13; text-color: #333333;
+                  text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
+area|z18-[building] { text: name; font-size: 11; text-color: #7a2d22;
+                  text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; }
