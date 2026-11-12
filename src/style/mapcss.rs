@@ -42,6 +42,8 @@ pub const DEFAULT_NODE_SIZE: f32 = 10.0;
 pub const DEFAULT_WAY_COLOR: u32 = 0x4169E1;
 pub const DEFAULT_WAY_WIDTH: f32 = 4.0;
 pub const DEFAULT_FILL_OPACITY: f32 = 0.4;
+/// Casing color when `casing-width` is set without `casing-color`.
+pub const DEFAULT_CASING_COLOR: u32 = 0x1C1C1E;
 
 /// Resolved area fill for a closed way.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -119,6 +121,10 @@ pub struct WayStyle {
     /// than MapCSS, for the same cache-freshness reason as
     /// [`NodeStyle::tagged`].
     pub direction: Direction,
+    /// Extra width on each side of the stroke drawn as a casing beneath it
+    /// (`casing-width`); 0 means no explicit casing.
+    pub casing_width: f32,
+    pub casing_color: u32,
     /// Interned id of the rules that matched this way's tags, an index into
     /// [`Stylesheet::zoom_styles`]. [`NO_SIG`] when not interned.
     pub sig: u32,
@@ -134,6 +140,8 @@ impl Default for WayStyle {
             width: DEFAULT_WAY_WIDTH,
             fill: None,
             direction: Direction::None,
+            casing_width: 0.0,
+            casing_color: DEFAULT_CASING_COLOR,
             sig: NO_SIG,
         }
     }
@@ -233,6 +241,9 @@ enum Declaration {
     FillColor(u32),
     /// Area fill opacity, clamped to 0..=1 at parse time.
     FillOpacity(f32),
+    /// Extra width of the casing on each side of the stroke, in pixels.
+    CasingWidth(f32),
+    CasingColor(u32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -491,6 +502,8 @@ impl Stylesheet {
                     Declaration::Width(w) => s.width = *w,
                     Declaration::FillColor(c) => fill_color = Some(*c),
                     Declaration::FillOpacity(o) => fill_opacity = Some(*o),
+                    Declaration::CasingWidth(w) => s.casing_width = *w,
+                    Declaration::CasingColor(c) => s.casing_color = *c,
                     // `symbol-size` on a way rule is meaningless — ignore.
                     _ => {}
                 }
@@ -828,6 +841,24 @@ impl<'a> Parser<'a> {
                         }
                     }
                 },
+                "casing-width" => match value.trim().parse::<f32>() {
+                    Ok(w) if w.is_finite() && w >= 0.0 => decls.push(Declaration::CasingWidth(w)),
+                    _ => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring invalid casing-width '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
+                "casing-color" => match parse_color(&value) {
+                    Some(c) => decls.push(Declaration::CasingColor(c)),
+                    None => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring unrecognized casing-color '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
                 "symbol-size" => match value.trim().parse::<f32>() {
                     Ok(w) if w.is_finite() && w >= 0.0 => decls.push(Declaration::SymbolSize(w)),
                     _ => {
@@ -1042,10 +1073,49 @@ mod tests {
 
     #[test]
     fn unknown_property_ignored() {
-        let s = Stylesheet::parse("way { color: red; casing-width: 2; width: 3; }").unwrap();
+        let s = Stylesheet::parse("way { color: red; frobnicate: 2; width: 3; }").unwrap();
         let w = s.way_style(&tags(&[]), false, Z);
         assert_eq!(w.color, 0xFF0000);
         assert_eq!(w.width, 3.0);
+    }
+
+    #[test]
+    fn casing_declarations_resolve_on_ways() {
+        let s = Stylesheet::parse(
+            "way[highway] { width: 3; casing-width: 1.5; casing-color: #102030; } way[highway=x] { casing-width: 0; }",
+        )
+        .unwrap();
+        let w = s.way_style(&tags(&[("highway", "primary")]), false, Z);
+        assert_eq!(w.casing_width, 1.5);
+        assert_eq!(w.casing_color, 0x102030);
+        // A later rule can turn the casing off again.
+        assert_eq!(
+            s.way_style(&tags(&[("highway", "x")]), false, Z)
+                .casing_width,
+            0.0
+        );
+        // No casing by default; a casing-width alone uses the default color.
+        assert_eq!(WayStyle::default().casing_width, 0.0);
+        let s = Stylesheet::parse("way { casing-width: 1; }").unwrap();
+        let w = s.way_style(&tags(&[]), false, Z);
+        assert_eq!(
+            (w.casing_width, w.casing_color),
+            (1.0, DEFAULT_CASING_COLOR)
+        );
+    }
+
+    #[test]
+    fn invalid_casing_values_are_ignored() {
+        let s = Stylesheet::parse("way { casing-width: -2; casing-color: nope; }").unwrap();
+        let w = s.way_style(&tags(&[]), false, Z);
+        assert_eq!(w.casing_width, 0.0);
+        assert_eq!(w.casing_color, DEFAULT_CASING_COLOR);
+    }
+
+    #[test]
+    fn casing_does_not_apply_to_nodes() {
+        let s = Stylesheet::parse("node { casing-width: 2; }").unwrap();
+        assert_eq!(s.node_style(&tags(&[]), Z), NodeStyle::default());
     }
 
     #[test]
@@ -1328,6 +1398,15 @@ mod tests {
             assert!(w(hw, 18.5) > w(hw, 12.0), "{hw} must widen with zoom");
             assert!(w(hw, 16.0) >= w(hw, 12.0), "{hw} must not narrow");
         }
+        // Major roads get a casing from zoom 14; minor ones rely on the
+        // renderer's default.
+        let cased = |hw: &str, z: f64| {
+            s.way_style(&tags(&[("highway", hw)]), false, z)
+                .casing_width
+        };
+        assert_eq!(cased("primary", 13.0), 0.0);
+        assert!(cased("primary", 14.0) > 0.0);
+        assert_eq!(cased("residential", 18.0), 0.0);
         // Minor paths keep their width.
         assert_eq!(w("footway", 18.5), w("footway", 12.0));
     }

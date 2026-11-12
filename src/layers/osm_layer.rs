@@ -3709,6 +3709,8 @@ pub struct WayScene {
     fills: Vec<(u32, Path<Pixels>)>,
     overlays: Vec<(u32, Path<Pixels>)>,
     casing: Option<(u32, Path<Pixels>)>,
+    /// Per-colour casings from `casing-width`, under the strokes.
+    styled_casings: Vec<(u32, Path<Pixels>)>,
     strokes: Vec<(u32, Path<Pixels>)>,
 }
 
@@ -3718,13 +3720,21 @@ impl WayScene {
         let sum =
             |v: &[(u32, Path<Pixels>)]| -> usize { v.iter().map(|(_, p)| p.vertices.len()).sum() };
         let casing = self.casing.as_ref().map_or(0, |(_, p)| p.vertices.len());
-        sum(&self.fills) + sum(&self.overlays) + casing + sum(&self.strokes)
+        sum(&self.fills)
+            + sum(&self.overlays)
+            + casing
+            + sum(&self.styled_casings)
+            + sum(&self.strokes)
     }
 
     /// Number of paths the scene hands to the GPU. Each is rasterised and
     /// composited separately, over its own bounding box.
     pub fn path_count(&self) -> usize {
-        self.fills.len() + self.overlays.len() + self.casing.is_some() as usize + self.strokes.len()
+        self.fills.len()
+            + self.overlays.len()
+            + self.casing.is_some() as usize
+            + self.styled_casings.len()
+            + self.strokes.len()
     }
 
     /// Hand the paths to the window: fills first so outlines stay on top,
@@ -3740,6 +3750,9 @@ impl WayScene {
             window.paint_path(path, gpui::rgba(rgba));
         }
         if let Some((rgba, path)) = self.casing {
+            window.paint_path(path, gpui::rgba(rgba));
+        }
+        for (rgba, path) in self.styled_casings {
             window.paint_path(path, gpui::rgba(rgba));
         }
         for (rgba, path) in self.strokes {
@@ -4025,6 +4038,9 @@ impl OsmLayer {
         let draw_casing = zoom >= CASING_MIN_ZOOM;
         let draw_arrows = zoom >= ARROW_MIN_ZOOM;
         let mut casing = Batch::new(BatchKind::Casing, (CASING_COLOR << 8) | 0xFF, 0, &hints);
+        // Casings asked for by the stylesheet (`casing-width`), one per colour.
+        let mut styled_casing_index: HashMap<u32, usize> = HashMap::new();
+        let mut styled_casings: Vec<Batch> = Vec::new();
 
         // Reused scratch buffers, so the (potentially tens of thousands of)
         // visible ways of a frame don't each allocate.
@@ -4090,6 +4106,18 @@ impl OsmLayer {
             };
             let stroke = &mut strokes[stroke_idx];
 
+            // An explicit casing replaces the default dark one.
+            let styled_casing_idx = (style.casing_width > 0.0).then(|| {
+                batch_index(
+                    &mut styled_casing_index,
+                    &mut styled_casings,
+                    BatchKind::Casing,
+                    (style.casing_color << 8) | 0xFF,
+                    &hints,
+                )
+            });
+            let default_casing = draw_casing && styled_casing_idx.is_none();
+
             let overlay_idx = if has_routes {
                 self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
                     batch_index(
@@ -4152,13 +4180,18 @@ impl OsmLayer {
                 && detail == WayDetail::Full
                 && (dragging
                     || bbox_extent_px(bbox, ppm_x, ppm_y) >= way_stroke::SHAPE_MIN_EXTENT_PX);
+            let casing_extent = if styled_casing_idx.is_some() {
+                style.casing_width
+            } else {
+                CASING_WIDTH
+            };
             let (casing_hw, overlay_hw) = (
-                half_width + CASING_WIDTH,
-                half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
+                half_width + casing_extent,
+                half_width + casing_extent + ROUTE_OVERLAY_EXTRA,
             );
             let widest_hw = if overlay_idx.is_some() {
                 overlay_hw
-            } else if draw_casing {
+            } else if default_casing || styled_casing_idx.is_some() {
                 casing_hw
             } else {
                 half_width
@@ -4185,13 +4218,24 @@ impl OsmLayer {
                         shape: shape_of(overlay_hw),
                     }
                 });
-                let casing_layer = draw_casing.then(|| Layer {
+                let casing_layer = default_casing.then(|| Layer {
                     sink: PathSink {
                         path: &mut casing.path,
                         bounds: &mut casing.bounds,
                     },
                     hw: casing_hw,
                     shape: shape_of(casing_hw),
+                });
+                let styled_layer = styled_casing_idx.map(|ci| {
+                    let cb = &mut styled_casings[ci];
+                    Layer {
+                        sink: PathSink {
+                            path: &mut cb.path,
+                            bounds: &mut cb.bounds,
+                        },
+                        hw: casing_hw,
+                        shape: shape_of(casing_hw),
+                    }
                 });
                 let stroke_layer = Layer {
                     sink: PathSink {
@@ -4201,7 +4245,12 @@ impl OsmLayer {
                     hw: half_width,
                     shape: shape_of(half_width),
                 };
-                polyline.emit_layers(&mut [overlay_layer, casing_layer, Some(stroke_layer)]);
+                polyline.emit_layers(&mut [
+                    overlay_layer,
+                    casing_layer,
+                    styled_layer,
+                    Some(stroke_layer),
+                ]);
             } else {
                 // Plain rectangles, as before joins existed.
                 for &(a, b) in &segs {
@@ -4215,10 +4264,18 @@ impl OsmLayer {
                         };
                         way_stroke::emit_segment(&mut sink, pa, pb, overlay_hw);
                     }
-                    if draw_casing {
+                    if default_casing {
                         let mut sink = PathSink {
                             path: &mut casing.path,
                             bounds: &mut casing.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
+                    }
+                    if let Some(ci) = styled_casing_idx {
+                        let cb = &mut styled_casings[ci];
+                        let mut sink = PathSink {
+                            path: &mut cb.path,
+                            bounds: &mut cb.bounds,
                         };
                         way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
                     }
@@ -4253,7 +4310,7 @@ impl OsmLayer {
                 {
                     push_triangle(&mut stroke.path, &mut stroke.bounds, tip, left, right);
                 }
-                if draw_casing {
+                if default_casing {
                     if let Some([tip, left, right]) = arrow_triangle(
                         p0,
                         p1,
@@ -4282,6 +4339,10 @@ impl OsmLayer {
                 .filter_map(|b| b.finish(&mut next_hints))
                 .collect(),
             casing: casing.finish(&mut next_hints),
+            styled_casings: styled_casings
+                .into_iter()
+                .filter_map(|b| b.finish(&mut next_hints))
+                .collect(),
             strokes: strokes
                 .into_iter()
                 .filter_map(|b| b.finish(&mut next_hints))
@@ -9849,6 +9910,36 @@ mod way_lod_tests {
     fn scene_vertices(layer: &OsmLayer, zoom: f64) -> usize {
         let (v, b) = view(zoom);
         layer.build_way_scene(&v, b).vertex_count()
+    }
+
+    fn scene_paths(layer: &OsmLayer, zoom: f64) -> usize {
+        let (v, b) = view(zoom);
+        layer.build_way_scene(&v, b).path_count()
+    }
+
+    fn layer_styled(css: &str) -> OsmLayer {
+        let mut l = layer();
+        l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
+        l
+    }
+
+    #[test]
+    fn a_styled_casing_adds_a_path_below_the_default_casing_zoom() {
+        // Zoom 15: no default casing, so one stroke path.
+        assert_eq!(scene_paths(&layer_styled("way { width: 3; }"), 15.0), 1);
+        let cased = layer_styled("way { width: 3; casing-width: 2; casing-color: red; }");
+        assert_eq!(scene_paths(&cased, 15.0), 2);
+        // At zoom 17 the styled casing replaces the default one.
+        assert_eq!(scene_paths(&cased, 17.0), 2);
+    }
+
+    #[test]
+    fn zoom_gated_casing_follows_the_zoom_bucket() {
+        let l = layer_styled("way { width: 3; } way|z15- { casing-width: 2; }");
+        assert_eq!(scene_paths(&l, 14.5), 1);
+        assert_eq!(scene_paths(&l, 15.2), 2);
+        // And back: the per-bucket table is not stale.
+        assert_eq!(scene_paths(&l, 14.5), 1);
     }
 
     /// The layer's cached geometry and its scene are what a layer freshly
