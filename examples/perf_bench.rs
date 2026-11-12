@@ -585,7 +585,7 @@ fn build_street_dataset() -> Arc<OsmData> {
 }
 
 fn line_labels_section() {
-    use osm_gpui::layers::line_labels::{Candidate, FrameOut, LabelStyle, LineLabelCache};
+    use osm_gpui::layers::line_labels::{Candidate, FrameOut, LabelStyle, LineLabelCache, Tuning};
     println!("\n--- line labels (rotated glyph outlines) ---");
     let data = build_street_dataset();
     let layer = OsmLayer::new_with_data(LayerId(1), "streets", data);
@@ -599,10 +599,10 @@ fn line_labels_section() {
         println!(
             "z{z}: {} labels placed, {} fill verts + {} halo verts ({:.0} + {:.0} per label), first frame built {} layouts",
             first.labels,
-            first.fill.len(),
-            first.halo.len(),
-            first.fill.len() as f64 / first.labels.max(1) as f64,
-            first.halo.len() as f64 / first.labels.max(1) as f64,
+            first.vertex_counts().0,
+            first.vertex_counts().1,
+            first.vertex_counts().0 as f64 / first.labels.max(1) as f64,
+            first.vertex_counts().1 as f64 / first.labels.max(1) as f64,
             first.layouts_built
         );
         bench(
@@ -610,7 +610,7 @@ fn line_labels_section() {
             50,
             || {
                 let o = layer.line_label_frame(&vp, bounds);
-                (o.fill.len() + o.halo.len()) as u64
+                (o.vertex_counts().0 + o.vertex_counts().1) as u64
             },
         );
         // Alternate between two zooms so every call is a cold layout.
@@ -627,7 +627,7 @@ fn line_labels_section() {
             || {
                 flip = !flip;
                 let o = layer.line_label_frame(if flip { &vp2 } else { &vp }, bounds);
-                (o.fill.len() + o.halo.len()) as u64
+                (o.vertex_counts().0 + o.vertex_counts().1) as u64
             },
         );
     }
@@ -652,17 +652,19 @@ fn line_labels_section() {
     }
     println!("tolerance sweep at z16 (fill_tol / halo_tol px):");
     for (ft, ht) in [(0.05, 0.1), (0.1, 0.2), (0.2, 0.4), (0.4, 0.8)] {
-        let mut c = LineLabelCache::new(LabelStyle {
+        let mut c = LineLabelCache::new(Tuning {
             fill_tol: ft,
             halo_tol: ht,
-            ..LabelStyle::default()
+            ..Tuning::default()
         });
         let cands: Vec<Candidate> = verts
             .iter()
             .map(|(id, v, n)| Candidate {
                 way_id: *id,
-                text: n,
+                text: n.clone(),
                 verts: v,
+                style: LabelStyle::default(),
+                priority: 50,
             })
             .collect();
         let mut out = FrameOut::default();
@@ -680,8 +682,8 @@ fn line_labels_section() {
         println!(
             "  {ft:.2}/{ht:.2}: {} labels, {:.0} fill + {:.0} halo verts/label, {} cached glyph meshes ({mf} fill + {mh} halo verts total), cold {ms:.1} ms",
             out.labels,
-            out.fill.len() as f64 / out.labels.max(1) as f64,
-            out.halo.len() as f64 / out.labels.max(1) as f64,
+            out.vertex_counts().0 as f64 / out.labels.max(1) as f64,
+            out.vertex_counts().1 as f64 / out.labels.max(1) as f64,
             c.glyph_cache_len()
         );
     }

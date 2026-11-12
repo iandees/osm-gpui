@@ -17,7 +17,9 @@
 //!   (`dash,gap` in pixels, or `none`) and `opacity`.
 //! - Label properties for a later label-rendering pass: `text` (a tag key,
 //!   e.g. `name`, or `none`), `font-size`, `text-color`, `text-halo-color`,
-//!   `text-halo-radius`, `text-position` (`center` | `line` | `right` | `left` | `above` | `below`), `icon-image`
+//!   `text-halo-radius`, `text-offset` (pixels; line labels only: perpendicular
+//!   shift from the way, positive above the text, negative below it),
+//!   `text-position` (`center` | `line` | `right` | `left` | `above` | `below`), `icon-image`
 //!   and `icon-width`. They are parsed and resolved into [`TextStyle`] (see
 //!   [`Stylesheet::way_text_style`] / [`Stylesheet::node_text_style`]).
 //!   Node labels and POI icons render them; `text-position` for nodes is
@@ -198,6 +200,9 @@ pub struct TextStyle {
     pub halo_color: Option<u32>,
     pub halo_radius: Option<f32>,
     pub position: Option<TextPosition>,
+    /// `text-offset`: perpendicular shift of a line label from its way, in
+    /// pixels. Positive is above the text, negative below it.
+    pub offset: Option<f32>,
     pub icon_image: Option<String>,
     pub icon_width: Option<f32>,
 }
@@ -216,6 +221,7 @@ impl TextStyle {
             Declaration::TextHaloColor(c) => self.halo_color = Some(*c),
             Declaration::TextHaloRadius(v) => self.halo_radius = Some(*v),
             Declaration::TextPosition(p) => self.position = Some(*p),
+            Declaration::TextOffset(v) => self.offset = Some(*v),
             Declaration::IconImage(i) => self.icon_image = i.clone(),
             Declaration::IconWidth(v) => self.icon_width = Some(*v),
             _ => {}
@@ -333,6 +339,7 @@ enum Declaration {
     TextHaloColor(u32),
     TextHaloRadius(f32),
     TextPosition(TextPosition),
+    TextOffset(f32),
     /// `icon-image: <path or url>`; `None` for `icon-image: none`.
     IconImage(Option<String>),
     IconWidth(f32),
@@ -409,6 +416,7 @@ fn label_rule_indices(rules: &[Rule]) -> Vec<u32> {
                         | Declaration::TextHaloColor(_)
                         | Declaration::TextHaloRadius(_)
                         | Declaration::TextPosition(_)
+                        | Declaration::TextOffset(_)
                         | Declaration::IconImage(_)
                         | Declaration::IconWidth(_)
                 )
@@ -1084,6 +1092,10 @@ impl<'a> Parser<'a> {
                     "below" => decls.push(Declaration::TextPosition(TextPosition::Below)),
                     _ => warn_once(warned, "text-position", &value),
                 },
+                "text-offset" => match value.trim().parse::<f32>() {
+                    Ok(v) if v.is_finite() => decls.push(Declaration::TextOffset(v)),
+                    _ => warn_once(warned, "text-offset", &value),
+                },
                 "icon-image" => {
                     let v = unquote(&value);
                     let v = v
@@ -1579,7 +1591,7 @@ mod tests {
         let t = text_of(
             "way[highway] { text: name; font-size: 11; text-color: #112233; \
              text-halo-color: rgba(255,255,255,0.8); text-halo-radius: 2; \
-             text-position: line; icon-image: \"icons/shield.svg\"; icon-width: 16; }",
+             text-position: line; text-offset: -4.5; icon-image: \"icons/shield.svg\"; icon-width: 16; }",
         );
         assert_eq!(
             t,
@@ -1590,6 +1602,7 @@ mod tests {
                 halo_color: Some(0xFFFFFF),
                 halo_radius: Some(2.0),
                 position: Some(TextPosition::Line),
+                offset: Some(-4.5),
                 icon_image: Some("icons/shield.svg".into()),
                 icon_width: Some(16.0),
             }
@@ -1650,7 +1663,7 @@ mod tests {
     fn invalid_label_values_are_ignored() {
         let t = text_of(
             "way { font-size: 0; text-color: nope; text-halo-radius: -1; text-position: sideways; \
-             icon-width: big; text: ; icon-image: ; }",
+             text-offset: far; icon-width: big; text: ; icon-image: ; }",
         );
         assert!(t.is_empty());
     }

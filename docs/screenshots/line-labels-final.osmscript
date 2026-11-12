@@ -1,0 +1,44 @@
+# Street names along ways, driven by MapCSS, placed together with point labels and
+# icons. One launch; each pair compares the old and new default:
+#   halo=stroke (joined, 28% more vertices) vs the coarse default,
+#   offset=0 (text on the line) vs the stylesheet's text-offset.
+#   cargo run --release -- --script docs/screenshots/line-labels-final.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels-mixed.osm
+load_osm docs/screenshots/fixtures/line-labels-curves.osm
+viewport 40.7120 -74.0060 17
+wait_idle 5s
+wait 1s
+action LabelBench:on,halo=stroke
+wait 800ms
+capture out/final-mixed-z17-halo-stroke.png
+action LabelBench:on
+wait 800ms
+capture out/final-mixed-z17-halo-coarse.png
+viewport 40.7120 -74.0075 19
+wait 1s
+action LabelBench:on,halo=stroke
+wait 800ms
+capture out/final-mixed-z19-halo-stroke.png
+action LabelBench:on
+wait 800ms
+capture out/final-mixed-z19-halo-coarse.png
+viewport 40.7120 -74.0060 17
+wait 1s
+action LabelBench:on,offset=0
+wait 800ms
+capture out/final-mixed-z17-offset0.png
+action LabelBench:on
+wait 800ms
+capture out/final-mixed-z17-offset-default.png
+viewport 40.72146 -74.00849 19
+wait 1s
+action LabelBench:on,offset=0
+wait 800ms
+capture out/final-roundabout-z19-before.png
+action LabelBench:on
+wait 800ms
+capture out/final-roundabout-z19-after.png
+viewport 40.72411 -74.0060 18
+wait 1s
+capture out/final-curves-z18.png

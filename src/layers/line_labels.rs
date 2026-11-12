@@ -19,9 +19,10 @@
 //! - nothing else: collision against already-placed labels is redone per
 //!   frame, it is a handful of rectangle tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::layers::labels::{CollisionGrid, Rect, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER};
 use crate::layers::way_stroke::{Polyline, Shape};
 
 /// A screen-space point in pixels.
@@ -40,12 +41,44 @@ pub const FIT_FACTOR: f32 = 1.2;
 /// Smallest zoom at which line labels are drawn.
 pub const MIN_ZOOM: f64 = 15.0;
 
-/// Visual parameters, fixed for the prototype.
-#[derive(Debug, Clone, Copy)]
+/// Style of one label, resolved from MapCSS (`font-size`, `text-color`,
+/// `text-halo-color`, `text-halo-radius`, `text-offset`).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LabelStyle {
     pub size_px: f32,
     /// Halo thickness outside the glyph outline, in pixels.
     pub halo_px: f32,
+    /// Perpendicular shift of the text from the way, in pixels. Convention:
+    /// measured in the text's own frame, positive = toward the top of the
+    /// glyphs ("above" the text), so it stays on the same side of the text
+    /// when the reading direction flips and the label is turned half a turn.
+    /// 0 centres the x-height on the way; negative puts the text below the
+    /// line. MapCSS `text-offset` maps onto this field (the stylesheet
+    /// default is half the x-height plus about a 2 px road half-width, so
+    /// the text clears the line; see [`clear_offset`] for wide roads).
+    pub offset_px: f32,
+    /// Fill colour `0xRRGGBB`.
+    pub color: u32,
+    /// Halo colour `0xRRGGBB`.
+    pub halo_color: u32,
+}
+
+impl Default for LabelStyle {
+    fn default() -> Self {
+        let size_px = 12.0;
+        Self {
+            size_px,
+            halo_px: 1.5,
+            offset_px: 0.35 * size_px + 2.0,
+            color: 0x1f2937,
+            halo_color: 0xffffff,
+        }
+    }
+}
+
+/// Shared tuning of the geometry builders.
+#[derive(Debug, Clone, Copy)]
+pub struct Tuning {
     /// Flatten tolerance for the fill outline, pixels.
     pub fill_tol: f32,
     /// Simplification tolerance for the halo outline, pixels.
@@ -56,47 +89,36 @@ pub struct LabelStyle {
     pub spacing_px: f32,
     /// Most labels one way can get.
     pub max_per_way: usize,
-    /// Perpendicular shift of the text from the way, in pixels. Convention:
-    /// measured in the text's own frame, positive = toward the top of the
-    /// glyphs ("above" the text), so it stays on the same side of the text
-    /// when the reading direction flips and the label is turned half a turn.
-    /// 0 centres the x-height on the way. A MapCSS `text-offset` should map
-    /// onto this field (the default below is half the x-height plus about a
-    /// 2 px road half-width, so the text clears the line).
-    pub offset_px: f32,
-    /// How the halo is built (benchmark knob; `Stroke` is the real one).
+    /// How the halo is built (`StrokeCoarse` by default, see [`HaloMode`]).
     pub halo_mode: HaloMode,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            fill_tol: 0.1,
+            halo_tol: 0.2,
+            pad_px: 4.0,
+            spacing_px: 300.0,
+            max_per_way: 40,
+            halo_mode: HaloMode::StrokeCoarse,
+        }
+    }
 }
 
 /// Halo construction variants, to compare vertex counts and frame times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HaloMode {
     /// Fully joined stroke around every contour.
-    #[default]
     Stroke,
-    /// Unjoined stroke segments around a coarser outline.
+    /// Unjoined stroke segments around a coarser outline: 28% fewer
+    /// vertices than `Stroke`. The default.
+    #[default]
     StrokeCoarse,
     /// The fill mesh repeated at four offsets.
     Offset4,
     /// No halo.
     None,
-}
-
-impl Default for LabelStyle {
-    fn default() -> Self {
-        let size_px = 12.0;
-        Self {
-            size_px,
-            halo_px: 1.5,
-            fill_tol: 0.1,
-            halo_tol: 0.2,
-            pad_px: 4.0,
-            spacing_px: 300.0,
-            max_per_way: 40,
-            offset_px: 0.35 * size_px + 2.0,
-            halo_mode: HaloMode::Stroke,
-        }
-    }
 }
 
 /// Benchmark knobs, settable from a script (`action LabelBench ...`).
@@ -120,13 +142,13 @@ fn pack(k: BenchKnobs) -> u32 {
         | (1 << 31)
 }
 
-/// Current knobs (defaults: labels on, stroke halo, repeat 1).
+/// Current knobs (defaults: labels on, coarse halo, repeat 1).
 pub fn bench_knobs() -> BenchKnobs {
     let v = BENCH.load(std::sync::atomic::Ordering::Relaxed);
     if v == 0 {
         return BenchKnobs {
             labels: true,
-            halo: HaloMode::Stroke,
+            halo: HaloMode::StrokeCoarse,
             repeat: 1,
             offset: None,
         };
@@ -147,6 +169,11 @@ pub fn bench_knobs() -> BenchKnobs {
     }
 }
 
+/// Changes whenever the knobs do, so callers can invalidate placements.
+pub fn bench_stamp() -> usize {
+    (BENCH.load(std::sync::atomic::Ordering::Relaxed) as usize) << 3
+}
+
 /// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none` and
 /// `repeat=N` tokens, e.g. `on halo=none repeat=4`.
 pub fn set_bench(spec: &str) -> Result<(), String> {
@@ -161,7 +188,7 @@ pub fn set_bench(spec: &str) -> Result<(), String> {
 pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
     let mut k = BenchKnobs {
         labels: true,
-        halo: HaloMode::Stroke,
+        halo: HaloMode::StrokeCoarse,
         repeat: 1,
         offset: None,
     };
@@ -439,11 +466,16 @@ impl rustybuzz::ttf_parser::OutlineBuilder for OutlineCollector {
 }
 
 /// Build the mesh for one glyph.
-fn build_mesh(face: &rustybuzz::Face<'_>, glyph: u16, style: &LabelStyle) -> GlyphMesh {
+fn build_mesh(
+    face: &rustybuzz::Face<'_>,
+    glyph: u16,
+    style: &LabelStyle,
+    tuning: &Tuning,
+) -> GlyphMesh {
     let upem = face.units_per_em() as f32;
     let mut oc = OutlineCollector {
         scale: style.size_px / upem,
-        tol: style.fill_tol,
+        tol: tuning.fill_tol,
         contours: Vec::new(),
         cur: Vec::new(),
     };
@@ -455,11 +487,11 @@ fn build_mesh(face: &rustybuzz::Face<'_>, glyph: u16, style: &LabelStyle) -> Gly
     }
     let fill = triangulate_contours(&oc.contours);
     let mut halo = Vec::new();
-    let (tol, shape) = match style.halo_mode {
-        HaloMode::StrokeCoarse => (style.halo_tol.max(0.5), Shape::PLAIN),
-        _ => (style.halo_tol, Shape::FULL),
+    let (tol, shape) = match tuning.halo_mode {
+        HaloMode::StrokeCoarse => (tuning.halo_tol.max(0.5), Shape::PLAIN),
+        _ => (tuning.halo_tol, Shape::FULL),
     };
-    match style.halo_mode {
+    match tuning.halo_mode {
         HaloMode::None => {}
         _ if style.halo_px <= 0.0 => {}
         HaloMode::Offset4 => {
@@ -586,14 +618,28 @@ pub fn window_ok(m: &Metrics, s0: f32, s1: f32, max_vertex: f32, max_total: f32)
 /// slots (about one per `length + spacing`), each taking the straight window
 /// closest to its slot centre. Empty when the way is too short.
 pub fn choose_windows(m: &Metrics, length: f32, spacing: f32, max_labels: usize) -> Vec<f32> {
-    let total = *m.cum.last().unwrap_or(&0.0);
+    choose_windows_in(m, f32::INFINITY, length, spacing, max_labels)
+}
+
+/// Like [`choose_windows`] for a ring walked twice (so windows can cross the
+/// seam): only the first `span` of arc length is the ring, window starts and
+/// slots are confined to it. `span` of infinity means an ordinary way.
+pub fn choose_windows_in(
+    m: &Metrics,
+    span: f32,
+    length: f32,
+    spacing: f32,
+    max_labels: usize,
+) -> Vec<f32> {
+    let end = *m.cum.last().unwrap_or(&0.0);
+    let total = span.min(end);
     if length <= 0.0 || total < length * FIT_FACTOR {
         return Vec::new();
     }
     const STEP: f32 = 4.0;
     let mut valid: Vec<f32> = Vec::new();
     let mut s = 0.0;
-    while s + length <= total + 1e-3 {
+    while s + length <= end + 1e-3 && s < total {
         if window_ok(m, s, s + length, MAX_VERTEX_TURN_DEG, MAX_TOTAL_TURN_DEG) {
             valid.push(s);
         }
@@ -645,7 +691,7 @@ pub fn point_at(pts: &[Pt], m: &Metrics, s: f32) -> (Pt, f32) {
 }
 
 // ---------------------------------------------------------------------------
-// Label layout and the frame builder.
+// Label layout, placement and emission.
 // ---------------------------------------------------------------------------
 
 /// One glyph placed on the way: offset of its baseline-left origin from the
@@ -669,41 +715,100 @@ pub struct PlacedLabel {
     pub bbox: [f32; 4],
 }
 
+type LayoutSig = ((usize, u64, u64), [u32; 3]);
+
 struct CacheEntry {
     text: String,
-    sig: (usize, u64, u64),
-    labels: Vec<PlacedLabel>,
+    /// Geometry signature and the style numbers the layout depends on.
+    sig: LayoutSig,
+    labels: Vec<Arc<PlacedLabel>>,
 }
 
-/// What `frame` produces: triangle vertex lists (3 per triangle) in screen
-/// space, halos to be painted first.
+/// Triangle vertex lists (3 per triangle) grouped by colour (`0xRRGGBB`).
+pub type ColorBatches = Vec<(u32, Vec<Pt>)>;
+
+/// What `emit_frame` produces: screen-space triangles, halos to be painted
+/// first.
 #[derive(Debug, Default)]
 pub struct FrameOut {
-    pub halo: Vec<Pt>,
-    pub fill: Vec<Pt>,
+    pub halo: ColorBatches,
+    pub fill: ColorBatches,
     pub labels: usize,
     pub layouts_built: usize,
 }
 
-/// A way that wants a label this frame.
+impl FrameOut {
+    pub fn vertex_counts(&self) -> (usize, usize) {
+        let n = |b: &ColorBatches| b.iter().map(|(_, v)| v.len()).sum();
+        (n(&self.fill), n(&self.halo))
+    }
+}
+
+fn batch(batches: &mut ColorBatches, color: u32) -> &mut Vec<Pt> {
+    let i = match batches.iter().position(|(c, _)| *c == color) {
+        Some(i) => i,
+        None => {
+            batches.push((color, Vec::new()));
+            batches.len() - 1
+        }
+    };
+    &mut batches[i].1
+}
+
+/// A way that wants a label.
 pub struct Candidate<'a> {
     pub way_id: i64,
-    pub text: &'a str,
+    pub text: String,
     /// `(node id, mercator x, mercator y)`.
     pub verts: &'a [(i64, f64, f64)],
+    pub style: LabelStyle,
+    /// Importance among line labels (higher is placed first).
+    pub priority: i32,
+}
+
+/// A label that won placement. Positions are relative to the way's first
+/// vertex, whose Mercator position is `(mx, my)`, so a pan only re-projects
+/// that one point.
+#[derive(Debug, Clone)]
+pub struct LinePlaced {
+    pub way_id: i64,
+    /// Which of the way's windows this is (stable across recomputes at one
+    /// zoom, used for hysteresis).
+    pub slot: usize,
+    pub mx: f64,
+    pub my: f64,
+    pub label: Arc<PlacedLabel>,
+    pub color: u32,
+    pub halo_color: u32,
+}
+
+/// Padding around line-label boxes when colliding, pixels.
+pub const COLLIDE_PAD: f32 = 1.0;
+/// Most line labels placed in one pass.
+pub const MAX_PLACED: usize = 300;
+
+/// The smallest perpendicular offset that keeps the text off a line of
+/// `half_width` pixels: the baseline (or, for a negative offset, the cap
+/// line) must clear the line's edge. 0 stays 0 (text centred on the way).
+pub fn clear_offset(offset: f32, size_px: f32, half_width: f32) -> f32 {
+    if offset == 0.0 {
+        return 0.0;
+    }
+    let min = 0.35 * size_px + half_width;
+    offset.signum() * offset.abs().max(min)
 }
 
 pub struct LineLabelCache {
     face: rustybuzz::Face<'static>,
-    pub style: LabelStyle,
+    pub tuning: Tuning,
     zoom_bits: u64,
-    glyphs: HashMap<(u16, u32), Arc<GlyphMesh>>,
+    glyphs: HashMap<(u16, u32, u32), Arc<GlyphMesh>>,
     layouts: HashMap<i64, CacheEntry>,
 }
 
 impl Default for LineLabelCache {
     fn default() -> Self {
-        Self::new(LabelStyle::default())
+        Self::new(Tuning::default())
     }
 }
 
@@ -716,11 +821,19 @@ fn geometry_sig(verts: &[(i64, f64, f64)]) -> (usize, u64, u64) {
     (verts.len(), sx.to_bits(), sy.to_bits())
 }
 
+fn style_sig(s: &LabelStyle) -> [u32; 3] {
+    [
+        (s.size_px * 4.0).round() as u32,
+        (s.offset_px * 8.0).round() as i32 as u32,
+        (s.halo_px * 8.0).round() as u32,
+    ]
+}
+
 impl LineLabelCache {
-    pub fn new(style: LabelStyle) -> Self {
+    pub fn new(tuning: Tuning) -> Self {
         Self {
             face: rustybuzz::Face::from_slice(FONT_BYTES, 0).expect("bundled font parses"),
-            style,
+            tuning,
             zoom_bits: 0,
             glyphs: HashMap::new(),
             layouts: HashMap::new(),
@@ -738,31 +851,49 @@ impl LineLabelCache {
             .fold((0, 0), |(f, h), m| (f + m.fill.len(), h + m.halo.len()))
     }
 
-    fn mesh(&mut self, id: u16) -> Arc<GlyphMesh> {
-        let key = (id, (self.style.size_px * 4.0).round() as u32);
+    fn mesh(&mut self, id: u16, style: &LabelStyle) -> Arc<GlyphMesh> {
+        let key = (
+            id,
+            (style.size_px * 4.0).round() as u32,
+            (style.halo_px * 8.0).round() as u32,
+        );
         if let Some(m) = self.glyphs.get(&key) {
             return m.clone();
         }
-        let m = Arc::new(build_mesh(&self.face, id, &self.style));
+        let m = Arc::new(build_mesh(&self.face, id, style, &self.tuning));
         self.glyphs.insert(key, m.clone());
         m
     }
 
     /// Lay `text` out along screen polyline `pts` (relative to its first
-    /// point; no reference offset is applied).
-    pub fn layout(&mut self, text: &str, pts: &[Pt]) -> Vec<PlacedLabel> {
-        let pts = dedup(pts);
+    /// point; no reference offset is applied). A closed ring (first point
+    /// equal to the last) gets windows that may cross the seam.
+    pub fn layout(&mut self, text: &str, pts: &[Pt], style: &LabelStyle) -> Vec<PlacedLabel> {
+        let mut pts = dedup(pts);
         if pts.len() < 2 {
             return Vec::new();
         }
-        let Some((shaped, width)) = shape(&self.face, text, self.style.size_px) else {
+        let Some((shaped, width)) = shape(&self.face, text, style.size_px) else {
             return Vec::new();
         };
-        let size = self.style.size_px;
-        let pad = self.style.pad_px;
+        let size = style.size_px;
+        let pad = self.tuning.pad_px;
         let length = width + 2.0 * pad;
+        let closed = pts.len() >= 4 && dist2(pts[0], pts[pts.len() - 1]) < 1e-4;
+        let span = *metrics(&pts).cum.last().unwrap_or(&0.0);
+        if closed {
+            // Walk the ring a second time so a window can run past the seam.
+            let again: Vec<Pt> = pts[1..].to_vec();
+            pts.extend(again);
+        }
         let m = metrics(&pts);
-        let starts = choose_windows(&m, length, self.style.spacing_px, self.style.max_per_way);
+        let starts = choose_windows_in(
+            &m,
+            if closed { span } else { f32::INFINITY },
+            length,
+            self.tuning.spacing_px,
+            self.tuning.max_per_way,
+        );
         let mut labels = Vec::new();
         for s0 in starts {
             let (a, _) = point_at(&pts, &m, s0 + pad);
@@ -797,12 +928,12 @@ impl LineLabelCache {
                 // lift it by `offset_px` toward the top of the glyphs. The
                 // shift lives in the text frame, so it follows the flip: a
                 // positive offset is always "above" the text.
-                let (lx, ly) = (-g.advance / 2.0, 0.35 * size - self.style.offset_px);
+                let (lx, ly) = (-g.advance / 2.0, 0.35 * size - style.offset_px);
                 let ox = px_ + lx * cos - ly * sin;
                 let oy = py_ + lx * sin + ly * cos;
-                let mesh = self.mesh(g.id);
+                let mesh = self.mesh(g.id, style);
                 // Glyph box in local frame, with halo margin.
-                let mg = self.style.halo_px + 1.0;
+                let mg = style.halo_px + 1.0;
                 for (cx, cy) in [
                     (-mg, -0.8 * size - mg),
                     (g.advance + mg, -0.8 * size - mg),
@@ -851,28 +982,28 @@ impl LineLabelCache {
         labels
     }
 
-    /// Build the triangle batches for one frame. `to_screen` maps mercator
-    /// meters to screen pixels relative to `origin`'s frame; `view` is the
-    /// canvas size in pixels.
-    pub fn frame(
+    /// Choose the labels to show (the expensive half; run when the camera
+    /// settles). `to_screen` maps mercator meters to screen pixels; `view`
+    /// is the canvas size. `obstacles` are screen rectangles already taken
+    /// (point labels, icons): line labels yield to all of them. `prev` holds
+    /// the `(way, slot)` pairs placed last time: they get a priority bonus
+    /// so a small camera change does not swap which of two overlapping
+    /// labels wins.
+    pub fn place(
         &mut self,
         cands: &[Candidate<'_>],
         zoom: f64,
         to_screen: impl Fn(f64, f64) -> Pt,
-        origin: Pt,
         view: (f32, f32),
-        out: &mut FrameOut,
-    ) {
+        obstacles: &[Rect],
+        prev: &HashSet<(i64, usize)>,
+    ) -> (Vec<LinePlaced>, usize) {
         let knobs = bench_knobs();
         if zoom < MIN_ZOOM || !knobs.labels {
-            return;
+            return (Vec::new(), 0);
         }
-        let offset = knobs
-            .offset
-            .map_or(LabelStyle::default().offset_px, |o| o as f32);
-        if knobs.halo != self.style.halo_mode || offset != self.style.offset_px {
-            self.style.offset_px = offset;
-            self.style.halo_mode = knobs.halo;
+        if knobs.halo != self.tuning.halo_mode {
+            self.tuning.halo_mode = knobs.halo;
             self.glyphs.clear();
             self.layouts.clear();
         }
@@ -880,13 +1011,19 @@ impl LineLabelCache {
             self.layouts.clear();
             self.zoom_bits = zoom.to_bits();
         }
-        let mut placed: Vec<[f32; 4]> = Vec::new();
-        for c in cands {
+        let mut built = 0;
+        // (candidate index, slot, effective priority, screen reference)
+        let mut order: Vec<(usize, usize, i32, Pt)> = Vec::new();
+        for (ci, c) in cands.iter().enumerate() {
             if c.verts.len() < 2 {
                 continue;
             }
+            let mut style = c.style;
+            if let Some(o) = knobs.offset {
+                style.offset_px = o as f32;
+            }
             let (rx, ry) = to_screen(c.verts[0].1, c.verts[0].2);
-            let sig = geometry_sig(c.verts);
+            let sig = (geometry_sig(c.verts), style_sig(&style));
             let fresh = self
                 .layouts
                 .get(&c.way_id)
@@ -900,46 +1037,118 @@ impl LineLabelCache {
                         (sx - rx, sy - ry)
                     })
                     .collect();
-                let labels = self.layout(c.text, &rel);
+                let labels = self
+                    .layout(&c.text, &rel, &style)
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect();
                 self.layouts.insert(
                     c.way_id,
                     CacheEntry {
-                        text: c.text.to_string(),
+                        text: c.text.clone(),
                         sig,
                         labels,
                     },
                 );
-                out.layouts_built += 1;
+                built += 1;
             }
-            let entry = &self.layouts[&c.way_id];
-            for label in &entry.labels {
-                let b = label.bbox;
-                if rx + b[2] < 0.0 || ry + b[3] < 0.0 || rx + b[0] > view.0 || ry + b[1] > view.1 {
-                    continue;
-                }
-                let hit = label.boxes.iter().any(|lb| {
-                    let r = [rx + lb[0], ry + lb[1], rx + lb[2], ry + lb[3]];
-                    placed
-                        .iter()
-                        .any(|p| r[0] < p[2] && r[2] > p[0] && r[1] < p[3] && r[3] > p[1])
-                });
-                if hit {
-                    continue;
-                }
-                for lb in &label.boxes {
-                    placed.push([rx + lb[0], ry + lb[1], rx + lb[2], ry + lb[3]]);
-                }
-                out.labels += 1;
-                let (ax, ay) = (rx + origin.0, ry + origin.1);
-                for g in &label.glyphs {
-                    let (gx, gy) = (ax + g.x, ay + g.y);
-                    let xf = |&(vx, vy): &Pt| {
-                        (gx + vx * g.cos - vy * g.sin, gy + vx * g.sin + vy * g.cos)
-                    };
-                    out.halo.extend(g.mesh.halo.iter().map(xf));
-                    out.fill.extend(g.mesh.fill.iter().map(xf));
-                }
+            let n = self.layouts[&c.way_id].labels.len();
+            for slot in 0..n {
+                let bonus = if prev.contains(&(c.way_id, slot)) {
+                    HYSTERESIS_BONUS
+                } else {
+                    0
+                };
+                order.push((ci, slot, c.priority + bonus, (rx, ry)));
             }
+        }
+        order.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then(cands[a.0].way_id.cmp(&cands[b.0].way_id))
+                .then(a.1.cmp(&b.1))
+        });
+
+        let mut grid = CollisionGrid::new(
+            Rect::new(0.0, 0.0, view.0, view.1).inflate(GRID_CELL),
+            GRID_CELL,
+        );
+        for r in obstacles {
+            grid.insert(*r, NO_OWNER);
+        }
+        let inner = Rect::new(2.0, 2.0, view.0 - 2.0, view.1 - 2.0);
+        let mut out = Vec::new();
+        for (ci, slot, _, (rx, ry)) in order {
+            if out.len() >= MAX_PLACED {
+                break;
+            }
+            let c = &cands[ci];
+            let label = self.layouts[&c.way_id].labels[slot].clone();
+            let rects: Vec<Rect> = label
+                .boxes
+                .iter()
+                .map(|b| Rect::new(rx + b[0], ry + b[1], rx + b[2], ry + b[3]))
+                .collect();
+            if rects
+                .iter()
+                .any(|r| !inner.contains(r) || grid.collides(&r.inflate(COLLIDE_PAD), NO_OWNER - 1))
+            {
+                continue;
+            }
+            for r in rects {
+                grid.insert(r, out.len() as u32);
+            }
+            out.push(LinePlaced {
+                way_id: c.way_id,
+                slot,
+                mx: c.verts[0].1,
+                my: c.verts[0].2,
+                label,
+                color: c.style.color,
+                halo_color: c.style.halo_color,
+            });
+        }
+        (out, built)
+    }
+
+    /// Place and emit in one go, with no obstacles and no hysteresis: what
+    /// a bench or a test wants.
+    pub fn frame(
+        &mut self,
+        cands: &[Candidate<'_>],
+        zoom: f64,
+        to_screen: impl Fn(f64, f64) -> Pt,
+        origin: Pt,
+        view: (f32, f32),
+        out: &mut FrameOut,
+    ) {
+        let (placed, built) = self.place(cands, zoom, &to_screen, view, &[], &HashSet::new());
+        out.layouts_built += built;
+        emit_frame(&placed, to_screen, origin, view, out);
+    }
+}
+
+/// Transform the placed labels' cached triangles onto the screen: the only
+/// per-frame work. Labels outside the view are skipped.
+pub fn emit_frame(
+    placed: &[LinePlaced],
+    to_screen: impl Fn(f64, f64) -> Pt,
+    origin: Pt,
+    view: (f32, f32),
+    out: &mut FrameOut,
+) {
+    for p in placed {
+        let (rx, ry) = to_screen(p.mx, p.my);
+        let b = p.label.bbox;
+        if rx + b[2] < 0.0 || ry + b[3] < 0.0 || rx + b[0] > view.0 || ry + b[1] > view.1 {
+            continue;
+        }
+        out.labels += 1;
+        let (ax, ay) = (rx + origin.0, ry + origin.1);
+        for g in &p.label.glyphs {
+            let (gx, gy) = (ax + g.x, ay + g.y);
+            let xf = |&(vx, vy): &Pt| (gx + vx * g.cos - vy * g.sin, gy + vx * g.sin + vy * g.cos);
+            batch(&mut out.halo, p.halo_color).extend(g.mesh.halo.iter().map(xf));
+            batch(&mut out.fill, p.color).extend(g.mesh.fill.iter().map(xf));
         }
     }
 }
@@ -1093,8 +1302,8 @@ mod tests {
         let mut cache = LineLabelCache::default();
         let east: Vec<Pt> = vec![(0.0, 0.0), (150.0, 0.0), (300.0, 0.0)];
         let west: Vec<Pt> = east.iter().rev().copied().collect();
-        let a = cache.layout("Main Street", &east);
-        let b = cache.layout("Main Street", &west);
+        let a = cache.layout("Main Street", &east, &LabelStyle::default());
+        let b = cache.layout("Main Street", &west, &LabelStyle::default());
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
         // Both read left to right: first glyph rotation is 0 either way.
@@ -1103,7 +1312,7 @@ mod tests {
         assert!(a[0].glyphs[0].x < a[0].glyphs.last().unwrap().x);
         assert!(b[0].glyphs[0].x < b[0].glyphs.last().unwrap().x);
         let n = cache.glyph_cache_len();
-        cache.layout("Main Street", &east);
+        cache.layout("Main Street", &east, &LabelStyle::default());
         assert_eq!(cache.glyph_cache_len(), n);
     }
 
@@ -1111,18 +1320,21 @@ mod tests {
     fn layout_vertical_way_reads_downward() {
         let mut cache = LineLabelCache::default();
         let up: Vec<Pt> = vec![(0.0, 300.0), (0.0, 150.0), (0.0, 0.0)];
-        let l = cache.layout("Oak Ave", &up);
+        let l = cache.layout("Oak Ave", &up, &LabelStyle::default());
         assert_eq!(l.len(), 1);
         // Reads top to bottom: rotation +90 degrees.
         let g = &l[0].glyphs[0];
         assert!(g.cos.abs() < 1e-3 && g.sin > 0.99);
     }
 
-    fn cache_with_offset(offset_px: f32) -> LineLabelCache {
-        LineLabelCache::new(LabelStyle {
-            offset_px,
-            ..LabelStyle::default()
-        })
+    fn cache_with_offset(offset_px: f32) -> (LineLabelCache, LabelStyle) {
+        (
+            LineLabelCache::default(),
+            LabelStyle {
+                offset_px,
+                ..LabelStyle::default()
+            },
+        )
     }
 
     /// Screen position of a glyph's x-height centre line, at the glyph origin.
@@ -1133,8 +1345,8 @@ mod tests {
 
     #[test]
     fn zero_offset_centres_text_on_the_way() {
-        let mut c = cache_with_offset(0.0);
-        let l = c.layout("Main Street", &straight(300.0));
+        let (mut c, st) = cache_with_offset(0.0);
+        let l = c.layout("Main Street", &straight(300.0), &st);
         for g in &l[0].glyphs {
             assert!(xheight_point(g, 12.0).1.abs() < 1e-3);
         }
@@ -1142,11 +1354,11 @@ mod tests {
 
     #[test]
     fn offset_lifts_text_above_the_way_in_both_reading_directions() {
-        let mut c = cache_with_offset(6.0);
+        let (mut c, st) = cache_with_offset(6.0);
         let east: Vec<Pt> = vec![(0.0, 0.0), (150.0, 0.0), (300.0, 0.0)];
         let west: Vec<Pt> = east.iter().rev().copied().collect();
         for pts in [east, west] {
-            let l = c.layout("Main Street", &pts);
+            let l = c.layout("Main Street", &pts, &st);
             for g in &l[0].glyphs {
                 // Upright text: up is smaller screen y, 6 px off the line.
                 assert!((xheight_point(g, 12.0).1 + 6.0).abs() < 1e-3);
@@ -1158,11 +1370,11 @@ mod tests {
     fn offset_on_a_vertical_way_goes_to_the_text_top_side() {
         // Reads downward (rotated 90 degrees clockwise): the text top points
         // east, so "above" is +x, whichever way the way is digitised.
-        let mut c = cache_with_offset(6.0);
+        let (mut c, st) = cache_with_offset(6.0);
         let down: Vec<Pt> = vec![(0.0, 0.0), (0.0, 150.0), (0.0, 300.0)];
         let up: Vec<Pt> = down.iter().rev().copied().collect();
         for pts in [down, up] {
-            let l = c.layout("Oak Ave", &pts);
+            let l = c.layout("Oak Ave", &pts, &st);
             for g in &l[0].glyphs {
                 assert!((xheight_point(g, 12.0).0 - 6.0).abs() < 1e-3);
             }
@@ -1183,9 +1395,9 @@ mod tests {
             })
             .collect();
         let rev: Vec<Pt> = arc.iter().rev().copied().collect();
-        let mut c = cache_with_offset(6.0);
+        let (mut c, st) = cache_with_offset(6.0);
         for pts in [arc, rev] {
-            let l = c.layout("Washington", &pts);
+            let l = c.layout("Washington", &pts, &st);
             assert!(!l.is_empty());
             for g in &l[0].glyphs {
                 let (x, y) = xheight_point(g, 12.0);
@@ -1197,10 +1409,10 @@ mod tests {
 
     #[test]
     fn collision_boxes_include_the_offset() {
-        let mut flat = cache_with_offset(0.0);
-        let mut lifted = cache_with_offset(10.0);
-        let a = flat.layout("Main Street", &straight(300.0))[0].bbox;
-        let b = lifted.layout("Main Street", &straight(300.0))[0].bbox;
+        let (mut flat, st0) = cache_with_offset(0.0);
+        let (mut lifted, st10) = cache_with_offset(10.0);
+        let a = flat.layout("Main Street", &straight(300.0), &st0)[0].bbox;
+        let b = lifted.layout("Main Street", &straight(300.0), &st10)[0].bbox;
         assert!((a[1] - b[1] - 10.0).abs() < 1e-3);
         assert!((a[3] - b[3] - 10.0).abs() < 1e-3);
     }
@@ -1227,8 +1439,190 @@ mod tests {
     fn missing_glyph_skips_label() {
         let mut cache = LineLabelCache::default();
         assert!(cache
-            .layout("\u{4e2d}\u{6587}", &straight(300.0))
+            .layout("\u{4e2d}\u{6587}", &straight(300.0), &LabelStyle::default())
             .is_empty());
+    }
+
+    fn cand<'a>(way_id: i64, text: &'a str, verts: &'a [(i64, f64, f64)]) -> Candidate<'a> {
+        Candidate {
+            way_id,
+            text: text.to_string(),
+            verts,
+            style: LabelStyle::default(),
+            priority: 40,
+        }
+    }
+
+    /// 1 mercator unit = 1.5 px, y up, shifted so the way sits mid-view.
+    fn to_screen(x: f64, y: f64) -> Pt {
+        (x as f32 * 1.5 + 100.0, -(y as f32) * 1.5 + 100.0)
+    }
+
+    fn east_way() -> Vec<(i64, f64, f64)> {
+        vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)]
+    }
+
+    #[test]
+    fn point_label_obstacles_block_line_labels() {
+        let mut cache = LineLabelCache::default();
+        let verts = east_way();
+        let cands = [cand(1, "Elm St", &verts)];
+        let view = (800.0, 600.0);
+        let (free, _) = cache.place(&cands, 17.0, to_screen, view, &[], &HashSet::new());
+        assert_eq!(free.len(), 1);
+        // A point label (or icon) right where the street name would go.
+        let blocker = Rect::new(150.0, 70.0, 260.0, 130.0);
+        let (blocked, _) = cache.place(&cands, 17.0, to_screen, view, &[blocker], &HashSet::new());
+        assert!(blocked.is_empty());
+        // Far away it does not matter.
+        let far = Rect::new(600.0, 400.0, 700.0, 450.0);
+        let (ok, _) = cache.place(&cands, 17.0, to_screen, view, &[far], &HashSet::new());
+        assert_eq!(ok.len(), 1);
+    }
+
+    #[test]
+    fn hysteresis_keeps_the_previous_winner_of_two_overlapping_labels() {
+        let mut cache = LineLabelCache::default();
+        let verts = east_way();
+        // Same geometry, so only priority and the bonus decide. Way 2 is a
+        // little more important, way 1 was placed last time.
+        let mut a = cand(1, "Elm St", &verts);
+        let mut b = cand(2, "Elm St", &verts);
+        a.priority = 40;
+        b.priority = 50;
+        let view = (800.0, 600.0);
+        let none = HashSet::new();
+        let (fresh, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &none);
+        assert_eq!(fresh.iter().map(|p| p.way_id).collect::<Vec<_>>(), [2]);
+        let prev: HashSet<(i64, usize)> = [(1, 0)].into();
+        let a = cand(1, "Elm St", &verts);
+        let mut b = cand(2, "Elm St", &verts);
+        b.priority = 50;
+        let (kept, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &prev);
+        assert_eq!(kept.iter().map(|p| p.way_id).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn labels_must_fit_inside_the_view() {
+        let mut cache = LineLabelCache::default();
+        let verts = east_way();
+        let cands = [cand(1, "Elm St", &verts)];
+        // A view so narrow that the label cannot fit.
+        let (p, _) = cache.place(
+            &cands,
+            17.0,
+            to_screen,
+            (180.0, 600.0),
+            &[],
+            &HashSet::new(),
+        );
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn per_label_colours_become_separate_batches() {
+        let mut cache = LineLabelCache::default();
+        let v1 = east_way();
+        let v2: Vec<(i64, f64, f64)> = v1.iter().map(|&(i, x, y)| (i + 10, x, y - 100.0)).collect();
+        let mut red = cand(2, "Oak St", &v2);
+        red.style.color = 0xff0000;
+        let cands = [cand(1, "Elm St", &v1), red];
+        let mut out = FrameOut::default();
+        cache.frame(
+            &cands,
+            17.0,
+            to_screen,
+            (0.0, 0.0),
+            (800.0, 600.0),
+            &mut out,
+        );
+        assert_eq!(out.labels, 2);
+        assert_eq!(out.fill.len(), 2);
+        assert_eq!(out.halo.len(), 1, "both labels share the white halo");
+    }
+
+    #[test]
+    fn default_stylesheet_labels_named_roads_and_waterways_along_the_line() {
+        use crate::style::{Stylesheet, TextPosition};
+        let s = Stylesheet::load_default();
+        let tags = |k: &str, v: &str| -> HashMap<String, String> {
+            [(k.to_string(), v.to_string())].into_iter().collect()
+        };
+        let road = s.way_text_style(&tags("highway", "residential"), false, 16.0);
+        assert_eq!(road.position, Some(TextPosition::Line));
+        assert_eq!(road.text.as_deref(), Some("name"));
+        assert_eq!(road.offset, Some(6.2));
+        assert_eq!(road.halo_color, Some(0xffffff));
+        assert!(s
+            .way_text_style(&tags("highway", "residential"), false, 15.0)
+            .is_empty());
+        let river = s.way_text_style(&tags("waterway", "river"), false, 17.0);
+        assert_eq!(river.position, Some(TextPosition::Line));
+        // Buildings and plain nodes get no line label.
+        assert_ne!(
+            s.way_text_style(&tags("building", "yes"), true, 17.0)
+                .position,
+            Some(TextPosition::Line)
+        );
+    }
+
+    #[test]
+    fn clear_offset_pushes_text_off_wide_roads_and_keeps_zero_and_sign() {
+        // size 12 -> 4.2 + half-width.
+        assert_eq!(clear_offset(0.0, 12.0, 6.0), 0.0);
+        assert!((clear_offset(6.2, 12.0, 2.0) - 6.2).abs() < 1e-5);
+        assert!((clear_offset(6.2, 12.0, 6.0) - 10.2).abs() < 1e-5);
+        assert!((clear_offset(-3.0, 12.0, 6.0) + 10.2).abs() < 1e-5);
+        assert!((clear_offset(20.0, 12.0, 6.0) - 20.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn negative_offset_puts_text_below_the_line() {
+        let mut c = LineLabelCache::default();
+        let st = LabelStyle {
+            offset_px: -6.0,
+            ..LabelStyle::default()
+        };
+        let l = c.layout("Main Street", &straight(300.0), &st);
+        for g in &l[0].glyphs {
+            assert!((xheight_point(g, 12.0).1 - 6.0).abs() < 1e-3);
+        }
+        // Still upright on a westbound way.
+        let west: Vec<Pt> = straight(300.0).into_iter().rev().collect();
+        let l = c.layout("Main Street", &west, &st);
+        for g in &l[0].glyphs {
+            assert!(g.cos > 0.99);
+            assert!((xheight_point(g, 12.0).1 - 6.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn a_ring_gets_windows_across_its_seam() {
+        // Square-ish ring built as 24 points of a circle (radius 100 px).
+        let r = 100.0f32;
+        let ring: Vec<Pt> = (0..=24)
+            .map(|i| {
+                let a = (i as f32 / 24.0) * std::f32::consts::TAU;
+                (r * a.cos(), r * a.sin())
+            })
+            .collect();
+        let mut c = LineLabelCache::default();
+        let st = LabelStyle::default();
+        let l = c.layout("Ring", &ring, &st);
+        assert!(!l.is_empty(), "a label fits on the ring");
+        // Pure window check: on the doubled ring a window starting 10 px
+        // before the seam is straight enough and chosen if it is closest to
+        // its slot centre.
+        let mut twice = ring.clone();
+        twice.extend(ring[1..].iter().copied());
+        let m = metrics(&twice);
+        let span = 2.0 * std::f32::consts::PI * r;
+        let w = choose_windows_in(&m, span, 30.0, 300.0, 4);
+        assert!(!w.is_empty());
+        assert!(w[0] < span);
+        assert!(w[0] + 30.0 > 0.0);
+        // A window straddling the seam passes the straightness test.
+        assert!(window_ok(&m, span - 10.0, span + 20.0, 25.0, 100.0));
     }
 
     #[test]
@@ -1236,19 +1630,7 @@ mod tests {
         let mut cache = LineLabelCache::default();
         // Two identical overlapping ways at z17.
         let verts: Vec<(i64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)];
-        let cands = [
-            Candidate {
-                way_id: 1,
-                text: "Elm St",
-                verts: &verts,
-            },
-            Candidate {
-                way_id: 2,
-                text: "Elm St",
-                verts: &verts,
-            },
-        ];
-        let to_screen = |x: f64, y: f64| (x as f32 * 1.5 + 100.0, -(y as f32) * 1.5 + 100.0);
+        let cands = [cand(1, "Elm St", &verts), cand(2, "Elm St", &verts)];
         let mut out = FrameOut::default();
         cache.frame(
             &cands,
@@ -1260,8 +1642,9 @@ mod tests {
         );
         assert_eq!(out.labels, 1);
         assert_eq!(out.layouts_built, 2);
-        assert!(!out.fill.is_empty() && out.fill.len() % 3 == 0);
-        assert!(!out.halo.is_empty());
+        let (nf, nh) = out.vertex_counts();
+        assert!(nf > 0 && nf % 3 == 0);
+        assert!(nh > 0);
         let mut out2 = FrameOut::default();
         cache.frame(
             &cands,

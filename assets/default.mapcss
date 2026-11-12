@@ -82,3 +82,13 @@ node|z18-[addr:housenumber] { text: name, addr:housenumber; }
 node|z17-[amenity], node|z17-[shop], node|z17-[tourism], node|z17-[leisure],
 node|z17-[historic], node|z17-[office], node|z17-[craft], node|z17-[emergency],
 node|z17-[public_transport]  { icon-image: preset; icon-width: 12; }
+
+/* Street and waterway names along the way (`text-position: line`): dark text on
+   a white halo, lifted off the line by `text-offset` pixels (positive is above
+   the text, negative below; the renderer pushes it further out for wide roads).
+   Drawn from z16, where labels start. Add `way|z17-[railway]` or others the same
+   way; ways without a name get no label. */
+way|z16-[highway]  { text: name; text-position: line; font-size: 12; text-color: #1f2937;
+                     text-halo-color: #ffffff; text-halo-radius: 1.5; text-offset: 6.2; }
+way|z16-[waterway] { text: name; text-position: line; font-size: 12; text-color: #1d4f91;
+                     text-halo-color: #ffffff; text-halo-radius: 1.5; text-offset: 6.2; }
