@@ -1,0 +1,53 @@
+# Arc mode: click the start, click the end, then bend the arc with the mouse
+# and click to finish. The nodes are spaced along the circle.
+#
+# Coordinate model: see select.osmscript — viewport center is window (488, 388).
+# Uses the oriented-building fixture, whose only feature sits left of x=330,
+# so the clicks below land on empty map.
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+load_osm docs/screenshots/fixtures/oriented_building.osm
+viewport 40.7120 -74.0060 18
+wait_idle 5s
+
+key v
+wait_idle 1s
+assert_mode arc
+capture out/arc-01-mode.png
+
+# Start, then end: a rubber band follows the mouse until the end is placed.
+click 520,520
+hover 700,480
+wait_idle 1s
+capture out/arc-02-rubber-band.png
+click 880,520
+hover 700,400
+wait_idle 1s
+capture out/arc-03-preview.png
+
+# Bend it the other way, then commit.
+hover 700,640
+wait_idle 1s
+capture out/arc-04-preview-flipped.png
+click 700,400
+wait_idle 2s
+# 28 new nodes (a ~135 degree arc at 5 degree steps) plus the way.
+assert_pending 29
+capture out/arc-05-committed.png
+
+# One undo step removes the whole arc.
+key cmd+z
+wait_idle 2s
+assert_pending 0
+capture out/arc-06-undone.png
+
+# Escape backs out: first an arc in progress, then the mode.
+click 520,520
+key escape
+wait_idle 1s
+assert_mode arc
+key escape
+wait_idle 1s
+assert_mode select
