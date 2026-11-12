@@ -41,6 +41,7 @@ pub mod osm_export;
 pub mod osm_upload;
 pub mod parallel;
 pub mod persist;
+pub mod polylabel;
 pub mod preset_recents;
 pub mod preset_translations;
 pub mod presets;
