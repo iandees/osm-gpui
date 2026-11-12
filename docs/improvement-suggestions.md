@@ -1,240 +1,207 @@
 # osm-gpui Improvement Suggestions
 
-Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06. Each item is scoped so an agent can implement it without re-doing the analysis. Line numbers reference the tree at commit `0b7536d`.
+Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06 and brought up to date against the merged PRs on 2026-11-11 (through PR #222). Each remaining item is scoped so an agent can implement it without re-doing the analysis. Done items are collapsed to one line with the PR that shipped them; file references for remaining items point at the current tree (line numbers are omitted because they drift quickly — grep for the named functions).
 
 ---
 
-## Tier 1 — Core product gaps (the mapper's edit loop is broken at both ends)
+## Tier 1 — Core product gaps
 
 ### 1.1 No upload path — edits can never reach OSM
-No `changeset`/`upload`/`osmChange` code exists anywhere in `src/`. `commit_node_moves` (`src/layers/osm_layer.rs:291`) only mutates the in-memory `OsmData` clone and sets `modified = true`; the File menu (`src/main.rs:2260-2267`) has only Open and Download. The OAuth flow requests `write_api` scope (`src/auth.rs:20`) that nothing uses.
+✅ Done — changeset upload shipped in #63 (upload dialog with comment, osmChange diff, close changeset). Hardened since: sign-in prompt when signed out (#98), no-retry on unknown outcome (#132), large edits split into several changesets (#136, #140), typed conflict errors with keep mine / use theirs (#128), server size limits enforced (#124), follow-ups (#145), keychain wait message (#151), sources/imagery/review-request fields (#178), disabled when nothing to upload (#222).
 
-**Implement:** an Upload action that (1) opens a changeset via `PUT /api/0.6/changeset/create` with `created_by` and a user-supplied `comment` tag, (2) builds an `osmChange` document from every layer where `is_modified()`, (3) `POST`s it to `/api/0.6/changeset/{id}/upload`, (4) closes the changeset. Reuse the bearer-token pattern from `check_for_download_requests` (`src/main.rs:1100-1102`). Include an upload dialog with a required changeset-comment field and a list of created/modified/deleted objects. Handle 409/410/412 conflict responses with a clear user-facing message (don't retry blindly — double-upload risk).
-
-### 1.2 OSM objects carry no version field (prerequisite for 1.1)
-`OsmNode`/`OsmWay`/`OsmRelation` (`src/osm.rs:16-35`) lack `version`, `changeset`, `timestamp`. The OSM API requires the current `version` on every modify/delete for optimistic locking.
-
-**Implement:** add `version: i32` (plus `changeset: i64`, `timestamp: String` if convenient) to the three structs; parse them in the element handlers around `src/osm.rs:375-405`; carry them through `commit_node_moves`.
+### 1.2 OSM objects carry no version field
+✅ Done — version tracking added to the parser and carried through edits and upload (#54).
 
 ### 1.3 Tags are read-only
-✅ Done — tag editing via dialog + side panel, EditTags undo variant, multi-select batch applies.
+✅ Done — tag editing via dialog + side panel, EditTags undo variant, multi-select batch applies (#48, #94).
 
 ### 1.4 Generalize undo/redo before adding new edit types
 ✅ Done — UndoableAction generalized with CreateNode, DeleteFeature, SetTags variants; unified push sites; History panel.
 
 ### 1.5 No create/delete of features, no vertex-level way editing
-✅ Done (partial) — Delete-key handler deletes selection; create-node mode via click+dragging or button. Vertex-level and split-way editing not yet implemented.
+✅ Done — node create/delete with undo (#61), Add mode with snapping onto ways and way extension (#68, #78), vertex delete with cleanup of orphaned nodes and too-short ways (#196), split way (#107, #208), join/unjoin node (#209, #211), drag vertices (#174).
 
 ### 1.6 No unsaved-changes warning on quit
-✅ Done — quit-confirm dialog checks is_modified() on layers; user can choose to quit or cancel.
+✅ Done — quit-confirm dialog (#60), Cmd+Q fix (#74), confirmation before deleting a layer with unsaved edits (#152).
 
 ### 1.7 Tile/imagery attribution is absent (legal requirement)
-✅ Done — attribution parsed from ELI, stored in ImageryEntry, rendered as clickable bottom-right overlay on-screen.
+✅ Done — attribution overlay (#55), clickable links (#59), smaller corner placement (#189).
 
 ---
 
 ## Tier 2 — Security & robustness
 
 ### 2.1 OAuth token stored world-readable in plaintext
-✅ Done — tokens stored in platform keyring (Keychain/Secret Service/Credential Manager) with file (0600) fallback; refresh-token support.
+✅ Done — platform keyring with 0600 file fallback; refresh-token support (#56).
 
 ### 2.2 OAuth `client_secret` hardcoded in a public repo
-`src/auth.rs:18-19`, sent at `:155-164`. A PKCE loopback flow is a public client; the embedded secret protects nothing and is committed publicly.
-
-**Implement:** re-register the OSM OAuth app as a public/PKCE client and drop `client_secret` from the token exchange — `code_verifier` already provides proof-of-possession.
+✅ Done — `client_secret` dropped from the token exchange (PKCE public client) (#56); per-server client IDs (#65). The comment at the top of `src/auth.rs` notes the OSM OAuth app must be registered as non-confidential.
 
 ### 2.3 No token expiry/refresh/401 handling
-✅ Done — StoredToken stores refresh_token and expires_at; ensure_fresh_token() handles expiry and refresh and is called on the download path.
+✅ Done — `StoredToken` stores `refresh_token`/`expires_at`; `ensure_fresh_token()` (#56).
 
 ### 2.4 Missing request timeouts
-✅ Done — 30-second timeouts on osm_api and auth ureq requests; fetch failures handled as retryable errors.
+✅ Done — 30-second timeouts and retryable fetch errors (#58).
 
 ### 2.5 Tile disk cache grows without bound
-✅ Done — cache bounded to 500 MB with oldest-mtime eviction; keyring by SHA-256(URL); stored in dirs::cache_dir().
+✅ Done — 500 MB bound with oldest-mtime eviction, SHA-256 keys, `dirs::cache_dir()` (#53); cache management panel (#86).
 
-### 2.6 Concurrent tile fetches are uncapped (violates OSM tile usage policy)
-✅ Done — concurrent tile fetches capped at 4 via process-wide counting semaphore (Mutex + Condvar).
+### 2.6 Concurrent tile fetches are uncapped
+✅ Done — capped at 4 via a process-wide semaphore (#53, #58).
 
-### 2.7 Non-atomic cache writes (tiles + ELI GeoJSON)
-✅ Done — atomic temp-file-then-rename pattern for tile cache writes and ELI cache; ELI parse failures surfaced to UI.
+### 2.7 Non-atomic cache writes
+✅ Done — temp-file-then-rename for tile and ELI caches (#53, #58).
 
 ### 2.8 Parser panics on non-UTF-8 input
-~14 `std::str::from_utf8(...).unwrap()` calls in `src/osm.rs` (e.g. `:377-378, 404-405, 428-429, 448-449, 469-470, 489-490, 507-508`). One bad byte in a downloaded/opened `.osm` file kills the parse thread with no user-facing error.
-
-**Implement:** helper `fn attr_str(b: &[u8]) -> Result<&str, OsmParseError>` mapping to the existing `OsmParseError::ParseError` variant; replace all unwraps.
+✅ Done — bytes-to-str conversion returns `OsmParseError` instead of unwrapping (#54).
 
 ### 2.9 OAuth loopback server: single-request, no path check, misleading denial error
-`src/auth.rs:132-137` accepts exactly one request — a browser `favicon.ico` probe arriving first fails the login; `:141-153` reports user denial (`error=access_denied`) as "Login timed out".
-
-**Implement:** loop on `recv_timeout` until a request whose path starts with `/callback` carries `code`/`state` (respond-and-discard others) up to the deadline; parse `error`/`error_description` into a distinct `AuthError::Denied`.
+✅ Done — callback loop ignores stray requests and denial is reported as `AuthError::Denied` (#56).
 
 ### 2.10 Narrow OAuth scope until upload exists
-`SCOPES = "read_prefs write_api"` (`src/auth.rs:20`) requests write access nothing uses. Request only `read_prefs` now; add `write_api` when 1.1 lands. (Skip this if 1.1 is being implemented in the same milestone.)
+✅ Moot — upload shipped (#63), so `write_api` is used; scopes are now `read_prefs write_api write_notes` (notes, #179).
 
 ---
 
 ## Tier 3 — Rendering quality & performance
 
-> **Measured (2026-07-06):** `examples/perf_bench.rs` (run with `cargo run --release --example perf_bench`) benchmarks the CPU side of the render path on a synthetic downtown-scale dataset (106k nodes: 8k ways × 12 vertices + 10k POIs, 1600×1000 viewport). Headline numbers on this machine, release mode:
->
-> | Path | Current | With proposed fix |
-> |---|---|---|
-> | Node paint loop (all visible, z14) | 2.69 ms/frame | 0.10 ms (cache per-node styles) |
-> | Way paint loop (all visible, z14) | 3.93 ms/frame | 3.54 ms (cache styles), 2.68 ms (+1px decimation, −35% vertices) |
-> | Way paint loop zoomed in (z17) | 0.17 ms | — (bbox culling already works well) |
-> | Click hit-test | 1.90 ms | 0.012 ms (R-tree path, measured via `hit_test_rect`) |
-> | `commit_node_moves` of ONE node | **52 ms** | sub-ms with incremental update (see 3.12) |
->
-> So the OSM layer costs ~6.6 ms of CPU per frame while panning with everything visible (≈26 ms in a debug build at the ~4× factor, matching the known debug frame-time issue), and every drag commit or undo/redo step stalls ~52 ms. The commit path and node-style caching are the two highest-value fixes.
+> **Measured (2026-07-06):** `examples/perf_bench.rs` benchmarked the CPU side of the render path on a synthetic downtown-scale dataset. The headline fixes (cached styles, R-tree hit-test, incremental commit, segment decimation) all landed in #57; a per-frame render-cost instrumentation and report followed in #148 and a way-drawing speedup in #157 (see `docs/perf/`).
 
-### 3.12 `commit_node_moves` does a full clone + rebuild — 52 ms hitch per edit and per undo/redo step
-`commit_node_moves` (`src/layers/osm_layer.rs:291-305`) clones the entire `OsmData` (~28 ms for 106k nodes — every node, way, and tag `String`) then calls `set_osm_data`, which rebuilds the node cache, way tables, layer bbox, and **both R-trees** from scratch (~24 ms). This runs on every drag release and every undo/redo (`apply_undo_action` → `commit_node_moves`), and the cost scales linearly with dataset size — a city-scale download will stall noticeably.
-
-**Implement:** an incremental path for node moves: (a) mutate only the affected `OsmNode`s (use `Arc::make_mut` on `OsmData` if uniquely held, or restructure so nodes live behind per-entry `Arc`s / the data isn't cloned wholesale); (b) update `node_cache.by_id`/`flat` entries for just the moved ids; (c) recompute bboxes/vertices only for ways containing a moved node (build a node→ways reverse index once at load); (d) update the R-trees with `remove`+`insert` for the affected entries instead of `bulk_load`ing all of them. Keep the full rebuild as the fallback for bulk operations.
+### 3.12 `commit_node_moves` does a full clone + rebuild
+✅ Done — incremental node-move commit, no whole-dataset clone/rebuild (#57).
 
 ### 3.1 Areas are never filled
-`src/layers/osm_layer.rs:435-487` strokes every way as a polyline; buildings render as 1px gray outlines, water/landuse as bare lines. Largest visual gap vs iD/JOSM.
-
-**Implement:** detect closed ways (first id == last, or area-implying tags: `building`, `landuse`, `natural`, `leisure`, `area=yes`); build a fill `Path` via `PathBuilder::fill` beneath the stroke. Requires `fill-color`/`fill-opacity` declarations and an `area` selector in `src/style/mapcss.rs` (the `Declaration` enum at `:96` currently has only `color`/`width`/`symbol-size`) plus stylesheet entries in `assets/default.mapcss`.
+✅ Done — MapCSS `fill-color`/`fill-opacity` with an `area` selector and `assets/default.mapcss` entries (#70); area presets for closed ways (#131).
 
 ### 3.2 Nondeterministic way draw order (frame-to-frame z flicker)
-`way_groups: HashMap<(u32,u32), WayGroup>` (`src/layers/osm_layer.rs:433`) is drained in randomized order at `:478`, so overlapping ways swap stacking between frames.
+🚧 In progress — being worked on in a separate PR. Current state: ways are iterated in id-sorted order (`sorted_ways` in `src/layers/osm_layer.rs`) but there is still no `z-index` in MapCSS and no area < casing < line layering.
 
-**Implement:** sort groups by a stable z key before painting (add `z-index` to MapCSS with sensible defaults: areas < casings < lines); short-term, a `BTreeMap` keyed by `(z, color, width)` suffices.
+### 3.3 Click hit-testing is O(dataset)
+✅ Done — R-tree candidate query plus refinement (#57).
 
-### 3.3 Click hit-testing is O(dataset) despite an existing R-tree — measured 1.9 ms vs 0.012 ms
-✅ Done — hit_test uses R-tree queries for candidates, refines with cached mercator coords; geo_to_screen uses cached center.
-
-### 3.4 Per-frame style re-resolution for every feature — measured 2.7 ms/frame for nodes alone
-✅ Done — NodeStyle and WayStyle cached in node_cache and way_styles; invalidated on stylesheet change; per-node HashMap probe eliminated.
+### 3.4 Per-frame style re-resolution
+✅ Done — cached `NodeStyle`/`WayStyle` (#57).
 
 ### 3.4b Sub-pixel segment decimation when zoomed out
-✅ Done — decimate_segments() function emits segments only when they exceed 1 px screen length, reducing vertices 35%.
+✅ Done — `decimate_segments()` (#57).
 
-### 3.13 Tile layer: parent-fallback element built and asset-probed every frame for every tile
-`render_elements` (`src/layers/tile_layer.rs:129-225`) rebuilds the full element tree per frame per visible tile, and *unconditionally* constructs the parent-fallback `img` (`:152-169`) with its own `use_asset` lookup — even when the child tile is already cached and fully covers it. That's 2× the asset-cache probes and double the element count for the steady-state (everything-loaded) case, and it keeps parent tiles pinned in the image cache. Each tile also pays 2 `geo_to_screen` calls (double trig each — see 3.3's center-caching fix).
+### 3.13 Tile layer: parent-fallback element built and asset-probed every frame
+Still open. `TileLayer::render_elements` (`src/layers/tile_layer.rs`) still builds the parent-fallback `img` (with its own `use_asset` lookup) for every visible tile unconditionally, even when the child tile is already loaded. Tile corners are still projected via `tile_screen_rect_shifted`, which does geo-to-screen math per tile. (Seam fixes #51, #62, #100 touched this code but did not change the per-frame cost.)
 
-**Implement:** probe the child asset first (`window.use_asset::<TileAsset>(&tile_url, cx)` returns `Option`); only attach the parent-fallback element when the child isn't ready yet. Project tile corners via `mercator_to_screen` with precomputed tile mercator bounds (tile edges are already mercator-aligned) instead of `geo_to_screen`.
+**Implement:** probe the child asset first (`window.use_asset::<TileAsset>` returns `Option`) and only attach the parent fallback when the child isn't ready; use precomputed mercator tile bounds.
 
 ### 3.5 Per-frame synchronous `read_dir` on the UI thread
-`TileCache::stats()` (`src/tile_cache.rs:281-294`) counts the cache directory; called via `TileLayer::stats()` from `get_layer_stats` every frame (`src/main.rs:1562`).
-
-**Implement:** only compute stats when `show_debug_overlay` is true, and cache the count with a ~1 s TTL or maintain an atomic counter updated on tile write.
+✅ Done — the cached-file count is recomputed at most once per second (`cached_file_count` / `STATS_TTL` in `src/tile_cache.rs`). (Stats are still gathered every frame by `get_layer_stats`, but that is now a cheap read.)
 
 ### 3.6 Node markers are squares; ways lack joins/caps/AA
-Nodes paint as hard-edged quads (`osm_layer.rs:513-520`); `push_segment_quad` (`:146-204`) emits disjoint per-segment quads with constant `st_position`, defeating GPUI edge AA and leaving notches at bends.
-
-**Implement:** round node dots via `corner_radii(size/2)` (cheapest) or `PathBuilder::fill` circles; add a small cap quad at each vertex/endpoint for pseudo-round joins; optionally use the higher-quality Lyon stroke path for just the selected/hovered ways.
+✅ Done — round nodes and thin cased ways (#93), line joins and end caps (#169), untagged vertices drawn only when selected / at high zoom (#149, #158), way vertices shown on hover (#174).
 
 ### 3.7 Selection styling: hardcoded magenta, square node ring, no halo, no hover
-`SELECTION_ACCENT = 0xFF4081` (`osm_layer.rs:13`) draws a square outline for nodes (`:685-689`) and an uncased line for ways (`:717-723`); box-select uses a different color (`cx.theme().accent`, `main.rs:1704-1706`); no hover state exists.
-
-**Implement:** two-pass halo (wide white/black casing under a themed accent stroke) so selection reads on any imagery; circular node ring matching the marker; single accent sourced from `cx.theme()`; hover highlight via hit-test in `handle_mouse_move` feeding a separate `set_hover` (cheap once 3.3 lands).
+✅ Done (partial) — two-pass halo, round markers and hover highlight shipped (#93), hover drawn above selection (#217). Remaining: the accent is still the `SELECTION_ACCENT` constant in `src/layers/osm_layer.rs` rather than sourced from `cx.theme()`, and box-select still uses a different color.
 
 ### 3.8 MapCSS subset is minimal
-Only `node`/`way` selectors with `[k]`/`[k=v]`/`[k!=v]`, and `color`/`width`/`symbol-size`. Zoom selectors are parsed-and-discarded (`mapcss.rs:348-356`); no casing, dashes, text, icons, opacity, z-index, rgb()/rgba().
-
-**Implement (priority order):** zoom-range selectors (`|z12-`) so road widths scale with zoom; `casing-width`/`casing-color`; `fill-*` (needed by 3.1); `dashes`. Text/icons come with 3.9.
+🚧 In progress — being worked on in a separate PR. Current state: `fill-color`/`fill-opacity` added (#70); zoom selectors are still parsed-and-discarded and `casing-*`, `dashes`, `text`, `icon-image`, `z-index`, `rgb()`/`rgba()` are not supported (see the header of `src/style/mapcss.rs`).
 
 ### 3.9 No labels, POI icons, or one-way arrows
-Render path draws only lines and dots; `name` tags, `oneway` chevrons, and amenity icons are invisible, making data hard to read.
-
-**Implement:** a label pass using shaped text for `name` with simple collision-skip; one-way chevrons along the polyline (segment direction `nx,ny` is already computed in `push_segment_quad`); map common POI tags to glyph icons. Depends on MapCSS `text`/`icon-image` support (3.8).
+🚧 In progress — being worked on in a separate PR. Current state: direction arrows on ways landed in #93 (and relations drawn via #139, #144), but there are no `name` labels and no POI icons on the map.
 
 ### 3.10 Hi-DPI tiles
-`tile_layer.rs:116-228` stretches 256px tiles across ~512 device pixels on Retina.
-
-**Implement:** read `window.scale_factor()`; at ≥2 request one zoom level deeper for the same screen area (or `@2x` templates where ELI advertises them); size tile divs accordingly.
+🚧 In progress — being worked on in a separate PR. Current state: nothing in `src/` reads `scale_factor`, so 256px tiles are still stretched on Retina (edge-seam clipping, #100, does not address this).
 
 ### 3.11 Map-area colors bypass the theme; tile pop-in is abrupt
-Map background `rgb(0x1a202c)` (`main.rs:1567`), grid `rgb(0x374151)` (`grid_layer.rs:17`), tile boundaries (`tile_layer.rs:246`), full-tile crimson error blocks (`tile_layer.rs:207`) are all hardcoded; tiles appear with no fade.
+Still open (partially mitigated by the theme work in #72, #143, #155). Hardcoded colors remain: grid `rgb(0x374151)` in `src/layers/grid_layer.rs`, tile placeholder `0x2d3748` and the full-tile crimson error block `0x9f1239` in `src/layers/tile_layer.rs`; tiles still appear with no fade.
 
-**Implement:** source map background/grid/overlay colors from `cx.theme()`; fade tile opacity 0→1 on load; make the loading background match the map background; replace the crimson error tile with a small corner badge.
+**Implement:** source map background/grid/overlay colors from `cx.theme()`; fade tile opacity 0→1; replace the crimson error tile with a corner badge.
 
 ---
 
 ## Tier 4 — UX polish
 
 ### 4.1 Download UX: manual-only, failure-discovered limits, per-download layer spam
-Download is Cmd-Shift-D only (`main.rs:2083`); the 0.25-sq-deg limit (`osm_api.rs:36-43`) is only discovered by triggering the error; every download spawns a new layer with "(2)", "(3)" suffixes (`main.rs:1114-1122`), so re-downloading after panning stacks duplicate objects — ambiguous for editing and future upload.
-
-**Implement:** (a) merge fetches into one canonical editable OSM layer keyed by object id instead of a new layer per fetch; (b) grey/disable the Download action with a "Zoom in to download" hint when `check_area` would fail for `visible_bounds()`; (c) optionally auto-fetch on viewport settle above a zoom threshold, debounced via the existing `IdleTracker`; (d) optionally draw the downloaded bbox extents.
+✅ Done (partial) — downloads merge into the active layer keeping local edits (#95); the area limit comes from the server's capabilities (#121, #122) with a "zoom in to download" hint (#97); progress shown (#119); downloaded bounds drawn with a Show Downloaded Area toggle (#120, #126). Remaining: no auto-fetch on viewport settle (option (c): debounce via `IdleTracker`).
 
 ### 4.2 Selection modifiers and Escape-to-deselect
-Click (`main.rs:849`) and box-select (`main.rs:827`) both replace the selection; no Shift-toggle. Escape only cancels a move-drag (`main.rs:1606-1610`).
-
-**Implement:** when Shift is held (events carry `modifiers`), toggle hits in/out of `self.selected` instead of replacing; extend Escape: cancel drag if active, else clear selection.
+✅ Done — shift+click toggle (#66); Escape cancels drags/modes and a Deselect All action exists.
 
 ### 4.3 Login state and pending-edit count invisible in main window
-Login display lives only in Settings (`ui/settings_window.rs:311-343`); no aggregate modified count (only per-layer bullets, `main.rs:1450`).
-
-**Implement:** a status strip or side-panel header showing "Logged in as X" / "Not logged in" plus total modified-object count — the natural home for the Upload button (1.1).
+✅ Done — status bar shows the signed-in account and the pending-edit count (#91).
 
 ### 4.4 Transient toasts vs. in-progress operations
-Status messages auto-expire after 5 s (`expire_status`, `main.rs:999-1005`) even while a download is still running; no spinner.
-
-**Implement:** distinguish sticky "operation in progress" status (cleared on completion) from transient toasts; add a small activity spinner while downloading/uploading.
+✅ Done — running download/upload shown with a spinner in the status bar, separate from transient messages (#119).
 
 ### 4.5 Trackpad/keyboard navigation
-All vertical scroll zooms (`viewport.rs:66-76`); no pinch, no keyboard pan/zoom, no double-click zoom.
-
-**Implement:** treat `ScrollDelta::Pixels` (trackpad) as pan and `Lines` (wheel) as zoom; arrow keys pan, `+`/`-` zoom on `focus_handle`; double-click = zoom-to-cursor (which is already correctly implemented in `coordinates.rs:zoom_at_point`).
+✅ Done (partial) — trackpad pan, pinch zoom, keyboard navigation (#92); scroll direction setting (#166, #170). Remaining: double-click on empty map does not zoom-to-cursor (double-click is used for selecting closed-way interiors and inserting a node on a segment).
 
 ### 4.6 Surface relation membership
-Relations are parsed (`osm.rs:31`, `:107-158`) but invisible: `FeatureKind` has only `Node`/`Way` (`selection.rs:6-9`). Moving/deleting a multipolygon member silently breaks it.
-
-**Implement (short-term):** show "member of relation N (type=...)" in the Selection/Tags panel for selected features; full relation rendering/editing is a later project.
+✅ Done — relations are parsed, selected, edited and shown in the side panel (member-of rows, roles, Add to Relation) (#110, #111, #112, #114), drawn on the map (#139, #144), and sortable (#213).
 
 ---
 
 ## Tier 5 — Code health
 
-### 5.1 Delete ~1,690 lines of dead code (5 files)
-`src/map.rs`, `src/data.rs`, `src/background.rs`, `src/mercator.rs`, `src/http_image_loader.rs` are not declared as modules anywhere (`src/lib.rs:5-24`) and don't compile as part of the build; `map.rs`/`data.rs` reference obsolete GPUI APIs and hardcoded sample data. Deleting them also removes a second inconsistent rendering path and (with `data.rs`/`http_image_loader.rs` gone) potentially the `reqwest`/`tokio` dependency. Grep for stray references first.
+### 5.1 Delete ~1,690 lines of dead code
+✅ Done — dead modules removed (#49).
 
 ### 5.2 Deduplicate `parse`/`parse_str` in `src/osm.rs`
-`:59-209` and `:211-361` are ~150 near-identical lines. Extract `fn parse_events<R: BufRead>(reader: Reader<R>) -> Result<OsmData, OsmParseError>`; both entry points become one-liners.
+✅ Done — parsing unified (#54).
 
-### 5.3 Split up `main.rs` (2,295 lines)
-✅ Done (partial) — UndoableAction/UndoStack/MoveDrag moved to src/undo.rs; menu.rs created; side_panel.rs created. Script-harness split partially (src/script_harness.rs exists).
+### 5.3 Split up `main.rs`
+Partially done (#49, #69): `undo.rs`, `menu.rs`, `side_panel.rs`, `script_harness.rs` etc. were split out, but `src/main.rs` has since regrown to ~14,900 lines (including a large in-file test module). Worth another extraction pass (e.g. status/upload/notes/autosave driving code, test module into `src/`-level test files).
 
 ### 5.4 Remove the `unsafe` pointer aliasing in `render`
-`src/main.rs:1636-1639` uses `addr_of!` + `unsafe { &* }` to alias `self.layer_manager` inside the canvas closure. Restructure to clone `selected` first and capture plain immutable borrows of `layer_manager` and the viewport — the paint path only needs `&LayerManager` and `&[FeatureRef]`.
+✅ Done — no `addr_of!`/`unsafe` aliasing remains in `main.rs` (#69).
 
-### 5.5 Extract `LayerManager::unique_name(&self, base: &str) -> String`
-The suffix-numbering loop is copy-pasted at `main.rs:902-907`, `:944-949`, `:1114-1119`.
+### 5.5 Extract `LayerManager::unique_name`
+✅ Done — `LayerManager::unique_name` exists and is used at all call sites (#69).
 
 ### 5.6 Replace `Arc<Mutex<Vec<()>>>` signal statics
-`DOWNLOAD_REQUESTS`/`TOGGLE_DEBUG_OVERLAY`/`OPEN_CUSTOM_IMAGERY_DIALOG` use `Vec<()>` as counters with three structurally identical drain fns (`main.rs:1007-1082`). Replace with a small `Signal(AtomicUsize)` with `raise()`/`take_count()`.
+✅ Done — the statics were removed in the event-driven refactor (#69).
 
 ### 5.7 Typed layer stats instead of parse-back strings
-`get_layer_stats` (`main.rs:966-993`) string-matches `"Nodes"`/`"Ways"`/`"Cached Files"` and re-parses numbers every frame. Add `fn feature_counts(&self) -> FeatureCounts` to the `MapLayer` trait; keep `stats()` for display only.
+Still open. `get_layer_stats` in `src/main.rs` still string-matches `"Cached Files"`/`"Nodes"`/`"Ways"` from `MapLayer::stats()`. Add `fn feature_counts(&self) -> FeatureCounts` to the `MapLayer` trait (`src/layers/mod.rs`).
 
 ### 5.8 `OsmMember.member_type: String` → enum
-`src/osm.rs:39`; parse `OsmMemberType { Node, Way, Relation }` in `parse_member` (`:500-523`), erroring on unknown values.
+✅ Done — `MemberType` enum parsed in `parse_member` (#54).
 
 ### 5.9 Test the real `LayerManager`, not shadow copies
-`src/layers/mod.rs:270-330` tests local `apply_move`/`apply_remove_at` re-implementations; the production `move_layer`/`remove_at` (`:126-142`) have zero coverage. Build a real `LayerManager` with a trivial test-only layer struct and delete the shadows. Also add tests for `on_move_layer` bounds math (`main.rs:596-603`).
+✅ Done (partial) — tests now build a real `LayerManager` and call production `move_layer`/`remove_at` (`src/layers/mod.rs` tests). Remaining: bounds math in `on_move_layer` (`src/main.rs`) has no direct test.
 
 ### 5.10 Surface user-action failures instead of swallowing them
-Pervasive `if let Ok(guard) = x.lock()` with no else (`main.rs:607-611, 1051-1059, 2096-2126`); `open_osm_file` parse failure is stderr-only (`main.rs:2034`); settings/token save failures (`auth.rs:328`, `settings_store.rs:126`) never reach the UI. Route user-triggered failures to `set_status(...)`; consider `parking_lot::Mutex` (no poisoning) for the queues.
+✅ Done (partial) — upload, keychain, restore and parse failures now route to status/notice dialogs (#98, #140, #151, #161). Remaining: audit the remaining `if let Ok(guard) = x.lock()` sites in `src/main.rs` and settings/token save failures (`src/auth.rs`, `src/settings_store.rs`) for silent drops.
 
 ### 5.11 Extract and test zoom-fit math
-`fit_to_osm_data` (`main.rs:527-582`) inlines `40075016.686`, tile size, margin, and zoom clamps that duplicate constants in `tiles.rs`/`coordinates.rs`. Extract pure `zoom_to_fit(bbox, screen_size, margin)` and `bbox_of(nodes)` into `coordinates.rs` with unit tests.
+✅ Done — `fit_bounds_to_viewport` with unit tests in `src/coordinates.rs` (#69). (`fit_to_osm_data` in `main.rs` still computes the bbox inline but delegates the zoom math.)
 
 ### 5.12 Misc small fixes
-- Unify User-Agent: `tile_cache.rs:208`, `http_image_loader.rs:8`, `imagery/mod.rs:120` hardcode `osm-gpui/0.1.0`; use one `const` built from `CARGO_PKG_VERSION` (as `osm_api.rs`/`auth.rs` already do).
-- `check_area` (`osm_api.rs:36-43`) uses signed spans; normalize/assert `min <= max` so inverted bounds can't pass.
-- `IdleTracker` (`idle_tracker.rs:23,32`) uses `debug_assert!`; in release an underflow wraps and permanently wedges `is_idle()` — use `saturating_sub` + warning.
-- `side_panel_open: Vec<usize>` as a hand-rolled set (`main.rs:271, 1250-1253, 1361-1367`) → `[bool; 4]` indexed by a `PanelSection` enum.
-- `OsmParser` is a stateless unit struct with `&self` methods (`osm.rs:52-57`) → associated functions.
+- User-Agent: ✅ Done — single `USER_AGENT` const built from `CARGO_PKG_VERSION` in `src/version.rs` (#105).
+- `check_area`: ✅ Done — now delegates to `capabilities::allows_download` using the server's limits (#121).
+- `IdleTracker` (`src/idle_tracker.rs`): still open — `tile_fetch_finished`/`image_decode_finished` use `debug_assert!` and a plain `fetch_sub`, so a release-mode underflow would wrap and wedge `is_idle()`. Use a saturating decrement plus a warning.
+- `side_panel_open`: ✅ Done as a fixed-size `[bool; 8]` set; an enum-indexed wrapper would still be tidier (low priority).
+- `OsmParser` (`src/osm.rs`): still a stateless unit struct with `&self` methods; convert to associated functions (low priority).
+
+---
+
+## Shipped since this review
+
+Major capabilities merged that were not in the original list:
+
+- **Releases and packaging:** release workflow, macOS app bundle, version-aware User-Agent (#105); MIT license (#127); Linux Wayland/X11 backends (#113); releases 0.2.0 (#109), 0.3.0 (#123), 0.4.0 (#141), 0.5.0 (#156), 0.6.0 (#168), 0.7.0 (#182), 0.8.0 (#215).
+- **Platform and settings:** gpui-component migration (#41), settings window and custom imagery (#40, #133), keyboard shortcut settings (#87), text size setting (#85), System/Light/Dark appearance (#155, #164, #188), in-window menu bar and Ctrl shortcuts on Windows/Linux (#153, #154, #172), status bar and fuller menus (#91), command-line/OS file opening (#134), localization with German (#103, #104, #106, #108).
+- **Imagery:** Editor Layer Index (#19), custom imagery (#39), ELI zoom limits (#33), imagery offset with an adjust mode (#159), tile seam fixes (#51, #62, #100), open on OSM Carto with a welcome card (#116), welcome card controls (#163).
+- **Tag editing and presets:** tag editor dialog (#48), iD presets with field-based editor (#71), NSI brand presets (#52), preset translations (#106), area presets (#131), recents (#142), bundled preset icons (#137), preset field inheritance (#191), taginfo/schema/loaded-data autocomplete (#192) and related-key suggestions (#216, #219), change-type pencil button (#190).
+- **Editing modes and tools:** Select/Add/Building/Extrude modes (#68, #76, #89, #133), squaring/circularize/reverse/delete selection actions (#101), join/separate/extend (#102), split, merge nodes, straighten, copy/paste tags (#107), align new buildings to a squared way (#99), align and distribute nodes (#176), create parallel way (#171), copy/paste/duplicate features (#175), simplify way (#212), rotate (#218), purge (#210), unjoin node and delete way segment (#211), join node to way with tag-aware snapping (#209, #221), multi-node split (#208), find by query (#162), direction-aware reverse (#194, #201, #203).
+- **Relations and multipolygons:** relation-aware editing, create/delete and editor (#110, #111, #112, #114), multipolygon and route/restriction rendering (#139, #144), Create Multipolygon (#207), Sort members (#213).
+- **Data layers and reference data:** GPX and GeoJSON reference layers (#180), OSM notes show/read/comment/close/reopen/create (#179, #184), object history view with revert tags (#177), File > Export to .osm (#96), merge downloads into active layer (#95), downloaded-area display (#120, #126).
+- **Safety and quality:** validator with Tools > Validate before upload (#160), autosave and crash restore (#161), persistence policy guarding real state in tests (#173), upload hardening and chunking (#124, #128, #132, #136, #140, #145, #206), edge-case test catalogue for editing operations (#193-#205).
+- **Tooling:** scriptable screenshot/osmscript harness (#3, #64, #75, #147, #214), render-cost measurement and way-drawing speedups (#148, #157, docs/perf), live dev-server upload tests (`docs/live-test`).
 
 ---
 
 ## Suggested sequencing
 
-1. **5.1** (delete dead code) — cheap, unblocks clean diffs for everything else.
-2. **1.2 → 1.4 → 1.3 → 1.5 → 1.6 → 1.1** — the edit-loop arc: versions, generalized undo, tag editing, create/delete, quit guard, upload. (2.1–2.3 land alongside 1.1 since upload makes token security matter more.)
-3. **1.7, 2.4–2.9** — legal + robustness, all small and independent (good parallel-agent fodder).
-4. **3.12, 3.4, 3.3** — the measured perf wins (incremental commit path, cached styles, indexed hit-test), then **3.1–3.2** for the visual wins (fills, z-order).
-5. Everything else as capacity allows; Tier 5 items are independent and safely parallelizable.
+The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upload), the security/robustness tier, and the measured perf wins (3.12, 3.3, 3.4) have all shipped. What remains:
+
+1. **In flight (separate PRs):** 3.8 MapCSS, 3.2 draw order, 3.9 labels/icons/one-way, 3.10 hi-DPI tiles. 3.2 and 3.9 depend on 3.8's `z-index`/`text`/`icon-image` support, so land 3.8 first.
+2. **Small rendering items:** 3.13 (tile parent-fallback only when the child isn't ready), 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
+3. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
+4. **Code health, safely parallelizable:** 5.3 (re-split `main.rs`), 5.7 typed layer stats, 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 leftovers (`IdleTracker` saturating decrement, `OsmParser` associated functions).
