@@ -10,19 +10,19 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Pan and zoom with trackpad scroll and pinch, mouse wheel, drags, and the keyboard.
 - Raster imagery from OpenStreetMap Carto, the [Editor Layer Index](https://github.com/osmlab/editor-layer-index) (filtered to the current view), and custom tile URL templates you add yourself. Attribution is shown on the map, and tiles are cached on disk within a size limit you can set and clear in Settings > Imagery.
 - A lat/lon grid layer, and a layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
-- OSM data is drawn for tracing over imagery: thin cased ways, round node markers (untagged vertices only from zoom 18; tagged nodes always, as a small dot when zoomed out; selected nodes and the nodes of a selected way are always shown in full), direction arrows, area fills, and hover highlighting. Styling is a built-in subset of MapCSS; it is not user-configurable.
+- OSM data is drawn for tracing over imagery: thin cased ways, round node markers, direction arrows, area fills, and hover highlighting.
 
-**Editing modes** (Mode menu, toolbar, or the shortcut keys below)
+**Editing modes**
 - Select: click, Shift-click, box-select, and double-click inside a closed way. Drag selected nodes to move them.
 - Add: draw nodes and ways, snapping new nodes onto existing ways.
 - Building: draw a rectangular building (three clicks), or align one to a selected squared way.
 - Extrude: drag a way segment to reshape the way (pull out an L, push in a notch); Cmd/Ctrl-drag moves the segment, Alt-drag makes a new way.
 
-**Selection actions** (Tools menu, right-click context menu, and shortcuts)
-- Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete. Each is one undo step.
+**Selection actions**
+- Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete.
 
 **Tags and presets**
-- Tags are edited in place in the side panel. Fields come from the bundled [iD tagging schema](https://github.com/openstreetmap/id-tagging-schema) preset that matches the feature. Edit > Change Feature Type picks a preset, and Edit > Apply NSI Preset applies a Name Suggestion Index brand.
+- Tags are edited in the side panel. Fields come from the bundled [iD tagging schema](https://github.com/openstreetmap/id-tagging-schema) preset that matches the feature. Edit > Change Feature Type picks a preset, and Edit > Apply NSI Preset applies a Name Suggestion Index brand.
 
 **Relations**
 - A node's or way's relation memberships are listed in the side panel. Selecting a relation highlights its members on the map and lets you edit its tags, member roles and order, and remove members.
@@ -41,7 +41,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Export a layer to a JOSM-style `.osm` file that keeps pending edits, so you can reopen it here or in JOSM.
 - A warning on quit when there are unsaved changes.
 
-**Undo and history**
+**Undo**
 - Undo and redo for every edit, with a History list in the side panel. Undo and redo select the features they changed.
 
 **Localization**
@@ -206,8 +206,6 @@ Off macOS the menus drop the macOS-only items (Services, Hide, Hide Others, Show
 - Upload conflicts are resolved one object at a time, and taking the server's version of an object clears the undo history.
 - Export always asks where to write; there is no save back to the opened file.
 - The German text is machine-drafted and has not been reviewed by a native speaker. Tag keys and values, layer names, the debug overlay, and Name Suggestion Index brand names are not translated.
-- No text labels or POI icons on the map, no search, and no user-defined map styles.
-- Keyboard shortcuts use the `cmd` modifier, which has only been checked on macOS.
 
 ## License
 
