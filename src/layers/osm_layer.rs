@@ -3632,6 +3632,9 @@ enum BatchKind {
 /// vertices accumulated as it grows.
 struct Batch {
     rgba: u32,
+    /// Draw-order layer (`z-index`, see [`z_key`]); batches of one kind are
+    /// painted in ascending `z`, then first-seen order.
+    z: i32,
     /// Key of this batch's `VertexHints` entry.
     key: u64,
     path: Option<Path<Pixels>>,
@@ -3641,9 +3644,8 @@ struct Batch {
 }
 
 impl Batch {
-    /// `variant` tells batches of one kind apart (the stroke width bits).
-    fn new(kind: BatchKind, rgba: u32, variant: u32, hints: &HashMap<u64, usize>) -> Self {
-        let key = ((kind as u64) << 60) ^ ((rgba as u64) << 24) ^ (variant as u64);
+    fn new(kind: BatchKind, rgba: u32, z: i32, hints: &HashMap<u64, usize>) -> Self {
+        let key = ((kind as u64) << 60) ^ ((rgba as u64) << 24) ^ (z as u32 as u64);
         // The previous frame's size plus a margin, capped so that a stale
         // hint (after zooming in from far out) cannot reserve gigabytes.
         let path = hints.get(&key).map(|&n| {
@@ -3653,6 +3655,7 @@ impl Batch {
         });
         Self {
             rgba,
+            z,
             key,
             path,
             bounds: (
@@ -3689,16 +3692,36 @@ const MAX_HINT_VERTICES: usize = 8 << 20;
 /// (a `HashMap`'s iteration order is randomized per process, which caused
 /// visible z-order flicker between overlapping fills of different colors).
 fn batch_index(
-    index: &mut HashMap<u32, usize>,
+    index: &mut HashMap<(i32, u32), usize>,
     batches: &mut Vec<Batch>,
     kind: BatchKind,
+    z: i32,
     rgba: u32,
     hints: &HashMap<u64, usize>,
 ) -> usize {
-    *index.entry(rgba).or_insert_with(|| {
-        batches.push(Batch::new(kind, rgba, 0, hints));
+    *index.entry((z, rgba)).or_insert_with(|| {
+        batches.push(Batch::new(kind, rgba, z, hints));
         batches.len() - 1
     })
+}
+
+/// A `z-index` as a sortable layer number (eighths, so fractional indices
+/// like 0.5 order correctly).
+fn z_key(z_index: f32) -> i32 {
+    (z_index.clamp(-1.0e6, 1.0e6) * 8.0).round() as i32
+}
+
+/// Finish `batches` into paths in draw order: ascending `z`, ties by
+/// first-seen order (a stable sort), so the order is the same every frame.
+fn finish_sorted(
+    mut batches: Vec<Batch>,
+    hints: &mut HashMap<u64, usize>,
+) -> Vec<(u32, Path<Pixels>)> {
+    batches.sort_by_key(|b| b.z);
+    batches
+        .into_iter()
+        .filter_map(|b| b.finish(hints))
+        .collect()
 }
 
 /// The way pass of one frame, recorded but not yet painted: area fills, route
@@ -3709,9 +3732,10 @@ pub struct WayScene {
     fills: Vec<(u32, Path<Pixels>)>,
     overlays: Vec<(u32, Path<Pixels>)>,
     casing: Option<(u32, Path<Pixels>)>,
-    /// Per-colour casings from `casing-width`, under the strokes.
-    styled_casings: Vec<(u32, Path<Pixels>)>,
-    strokes: Vec<(u32, Path<Pixels>)>,
+    /// The casings from `casing-width` and the strokes, in one list in
+    /// `z-index` order: at each layer the casings come first, so a higher
+    /// layer's casing covers a lower layer's stroke.
+    lines: Vec<(u32, Path<Pixels>)>,
 }
 
 impl WayScene {
@@ -3720,21 +3744,13 @@ impl WayScene {
         let sum =
             |v: &[(u32, Path<Pixels>)]| -> usize { v.iter().map(|(_, p)| p.vertices.len()).sum() };
         let casing = self.casing.as_ref().map_or(0, |(_, p)| p.vertices.len());
-        sum(&self.fills)
-            + sum(&self.overlays)
-            + casing
-            + sum(&self.styled_casings)
-            + sum(&self.strokes)
+        sum(&self.fills) + sum(&self.overlays) + casing + sum(&self.lines)
     }
 
     /// Number of paths the scene hands to the GPU. Each is rasterised and
     /// composited separately, over its own bounding box.
     pub fn path_count(&self) -> usize {
-        self.fills.len()
-            + self.overlays.len()
-            + self.casing.is_some() as usize
-            + self.styled_casings.len()
-            + self.strokes.len()
+        self.fills.len() + self.overlays.len() + self.casing.is_some() as usize + self.lines.len()
     }
 
     /// Hand the paths to the window: fills first so outlines stay on top,
@@ -3752,10 +3768,7 @@ impl WayScene {
         if let Some((rgba, path)) = self.casing {
             window.paint_path(path, gpui::rgba(rgba));
         }
-        for (rgba, path) in self.styled_casings {
-            window.paint_path(path, gpui::rgba(rgba));
-        }
-        for (rgba, path) in self.strokes {
+        for (rgba, path) in self.lines {
             window.paint_path(path, gpui::rgba(rgba));
         }
         crate::frame_stats::lap("osm.ways_paint", fs_phase);
@@ -3886,7 +3899,7 @@ impl OsmLayer {
         // top. Triangulation is cached (`way_fill_tris`, computed at
         // load/edit time); per-frame work is projection + batched
         // raw-triangle emission, grouped by RGBA color.
-        let mut fill_index: HashMap<u32, usize> = HashMap::new();
+        let mut fill_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut fills: Vec<Batch> = Vec::new();
         let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
 
@@ -3900,7 +3913,8 @@ impl OsmLayer {
         );
         let fs_phase = crate::frame_stats::start();
         for entry in self.mp.entries.values() {
-            let Some(fill) = at_zoom(entry.style).fill else {
+            let fill_style = at_zoom(entry.style);
+            let Some(fill) = fill_style.fill else {
                 continue;
             };
             let b = &entry.bbox;
@@ -3912,6 +3926,7 @@ impl OsmLayer {
                 &mut fill_index,
                 &mut fills,
                 BatchKind::Fill,
+                z_key(fill_style.z_index),
                 (fill.color << 8) | alpha,
                 &hints,
             );
@@ -3941,7 +3956,8 @@ impl OsmLayer {
         let fs_phase = crate::frame_stats::start();
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
-            let Some(fill) = at_zoom(self.way_styles[i]).fill else {
+            let fill_style = at_zoom(self.way_styles[i]);
+            let Some(fill) = fill_style.fill else {
                 continue;
             };
             let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
@@ -3981,6 +3997,7 @@ impl OsmLayer {
                 &mut fill_index,
                 &mut fills,
                 BatchKind::Fill,
+                z_key(fill_style.z_index),
                 (fill.color << 8) | alpha,
                 &hints,
             );
@@ -4018,16 +4035,16 @@ impl OsmLayer {
         // GPU (a dozen near-screen-sized paths cost more than a million
         // vertices), and a width is only the half-width of each segment's
         // quad.
-        let mut stroke_index: HashMap<u32, usize> = HashMap::new();
+        let mut stroke_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut strokes: Vec<Batch> = Vec::new();
         // Consecutive ways mostly share a style, so remember the last lookup.
-        let mut last_stroke: Option<(u32, usize)> = None;
+        let mut last_stroke: Option<((i32, u32), usize)> = None;
 
         // Route overlays: a translucent line under each route member way,
         // one path per colour. Looked up per visible way from the cache
         // (`MpCache::route_ways`), never by scanning relations.
         let has_routes = !self.mp.route_ways.is_empty();
-        let mut overlay_index: HashMap<u32, usize> = HashMap::new();
+        let mut overlay_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut overlays: Vec<Batch> = Vec::new();
         let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
 
@@ -4039,7 +4056,7 @@ impl OsmLayer {
         let draw_arrows = zoom >= ARROW_MIN_ZOOM;
         let mut casing = Batch::new(BatchKind::Casing, (CASING_COLOR << 8) | 0xFF, 0, &hints);
         // Casings asked for by the stylesheet (`casing-width`), one per colour.
-        let mut styled_casing_index: HashMap<u32, usize> = HashMap::new();
+        let mut styled_casing_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut styled_casings: Vec<Batch> = Vec::new();
 
         // Reused scratch buffers, so the (potentially tens of thousands of)
@@ -4090,17 +4107,19 @@ impl OsmLayer {
                 continue;
             }
             let half_width = style.width / 2.0;
+            let z = z_key(style.z_index);
             let stroke_idx = match last_stroke {
-                Some((c, idx)) if c == style.color => idx,
+                Some(((lz, c), idx)) if lz == z && c == style.color => idx,
                 _ => {
                     let idx = batch_index(
                         &mut stroke_index,
                         &mut strokes,
                         BatchKind::Stroke,
+                        z,
                         (style.color << 8) | 0xFF,
                         &hints,
                     );
-                    last_stroke = Some((style.color, idx));
+                    last_stroke = Some(((z, style.color), idx));
                     idx
                 }
             };
@@ -4112,6 +4131,7 @@ impl OsmLayer {
                     &mut styled_casing_index,
                     &mut styled_casings,
                     BatchKind::Casing,
+                    z,
                     (style.casing_color << 8) | 0xFF,
                     &hints,
                 )
@@ -4124,6 +4144,7 @@ impl OsmLayer {
                         &mut overlay_index,
                         &mut overlays,
                         BatchKind::Overlay,
+                        0,
                         (colour << 8) | overlay_alpha,
                         &hints,
                     )
@@ -4330,23 +4351,25 @@ impl OsmLayer {
 
         let mut next_hints = HashMap::new();
         let scene = WayScene {
-            fills: fills
-                .into_iter()
-                .filter_map(|b| b.finish(&mut next_hints))
-                .collect(),
+            fills: finish_sorted(fills, &mut next_hints),
             overlays: overlays
                 .into_iter()
                 .filter_map(|b| b.finish(&mut next_hints))
                 .collect(),
             casing: casing.finish(&mut next_hints),
-            styled_casings: styled_casings
-                .into_iter()
-                .filter_map(|b| b.finish(&mut next_hints))
-                .collect(),
-            strokes: strokes
-                .into_iter()
-                .filter_map(|b| b.finish(&mut next_hints))
-                .collect(),
+            lines: {
+                // Per z-index layer: casings, then strokes. Stable, so equal
+                // layers keep first-seen order.
+                let mut all: Vec<(i32, u8, Batch)> = styled_casings
+                    .into_iter()
+                    .map(|b| (b.z, 0, b))
+                    .chain(strokes.into_iter().map(|b| (b.z, 1, b)))
+                    .collect();
+                all.sort_by_key(|&(z, order, _)| (z, order));
+                all.into_iter()
+                    .filter_map(|(_, _, b)| b.finish(&mut next_hints))
+                    .collect()
+            },
         };
         self.vertex_hints.replace(next_hints);
         crate::frame_stats::count("count.way_path_vertices", scene.vertex_count());
@@ -9931,6 +9954,65 @@ mod way_lod_tests {
         assert_eq!(scene_paths(&cased, 15.0), 2);
         // At zoom 17 the styled casing replaces the default one.
         assert_eq!(scene_paths(&cased, 17.0), 2);
+    }
+
+    /// Two overlapping ways over the same nodes, tagged `highway=lo` (way
+    /// 10) and `highway=hi` (way 11).
+    fn two_way_layer(css: &str) -> OsmLayer {
+        let l = layer();
+        let mut data = (**l.osm_data.as_ref().unwrap()).clone();
+        let mut lo = way(10, vec![1, 2, 3, 4, 5]);
+        lo.tags.insert("highway".into(), "lo".into());
+        let mut hi = way(11, vec![1, 2, 3, 4, 5]);
+        hi.tags.insert("highway".into(), "hi".into());
+        data.ways = HashMap::from([(10, lo), (11, hi)]);
+        let mut l = OsmLayer::new_with_data(LayerId(1), "t", Arc::new(data));
+        l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
+        l
+    }
+
+    fn line_colors(l: &OsmLayer, zoom: f64) -> Vec<u32> {
+        let (v, b) = view(zoom);
+        l.build_way_scene(&v, b)
+            .lines
+            .iter()
+            .map(|(rgba, _)| rgba >> 8)
+            .collect()
+    }
+
+    #[test]
+    fn z_index_orders_strokes_whatever_the_way_order() {
+        // `lo` is way 10 and would draw first anyway; swap which one is on top.
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 1; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; }";
+        let l = two_way_layer(css);
+        assert_eq!(line_colors(&l, 17.0), vec![0x0000ff, 0xff0000]);
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 9; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; }";
+        let l = two_way_layer(css);
+        assert_eq!(line_colors(&l, 17.0), vec![0xff0000, 0x0000ff]);
+    }
+
+    #[test]
+    fn a_higher_layers_casing_covers_a_lower_layers_stroke() {
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 1; casing-width: 1; casing-color: #111111; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; casing-width: 1; casing-color: #222222; }";
+        let l = two_way_layer(css);
+        assert_eq!(
+            line_colors(&l, 17.0),
+            vec![0x111111, 0x0000ff, 0x222222, 0xff0000]
+        );
+    }
+
+    #[test]
+    fn equal_z_index_keeps_a_stable_order_across_frames() {
+        let css = "way[highway] { width: 3; } way[highway=lo] { color: #0000ff; } way[highway=hi] { color: #ff0000; }";
+        let l = two_way_layer(css);
+        let first = line_colors(&l, 17.0);
+        assert_eq!(first.len(), 2);
+        for _ in 0..50 {
+            assert_eq!(line_colors(&l, 17.0), first);
+        }
     }
 
     #[test]

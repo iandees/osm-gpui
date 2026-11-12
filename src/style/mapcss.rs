@@ -125,6 +125,9 @@ pub struct WayStyle {
     /// (`casing-width`); 0 means no explicit casing.
     pub casing_width: f32,
     pub casing_color: u32,
+    /// Draw order (`z-index`): higher draws on top. Fills, then lines in
+    /// ascending order, whatever the index; 0 by default.
+    pub z_index: f32,
     /// Interned id of the rules that matched this way's tags, an index into
     /// [`Stylesheet::zoom_styles`]. [`NO_SIG`] when not interned.
     pub sig: u32,
@@ -142,6 +145,7 @@ impl Default for WayStyle {
             direction: Direction::None,
             casing_width: 0.0,
             casing_color: DEFAULT_CASING_COLOR,
+            z_index: 0.0,
             sig: NO_SIG,
         }
     }
@@ -244,6 +248,8 @@ enum Declaration {
     /// Extra width of the casing on each side of the stroke, in pixels.
     CasingWidth(f32),
     CasingColor(u32),
+    /// Draw order within a feature class; higher draws on top.
+    ZIndex(f32),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -504,6 +510,7 @@ impl Stylesheet {
                     Declaration::FillOpacity(o) => fill_opacity = Some(*o),
                     Declaration::CasingWidth(w) => s.casing_width = *w,
                     Declaration::CasingColor(c) => s.casing_color = *c,
+                    Declaration::ZIndex(z) => s.z_index = *z,
                     // `symbol-size` on a way rule is meaningless — ignore.
                     _ => {}
                 }
@@ -859,6 +866,15 @@ impl<'a> Parser<'a> {
                         }
                     }
                 },
+                "z-index" => match value.trim().parse::<f32>() {
+                    Ok(z) if z.is_finite() => decls.push(Declaration::ZIndex(z)),
+                    _ => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring invalid z-index '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
                 "symbol-size" => match value.trim().parse::<f32>() {
                     Ok(w) if w.is_finite() && w >= 0.0 => decls.push(Declaration::SymbolSize(w)),
                     _ => {
@@ -1116,6 +1132,30 @@ mod tests {
     fn casing_does_not_apply_to_nodes() {
         let s = Stylesheet::parse("node { casing-width: 2; }").unwrap();
         assert_eq!(s.node_style(&tags(&[]), Z), NodeStyle::default());
+    }
+
+    #[test]
+    fn z_index_parses_and_later_rules_override() {
+        let s = Stylesheet::parse(
+            "way[highway] { z-index: 3; } way[highway=x] { z-index: -1.5; } way[bad] { z-index: up; }",
+        )
+        .unwrap();
+        let z = |pairs: &[(&str, &str)]| s.way_style(&tags(pairs), false, Z).z_index;
+        assert_eq!(z(&[("highway", "primary")]), 3.0);
+        assert_eq!(z(&[("highway", "x")]), -1.5);
+        // Invalid values are dropped, leaving the default.
+        assert_eq!(z(&[("bad", "1")]), 0.0);
+        assert_eq!(z(&[]), 0.0);
+    }
+
+    #[test]
+    fn default_stylesheet_ranks_roads_by_importance() {
+        let s = Stylesheet::load_default();
+        let z = |hw: &str| s.way_style(&tags(&[("highway", hw)]), false, Z).z_index;
+        assert!(z("motorway") > z("primary"));
+        assert!(z("primary") > z("secondary"));
+        assert!(z("secondary") > z("tertiary"));
+        assert!(z("tertiary") > z("residential"));
     }
 
     #[test]
