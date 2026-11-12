@@ -8,9 +8,10 @@ use gpui::{
     Window,
 };
 use gpui_component::{
+    button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     label::Label,
-    v_flex, ActiveTheme as _,
+    v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use std::collections::HashMap;
 
@@ -308,18 +309,37 @@ impl Render for PresetPickerDialog {
             .shadow_lg()
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .px_4()
                     .py_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.preset_picker.title")),
+                    .child(tr!("dialog.preset_picker.title"))
+                    .child(
+                        Button::new("preset-picker-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(tr!("dialog.preset_picker.close"))
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                    ),
             )
-            .child(div().p_4().child(body));
+            .child(div().p_4().child(body))
+            // A press inside the card must not reach the scrim's
+            // click-to-dismiss handler below.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
 
         div()
             .track_focus(&self.focus_handle)
+            // Clicking the scrim, outside the card, closes the dialog like Esc.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.cancel(cx)),
+            )
             .on_key_down(cx.listener(Self::on_key_down))
             .absolute()
             .inset_0()
@@ -363,5 +383,53 @@ mod tests {
     #[test]
     fn preview_empty_tags_is_empty_string() {
         assert_eq!(format_tag_preview(&tags(&[])), "");
+    }
+
+    #[gpui::test]
+    fn clicking_outside_the_card_cancels_but_clicking_inside_does_not(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{point, px, size, AvailableSpace, Entity, VisualTestContext};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let dialog = cx.new(|cx| PresetPickerDialog::new(vec![], window, cx));
+            gpui_component::Root::new(dialog, window, cx)
+        });
+        let vcx = &mut VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        let dialog: Entity<PresetPickerDialog> = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast()
+            .unwrap();
+        let cancelled = Rc::new(Cell::new(0));
+        let seen = cancelled.clone();
+        let _sub = vcx.update(|_, cx| {
+            cx.subscribe(&dialog, move |_, event: &DialogEvent, _| {
+                if matches!(event, DialogEvent::Cancelled) {
+                    seen.set(seen.get() + 1);
+                }
+            })
+        });
+        vcx.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                AvailableSpace::Definite(px(1200.0)),
+                AvailableSpace::Definite(px(800.0)),
+            ),
+            |_, _| gpui::AnyView::from(root.clone()),
+        );
+
+        // The card is centred in the window.
+        let centre = vcx.update(|window, _| {
+            let v = window.viewport_size();
+            point(v.width / 2.0, v.height / 2.0)
+        });
+        vcx.simulate_click(centre, gpui::Modifiers::none());
+        assert_eq!(cancelled.get(), 0, "a click on the card keeps it open");
+        vcx.simulate_click(point(px(10.0), px(10.0)), gpui::Modifiers::none());
+        assert_eq!(cancelled.get(), 1, "a click on the scrim closes it");
     }
 }
