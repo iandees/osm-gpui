@@ -56,20 +56,136 @@ pub struct LabelStyle {
     pub spacing_px: f32,
     /// Most labels one way can get.
     pub max_per_way: usize,
+    /// Perpendicular shift of the text from the way, in pixels. Convention:
+    /// measured in the text's own frame, positive = toward the top of the
+    /// glyphs ("above" the text), so it stays on the same side of the text
+    /// when the reading direction flips and the label is turned half a turn.
+    /// 0 centres the x-height on the way. A MapCSS `text-offset` should map
+    /// onto this field (the default below is half the x-height plus about a
+    /// 2 px road half-width, so the text clears the line).
+    pub offset_px: f32,
+    /// How the halo is built (benchmark knob; `Stroke` is the real one).
+    pub halo_mode: HaloMode,
+}
+
+/// Halo construction variants, to compare vertex counts and frame times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HaloMode {
+    /// Fully joined stroke around every contour.
+    #[default]
+    Stroke,
+    /// Unjoined stroke segments around a coarser outline.
+    StrokeCoarse,
+    /// The fill mesh repeated at four offsets.
+    Offset4,
+    /// No halo.
+    None,
 }
 
 impl Default for LabelStyle {
     fn default() -> Self {
+        let size_px = 12.0;
         Self {
-            size_px: 12.0,
+            size_px,
             halo_px: 1.5,
             fill_tol: 0.1,
             halo_tol: 0.2,
             pad_px: 4.0,
             spacing_px: 300.0,
             max_per_way: 40,
+            offset_px: 0.35 * size_px + 2.0,
+            halo_mode: HaloMode::Stroke,
         }
     }
+}
+
+/// Benchmark knobs, settable from a script (`action LabelBench ...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BenchKnobs {
+    pub labels: bool,
+    pub halo: HaloMode,
+    /// Paint the label batches this many times (GPU load multiplier).
+    pub repeat: u32,
+    /// Text offset override in whole pixels (`None` = the style default).
+    pub offset: Option<u8>,
+}
+
+static BENCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn pack(k: BenchKnobs) -> u32 {
+    (k.labels as u32)
+        | ((k.halo as u32) << 1)
+        | (k.repeat.min(255) << 8)
+        | (k.offset.map_or(0, |o| o as u32 + 1) << 16)
+        | (1 << 31)
+}
+
+/// Current knobs (defaults: labels on, stroke halo, repeat 1).
+pub fn bench_knobs() -> BenchKnobs {
+    let v = BENCH.load(std::sync::atomic::Ordering::Relaxed);
+    if v == 0 {
+        return BenchKnobs {
+            labels: true,
+            halo: HaloMode::Stroke,
+            repeat: 1,
+            offset: None,
+        };
+    }
+    BenchKnobs {
+        labels: v & 1 != 0,
+        halo: match (v >> 1) & 3 {
+            0 => HaloMode::Stroke,
+            1 => HaloMode::StrokeCoarse,
+            2 => HaloMode::Offset4,
+            _ => HaloMode::None,
+        },
+        repeat: ((v >> 8) & 255).max(1),
+        offset: match (v >> 16) & 511 {
+            0 => None,
+            n => Some((n - 1) as u8),
+        },
+    }
+}
+
+/// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none` and
+/// `repeat=N` tokens, e.g. `on halo=none repeat=4`.
+pub fn set_bench(spec: &str) -> Result<(), String> {
+    BENCH.store(
+        pack(parse_bench(spec)?),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    Ok(())
+}
+
+/// The pure half of [`set_bench`].
+pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
+    let mut k = BenchKnobs {
+        labels: true,
+        halo: HaloMode::Stroke,
+        repeat: 1,
+        offset: None,
+    };
+    for tok in spec.split_whitespace() {
+        match tok {
+            "on" => k.labels = true,
+            "off" => k.labels = false,
+            _ => {
+                let (key, val) = tok.split_once('=').ok_or(format!("bad token {tok}"))?;
+                match (key, val) {
+                    ("halo", "stroke") => k.halo = HaloMode::Stroke,
+                    ("halo", "coarse") => k.halo = HaloMode::StrokeCoarse,
+                    ("halo", "offset4") => k.halo = HaloMode::Offset4,
+                    ("halo", "none") => k.halo = HaloMode::None,
+                    ("offset", n) => {
+                        k.offset = Some(n.parse().map_err(|_| format!("bad offset {n}"))?)
+                    }
+                    ("repeat", n) => k.repeat = n.parse().map_err(|_| format!("bad repeat {n}"))?,
+                    _ => return Err(format!("bad token {tok}")),
+                }
+            }
+        }
+    }
+    Ok(k)
 }
 
 // ---------------------------------------------------------------------------
@@ -339,18 +455,32 @@ fn build_mesh(face: &rustybuzz::Face<'_>, glyph: u16, style: &LabelStyle) -> Gly
     }
     let fill = triangulate_contours(&oc.contours);
     let mut halo = Vec::new();
-    if style.halo_px > 0.0 {
-        let mut pl = Polyline::default();
-        for c in &oc.contours {
-            let s = simplify_closed(c, style.halo_tol);
-            if s.len() < 3 {
-                continue;
+    let (tol, shape) = match style.halo_mode {
+        HaloMode::StrokeCoarse => (style.halo_tol.max(0.5), Shape::PLAIN),
+        _ => (style.halo_tol, Shape::FULL),
+    };
+    match style.halo_mode {
+        HaloMode::None => {}
+        _ if style.halo_px <= 0.0 => {}
+        HaloMode::Offset4 => {
+            let r = style.halo_px;
+            for (dx, dy) in [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)] {
+                halo.extend(fill.iter().map(|&(x, y)| (x + dx, y + dy)));
             }
-            pl.set(s.iter().copied().chain(std::iter::once(s[0])));
-            let mut tris: Vec<[Pt; 3]> = Vec::new();
-            pl.emit(&mut tris, style.halo_px, Shape::FULL);
-            for t in tris {
-                halo.extend(t);
+        }
+        _ => {
+            let mut pl = Polyline::default();
+            for c in &oc.contours {
+                let s = simplify_closed(c, tol);
+                if s.len() < 3 {
+                    continue;
+                }
+                pl.set(s.iter().copied().chain(std::iter::once(s[0])));
+                let mut tris: Vec<[Pt; 3]> = Vec::new();
+                pl.emit(&mut tris, style.halo_px, shape);
+                for t in tris {
+                    halo.extend(t);
+                }
             }
         }
     }
@@ -663,8 +793,11 @@ impl LineLabelCache {
                 };
                 let (sin, cos) = angle.sin_cos();
                 // Local frame: x along the text, y down. Put the glyph's
-                // baseline-left so the x-height centre sits on the way.
-                let (lx, ly) = (-g.advance / 2.0, 0.35 * size);
+                // baseline-left so the x-height centre sits on the way, then
+                // lift it by `offset_px` toward the top of the glyphs. The
+                // shift lives in the text frame, so it follows the flip: a
+                // positive offset is always "above" the text.
+                let (lx, ly) = (-g.advance / 2.0, 0.35 * size - self.style.offset_px);
                 let ox = px_ + lx * cos - ly * sin;
                 let oy = py_ + lx * sin + ly * cos;
                 let mesh = self.mesh(g.id);
@@ -730,8 +863,18 @@ impl LineLabelCache {
         view: (f32, f32),
         out: &mut FrameOut,
     ) {
-        if zoom < MIN_ZOOM {
+        let knobs = bench_knobs();
+        if zoom < MIN_ZOOM || !knobs.labels {
             return;
+        }
+        let offset = knobs
+            .offset
+            .map_or(LabelStyle::default().offset_px, |o| o as f32);
+        if knobs.halo != self.style.halo_mode || offset != self.style.offset_px {
+            self.style.offset_px = offset;
+            self.style.halo_mode = knobs.halo;
+            self.glyphs.clear();
+            self.layouts.clear();
         }
         if zoom.to_bits() != self.zoom_bits {
             self.layouts.clear();
@@ -973,6 +1116,111 @@ mod tests {
         // Reads top to bottom: rotation +90 degrees.
         let g = &l[0].glyphs[0];
         assert!(g.cos.abs() < 1e-3 && g.sin > 0.99);
+    }
+
+    fn cache_with_offset(offset_px: f32) -> LineLabelCache {
+        LineLabelCache::new(LabelStyle {
+            offset_px,
+            ..LabelStyle::default()
+        })
+    }
+
+    /// Screen position of a glyph's x-height centre line, at the glyph origin.
+    fn xheight_point(g: &PlacedGlyph, size: f32) -> Pt {
+        let h = 0.35 * size;
+        (g.x + h * g.sin, g.y - h * g.cos)
+    }
+
+    #[test]
+    fn zero_offset_centres_text_on_the_way() {
+        let mut c = cache_with_offset(0.0);
+        let l = c.layout("Main Street", &straight(300.0));
+        for g in &l[0].glyphs {
+            assert!(xheight_point(g, 12.0).1.abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn offset_lifts_text_above_the_way_in_both_reading_directions() {
+        let mut c = cache_with_offset(6.0);
+        let east: Vec<Pt> = vec![(0.0, 0.0), (150.0, 0.0), (300.0, 0.0)];
+        let west: Vec<Pt> = east.iter().rev().copied().collect();
+        for pts in [east, west] {
+            let l = c.layout("Main Street", &pts);
+            for g in &l[0].glyphs {
+                // Upright text: up is smaller screen y, 6 px off the line.
+                assert!((xheight_point(g, 12.0).1 + 6.0).abs() < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn offset_on_a_vertical_way_goes_to_the_text_top_side() {
+        // Reads downward (rotated 90 degrees clockwise): the text top points
+        // east, so "above" is +x, whichever way the way is digitised.
+        let mut c = cache_with_offset(6.0);
+        let down: Vec<Pt> = vec![(0.0, 0.0), (0.0, 150.0), (0.0, 300.0)];
+        let up: Vec<Pt> = down.iter().rev().copied().collect();
+        for pts in [down, up] {
+            let l = c.layout("Oak Ave", &pts);
+            for g in &l[0].glyphs {
+                assert!((xheight_point(g, 12.0).0 - 6.0).abs() < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn offset_follows_a_curve_radially() {
+        // Arc of radius 300 whose centre is below it (screen y down), read
+        // west to east: the text top is away from the centre, so each glyph
+        // sits 300 + offset from the centre. Reversed digitisation gives the
+        // same result.
+        let r = 300.0f32;
+        let arc: Vec<Pt> = (0..=24)
+            .map(|i| {
+                let a = (-35.0 + 70.0 * i as f32 / 24.0).to_radians();
+                (r * a.sin(), r - r * a.cos())
+            })
+            .collect();
+        let rev: Vec<Pt> = arc.iter().rev().copied().collect();
+        let mut c = cache_with_offset(6.0);
+        for pts in [arc, rev] {
+            let l = c.layout("Washington", &pts);
+            assert!(!l.is_empty());
+            for g in &l[0].glyphs {
+                let (x, y) = xheight_point(g, 12.0);
+                let d = (x * x + (y - r) * (y - r)).sqrt();
+                assert!((d - (r + 6.0)).abs() < 0.4, "radius {d}");
+            }
+        }
+    }
+
+    #[test]
+    fn collision_boxes_include_the_offset() {
+        let mut flat = cache_with_offset(0.0);
+        let mut lifted = cache_with_offset(10.0);
+        let a = flat.layout("Main Street", &straight(300.0))[0].bbox;
+        let b = lifted.layout("Main Street", &straight(300.0))[0].bbox;
+        assert!((a[1] - b[1] - 10.0).abs() < 1e-3);
+        assert!((a[3] - b[3] - 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bench_spec_parses() {
+        assert_eq!(
+            parse_bench("on halo=none repeat=4"),
+            Ok(BenchKnobs {
+                labels: true,
+                halo: HaloMode::None,
+                repeat: 4,
+                offset: None
+            })
+        );
+        assert!(!parse_bench("off").unwrap().labels);
+        assert!(parse_bench("halo=wat").is_err());
+        // Packing round-trips.
+        let k = parse_bench("halo=offset4 repeat=3").unwrap();
+        assert_eq!(pack(k) & 1, 1);
     }
 
     #[test]

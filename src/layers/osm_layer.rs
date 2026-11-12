@@ -3919,6 +3919,11 @@ impl OsmLayer {
                 origin: point(px(min_x), px(min_y)),
                 size: size(px(max_x - min_x), px(max_y - min_y)),
             };
+            // `repeat` > 1 is a GPU-load multiplier for benchmarking.
+            let repeat = crate::layers::line_labels::bench_knobs().repeat;
+            for _ in 1..repeat {
+                window.paint_path(path.clone(), rgba(color));
+            }
             window.paint_path(path, rgba(color));
         }
         crate::frame_stats::lap("labels.paint", fs_phase);
