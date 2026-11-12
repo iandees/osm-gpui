@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
+use crate::layers::area_labels;
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::labels;
 use crate::layers::merge::{self, MergeStats};
@@ -172,6 +173,20 @@ struct NodeCache {
     flat: Vec<(i64, f64, f64)>,
     /// Resolved style per node, aligned with `flat` by index.
     styles: Vec<NodeStyle>,
+}
+
+/// Areas smaller than this on screen (width, height in px) cannot hold any
+/// label text and are not considered.
+const MIN_AREA_PX: (f32, f32) = (16.0, 11.0);
+
+/// A named area ready for placement: its item plus what painting needs.
+struct AreaItem {
+    item: labels::Item,
+    label: Arc<area_labels::AreaLabel>,
+    line: Arc<ShapedLine>,
+    /// Where the text is centred, Mercator metres.
+    mx: f64,
+    my: f64,
 }
 
 /// How close, in pixels, the pointer must be to a way's line to hover it.
@@ -589,6 +604,8 @@ struct MpEntry {
     /// multipolygon is the old style, whose tags live on the outer way: that
     /// way stays what a click selects.
     tagged: bool,
+    /// The relation's tags, for its area label.
+    tags: HashMap<String, String>,
 }
 
 /// What became of a relation in the cache (tests inspect this).
@@ -718,6 +735,7 @@ fn build_mp(
         bbox: total,
         area: assembled.area(),
         tagged: relation.tags.keys().any(|k| k != "type"),
+        tags: relation.tags.clone(),
     }))
 }
 
@@ -3159,6 +3177,242 @@ impl OsmLayer {
             .clone()
     }
 
+    /// The (cached) label text and style of the area `key` (a closed way or
+    /// a tagged multipolygon relation) at `zoom`.
+    fn area_label_for(
+        &self,
+        cache: &mut labels::LabelCache,
+        key: labels::Key,
+        zoom: f64,
+    ) -> Option<Arc<area_labels::AreaLabel>> {
+        cache.areas.label(key, || {
+            let data = self.osm_data.as_ref()?;
+            if key.0 == labels::KIND_REL {
+                let e = self.mp.entries.get(&key.1)?;
+                if !e.tagged {
+                    // Old-style: the outer way carries the tags and its own
+                    // label.
+                    return None;
+                }
+                let st = self.stylesheet.way_text_style(&e.tags, true, zoom);
+                area_labels::resolve_area_label(&st, &e.tags, zoom)
+            } else {
+                let way = data.ways.get(&key.1)?;
+                if !way.is_closed() {
+                    return None;
+                }
+                let st = self.stylesheet.way_text_style(&way.tags, true, zoom);
+                area_labels::resolve_area_label(&st, &way.tags, zoom)
+            }
+        })
+    }
+
+    /// The (cached) label geometry of the area `key`: its polygons in
+    /// Mercator metres with their poles of inaccessibility. Keyed by a hash
+    /// of the vertices, so it is rebuilt exactly when an edit changed them.
+    fn area_geom_for(
+        &self,
+        cache: &mut labels::LabelCache,
+        key: labels::Key,
+    ) -> Option<Arc<area_labels::AreaGeom>> {
+        use area_labels::{AreaGeom, Fingerprint};
+        let xy = |v: &[(i64, f64, f64)]| -> Vec<(f64, f64)> {
+            v.iter().map(|&(_, x, y)| (x, y)).collect()
+        };
+        if key.0 == labels::KIND_REL {
+            let e = self.mp.entries.get(&key.1)?;
+            let mut fp = Fingerprint::default();
+            for p in &e.polygons {
+                for k in 0..p.ring_count() {
+                    fp.ring(p.ring(k).iter().map(|&(_, x, y)| (x, y)));
+                }
+            }
+            cache.areas.geom(key, fp, || {
+                AreaGeom::build(
+                    e.polygons
+                        .iter()
+                        .map(|p| (0..p.ring_count()).map(|k| xy(p.ring(k))).collect())
+                        .collect(),
+                )
+            })
+        } else {
+            let idx = *self.way_id_to_index.get(&key.1)?;
+            let verts = &self.way_vertices[idx];
+            if verts.len() < 4 || verts.first()?.0 != verts.last()?.0 {
+                return None;
+            }
+            let mut fp = Fingerprint::default();
+            fp.ring(verts.iter().map(|&(_, x, y)| (x, y)));
+            cache
+                .areas
+                .geom(key, fp, || AreaGeom::build(vec![vec![xy(verts)]]))
+        }
+    }
+
+    /// Locate and shape one area's label for the current view. `None` when
+    /// it has no geometry, does not fit, or (unless `forced`) fits nowhere.
+    #[allow(clippy::too_many_arguments)]
+    fn locate_area_label(
+        &self,
+        cache: &mut labels::LabelCache,
+        view: &area_labels::AreaView,
+        key: labels::Key,
+        label: &Arc<area_labels::AreaLabel>,
+        forced: bool,
+        budget: &mut usize,
+        window: &mut Window,
+    ) -> Option<(area_labels::Located, Arc<ShapedLine>)> {
+        let geom = self.area_geom_for(cache, key)?;
+        let line = cache.shapes.get(window, &label.text, label.font_px);
+        let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
+        let scales = area_labels::font_scales(label.font_px);
+        let at = area_labels::locate(&geom, view, size, &scales, forced, budget)?;
+        let line = if at.scale == 1.0 {
+            line
+        } else {
+            cache
+                .shapes
+                .get(window, &label.text, label.font_px * at.scale)
+        };
+        Some((at, line))
+    }
+
+    /// The named areas in view as placement items (`Anchor::Center`, no
+    /// marker). Cheap for what is skipped: tiny areas are dropped on their
+    /// cached bounding box before any lookup, labels and geometry are cached
+    /// across placements, and only the top `MAX_AREA_CANDIDATES` by priority
+    /// are located and shaped. An area whose text equals that of a node label
+    /// inside it (a building and its own POI node) is dropped: the point
+    /// label is the better one.
+    #[allow(clippy::too_many_arguments)]
+    fn area_items(
+        &self,
+        cache: &mut labels::LabelCache,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        forced: &HashSet<labels::Key>,
+        node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
+        window: &mut Window,
+    ) -> Vec<AreaItem> {
+        let zoom = cam.zoom;
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, cam.w, cam.h);
+        let ppm = view.ppm;
+        // (key, label, longer side in px)
+        let mut found: Vec<(labels::Key, Arc<area_labels::AreaLabel>, f32)> = Vec::new();
+        let tiny =
+            |w: f64, h: f64| (w * ppm) < MIN_AREA_PX.0 as f64 || (h * ppm) < MIN_AREA_PX.1 as f64;
+        let env = AABB::from_corners([vmin_x, vmin_y], [vmax_x, vmax_y]);
+        for g in self.way_index.locate_in_envelope_intersecting(env) {
+            let id = g.data;
+            let key = (labels::KIND_WAY, id);
+            let Some(&idx) = self.way_id_to_index.get(&id) else {
+                continue;
+            };
+            let Some(b) = self.way_bboxes[idx] else {
+                continue;
+            };
+            let (bw, bh) = (b.max_x - b.min_x, b.max_y - b.min_y);
+            if tiny(bw, bh) && !forced.contains(&key) {
+                continue;
+            }
+            if let Some(l) = self.area_label_for(cache, key, zoom) {
+                found.push((key, l, ((bw.max(bh)) * ppm) as f32));
+            }
+        }
+        for (&id, e) in &self.mp.entries {
+            let key = (labels::KIND_REL, id);
+            let b = &e.bbox;
+            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+                continue;
+            }
+            let (bw, bh) = (b.max_x - b.min_x, b.max_y - b.min_y);
+            if tiny(bw, bh) && !forced.contains(&key) {
+                continue;
+            }
+            if let Some(l) = self.area_label_for(cache, key, zoom) {
+                found.push((key, l, ((bw.max(bh)) * ppm) as f32));
+            }
+        }
+        // A member way repeating its relation's name is the same label.
+        let rel_text: HashMap<i64, &SharedString> = found
+            .iter()
+            .filter(|f| f.0 .0 == labels::KIND_REL)
+            .map(|f| (f.0 .1, &f.1.text))
+            .collect();
+        if !rel_text.is_empty() {
+            let dup: HashSet<labels::Key> = found
+                .iter()
+                .filter(|f| f.0 .0 == labels::KIND_WAY)
+                .filter(|f| {
+                    self.mp.way_to_rels.get(&f.0 .1).is_some_and(|rels| {
+                        rels.iter().any(|r| rel_text.get(r) == Some(&&f.1.text))
+                    })
+                })
+                .map(|f| f.0)
+                .collect();
+            found.retain(|f| !dup.contains(&f.0));
+        }
+        let rank = |f: &(labels::Key, Arc<area_labels::AreaLabel>, f32)| {
+            (
+                forced.contains(&f.0),
+                f.1.priority + area_labels::size_bonus(f.2),
+            )
+        };
+        found.sort_by(|a, b| rank(b).cmp(&rank(a)).then(a.0.cmp(&b.0)));
+        found.truncate(area_labels::MAX_AREA_CANDIDATES);
+
+        let mut budget = area_labels::CLIP_BUDGET;
+        let mut out = Vec::with_capacity(found.len());
+        for (key, label, bpx) in found {
+            let is_forced = forced.contains(&key);
+            let Some((at, line)) =
+                self.locate_area_label(cache, &view, key, &label, is_forced, &mut budget, window)
+            else {
+                continue;
+            };
+            if !is_forced && Self::names_a_node_inside(node_texts, &label.text, &at, &view) {
+                continue;
+            }
+            let sp = viewport.mercator_to_screen(at.mx, at.my);
+            let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
+            out.push(AreaItem {
+                item: labels::Item {
+                    key,
+                    center: (f32::from(sp.x), f32::from(sp.y)),
+                    marker_r: 0.0,
+                    icon_r: None,
+                    text: Some((w, h, labels::Anchor::Center)),
+                    priority: label.priority + area_labels::size_bonus(bpx),
+                    forced: is_forced,
+                },
+                label,
+                line,
+                mx: at.mx,
+                my: at.my,
+            });
+        }
+        out
+    }
+
+    /// Whether a node label with the same `text` sits near the located
+    /// area label (within a text's width of it): then the area label would
+    /// only repeat it.
+    fn names_a_node_inside(
+        node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
+        text: &SharedString,
+        at: &area_labels::Located,
+        view: &area_labels::AreaView,
+    ) -> bool {
+        let Some(nodes) = node_texts.get(text) else {
+            return false;
+        };
+        let reach = 60.0 / view.ppm;
+        nodes
+            .iter()
+            .any(|&(x, y)| (x - at.mx).abs() < reach && (y - at.my).abs() < reach)
+    }
+
     /// Place the labels and icons of the nodes in view (the expensive half;
     /// run when the camera settles, not every frame).
     fn place_labels(
@@ -3167,6 +3421,7 @@ impl OsmLayer {
         viewport: &Viewport,
         cam: labels::CameraSig,
         selected: &HashSet<i64>,
+        forced_areas: &HashSet<labels::Key>,
         window: &mut Window,
     ) -> labels::Placement {
         let fs = crate::frame_stats::start();
@@ -3245,7 +3500,18 @@ impl OsmLayer {
                 None => lines.push(None),
             }
         }
-        let items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
+        let mut items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
+        // Named areas (after the nodes, so their item indices follow).
+        let n_nodes = items.len();
+        let mut node_texts: HashMap<SharedString, Vec<(f64, f64)>> = HashMap::new();
+        for (idx, _, l) in &cands {
+            if let Some(t) = &l.text {
+                let (_, mx, my) = self.node_cache.flat[*idx];
+                node_texts.entry(t.clone()).or_default().push((mx, my));
+            }
+        }
+        let areas = self.area_items(cache, viewport, cam, forced_areas, &node_texts, window);
+        items.extend(areas.iter().map(|a| a.item.clone()));
         let prev = cache.prev_state();
         let out = labels::place(
             &items,
@@ -3256,6 +3522,26 @@ impl OsmLayer {
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
         for p in out {
+            if p.item >= n_nodes {
+                let a = &areas[p.item - n_nodes];
+                if let Some((_, r)) = p.text {
+                    placed.push(labels::PlacedLabel::new_area(
+                        a.item.key.0,
+                        a.item.key.1,
+                        a.mx,
+                        a.my,
+                        labels::PlacedText {
+                            line: a.line.clone(),
+                            dx: r.x0 - a.item.center.0,
+                            dy: r.y0 - a.item.center.1,
+                            color: a.label.color,
+                            halo_color: a.label.halo_color,
+                            halo_radius: a.label.halo_radius,
+                        },
+                    ));
+                }
+                continue;
+            }
             let (idx, item, l) = &cands[p.item];
             let (id, mx, my) = self.node_cache.flat[*idx];
             let icon = if p.icon {
@@ -3336,7 +3622,17 @@ impl OsmLayer {
                 .filter(|f| f.layer_id == self.id && f.kind == FeatureKind::Node)
                 .map(|f| f.id)
                 .collect();
-            let p = self.place_labels(&mut cache, viewport, cam, &ids, window);
+            let forced_areas: HashSet<labels::Key> = selected
+                .iter()
+                .chain(hovered)
+                .filter(|f| f.layer_id == self.id)
+                .filter_map(|f| match f.kind {
+                    FeatureKind::Way => Some((labels::KIND_WAY, f.id)),
+                    FeatureKind::Relation => Some((labels::KIND_REL, f.id)),
+                    FeatureKind::Node => None,
+                })
+                .collect();
+            let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
             cache.store(p);
         }
         if matches!(step, labels::Step::DrawAndWait | labels::Step::HideAndWait) {
@@ -3355,7 +3651,12 @@ impl OsmLayer {
             return;
         };
         for l in &placement.labels {
-            let sp = viewport.mercator_to_screen(l.mx, l.my) + self.drag_preview_offset(l.id);
+            let drag = if l.kind == labels::KIND_NODE {
+                self.drag_preview_offset(l.id)
+            } else {
+                Point::default()
+            };
+            let sp = viewport.mercator_to_screen(l.mx, l.my) + drag;
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
@@ -3412,6 +3713,55 @@ impl OsmLayer {
             };
             let at = point(sp.x + ox, sp.y + oy);
             labels::paint_text(window, &t, point(at.x + px(t.dx), at.y + px(t.dy)));
+        }
+        // Likewise a selected or hovered area whose label was not placed
+        // (the selection changed since): shown at its label point, fitted or
+        // not, collision ignored.
+        let mut forced_area_budget = area_labels::CLIP_BUDGET;
+        let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, w, h);
+        for f in selected.iter().chain(hovered) {
+            let kind = match f.kind {
+                FeatureKind::Way => labels::KIND_WAY,
+                FeatureKind::Relation => labels::KIND_REL,
+                FeatureKind::Node => continue,
+            };
+            if f.layer_id != self.id
+                || placement
+                    .labels
+                    .iter()
+                    .any(|l| l.kind == kind && l.id == f.id && l.text.is_some())
+            {
+                continue;
+            }
+            let key = (kind, f.id);
+            let Some(label) = self.area_label_for(&mut cache, key, zoom) else {
+                continue;
+            };
+            let Some((at, line)) = self.locate_area_label(
+                &mut cache,
+                &view,
+                key,
+                &label,
+                true,
+                &mut forced_area_budget,
+                window,
+            ) else {
+                continue;
+            };
+            let sp = viewport.mercator_to_screen(at.mx, at.my);
+            if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
+                continue;
+            }
+            let t = labels::PlacedText {
+                dx: -f32::from(line.width) / 2.0,
+                dy: -f32::from(line.ascent + line.descent) / 2.0,
+                line,
+                color: label.color,
+                halo_color: label.halo_color,
+                halo_radius: label.halo_radius,
+            };
+            let atp = point(sp.x + ox, sp.y + oy);
+            labels::paint_text(window, &t, point(atp.x + px(t.dx), atp.y + px(t.dy)));
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);
@@ -7225,6 +7575,139 @@ mod tests {
             Stylesheet::parse("area[building] { fill-color: #808080; fill-opacity: 0.4; }")
                 .unwrap(),
         )
+    }
+
+    fn area_label_sheet() -> Arc<Stylesheet> {
+        Arc::new(Stylesheet::parse("area|z17-[building], area[leisure] { text: name; }").unwrap())
+    }
+
+    #[test]
+    fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", square_ring_data());
+        layer.set_stylesheet(area_label_sheet());
+        let mut cache = crate::layers::labels::LabelCache::default();
+        let key = (crate::layers::labels::KIND_WAY, 10);
+        let validate = |layer: &OsmLayer, cache: &mut crate::layers::labels::LabelCache| {
+            cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 18);
+        };
+        validate(&layer, &mut cache);
+        assert!(
+            layer.area_label_for(&mut cache, key, 18.0).is_none(),
+            "no name, no label"
+        );
+
+        layer.set_tag(FeatureKind::Way, 10, "name", "Hall");
+        validate(&layer, &mut cache);
+        let l = layer.area_label_for(&mut cache, key, 18.0).unwrap();
+        assert_eq!(l.text.as_ref(), "Hall");
+        cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 16);
+        assert!(
+            layer.area_label_for(&mut cache, key, 16.5).is_none(),
+            "below the rule's zoom (a fresh bucket)"
+        );
+        validate(&layer, &mut cache);
+
+        let g1 = layer.area_geom_for(&mut cache, key).unwrap();
+        let g2 = layer.area_geom_for(&mut cache, key).unwrap();
+        assert!(Arc::ptr_eq(&g1, &g2));
+        assert_eq!(cache.areas.builds, 1, "computed once");
+
+        // A tag edit leaves the geometry alone.
+        layer.set_tag(FeatureKind::Way, 10, "name", "Hall 2");
+        validate(&layer, &mut cache);
+        assert_eq!(
+            layer
+                .area_label_for(&mut cache, key, 18.0)
+                .unwrap()
+                .text
+                .as_ref(),
+            "Hall 2"
+        );
+        let _ = layer.area_geom_for(&mut cache, key).unwrap();
+        assert_eq!(cache.areas.builds, 1);
+
+        // Moving a corner rebuilds it, and the pole moves.
+        layer.commit_node_moves(&[(3, 40.004, -73.997)]);
+        validate(&layer, &mut cache);
+        let g3 = layer.area_geom_for(&mut cache, key).unwrap();
+        assert_eq!(cache.areas.builds, 2, "a vertex edit invalidates");
+        assert!(g3.polys[0].bbox.2 > g1.polys[0].bbox.2);
+        assert_ne!(
+            (g3.polys[0].pole.x, g3.polys[0].pole.y),
+            (g1.polys[0].pole.x, g1.polys[0].pole.y)
+        );
+    }
+
+    #[test]
+    fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
+        use crate::osm::{MemberType, OsmMember, OsmRelation};
+        let mk = |id, dlat: f64, dlon: f64| OsmNode {
+            id,
+            lat: 40.0 + dlat,
+            lon: -74.0 + dlon,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let way = |id, nodes: Vec<i64>| OsmWay {
+            id,
+            nodes,
+            version: 1,
+            tags: empty_tags(),
+        };
+        let mut base = (*data_with(
+            vec![
+                mk(1, 0.0, 0.0),
+                mk(2, 0.0, 0.01),
+                mk(3, 0.01, 0.01),
+                mk(4, 0.01, 0.0),
+                mk(5, 0.002, 0.002),
+                mk(6, 0.002, 0.008),
+                mk(7, 0.008, 0.008),
+                mk(8, 0.008, 0.002),
+            ],
+            vec![way(10, vec![1, 2, 3, 4, 1]), way(11, vec![5, 6, 7, 8, 5])],
+        ))
+        .clone();
+        let member = |reference, role: &str| OsmMember {
+            member_type: MemberType::Way,
+            reference,
+            role: role.to_string(),
+        };
+        let mut tags = HashMap::new();
+        for (k, v) in [
+            ("type", "multipolygon"),
+            ("leisure", "park"),
+            ("name", "Ring Park"),
+        ] {
+            tags.insert(k.to_string(), v.to_string());
+        }
+        base.relations.push(OsmRelation {
+            id: 500,
+            version: 1,
+            tags,
+            members: vec![member(10, "outer"), member(11, "inner")],
+        });
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
+        layer.set_stylesheet(area_label_sheet());
+        let mut cache = crate::layers::labels::LabelCache::default();
+        cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 17);
+        let key = (crate::layers::labels::KIND_REL, 500);
+        let l = layer.area_label_for(&mut cache, key, 17.0).unwrap();
+        assert_eq!(l.text.as_ref(), "Ring Park");
+        assert_eq!(l.priority, 300);
+        let g = layer.area_geom_for(&mut cache, key).unwrap();
+        assert_eq!(g.polys.len(), 1);
+        assert_eq!(g.polys[0].rings.len(), 2, "outer ring plus the hole");
+        let hole_edge = crate::coordinates::lat_lon_to_mercator(40.002, -74.002);
+        let hole_far = crate::coordinates::lat_lon_to_mercator(40.008, -73.992);
+        let p = g.polys[0].pole;
+        let in_hole =
+            p.x > hole_edge.0 && p.x < hole_far.0 && p.y > hole_edge.1 && p.y < hole_far.1;
+        assert!(!in_hole, "pole {p:?} is in the hole");
+        // The member ways carry no tags, so they get no label of their own.
+        assert!(layer
+            .area_label_for(&mut cache, (crate::layers::labels::KIND_WAY, 10), 17.0)
+            .is_none());
     }
 
     #[test]

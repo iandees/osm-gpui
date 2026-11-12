@@ -514,6 +514,146 @@ fn main() {
 
     multipolygon_section(&data);
     labels_section();
+    area_labels_section();
+}
+
+/// Area labels: polylabel (cold, once per area), the fingerprint-keyed cache
+/// hit (warm, paid by every placement), and fit-gated locating of 300 named
+/// areas. Shaping and painting need a window (`OSM_GPUI_FRAME_STATS` laps).
+fn area_labels_section() {
+    use osm_gpui::layers::area_labels::{
+        font_scales, locate, AreaCaches, AreaGeom, AreaView, Fingerprint, CLIP_BUDGET,
+    };
+    type Pt = (f64, f64);
+    println!("\n-- area labels (z17, 1600x1000, 300 named areas) --");
+    let mut rng = Lcg(11);
+    let (vw, vh) = (1600.0f64, 1000.0f64);
+    let ppm = 0.837; // pixels per Mercator metre at z17
+    let (span_x, span_y) = (vw / ppm, vh / ppm);
+    // A wobbly blob of `n` vertices.
+    let blob = |rng: &mut Lcg, cx: f64, cy: f64, rx: f64, ry: f64, n: usize| -> Vec<Pt> {
+        (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                let k = 1.0 + (rng.f64() - 0.5) * 0.25;
+                (cx + rx * k * a.cos(), cy + ry * k * a.sin())
+            })
+            .collect()
+    };
+    let mut areas: Vec<Vec<Vec<Pt>>> = Vec::new();
+    // 200 buildings: rectangles and L shapes.
+    for _ in 0..200 {
+        let (x, y) = (rng.f64() * span_x, rng.f64() * span_y);
+        let (w, h) = (12.0 + rng.f64() * 40.0, 10.0 + rng.f64() * 30.0);
+        let mut ring = vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+        if rng.next().is_multiple_of(3) {
+            ring = vec![
+                (x, y),
+                (x + w, y),
+                (x + w, y + h * 0.4),
+                (x + w * 0.4, y + h * 0.4),
+                (x + w * 0.4, y + h),
+                (x, y + h),
+            ];
+        }
+        areas.push(vec![ring]);
+    }
+    // 60 parks of 60-120 vertices, a third with a pond-sized hole.
+    for i in 0..60 {
+        let (cx, cy) = (rng.f64() * span_x, rng.f64() * span_y);
+        let n = 60 + (rng.next() % 60) as usize;
+        let (rx, ry) = (40.0 + rng.f64() * 120.0, 30.0 + rng.f64() * 90.0);
+        let mut rings = vec![blob(&mut rng, cx, cy, rx, ry, n)];
+        if i % 3 == 0 {
+            rings.push(blob(&mut rng, cx, cy, rx * 0.3, ry * 0.3, 24));
+        }
+        areas.push(rings);
+    }
+    // 30 lakes with 200 vertices.
+    for _ in 0..30 {
+        let (cx, cy) = (rng.f64() * span_x, rng.f64() * span_y);
+        let (rx, ry) = (80.0 + rng.f64() * 200.0, 50.0 + rng.f64() * 120.0);
+        areas.push(vec![blob(&mut rng, cx, cy, rx, ry, 200)]);
+    }
+    // 10 complex ones: 2000 vertices (a coastline-like wobble), 3 holes.
+    for _ in 0..10 {
+        let (cx, cy) = (rng.f64() * span_x, rng.f64() * span_y);
+        let mut rings = vec![blob(&mut rng, cx, cy, 300.0, 200.0, 2000)];
+        for k in 0..3 {
+            rings.push(blob(
+                &mut rng,
+                cx + (k as f64 - 1.0) * 120.0,
+                cy,
+                30.0,
+                25.0,
+                40,
+            ));
+        }
+        areas.push(rings);
+    }
+    let n_vertices: usize = areas.iter().flatten().map(|r| r.len()).sum();
+    println!("   ({} areas, {n_vertices} vertices)", areas.len());
+
+    let fp = |a: &Vec<Vec<Pt>>| {
+        let mut f = Fingerprint::default();
+        for r in a {
+            f.ring(r.iter().copied());
+        }
+        f
+    };
+    // Cold: every area's pole (the first placement after load; an edit only
+    // redoes the areas it touched).
+    bench(
+        "area labels: polylabel x300 (cold, then cached)",
+        10,
+        || {
+            let mut n = 0u64;
+            for a in &areas {
+                n += AreaGeom::build(vec![a.clone()])
+                    .map(|g| g.polys.len() as u64)
+                    .unwrap_or(0);
+            }
+            n
+        },
+    );
+    let mut caches = AreaCaches::default();
+    for (i, a) in areas.iter().enumerate() {
+        let _ = caches.geom((1, i as i64), fp(a), || AreaGeom::build(vec![a.clone()]));
+    }
+    // Warm: what every settle-time placement pays for geometry.
+    bench(
+        "area labels: geometry cache hit x300 (hash+lookup)",
+        200,
+        || {
+            let mut n = 0u64;
+            for (i, a) in areas.iter().enumerate() {
+                let g = caches.geom((1, i as i64), fp(a), || panic!("miss"));
+                n += g.is_some() as u64;
+            }
+            n
+        },
+    );
+    let geoms: Vec<_> = areas
+        .iter()
+        .map(|a| AreaGeom::build(vec![a.clone()]))
+        .collect();
+    let view = AreaView::new(0.0, span_x, span_y, vw as f32, vh as f32);
+    let scales = font_scales(12.0);
+    let mut shown = 0usize;
+    bench(
+        "area labels: fit-gate + locate x300 (warm geometry)",
+        100,
+        || {
+            let mut budget = CLIP_BUDGET;
+            let mut n = 0u64;
+            for g in geoms.iter().flatten() {
+                n += locate(g, &view, (70.0, 13.0), &scales, false, &mut budget).is_some() as u64;
+            }
+            shown = n as usize;
+            n
+        },
+    );
+    println!("   ({shown} of {} fit 70x13 px text)", areas.len());
 }
 
 /// A circle of `n` nodes of radius `radius_deg` degrees around

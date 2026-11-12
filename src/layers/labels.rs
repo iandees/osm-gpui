@@ -14,6 +14,8 @@
 //!   cache, and the last [`Placement`]. Placement is recomputed when the
 //!   camera settles, not on every pan frame: a placed label stores its
 //!   Mercator anchor and a screen offset, so a pan just re-projects it.
+//! * [`crate::layers::area_labels`]: names of closed ways and multipolygons,
+//!   placed through the same grid as [`Anchor::Center`] items.
 //! * [`paint_text`], [`paint_icon`]: drawing. Text goes through
 //!   `Window::paint_glyph` directly (not `ShapedLine::paint`, which opens a
 //!   paint layer per call), so a halo is the same glyphs repainted at offsets
@@ -22,6 +24,7 @@
 //! Labels are never hit-tested: nothing here is in any spatial index the hit
 //! tests use.
 
+use crate::layers::area_labels::AreaCaches;
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
 use gpui::{
@@ -187,6 +190,9 @@ pub enum Anchor {
     Left,
     Above,
     Below,
+    /// Centred on the item's position (area labels). Never falls back to a
+    /// side.
+    Center,
 }
 
 impl Anchor {
@@ -203,6 +209,9 @@ impl Anchor {
 /// The anchors to try, in order: the one used last time (hysteresis), the
 /// preferred one, then right, left, above, below.
 pub fn anchor_order(pref: Anchor, prev: Option<Anchor>) -> Vec<Anchor> {
+    if pref == Anchor::Center {
+        return vec![Anchor::Center];
+    }
     let mut out = Vec::with_capacity(5);
     for a in prev.into_iter().chain([
         pref,
@@ -227,6 +236,7 @@ pub fn label_rect(anchor: Anchor, c: (f32, f32), reach: f32, gap: f32, w: f32, h
         Anchor::Left => Rect::new(c.0 - d - w, c.1 - h / 2.0, c.0 - d, c.1 + h / 2.0),
         Anchor::Above => Rect::new(c.0 - w / 2.0, c.1 - d - h, c.0 + w / 2.0, c.1 - d),
         Anchor::Below => Rect::new(c.0 - w / 2.0, c.1 + d, c.0 + w / 2.0, c.1 + d + h),
+        Anchor::Center => Rect::around(c.0, c.1, w / 2.0, h / 2.0),
     }
 }
 
@@ -237,6 +247,9 @@ pub fn label_rect(anchor: Anchor, c: (f32, f32), reach: f32, gap: f32, w: f32, h
 /// A feature key: `(kind, id)`, so node and way ids never clash.
 pub type Key = (u8, i64);
 pub const KIND_NODE: u8 = 0;
+/// Area labels: a closed way, or a multipolygon relation.
+pub const KIND_WAY: u8 = 1;
+pub const KIND_REL: u8 = 2;
 
 /// One thing to place: a marker, optionally with an icon and/or a text.
 #[derive(Debug, Clone)]
@@ -673,6 +686,8 @@ pub struct PlacedIcon {
 
 #[derive(Clone)]
 pub struct PlacedLabel {
+    /// `KIND_NODE` for points; area labels use `KIND_WAY` / `KIND_REL`.
+    pub kind: u8,
     pub id: i64,
     pub mx: f64,
     pub my: f64,
@@ -694,12 +709,27 @@ impl PlacedLabel {
             None => (None, None),
         };
         Self {
+            kind: KIND_NODE,
             id,
             mx,
             my,
             icon,
             text,
             anchor,
+        }
+    }
+
+    /// A text-only label of an area (`KIND_WAY` / `KIND_REL`), centred on
+    /// the Mercator point `(mx, my)`.
+    pub fn new_area(kind: u8, id: i64, mx: f64, my: f64, text: PlacedText) -> Self {
+        Self {
+            kind,
+            id,
+            mx,
+            my,
+            icon: None,
+            text: Some(text),
+            anchor: Some(Anchor::Center),
         }
     }
 }
@@ -748,6 +778,8 @@ pub struct LabelCache {
     pub icons: IconCache,
     /// Lazily resolved labels of nodes seen in view, valid for `built_for`.
     pub nodes: HashMap<i64, Option<Arc<NodeLabel>>>,
+    /// Area labels and their cached label points; see [`area_labels`].
+    pub areas: AreaCaches,
     built_for: Option<(u64, usize, i32)>,
     pub placement: Option<Placement>,
     last_cam: Option<CameraSig>,
@@ -760,6 +792,7 @@ impl Default for LabelCache {
             shapes: ShapeCache::default(),
             icons: IconCache::new(),
             nodes: HashMap::new(),
+            areas: AreaCaches::default(),
             built_for: None,
             placement: None,
             last_cam: None,
@@ -774,6 +807,7 @@ impl LabelCache {
     pub fn validate(&mut self, revision: u64, sheet: usize, bucket: i32) {
         if self.built_for != Some((revision, sheet, bucket)) {
             self.nodes.clear();
+            self.areas.clear_labels();
             self.built_for = Some((revision, sheet, bucket));
         }
     }
@@ -833,7 +867,7 @@ impl LabelCache {
                     .iter()
                     .map(|l| {
                         (
-                            (KIND_NODE, l.id),
+                            (l.kind, l.id),
                             Prev {
                                 icon: l.icon.is_some(),
                                 anchor: l.anchor,
@@ -1407,5 +1441,107 @@ mod tests {
         assert_eq!(halo_offsets(0.5).len(), 4);
         assert_eq!(halo_offsets(1.5).len(), 4);
         assert_eq!(halo_offsets(2.0).len(), 8);
+    }
+
+    fn area_item(id: i64, x: f32, y: f32, w: f32, priority: i32) -> Item {
+        Item {
+            key: (KIND_WAY, id),
+            center: (x, y),
+            marker_r: 0.0,
+            icon_r: None,
+            text: Some((w, 12.0, Anchor::Center)),
+            priority,
+            forced: false,
+        }
+    }
+
+    #[test]
+    fn an_area_label_is_centred_and_never_slides_to_a_side() {
+        let out = place(
+            &[area_item(1, 200.0, 150.0, 60.0, 300)],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+        );
+        let (a, r) = out[0].text.unwrap();
+        assert_eq!(a, Anchor::Center);
+        assert_eq!((r.x0, r.x1, r.y0, r.y1), (170.0, 230.0, 144.0, 156.0));
+        // Blocked: dropped, not moved.
+        let fixed = [Rect::new(190.0, 140.0, 210.0, 160.0)];
+        assert!(place(
+            &[area_item(1, 200.0, 150.0, 60.0, 300)],
+            &fixed,
+            &HashMap::new(),
+            &cfg()
+        )
+        .is_empty());
+        // Near the edge so the centred box leaves the view: dropped.
+        assert!(place(
+            &[area_item(1, 10.0, 150.0, 60.0, 300)],
+            &[],
+            &HashMap::new(),
+            &cfg()
+        )
+        .is_empty());
+        assert_eq!(
+            anchor_order(Anchor::Center, Some(Anchor::Left)),
+            vec![Anchor::Center]
+        );
+    }
+
+    #[test]
+    fn area_labels_yield_to_node_labels_and_each_other_by_priority() {
+        // The node's label (priority 400) sits where the area's centred text is.
+        let mut node = item(1, 150.0, 150.0, 50.0, 400);
+        node.marker_r = 3.0;
+        let area = area_item(2, 200.0, 150.0, 80.0, 330);
+        let out = place(&[node, area], &[], &HashMap::new(), &cfg());
+        assert!(
+            out.iter().all(|p| p.item != 1),
+            "the area label is dropped, the node's wins"
+        );
+        // Two overlapping areas: the higher tier wins; a node id never clashes
+        // with a way id (distinct kinds).
+        let lake = area_item(5, 200.0, 150.0, 80.0, 320);
+        let bld = Item {
+            key: (KIND_NODE, 5),
+            ..area_item(5, 210.0, 150.0, 80.0, 250)
+        };
+        let out = place(&[bld, lake], &[], &HashMap::new(), &cfg());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].item, 1);
+    }
+
+    #[test]
+    fn a_selected_area_is_kept_even_where_it_collides() {
+        let big = area_item(1, 200.0, 150.0, 80.0, 330);
+        let mut sel = area_item(2, 210.0, 150.0, 80.0, 250);
+        sel.forced = true;
+        let out = place(&[big, sel], &[], &HashMap::new(), &cfg());
+        assert!(out.iter().any(|p| p.item == 1 && p.text.is_some()));
+    }
+
+    #[test]
+    fn hysteresis_applies_to_area_keys() {
+        let a = area_item(1, 200.0, 150.0, 90.0, 300);
+        let b = area_item(2, 215.0, 150.0, 90.0, 320);
+        assert_eq!(
+            place(&[a.clone(), b.clone()], &[], &HashMap::new(), &cfg())[0].item,
+            1
+        );
+        let prev: HashMap<Key, Prev> = [(
+            a.key,
+            Prev {
+                icon: false,
+                anchor: Some(Anchor::Center),
+            },
+        )]
+        .into();
+        let out = place(&[a, b], &[], &prev, &cfg());
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].item, 0,
+            "the area shown last time keeps its spot within a tier"
+        );
     }
 }

@@ -1,0 +1,82 @@
+# Area labels (names of closed ways and multipolygons) over
+# docs/screenshots/fixtures/areas.osm, laid out in ground metres east/north of
+# (40.7128, -74.0060):
+#   - eight named buildings of different sizes, a long-named depot, four tiny
+#     sheds, an L-shaped "Annex", and "Corner Cafe" (a building whose name is
+#     repeated by a cafe node: only the node label is drawn)
+#   - Riverside Park, a multipolygon relation with a pond (hole)
+#   - Mirror Lake, Duck Pond (small), Ash Woods, Market Square (landuse)
+#   - "Linear Greenway Trail Park": a long thin L whose label must slide along
+#     an arm
+#   - Great Meadow Park: a park far bigger than the view, to show the label
+#     following the visible part when its own pole is off-screen
+# Run with
+#   OSM_GPUI_FRAME_STATS=1 OSM_GPUI_FRAME_STATS_NO_TILES=1 \
+#     cargo run --release -- --script docs/screenshots/areas.osmscript
+
+window 1200 800
+load_osm docs/screenshots/fixtures/areas.osm
+viewport 40.714147 -74.006000 16
+wait_idle 5s
+wait 600ms
+capture docs/screenshots/areas-01-z16.png
+
+viewport 40.714147 -74.005407 17
+wait 600ms
+capture docs/screenshots/areas-02-z17.png
+
+viewport 40.713519 -74.008370 17
+wait 600ms
+capture docs/screenshots/areas-03-z17-greenway.png
+
+viewport 40.714597 -74.008370 18
+wait 600ms
+capture docs/screenshots/areas-04-z18-buildings.png
+
+viewport 40.715225 -74.009200 19
+wait 600ms
+capture docs/screenshots/areas-05-z19-sheds-annex.png
+
+# A selected tiny shed keeps its label even though the text does not fit.
+viewport 40.715252 -74.009135 19
+wait 600ms
+click 473,388
+wait 600ms
+assert_selected way 2011
+capture docs/screenshots/areas-06-selected-shed.png
+
+# A park bigger than the view: its pole is off-screen, the label follows the
+# visible part.
+viewport 40.714597 -73.996519 17
+wait 600ms
+capture docs/screenshots/areas-07-giant-park-a.png
+viewport 40.720885 -73.985853 17
+wait 600ms
+capture docs/screenshots/areas-08-giant-park-b.png
+
+# Pan, warm, and zoom, cold.
+viewport 40.714597 -74.008370 18
+wait 600ms
+frame_stats discard
+drag 300,400 360,420
+wait 150ms
+drag 360,420 300,400
+wait 150ms
+drag 300,400 360,420
+wait 150ms
+drag 360,420 300,400
+wait 600ms
+frame_stats areas_pan_warm
+
+frame_stats discard
+scroll 488,388 dy=3
+wait 500ms
+scroll 488,388 dy=-3
+wait 500ms
+scroll 488,388 dy=3
+wait 500ms
+scroll 488,388 dy=-3
+wait 500ms
+frame_stats areas_zoom_cold
+
+log done
