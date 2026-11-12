@@ -1,0 +1,20 @@
+/* osm-gpui "Wireframe" MapCSS stylesheet, after JOSM's wireframe view.
+
+   A black canvas with no imagery and no fills. Every way is the same 1px
+   dark blue line, whatever its tags. Ways that belong to a relation get a thin
+   cyan outline around the line. Nodes are drawn from zoom 16: the vertices of
+   ways as small yellow hollow squares, nodes shared by several ways as
+   slightly larger squares, and tagged or free-standing nodes as yellow
+   crosses. There are no labels or icons. Selection and hover highlighting is
+   drawn by the renderer on top, in its own colours. */
+
+canvas { fill-color: #000000; show-imagery: no; }
+
+way { color: #2b4bd9; width: 1; }
+way:in-relation { casing-width: 1; casing-color: #17c3c3; }
+
+/* Nodes. The general rule is a way vertex; later rules override it. */
+node            { color: #ffd60a; symbol-shape: square; symbol-size: 4; }
+node:connection { symbol-size: 6; }
+node:tagged, node:unconnected
+                { symbol-shape: cross; symbol-size: 8; }

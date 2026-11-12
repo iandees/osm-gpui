@@ -383,6 +383,8 @@ settings:
     group: "Kartenstil"
     title: "Kartenstil (MapCSS)"
     built_in: "Eingebaut (default.mapcss)"
+    wireframe: "Drahtgitter"
+    id: "iD"
     description: "Der MapCSS-Stil, der Objekte auf der Karte einfärbt und beschriftet. Wählen Sie einen hinzugefügten Stil oder den eingebauten."
     add: "Stil hinzufügen"
     add_description: "Fügt einen MapCSS-Stil aus einer Datei auf diesem Computer oder von einer Webadresse hinzu. Er wird sofort verwendet und gemerkt. Ein Stil, der sich nicht laden lässt, wird nicht verwendet; der aktuelle bleibt."

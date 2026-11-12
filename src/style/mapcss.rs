@@ -27,6 +27,14 @@
 //!   tag keys (`name, ref`): the first present wins. `icon-image` is `preset`
 //!   (the node's preset icon), an embedded icon name such as `maki-cafe`, or
 //!   `none`.
+//! - Node markers: `symbol-shape` (`circle`, the default round marker, or
+//!   `square` / `cross`, hollow shapes the stylesheet asks to have drawn for
+//!   every node it matches, way vertices included).
+//! - Pseudo-classes: `node:tagged`, `node:connection` (in two or more ways),
+//!   `node:unconnected` (in no way) and `way:in-relation` / `area:in-relation`
+//!   (a member of any relation), alongside `way:closed`.
+//! - The `canvas` selector: `fill-color` sets the map background and
+//!   `show-imagery: no` hides the imagery layers.
 //! - Comments: `/* ... */` (non-nesting).
 //!
 //! - Zoom-range selectors after the type: `way|z12-`, `way|z-14`,
@@ -69,11 +77,56 @@ pub struct Fill {
     pub opacity: f32,
 }
 
+/// How a node's marker is shaped (`symbol-shape`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeShape {
+    /// The renderer's own round marker (the default look).
+    #[default]
+    Circle,
+    /// A hollow square outline.
+    Square,
+    /// A `+` cross.
+    Cross,
+}
+
+impl NodeShape {
+    /// Whether the stylesheet asked for a marker of its own drawing (hollow
+    /// square or cross) rather than the renderer's round one.
+    pub fn is_custom(self) -> bool {
+        self != NodeShape::Circle
+    }
+}
+
+/// The look of a node's marker: what `color`, `symbol-size` and
+/// `symbol-shape` resolve to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeVisual {
+    pub color: u32,
+    pub size: f32,
+    pub shape: NodeShape,
+}
+
+/// What a selector's pseudo-classes test, beyond the feature's tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Context {
+    /// Ways the node is part of (nodes only).
+    node_ways: usize,
+    /// Whether the way is a member of any relation (ways only).
+    in_relation: bool,
+}
+
 /// Resolved node style for a single feature.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeStyle {
     pub color: u32,
     pub size: f32,
+    pub shape: NodeShape,
+    /// The look when the node is shared by two or more ways
+    /// (`node:connection` rules); the same as the fields above unless the
+    /// stylesheet has such rules.
+    pub junction: NodeVisual,
+    /// The look when the node belongs to no way (`node:unconnected`).
+    pub unconnected: NodeVisual,
     /// Whether the node has any tags. Untagged nodes are plain way
     /// vertices, which the renderer hides when zoomed out. Not settable
     /// from MapCSS; it rides along here so every code path that keeps the
@@ -83,10 +136,58 @@ pub struct NodeStyle {
 
 impl Default for NodeStyle {
     fn default() -> Self {
-        Self {
+        let visual = NodeVisual {
             color: DEFAULT_NODE_COLOR,
             size: DEFAULT_NODE_SIZE,
+            shape: NodeShape::Circle,
+        };
+        Self {
+            color: visual.color,
+            size: visual.size,
+            shape: visual.shape,
+            junction: visual,
+            unconnected: visual,
             tagged: false,
+        }
+    }
+}
+
+impl NodeStyle {
+    /// Whether the node's look is a hollow square or cross in any context.
+    pub fn has_custom_marker(&self) -> bool {
+        self.shape.is_custom()
+            || self.junction.shape.is_custom()
+            || self.unconnected.shape.is_custom()
+    }
+
+    /// The look of a node that belongs to `ways` ways.
+    pub fn visual(&self, ways: usize) -> NodeVisual {
+        match ways {
+            0 => self.unconnected,
+            1 => NodeVisual {
+                color: self.color,
+                size: self.size,
+                shape: self.shape,
+            },
+            _ => self.junction,
+        }
+    }
+}
+
+/// What the stylesheet says about the map canvas itself (`canvas { .. }`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasStyle {
+    /// `fill-color`: the colour behind everything; `None` keeps the theme's.
+    pub background: Option<u32>,
+    /// `show-imagery`: false hides the imagery (tile) layers.
+    pub show_imagery: bool,
+}
+
+impl Default for CanvasStyle {
+    fn default() -> Self {
+        Self {
+            background: None,
+            show_imagery: true,
         }
     }
 }
@@ -269,7 +370,15 @@ enum TargetKind {
     Way,
     /// `area` selector or `way:closed` — matches only closed ways.
     Area,
+    /// `canvas`: the map background; no tags.
+    Canvas,
 }
+
+/// Pseudo-class tests of a selector (bit flags).
+const P_IN_RELATION: u8 = 1;
+const P_CONNECTION: u8 = 2;
+const P_UNCONNECTED: u8 = 4;
+const P_TAGGED: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TagTest {
@@ -295,18 +404,32 @@ impl TagTest {
 struct Selector {
     kind: TargetKind,
     tests: Vec<TagTest>,
+    /// `P_*` flags from `:in-relation`, `:connection`, `:unconnected` and
+    /// `:tagged`.
+    pseudo: u8,
     zoom: ZoomRange,
 }
 
 impl Selector {
     /// Kind and tag tests only; the zoom range is checked separately so a
     /// feature's matches can be cached independent of zoom.
-    fn matches(&self, kind: TargetKind, closed: bool, tags: &HashMap<String, String>) -> bool {
+    fn matches(
+        &self,
+        kind: TargetKind,
+        closed: bool,
+        tags: &HashMap<String, String>,
+        ctx: Context,
+    ) -> bool {
         let kind_ok = match self.kind {
             TargetKind::Area => kind == TargetKind::Way && closed,
             k => k == kind,
         };
-        kind_ok && self.tests.iter().all(|t| t.matches(tags))
+        kind_ok
+            && (self.pseudo & P_IN_RELATION == 0 || ctx.in_relation)
+            && (self.pseudo & P_CONNECTION == 0 || ctx.node_ways >= 2)
+            && (self.pseudo & P_UNCONNECTED == 0 || ctx.node_ways == 0)
+            && (self.pseudo & P_TAGGED == 0 || !tags.is_empty())
+            && self.tests.iter().all(|t| t.matches(tags))
     }
 }
 
@@ -347,6 +470,10 @@ enum Declaration {
     /// `icon-image: <path or url>`; `None` for `icon-image: none`.
     IconImage(Option<String>),
     IconWidth(f32),
+    /// `symbol-shape` of a node marker.
+    SymbolShape(NodeShape),
+    /// `show-imagery` (on `canvas`).
+    ShowImagery(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -357,10 +484,16 @@ struct Rule {
 
 impl Rule {
     /// Bitmask of the selectors (first 64) whose kind and tags match.
-    fn tag_mask(&self, kind: TargetKind, closed: bool, tags: &HashMap<String, String>) -> u64 {
+    fn tag_mask(
+        &self,
+        kind: TargetKind,
+        closed: bool,
+        tags: &HashMap<String, String>,
+        ctx: Context,
+    ) -> u64 {
         let mut mask = 0u64;
         for (i, sel) in self.selectors.iter().enumerate().take(64) {
-            if sel.matches(kind, closed, tags) {
+            if sel.matches(kind, closed, tags, ctx) {
                 mask |= 1 << i;
             }
         }
@@ -403,6 +536,12 @@ pub struct Stylesheet {
     /// Indices of the rules that carry a label or icon declaration, so
     /// resolving a node's [`TextStyle`] skips the (many) pure-stroke rules.
     label_rules: Vec<u32>,
+    /// What the `canvas` rules resolve to.
+    canvas: CanvasStyle,
+    /// Whether any node rule tests how many ways the node is in.
+    node_context: bool,
+    /// Whether any way rule tests relation membership.
+    uses_membership: bool,
     sigs: Mutex<SigCache>,
 }
 
@@ -437,6 +576,9 @@ impl Clone for Stylesheet {
             rules: self.rules.clone(),
             zoom_dependent: self.zoom_dependent,
             label_rules: self.label_rules.clone(),
+            canvas: self.canvas,
+            node_context: self.node_context,
+            uses_membership: self.uses_membership,
             sigs: Mutex::default(),
         }
     }
@@ -483,10 +625,20 @@ impl Stylesheet {
             .iter()
             .any(|r| r.selectors.iter().any(|s| !s.zoom.is_all()));
         let label_rules = label_rule_indices(&rules);
+        let any_selector =
+            |f: &dyn Fn(&Selector) -> bool| rules.iter().any(|r| r.selectors.iter().any(f));
+        let node_context = any_selector(&|s| {
+            s.kind == TargetKind::Node && s.pseudo & (P_CONNECTION | P_UNCONNECTED) != 0
+        });
+        let uses_membership = any_selector(&|s| s.pseudo & P_IN_RELATION != 0);
+        let canvas = resolve_canvas(&rules);
         Ok(Self {
             rules,
             zoom_dependent,
             label_rules,
+            canvas,
+            node_context,
+            uses_membership,
             sigs: Mutex::default(),
         })
     }
@@ -509,19 +661,45 @@ impl Stylesheet {
     /// Resolve a style for a node given its OSM tags at `zoom`.
     pub fn node_style(&self, tags: &HashMap<String, String>, zoom: f64) -> NodeStyle {
         let bucket = zoom_bucket(zoom);
-        let mut s = NodeStyle {
+        let one = self.node_visual(tags, bucket, 1);
+        let (junction, unconnected) = if self.node_context {
+            (
+                self.node_visual(tags, bucket, 2),
+                self.node_visual(tags, bucket, 0),
+            )
+        } else {
+            (one, one)
+        };
+        NodeStyle {
+            color: one.color,
+            size: one.size,
+            shape: one.shape,
+            junction,
+            unconnected,
             tagged: !tags.is_empty(),
-            ..NodeStyle::default()
+        }
+    }
+
+    fn node_visual(&self, tags: &HashMap<String, String>, bucket: i32, ways: usize) -> NodeVisual {
+        let ctx = Context {
+            node_ways: ways,
+            in_relation: false,
+        };
+        let mut v = NodeVisual {
+            color: DEFAULT_NODE_COLOR,
+            size: DEFAULT_NODE_SIZE,
+            shape: NodeShape::Circle,
         };
         for rule in &self.rules {
-            let mask = rule.tag_mask(TargetKind::Node, false, tags);
+            let mask = rule.tag_mask(TargetKind::Node, false, tags, ctx);
             if mask == 0 || !rule.applies(mask, Some(bucket)) {
                 continue;
             }
             for d in &rule.declarations {
                 match d {
-                    Declaration::Color(c) => s.color = *c,
-                    Declaration::SymbolSize(w) => s.size = *w,
+                    Declaration::Color(c) => v.color = *c,
+                    Declaration::SymbolSize(w) => v.size = *w,
+                    Declaration::SymbolShape(sh) => v.shape = *sh,
                     // `width` on a pure-node rule aliases to symbol-size.
                     Declaration::Width(w)
                         if rule
@@ -529,13 +707,25 @@ impl Stylesheet {
                             .iter()
                             .all(|sel| sel.kind == TargetKind::Node) =>
                     {
-                        s.size = *w;
+                        v.size = *w;
                     }
                     _ => {}
                 }
             }
         }
-        s
+        v
+    }
+
+    /// What the `canvas` rules say about the map background and imagery.
+    pub fn canvas_style(&self) -> CanvasStyle {
+        self.canvas
+    }
+
+    /// Whether any way rule depends on relation membership
+    /// (`way:in-relation`), so the renderer must restyle ways when
+    /// relations change.
+    pub fn uses_relation_membership(&self) -> bool {
+        self.uses_membership
     }
 
     /// Resolve a style for a way given its OSM tags and whether it forms a
@@ -543,7 +733,7 @@ impl Stylesheet {
     /// `closed`; fill declarations only take effect on closed ways (JOSM
     /// semantics).
     pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool, zoom: f64) -> WayStyle {
-        let matches = self.match_way(tags, closed);
+        let matches = self.match_way(tags, closed, false);
         self.resolve_way(&matches, closed, Some(zoom_bucket(zoom)), tags)
     }
 
@@ -551,8 +741,16 @@ impl Stylesheet {
     /// that matches the tags applies), with [`WayStyle::sig`] set so the
     /// renderer can fetch the real per-zoom style from
     /// [`Stylesheet::zoom_styles`].
-    pub fn way_style_cached(&self, tags: &HashMap<String, String>, closed: bool) -> WayStyle {
-        let matches = self.match_way(tags, closed);
+    ///
+    /// `in_relation` is whether the way is a member of any relation, for
+    /// `way:in-relation` rules.
+    pub fn way_style_cached(
+        &self,
+        tags: &HashMap<String, String>,
+        closed: bool,
+        in_relation: bool,
+    ) -> WayStyle {
+        let matches = self.match_way(tags, closed, in_relation);
         let mut s = self.resolve_way(&matches, closed, None, tags);
         s.sig = self.intern(closed, matches);
         s
@@ -613,7 +811,7 @@ impl Stylesheet {
         let mut out = TextStyle::default();
         for &ri in &self.label_rules {
             let rule = &self.rules[ri as usize];
-            let mask = rule.tag_mask(kind, closed, tags);
+            let mask = rule.tag_mask(kind, closed, tags, Context::default());
             if mask == 0 || !rule.applies(mask, Some(bucket)) {
                 continue;
             }
@@ -636,10 +834,19 @@ impl Stylesheet {
         id
     }
 
-    fn match_way(&self, tags: &HashMap<String, String>, closed: bool) -> Matches {
+    fn match_way(
+        &self,
+        tags: &HashMap<String, String>,
+        closed: bool,
+        in_relation: bool,
+    ) -> Matches {
+        let ctx = Context {
+            node_ways: 0,
+            in_relation,
+        };
         let mut out = Vec::new();
         for (i, rule) in self.rules.iter().enumerate() {
-            let mask = rule.tag_mask(TargetKind::Way, closed, tags);
+            let mask = rule.tag_mask(TargetKind::Way, closed, tags, ctx);
             if mask != 0 {
                 out.push((i as u32, mask));
             }
@@ -692,6 +899,24 @@ impl Stylesheet {
         }
         s
     }
+}
+
+/// Apply the `canvas` rules in order.
+fn resolve_canvas(rules: &[Rule]) -> CanvasStyle {
+    let mut out = CanvasStyle::default();
+    for rule in rules {
+        if !rule.selectors.iter().any(|s| s.kind == TargetKind::Canvas) {
+            continue;
+        }
+        for d in &rule.declarations {
+            match d {
+                Declaration::FillColor(c) => out.background = Some(*c),
+                Declaration::ShowImagery(b) => out.show_imagery = *b,
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Strip `/* ... */` comments. Non-nesting, single pass.
@@ -803,7 +1028,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a single selector. Returns `Ok(None)` for a recognized-but-
-    /// unsupported selector (e.g., `relation`, `*`, `canvas`) so the
+    /// unsupported selector (e.g., `relation`, `*`) so the
     /// caller can skip the rule.
     fn parse_selector(&mut self, warned: &mut bool) -> Result<Option<Selector>, ParseError> {
         let ident = self.read_ident();
@@ -814,6 +1039,7 @@ impl<'a> Parser<'a> {
             "node" => TargetKind::Node,
             "way" => TargetKind::Way,
             "area" => TargetKind::Area,
+            "canvas" => TargetKind::Canvas,
             _ => {
                 if !*warned {
                     eprintln!(
@@ -831,6 +1057,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut tests = Vec::new();
+        let mut pseudo = 0u8;
         let mut zoom = ZoomRange::ALL;
         loop {
             self.skip_ws();
@@ -844,12 +1071,21 @@ impl<'a> Parser<'a> {
                     // `way:closed` is area semantics; every other
                     // pseudo-class is unsupported and skipped.
                     self.bump();
-                    let pseudo = self.read_ident();
-                    if pseudo == "closed" && kind == TargetKind::Way {
+                    let name = self.read_ident();
+                    let flag = match (name.as_str(), kind) {
+                        ("in-relation", TargetKind::Way | TargetKind::Area) => P_IN_RELATION,
+                        ("connection", TargetKind::Node) => P_CONNECTION,
+                        ("unconnected", TargetKind::Node) => P_UNCONNECTED,
+                        ("tagged", TargetKind::Node) => P_TAGGED,
+                        _ => 0,
+                    };
+                    if name == "closed" && kind == TargetKind::Way {
                         kind = TargetKind::Area;
+                    } else if flag != 0 {
+                        pseudo |= flag;
                     } else {
                         if !*warned {
-                            eprintln!("mapcss: ignoring unsupported pseudo-class ':{}'", pseudo);
+                            eprintln!("mapcss: ignoring unsupported pseudo-class ':{}'", name);
                             *warned = true;
                         }
                         self.skip_selector_tail();
@@ -864,7 +1100,12 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(Some(Selector { kind, tests, zoom }))
+        Ok(Some(Selector {
+            kind,
+            tests,
+            pseudo,
+            zoom,
+        }))
     }
 
     /// The part of a zoom selector after `|`: `z12`, `z12-`, `z-14`,
@@ -1133,6 +1374,17 @@ impl<'a> Parser<'a> {
                             *warned = true;
                         }
                     }
+                },
+                "symbol-shape" => match value.trim().to_ascii_lowercase().as_str() {
+                    "circle" => decls.push(Declaration::SymbolShape(NodeShape::Circle)),
+                    "square" => decls.push(Declaration::SymbolShape(NodeShape::Square)),
+                    "cross" => decls.push(Declaration::SymbolShape(NodeShape::Cross)),
+                    _ => warn_once(warned, "symbol-shape", &value),
+                },
+                "show-imagery" => match value.trim().to_ascii_lowercase().as_str() {
+                    "yes" | "true" | "on" => decls.push(Declaration::ShowImagery(true)),
+                    "no" | "false" | "off" => decls.push(Declaration::ShowImagery(false)),
+                    _ => warn_once(warned, "show-imagery", &value),
                 },
                 "symbol-size" => match value.trim().parse::<f32>() {
                     Ok(w) if w.is_finite() && w >= 0.0 => decls.push(Declaration::SymbolSize(w)),
@@ -1912,12 +2164,12 @@ mod tests {
         .unwrap();
         assert!(s.is_zoom_dependent());
         let t = tags(&[("highway", "primary")]);
-        let cached = s.way_style_cached(&t, false);
+        let cached = s.way_style_cached(&t, false, false);
         assert_ne!(cached.sig, NO_SIG);
         // Same rules matched: same signature. Different rules: different.
-        assert_eq!(s.way_style_cached(&t, false).sig, cached.sig);
+        assert_eq!(s.way_style_cached(&t, false, false).sig, cached.sig);
         assert_ne!(
-            s.way_style_cached(&tags(&[("waterway", "river")]), false)
+            s.way_style_cached(&tags(&[("waterway", "river")]), false, false)
                 .sig,
             cached.sig
         );
@@ -1931,9 +2183,9 @@ mod tests {
     #[test]
     fn zoom_table_grows_with_new_signatures() {
         let s = Stylesheet::parse("way|z12-[highway] { width: 5; }").unwrap();
-        let a = s.way_style_cached(&tags(&[("highway", "x")]), false);
+        let a = s.way_style_cached(&tags(&[("highway", "x")]), false, false);
         assert_eq!(s.zoom_styles(14.0)[a.sig as usize].width, 5.0);
-        let b = s.way_style_cached(&tags(&[("waterway", "x")]), false);
+        let b = s.way_style_cached(&tags(&[("waterway", "x")]), false, false);
         assert_eq!(s.zoom_styles(14.0)[b.sig as usize].width, DEFAULT_WAY_WIDTH);
     }
 
@@ -1976,5 +2228,67 @@ mod tests {
     fn width_on_node_aliases_symbol_size() {
         let s = Stylesheet::parse("node { width: 7; }").unwrap();
         assert_eq!(s.node_style(&tags(&[]), Z).size, 7.0);
+    }
+
+    #[test]
+    fn canvas_rules_set_background_and_imagery() {
+        let s = Stylesheet::parse(
+            "canvas { fill-color: #102030; show-imagery: no; }\n\
+             way { width: 3; }",
+        )
+        .unwrap();
+        let c = s.canvas_style();
+        assert_eq!(c.background, Some(0x102030));
+        assert!(!c.show_imagery);
+        // A canvas rule never styles features.
+        assert_eq!(s.way_style(&tags(&[]), true, Z).fill, None);
+        let none = Stylesheet::parse("way { width: 3; }").unwrap();
+        assert_eq!(none.canvas_style(), CanvasStyle::default());
+        assert!(none.canvas_style().show_imagery);
+        let later = Stylesheet::parse(
+            "canvas { show-imagery: no; } canvas { show-imagery: yes; fill-color: red; }",
+        )
+        .unwrap();
+        assert!(later.canvas_style().show_imagery);
+        assert_eq!(later.canvas_style().background, Some(0xFF0000));
+    }
+
+    #[test]
+    fn node_shape_and_context_pseudo_classes() {
+        let s = Stylesheet::parse(
+            "node { symbol-shape: square; symbol-size: 4; }\n\
+             node:connection { symbol-size: 6; }\n\
+             node:tagged, node:unconnected { symbol-shape: cross; }",
+        )
+        .unwrap();
+        let v = s.node_style(&tags(&[]), Z);
+        assert_eq!(v.visual(1).shape, NodeShape::Square);
+        assert_eq!(v.visual(1).size, 4.0);
+        assert_eq!(v.visual(3).size, 6.0);
+        assert_eq!(v.visual(0).shape, NodeShape::Cross);
+        let t = s.node_style(&tags(&[("a", "b")]), Z);
+        assert_eq!(t.visual(1).shape, NodeShape::Cross);
+        // Without such rules every context looks alike and the default marker
+        // is round.
+        let plain = Stylesheet::parse("node { color: #fff; }").unwrap();
+        let n = plain.node_style(&tags(&[]), Z);
+        assert_eq!(n.visual(0), n.visual(2));
+        assert!(!n.has_custom_marker());
+    }
+
+    #[test]
+    fn in_relation_pseudo_class_matches_members_only() {
+        let s = Stylesheet::parse("way { width: 1; } way:in-relation { width: 5; }").unwrap();
+        assert!(s.uses_relation_membership());
+        let t = tags(&[("highway", "x")]);
+        assert_eq!(s.way_style_cached(&t, false, false).width, 1.0);
+        assert_eq!(s.way_style_cached(&t, false, true).width, 5.0);
+        // Areas that are members too.
+        let a = Stylesheet::parse("area:in-relation { width: 7; }").unwrap();
+        assert_eq!(a.way_style_cached(&t, true, true).width, 7.0);
+        assert_eq!(a.way_style_cached(&t, true, false).width, DEFAULT_WAY_WIDTH);
+        assert!(!Stylesheet::parse("way { width: 1; }")
+            .unwrap()
+            .uses_relation_membership());
     }
 }

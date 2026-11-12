@@ -678,9 +678,17 @@ impl SettingsWindow {
     /// The "Map style" group: a dropdown of the built-in style and the added
     /// custom ones, then a field to add a file path or URL.
     fn map_style_group(&self, view: Entity<Self>) -> SettingGroup {
-        const BUILT_IN: &str = "";
-        let mut options: Vec<(SharedString, SharedString)> =
-            vec![(BUILT_IN.into(), tr!("settings.map_style.built_in"))];
+        use crate::style::custom;
+        // The default style's key is empty (stored as no choice).
+        let mut options: Vec<(SharedString, SharedString)> = custom::BUILT_IN_STYLES
+            .iter()
+            .map(|s| {
+                (
+                    custom::built_in_location(s.id).unwrap_or_default().into(),
+                    tr!(s.label_key),
+                )
+            })
+            .collect();
         for loc in &self.app_settings.map_styles {
             options.push((
                 loc.clone().into(),
@@ -713,7 +721,11 @@ impl SettingsWindow {
         let input = self.map_style_input.clone();
         let error = self.map_style_error.clone();
         let loading = self.map_style_loading;
-        let can_remove = self.app_settings.active_map_style.is_some();
+        let can_remove = self
+            .app_settings
+            .active_map_style
+            .as_deref()
+            .is_some_and(|l| custom::built_in_for(l).is_none());
         let add_item = SettingItem::new(
             tr!("settings.map_style.add"),
             SettingField::render(move |_options, window, cx| {

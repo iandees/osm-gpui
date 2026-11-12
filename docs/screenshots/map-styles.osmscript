@@ -1,0 +1,35 @@
+# The same area in the built-in default, Wireframe and iD map styles.
+#   cargo run --release -- --script docs/screenshots/map-styles.osmscript
+# (The fixture is generated data, not a real place: a few road classes, rail,
+# paths, parks, water, landuse, buildings, POIs and a bus-route relation.)
+window 1200 800
+load_osm docs/screenshots/fixtures/map-styles.osm
+viewport 40.7120 -74.0064 17
+action MapStyle:default
+wait_idle 5s
+wait 800ms
+capture docs/screenshots/map-style-default.png
+
+action MapStyle:wireframe
+wait 800ms
+capture docs/screenshots/map-style-wireframe.png
+
+action MapStyle:id
+wait 800ms
+capture docs/screenshots/map-style-id.png
+
+# Close up on Main Street where Broadway crosses it (z19).
+viewport 40.71236 -74.00782 19
+wait_idle 5s
+wait 800ms
+capture docs/screenshots/map-style-id-detail.png
+
+action MapStyle:wireframe
+wait 800ms
+# Select Main Street and hover Broadway: highlighting must read on black.
+click geo:40.71236,-74.00711
+wait 400ms
+hover geo:40.71275,-74.00782
+wait 800ms
+capture docs/screenshots/map-style-wireframe-detail.png
+log done
