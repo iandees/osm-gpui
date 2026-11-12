@@ -7457,6 +7457,15 @@ impl Render for MapViewer {
                                             );
                                         }
 
+                                        this.layer_manager.render_all_labels(
+                                            &viewport_clone,
+                                            bounds,
+                                            &selected,
+                                            hovered.as_ref(),
+                                            window,
+                                            cx,
+                                        );
+
                                         if let Some(reference) = this.building_reference {
                                             // Mark the way the building is aligned to.
                                             this.layer_manager.render_highlight(

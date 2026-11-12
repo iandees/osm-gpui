@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="labels fixture">
+  <!-- Named POIs, unnamed icon POIs, places, house numbers and a dense cluster around 40.7128 -74.0060 for labels.osmscript. -->
+  <node id="8001" version="1" lat="40.7125905" lon="-74.0055457">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Blue Door Cafe"/>
+  </node>
+  <node id="8002" version="1" lat="40.7146665" lon="-74.0062611">
+    <tag k="amenity" v="restaurant"/>
+    <tag k="name" v="Joe's Pizza"/>
+  </node>
+  <node id="8003" version="1" lat="40.7128345" lon="-74.0053359">
+    <tag k="amenity" v="bank"/>
+    <tag k="name" v="Bank of Gotham"/>
+  </node>
+  <node id="8004" version="1" lat="40.7114125" lon="-74.0059095">
+    <tag k="shop" v="convenience"/>
+    <tag k="name" v="Corner Deli"/>
+  </node>
+  <node id="8005" version="1" lat="40.7133715" lon="-74.0037734">
+    <tag k="shop" v="bakery"/>
+    <tag k="name" v="Lotus Bakery"/>
+  </node>
+  <node id="8006" version="1" lat="40.7110141" lon="-74.0074942">
+    <tag k="tourism" v="hotel"/>
+    <tag k="name" v="Hotel Aurora"/>
+  </node>
+  <node id="8007" version="1" lat="40.7109990" lon="-74.0036467">
+    <tag k="amenity" v="place_of_worship"/>
+    <tag k="name" v="St Mark's Church"/>
+  </node>
+  <node id="8008" version="1" lat="40.7136511" lon="-74.0094817">
+    <tag k="amenity" v="pharmacy"/>
+    <tag k="name" v="Pharmacy 24"/>
+  </node>
+  <node id="8009" version="1" lat="40.7149217" lon="-74.0024678">
+    <tag k="amenity" v="library"/>
+    <tag k="name" v="City Library"/>
+  </node>
+  <node id="8010" version="1" lat="40.7134773" lon="-74.0051217">
+    <tag k="amenity" v="restaurant"/>
+    <tag k="name" v="Noodle House"/>
+  </node>
+  <node id="8011" version="1" lat="40.7112930" lon="-74.0096860">
+    <tag k="shop" v="books"/>
+    <tag k="name" v="Brooklyn Books"/>
+  </node>
+  <node id="8012" version="1" lat="40.7129249" lon="-74.0093474">
+    <tag k="shop" v="supermarket"/>
+    <tag k="name" v="Fresh Market"/>
+  </node>
+  <node id="8013" version="1" lat="40.7114369" lon="-74.0079612">
+    <tag k="amenity" v="restaurant"/>
+    <tag k="name" v="Sunrise Diner"/>
+  </node>
+  <node id="8014" version="1" lat="40.7107324" lon="-74.0062741">
+    <tag k="amenity" v="pub"/>
+    <tag k="name" v="Old Town Pub"/>
+  </node>
+  <node id="8015" version="1" lat="40.7125383" lon="-74.0033976">
+    <tag k="amenity" v="dentist"/>
+    <tag k="name" v="Grand Central Dental Clinic and Wellness"/>
+  </node>
+  <node id="8016" version="1" lat="40.7128841" lon="-74.0049338">
+    <tag k="leisure" v="playground"/>
+    <tag k="name" v="Pocket Park"/>
+  </node>
+  <node id="8017" version="1" lat="40.7127990" lon="-74.0047654">
+    <tag k="amenity" v="restaurant"/>
+    <tag k="name" v="Corner Bistro"/>
+  </node>
+  <node id="8018" version="1" lat="40.7126123" lon="-74.0076860">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Tea Room"/>
+  </node>
+  <node id="8019" version="1" lat="40.7149897" lon="-74.0022327">
+    <tag k="shop" v="hairdresser"/>
+    <tag k="name" v="Barber Shop"/>
+  </node>
+  <node id="8020" version="1" lat="40.7142969" lon="-74.0044206">
+    <tag k="leisure" v="fitness_centre"/>
+    <tag k="name" v="Gym 360"/>
+  </node>
+  <node id="8021" version="1" lat="40.7130852" lon="-74.0066324">
+    <tag k="amenity" v="cafe"/>
+    <tag k="name" v="Cluster Cafe"/>
+  </node>
+  <node id="8022" version="1" lat="40.7130831" lon="-74.0066516">
+    <tag k="shop" v="deli"/>
+    <tag k="name" v="Cluster Deli"/>
+  </node>
+  <node id="8023" version="1" lat="40.7131213" lon="-74.0066120">
+    <tag k="amenity" v="bank"/>
+    <tag k="name" v="Cluster Bank"/>
+  </node>
+  <node id="8024" version="1" lat="40.7131277" lon="-74.0066136">
+    <tag k="amenity" v="pub"/>
+    <tag k="name" v="Cluster Pub"/>
+  </node>
+  <node id="8025" version="1" lat="40.7131366" lon="-74.0065583">
+    <tag k="leisure" v="sauna"/>
+    <tag k="name" v="Cluster Spa"/>
+  </node>
+  <node id="8026" version="1" lat="40.7130600" lon="-74.0066348">
+    <tag k="shop" v="shoes"/>
+    <tag k="name" v="Cluster Shoes"/>
+  </node>
+  <node id="8027" version="1" lat="40.7144411" lon="-74.0062101">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="8028" version="1" lat="40.7147214" lon="-74.0067180">
+    <tag k="amenity" v="waste_basket"/>
+  </node>
+  <node id="8029" version="1" lat="40.7110922" lon="-74.0050938">
+    <tag k="amenity" v="toilets"/>
+  </node>
+  <node id="8030" version="1" lat="40.7139140" lon="-74.0076116">
+    <tag k="amenity" v="atm"/>
+  </node>
+  <node id="8031" version="1" lat="40.7111486" lon="-74.0071719">
+    <tag k="amenity" v="bicycle_parking"/>
+  </node>
+  <node id="8032" version="1" lat="40.7134000" lon="-74.0048000">
+    <tag k="place" v="neighbourhood"/>
+    <tag k="name" v="Tribeca Corner"/>
+  </node>
+  <node id="8033" version="1" lat="40.7116000" lon="-74.0080000">
+    <tag k="place" v="suburb"/>
+    <tag k="name" v="Lower Gotham"/>
+  </node>
+  <node id="8034" version="1" lat="40.7144707" lon="-74.0044518">
+    <tag k="addr:housenumber" v="10"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8035" version="1" lat="40.7114248" lon="-74.0075217">
+    <tag k="addr:housenumber" v="12"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8036" version="1" lat="40.7113638" lon="-74.0086406">
+    <tag k="addr:housenumber" v="14"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8037" version="1" lat="40.7138693" lon="-74.0079339">
+    <tag k="addr:housenumber" v="16"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8038" version="1" lat="40.7130135" lon="-74.0063155">
+    <tag k="addr:housenumber" v="18"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8039" version="1" lat="40.7116865" lon="-74.0046086">
+    <tag k="addr:housenumber" v="20"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8040" version="1" lat="40.7114715" lon="-74.0051377">
+    <tag k="addr:housenumber" v="22"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8041" version="1" lat="40.7114194" lon="-74.0064755">
+    <tag k="addr:housenumber" v="24"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8042" version="1" lat="40.7117663" lon="-74.0073812">
+    <tag k="addr:housenumber" v="26"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8043" version="1" lat="40.7144953" lon="-74.0041795">
+    <tag k="addr:housenumber" v="28"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8044" version="1" lat="40.7120949" lon="-74.0036908">
+    <tag k="addr:housenumber" v="30"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8045" version="1" lat="40.7117586" lon="-74.0066344">
+    <tag k="addr:housenumber" v="32"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8046" version="1" lat="40.7140758" lon="-74.0051490">
+    <tag k="addr:housenumber" v="34"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8047" version="1" lat="40.7113612" lon="-74.0030642">
+    <tag k="addr:housenumber" v="36"/>
+    <tag k="addr:street" v="Broadway"/>
+  </node>
+  <node id="8048" version="1" lat="40.7123000" lon="-74.0056000">
+    <tag k="name" v="Memorial Fountain"/>
+    <tag k="man_made" v="water_well"/>
+  </node>
+  <node id="8049" version="1" lat="40.7130000" lon="-74.0060000">
+    <tag k="name" v="Plain Name Only"/>
+  </node>
+  <node id="8050" version="1" lat="40.7103000" lon="-74.0100000"/>
+  <node id="8051" version="1" lat="40.7153000" lon="-74.0020000"/>
+  <node id="8052" version="1" lat="40.7153000" lon="-74.0090000"/>
+  <node id="8053" version="1" lat="40.7103000" lon="-74.0030000"/>
+  <node id="8054" version="1" lat="40.7120000" lon="-74.0090000"/>
+  <node id="8055" version="1" lat="40.7120000" lon="-74.0082000"/>
+  <node id="8056" version="1" lat="40.7125000" lon="-74.0082000"/>
+  <node id="8057" version="1" lat="40.7125000" lon="-74.0090000"/>
+  <node id="8058" version="1" lat="40.7120000" lon="-74.0090000"/>
+  <way id="9101" version="1">
+    <nd ref="8050"/>
+    <nd ref="8051"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="name" v="Broadway"/>
+  </way>
+  <way id="9102" version="1">
+    <nd ref="8052"/>
+    <nd ref="8053"/>
+    <tag k="highway" v="residential"/>
+  </way>
+  <way id="9103" version="1">
+    <nd ref="8054"/>
+    <nd ref="8055"/>
+    <nd ref="8056"/>
+    <nd ref="8057"/>
+    <nd ref="8058"/>
+    <tag k="building" v="yes"/>
+  </way>
+</osm>

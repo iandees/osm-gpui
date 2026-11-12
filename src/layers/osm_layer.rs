@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
+use crate::layers::labels;
 use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
 use crate::layers::resolve;
@@ -289,6 +290,10 @@ pub struct OsmLayer {
     /// which already predates this), so this is a fresh counter dedicated to
     /// `add_way`.
     next_placeholder_way_id: i64,
+    /// Label candidates, shaped text and the last placement; see
+    /// [`labels`]. A mutex because painting takes `&self` and layers are
+    /// `Sync`; it is only ever locked on the UI thread.
+    label_cache: std::sync::Mutex<labels::LabelCache>,
 }
 
 /// Starting point for `next_new_id`: one below the most negative existing
@@ -1281,6 +1286,7 @@ impl OsmLayer {
             revision: 0,
             next_new_id: -1,
             next_placeholder_way_id: -1,
+            label_cache: Default::default(),
         }
     }
 
@@ -1335,6 +1341,7 @@ impl OsmLayer {
             revision: 0,
             next_new_id,
             next_placeholder_way_id: -1,
+            label_cache: Default::default(),
         }
     }
 
@@ -3124,6 +3131,292 @@ impl OsmLayer {
         }
     }
 
+    /// Marker radius a tagged node is drawn with at `zoom` (0 when hidden).
+    fn label_marker_radius(style: NodeStyle, zoom: f64) -> f32 {
+        match node_markers::node_form(style.tagged, false, false, zoom) {
+            NodeForm::Hidden => 0.0,
+            NodeForm::Simple(edge) => edge / 2.0,
+            _ => (style.size + 2.0) / 2.0,
+        }
+    }
+
+    /// The (cached) label of node `id`, resolved from the stylesheet at
+    /// `zoom` on first use.
+    fn node_label_for(
+        &self,
+        cache: &mut labels::LabelCache,
+        id: i64,
+        zoom: f64,
+    ) -> Option<Arc<labels::NodeLabel>> {
+        let labels::LabelCache { nodes, icons, .. } = cache;
+        nodes
+            .entry(id)
+            .or_insert_with(|| {
+                let tags = &self.osm_data.as_ref()?.nodes.get(&id)?.tags;
+                let st = self.stylesheet.node_text_style(tags, zoom);
+                labels::resolve_node_label(&st, tags, icons, zoom).map(Arc::new)
+            })
+            .clone()
+    }
+
+    /// Place the labels and icons of the nodes in view (the expensive half;
+    /// run when the camera settles, not every frame).
+    fn place_labels(
+        &self,
+        cache: &mut labels::LabelCache,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        selected: &HashSet<i64>,
+        window: &mut Window,
+    ) -> labels::Placement {
+        let fs = crate::frame_stats::start();
+        let zoom = cam.zoom;
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        // Nodes a little outside the view can still have a label that
+        // reaches in.
+        let margin = 150.0 / (cam.w as f64 / cam.span_x.max(1e-9));
+        let mut cands: Vec<(usize, labels::Item, Arc<labels::NodeLabel>)> = Vec::new();
+        let mut fixed: Vec<labels::Rect> = Vec::new();
+        for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
+            if mx < vmin_x - margin
+                || mx > vmax_x + margin
+                || my < vmin_y - margin
+                || my > vmax_y + margin
+            {
+                continue;
+            }
+            let style = self.node_cache.styles[idx];
+            if !style.tagged {
+                continue;
+            }
+            let sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) {
+                continue;
+            }
+            let c = (f32::from(sp.x), f32::from(sp.y));
+            let r = Self::label_marker_radius(style, zoom);
+            match self.node_label_for(cache, id, zoom) {
+                Some(l) => {
+                    let item = labels::Item {
+                        key: (labels::KIND_NODE, id),
+                        center: c,
+                        marker_r: r,
+                        icon_r: l.icon.as_ref().map(|i| i.backing() / 2.0),
+                        text: None,
+                        priority: l.priority,
+                        forced: selected.contains(&id),
+                    };
+                    cands.push((idx, item, l));
+                }
+                None if r > 0.0 => fixed.push(labels::Rect::around(c.0, c.1, r, r)),
+                None => {}
+            }
+        }
+        // Keep the most important candidates; the rest are plain obstacles.
+        if cands.len() > labels::MAX_CANDIDATES {
+            cands.sort_by(|a, b| {
+                b.1.forced
+                    .cmp(&a.1.forced)
+                    .then(b.1.priority.cmp(&a.1.priority))
+                    .then(a.1.key.cmp(&b.1.key))
+            });
+            for (_, it, _) in cands.drain(labels::MAX_CANDIDATES..) {
+                if it.marker_r > 0.0 {
+                    fixed.push(labels::Rect::around(
+                        it.center.0,
+                        it.center.1,
+                        it.marker_r,
+                        it.marker_r,
+                    ));
+                }
+            }
+        }
+        // Shape (cached) to learn each text's size.
+        let mut lines: Vec<Option<Arc<ShapedLine>>> = Vec::with_capacity(cands.len());
+        for (_, it, l) in cands.iter_mut() {
+            match &l.text {
+                Some(t) => {
+                    let line = cache.shapes.get(window, t, l.font_px);
+                    let w = f32::from(line.width);
+                    let h = f32::from(line.ascent + line.descent);
+                    it.text = Some((w, h, l.pref));
+                    lines.push(Some(line));
+                }
+                None => lines.push(None),
+            }
+        }
+        let items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
+        let prev = cache.prev_state();
+        let out = labels::place(
+            &items,
+            &fixed,
+            &prev,
+            &labels::Config::for_view(cam.w, cam.h),
+        );
+        let mut placed = Vec::with_capacity(out.len());
+        let mut by_id = HashMap::with_capacity(out.len());
+        for p in out {
+            let (idx, item, l) = &cands[p.item];
+            let (id, mx, my) = self.node_cache.flat[*idx];
+            let icon = if p.icon {
+                l.icon.clone().map(|choice| labels::PlacedIcon {
+                    choice,
+                    fill: self.node_cache.styles[*idx].color,
+                })
+            } else {
+                None
+            };
+            let text = match (p.text, &lines[p.item]) {
+                (Some((anchor, r)), Some(line)) => Some((
+                    labels::PlacedText {
+                        line: line.clone(),
+                        dx: r.x0 - item.center.0,
+                        dy: r.y0 - item.center.1,
+                        color: l.color,
+                        halo_color: l.halo_color,
+                        halo_radius: l.halo_radius,
+                    },
+                    anchor,
+                )),
+                _ => None,
+            };
+            by_id.insert(id, placed.len());
+            placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
+        }
+        crate::frame_stats::lap("labels.place", fs);
+        crate::frame_stats::count("labels.candidates", items.len());
+        crate::frame_stats::count("labels.placed", placed.len());
+        labels::Placement {
+            cam,
+            revision: self.revision,
+            sheet: Arc::as_ptr(&self.stylesheet) as usize,
+            labels: placed,
+            by_id,
+        }
+    }
+
+    /// Paint labels and icons: place when the camera has settled (or the
+    /// data changed), otherwise just re-project the last placement.
+    fn paint_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        selected: &[FeatureRef],
+        hovered: Option<&FeatureRef>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let zoom = viewport.zoom_level();
+        if self.osm_data.is_none() || zoom < labels::LABEL_MIN_ZOOM {
+            return;
+        }
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        if let Some(lb) = &self.layer_bbox {
+            if lb.max_x < vmin_x || lb.min_x > vmax_x || lb.max_y < vmin_y || lb.min_y > vmax_y {
+                return;
+            }
+        }
+        let fs = crate::frame_stats::start();
+        let cam = labels::CameraSig {
+            zoom,
+            min_x: vmin_x,
+            max_y: vmax_y,
+            span_x: vmax_x - vmin_x,
+            w: f32::from(viewport.transform.screen_size.width),
+            h: f32::from(viewport.transform.screen_size.height),
+        };
+        let sheet = Arc::as_ptr(&self.stylesheet) as usize;
+        let mut cache = self.label_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.validate(self.revision, sheet, zoom.floor() as i32);
+        let step = cache.step(cam, self.revision, sheet, std::time::Instant::now());
+        if step == labels::Step::Recompute {
+            let ids: HashSet<i64> = selected
+                .iter()
+                .chain(hovered)
+                .filter(|f| f.layer_id == self.id && f.kind == FeatureKind::Node)
+                .map(|f| f.id)
+                .collect();
+            let p = self.place_labels(&mut cache, viewport, cam, &ids, window);
+            cache.store(p);
+        }
+        if matches!(step, labels::Step::DrawAndWait | labels::Step::HideAndWait) {
+            window.request_animation_frame();
+        }
+        if step == labels::Step::HideAndWait {
+            return;
+        }
+        let ox = bounds.origin.x;
+        let oy = bounds.origin.y;
+        let (w, h) = (cam.w, cam.h);
+        let on_screen = |x: f32, y: f32| x > -300.0 && x < w + 300.0 && y > -100.0 && y < h + 100.0;
+        // Taken out of the cache so painting can also borrow it for the
+        // forced labels below.
+        let Some(placement) = cache.placement.take() else {
+            return;
+        };
+        for l in &placement.labels {
+            let sp = viewport.mercator_to_screen(l.mx, l.my) + self.drag_preview_offset(l.id);
+            if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
+                continue;
+            }
+            let at = point(sp.x + ox, sp.y + oy);
+            if let Some(icon) = &l.icon {
+                labels::paint_icon(window, cx, icon, at);
+            }
+            if let Some(t) = &l.text {
+                labels::paint_text(window, t, point(at.x + px(t.dx), at.y + px(t.dy)));
+            }
+        }
+        // Selected and hovered nodes keep their label even where the
+        // placement dropped it: drawn beside the marker, collision ignored.
+        for f in selected.iter().chain(hovered) {
+            if f.layer_id != self.id
+                || f.kind != FeatureKind::Node
+                || placement
+                    .by_id
+                    .get(&f.id)
+                    .is_some_and(|&i| placement.labels[i].text.is_some())
+            {
+                continue;
+            }
+            let Some(&idx) = self.node_cache.index_by_id.get(&f.id) else {
+                continue;
+            };
+            let Some(label) = self.node_label_for(&mut cache, f.id, zoom) else {
+                continue;
+            };
+            let Some(text) = &label.text else { continue };
+            let (_, mx, my) = self.node_cache.flat[idx];
+            let sp = viewport.mercator_to_screen(mx, my) + self.drag_preview_offset(f.id);
+            if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
+                continue;
+            }
+            let line = cache.shapes.get(window, text, label.font_px);
+            let reach = Self::label_marker_radius(self.node_cache.styles[idx], zoom)
+                .max((self.node_cache.styles[idx].size + 2.0) / 2.0);
+            let r = labels::label_rect(
+                label.pref,
+                (0.0, 0.0),
+                reach,
+                3.0,
+                f32::from(line.width),
+                f32::from(line.ascent + line.descent),
+            );
+            let t = labels::PlacedText {
+                line,
+                dx: r.x0,
+                dy: r.y0,
+                color: label.color,
+                halo_color: label.halo_color,
+                halo_radius: label.halo_radius,
+            };
+            let at = point(sp.x + ox, sp.y + oy);
+            labels::paint_text(window, &t, point(at.x + px(t.dx), at.y + px(t.dy)));
+        }
+        cache.placement = Some(placement);
+        crate::frame_stats::lap("labels.paint", fs);
+    }
+
     /// The CPU half of the multipolygon fill pass of `render_canvas` (cull,
     /// project, emit triangles — everything but handing the path to the GPU),
     /// run through the same code, and the number of path vertices it
@@ -4474,6 +4767,18 @@ impl MapLayer for OsmLayer {
 
     fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
         &self.download_rects
+    }
+
+    fn render_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        selected: &[FeatureRef],
+        hovered: Option<&FeatureRef>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        self.paint_labels(viewport, bounds, selected, hovered, window, cx);
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {

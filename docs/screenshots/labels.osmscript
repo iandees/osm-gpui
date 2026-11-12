@@ -1,0 +1,65 @@
+# Point labels and POI icons over docs/screenshots/fixtures/labels.osm:
+# named and unnamed POIs, two places, house numbers and a dense cluster
+# (nodes 8021..8026) around 40.7128 -74.0060. Run with
+#   OSM_GPUI_FRAME_STATS=1 OSM_GPUI_FRAME_STATS_NO_TILES=1 \
+#     cargo run --release -- --script docs/screenshots/labels.osmscript
+# The map area is centred at about (488, 388) in a 1200x800 window; the
+# click below is the cluster's 8026 at z17. The frame_stats tables at the end
+# give CPU ms per frame (labels.paint, labels.place) for a warm pan and a
+# cold zoom.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/labels.osm
+viewport 40.7128 -74.0060 16
+wait_idle 5s
+wait 600ms
+capture docs/screenshots/labels-01-z16-places.png
+
+viewport 40.7128 -74.0060 17
+wait 600ms
+capture docs/screenshots/labels-02-z17-names-icons.png
+
+viewport 40.7128 -74.0060 18
+wait 600ms
+capture docs/screenshots/labels-03-z18-housenumbers.png
+
+viewport 40.7123 -74.0066 19
+wait 600ms
+capture docs/screenshots/labels-04-z19.png
+
+# A selected node keeps its label even in the dense cluster.
+viewport 40.7128 -74.0060 17
+wait 600ms
+click 429,356
+wait 600ms
+assert_selected node 8026
+capture docs/screenshots/labels-05-selected-in-cluster.png
+
+# Pan, warm: labels are re-projected, not re-placed.
+viewport 40.7128 -74.0060 18
+wait 600ms
+frame_stats discard
+drag 300,400 360,420
+wait 150ms
+drag 360,420 300,400
+wait 150ms
+drag 300,400 360,420
+wait 150ms
+drag 360,420 300,400
+wait 600ms
+frame_stats labels_pan_warm
+
+# Zoom, cold: hidden during the gesture, placed (with shaping) on settle.
+frame_stats discard
+scroll 488,388 dy=3
+wait 500ms
+scroll 488,388 dy=-3
+wait 500ms
+scroll 488,388 dy=3
+wait 500ms
+scroll 488,388 dy=-3
+wait 500ms
+frame_stats labels_zoom_cold
+capture docs/screenshots/labels-06-after-zoom.png
+
+log done
