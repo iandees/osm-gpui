@@ -143,7 +143,12 @@ impl MapLayer for NotesLayer {
         self.visible = visible;
     }
 
-    fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        _viewport: &Viewport,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::App,
+    ) -> Vec<AnyElement> {
         vec![]
     }
 

@@ -5,6 +5,7 @@ use crate::viewport::Viewport;
 
 pub mod diff;
 pub mod grid_layer;
+pub mod labels;
 pub mod line_labels;
 pub mod merge;
 pub mod node_markers;
@@ -74,10 +75,33 @@ pub trait MapLayer: Send + Sync {
     fn set_visible(&mut self, visible: bool);
 
     /// Render this layer as GPUI elements (for raster/image content)
-    fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement>;
+    ///
+    /// `window` and `cx` let raster layers read the display scale factor and
+    /// probe their image assets while building elements.
+    fn render_elements(
+        &self,
+        viewport: &Viewport,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement>;
 
     /// Render this layer using canvas drawing (for vector content)
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window);
+
+    /// Paint labels and POI icons above everything `render_canvas` and the
+    /// highlights drew. `selected` and `hovered` keep their labels even
+    /// when collision would drop them. Default: nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn render_labels(
+        &self,
+        _viewport: &Viewport,
+        _bounds: Bounds<Pixels>,
+        _selected: &[crate::selection::FeatureRef],
+        _hovered: Option<&crate::selection::FeatureRef>,
+        _window: &mut Window,
+        _cx: &App,
+    ) {
+    }
 
     /// The rectangles (Web Mercator meters) this layer's data was downloaded
     /// for; empty when that is not known. See `render_all_download_bounds`.
@@ -637,12 +661,17 @@ impl LayerManager {
     }
 
     /// Render all visible layers as GPUI elements
-    pub fn render_all_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {
+    pub fn render_all_elements(
+        &self,
+        viewport: &Viewport,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
         let mut elements = Vec::new();
 
         for layer in &self.layers {
             if layer.is_visible() {
-                elements.extend(layer.render_elements(viewport));
+                elements.extend(layer.render_elements(viewport, window, cx));
             }
         }
 
@@ -764,6 +793,23 @@ impl LayerManager {
         for layer in &self.layers {
             if layer.is_visible() {
                 layer.render_canvas(viewport, bounds, window);
+            }
+        }
+    }
+
+    /// Paint every visible layer's labels and icons.
+    pub fn render_all_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        selected: &[crate::selection::FeatureRef],
+        hovered: Option<&crate::selection::FeatureRef>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        for layer in &self.layers {
+            if layer.is_visible() {
+                layer.render_labels(viewport, bounds, selected, hovered, window, cx);
             }
         }
     }

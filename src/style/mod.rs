@@ -6,4 +6,6 @@
 
 pub mod mapcss;
 
-pub use mapcss::{Direction, Fill, NodeStyle, ParseError, Stylesheet, WayStyle};
+pub use mapcss::{
+    Direction, Fill, NodeStyle, ParseError, Stylesheet, TextPosition, TextStyle, WayStyle,
+};

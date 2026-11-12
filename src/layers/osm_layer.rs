@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
+use crate::layers::labels;
 use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
 use crate::layers::resolve;
@@ -31,6 +32,11 @@ const RELATION_MEMBER_ACCENT: u32 = 0x7C4DFF;
 /// outer ring of the hover highlight — whatever needs to read against light
 /// imagery.
 const CASING_COLOR: u32 = 0x1C1C1E;
+
+/// The zoom at which node styles are resolved into the per-node cache.
+/// Node rules with zoom ranges are evaluated at this zoom only (way styles
+/// are re-resolved per zoom bucket; nodes are not yet).
+const NODE_STYLE_ZOOM: f64 = 18.0;
 
 /// How far the casing extends beyond each side of a way's stroke, in pixels.
 const CASING_WIDTH: f32 = 1.0;
@@ -286,6 +292,10 @@ pub struct OsmLayer {
     /// which already predates this), so this is a fresh counter dedicated to
     /// `add_way`.
     next_placeholder_way_id: i64,
+    /// Label candidates, shaped text and the last placement; see
+    /// [`labels`]. A mutex because painting takes `&self` and layers are
+    /// `Sync`; it is only ever locked on the UI thread.
+    label_cache: std::sync::Mutex<labels::LabelCache>,
 }
 
 /// Starting point for `next_new_id`: one below the most negative existing
@@ -309,7 +319,7 @@ fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> NodeCache {
             let (mx, my) = lat_lon_to_mercator(lat, lon);
             index_by_id.insert(node.id, flat.len());
             flat.push((node.id, mx, my));
-            styles.push(stylesheet.node_style(&node.tags));
+            styles.push(stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM));
         }
     }
     NodeCache {
@@ -532,7 +542,7 @@ fn compute_way_tables(
     let mut fill_tris = Vec::with_capacity(data.ways.len());
     for way in sorted_ways(data) {
         let (verts, bbox) = project_way_vertices(way, node_cache);
-        let style = stylesheet.way_style(&way.tags, way.is_closed());
+        let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
         fill_tris.push(compute_fill_tris(&verts, &style));
         ids.push(way.id);
         bboxes.push(bbox);
@@ -659,7 +669,7 @@ fn build_mp(
         Ok(a) => a,
         Err(problem) => return Some(Err(problem)),
     };
-    let style = stylesheet.way_style(&relation.tags, true);
+    let style = stylesheet.way_style_cached(&relation.tags, true);
     let mut polygons = Vec::with_capacity(assembled.polygons.len());
     let mut total = WayBbox::empty();
     for polygon in &assembled.polygons {
@@ -904,7 +914,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = node_cache.index_by_id.get(&id) {
-                node_cache.styles[idx] = stylesheet.node_style(&node.tags);
+                node_cache.styles[idx] = stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
             }
         }
         FeatureKind::Way => {
@@ -912,7 +922,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = way_id_to_index.get(&id) {
-                let style = stylesheet.way_style(&way.tags, way.is_closed());
+                let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
                 way_fill_tris[idx] = compute_fill_tris(&way_vertices[idx], &style);
                 way_styles[idx] = style;
             }
@@ -1279,6 +1289,7 @@ impl OsmLayer {
             revision: 0,
             next_new_id: -1,
             next_placeholder_way_id: -1,
+            label_cache: Default::default(),
         }
     }
 
@@ -1334,6 +1345,7 @@ impl OsmLayer {
             revision: 0,
             next_new_id,
             next_placeholder_way_id: -1,
+            label_cache: Default::default(),
         }
     }
 
@@ -1931,7 +1943,7 @@ impl OsmLayer {
             match validate_coords(node.lat, node.lon) {
                 Some((lat, lon)) => {
                     let (mx, my) = lat_lon_to_mercator(lat, lon);
-                    let style = self.stylesheet.node_style(&node.tags);
+                    let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
                     if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                         self.node_cache.flat[idx] = (id, mx, my);
                         self.node_cache.styles[idx] = style;
@@ -2013,7 +2025,7 @@ impl OsmLayer {
             }
             self.way_vertices[way_idx] = verts;
             self.way_bboxes[way_idx] = new_bbox;
-            let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+            let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
             self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
             self.way_styles[way_idx] = style;
         }
@@ -2214,7 +2226,7 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -2308,7 +2320,7 @@ impl OsmLayer {
                 None => self.layer_bbox = Some(b),
             }
         }
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris[way_idx] = compute_fill_tris(&verts, &style);
         self.way_vertices[way_idx] = verts;
         self.way_bboxes[way_idx] = bbox;
@@ -2796,7 +2808,7 @@ impl OsmLayer {
 
         if let Some((vlat, vlon)) = validate_coords(node.lat, node.lon) {
             let (mx, my) = lat_lon_to_mercator(vlat, vlon);
-            let style = self.stylesheet.node_style(&node.tags);
+            let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
             if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                 self.node_cache.flat[idx] = (id, mx, my);
                 self.node_cache.styles[idx] = style;
@@ -3027,7 +3039,7 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -3121,6 +3133,292 @@ impl OsmLayer {
             Some((ids, delta)) if ids.contains(&node_id) => *delta,
             _ => Point::default(),
         }
+    }
+
+    /// Marker radius a tagged node is drawn with at `zoom` (0 when hidden).
+    fn label_marker_radius(style: NodeStyle, zoom: f64) -> f32 {
+        match node_markers::node_form(style.tagged, false, false, zoom) {
+            NodeForm::Hidden => 0.0,
+            NodeForm::Simple(edge) => edge / 2.0,
+            _ => (style.size + 2.0) / 2.0,
+        }
+    }
+
+    /// The (cached) label of node `id`, resolved from the stylesheet at
+    /// `zoom` on first use.
+    fn node_label_for(
+        &self,
+        cache: &mut labels::LabelCache,
+        id: i64,
+        zoom: f64,
+    ) -> Option<Arc<labels::NodeLabel>> {
+        let labels::LabelCache { nodes, icons, .. } = cache;
+        nodes
+            .entry(id)
+            .or_insert_with(|| {
+                let tags = &self.osm_data.as_ref()?.nodes.get(&id)?.tags;
+                let st = self.stylesheet.node_text_style(tags, zoom);
+                labels::resolve_node_label(&st, tags, icons, zoom).map(Arc::new)
+            })
+            .clone()
+    }
+
+    /// Place the labels and icons of the nodes in view (the expensive half;
+    /// run when the camera settles, not every frame).
+    fn place_labels(
+        &self,
+        cache: &mut labels::LabelCache,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        selected: &HashSet<i64>,
+        window: &mut Window,
+    ) -> labels::Placement {
+        let fs = crate::frame_stats::start();
+        let zoom = cam.zoom;
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        // Nodes a little outside the view can still have a label that
+        // reaches in.
+        let margin = 150.0 / (cam.w as f64 / cam.span_x.max(1e-9));
+        let mut cands: Vec<(usize, labels::Item, Arc<labels::NodeLabel>)> = Vec::new();
+        let mut fixed: Vec<labels::Rect> = Vec::new();
+        for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
+            if mx < vmin_x - margin
+                || mx > vmax_x + margin
+                || my < vmin_y - margin
+                || my > vmax_y + margin
+            {
+                continue;
+            }
+            let style = self.node_cache.styles[idx];
+            if !style.tagged {
+                continue;
+            }
+            let sp = viewport.mercator_to_screen(mx, my);
+            if !is_point_valid(sp) {
+                continue;
+            }
+            let c = (f32::from(sp.x), f32::from(sp.y));
+            let r = Self::label_marker_radius(style, zoom);
+            match self.node_label_for(cache, id, zoom) {
+                Some(l) => {
+                    let item = labels::Item {
+                        key: (labels::KIND_NODE, id),
+                        center: c,
+                        marker_r: r,
+                        icon_r: l.icon.as_ref().map(|i| i.backing() / 2.0),
+                        text: None,
+                        priority: l.priority,
+                        forced: selected.contains(&id),
+                    };
+                    cands.push((idx, item, l));
+                }
+                None if r > 0.0 => fixed.push(labels::Rect::around(c.0, c.1, r, r)),
+                None => {}
+            }
+        }
+        // Keep the most important candidates; the rest are plain obstacles.
+        if cands.len() > labels::MAX_CANDIDATES {
+            cands.sort_by(|a, b| {
+                b.1.forced
+                    .cmp(&a.1.forced)
+                    .then(b.1.priority.cmp(&a.1.priority))
+                    .then(a.1.key.cmp(&b.1.key))
+            });
+            for (_, it, _) in cands.drain(labels::MAX_CANDIDATES..) {
+                if it.marker_r > 0.0 {
+                    fixed.push(labels::Rect::around(
+                        it.center.0,
+                        it.center.1,
+                        it.marker_r,
+                        it.marker_r,
+                    ));
+                }
+            }
+        }
+        // Shape (cached) to learn each text's size.
+        let mut lines: Vec<Option<Arc<ShapedLine>>> = Vec::with_capacity(cands.len());
+        for (_, it, l) in cands.iter_mut() {
+            match &l.text {
+                Some(t) => {
+                    let line = cache.shapes.get(window, t, l.font_px);
+                    let w = f32::from(line.width);
+                    let h = f32::from(line.ascent + line.descent);
+                    it.text = Some((w, h, l.pref));
+                    lines.push(Some(line));
+                }
+                None => lines.push(None),
+            }
+        }
+        let items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
+        let prev = cache.prev_state();
+        let out = labels::place(
+            &items,
+            &fixed,
+            &prev,
+            &labels::Config::for_view(cam.w, cam.h),
+        );
+        let mut placed = Vec::with_capacity(out.len());
+        let mut by_id = HashMap::with_capacity(out.len());
+        for p in out {
+            let (idx, item, l) = &cands[p.item];
+            let (id, mx, my) = self.node_cache.flat[*idx];
+            let icon = if p.icon {
+                l.icon.clone().map(|choice| labels::PlacedIcon {
+                    choice,
+                    fill: self.node_cache.styles[*idx].color,
+                })
+            } else {
+                None
+            };
+            let text = match (p.text, &lines[p.item]) {
+                (Some((anchor, r)), Some(line)) => Some((
+                    labels::PlacedText {
+                        line: line.clone(),
+                        dx: r.x0 - item.center.0,
+                        dy: r.y0 - item.center.1,
+                        color: l.color,
+                        halo_color: l.halo_color,
+                        halo_radius: l.halo_radius,
+                    },
+                    anchor,
+                )),
+                _ => None,
+            };
+            by_id.insert(id, placed.len());
+            placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
+        }
+        crate::frame_stats::lap("labels.place", fs);
+        crate::frame_stats::count("labels.candidates", items.len());
+        crate::frame_stats::count("labels.placed", placed.len());
+        labels::Placement {
+            cam,
+            revision: self.revision,
+            sheet: Arc::as_ptr(&self.stylesheet) as usize,
+            labels: placed,
+            by_id,
+        }
+    }
+
+    /// Paint labels and icons: place when the camera has settled (or the
+    /// data changed), otherwise just re-project the last placement.
+    fn paint_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        selected: &[FeatureRef],
+        hovered: Option<&FeatureRef>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let zoom = viewport.zoom_level();
+        if self.osm_data.is_none() || zoom < labels::LABEL_MIN_ZOOM {
+            return;
+        }
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        if let Some(lb) = &self.layer_bbox {
+            if lb.max_x < vmin_x || lb.min_x > vmax_x || lb.max_y < vmin_y || lb.min_y > vmax_y {
+                return;
+            }
+        }
+        let fs = crate::frame_stats::start();
+        let cam = labels::CameraSig {
+            zoom,
+            min_x: vmin_x,
+            max_y: vmax_y,
+            span_x: vmax_x - vmin_x,
+            w: f32::from(viewport.transform.screen_size.width),
+            h: f32::from(viewport.transform.screen_size.height),
+        };
+        let sheet = Arc::as_ptr(&self.stylesheet) as usize;
+        let mut cache = self.label_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.validate(self.revision, sheet, zoom.floor() as i32);
+        let step = cache.step(cam, self.revision, sheet, std::time::Instant::now());
+        if step == labels::Step::Recompute {
+            let ids: HashSet<i64> = selected
+                .iter()
+                .chain(hovered)
+                .filter(|f| f.layer_id == self.id && f.kind == FeatureKind::Node)
+                .map(|f| f.id)
+                .collect();
+            let p = self.place_labels(&mut cache, viewport, cam, &ids, window);
+            cache.store(p);
+        }
+        if matches!(step, labels::Step::DrawAndWait | labels::Step::HideAndWait) {
+            window.request_animation_frame();
+        }
+        if step == labels::Step::HideAndWait {
+            return;
+        }
+        let ox = bounds.origin.x;
+        let oy = bounds.origin.y;
+        let (w, h) = (cam.w, cam.h);
+        let on_screen = |x: f32, y: f32| x > -300.0 && x < w + 300.0 && y > -100.0 && y < h + 100.0;
+        // Taken out of the cache so painting can also borrow it for the
+        // forced labels below.
+        let Some(placement) = cache.placement.take() else {
+            return;
+        };
+        for l in &placement.labels {
+            let sp = viewport.mercator_to_screen(l.mx, l.my) + self.drag_preview_offset(l.id);
+            if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
+                continue;
+            }
+            let at = point(sp.x + ox, sp.y + oy);
+            if let Some(icon) = &l.icon {
+                labels::paint_icon(window, cx, icon, at);
+            }
+            if let Some(t) = &l.text {
+                labels::paint_text(window, t, point(at.x + px(t.dx), at.y + px(t.dy)));
+            }
+        }
+        // Selected and hovered nodes keep their label even where the
+        // placement dropped it: drawn beside the marker, collision ignored.
+        for f in selected.iter().chain(hovered) {
+            if f.layer_id != self.id
+                || f.kind != FeatureKind::Node
+                || placement
+                    .by_id
+                    .get(&f.id)
+                    .is_some_and(|&i| placement.labels[i].text.is_some())
+            {
+                continue;
+            }
+            let Some(&idx) = self.node_cache.index_by_id.get(&f.id) else {
+                continue;
+            };
+            let Some(label) = self.node_label_for(&mut cache, f.id, zoom) else {
+                continue;
+            };
+            let Some(text) = &label.text else { continue };
+            let (_, mx, my) = self.node_cache.flat[idx];
+            let sp = viewport.mercator_to_screen(mx, my) + self.drag_preview_offset(f.id);
+            if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
+                continue;
+            }
+            let line = cache.shapes.get(window, text, label.font_px);
+            let reach = Self::label_marker_radius(self.node_cache.styles[idx], zoom)
+                .max((self.node_cache.styles[idx].size + 2.0) / 2.0);
+            let r = labels::label_rect(
+                label.pref,
+                (0.0, 0.0),
+                reach,
+                3.0,
+                f32::from(line.width),
+                f32::from(line.ascent + line.descent),
+            );
+            let t = labels::PlacedText {
+                line,
+                dx: r.x0,
+                dy: r.y0,
+                color: label.color,
+                halo_color: label.halo_color,
+                halo_radius: label.halo_radius,
+            };
+            let at = point(sp.x + ox, sp.y + oy);
+            labels::paint_text(window, &t, point(at.x + px(t.dx), at.y + px(t.dy)));
+        }
+        cache.placement = Some(placement);
+        crate::frame_stats::lap("labels.paint", fs);
     }
 
     /// The CPU half of the multipolygon fill pass of `render_canvas` (cull,
@@ -3631,6 +3929,9 @@ enum BatchKind {
 /// vertices accumulated as it grows.
 struct Batch {
     rgba: u32,
+    /// Draw-order layer (`z-index`, see [`z_key`]); batches of one kind are
+    /// painted in ascending `z`, then first-seen order.
+    z: i32,
     /// Key of this batch's `VertexHints` entry.
     key: u64,
     path: Option<Path<Pixels>>,
@@ -3640,9 +3941,8 @@ struct Batch {
 }
 
 impl Batch {
-    /// `variant` tells batches of one kind apart (the stroke width bits).
-    fn new(kind: BatchKind, rgba: u32, variant: u32, hints: &HashMap<u64, usize>) -> Self {
-        let key = ((kind as u64) << 60) ^ ((rgba as u64) << 24) ^ (variant as u64);
+    fn new(kind: BatchKind, rgba: u32, z: i32, hints: &HashMap<u64, usize>) -> Self {
+        let key = ((kind as u64) << 60) ^ ((rgba as u64) << 24) ^ (z as u32 as u64);
         // The previous frame's size plus a margin, capped so that a stale
         // hint (after zooming in from far out) cannot reserve gigabytes.
         let path = hints.get(&key).map(|&n| {
@@ -3652,6 +3952,7 @@ impl Batch {
         });
         Self {
             rgba,
+            z,
             key,
             path,
             bounds: (
@@ -3688,16 +3989,36 @@ const MAX_HINT_VERTICES: usize = 8 << 20;
 /// (a `HashMap`'s iteration order is randomized per process, which caused
 /// visible z-order flicker between overlapping fills of different colors).
 fn batch_index(
-    index: &mut HashMap<u32, usize>,
+    index: &mut HashMap<(i32, u32), usize>,
     batches: &mut Vec<Batch>,
     kind: BatchKind,
+    z: i32,
     rgba: u32,
     hints: &HashMap<u64, usize>,
 ) -> usize {
-    *index.entry(rgba).or_insert_with(|| {
-        batches.push(Batch::new(kind, rgba, 0, hints));
+    *index.entry((z, rgba)).or_insert_with(|| {
+        batches.push(Batch::new(kind, rgba, z, hints));
         batches.len() - 1
     })
+}
+
+/// A `z-index` as a sortable layer number (eighths, so fractional indices
+/// like 0.5 order correctly).
+fn z_key(z_index: f32) -> i32 {
+    (z_index.clamp(-1.0e6, 1.0e6) * 8.0).round() as i32
+}
+
+/// Finish `batches` into paths in draw order: ascending `z`, ties by
+/// first-seen order (a stable sort), so the order is the same every frame.
+fn finish_sorted(
+    mut batches: Vec<Batch>,
+    hints: &mut HashMap<u64, usize>,
+) -> Vec<(u32, Path<Pixels>)> {
+    batches.sort_by_key(|b| b.z);
+    batches
+        .into_iter()
+        .filter_map(|b| b.finish(hints))
+        .collect()
 }
 
 /// The way pass of one frame, recorded but not yet painted: area fills, route
@@ -3708,7 +4029,10 @@ pub struct WayScene {
     fills: Vec<(u32, Path<Pixels>)>,
     overlays: Vec<(u32, Path<Pixels>)>,
     casing: Option<(u32, Path<Pixels>)>,
-    strokes: Vec<(u32, Path<Pixels>)>,
+    /// The casings from `casing-width` and the strokes, in one list in
+    /// `z-index` order: at each layer the casings come first, so a higher
+    /// layer's casing covers a lower layer's stroke.
+    lines: Vec<(u32, Path<Pixels>)>,
 }
 
 impl WayScene {
@@ -3717,13 +4041,13 @@ impl WayScene {
         let sum =
             |v: &[(u32, Path<Pixels>)]| -> usize { v.iter().map(|(_, p)| p.vertices.len()).sum() };
         let casing = self.casing.as_ref().map_or(0, |(_, p)| p.vertices.len());
-        sum(&self.fills) + sum(&self.overlays) + casing + sum(&self.strokes)
+        sum(&self.fills) + sum(&self.overlays) + casing + sum(&self.lines)
     }
 
     /// Number of paths the scene hands to the GPU. Each is rasterised and
     /// composited separately, over its own bounding box.
     pub fn path_count(&self) -> usize {
-        self.fills.len() + self.overlays.len() + self.casing.is_some() as usize + self.strokes.len()
+        self.fills.len() + self.overlays.len() + self.casing.is_some() as usize + self.lines.len()
     }
 
     /// Hand the paths to the window: fills first so outlines stay on top,
@@ -3741,7 +4065,7 @@ impl WayScene {
         if let Some((rgba, path)) = self.casing {
             window.paint_path(path, gpui::rgba(rgba));
         }
-        for (rgba, path) in self.strokes {
+        for (rgba, path) in self.lines {
             window.paint_path(path, gpui::rgba(rgba));
         }
         crate::frame_stats::lap("osm.ways_paint", fs_phase);
@@ -3948,6 +4272,22 @@ impl OsmLayer {
         let (ppm_x, ppm_y) = proj.pixels_per_meter();
         let zoom = viewport.zoom_level();
         let lod = WayLod::at(zoom);
+        // Zoom-range rules: cached styles are zoom-agnostic and indexed by
+        // signature into this per-zoom-bucket table (rebuilt only when the
+        // bucket changes). `None` for a stylesheet with no zoom selectors.
+        let zoom_table = self
+            .stylesheet
+            .is_zoom_dependent()
+            .then(|| self.stylesheet.zoom_styles(zoom));
+        let at_zoom = |s: WayStyle| -> WayStyle {
+            match zoom_table.as_ref().and_then(|t| t.get(s.sig as usize)) {
+                Some(z) => WayStyle {
+                    direction: s.direction,
+                    ..*z
+                },
+                None => s,
+            }
+        };
         // While nodes are being dragged the cached bounding boxes are stale,
         // so draw every way in full.
         let dragging = self.drag_preview.is_some();
@@ -3964,7 +4304,7 @@ impl OsmLayer {
         // top. Triangulation is cached (`way_fill_tris`, computed at
         // load/edit time); per-frame work is projection + batched
         // raw-triangle emission, grouped by RGBA color.
-        let mut fill_index: HashMap<u32, usize> = HashMap::new();
+        let mut fill_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut fills: Vec<Batch> = Vec::new();
         let mut fill_pts: Vec<Point<Pixels>> = Vec::new();
 
@@ -3978,7 +4318,8 @@ impl OsmLayer {
         );
         let fs_phase = crate::frame_stats::start();
         for entry in self.mp.entries.values() {
-            let Some(fill) = entry.style.fill else {
+            let fill_style = at_zoom(entry.style);
+            let Some(fill) = fill_style.fill else {
                 continue;
             };
             let b = &entry.bbox;
@@ -3990,6 +4331,7 @@ impl OsmLayer {
                 &mut fill_index,
                 &mut fills,
                 BatchKind::Fill,
+                z_key(fill_style.z_index),
                 (fill.color << 8) | alpha,
                 &hints,
             );
@@ -4019,7 +4361,8 @@ impl OsmLayer {
         let fs_phase = crate::frame_stats::start();
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
-            let Some(fill) = self.way_styles[i].fill else {
+            let fill_style = at_zoom(self.way_styles[i]);
+            let Some(fill) = fill_style.fill else {
                 continue;
             };
             let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
@@ -4059,6 +4402,7 @@ impl OsmLayer {
                 &mut fill_index,
                 &mut fills,
                 BatchKind::Fill,
+                z_key(fill_style.z_index),
                 (fill.color << 8) | alpha,
                 &hints,
             );
@@ -4096,16 +4440,16 @@ impl OsmLayer {
         // GPU (a dozen near-screen-sized paths cost more than a million
         // vertices), and a width is only the half-width of each segment's
         // quad.
-        let mut stroke_index: HashMap<u32, usize> = HashMap::new();
+        let mut stroke_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut strokes: Vec<Batch> = Vec::new();
         // Consecutive ways mostly share a style, so remember the last lookup.
-        let mut last_stroke: Option<(u32, usize)> = None;
+        let mut last_stroke: Option<((i32, u32), usize)> = None;
 
         // Route overlays: a translucent line under each route member way,
         // one path per colour. Looked up per visible way from the cache
         // (`MpCache::route_ways`), never by scanning relations.
         let has_routes = !self.mp.route_ways.is_empty();
-        let mut overlay_index: HashMap<u32, usize> = HashMap::new();
+        let mut overlay_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut overlays: Vec<Batch> = Vec::new();
         let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
 
@@ -4116,6 +4460,9 @@ impl OsmLayer {
         let draw_casing = zoom >= CASING_MIN_ZOOM;
         let draw_arrows = zoom >= ARROW_MIN_ZOOM;
         let mut casing = Batch::new(BatchKind::Casing, (CASING_COLOR << 8) | 0xFF, 0, &hints);
+        // Casings asked for by the stylesheet (`casing-width`), one per colour.
+        let mut styled_casing_index: HashMap<(i32, u32), usize> = HashMap::new();
+        let mut styled_casings: Vec<Batch> = Vec::new();
 
         // Reused scratch buffers, so the (potentially tens of thousands of)
         // visible ways of a frame don't each allocate.
@@ -4159,27 +4506,48 @@ impl OsmLayer {
             // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
             // not here — no stylesheet lookup or tags HashMap access in this
             // per-frame loop.
-            let style = self.way_styles[i];
+            let style = at_zoom(self.way_styles[i]);
             if !dragging && !lod.strokes(style.width) {
                 ways_skipped += 1;
                 continue;
             }
             let half_width = style.width / 2.0;
+            let z = z_key(style.z_index);
+            let stroke_rgba = (style.color << 8) | (style.opacity * 255.0).round() as u32;
             let stroke_idx = match last_stroke {
-                Some((c, idx)) if c == style.color => idx,
+                Some(((lz, c), idx)) if lz == z && c == stroke_rgba => idx,
                 _ => {
                     let idx = batch_index(
                         &mut stroke_index,
                         &mut strokes,
                         BatchKind::Stroke,
-                        (style.color << 8) | 0xFF,
+                        z,
+                        stroke_rgba,
                         &hints,
                     );
-                    last_stroke = Some((style.color, idx));
+                    last_stroke = Some(((z, stroke_rgba), idx));
                     idx
                 }
             };
+            // Dashes only where a segment is long enough to show them; a
+            // collapsed way is a single stroke across its bounding box.
+            let dashes = style
+                .dashes
+                .filter(|_| detail == WayDetail::Full && !lod.coarse);
             let stroke = &mut strokes[stroke_idx];
+
+            // An explicit casing replaces the default dark one.
+            let styled_casing_idx = (style.casing_width > 0.0).then(|| {
+                batch_index(
+                    &mut styled_casing_index,
+                    &mut styled_casings,
+                    BatchKind::Casing,
+                    z,
+                    (style.casing_color << 8) | 0xFF,
+                    &hints,
+                )
+            });
+            let default_casing = draw_casing && styled_casing_idx.is_none();
 
             let overlay_idx = if has_routes {
                 self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
@@ -4187,6 +4555,7 @@ impl OsmLayer {
                         &mut overlay_index,
                         &mut overlays,
                         BatchKind::Overlay,
+                        0,
                         (colour << 8) | overlay_alpha,
                         &hints,
                     )
@@ -4243,13 +4612,18 @@ impl OsmLayer {
                 && detail == WayDetail::Full
                 && (dragging
                     || bbox_extent_px(bbox, ppm_x, ppm_y) >= way_stroke::SHAPE_MIN_EXTENT_PX);
+            let casing_extent = if styled_casing_idx.is_some() {
+                style.casing_width
+            } else {
+                CASING_WIDTH
+            };
             let (casing_hw, overlay_hw) = (
-                half_width + CASING_WIDTH,
-                half_width + CASING_WIDTH + ROUTE_OVERLAY_EXTRA,
+                half_width + casing_extent,
+                half_width + casing_extent + ROUTE_OVERLAY_EXTRA,
             );
             let widest_hw = if overlay_idx.is_some() {
                 overlay_hw
-            } else if draw_casing {
+            } else if default_casing || styled_casing_idx.is_some() {
                 casing_hw
             } else {
                 half_width
@@ -4276,13 +4650,24 @@ impl OsmLayer {
                         shape: shape_of(overlay_hw),
                     }
                 });
-                let casing_layer = draw_casing.then(|| Layer {
+                let casing_layer = default_casing.then(|| Layer {
                     sink: PathSink {
                         path: &mut casing.path,
                         bounds: &mut casing.bounds,
                     },
                     hw: casing_hw,
                     shape: shape_of(casing_hw),
+                });
+                let styled_layer = styled_casing_idx.map(|ci| {
+                    let cb = &mut styled_casings[ci];
+                    Layer {
+                        sink: PathSink {
+                            path: &mut cb.path,
+                            bounds: &mut cb.bounds,
+                        },
+                        hw: casing_hw,
+                        shape: shape_of(casing_hw),
+                    }
                 });
                 let stroke_layer = Layer {
                     sink: PathSink {
@@ -4292,7 +4677,12 @@ impl OsmLayer {
                     hw: half_width,
                     shape: shape_of(half_width),
                 };
-                polyline.emit_layers(&mut [overlay_layer, casing_layer, Some(stroke_layer)]);
+                polyline.emit_layers(&mut [
+                    overlay_layer,
+                    casing_layer,
+                    styled_layer,
+                    dashes.is_none().then_some(stroke_layer),
+                ]);
             } else {
                 // Plain rectangles, as before joins existed.
                 for &(a, b) in &segs {
@@ -4306,19 +4696,40 @@ impl OsmLayer {
                         };
                         way_stroke::emit_segment(&mut sink, pa, pb, overlay_hw);
                     }
-                    if draw_casing {
+                    if default_casing {
                         let mut sink = PathSink {
                             path: &mut casing.path,
                             bounds: &mut casing.bounds,
                         };
                         way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
                     }
-                    let mut sink = PathSink {
-                        path: &mut stroke.path,
-                        bounds: &mut stroke.bounds,
-                    };
-                    way_stroke::emit_segment(&mut sink, pa, pb, half_width);
+                    if let Some(ci) = styled_casing_idx {
+                        let cb = &mut styled_casings[ci];
+                        let mut sink = PathSink {
+                            path: &mut cb.path,
+                            bounds: &mut cb.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
+                    }
+                    if dashes.is_none() {
+                        let mut sink = PathSink {
+                            path: &mut stroke.path,
+                            bounds: &mut stroke.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, half_width);
+                    }
                 }
+            }
+            if let (Some((dash, gap)), Some(first)) = (dashes, segs.first()) {
+                let anchors: Vec<(f32, f32)> = std::iter::once(scratch_pts[first.0])
+                    .chain(segs.iter().map(|&(_, b)| scratch_pts[b]))
+                    .map(|p| (f32::from(p.x), f32::from(p.y)))
+                    .collect();
+                let mut sink = PathSink {
+                    path: &mut stroke.path,
+                    bounds: &mut stroke.bounds,
+                };
+                way_stroke::emit_dashed(&mut sink, &anchors, dash, gap, half_width);
             }
 
             let arrows = draw_arrows && style.direction != Direction::None;
@@ -4344,7 +4755,7 @@ impl OsmLayer {
                 {
                     push_triangle(&mut stroke.path, &mut stroke.bounds, tip, left, right);
                 }
-                if draw_casing {
+                if default_casing {
                     if let Some([tip, left, right]) = arrow_triangle(
                         p0,
                         p1,
@@ -4364,19 +4775,25 @@ impl OsmLayer {
 
         let mut next_hints = HashMap::new();
         let scene = WayScene {
-            fills: fills
-                .into_iter()
-                .filter_map(|b| b.finish(&mut next_hints))
-                .collect(),
+            fills: finish_sorted(fills, &mut next_hints),
             overlays: overlays
                 .into_iter()
                 .filter_map(|b| b.finish(&mut next_hints))
                 .collect(),
             casing: casing.finish(&mut next_hints),
-            strokes: strokes
-                .into_iter()
-                .filter_map(|b| b.finish(&mut next_hints))
-                .collect(),
+            lines: {
+                // Per z-index layer: casings, then strokes. Stable, so equal
+                // layers keep first-seen order.
+                let mut all: Vec<(i32, u8, Batch)> = styled_casings
+                    .into_iter()
+                    .map(|b| (b.z, 0, b))
+                    .chain(strokes.into_iter().map(|b| (b.z, 1, b)))
+                    .collect();
+                all.sort_by_key(|&(z, order, _)| (z, order));
+                all.into_iter()
+                    .filter_map(|(_, _, b)| b.finish(&mut next_hints))
+                    .collect()
+            },
         };
         self.vertex_hints.replace(next_hints);
         crate::frame_stats::count("count.way_path_vertices", scene.vertex_count());
@@ -4448,7 +4865,12 @@ impl MapLayer for OsmLayer {
         OsmLayer::autosave_snapshot(self)
     }
 
-    fn render_elements(&self, _viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        _viewport: &Viewport,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Vec<AnyElement> {
         // Node rendering moved to `render_canvas` (paint_quad) to avoid the
         // per-node GPUI element layout cost. The selection ring is drawn in
         // `render_highlight` as a canvas outline.
@@ -4457,6 +4879,18 @@ impl MapLayer for OsmLayer {
 
     fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
         &self.download_rects
+    }
+
+    fn render_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        selected: &[FeatureRef],
+        hovered: Option<&FeatureRef>,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        self.paint_labels(viewport, bounds, selected, hovered, window, cx);
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -5277,7 +5711,7 @@ impl EditableLayer for OsmLayer {
                 {
                     return;
                 }
-                let node_style = self.stylesheet.node_style(&n.tags);
+                let node_style = self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
                 // it or drawn it small.
@@ -5311,7 +5745,8 @@ impl EditableLayer for OsmLayer {
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
-                                node_styles.push(self.stylesheet.node_style(&n.tags));
+                                node_styles
+                                    .push(self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM));
                             }
                         }
                     }
@@ -5338,7 +5773,9 @@ impl EditableLayer for OsmLayer {
                 }
 
                 // A wide halo stroke under a narrower core stroke.
-                let way_style = self.stylesheet.way_style(&way.tags, way.is_closed());
+                let way_style =
+                    self.stylesheet
+                        .way_style(&way.tags, way.is_closed(), viewport.zoom_level());
                 // Drawn with the way pass's own stroke geometry (mitered
                 // bends, round ends, a joined closing corner) rather than a
                 // tessellated stroke with square ends.
@@ -9938,6 +10375,122 @@ mod way_lod_tests {
     fn scene_vertices(layer: &OsmLayer, zoom: f64) -> usize {
         let (v, b) = view(zoom);
         layer.build_way_scene(&v, b).vertex_count()
+    }
+
+    fn scene_paths(layer: &OsmLayer, zoom: f64) -> usize {
+        let (v, b) = view(zoom);
+        layer.build_way_scene(&v, b).path_count()
+    }
+
+    fn layer_styled(css: &str) -> OsmLayer {
+        let mut l = layer();
+        l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
+        l
+    }
+
+    #[test]
+    fn a_styled_casing_adds_a_path_below_the_default_casing_zoom() {
+        // Zoom 15: no default casing, so one stroke path.
+        assert_eq!(scene_paths(&layer_styled("way { width: 3; }"), 15.0), 1);
+        let cased = layer_styled("way { width: 3; casing-width: 2; casing-color: red; }");
+        assert_eq!(scene_paths(&cased, 15.0), 2);
+        // At zoom 17 the styled casing replaces the default one.
+        assert_eq!(scene_paths(&cased, 17.0), 2);
+    }
+
+    /// Two overlapping ways over the same nodes, tagged `highway=lo` (way
+    /// 10) and `highway=hi` (way 11).
+    fn two_way_layer(css: &str) -> OsmLayer {
+        let l = layer();
+        let mut data = (**l.osm_data.as_ref().unwrap()).clone();
+        let mut lo = way(10, vec![1, 2, 3, 4, 5]);
+        lo.tags.insert("highway".into(), "lo".into());
+        let mut hi = way(11, vec![1, 2, 3, 4, 5]);
+        hi.tags.insert("highway".into(), "hi".into());
+        data.ways = HashMap::from([(10, lo), (11, hi)]);
+        let mut l = OsmLayer::new_with_data(LayerId(1), "t", Arc::new(data));
+        l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
+        l
+    }
+
+    fn line_colors(l: &OsmLayer, zoom: f64) -> Vec<u32> {
+        let (v, b) = view(zoom);
+        l.build_way_scene(&v, b)
+            .lines
+            .iter()
+            .map(|(rgba, _)| rgba >> 8)
+            .collect()
+    }
+
+    #[test]
+    fn z_index_orders_strokes_whatever_the_way_order() {
+        // `lo` is way 10 and would draw first anyway; swap which one is on top.
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 1; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; }";
+        let l = two_way_layer(css);
+        assert_eq!(line_colors(&l, 17.0), vec![0x0000ff, 0xff0000]);
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 9; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; }";
+        let l = two_way_layer(css);
+        assert_eq!(line_colors(&l, 17.0), vec![0xff0000, 0x0000ff]);
+    }
+
+    #[test]
+    fn a_higher_layers_casing_covers_a_lower_layers_stroke() {
+        let css = "way[highway=lo] { color: #0000ff; width: 3; z-index: 1; casing-width: 1; casing-color: #111111; } \
+                   way[highway=hi] { color: #ff0000; width: 3; z-index: 5; casing-width: 1; casing-color: #222222; }";
+        let l = two_way_layer(css);
+        assert_eq!(
+            line_colors(&l, 17.0),
+            vec![0x111111, 0x0000ff, 0x222222, 0xff0000]
+        );
+    }
+
+    #[test]
+    fn stroke_opacity_becomes_the_batch_alpha() {
+        let l = layer_styled("way { color: #123456; width: 3; opacity: 0.5; }");
+        let (v, b) = view(17.0);
+        let scene = l.build_way_scene(&v, b);
+        assert_eq!(scene.lines.len(), 1);
+        assert_eq!(scene.lines[0].0, 0x1234_5600 | 128);
+    }
+
+    #[test]
+    fn a_dashed_stroke_draws_fewer_pixels_than_a_solid_one() {
+        let area = |l: &OsmLayer| {
+            let (v, b) = view(18.0);
+            l.build_way_scene(&v, b)
+                .lines
+                .iter()
+                .map(|(_, p)| p.vertices.len())
+                .sum::<usize>()
+        };
+        let solid = layer_styled("way { width: 3; }");
+        let dashed = layer_styled("way { width: 3; dashes: 8,8; }");
+        // Many short rectangles instead of one long one.
+        assert!(area(&dashed) > area(&solid));
+        // And never below the editing zoom, where the stroke is simplified.
+        assert_eq!(scene_vertices(&dashed, 15.0), scene_vertices(&solid, 15.0));
+    }
+
+    #[test]
+    fn equal_z_index_keeps_a_stable_order_across_frames() {
+        let css = "way[highway] { width: 3; } way[highway=lo] { color: #0000ff; } way[highway=hi] { color: #ff0000; }";
+        let l = two_way_layer(css);
+        let first = line_colors(&l, 17.0);
+        assert_eq!(first.len(), 2);
+        for _ in 0..50 {
+            assert_eq!(line_colors(&l, 17.0), first);
+        }
+    }
+
+    #[test]
+    fn zoom_gated_casing_follows_the_zoom_bucket() {
+        let l = layer_styled("way { width: 3; } way|z15- { casing-width: 2; }");
+        assert_eq!(scene_paths(&l, 14.5), 1);
+        assert_eq!(scene_paths(&l, 15.2), 2);
+        // And back: the per-bucket table is not stale.
+        assert_eq!(scene_paths(&l, 14.5), 1);
     }
 
     /// The layer's cached geometry and its scene are what a layer freshly
