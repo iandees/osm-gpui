@@ -8,9 +8,10 @@ use gpui::{
     Window,
 };
 use gpui_component::{
+    button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     label::Label,
-    v_flex, ActiveTheme as _,
+    v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use std::collections::HashMap;
 
@@ -308,13 +309,24 @@ impl Render for PresetPickerDialog {
             .shadow_lg()
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .px_4()
                     .py_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.preset_picker.title")),
+                    .child(tr!("dialog.preset_picker.title"))
+                    .child(
+                        Button::new("preset-picker-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(tr!("dialog.preset_picker.close"))
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                    ),
             )
             .child(div().p_4().child(body))
             // A press inside the card must not reach the scrim's

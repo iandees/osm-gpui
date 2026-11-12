@@ -984,6 +984,7 @@ dialog:
       min_zoom_above_max: "Min. Zoom darf nicht größer als Max. Zoom sein."
   preset_picker:
     title: "Objekttyp ändern"
+    close: "Schließen"
     search_placeholder: "Objekttypen suchen …"
     recent: "Zuletzt verwendet"
     common: "Häufig"

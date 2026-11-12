@@ -1005,6 +1005,7 @@ dialog:
       min_zoom_above_max: "Min zoom must be ≤ max zoom."
   preset_picker:
     title: "Change Feature Type"
+    close: "Close"
     search_placeholder: "Search feature types…"
     # Group headings in the list shown before typing a search.
     recent: "Recent"
