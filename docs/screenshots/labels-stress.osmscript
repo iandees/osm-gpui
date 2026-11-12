@@ -1,0 +1,38 @@
+# Label paint cost with ~300 labels placed: docs/screenshots/fixtures/labels-stress.osm
+# (350 named POIs on a jittered grid, laid out for the z17 view below). Run
+# once per halo mode, for example:
+#   OSM_GPUI_LABEL_HALO=quad OSM_GPUI_FRAME_STATS=1 OSM_GPUI_FRAME_STATS_NO_TILES=1 \
+#     cargo run --release -- --script docs/screenshots/labels-stress.osmscript
+# The tables to read are labels.paint, labels.placed and labels.place.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/labels-stress.osm
+viewport 40.7128 -74.0060 17
+wait_idle 5s
+wait 800ms
+capture docs/screenshots/labels-stress.png
+
+# Pan, warm: labels are re-projected, not re-placed.
+frame_stats discard
+drag 300,400 340,420
+wait 150ms
+drag 340,420 300,400
+wait 150ms
+drag 300,400 340,420
+wait 150ms
+drag 340,420 300,400
+wait 800ms
+frame_stats stress_pan_warm
+
+# Zoom: the old labels follow their anchors, then are re-placed on settle.
+frame_stats discard
+scroll 488,388 dy=2
+wait 600ms
+scroll 488,388 dy=-2
+wait 600ms
+scroll 488,388 dy=2
+wait 600ms
+scroll 488,388 dy=-2
+wait 600ms
+frame_stats stress_zoom
+log done

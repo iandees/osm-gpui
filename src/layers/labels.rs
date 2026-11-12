@@ -58,7 +58,13 @@ pub const DEFAULT_HALO_RADIUS: f32 = 1.5;
 pub const DEFAULT_ICON_PX: f32 = 12.0;
 /// Extra backing circle diameter around the glyph.
 pub const ICON_BACKING_EXTRA: f32 = 6.0;
-const HALO_ALPHA: f32 = 0.9;
+/// Halo opacity when `text-halo-color` carries no alpha of its own.
+pub const DEFAULT_HALO_ALPHA: f32 = 0.9;
+/// Length of the fade-in of newly placed labels.
+pub const FADE: Duration = Duration::from_millis(140);
+/// While zooming, the previous placement stays on screen (re-projected from
+/// its Mercator anchors) as long as the zoom differs by at most this much.
+pub const ZOOM_KEEP: f64 = 1.0;
 /// Longest label, in characters; longer text is cut with an ellipsis.
 const MAX_TEXT_CHARS: usize = 32;
 /// A previously placed label gets this much extra priority so a pan or a
@@ -438,6 +444,7 @@ pub struct NodeLabel {
     pub color: u32,
     pub halo_color: u32,
     pub halo_radius: f32,
+    pub halo_alpha: f32,
     pub pref: Anchor,
     pub icon: Option<IconChoice>,
     pub priority: i32,
@@ -596,6 +603,7 @@ pub fn resolve_node_label(
         color: style.color.unwrap_or(DEFAULT_TEXT_COLOR),
         halo_color: style.halo_color.unwrap_or(DEFAULT_HALO_COLOR),
         halo_radius: style.halo_radius.unwrap_or(DEFAULT_HALO_RADIUS),
+        halo_alpha: style.halo_opacity.unwrap_or(DEFAULT_HALO_ALPHA),
         pref: Anchor::from_position(style.position),
         icon,
     })
@@ -675,6 +683,7 @@ pub struct PlacedText {
     pub color: u32,
     pub halo_color: u32,
     pub halo_radius: f32,
+    pub halo_alpha: f32,
 }
 
 #[derive(Clone)]
@@ -694,6 +703,9 @@ pub struct PlacedLabel {
     pub icon: Option<PlacedIcon>,
     pub text: Option<PlacedText>,
     anchor: Option<Anchor>,
+    /// When this label started fading in; `None` for one that was already
+    /// on screen (it stays fully opaque across a re-placement).
+    pub born: Option<Instant>,
 }
 
 impl PlacedLabel {
@@ -716,6 +728,7 @@ impl PlacedLabel {
             icon,
             text,
             anchor,
+            born: None,
         }
     }
 
@@ -730,6 +743,17 @@ impl PlacedLabel {
             icon: None,
             text: Some(text),
             anchor: Some(Anchor::Center),
+            born: None,
+        }
+    }
+}
+
+/// Opacity of a label born at `born` (`None`: already opaque) at `now`.
+pub fn fade_alpha(born: Option<Instant>, now: Instant) -> f32 {
+    match born {
+        None => 1.0,
+        Some(b) => {
+            (now.saturating_duration_since(b).as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
         }
     }
 }
@@ -753,6 +777,16 @@ pub struct Placement {
     pub sheet: usize,
     pub labels: Vec<PlacedLabel>,
     pub by_id: HashMap<i64, usize>,
+    /// When the last fade-in finishes; frames are requested until then.
+    pub fade_end: Option<Instant>,
+    /// How this placement's text halos are drawn (see [`halo_for`]).
+    pub halo: HaloMode,
+}
+
+/// Whether to ask for another frame: while waiting for the camera to settle
+/// and while a fade-in runs, never when everything is at rest.
+pub fn wants_frame(step: Step, fade_end: Option<Instant>, now: Instant) -> bool {
+    matches!(step, Step::DrawAndWait | Step::HideAndWait) || fade_end.is_some_and(|e| now < e)
 }
 
 /// What `LabelCache::step` tells the caller to do this frame.
@@ -828,8 +862,16 @@ impl LabelCache {
         }
         let same_scale = p.cam.zoom == cam.zoom && p.cam.w == cam.w && p.cam.h == cam.h;
         if !same_scale {
-            return if settled {
-                Step::Recompute
+            if settled {
+                return Step::Recompute;
+            }
+            // A zoom in progress: keep showing the old labels, moving with
+            // their anchors, unless the scale has changed too much for them
+            // to mean anything (or the window was resized).
+            let keep =
+                p.cam.w == cam.w && p.cam.h == cam.h && (p.cam.zoom - cam.zoom).abs() <= ZOOM_KEEP;
+            return if keep {
+                Step::DrawAndWait
             } else {
                 Step::HideAndWait
             };
@@ -854,7 +896,27 @@ impl LabelCache {
         }
     }
 
-    pub fn store(&mut self, p: Placement) {
+    /// Keep a new placement. Labels that were on screen in the previous one
+    /// (at a comparable zoom) stay opaque; the others fade in from `now`.
+    pub fn store(&mut self, mut p: Placement, now: Instant) {
+        let kept: Option<&Placement> = self
+            .placement
+            .as_ref()
+            .filter(|o| (o.cam.zoom - p.cam.zoom).abs() <= ZOOM_KEEP);
+        // By (kind, id): area ids may equal node ids.
+        let kept_keys: Option<HashSet<Key>> =
+            kept.map(|o| o.labels.iter().map(|l| (l.kind, l.id)).collect());
+        let mut any = false;
+        for l in &mut p.labels {
+            if kept_keys
+                .as_ref()
+                .is_none_or(|k| !k.contains(&(l.kind, l.id)))
+            {
+                l.born = Some(now);
+                any = true;
+            }
+        }
+        p.fade_end = any.then(|| now + FADE);
         self.placement = Some(p);
     }
 
@@ -908,6 +970,50 @@ fn paint_glyphs(window: &mut Window, line: &ShapedLine, origin: Point<Pixels>, c
     }
 }
 
+/// How a label's halo is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HaloMode {
+    /// The glyphs repainted at 4 (8 from a radius of 2) offsets: the best
+    /// outline, the most expensive.
+    Offsets,
+    /// One repaint, offset diagonally: a drop shadow.
+    Shadow,
+    /// One translucent rounded rectangle behind the text.
+    Quad,
+    /// No halo (for measurement).
+    Off,
+}
+
+/// The halo mode forced by `OSM_GPUI_LABEL_HALO` (`offsets` | `shadow` |
+/// `quad` | `off`), read once; `None` to choose by label count.
+pub fn forced_halo_mode() -> Option<HaloMode> {
+    static MODE: OnceLock<Option<HaloMode>> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("OSM_GPUI_LABEL_HALO").as_deref() {
+        Ok("offsets") => Some(HaloMode::Offsets),
+        Ok("shadow") => Some(HaloMode::Shadow),
+        Ok("quad") => Some(HaloMode::Quad),
+        Ok("off") => Some(HaloMode::Off),
+        _ => None,
+    })
+}
+
+/// Measured in release at about 300 placed labels with icons: no halo 1.05 ms,
+/// `Quad` 1.24 ms, `Shadow` 2.4 ms, `Offsets` 9.1 ms per frame (each glyph
+/// pass costs about 1.3 ms there, about 4 us per label). The outline is the
+/// most legible, so it is used while there are few labels; with more than
+/// [`OUTLINE_MAX_LABELS`] placed, the cheap backing quad takes over.
+pub const OUTLINE_MAX_LABELS: usize = 40;
+
+/// The halo for a placement with `n_text` text labels, unless overridden by
+/// `OSM_GPUI_LABEL_HALO`.
+pub fn halo_for(n_text: usize) -> HaloMode {
+    forced_halo_mode().unwrap_or(if n_text <= OUTLINE_MAX_LABELS {
+        HaloMode::Offsets
+    } else {
+        HaloMode::Quad
+    })
+}
+
 /// Offsets (in pixels) at which the halo is painted for radius `r`: the four
 /// axis directions, plus the diagonals from a radius of 2 (each pass costs about 0.3 us per glyph,
 /// so the default 1.5 px halo is four passes).
@@ -923,25 +1029,63 @@ pub fn halo_offsets(r: f32) -> Vec<(f32, f32)> {
     v
 }
 
-/// Paint `text` with its top-left at `top_left`: the halo glyphs first, then
-/// the fill.
-pub fn paint_text(window: &mut Window, t: &PlacedText, top_left: Point<Pixels>) {
+/// Paint `text` with its top-left at `top_left`, at opacity `alpha`: the halo
+/// first (see [`HaloMode`]), then the fill.
+pub fn paint_text(
+    window: &mut Window,
+    t: &PlacedText,
+    top_left: Point<Pixels>,
+    alpha: f32,
+    mode: HaloMode,
+) {
     let baseline = point(top_left.x, top_left.y + t.line.ascent);
-    let halo = rgb_hsla(t.halo_color, HALO_ALPHA);
-    for (ox, oy) in halo_offsets(t.halo_radius) {
-        paint_glyphs(
-            window,
-            &t.line,
-            point(baseline.x + px(ox), baseline.y + px(oy)),
-            halo,
-        );
+    if t.halo_radius > 0.0 {
+        let halo = rgb_hsla(t.halo_color, t.halo_alpha * alpha);
+        match mode {
+            HaloMode::Offsets => {
+                for (ox, oy) in halo_offsets(t.halo_radius) {
+                    paint_glyphs(
+                        window,
+                        &t.line,
+                        point(baseline.x + px(ox), baseline.y + px(oy)),
+                        halo,
+                    );
+                }
+            }
+            HaloMode::Shadow => {
+                let d = t.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
+                paint_glyphs(
+                    window,
+                    &t.line,
+                    point(baseline.x + px(d), baseline.y + px(d)),
+                    halo,
+                );
+            }
+            HaloMode::Quad => {
+                let pad = t.halo_radius + 1.0;
+                let b = Bounds {
+                    origin: point(top_left.x - px(pad), top_left.y),
+                    size: size(t.line.width + px(2.0 * pad), t.line.ascent + t.line.descent),
+                };
+                let mut c = halo;
+                c.a *= 0.6;
+                window.paint_quad(gpui::fill(b, c).corner_radii(px(3.0)));
+            }
+            HaloMode::Off => {}
+        }
     }
-    paint_glyphs(window, &t.line, baseline, rgb_hsla(t.color, 1.0));
+    paint_glyphs(window, &t.line, baseline, rgb_hsla(t.color, alpha));
 }
 
 /// Paint an icon centred on `center`: a round backing in `fill` with a dark
 /// outline, then the glyph in white.
-pub fn paint_icon(window: &mut Window, cx: &gpui::App, icon: &PlacedIcon, center: Point<Pixels>) {
+pub fn paint_icon(
+    window: &mut Window,
+    cx: &gpui::App,
+    icon: &PlacedIcon,
+    center: Point<Pixels>,
+    alpha: f32,
+) {
     let d = icon.choice.backing();
     let b = Bounds {
         origin: point(center.x - px(d / 2.0), center.y - px(d / 2.0)),
@@ -950,9 +1094,9 @@ pub fn paint_icon(window: &mut Window, cx: &gpui::App, icon: &PlacedIcon, center
     window.paint_quad(quad(
         b,
         px(d / 2.0),
-        rgb_hsla(icon.fill, 1.0),
+        rgb_hsla(icon.fill, alpha),
         px(1.0),
-        rgb_hsla(0x1C1C1E, 1.0),
+        rgb_hsla(0x1C1C1E, alpha),
         BorderStyle::Solid,
     ));
     let s = icon.choice.size;
@@ -965,7 +1109,7 @@ pub fn paint_icon(window: &mut Window, cx: &gpui::App, icon: &PlacedIcon, center
         icon.choice.path.clone(),
         None,
         TransformationMatrix::unit(),
-        rgb_hsla(0xFFFFFF, 1.0),
+        rgb_hsla(0xFFFFFF, alpha),
         cx,
     );
 }
@@ -1362,13 +1506,18 @@ mod tests {
         let t0 = Instant::now();
         let mut c = LabelCache::default();
         assert_eq!(c.step(cam(17.0, 0.0), 1, 1, t0), Step::Recompute);
-        c.store(Placement {
-            cam: cam(17.0, 0.0),
-            revision: 1,
-            sheet: 1,
-            labels: vec![],
-            by_id: HashMap::new(),
-        });
+        c.store(
+            Placement {
+                cam: cam(17.0, 0.0),
+                revision: 1,
+                sheet: 1,
+                labels: vec![],
+                by_id: HashMap::new(),
+                fade_end: None,
+                halo: HaloMode::Offsets,
+            },
+            t0,
+        );
         assert_eq!(c.step(cam(17.0, 0.0), 1, 1, t0), Step::Draw);
         // A tiny pan: translate, ask for a settle frame.
         let m = 1.0; // 1 Mercator metre = a few px at z17: well under 40%.
@@ -1394,26 +1543,40 @@ mod tests {
     fn step_hides_during_zoom_and_recomputes_on_data_change() {
         let t0 = Instant::now();
         let mut c = LabelCache::default();
-        c.store(Placement {
-            cam: cam(17.0, 0.0),
-            revision: 1,
-            sheet: 1,
-            labels: vec![],
-            by_id: HashMap::new(),
-        });
+        c.store(
+            Placement {
+                cam: cam(17.0, 0.0),
+                revision: 1,
+                sheet: 1,
+                labels: vec![],
+                by_id: HashMap::new(),
+                fade_end: None,
+                halo: HaloMode::Offsets,
+            },
+            t0,
+        );
         let _ = c.step(cam(17.0, 0.0), 1, 1, t0);
-        assert_eq!(c.step(cam(17.2, 0.0), 1, 1, t0), Step::HideAndWait);
+        // A zoom in progress keeps the old labels, moving with their anchors.
+        assert_eq!(c.step(cam(17.2, 0.0), 1, 1, t0), Step::DrawAndWait);
+        // A zoom far from the placement's hides them.
+        assert_eq!(c.step(cam(19.0, 0.0), 1, 1, t0), Step::HideAndWait);
+        let _ = c.step(cam(17.2, 0.0), 1, 1, t0);
         assert_eq!(
             c.step(cam(17.2, 0.0), 1, 1, t0 + Duration::from_millis(300)),
             Step::Recompute
         );
-        c.store(Placement {
-            cam: cam(17.2, 0.0),
-            revision: 1,
-            sheet: 1,
-            labels: vec![],
-            by_id: HashMap::new(),
-        });
+        c.store(
+            Placement {
+                cam: cam(17.2, 0.0),
+                revision: 1,
+                sheet: 1,
+                labels: vec![],
+                by_id: HashMap::new(),
+                fade_end: None,
+                halo: HaloMode::Offsets,
+            },
+            t0,
+        );
         assert_eq!(
             c.step(cam(17.2, 0.0), 2, 1, t0 + Duration::from_millis(310)),
             Step::Recompute,
@@ -1433,6 +1596,129 @@ mod tests {
         c.nodes.insert(5, None);
         c.validate(2, 1, 18);
         assert!(c.nodes.is_empty());
+    }
+
+    fn placed(id: i64) -> PlacedLabel {
+        PlacedLabel::new(id, 0.0, 0.0, None, None)
+    }
+
+    fn placement(zoom: f64, ids: &[i64]) -> Placement {
+        Placement {
+            cam: cam(zoom, 0.0),
+            revision: 1,
+            sheet: 1,
+            labels: ids.iter().map(|&i| placed(i)).collect(),
+            by_id: ids.iter().enumerate().map(|(n, &i)| (i, n)).collect(),
+            fade_end: None,
+            halo: HaloMode::Offsets,
+        }
+    }
+
+    #[test]
+    fn fade_alpha_ramps_from_zero_to_one() {
+        let t0 = Instant::now();
+        assert_eq!(fade_alpha(None, t0), 1.0);
+        assert_eq!(fade_alpha(Some(t0), t0), 0.0);
+        let half = fade_alpha(Some(t0), t0 + FADE / 2);
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+        assert_eq!(fade_alpha(Some(t0), t0 + FADE * 3), 1.0);
+        // A clock that steps back does not go negative.
+        assert_eq!(fade_alpha(Some(t0 + FADE), t0), 0.0);
+    }
+
+    #[test]
+    fn the_first_placement_fades_in_entirely() {
+        let t0 = Instant::now();
+        let mut c = LabelCache::default();
+        c.store(placement(17.0, &[1, 2]), t0);
+        let p = c.placement.as_ref().unwrap();
+        assert!(p.labels.iter().all(|l| l.born == Some(t0)));
+        assert_eq!(p.fade_end, Some(t0 + FADE));
+    }
+
+    #[test]
+    fn a_replacement_fades_in_only_the_new_labels() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(1);
+        let mut c = LabelCache::default();
+        c.store(placement(17.0, &[1, 2]), t0);
+        // After a zoom to 17.4 the same labels stay opaque; 3 is new.
+        c.store(placement(17.4, &[1, 3]), t1);
+        let p = c.placement.as_ref().unwrap();
+        assert_eq!(p.labels[0].born, None, "label 1 was on screen");
+        assert_eq!(p.labels[1].born, Some(t1), "label 3 is new");
+        assert_eq!(p.fade_end, Some(t1 + FADE));
+        // Nothing new: no fade, so no frames are requested.
+        c.store(placement(17.4, &[1, 3]), t1 + Duration::from_secs(1));
+        let p = c.placement.as_ref().unwrap();
+        assert!(p.labels.iter().all(|l| l.born.is_none()));
+        assert_eq!(p.fade_end, None);
+    }
+
+    #[test]
+    fn area_labels_are_kept_across_a_replacement_by_kind_and_id() {
+        let t0 = Instant::now();
+        let mut c = LabelCache::default();
+        let mut p = placement(17.0, &[7]);
+        let mut area = p.labels[0].clone();
+        area.kind = KIND_WAY; // same id as the node
+        p.labels.push(area);
+        c.store(p, t0);
+        let mut p2 = placement(17.2, &[7]);
+        let mut area2 = p2.labels[0].clone();
+        area2.kind = KIND_WAY;
+        p2.labels.push(area2);
+        let mut other = p2.labels[0].clone();
+        other.kind = KIND_REL;
+        p2.labels.push(other);
+        c.store(p2, t0 + Duration::from_secs(1));
+        let l = &c.placement.as_ref().unwrap().labels;
+        assert_eq!(
+            (l[0].born, l[1].born),
+            (None, None),
+            "node 7 and way 7 stay"
+        );
+        assert!(l[2].born.is_some(), "relation 7 is new");
+    }
+
+    #[test]
+    fn a_far_zoom_fades_everything_in_again() {
+        let t0 = Instant::now();
+        let mut c = LabelCache::default();
+        c.store(placement(15.0, &[1, 2]), t0);
+        c.store(placement(18.0, &[1, 2]), t0 + Duration::from_secs(1));
+        let p = c.placement.as_ref().unwrap();
+        assert!(p.labels.iter().all(|l| l.born.is_some()));
+    }
+
+    #[test]
+    fn a_resize_hides_instead_of_scaling() {
+        let t0 = Instant::now();
+        let mut c = LabelCache::default();
+        c.store(placement(17.0, &[1]), t0);
+        let _ = c.step(cam(17.0, 0.0), 1, 1, t0);
+        let mut resized = cam(17.0, 0.0);
+        resized.w = 900.0;
+        assert_eq!(c.step(resized, 1, 1, t0), Step::HideAndWait);
+    }
+
+    #[test]
+    fn frames_are_requested_only_while_something_is_in_flight() {
+        let t0 = Instant::now();
+        assert!(!wants_frame(Step::Draw, None, t0), "at rest");
+        assert!(!wants_frame(Step::Draw, Some(t0), t0 + FADE), "fade done");
+        assert!(wants_frame(Step::Draw, Some(t0 + FADE), t0), "fading");
+        assert!(wants_frame(Step::DrawAndWait, None, t0), "settling");
+        assert!(wants_frame(Step::HideAndWait, None, t0));
+        assert!(!wants_frame(Step::Recompute, None, t0));
+    }
+
+    #[test]
+    fn the_cheap_halo_takes_over_past_the_outline_budget() {
+        if forced_halo_mode().is_none() {
+            assert_eq!(halo_for(OUTLINE_MAX_LABELS), HaloMode::Offsets);
+            assert_eq!(halo_for(OUTLINE_MAX_LABELS + 1), HaloMode::Quad);
+        }
     }
 
     #[test]

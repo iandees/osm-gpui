@@ -3537,6 +3537,7 @@ impl OsmLayer {
                             color: a.label.color,
                             halo_color: a.label.halo_color,
                             halo_radius: a.label.halo_radius,
+                            halo_alpha: a.label.halo_alpha,
                         },
                     ));
                 }
@@ -3561,6 +3562,7 @@ impl OsmLayer {
                         color: l.color,
                         halo_color: l.halo_color,
                         halo_radius: l.halo_radius,
+                        halo_alpha: l.halo_alpha,
                     },
                     anchor,
                 )),
@@ -3569,6 +3571,7 @@ impl OsmLayer {
             by_id.insert(id, placed.len());
             placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
         }
+        let n_text = placed.iter().filter(|l| l.text.is_some()).count();
         crate::frame_stats::lap("labels.place", fs);
         crate::frame_stats::count("labels.candidates", items.len());
         crate::frame_stats::count("labels.placed", placed.len());
@@ -3578,6 +3581,8 @@ impl OsmLayer {
             sheet: Arc::as_ptr(&self.stylesheet) as usize,
             labels: placed,
             by_id,
+            fade_end: None,
+            halo: labels::halo_for(n_text),
         }
     }
 
@@ -3614,7 +3619,8 @@ impl OsmLayer {
         let sheet = Arc::as_ptr(&self.stylesheet) as usize;
         let mut cache = self.label_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.validate(self.revision, sheet, zoom.floor() as i32);
-        let step = cache.step(cam, self.revision, sheet, std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let step = cache.step(cam, self.revision, sheet, now);
         if step == labels::Step::Recompute {
             let ids: HashSet<i64> = selected
                 .iter()
@@ -3633,9 +3639,12 @@ impl OsmLayer {
                 })
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            cache.store(p);
+            cache.store(p, now);
         }
-        if matches!(step, labels::Step::DrawAndWait | labels::Step::HideAndWait) {
+        // Frames are requested only while something is in flight: waiting to
+        // settle, or a fade-in running.
+        let fade_end = cache.placement.as_ref().and_then(|p| p.fade_end);
+        if labels::wants_frame(step, fade_end, now) {
             window.request_animation_frame();
         }
         if step == labels::Step::HideAndWait {
@@ -3650,6 +3659,7 @@ impl OsmLayer {
         let Some(placement) = cache.placement.take() else {
             return;
         };
+        let halo = placement.halo;
         for l in &placement.labels {
             let drag = if l.kind == labels::KIND_NODE {
                 self.drag_preview_offset(l.id)
@@ -3661,11 +3671,18 @@ impl OsmLayer {
                 continue;
             }
             let at = point(sp.x + ox, sp.y + oy);
+            let alpha = labels::fade_alpha(l.born, now);
             if let Some(icon) = &l.icon {
-                labels::paint_icon(window, cx, icon, at);
+                labels::paint_icon(window, cx, icon, at, alpha);
             }
             if let Some(t) = &l.text {
-                labels::paint_text(window, t, point(at.x + px(t.dx), at.y + px(t.dy)));
+                labels::paint_text(
+                    window,
+                    t,
+                    point(at.x + px(t.dx), at.y + px(t.dy)),
+                    alpha,
+                    halo,
+                );
             }
         }
         // Selected and hovered nodes keep their label even where the
@@ -3710,9 +3727,16 @@ impl OsmLayer {
                 color: label.color,
                 halo_color: label.halo_color,
                 halo_radius: label.halo_radius,
+                halo_alpha: label.halo_alpha,
             };
             let at = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(window, &t, point(at.x + px(t.dx), at.y + px(t.dy)));
+            labels::paint_text(
+                window,
+                &t,
+                point(at.x + px(t.dx), at.y + px(t.dy)),
+                1.0,
+                labels::HaloMode::Offsets,
+            );
         }
         // Likewise a selected or hovered area whose label was not placed
         // (the selection changed since): shown at its label point, fitted or
@@ -3759,9 +3783,16 @@ impl OsmLayer {
                 color: label.color,
                 halo_color: label.halo_color,
                 halo_radius: label.halo_radius,
+                halo_alpha: label.halo_alpha,
             };
             let atp = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(window, &t, point(atp.x + px(t.dx), atp.y + px(t.dy)));
+            labels::paint_text(
+                window,
+                &t,
+                point(atp.x + px(t.dx), atp.y + px(t.dy)),
+                1.0,
+                labels::HaloMode::Offsets,
+            );
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);

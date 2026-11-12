@@ -30,7 +30,9 @@ use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::layers::labels::{label_text, Key, DEFAULT_FONT_PX, DEFAULT_HALO_COLOR, LABEL_MIN_ZOOM};
+use crate::layers::labels::{
+    label_text, Key, DEFAULT_FONT_PX, DEFAULT_HALO_ALPHA, DEFAULT_HALO_COLOR, LABEL_MIN_ZOOM,
+};
 
 /// Area text colour when the stylesheet gives none.
 pub const DEFAULT_AREA_COLOR: u32 = 0xE8E8E8;
@@ -64,6 +66,7 @@ pub struct AreaLabel {
     pub color: u32,
     pub halo_color: u32,
     pub halo_radius: f32,
+    pub halo_alpha: f32,
     /// Tier (see [`area_priority`]); the size bonus is added per placement.
     pub priority: i32,
 }
@@ -123,6 +126,7 @@ pub fn resolve_area_label(
         color: style.color.unwrap_or(DEFAULT_AREA_COLOR),
         halo_color: style.halo_color.unwrap_or(DEFAULT_HALO_COLOR),
         halo_radius: style.halo_radius.unwrap_or(DEFAULT_AREA_HALO),
+        halo_alpha: style.halo_opacity.unwrap_or(DEFAULT_HALO_ALPHA),
         priority: area_priority(tags),
     })
 }
