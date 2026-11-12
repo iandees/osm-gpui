@@ -227,6 +227,8 @@ pub struct OsmLayer {
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
     layer_bbox: Option<WayBbox>,
+    /// Street-name labels along ways (prototype); see `line_labels`.
+    line_labels: std::sync::Mutex<crate::layers::line_labels::LineLabelCache>,
     /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
     /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
     /// can change: construction, `set_osm_data` (which `merge_download` ends
@@ -1257,6 +1259,7 @@ impl OsmLayer {
             way_fill_tris: Vec::new(),
             mp: MpCache::default(),
             layer_bbox: None,
+            line_labels: Default::default(),
             download_rects: Vec::new(),
             node_cache: NodeCache {
                 index_by_id: HashMap::new(),
@@ -1315,6 +1318,7 @@ impl OsmLayer {
             way_fill_tris,
             mp,
             layer_bbox,
+            line_labels: Default::default(),
             download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
             node_cache,
             stylesheet,
@@ -3819,6 +3823,109 @@ fn bbox_extent_px(b: &WayBbox, ppm_x: f64, ppm_y: f64) -> f32 {
 }
 
 impl OsmLayer {
+    /// Triangles for the street-name labels of the ways in view (prototype:
+    /// every named `highway` way at zoom >= `line_labels::MIN_ZOOM`). Screen
+    /// coordinates include the canvas origin. Public so benches can time it
+    /// without a window.
+    pub fn line_label_frame(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+    ) -> crate::layers::line_labels::FrameOut {
+        use crate::layers::line_labels::{Candidate, FrameOut, MIN_ZOOM};
+        let mut out = FrameOut::default();
+        let zoom = viewport.zoom_level();
+        let Some(data) = self.osm_data.as_ref() else {
+            return out;
+        };
+        // Cached bounding boxes are stale while nodes are dragged.
+        if zoom < MIN_ZOOM || self.drag_preview.is_some() {
+            return out;
+        }
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        // Widen the cull a little so labels of ways just off-screen on the
+        // long side still lay out consistently.
+        let mut cands: Vec<Candidate<'_>> = Vec::new();
+        for (i, bbox) in self.way_bboxes.iter().enumerate() {
+            let Some(b) = bbox else { continue };
+            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+                continue;
+            }
+            let way_id = self.way_ids[i];
+            let Some(way) = data.ways.get(&way_id) else {
+                continue;
+            };
+            if !way.tags.contains_key("highway") {
+                continue;
+            }
+            let Some(name) = way.tags.get("name").filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            cands.push(Candidate {
+                way_id,
+                text: name,
+                verts: &self.way_vertices[i],
+            });
+        }
+        let proj = viewport.projector();
+        let origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let view = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if let Ok(mut cache) = self.line_labels.lock() {
+            cache.frame(
+                &cands,
+                zoom,
+                |mx, my| proj.to_screen(mx, my),
+                origin,
+                view,
+                &mut out,
+            );
+        }
+        out
+    }
+
+    /// Paint the street-name labels: halos first, then glyph fills.
+    fn paint_line_labels(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
+        let fs_phase = crate::frame_stats::start();
+        let out = self.line_label_frame(viewport, bounds);
+        crate::frame_stats::lap("labels.build", fs_phase);
+        let fs_phase = crate::frame_stats::start();
+        crate::frame_stats::count("labels.placed", out.labels);
+        crate::frame_stats::count("labels.vertices", out.halo.len() + out.fill.len());
+        for (verts, color) in [(&out.halo, 0xffffffffu32), (&out.fill, 0x1f2937ff)] {
+            if verts.is_empty() {
+                continue;
+            }
+            let st = point(0., 1.);
+            let mut path = Path::new(point(px(verts[0].0), px(verts[0].1)));
+            let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            );
+            path.vertices.reserve(verts.len());
+            for &(x, y) in verts.iter() {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                path.vertices.push(PathVertex {
+                    xy_position: point(px(x), px(y)),
+                    st_position: st,
+                    content_mask: Default::default(),
+                });
+            }
+            path.bounds = Bounds {
+                origin: point(px(min_x), px(min_y)),
+                size: size(px(max_x - min_x), px(max_y - min_y)),
+            };
+            window.paint_path(path, rgba(color));
+        }
+        crate::frame_stats::lap("labels.paint", fs_phase);
+    }
+}
+
+impl OsmLayer {
     /// Record the way pass (fills, route overlays, casing, strokes) for this
     /// frame: cull in Mercator space, project, merge sub-pixel segments and
     /// batch everything into one path per colour/width. `bounds` is the
@@ -4484,6 +4591,7 @@ impl MapLayer for OsmLayer {
             }
         }
         crate::frame_stats::lap("osm.restrictions", fs_phase);
+        self.paint_line_labels(viewport, bounds, window);
         crate::frame_stats::lap("osm.total", fs_total);
     }
 

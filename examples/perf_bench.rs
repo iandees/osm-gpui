@@ -301,6 +301,12 @@ fn render_nodes_cpu(
 }
 
 fn main() {
+    // `cargo run --release --example perf_bench -- labels` runs only the
+    // street-label section.
+    if std::env::args().any(|a| a == "labels") {
+        line_labels_section();
+        return;
+    }
     let n_ways = 8_000;
     let nodes_per_way = 12;
     let n_poi = 10_000;
@@ -512,6 +518,171 @@ fn main() {
     });
 
     multipolygon_section(&data);
+    line_labels_section();
+}
+
+/// ~320 named streets of ~400 m at random angles with a little wobble.
+fn build_street_dataset() -> Arc<OsmData> {
+    let mut rng = Lcg(7);
+    let mut nodes = HashMap::new();
+    let mut ways = HashMap::new();
+    let mut next_id = 1i64;
+    let names = [
+        "Main Street",
+        "Washington Boulevard",
+        "Oak Avenue",
+        "Elm St",
+        "Riverside Terrace",
+        "Lincoln Road",
+        "Maple Drive",
+        "Broadway",
+    ];
+    for wid in 0..320i64 {
+        let (cl, co) = (
+            CENTER_LAT + (rng.f64() - 0.5) * 0.016,
+            CENTER_LON + (rng.f64() - 0.5) * 0.022,
+        );
+        let ang = rng.f64() * std::f64::consts::PI;
+        let mut ids = Vec::new();
+        for i in 0..=16 {
+            let t = (i as f64 / 16.0 - 0.5) * 0.0036; // ~400 m
+            let wob = (rng.f64() - 0.5) * 0.00004;
+            let id = next_id;
+            next_id += 1;
+            nodes.insert(
+                id,
+                OsmNode {
+                    id,
+                    lat: cl + t * ang.sin() + wob,
+                    lon: co + t * ang.cos() / 0.7 + wob,
+                    tags: HashMap::new(),
+                    version: 1,
+                },
+            );
+            ids.push(id);
+        }
+        ways.insert(
+            wid,
+            OsmWay {
+                id: wid,
+                nodes: ids,
+                tags: tags(&[
+                    ("highway", "residential"),
+                    ("name", names[(wid % 8) as usize]),
+                ]),
+                version: 1,
+            },
+        );
+    }
+    Arc::new(OsmData {
+        nodes,
+        ways,
+        relations: Vec::new(),
+        bounds: Vec::new(),
+    })
+}
+
+fn line_labels_section() {
+    use osm_gpui::layers::line_labels::{Candidate, FrameOut, LabelStyle, LineLabelCache};
+    println!("\n--- line labels (rotated glyph outlines) ---");
+    let data = build_street_dataset();
+    let layer = OsmLayer::new_with_data(LayerId(1), "streets", data);
+    let bounds = gpui::Bounds {
+        origin: point(px(0.0), px(0.0)),
+        size: size(px(1600.0), px(1000.0)),
+    };
+    for z in [16.0, 17.0] {
+        let vp = Viewport::new(CENTER_LAT, CENTER_LON, z, size(px(1600.0), px(1000.0)));
+        let first = layer.line_label_frame(&vp, bounds);
+        println!(
+            "z{z}: {} labels placed, {} fill verts + {} halo verts ({:.0} + {:.0} per label), first frame built {} layouts",
+            first.labels,
+            first.fill.len(),
+            first.halo.len(),
+            first.fill.len() as f64 / first.labels.max(1) as f64,
+            first.halo.len() as f64 / first.labels.max(1) as f64,
+            first.layouts_built
+        );
+        bench(
+            &format!("line_label_frame z{z} warm (cache hit, pan)"),
+            50,
+            || {
+                let o = layer.line_label_frame(&vp, bounds);
+                (o.fill.len() + o.halo.len()) as u64
+            },
+        );
+        // Alternate between two zooms so every call is a cold layout.
+        let vp2 = Viewport::new(
+            CENTER_LAT,
+            CENTER_LON,
+            z + 0.01,
+            size(px(1600.0), px(1000.0)),
+        );
+        let mut flip = false;
+        bench(
+            &format!("line_label_frame z{z} cold (zoom changed)"),
+            20,
+            || {
+                flip = !flip;
+                let o = layer.line_label_frame(if flip { &vp2 } else { &vp }, bounds);
+                (o.fill.len() + o.halo.len()) as u64
+            },
+        );
+    }
+
+    // Vertex budget vs flatten tolerance, on a cache driven directly.
+    let data = build_street_dataset();
+    let vp = Viewport::new(CENTER_LAT, CENTER_LON, 16.0, size(px(1600.0), px(1000.0)));
+    let proj = vp.projector();
+    #[allow(clippy::type_complexity)]
+    let mut verts: Vec<(i64, Vec<(i64, f64, f64)>, String)> = Vec::new();
+    for w in data.ways.values() {
+        let v: Vec<(i64, f64, f64)> = w
+            .nodes
+            .iter()
+            .map(|id| {
+                let n = &data.nodes[id];
+                let (mx, my) = osm_gpui::coordinates::lat_lon_to_mercator(n.lat, n.lon);
+                (*id, mx, my)
+            })
+            .collect();
+        verts.push((w.id, v, w.tags["name"].clone()));
+    }
+    println!("tolerance sweep at z16 (fill_tol / halo_tol px):");
+    for (ft, ht) in [(0.05, 0.1), (0.1, 0.2), (0.2, 0.4), (0.4, 0.8)] {
+        let mut c = LineLabelCache::new(LabelStyle {
+            fill_tol: ft,
+            halo_tol: ht,
+            ..LabelStyle::default()
+        });
+        let cands: Vec<Candidate> = verts
+            .iter()
+            .map(|(id, v, n)| Candidate {
+                way_id: *id,
+                text: n,
+                verts: v,
+            })
+            .collect();
+        let mut out = FrameOut::default();
+        let t0 = Instant::now();
+        c.frame(
+            &cands,
+            16.0,
+            |x, y| proj.to_screen(x, y),
+            (0.0, 0.0),
+            (1600.0, 1000.0),
+            &mut out,
+        );
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let (mf, mh) = c.mesh_vertex_totals();
+        println!(
+            "  {ft:.2}/{ht:.2}: {} labels, {:.0} fill + {:.0} halo verts/label, {} cached glyph meshes ({mf} fill + {mh} halo verts total), cold {ms:.1} ms",
+            out.labels,
+            out.fill.len() as f64 / out.labels.max(1) as f64,
+            out.halo.len() as f64 / out.labels.max(1) as f64,
+            c.glyph_cache_len()
+        );
+    }
 }
 
 /// A circle of `n` nodes of radius `radius_deg` degrees around
