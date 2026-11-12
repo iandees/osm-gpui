@@ -7,6 +7,7 @@ pub mod area_labels;
 pub mod diff;
 pub mod grid_layer;
 pub mod labels;
+pub mod line_labels;
 pub mod merge;
 pub mod node_markers;
 pub mod notes_layer;

@@ -542,6 +542,18 @@ impl MapViewer {
                 ScriptCommand::LoadReference { name, data } => {
                     self.add_reference_dataset(name, *data, cx);
                 }
+                // Benchmark knob for the street-name labels, e.g.
+                // `action LabelBench:on,halo=none,repeat=4` (see
+                // `line_labels::parse_bench`).
+                ScriptCommand::Action { name } if name.starts_with("LabelBench") => {
+                    // The script parser wants one token: `LabelBench:on,halo=none`.
+                    let spec = name
+                        .trim_start_matches("LabelBench")
+                        .replace([':', ','], " ");
+                    let result = osm_gpui::layers::line_labels::set_bench(&spec);
+                    cx.notify();
+                    bus.set_assert_result(result);
+                }
                 ScriptCommand::Action { name } => {
                     // `Name` or `Name {json}`; the JSON fills the action's fields.
                     let (action_name, data) = match name.split_once(char::is_whitespace) {

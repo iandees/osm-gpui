@@ -1,0 +1,46 @@
+# Before/after for the perpendicular text offset: "before" is offset=0 (text
+# centred on the way), "after" the default offset. Straight and curved fixtures.
+#   cargo run --release -- --script docs/screenshots/line-labels-offset.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels.osm
+load_osm docs/screenshots/fixtures/line-labels-curves.osm
+viewport 40.7120 -74.0060 17
+wait_idle 5s
+action LabelBench:on,offset=0
+wait 600ms
+capture out/offset-straight-z17-before.png
+action LabelBench:on
+wait 600ms
+capture out/offset-straight-z17-after.png
+viewport 40.72411 -74.0060 18
+wait 600ms
+action LabelBench:on,offset=0
+wait 600ms
+capture out/offset-curves-top-z18-before.png
+action LabelBench:on
+wait 600ms
+capture out/offset-curves-top-z18-after.png
+viewport 40.72010 -74.00700 19
+wait 600ms
+action LabelBench:on,offset=0
+wait 600ms
+capture out/offset-ramp-z19-before.png
+action LabelBench:on
+wait 600ms
+capture out/offset-ramp-z19-after.png
+viewport 40.72146 -74.00849 19
+wait 600ms
+action LabelBench:on,offset=0
+wait 600ms
+capture out/offset-roundabout-z19-before.png
+action LabelBench:on
+wait 600ms
+capture out/offset-roundabout-z19-after.png
+viewport 40.72047 -74.00482 18
+wait 600ms
+action LabelBench:on,offset=0
+wait 600ms
+capture out/offset-corner-z18-before.png
+action LabelBench:on
+wait 600ms
+capture out/offset-corner-z18-after.png

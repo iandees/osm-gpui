@@ -1,0 +1,3203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="gen">
+ <node id="1" lat="40.7084837" lon="-74.0129054" version="1"/>
+ <node id="2" lat="40.7083618" lon="-74.0126425" version="1"/>
+ <node id="3" lat="40.7082400" lon="-74.0123797" version="1"/>
+ <node id="4" lat="40.7088253" lon="-74.0129494" version="1"/>
+ <node id="5" lat="40.7088469" lon="-74.0126425" version="1"/>
+ <node id="6" lat="40.7088685" lon="-74.0123357" version="1"/>
+ <node id="7" lat="40.7093948" lon="-74.0129393" version="1"/>
+ <node id="8" lat="40.7093320" lon="-74.0126425" version="1"/>
+ <node id="9" lat="40.7092692" lon="-74.0123458" version="1"/>
+ <node id="10" lat="40.7097667" lon="-74.0129434" version="1"/>
+ <node id="11" lat="40.7098171" lon="-74.0126425" version="1"/>
+ <node id="12" lat="40.7098675" lon="-74.0123417" version="1"/>
+ <node id="13" lat="40.7102414" lon="-74.0129401" version="1"/>
+ <node id="14" lat="40.7103022" lon="-74.0126425" version="1"/>
+ <node id="15" lat="40.7103630" lon="-74.0123450" version="1"/>
+ <node id="16" lat="40.7109717" lon="-74.0128317" version="1"/>
+ <node id="17" lat="40.7107873" lon="-74.0126425" version="1"/>
+ <node id="18" lat="40.7106029" lon="-74.0124534" version="1"/>
+ <node id="19" lat="40.7114713" lon="-74.0128039" version="1"/>
+ <node id="20" lat="40.7112724" lon="-74.0126425" version="1"/>
+ <node id="21" lat="40.7110734" lon="-74.0124812" version="1"/>
+ <node id="22" lat="40.7116058" lon="-74.0128769" version="1"/>
+ <node id="23" lat="40.7117575" lon="-74.0126425" version="1"/>
+ <node id="24" lat="40.7119091" lon="-74.0124082" version="1"/>
+ <node id="25" lat="40.7123553" lon="-74.0129124" version="1"/>
+ <node id="26" lat="40.7122425" lon="-74.0126425" version="1"/>
+ <node id="27" lat="40.7121297" lon="-74.0123727" version="1"/>
+ <node id="28" lat="40.7128510" lon="-74.0129042" version="1"/>
+ <node id="29" lat="40.7127276" lon="-74.0126425" version="1"/>
+ <node id="30" lat="40.7126043" lon="-74.0123809" version="1"/>
+ <node id="31" lat="40.7130115" lon="-74.0127990" version="1"/>
+ <node id="32" lat="40.7132127" lon="-74.0126425" version="1"/>
+ <node id="33" lat="40.7134139" lon="-74.0124861" version="1"/>
+ <node id="34" lat="40.7137123" lon="-74.0129501" version="1"/>
+ <node id="35" lat="40.7136978" lon="-74.0126425" version="1"/>
+ <node id="36" lat="40.7136833" lon="-74.0123350" version="1"/>
+ <node id="37" lat="40.7140316" lon="-74.0128773" version="1"/>
+ <node id="38" lat="40.7141829" lon="-74.0126425" version="1"/>
+ <node id="39" lat="40.7143342" lon="-74.0124078" version="1"/>
+ <node id="40" lat="40.7146795" lon="-74.0129503" version="1"/>
+ <node id="41" lat="40.7146680" lon="-74.0126425" version="1"/>
+ <node id="42" lat="40.7146564" lon="-74.0123348" version="1"/>
+ <node id="43" lat="40.7150860" lon="-74.0129377" version="1"/>
+ <node id="44" lat="40.7151531" lon="-74.0126425" version="1"/>
+ <node id="45" lat="40.7152201" lon="-74.0123474" version="1"/>
+ <node id="46" lat="40.7157942" lon="-74.0128718" version="1"/>
+ <node id="47" lat="40.7156382" lon="-74.0126425" version="1"/>
+ <node id="48" lat="40.7154821" lon="-74.0124133" version="1"/>
+ <node id="49" lat="40.7082967" lon="-74.0122392" version="1"/>
+ <node id="50" lat="40.7083618" lon="-74.0119433" version="1"/>
+ <node id="51" lat="40.7084269" lon="-74.0116474" version="1"/>
+ <node id="52" lat="40.7086842" lon="-74.0121644" version="1"/>
+ <node id="53" lat="40.7088469" lon="-74.0119433" version="1"/>
+ <node id="54" lat="40.7090097" lon="-74.0117223" version="1"/>
+ <node id="55" lat="40.7093207" lon="-74.0122511" version="1"/>
+ <node id="56" lat="40.7093320" lon="-74.0119433" version="1"/>
+ <node id="57" lat="40.7093434" lon="-74.0116356" version="1"/>
+ <node id="58" lat="40.7097040" lon="-74.0122130" version="1"/>
+ <node id="59" lat="40.7098171" lon="-74.0119433" version="1"/>
+ <node id="60" lat="40.7099302" lon="-74.0116737" version="1"/>
+ <node id="61" lat="40.7102201" lon="-74.0122318" version="1"/>
+ <node id="62" lat="40.7103022" lon="-74.0119433" version="1"/>
+ <node id="63" lat="40.7103843" lon="-74.0116548" version="1"/>
+ <node id="64" lat="40.7109721" lon="-74.0121317" version="1"/>
+ <node id="65" lat="40.7107873" lon="-74.0119433" version="1"/>
+ <node id="66" lat="40.7106024" lon="-74.0117550" version="1"/>
+ <node id="67" lat="40.7111521" lon="-74.0122075" version="1"/>
+ <node id="68" lat="40.7112724" lon="-74.0119433" version="1"/>
+ <node id="69" lat="40.7113926" lon="-74.0116792" version="1"/>
+ <node id="70" lat="40.7117132" lon="-74.0122459" version="1"/>
+ <node id="71" lat="40.7117575" lon="-74.0119433" version="1"/>
+ <node id="72" lat="40.7118017" lon="-74.0116408" version="1"/>
+ <node id="73" lat="40.7123370" lon="-74.0122252" version="1"/>
+ <node id="74" lat="40.7122425" lon="-74.0119433" version="1"/>
+ <node id="75" lat="40.7121481" lon="-74.0116615" version="1"/>
+ <node id="76" lat="40.7129219" lon="-74.0121144" version="1"/>
+ <node id="77" lat="40.7127276" lon="-74.0119433" version="1"/>
+ <node id="78" lat="40.7125334" lon="-74.0117723" version="1"/>
+ <node id="79" lat="40.7130509" lon="-74.0121655" version="1"/>
+ <node id="80" lat="40.7132127" lon="-74.0119433" version="1"/>
+ <node id="81" lat="40.7133746" lon="-74.0117212" version="1"/>
+ <node id="82" lat="40.7137111" lon="-74.0122510" version="1"/>
+ <node id="83" lat="40.7136978" lon="-74.0119433" version="1"/>
+ <node id="84" lat="40.7136845" lon="-74.0116357" version="1"/>
+ <node id="85" lat="40.7140796" lon="-74.0122197" version="1"/>
+ <node id="86" lat="40.7141829" lon="-74.0119433" version="1"/>
+ <node id="87" lat="40.7142862" lon="-74.0116670" version="1"/>
+ <node id="88" lat="40.7145015" lon="-74.0121595" version="1"/>
+ <node id="89" lat="40.7146680" lon="-74.0119433" version="1"/>
+ <node id="90" lat="40.7148345" lon="-74.0117272" version="1"/>
+ <node id="91" lat="40.7150518" lon="-74.0122210" version="1"/>
+ <node id="92" lat="40.7151531" lon="-74.0119433" version="1"/>
+ <node id="93" lat="40.7152543" lon="-74.0116657" version="1"/>
+ <node id="94" lat="40.7154579" lon="-74.0121392" version="1"/>
+ <node id="95" lat="40.7156382" lon="-74.0119433" version="1"/>
+ <node id="96" lat="40.7158185" lon="-74.0117475" version="1"/>
+ <node id="97" lat="40.7084128" lon="-74.0115448" version="1"/>
+ <node id="98" lat="40.7083618" lon="-74.0112441" version="1"/>
+ <node id="99" lat="40.7083109" lon="-74.0109434" version="1"/>
+ <node id="100" lat="40.7087093" lon="-74.0114931" version="1"/>
+ <node id="101" lat="40.7088469" lon="-74.0112441" version="1"/>
+ <node id="102" lat="40.7089846" lon="-74.0109952" version="1"/>
+ <node id="103" lat="40.7093590" lon="-74.0115502" version="1"/>
+ <node id="104" lat="40.7093320" lon="-74.0112441" version="1"/>
+ <node id="105" lat="40.7093050" lon="-74.0109381" version="1"/>
+ <node id="106" lat="40.7096324" lon="-74.0114327" version="1"/>
+ <node id="107" lat="40.7098171" lon="-74.0112441" version="1"/>
+ <node id="108" lat="40.7100018" lon="-74.0110556" version="1"/>
+ <node id="109" lat="40.7101357" lon="-74.0114602" version="1"/>
+ <node id="110" lat="40.7103022" lon="-74.0112441" version="1"/>
+ <node id="111" lat="40.7104687" lon="-74.0110280" version="1"/>
+ <node id="112" lat="40.7109617" lon="-74.0114491" version="1"/>
+ <node id="113" lat="40.7107873" lon="-74.0112441" version="1"/>
+ <node id="114" lat="40.7106129" lon="-74.0110392" version="1"/>
+ <node id="115" lat="40.7114337" lon="-74.0114669" version="1"/>
+ <node id="116" lat="40.7112724" lon="-74.0112441" version="1"/>
+ <node id="117" lat="40.7111111" lon="-74.0110213" version="1"/>
+ <node id="118" lat="40.7118879" lon="-74.0114997" version="1"/>
+ <node id="119" lat="40.7117575" lon="-74.0112441" version="1"/>
+ <node id="120" lat="40.7116270" lon="-74.0109885" version="1"/>
+ <node id="121" lat="40.7120492" lon="-74.0114171" version="1"/>
+ <node id="122" lat="40.7122425" lon="-74.0112441" version="1"/>
+ <node id="123" lat="40.7124358" lon="-74.0110712" version="1"/>
+ <node id="124" lat="40.7127588" lon="-74.0115495" version="1"/>
+ <node id="125" lat="40.7127276" lon="-74.0112441" version="1"/>
+ <node id="126" lat="40.7126965" lon="-74.0109387" version="1"/>
+ <node id="127" lat="40.7131515" lon="-74.0115415" version="1"/>
+ <node id="128" lat="40.7132127" lon="-74.0112441" version="1"/>
+ <node id="129" lat="40.7132739" lon="-74.0109468" version="1"/>
+ <node id="130" lat="40.7137923" lon="-74.0115259" version="1"/>
+ <node id="131" lat="40.7136978" lon="-74.0112441" version="1"/>
+ <node id="132" lat="40.7136033" lon="-74.0109624" version="1"/>
+ <node id="133" lat="40.7141794" lon="-74.0115522" version="1"/>
+ <node id="134" lat="40.7141829" lon="-74.0112441" version="1"/>
+ <node id="135" lat="40.7141864" lon="-74.0109360" version="1"/>
+ <node id="136" lat="40.7147233" lon="-74.0115435" version="1"/>
+ <node id="137" lat="40.7146680" lon="-74.0112441" version="1"/>
+ <node id="138" lat="40.7146127" lon="-74.0109447" version="1"/>
+ <node id="139" lat="40.7152248" lon="-74.0115373" version="1"/>
+ <node id="140" lat="40.7151531" lon="-74.0112441" version="1"/>
+ <node id="141" lat="40.7150813" lon="-74.0109509" version="1"/>
+ <node id="142" lat="40.7155968" lon="-74.0115474" version="1"/>
+ <node id="143" lat="40.7156382" lon="-74.0112441" version="1"/>
+ <node id="144" lat="40.7156796" lon="-74.0109409" version="1"/>
+ <node id="145" lat="40.7083208" lon="-74.0108482" version="1"/>
+ <node id="146" lat="40.7083618" lon="-74.0105449" version="1"/>
+ <node id="147" lat="40.7084028" lon="-74.0102416" version="1"/>
+ <node id="148" lat="40.7086720" lon="-74.0107491" version="1"/>
+ <node id="149" lat="40.7088469" lon="-74.0105449" version="1"/>
+ <node id="150" lat="40.7090219" lon="-74.0103407" version="1"/>
+ <node id="151" lat="40.7092451" lon="-74.0108309" version="1"/>
+ <node id="152" lat="40.7093320" lon="-74.0105449" version="1"/>
+ <node id="153" lat="40.7094189" lon="-74.0102589" version="1"/>
+ <node id="154" lat="40.7096344" lon="-74.0107368" version="1"/>
+ <node id="155" lat="40.7098171" lon="-74.0105449" version="1"/>
+ <node id="156" lat="40.7099998" lon="-74.0103530" version="1"/>
+ <node id="157" lat="40.7101436" lon="-74.0107711" version="1"/>
+ <node id="158" lat="40.7103022" lon="-74.0105449" version="1"/>
+ <node id="159" lat="40.7104608" lon="-74.0103187" version="1"/>
+ <node id="160" lat="40.7105872" lon="-74.0107040" version="1"/>
+ <node id="161" lat="40.7107873" lon="-74.0105449" version="1"/>
+ <node id="162" lat="40.7109873" lon="-74.0103858" version="1"/>
+ <node id="163" lat="40.7111904" lon="-74.0108334" version="1"/>
+ <node id="164" lat="40.7112724" lon="-74.0105449" version="1"/>
+ <node id="165" lat="40.7113544" lon="-74.0102564" version="1"/>
+ <node id="166" lat="40.7119089" lon="-74.0107795" version="1"/>
+ <node id="167" lat="40.7117575" lon="-74.0105449" version="1"/>
+ <node id="168" lat="40.7116060" lon="-74.0103103" version="1"/>
+ <node id="169" lat="40.7120824" lon="-74.0107692" version="1"/>
+ <node id="170" lat="40.7122425" lon="-74.0105449" version="1"/>
+ <node id="171" lat="40.7124027" lon="-74.0103206" version="1"/>
+ <node id="172" lat="40.7125346" lon="-74.0107183" version="1"/>
+ <node id="173" lat="40.7127276" lon="-74.0105449" version="1"/>
+ <node id="174" lat="40.7129207" lon="-74.0103715" version="1"/>
+ <node id="175" lat="40.7130376" lon="-74.0107488" version="1"/>
+ <node id="176" lat="40.7132127" lon="-74.0105449" version="1"/>
+ <node id="177" lat="40.7133878" lon="-74.0103410" version="1"/>
+ <node id="178" lat="40.7136641" lon="-74.0108498" version="1"/>
+ <node id="179" lat="40.7136978" lon="-74.0105449" version="1"/>
+ <node id="180" lat="40.7137315" lon="-74.0102400" version="1"/>
+ <node id="181" lat="40.7140818" lon="-74.0108226" version="1"/>
+ <node id="182" lat="40.7141829" lon="-74.0105449" version="1"/>
+ <node id="183" lat="40.7142840" lon="-74.0102672" version="1"/>
+ <node id="184" lat="40.7148008" lon="-74.0107983" version="1"/>
+ <node id="185" lat="40.7146680" lon="-74.0105449" version="1"/>
+ <node id="186" lat="40.7145351" lon="-74.0102915" version="1"/>
+ <node id="187" lat="40.7150036" lon="-74.0107817" version="1"/>
+ <node id="188" lat="40.7151531" lon="-74.0105449" version="1"/>
+ <node id="189" lat="40.7153026" lon="-74.0103081" version="1"/>
+ <node id="190" lat="40.7156023" lon="-74.0108494" version="1"/>
+ <node id="191" lat="40.7156382" lon="-74.0105449" version="1"/>
+ <node id="192" lat="40.7156740" lon="-74.0102404" version="1"/>
+ <node id="193" lat="40.7084635" lon="-74.0101231" version="1"/>
+ <node id="194" lat="40.7083618" lon="-74.0098457" version="1"/>
+ <node id="195" lat="40.7082602" lon="-74.0095683" version="1"/>
+ <node id="196" lat="40.7090319" lon="-74.0100338" version="1"/>
+ <node id="197" lat="40.7088469" lon="-74.0098457" version="1"/>
+ <node id="198" lat="40.7086619" lon="-74.0096576" version="1"/>
+ <node id="199" lat="40.7091743" lon="-74.0100730" version="1"/>
+ <node id="200" lat="40.7093320" lon="-74.0098457" version="1"/>
+ <node id="201" lat="40.7094897" lon="-74.0096184" version="1"/>
+ <node id="202" lat="40.7096174" lon="-74.0100054" version="1"/>
+ <node id="203" lat="40.7098171" lon="-74.0098457" version="1"/>
+ <node id="204" lat="40.7100168" lon="-74.0096860" version="1"/>
+ <node id="205" lat="40.7104795" lon="-74.0100463" version="1"/>
+ <node id="206" lat="40.7103022" lon="-74.0098457" version="1"/>
+ <node id="207" lat="40.7101249" lon="-74.0096451" version="1"/>
+ <node id="208" lat="40.7106498" lon="-74.0100947" version="1"/>
+ <node id="209" lat="40.7107873" lon="-74.0098457" version="1"/>
+ <node id="210" lat="40.7109248" lon="-74.0095966" version="1"/>
+ <node id="211" lat="40.7113159" lon="-74.0101484" version="1"/>
+ <node id="212" lat="40.7112724" lon="-74.0098457" version="1"/>
+ <node id="213" lat="40.7112288" lon="-74.0095430" version="1"/>
+ <node id="214" lat="40.7119135" lon="-74.0100750" version="1"/>
+ <node id="215" lat="40.7117575" lon="-74.0098457" version="1"/>
+ <node id="216" lat="40.7116015" lon="-74.0096164" version="1"/>
+ <node id="217" lat="40.7123403" lon="-74.0101255" version="1"/>
+ <node id="218" lat="40.7122425" lon="-74.0098457" version="1"/>
+ <node id="219" lat="40.7121448" lon="-74.0095658" version="1"/>
+ <node id="220" lat="40.7126030" lon="-74.0101063" version="1"/>
+ <node id="221" lat="40.7127276" lon="-74.0098457" version="1"/>
+ <node id="222" lat="40.7128523" lon="-74.0095851" version="1"/>
+ <node id="223" lat="40.7130483" lon="-74.0100646" version="1"/>
+ <node id="224" lat="40.7132127" lon="-74.0098457" version="1"/>
+ <node id="225" lat="40.7133771" lon="-74.0096268" version="1"/>
+ <node id="226" lat="40.7138884" lon="-74.0100238" version="1"/>
+ <node id="227" lat="40.7136978" lon="-74.0098457" version="1"/>
+ <node id="228" lat="40.7135072" lon="-74.0096676" version="1"/>
+ <node id="229" lat="40.7141274" lon="-74.0101450" version="1"/>
+ <node id="230" lat="40.7141829" lon="-74.0098457" version="1"/>
+ <node id="231" lat="40.7142384" lon="-74.0095464" version="1"/>
+ <node id="232" lat="40.7148584" lon="-74.0100241" version="1"/>
+ <node id="233" lat="40.7146680" lon="-74.0098457" version="1"/>
+ <node id="234" lat="40.7144776" lon="-74.0096672" version="1"/>
+ <node id="235" lat="40.7150499" lon="-74.0101221" version="1"/>
+ <node id="236" lat="40.7151531" lon="-74.0098457" version="1"/>
+ <node id="237" lat="40.7152562" lon="-74.0095692" version="1"/>
+ <node id="238" lat="40.7157191" lon="-74.0101347" version="1"/>
+ <node id="239" lat="40.7156382" lon="-74.0098457" version="1"/>
+ <node id="240" lat="40.7155572" lon="-74.0095567" version="1"/>
+ <node id="241" lat="40.7081947" lon="-74.0093616" version="1"/>
+ <node id="242" lat="40.7083618" lon="-74.0091465" version="1"/>
+ <node id="243" lat="40.7085290" lon="-74.0089313" version="1"/>
+ <node id="244" lat="40.7086496" lon="-74.0093112" version="1"/>
+ <node id="245" lat="40.7088469" lon="-74.0091465" version="1"/>
+ <node id="246" lat="40.7090443" lon="-74.0089817" version="1"/>
+ <node id="247" lat="40.7093294" lon="-74.0094546" version="1"/>
+ <node id="248" lat="40.7093320" lon="-74.0091465" version="1"/>
+ <node id="249" lat="40.7093347" lon="-74.0088384" version="1"/>
+ <node id="250" lat="40.7096152" lon="-74.0093014" version="1"/>
+ <node id="251" lat="40.7098171" lon="-74.0091465" version="1"/>
+ <node id="252" lat="40.7100190" lon="-74.0089916" version="1"/>
+ <node id="253" lat="40.7103928" lon="-74.0094304" version="1"/>
+ <node id="254" lat="40.7103022" lon="-74.0091465" version="1"/>
+ <node id="255" lat="40.7102115" lon="-74.0088625" version="1"/>
+ <node id="256" lat="40.7109682" lon="-74.0093414" version="1"/>
+ <node id="257" lat="40.7107873" lon="-74.0091465" version="1"/>
+ <node id="258" lat="40.7106064" lon="-74.0089516" version="1"/>
+ <node id="259" lat="40.7112239" lon="-74.0094479" version="1"/>
+ <node id="260" lat="40.7112724" lon="-74.0091465" version="1"/>
+ <node id="261" lat="40.7113208" lon="-74.0088450" version="1"/>
+ <node id="262" lat="40.7119516" lon="-74.0093177" version="1"/>
+ <node id="263" lat="40.7117575" lon="-74.0091465" version="1"/>
+ <node id="264" lat="40.7115633" lon="-74.0089752" version="1"/>
+ <node id="265" lat="40.7123809" lon="-74.0093948" version="1"/>
+ <node id="266" lat="40.7122425" lon="-74.0091465" version="1"/>
+ <node id="267" lat="40.7121042" lon="-74.0088982" version="1"/>
+ <node id="268" lat="40.7127724" lon="-74.0094489" version="1"/>
+ <node id="269" lat="40.7127276" lon="-74.0091465" version="1"/>
+ <node id="270" lat="40.7126829" lon="-74.0088441" version="1"/>
+ <node id="271" lat="40.7131592" lon="-74.0094464" version="1"/>
+ <node id="272" lat="40.7132127" lon="-74.0091465" version="1"/>
+ <node id="273" lat="40.7132663" lon="-74.0088466" version="1"/>
+ <node id="274" lat="40.7138518" lon="-74.0093781" version="1"/>
+ <node id="275" lat="40.7136978" lon="-74.0091465" version="1"/>
+ <node id="276" lat="40.7135438" lon="-74.0089148" version="1"/>
+ <node id="277" lat="40.7143740" lon="-74.0093236" version="1"/>
+ <node id="278" lat="40.7141829" lon="-74.0091465" version="1"/>
+ <node id="279" lat="40.7139918" lon="-74.0089693" version="1"/>
+ <node id="280" lat="40.7145053" lon="-74.0093676" version="1"/>
+ <node id="281" lat="40.7146680" lon="-74.0091465" version="1"/>
+ <node id="282" lat="40.7148306" lon="-74.0089253" version="1"/>
+ <node id="283" lat="40.7152419" lon="-74.0094315" version="1"/>
+ <node id="284" lat="40.7151531" lon="-74.0091465" version="1"/>
+ <node id="285" lat="40.7150643" lon="-74.0088615" version="1"/>
+ <node id="286" lat="40.7154467" lon="-74.0093230" version="1"/>
+ <node id="287" lat="40.7156382" lon="-74.0091465" version="1"/>
+ <node id="288" lat="40.7158296" lon="-74.0089699" version="1"/>
+ <node id="289" lat="40.7081894" lon="-74.0086550" version="1"/>
+ <node id="290" lat="40.7083618" lon="-74.0084473" version="1"/>
+ <node id="291" lat="40.7085343" lon="-74.0082395" version="1"/>
+ <node id="292" lat="40.7089061" lon="-74.0087453" version="1"/>
+ <node id="293" lat="40.7088469" lon="-74.0084473" version="1"/>
+ <node id="294" lat="40.7087878" lon="-74.0081492" version="1"/>
+ <node id="295" lat="40.7093514" lon="-74.0087543" version="1"/>
+ <node id="296" lat="40.7093320" lon="-74.0084473" version="1"/>
+ <node id="297" lat="40.7093127" lon="-74.0081402" version="1"/>
+ <node id="298" lat="40.7098073" lon="-74.0087551" version="1"/>
+ <node id="299" lat="40.7098171" lon="-74.0084473" version="1"/>
+ <node id="300" lat="40.7098269" lon="-74.0081394" version="1"/>
+ <node id="301" lat="40.7102329" lon="-74.0087415" version="1"/>
+ <node id="302" lat="40.7103022" lon="-74.0084473" version="1"/>
+ <node id="303" lat="40.7103715" lon="-74.0081530" version="1"/>
+ <node id="304" lat="40.7107408" lon="-74.0087492" version="1"/>
+ <node id="305" lat="40.7107873" lon="-74.0084473" version="1"/>
+ <node id="306" lat="40.7108338" lon="-74.0081453" version="1"/>
+ <node id="307" lat="40.7112435" lon="-74.0087530" version="1"/>
+ <node id="308" lat="40.7112724" lon="-74.0084473" version="1"/>
+ <node id="309" lat="40.7113013" lon="-74.0081415" version="1"/>
+ <node id="310" lat="40.7116993" lon="-74.0087457" version="1"/>
+ <node id="311" lat="40.7117575" lon="-74.0084473" version="1"/>
+ <node id="312" lat="40.7118156" lon="-74.0081488" version="1"/>
+ <node id="313" lat="40.7120563" lon="-74.0086332" version="1"/>
+ <node id="314" lat="40.7122425" lon="-74.0084473" version="1"/>
+ <node id="315" lat="40.7124288" lon="-74.0082613" version="1"/>
+ <node id="316" lat="40.7127242" lon="-74.0087553" version="1"/>
+ <node id="317" lat="40.7127276" lon="-74.0084473" version="1"/>
+ <node id="318" lat="40.7127311" lon="-74.0081392" version="1"/>
+ <node id="319" lat="40.7132463" lon="-74.0087522" version="1"/>
+ <node id="320" lat="40.7132127" lon="-74.0084473" version="1"/>
+ <node id="321" lat="40.7131792" lon="-74.0081423" version="1"/>
+ <node id="322" lat="40.7135938" lon="-74.0087232" version="1"/>
+ <node id="323" lat="40.7136978" lon="-74.0084473" version="1"/>
+ <node id="324" lat="40.7138018" lon="-74.0081713" version="1"/>
+ <node id="325" lat="40.7143049" lon="-74.0087100" version="1"/>
+ <node id="326" lat="40.7141829" lon="-74.0084473" version="1"/>
+ <node id="327" lat="40.7140609" lon="-74.0081845" version="1"/>
+ <node id="328" lat="40.7147625" lon="-74.0087290" version="1"/>
+ <node id="329" lat="40.7146680" lon="-74.0084473" version="1"/>
+ <node id="330" lat="40.7145735" lon="-74.0081655" version="1"/>
+ <node id="331" lat="40.7149564" lon="-74.0086136" version="1"/>
+ <node id="332" lat="40.7151531" lon="-74.0084473" version="1"/>
+ <node id="333" lat="40.7153497" lon="-74.0082810" version="1"/>
+ <node id="334" lat="40.7156278" lon="-74.0087551" version="1"/>
+ <node id="335" lat="40.7156382" lon="-74.0084473" version="1"/>
+ <node id="336" lat="40.7156485" lon="-74.0081394" version="1"/>
+ <node id="337" lat="40.7083382" lon="-74.0080546" version="1"/>
+ <node id="338" lat="40.7083618" lon="-74.0077480" version="1"/>
+ <node id="339" lat="40.7083855" lon="-74.0074415" version="1"/>
+ <node id="340" lat="40.7090463" lon="-74.0079085" version="1"/>
+ <node id="341" lat="40.7088469" lon="-74.0077480" version="1"/>
+ <node id="342" lat="40.7086475" lon="-74.0075876" version="1"/>
+ <node id="343" lat="40.7093733" lon="-74.0080513" version="1"/>
+ <node id="344" lat="40.7093320" lon="-74.0077480" version="1"/>
+ <node id="345" lat="40.7092908" lon="-74.0074448" version="1"/>
+ <node id="346" lat="40.7097782" lon="-74.0080519" version="1"/>
+ <node id="347" lat="40.7098171" lon="-74.0077480" version="1"/>
+ <node id="348" lat="40.7098560" lon="-74.0074442" version="1"/>
+ <node id="349" lat="40.7104994" lon="-74.0079132" version="1"/>
+ <node id="350" lat="40.7103022" lon="-74.0077480" version="1"/>
+ <node id="351" lat="40.7101050" lon="-74.0075829" version="1"/>
+ <node id="352" lat="40.7107312" lon="-74.0080471" version="1"/>
+ <node id="353" lat="40.7107873" lon="-74.0077480" version="1"/>
+ <node id="354" lat="40.7108434" lon="-74.0074489" version="1"/>
+ <node id="355" lat="40.7112085" lon="-74.0080444" version="1"/>
+ <node id="356" lat="40.7112724" lon="-74.0077480" version="1"/>
+ <node id="357" lat="40.7113362" lon="-74.0074516" version="1"/>
+ <node id="358" lat="40.7119435" lon="-74.0079344" version="1"/>
+ <node id="359" lat="40.7117575" lon="-74.0077480" version="1"/>
+ <node id="360" lat="40.7115714" lon="-74.0075617" version="1"/>
+ <node id="361" lat="40.7121810" lon="-74.0080453" version="1"/>
+ <node id="362" lat="40.7122425" lon="-74.0077480" version="1"/>
+ <node id="363" lat="40.7123041" lon="-74.0074508" version="1"/>
+ <node id="364" lat="40.7127441" lon="-74.0080554" version="1"/>
+ <node id="365" lat="40.7127276" lon="-74.0077480" version="1"/>
+ <node id="366" lat="40.7127111" lon="-74.0074407" version="1"/>
+ <node id="367" lat="40.7131271" lon="-74.0080347" version="1"/>
+ <node id="368" lat="40.7132127" lon="-74.0077480" version="1"/>
+ <node id="369" lat="40.7132984" lon="-74.0074614" version="1"/>
+ <node id="370" lat="40.7137688" lon="-74.0080416" version="1"/>
+ <node id="371" lat="40.7136978" lon="-74.0077480" version="1"/>
+ <node id="372" lat="40.7136268" lon="-74.0074545" version="1"/>
+ <node id="373" lat="40.7140848" lon="-74.0080277" version="1"/>
+ <node id="374" lat="40.7141829" lon="-74.0077480" version="1"/>
+ <node id="375" lat="40.7142810" lon="-74.0074684" version="1"/>
+ <node id="376" lat="40.7145563" lon="-74.0080187" version="1"/>
+ <node id="377" lat="40.7146680" lon="-74.0077480" version="1"/>
+ <node id="378" lat="40.7147797" lon="-74.0074774" version="1"/>
+ <node id="379" lat="40.7153497" lon="-74.0079143" version="1"/>
+ <node id="380" lat="40.7151531" lon="-74.0077480" version="1"/>
+ <node id="381" lat="40.7149564" lon="-74.0075817" version="1"/>
+ <node id="382" lat="40.7158240" lon="-74.0079346" version="1"/>
+ <node id="383" lat="40.7156382" lon="-74.0077480" version="1"/>
+ <node id="384" lat="40.7154523" lon="-74.0075614" version="1"/>
+ <node id="385" lat="40.7082777" lon="-74.0073362" version="1"/>
+ <node id="386" lat="40.7083618" lon="-74.0070488" version="1"/>
+ <node id="387" lat="40.7084460" lon="-74.0067614" version="1"/>
+ <node id="388" lat="40.7086542" lon="-74.0072229" version="1"/>
+ <node id="389" lat="40.7088469" lon="-74.0070488" version="1"/>
+ <node id="390" lat="40.7090396" lon="-74.0068747" version="1"/>
+ <node id="391" lat="40.7094483" lon="-74.0073160" version="1"/>
+ <node id="392" lat="40.7093320" lon="-74.0070488" version="1"/>
+ <node id="393" lat="40.7092157" lon="-74.0067816" version="1"/>
+ <node id="394" lat="40.7098384" lon="-74.0073557" version="1"/>
+ <node id="395" lat="40.7098171" lon="-74.0070488" version="1"/>
+ <node id="396" lat="40.7097958" lon="-74.0067420" version="1"/>
+ <node id="397" lat="40.7102571" lon="-74.0073512" version="1"/>
+ <node id="398" lat="40.7103022" lon="-74.0070488" version="1"/>
+ <node id="399" lat="40.7103472" lon="-74.0067465" version="1"/>
+ <node id="400" lat="40.7108732" lon="-74.0073353" version="1"/>
+ <node id="401" lat="40.7107873" lon="-74.0070488" version="1"/>
+ <node id="402" lat="40.7107013" lon="-74.0067623" version="1"/>
+ <node id="403" lat="40.7113380" lon="-74.0073445" version="1"/>
+ <node id="404" lat="40.7112724" lon="-74.0070488" version="1"/>
+ <node id="405" lat="40.7112067" lon="-74.0067531" version="1"/>
+ <node id="406" lat="40.7118468" lon="-74.0073335" version="1"/>
+ <node id="407" lat="40.7117575" lon="-74.0070488" version="1"/>
+ <node id="408" lat="40.7116682" lon="-74.0067641" version="1"/>
+ <node id="409" lat="40.7123058" lon="-74.0073455" version="1"/>
+ <node id="410" lat="40.7122425" lon="-74.0070488" version="1"/>
+ <node id="411" lat="40.7121793" lon="-74.0067522" version="1"/>
+ <node id="412" lat="40.7126812" lon="-74.0073508" version="1"/>
+ <node id="413" lat="40.7127276" lon="-74.0070488" version="1"/>
+ <node id="414" lat="40.7127741" lon="-74.0067469" version="1"/>
+ <node id="415" lat="40.7133075" lon="-74.0073304" version="1"/>
+ <node id="416" lat="40.7132127" lon="-74.0070488" version="1"/>
+ <node id="417" lat="40.7131179" lon="-74.0067672" version="1"/>
+ <node id="418" lat="40.7137572" lon="-74.0073468" version="1"/>
+ <node id="419" lat="40.7136978" lon="-74.0070488" version="1"/>
+ <node id="420" lat="40.7136384" lon="-74.0067508" version="1"/>
+ <node id="421" lat="40.7140568" lon="-74.0073082" version="1"/>
+ <node id="422" lat="40.7141829" lon="-74.0070488" version="1"/>
+ <node id="423" lat="40.7143090" lon="-74.0067895" version="1"/>
+ <node id="424" lat="40.7148634" lon="-74.0072177" version="1"/>
+ <node id="425" lat="40.7146680" lon="-74.0070488" version="1"/>
+ <node id="426" lat="40.7144726" lon="-74.0068800" version="1"/>
+ <node id="427" lat="40.7151193" lon="-74.0073537" version="1"/>
+ <node id="428" lat="40.7151531" lon="-74.0070488" version="1"/>
+ <node id="429" lat="40.7151868" lon="-74.0067439" version="1"/>
+ <node id="430" lat="40.7155277" lon="-74.0073203" version="1"/>
+ <node id="431" lat="40.7156382" lon="-74.0070488" version="1"/>
+ <node id="432" lat="40.7157486" lon="-74.0067773" version="1"/>
+ <node id="433" lat="40.7084523" lon="-74.0066337" version="1"/>
+ <node id="434" lat="40.7083618" lon="-74.0063496" version="1"/>
+ <node id="435" lat="40.7082713" lon="-74.0060656" version="1"/>
+ <node id="436" lat="40.7089751" lon="-74.0066072" version="1"/>
+ <node id="437" lat="40.7088469" lon="-74.0063496" version="1"/>
+ <node id="438" lat="40.7087187" lon="-74.0060921" version="1"/>
+ <node id="439" lat="40.7091932" lon="-74.0065974" version="1"/>
+ <node id="440" lat="40.7093320" lon="-74.0063496" version="1"/>
+ <node id="441" lat="40.7094708" lon="-74.0061018" version="1"/>
+ <node id="442" lat="40.7099386" lon="-74.0066127" version="1"/>
+ <node id="443" lat="40.7098171" lon="-74.0063496" version="1"/>
+ <node id="444" lat="40.7096956" lon="-74.0060865" version="1"/>
+ <node id="445" lat="40.7104444" lon="-74.0065940" version="1"/>
+ <node id="446" lat="40.7103022" lon="-74.0063496" version="1"/>
+ <node id="447" lat="40.7101600" lon="-74.0061052" version="1"/>
+ <node id="448" lat="40.7108189" lon="-74.0066549" version="1"/>
+ <node id="449" lat="40.7107873" lon="-74.0063496" version="1"/>
+ <node id="450" lat="40.7107557" lon="-74.0060443" version="1"/>
+ <node id="451" lat="40.7111782" lon="-74.0066316" version="1"/>
+ <node id="452" lat="40.7112724" lon="-74.0063496" version="1"/>
+ <node id="453" lat="40.7113665" lon="-74.0060676" version="1"/>
+ <node id="454" lat="40.7119304" lon="-74.0065567" version="1"/>
+ <node id="455" lat="40.7117575" lon="-74.0063496" version="1"/>
+ <node id="456" lat="40.7115845" lon="-74.0061425" version="1"/>
+ <node id="457" lat="40.7123276" lon="-74.0066366" version="1"/>
+ <node id="458" lat="40.7122425" lon="-74.0063496" version="1"/>
+ <node id="459" lat="40.7121575" lon="-74.0060627" version="1"/>
+ <node id="460" lat="40.7128073" lon="-74.0066392" version="1"/>
+ <node id="461" lat="40.7127276" lon="-74.0063496" version="1"/>
+ <node id="462" lat="40.7126479" lon="-74.0060600" version="1"/>
+ <node id="463" lat="40.7130625" lon="-74.0065856" version="1"/>
+ <node id="464" lat="40.7132127" lon="-74.0063496" version="1"/>
+ <node id="465" lat="40.7133629" lon="-74.0061137" version="1"/>
+ <node id="466" lat="40.7137278" lon="-74.0066552" version="1"/>
+ <node id="467" lat="40.7136978" lon="-74.0063496" version="1"/>
+ <node id="468" lat="40.7136678" lon="-74.0060440" version="1"/>
+ <node id="469" lat="40.7140246" lon="-74.0065762" version="1"/>
+ <node id="470" lat="40.7141829" lon="-74.0063496" version="1"/>
+ <node id="471" lat="40.7143412" lon="-74.0061230" version="1"/>
+ <node id="472" lat="40.7148171" lon="-74.0065867" version="1"/>
+ <node id="473" lat="40.7146680" lon="-74.0063496" version="1"/>
+ <node id="474" lat="40.7145188" lon="-74.0061125" version="1"/>
+ <node id="475" lat="40.7152314" lon="-74.0066399" version="1"/>
+ <node id="476" lat="40.7151531" lon="-74.0063496" version="1"/>
+ <node id="477" lat="40.7150747" lon="-74.0060593" version="1"/>
+ <node id="478" lat="40.7155659" lon="-74.0066426" version="1"/>
+ <node id="479" lat="40.7156382" lon="-74.0063496" version="1"/>
+ <node id="480" lat="40.7157104" lon="-74.0060566" version="1"/>
+ <node id="481" lat="40.7081933" lon="-74.0058637" version="1"/>
+ <node id="482" lat="40.7083618" lon="-74.0056504" version="1"/>
+ <node id="483" lat="40.7085304" lon="-74.0054371" version="1"/>
+ <node id="484" lat="40.7088708" lon="-74.0059569" version="1"/>
+ <node id="485" lat="40.7088469" lon="-74.0056504" version="1"/>
+ <node id="486" lat="40.7088231" lon="-74.0053439" version="1"/>
+ <node id="487" lat="40.7094592" lon="-74.0059088" version="1"/>
+ <node id="488" lat="40.7093320" lon="-74.0056504" version="1"/>
+ <node id="489" lat="40.7092048" lon="-74.0053920" version="1"/>
+ <node id="490" lat="40.7099837" lon="-74.0058664" version="1"/>
+ <node id="491" lat="40.7098171" lon="-74.0056504" version="1"/>
+ <node id="492" lat="40.7096505" lon="-74.0054344" version="1"/>
+ <node id="493" lat="40.7102877" lon="-74.0059579" version="1"/>
+ <node id="494" lat="40.7103022" lon="-74.0056504" version="1"/>
+ <node id="495" lat="40.7103167" lon="-74.0053429" version="1"/>
+ <node id="496" lat="40.7109282" lon="-74.0058961" version="1"/>
+ <node id="497" lat="40.7107873" lon="-74.0056504" version="1"/>
+ <node id="498" lat="40.7106464" lon="-74.0054046" version="1"/>
+ <node id="499" lat="40.7111324" lon="-74.0058971" version="1"/>
+ <node id="500" lat="40.7112724" lon="-74.0056504" version="1"/>
+ <node id="501" lat="40.7114123" lon="-74.0054037" version="1"/>
+ <node id="502" lat="40.7116054" lon="-74.0058843" version="1"/>
+ <node id="503" lat="40.7117575" lon="-74.0056504" version="1"/>
+ <node id="504" lat="40.7119095" lon="-74.0054165" version="1"/>
+ <node id="505" lat="40.7123862" lon="-74.0058933" version="1"/>
+ <node id="506" lat="40.7122425" lon="-74.0056504" version="1"/>
+ <node id="507" lat="40.7120988" lon="-74.0054075" version="1"/>
+ <node id="508" lat="40.7128321" lon="-74.0059260" version="1"/>
+ <node id="509" lat="40.7127276" lon="-74.0056504" version="1"/>
+ <node id="510" lat="40.7126232" lon="-74.0053748" version="1"/>
+ <node id="511" lat="40.7130726" lon="-74.0058969" version="1"/>
+ <node id="512" lat="40.7132127" lon="-74.0056504" version="1"/>
+ <node id="513" lat="40.7133528" lon="-74.0054039" version="1"/>
+ <node id="514" lat="40.7136294" lon="-74.0059450" version="1"/>
+ <node id="515" lat="40.7136978" lon="-74.0056504" version="1"/>
+ <node id="516" lat="40.7137662" lon="-74.0053558" version="1"/>
+ <node id="517" lat="40.7140431" lon="-74.0058973" version="1"/>
+ <node id="518" lat="40.7141829" lon="-74.0056504" version="1"/>
+ <node id="519" lat="40.7143226" lon="-74.0054035" version="1"/>
+ <node id="520" lat="40.7147423" lon="-74.0059425" version="1"/>
+ <node id="521" lat="40.7146680" lon="-74.0056504" version="1"/>
+ <node id="522" lat="40.7145936" lon="-74.0053583" version="1"/>
+ <node id="523" lat="40.7153166" lon="-74.0058704" version="1"/>
+ <node id="524" lat="40.7151531" lon="-74.0056504" version="1"/>
+ <node id="525" lat="40.7149895" lon="-74.0054304" version="1"/>
+ <node id="526" lat="40.7157367" lon="-74.0059297" version="1"/>
+ <node id="527" lat="40.7156382" lon="-74.0056504" version="1"/>
+ <node id="528" lat="40.7155396" lon="-74.0053711" version="1"/>
+ <node id="529" lat="40.7082270" lon="-74.0052028" version="1"/>
+ <node id="530" lat="40.7083618" lon="-74.0049512" version="1"/>
+ <node id="531" lat="40.7084967" lon="-74.0046996" version="1"/>
+ <node id="532" lat="40.7089546" lon="-74.0052246" version="1"/>
+ <node id="533" lat="40.7088469" lon="-74.0049512" version="1"/>
+ <node id="534" lat="40.7087392" lon="-74.0046778" version="1"/>
+ <node id="535" lat="40.7094059" lon="-74.0052435" version="1"/>
+ <node id="536" lat="40.7093320" lon="-74.0049512" version="1"/>
+ <node id="537" lat="40.7092581" lon="-74.0046589" version="1"/>
+ <node id="538" lat="40.7098575" lon="-74.0052547" version="1"/>
+ <node id="539" lat="40.7098171" lon="-74.0049512" version="1"/>
+ <node id="540" lat="40.7097767" lon="-74.0046477" version="1"/>
+ <node id="541" lat="40.7103413" lon="-74.0052550" version="1"/>
+ <node id="542" lat="40.7103022" lon="-74.0049512" version="1"/>
+ <node id="543" lat="40.7102631" lon="-74.0046474" version="1"/>
+ <node id="544" lat="40.7108313" lon="-74.0052538" version="1"/>
+ <node id="545" lat="40.7107873" lon="-74.0049512" version="1"/>
+ <node id="546" lat="40.7107433" lon="-74.0046486" version="1"/>
+ <node id="547" lat="40.7110922" lon="-74.0051473" version="1"/>
+ <node id="548" lat="40.7112724" lon="-74.0049512" version="1"/>
+ <node id="549" lat="40.7114525" lon="-74.0047551" version="1"/>
+ <node id="550" lat="40.7119115" lon="-74.0051827" version="1"/>
+ <node id="551" lat="40.7117575" lon="-74.0049512" version="1"/>
+ <node id="552" lat="40.7116034" lon="-74.0047196" version="1"/>
+ <node id="553" lat="40.7124437" lon="-74.0051078" version="1"/>
+ <node id="554" lat="40.7122425" lon="-74.0049512" version="1"/>
+ <node id="555" lat="40.7120414" lon="-74.0047945" version="1"/>
+ <node id="556" lat="40.7125406" lon="-74.0051358" version="1"/>
+ <node id="557" lat="40.7127276" lon="-74.0049512" version="1"/>
+ <node id="558" lat="40.7129146" lon="-74.0047666" version="1"/>
+ <node id="559" lat="40.7130459" lon="-74.0051668" version="1"/>
+ <node id="560" lat="40.7132127" lon="-74.0049512" version="1"/>
+ <node id="561" lat="40.7133796" lon="-74.0047356" version="1"/>
+ <node id="562" lat="40.7134988" lon="-74.0051125" version="1"/>
+ <node id="563" lat="40.7136978" lon="-74.0049512" version="1"/>
+ <node id="564" lat="40.7138968" lon="-74.0047899" version="1"/>
+ <node id="565" lat="40.7142149" lon="-74.0052564" version="1"/>
+ <node id="566" lat="40.7141829" lon="-74.0049512" version="1"/>
+ <node id="567" lat="40.7141509" lon="-74.0046460" version="1"/>
+ <node id="568" lat="40.7144790" lon="-74.0051322" version="1"/>
+ <node id="569" lat="40.7146680" lon="-74.0049512" version="1"/>
+ <node id="570" lat="40.7148570" lon="-74.0047701" version="1"/>
+ <node id="571" lat="40.7149708" lon="-74.0051439" version="1"/>
+ <node id="572" lat="40.7151531" lon="-74.0049512" version="1"/>
+ <node id="573" lat="40.7153353" lon="-74.0047585" version="1"/>
+ <node id="574" lat="40.7157666" lon="-74.0052086" version="1"/>
+ <node id="575" lat="40.7156382" lon="-74.0049512" version="1"/>
+ <node id="576" lat="40.7155098" lon="-74.0046938" version="1"/>
+ <node id="577" lat="40.7082470" lon="-74.0045202" version="1"/>
+ <node id="578" lat="40.7083618" lon="-74.0042520" version="1"/>
+ <node id="579" lat="40.7084767" lon="-74.0039837" version="1"/>
+ <node id="580" lat="40.7086955" lon="-74.0044866" version="1"/>
+ <node id="581" lat="40.7088469" lon="-74.0042520" version="1"/>
+ <node id="582" lat="40.7089983" lon="-74.0040173" version="1"/>
+ <node id="583" lat="40.7092538" lon="-74.0045423" version="1"/>
+ <node id="584" lat="40.7093320" lon="-74.0042520" version="1"/>
+ <node id="585" lat="40.7094102" lon="-74.0039616" version="1"/>
+ <node id="586" lat="40.7098078" lon="-74.0045598" version="1"/>
+ <node id="587" lat="40.7098171" lon="-74.0042520" version="1"/>
+ <node id="588" lat="40.7098264" lon="-74.0039441" version="1"/>
+ <node id="589" lat="40.7104021" lon="-74.0045305" version="1"/>
+ <node id="590" lat="40.7103022" lon="-74.0042520" version="1"/>
+ <node id="591" lat="40.7102023" lon="-74.0039734" version="1"/>
+ <node id="592" lat="40.7108636" lon="-74.0045432" version="1"/>
+ <node id="593" lat="40.7107873" lon="-74.0042520" version="1"/>
+ <node id="594" lat="40.7107110" lon="-74.0039607" version="1"/>
+ <node id="595" lat="40.7113986" lon="-74.0045112" version="1"/>
+ <node id="596" lat="40.7112724" lon="-74.0042520" version="1"/>
+ <node id="597" lat="40.7111462" lon="-74.0039927" version="1"/>
+ <node id="598" lat="40.7119411" lon="-74.0044424" version="1"/>
+ <node id="599" lat="40.7117575" lon="-74.0042520" version="1"/>
+ <node id="600" lat="40.7115738" lon="-74.0040615" version="1"/>
+ <node id="601" lat="40.7121994" lon="-74.0045548" version="1"/>
+ <node id="602" lat="40.7122425" lon="-74.0042520" version="1"/>
+ <node id="603" lat="40.7122857" lon="-74.0039491" version="1"/>
+ <node id="604" lat="40.7128284" lon="-74.0045299" version="1"/>
+ <node id="605" lat="40.7127276" lon="-74.0042520" version="1"/>
+ <node id="606" lat="40.7126269" lon="-74.0039740" version="1"/>
+ <node id="607" lat="40.7130714" lon="-74.0044973" version="1"/>
+ <node id="608" lat="40.7132127" lon="-74.0042520" version="1"/>
+ <node id="609" lat="40.7133540" lon="-74.0040066" version="1"/>
+ <node id="610" lat="40.7138882" lon="-74.0044305" version="1"/>
+ <node id="611" lat="40.7136978" lon="-74.0042520" version="1"/>
+ <node id="612" lat="40.7135074" lon="-74.0040734" version="1"/>
+ <node id="613" lat="40.7140082" lon="-74.0044564" version="1"/>
+ <node id="614" lat="40.7141829" lon="-74.0042520" version="1"/>
+ <node id="615" lat="40.7143576" lon="-74.0040475" version="1"/>
+ <node id="616" lat="40.7145758" lon="-74.0045351" version="1"/>
+ <node id="617" lat="40.7146680" lon="-74.0042520" version="1"/>
+ <node id="618" lat="40.7147602" lon="-74.0039688" version="1"/>
+ <node id="619" lat="40.7149719" lon="-74.0044464" version="1"/>
+ <node id="620" lat="40.7151531" lon="-74.0042520" version="1"/>
+ <node id="621" lat="40.7153342" lon="-74.0040575" version="1"/>
+ <node id="622" lat="40.7154657" lon="-74.0044598" version="1"/>
+ <node id="623" lat="40.7156382" lon="-74.0042520" version="1"/>
+ <node id="624" lat="40.7158106" lon="-74.0040441" version="1"/>
+ <node id="625" lat="40.7081884" lon="-74.0037591" version="1"/>
+ <node id="626" lat="40.7083618" lon="-74.0035527" version="1"/>
+ <node id="627" lat="40.7085353" lon="-74.0033464" version="1"/>
+ <node id="628" lat="40.7088094" lon="-74.0038569" version="1"/>
+ <node id="629" lat="40.7088469" lon="-74.0035527" version="1"/>
+ <node id="630" lat="40.7088844" lon="-74.0032486" version="1"/>
+ <node id="631" lat="40.7095310" lon="-74.0037141" version="1"/>
+ <node id="632" lat="40.7093320" lon="-74.0035527" version="1"/>
+ <node id="633" lat="40.7091330" lon="-74.0033914" version="1"/>
+ <node id="634" lat="40.7097023" lon="-74.0038211" version="1"/>
+ <node id="635" lat="40.7098171" lon="-74.0035527" version="1"/>
+ <node id="636" lat="40.7099319" lon="-74.0032844" version="1"/>
+ <node id="637" lat="40.7104504" lon="-74.0037909" version="1"/>
+ <node id="638" lat="40.7103022" lon="-74.0035527" version="1"/>
+ <node id="639" lat="40.7101540" lon="-74.0033146" version="1"/>
+ <node id="640" lat="40.7108823" lon="-74.0038342" version="1"/>
+ <node id="641" lat="40.7107873" lon="-74.0035527" version="1"/>
+ <node id="642" lat="40.7106922" lon="-74.0032713" version="1"/>
+ <node id="643" lat="40.7111942" lon="-74.0038431" version="1"/>
+ <node id="644" lat="40.7112724" lon="-74.0035527" version="1"/>
+ <node id="645" lat="40.7113505" lon="-74.0032624" version="1"/>
+ <node id="646" lat="40.7117452" lon="-74.0038605" version="1"/>
+ <node id="647" lat="40.7117575" lon="-74.0035527" version="1"/>
+ <node id="648" lat="40.7117697" lon="-74.0032450" version="1"/>
+ <node id="649" lat="40.7122845" lon="-74.0038559" version="1"/>
+ <node id="650" lat="40.7122425" lon="-74.0035527" version="1"/>
+ <node id="651" lat="40.7122006" lon="-74.0032496" version="1"/>
+ <node id="652" lat="40.7125419" lon="-74.0037395" version="1"/>
+ <node id="653" lat="40.7127276" lon="-74.0035527" version="1"/>
+ <node id="654" lat="40.7129134" lon="-74.0033660" version="1"/>
+ <node id="655" lat="40.7131584" lon="-74.0038524" version="1"/>
+ <node id="656" lat="40.7132127" lon="-74.0035527" version="1"/>
+ <node id="657" lat="40.7132671" lon="-74.0032531" version="1"/>
+ <node id="658" lat="40.7137740" lon="-74.0038440" version="1"/>
+ <node id="659" lat="40.7136978" lon="-74.0035527" version="1"/>
+ <node id="660" lat="40.7136216" lon="-74.0032615" version="1"/>
+ <node id="661" lat="40.7142986" lon="-74.0038204" version="1"/>
+ <node id="662" lat="40.7141829" lon="-74.0035527" version="1"/>
+ <node id="663" lat="40.7140672" lon="-74.0032851" version="1"/>
+ <node id="664" lat="40.7145075" lon="-74.0037766" version="1"/>
+ <node id="665" lat="40.7146680" lon="-74.0035527" version="1"/>
+ <node id="666" lat="40.7148285" lon="-74.0033289" version="1"/>
+ <node id="667" lat="40.7151642" lon="-74.0038605" version="1"/>
+ <node id="668" lat="40.7151531" lon="-74.0035527" version="1"/>
+ <node id="669" lat="40.7151419" lon="-74.0032450" version="1"/>
+ <node id="670" lat="40.7155080" lon="-74.0038086" version="1"/>
+ <node id="671" lat="40.7156382" lon="-74.0035527" version="1"/>
+ <node id="672" lat="40.7157684" lon="-74.0032969" version="1"/>
+ <node id="673" lat="40.7084332" lon="-74.0031469" version="1"/>
+ <node id="674" lat="40.7083618" lon="-74.0028535" version="1"/>
+ <node id="675" lat="40.7082905" lon="-74.0025601" version="1"/>
+ <node id="676" lat="40.7089853" lon="-74.0031018" version="1"/>
+ <node id="677" lat="40.7088469" lon="-74.0028535" version="1"/>
+ <node id="678" lat="40.7087086" lon="-74.0026053" version="1"/>
+ <node id="679" lat="40.7093151" lon="-74.0031608" version="1"/>
+ <node id="680" lat="40.7093320" lon="-74.0028535" version="1"/>
+ <node id="681" lat="40.7093489" lon="-74.0025462" version="1"/>
+ <node id="682" lat="40.7096733" lon="-74.0030963" version="1"/>
+ <node id="683" lat="40.7098171" lon="-74.0028535" version="1"/>
+ <node id="684" lat="40.7099610" lon="-74.0026108" version="1"/>
+ <node id="685" lat="40.7104506" lon="-74.0030915" version="1"/>
+ <node id="686" lat="40.7103022" lon="-74.0028535" version="1"/>
+ <node id="687" lat="40.7101538" lon="-74.0026156" version="1"/>
+ <node id="688" lat="40.7106533" lon="-74.0031059" version="1"/>
+ <node id="689" lat="40.7107873" lon="-74.0028535" version="1"/>
+ <node id="690" lat="40.7109212" lon="-74.0026011" version="1"/>
+ <node id="691" lat="40.7110919" lon="-74.0030491" version="1"/>
+ <node id="692" lat="40.7112724" lon="-74.0028535" version="1"/>
+ <node id="693" lat="40.7114529" lon="-74.0026580" version="1"/>
+ <node id="694" lat="40.7116178" lon="-74.0031005" version="1"/>
+ <node id="695" lat="40.7117575" lon="-74.0028535" version="1"/>
+ <node id="696" lat="40.7118971" lon="-74.0026066" version="1"/>
+ <node id="697" lat="40.7120961" lon="-74.0030936" version="1"/>
+ <node id="698" lat="40.7122425" lon="-74.0028535" version="1"/>
+ <node id="699" lat="40.7123890" lon="-74.0026135" version="1"/>
+ <node id="700" lat="40.7129280" lon="-74.0030118" version="1"/>
+ <node id="701" lat="40.7127276" lon="-74.0028535" version="1"/>
+ <node id="702" lat="40.7125272" lon="-74.0026953" version="1"/>
+ <node id="703" lat="40.7131506" lon="-74.0031505" version="1"/>
+ <node id="704" lat="40.7132127" lon="-74.0028535" version="1"/>
+ <node id="705" lat="40.7132749" lon="-74.0025565" version="1"/>
+ <node id="706" lat="40.7135370" lon="-74.0030770" version="1"/>
+ <node id="707" lat="40.7136978" lon="-74.0028535" version="1"/>
+ <node id="708" lat="40.7138586" lon="-74.0026300" version="1"/>
+ <node id="709" lat="40.7143719" lon="-74.0030346" version="1"/>
+ <node id="710" lat="40.7141829" lon="-74.0028535" version="1"/>
+ <node id="711" lat="40.7139939" lon="-74.0026725" version="1"/>
+ <node id="712" lat="40.7147756" lon="-74.0031270" version="1"/>
+ <node id="713" lat="40.7146680" lon="-74.0028535" version="1"/>
+ <node id="714" lat="40.7145604" lon="-74.0025800" version="1"/>
+ <node id="715" lat="40.7152619" lon="-74.0031262" version="1"/>
+ <node id="716" lat="40.7151531" lon="-74.0028535" version="1"/>
+ <node id="717" lat="40.7150443" lon="-74.0025809" version="1"/>
+ <node id="718" lat="40.7156248" lon="-74.0031612" version="1"/>
+ <node id="719" lat="40.7156382" lon="-74.0028535" version="1"/>
+ <node id="720" lat="40.7156515" lon="-74.0025459" version="1"/>
+ <node id="721" lat="40.7083994" lon="-74.0024584" version="1"/>
+ <node id="722" lat="40.7083618" lon="-74.0021543" version="1"/>
+ <node id="723" lat="40.7083243" lon="-74.0018502" version="1"/>
+ <node id="724" lat="40.7088602" lon="-74.0024619" version="1"/>
+ <node id="725" lat="40.7088469" lon="-74.0021543" version="1"/>
+ <node id="726" lat="40.7088337" lon="-74.0018467" version="1"/>
+ <node id="727" lat="40.7092042" lon="-74.0024122" version="1"/>
+ <node id="728" lat="40.7093320" lon="-74.0021543" version="1"/>
+ <node id="729" lat="40.7094598" lon="-74.0018964" version="1"/>
+ <node id="730" lat="40.7100189" lon="-74.0023094" version="1"/>
+ <node id="731" lat="40.7098171" lon="-74.0021543" version="1"/>
+ <node id="732" lat="40.7096153" lon="-74.0019992" version="1"/>
+ <node id="733" lat="40.7104897" lon="-74.0023379" version="1"/>
+ <node id="734" lat="40.7103022" lon="-74.0021543" version="1"/>
+ <node id="735" lat="40.7101146" lon="-74.0019707" version="1"/>
+ <node id="736" lat="40.7109518" lon="-74.0023730" version="1"/>
+ <node id="737" lat="40.7107873" lon="-74.0021543" version="1"/>
+ <node id="738" lat="40.7106228" lon="-74.0019356" version="1"/>
+ <node id="739" lat="40.7114376" lon="-74.0023720" version="1"/>
+ <node id="740" lat="40.7112724" lon="-74.0021543" version="1"/>
+ <node id="741" lat="40.7111071" lon="-74.0019366" version="1"/>
+ <node id="742" lat="40.7119410" lon="-74.0023449" version="1"/>
+ <node id="743" lat="40.7117575" lon="-74.0021543" version="1"/>
+ <node id="744" lat="40.7115739" lon="-74.0019637" version="1"/>
+ <node id="745" lat="40.7120467" lon="-74.0023223" version="1"/>
+ <node id="746" lat="40.7122425" lon="-74.0021543" version="1"/>
+ <node id="747" lat="40.7124383" lon="-74.0019863" version="1"/>
+ <node id="748" lat="40.7125697" lon="-74.0023814" version="1"/>
+ <node id="749" lat="40.7127276" lon="-74.0021543" version="1"/>
+ <node id="750" lat="40.7128855" lon="-74.0019273" version="1"/>
+ <node id="751" lat="40.7133908" lon="-74.0023538" version="1"/>
+ <node id="752" lat="40.7132127" lon="-74.0021543" version="1"/>
+ <node id="753" lat="40.7130347" lon="-74.0019549" version="1"/>
+ <node id="754" lat="40.7136968" lon="-74.0024624" version="1"/>
+ <node id="755" lat="40.7136978" lon="-74.0021543" version="1"/>
+ <node id="756" lat="40.7136988" lon="-74.0018462" version="1"/>
+ <node id="757" lat="40.7142707" lon="-74.0024398" version="1"/>
+ <node id="758" lat="40.7141829" lon="-74.0021543" version="1"/>
+ <node id="759" lat="40.7140951" lon="-74.0018688" version="1"/>
+ <node id="760" lat="40.7147564" lon="-74.0024395" version="1"/>
+ <node id="761" lat="40.7146680" lon="-74.0021543" version="1"/>
+ <node id="762" lat="40.7145795" lon="-74.0018691" version="1"/>
+ <node id="763" lat="40.7152246" lon="-74.0024476" version="1"/>
+ <node id="764" lat="40.7151531" lon="-74.0021543" version="1"/>
+ <node id="765" lat="40.7150815" lon="-74.0018610" version="1"/>
+ <node id="766" lat="40.7155674" lon="-74.0024480" version="1"/>
+ <node id="767" lat="40.7156382" lon="-74.0021543" version="1"/>
+ <node id="768" lat="40.7157089" lon="-74.0018607" version="1"/>
+ <node id="769" lat="40.7083197" lon="-74.0017582" version="1"/>
+ <node id="770" lat="40.7083618" lon="-74.0014551" version="1"/>
+ <node id="771" lat="40.7084040" lon="-74.0011520" version="1"/>
+ <node id="772" lat="40.7089140" lon="-74.0017502" version="1"/>
+ <node id="773" lat="40.7088469" lon="-74.0014551" version="1"/>
+ <node id="774" lat="40.7087798" lon="-74.0011600" version="1"/>
+ <node id="775" lat="40.7094728" lon="-74.0017010" version="1"/>
+ <node id="776" lat="40.7093320" lon="-74.0014551" version="1"/>
+ <node id="777" lat="40.7091912" lon="-74.0012092" version="1"/>
+ <node id="778" lat="40.7098991" lon="-74.0017436" version="1"/>
+ <node id="779" lat="40.7098171" lon="-74.0014551" version="1"/>
+ <node id="780" lat="40.7097351" lon="-74.0011666" version="1"/>
+ <node id="781" lat="40.7104678" lon="-74.0016724" version="1"/>
+ <node id="782" lat="40.7103022" lon="-74.0014551" version="1"/>
+ <node id="783" lat="40.7101366" lon="-74.0012378" version="1"/>
+ <node id="784" lat="40.7107602" lon="-74.0017611" version="1"/>
+ <node id="785" lat="40.7107873" lon="-74.0014551" version="1"/>
+ <node id="786" lat="40.7108144" lon="-74.0011491" version="1"/>
+ <node id="787" lat="40.7111703" lon="-74.0017322" version="1"/>
+ <node id="788" lat="40.7112724" lon="-74.0014551" version="1"/>
+ <node id="789" lat="40.7113745" lon="-74.0011780" version="1"/>
+ <node id="790" lat="40.7118154" lon="-74.0017536" version="1"/>
+ <node id="791" lat="40.7117575" lon="-74.0014551" version="1"/>
+ <node id="792" lat="40.7116995" lon="-74.0011566" version="1"/>
+ <node id="793" lat="40.7124225" lon="-74.0016515" version="1"/>
+ <node id="794" lat="40.7122425" lon="-74.0014551" version="1"/>
+ <node id="795" lat="40.7120626" lon="-74.0012587" version="1"/>
+ <node id="796" lat="40.7128733" lon="-74.0016960" version="1"/>
+ <node id="797" lat="40.7127276" lon="-74.0014551" version="1"/>
+ <node id="798" lat="40.7125820" lon="-74.0012142" version="1"/>
+ <node id="799" lat="40.7132740" lon="-74.0017524" version="1"/>
+ <node id="800" lat="40.7132127" lon="-74.0014551" version="1"/>
+ <node id="801" lat="40.7131515" lon="-74.0011578" version="1"/>
+ <node id="802" lat="40.7136471" lon="-74.0017559" version="1"/>
+ <node id="803" lat="40.7136978" lon="-74.0014551" version="1"/>
+ <node id="804" lat="40.7137485" lon="-74.0011543" version="1"/>
+ <node id="805" lat="40.7140526" lon="-74.0017108" version="1"/>
+ <node id="806" lat="40.7141829" lon="-74.0014551" version="1"/>
+ <node id="807" lat="40.7143132" lon="-74.0011994" version="1"/>
+ <node id="808" lat="40.7147259" lon="-74.0017536" version="1"/>
+ <node id="809" lat="40.7146680" lon="-74.0014551" version="1"/>
+ <node id="810" lat="40.7146100" lon="-74.0011566" version="1"/>
+ <node id="811" lat="40.7150153" lon="-74.0017039" version="1"/>
+ <node id="812" lat="40.7151531" lon="-74.0014551" version="1"/>
+ <node id="813" lat="40.7152908" lon="-74.0012063" version="1"/>
+ <node id="814" lat="40.7155787" lon="-74.0017531" version="1"/>
+ <node id="815" lat="40.7156382" lon="-74.0014551" version="1"/>
+ <node id="816" lat="40.7156976" lon="-74.0011571" version="1"/>
+ <node id="817" lat="40.7083952" lon="-74.0010609" version="1"/>
+ <node id="818" lat="40.7083618" lon="-74.0007559" version="1"/>
+ <node id="819" lat="40.7083285" lon="-74.0004509" version="1"/>
+ <node id="820" lat="40.7089086" lon="-74.0010531" version="1"/>
+ <node id="821" lat="40.7088469" lon="-74.0007559" version="1"/>
+ <node id="822" lat="40.7087853" lon="-74.0004587" version="1"/>
+ <node id="823" lat="40.7093339" lon="-74.0010640" version="1"/>
+ <node id="824" lat="40.7093320" lon="-74.0007559" version="1"/>
+ <node id="825" lat="40.7093301" lon="-74.0004478" version="1"/>
+ <node id="826" lat="40.7097208" lon="-74.0010366" version="1"/>
+ <node id="827" lat="40.7098171" lon="-74.0007559" version="1"/>
+ <node id="828" lat="40.7099134" lon="-74.0004752" version="1"/>
+ <node id="829" lat="40.7103409" lon="-74.0010598" version="1"/>
+ <node id="830" lat="40.7103022" lon="-74.0007559" version="1"/>
+ <node id="831" lat="40.7102635" lon="-74.0004520" version="1"/>
+ <node id="832" lat="40.7106949" lon="-74.0010389" version="1"/>
+ <node id="833" lat="40.7107873" lon="-74.0007559" version="1"/>
+ <node id="834" lat="40.7108796" lon="-74.0004729" version="1"/>
+ <node id="835" lat="40.7112915" lon="-74.0010630" version="1"/>
+ <node id="836" lat="40.7112724" lon="-74.0007559" version="1"/>
+ <node id="837" lat="40.7112532" lon="-74.0004488" version="1"/>
+ <node id="838" lat="40.7118763" lon="-74.0010211" version="1"/>
+ <node id="839" lat="40.7117575" lon="-74.0007559" version="1"/>
+ <node id="840" lat="40.7116386" lon="-74.0004906" version="1"/>
+ <node id="841" lat="40.7122250" lon="-74.0010631" version="1"/>
+ <node id="842" lat="40.7122425" lon="-74.0007559" version="1"/>
+ <node id="843" lat="40.7122601" lon="-74.0004486" version="1"/>
+ <node id="844" lat="40.7126348" lon="-74.0010386" version="1"/>
+ <node id="845" lat="40.7127276" lon="-74.0007559" version="1"/>
+ <node id="846" lat="40.7128205" lon="-74.0004731" version="1"/>
+ <node id="847" lat="40.7133953" lon="-74.0009481" version="1"/>
+ <node id="848" lat="40.7132127" lon="-74.0007559" version="1"/>
+ <node id="849" lat="40.7130302" lon="-74.0005637" version="1"/>
+ <node id="850" lat="40.7137344" lon="-74.0010602" version="1"/>
+ <node id="851" lat="40.7136978" lon="-74.0007559" version="1"/>
+ <node id="852" lat="40.7136612" lon="-74.0004516" version="1"/>
+ <node id="853" lat="40.7142190" lon="-74.0010603" version="1"/>
+ <node id="854" lat="40.7141829" lon="-74.0007559" version="1"/>
+ <node id="855" lat="40.7141468" lon="-74.0004515" version="1"/>
+ <node id="856" lat="40.7145012" lon="-74.0009716" version="1"/>
+ <node id="857" lat="40.7146680" lon="-74.0007559" version="1"/>
+ <node id="858" lat="40.7148347" lon="-74.0005401" version="1"/>
+ <node id="859" lat="40.7149681" lon="-74.0009440" version="1"/>
+ <node id="860" lat="40.7151531" lon="-74.0007559" version="1"/>
+ <node id="861" lat="40.7153381" lon="-74.0005678" version="1"/>
+ <node id="862" lat="40.7156990" lon="-74.0010534" version="1"/>
+ <node id="863" lat="40.7156382" lon="-74.0007559" version="1"/>
+ <node id="864" lat="40.7155773" lon="-74.0004584" version="1"/>
+ <node id="865" lat="40.7081890" lon="-74.0002639" version="1"/>
+ <node id="866" lat="40.7083618" lon="-74.0000567" version="1"/>
+ <node id="867" lat="40.7085347" lon="-73.9998495" version="1"/>
+ <node id="868" lat="40.7087133" lon="-74.0003094" version="1"/>
+ <node id="869" lat="40.7088469" lon="-74.0000567" version="1"/>
+ <node id="870" lat="40.7089806" lon="-73.9998040" version="1"/>
+ <node id="871" lat="40.7094436" lon="-74.0003274" version="1"/>
+ <node id="872" lat="40.7093320" lon="-74.0000567" version="1"/>
+ <node id="873" lat="40.7092204" lon="-73.9997860" version="1"/>
+ <node id="874" lat="40.7098346" lon="-74.0003639" version="1"/>
+ <node id="875" lat="40.7098171" lon="-74.0000567" version="1"/>
+ <node id="876" lat="40.7097996" lon="-73.9997494" version="1"/>
+ <node id="877" lat="40.7104680" lon="-74.0002737" version="1"/>
+ <node id="878" lat="40.7103022" lon="-74.0000567" version="1"/>
+ <node id="879" lat="40.7101364" lon="-73.9998396" version="1"/>
+ <node id="880" lat="40.7106448" lon="-74.0003008" version="1"/>
+ <node id="881" lat="40.7107873" lon="-74.0000567" version="1"/>
+ <node id="882" lat="40.7109297" lon="-73.9998125" version="1"/>
+ <node id="883" lat="40.7111945" lon="-74.0003472" version="1"/>
+ <node id="884" lat="40.7112724" lon="-74.0000567" version="1"/>
+ <node id="885" lat="40.7113502" lon="-73.9997662" version="1"/>
+ <node id="886" lat="40.7115881" lon="-74.0002688" version="1"/>
+ <node id="887" lat="40.7117575" lon="-74.0000567" version="1"/>
+ <node id="888" lat="40.7119268" lon="-73.9998445" version="1"/>
+ <node id="889" lat="40.7121083" lon="-74.0003088" version="1"/>
+ <node id="890" lat="40.7122425" lon="-74.0000567" version="1"/>
+ <node id="891" lat="40.7123768" lon="-73.9998046" version="1"/>
+ <node id="892" lat="40.7126473" lon="-74.0003460" version="1"/>
+ <node id="893" lat="40.7127276" lon="-74.0000567" version="1"/>
+ <node id="894" lat="40.7128079" lon="-73.9997673" version="1"/>
+ <node id="895" lat="40.7131029" lon="-74.0003286" version="1"/>
+ <node id="896" lat="40.7132127" lon="-74.0000567" version="1"/>
+ <node id="897" lat="40.7133225" lon="-73.9997847" version="1"/>
+ <node id="898" lat="40.7136667" lon="-74.0003620" version="1"/>
+ <node id="899" lat="40.7136978" lon="-74.0000567" version="1"/>
+ <node id="900" lat="40.7137289" lon="-73.9997513" version="1"/>
+ <node id="901" lat="40.7143554" lon="-74.0002643" version="1"/>
+ <node id="902" lat="40.7141829" lon="-74.0000567" version="1"/>
+ <node id="903" lat="40.7140104" lon="-73.9998490" version="1"/>
+ <node id="904" lat="40.7146253" lon="-74.0003596" version="1"/>
+ <node id="905" lat="40.7146680" lon="-74.0000567" version="1"/>
+ <node id="906" lat="40.7147107" lon="-73.9997537" version="1"/>
+ <node id="907" lat="40.7153541" lon="-74.0002135" version="1"/>
+ <node id="908" lat="40.7151531" lon="-74.0000567" version="1"/>
+ <node id="909" lat="40.7149520" lon="-73.9998999" version="1"/>
+ <node id="910" lat="40.7157968" lon="-74.0002828" version="1"/>
+ <node id="911" lat="40.7156382" lon="-74.0000567" version="1"/>
+ <node id="912" lat="40.7154795" lon="-73.9998305" version="1"/>
+ <node id="913" lat="40.7082349" lon="-73.9996161" version="1"/>
+ <node id="914" lat="40.7083618" lon="-73.9993575" version="1"/>
+ <node id="915" lat="40.7084888" lon="-73.9990988" version="1"/>
+ <node id="916" lat="40.7090375" lon="-73.9995356" version="1"/>
+ <node id="917" lat="40.7088469" lon="-73.9993575" version="1"/>
+ <node id="918" lat="40.7086564" lon="-73.9991793" version="1"/>
+ <node id="919" lat="40.7095082" lon="-73.9995597" version="1"/>
+ <node id="920" lat="40.7093320" lon="-73.9993575" version="1"/>
+ <node id="921" lat="40.7091558" lon="-73.9991552" version="1"/>
+ <node id="922" lat="40.7099909" lon="-73.9995633" version="1"/>
+ <node id="923" lat="40.7098171" lon="-73.9993575" version="1"/>
+ <node id="924" lat="40.7096433" lon="-73.9991516" version="1"/>
+ <node id="925" lat="40.7101352" lon="-73.9995728" version="1"/>
+ <node id="926" lat="40.7103022" lon="-73.9993575" version="1"/>
+ <node id="927" lat="40.7104692" lon="-73.9991421" version="1"/>
+ <node id="928" lat="40.7109327" lon="-73.9995986" version="1"/>
+ <node id="929" lat="40.7107873" lon="-73.9993575" version="1"/>
+ <node id="930" lat="40.7106419" lon="-73.9991163" version="1"/>
+ <node id="931" lat="40.7114687" lon="-73.9995245" version="1"/>
+ <node id="932" lat="40.7112724" lon="-73.9993575" version="1"/>
+ <node id="933" lat="40.7110761" lon="-73.9991905" version="1"/>
+ <node id="934" lat="40.7116043" lon="-73.9995901" version="1"/>
+ <node id="935" lat="40.7117575" lon="-73.9993575" version="1"/>
+ <node id="936" lat="40.7119106" lon="-73.9991249" version="1"/>
+ <node id="937" lat="40.7124090" lon="-73.9995736" version="1"/>
+ <node id="938" lat="40.7122425" lon="-73.9993575" version="1"/>
+ <node id="939" lat="40.7120761" lon="-73.9991413" version="1"/>
+ <node id="940" lat="40.7125736" lon="-73.9995890" version="1"/>
+ <node id="941" lat="40.7127276" lon="-73.9993575" version="1"/>
+ <node id="942" lat="40.7128817" lon="-73.9991259" version="1"/>
+ <node id="943" lat="40.7131297" lon="-73.9996455" version="1"/>
+ <node id="944" lat="40.7132127" lon="-73.9993575" version="1"/>
+ <node id="945" lat="40.7132958" lon="-73.9990695" version="1"/>
+ <node id="946" lat="40.7135466" lon="-73.9995923" version="1"/>
+ <node id="947" lat="40.7136978" lon="-73.9993575" version="1"/>
+ <node id="948" lat="40.7138490" lon="-73.9991226" version="1"/>
+ <node id="949" lat="40.7139933" lon="-73.9995373" version="1"/>
+ <node id="950" lat="40.7141829" lon="-73.9993575" version="1"/>
+ <node id="951" lat="40.7143725" lon="-73.9991776" version="1"/>
+ <node id="952" lat="40.7146295" lon="-73.9996614" version="1"/>
+ <node id="953" lat="40.7146680" lon="-73.9993575" version="1"/>
+ <node id="954" lat="40.7147065" lon="-73.9990535" version="1"/>
+ <node id="955" lat="40.7150163" lon="-73.9996072" version="1"/>
+ <node id="956" lat="40.7151531" lon="-73.9993575" version="1"/>
+ <node id="957" lat="40.7152899" lon="-73.9991077" version="1"/>
+ <node id="958" lat="40.7158310" lon="-73.9995313" version="1"/>
+ <node id="959" lat="40.7156382" lon="-73.9993575" version="1"/>
+ <node id="960" lat="40.7154453" lon="-73.9991836" version="1"/>
+ <way id="1" version="1">
+  <nd ref="1"/>
+  <nd ref="2"/>
+  <nd ref="3"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="2" version="1">
+  <nd ref="4"/>
+  <nd ref="5"/>
+  <nd ref="6"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="3" version="1">
+  <nd ref="7"/>
+  <nd ref="8"/>
+  <nd ref="9"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="4" version="1">
+  <nd ref="10"/>
+  <nd ref="11"/>
+  <nd ref="12"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="5" version="1">
+  <nd ref="13"/>
+  <nd ref="14"/>
+  <nd ref="15"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="6" version="1">
+  <nd ref="16"/>
+  <nd ref="17"/>
+  <nd ref="18"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="7" version="1">
+  <nd ref="19"/>
+  <nd ref="20"/>
+  <nd ref="21"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="8" version="1">
+  <nd ref="22"/>
+  <nd ref="23"/>
+  <nd ref="24"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="9" version="1">
+  <nd ref="25"/>
+  <nd ref="26"/>
+  <nd ref="27"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="10" version="1">
+  <nd ref="28"/>
+  <nd ref="29"/>
+  <nd ref="30"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="11" version="1">
+  <nd ref="31"/>
+  <nd ref="32"/>
+  <nd ref="33"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="12" version="1">
+  <nd ref="34"/>
+  <nd ref="35"/>
+  <nd ref="36"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="13" version="1">
+  <nd ref="37"/>
+  <nd ref="38"/>
+  <nd ref="39"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="14" version="1">
+  <nd ref="40"/>
+  <nd ref="41"/>
+  <nd ref="42"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="15" version="1">
+  <nd ref="43"/>
+  <nd ref="44"/>
+  <nd ref="45"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="16" version="1">
+  <nd ref="46"/>
+  <nd ref="47"/>
+  <nd ref="48"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="17" version="1">
+  <nd ref="49"/>
+  <nd ref="50"/>
+  <nd ref="51"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="18" version="1">
+  <nd ref="52"/>
+  <nd ref="53"/>
+  <nd ref="54"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="19" version="1">
+  <nd ref="55"/>
+  <nd ref="56"/>
+  <nd ref="57"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="20" version="1">
+  <nd ref="58"/>
+  <nd ref="59"/>
+  <nd ref="60"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="21" version="1">
+  <nd ref="61"/>
+  <nd ref="62"/>
+  <nd ref="63"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="22" version="1">
+  <nd ref="64"/>
+  <nd ref="65"/>
+  <nd ref="66"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="23" version="1">
+  <nd ref="67"/>
+  <nd ref="68"/>
+  <nd ref="69"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="24" version="1">
+  <nd ref="70"/>
+  <nd ref="71"/>
+  <nd ref="72"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="25" version="1">
+  <nd ref="73"/>
+  <nd ref="74"/>
+  <nd ref="75"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="26" version="1">
+  <nd ref="76"/>
+  <nd ref="77"/>
+  <nd ref="78"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="27" version="1">
+  <nd ref="79"/>
+  <nd ref="80"/>
+  <nd ref="81"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="28" version="1">
+  <nd ref="82"/>
+  <nd ref="83"/>
+  <nd ref="84"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="29" version="1">
+  <nd ref="85"/>
+  <nd ref="86"/>
+  <nd ref="87"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="30" version="1">
+  <nd ref="88"/>
+  <nd ref="89"/>
+  <nd ref="90"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="31" version="1">
+  <nd ref="91"/>
+  <nd ref="92"/>
+  <nd ref="93"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="32" version="1">
+  <nd ref="94"/>
+  <nd ref="95"/>
+  <nd ref="96"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="33" version="1">
+  <nd ref="97"/>
+  <nd ref="98"/>
+  <nd ref="99"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="34" version="1">
+  <nd ref="100"/>
+  <nd ref="101"/>
+  <nd ref="102"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="35" version="1">
+  <nd ref="103"/>
+  <nd ref="104"/>
+  <nd ref="105"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="36" version="1">
+  <nd ref="106"/>
+  <nd ref="107"/>
+  <nd ref="108"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="37" version="1">
+  <nd ref="109"/>
+  <nd ref="110"/>
+  <nd ref="111"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="38" version="1">
+  <nd ref="112"/>
+  <nd ref="113"/>
+  <nd ref="114"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="39" version="1">
+  <nd ref="115"/>
+  <nd ref="116"/>
+  <nd ref="117"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="40" version="1">
+  <nd ref="118"/>
+  <nd ref="119"/>
+  <nd ref="120"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="41" version="1">
+  <nd ref="121"/>
+  <nd ref="122"/>
+  <nd ref="123"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="42" version="1">
+  <nd ref="124"/>
+  <nd ref="125"/>
+  <nd ref="126"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="43" version="1">
+  <nd ref="127"/>
+  <nd ref="128"/>
+  <nd ref="129"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="44" version="1">
+  <nd ref="130"/>
+  <nd ref="131"/>
+  <nd ref="132"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="45" version="1">
+  <nd ref="133"/>
+  <nd ref="134"/>
+  <nd ref="135"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="46" version="1">
+  <nd ref="136"/>
+  <nd ref="137"/>
+  <nd ref="138"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="47" version="1">
+  <nd ref="139"/>
+  <nd ref="140"/>
+  <nd ref="141"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="48" version="1">
+  <nd ref="142"/>
+  <nd ref="143"/>
+  <nd ref="144"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="49" version="1">
+  <nd ref="145"/>
+  <nd ref="146"/>
+  <nd ref="147"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="50" version="1">
+  <nd ref="148"/>
+  <nd ref="149"/>
+  <nd ref="150"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="51" version="1">
+  <nd ref="151"/>
+  <nd ref="152"/>
+  <nd ref="153"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="52" version="1">
+  <nd ref="154"/>
+  <nd ref="155"/>
+  <nd ref="156"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="53" version="1">
+  <nd ref="157"/>
+  <nd ref="158"/>
+  <nd ref="159"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="54" version="1">
+  <nd ref="160"/>
+  <nd ref="161"/>
+  <nd ref="162"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="55" version="1">
+  <nd ref="163"/>
+  <nd ref="164"/>
+  <nd ref="165"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="56" version="1">
+  <nd ref="166"/>
+  <nd ref="167"/>
+  <nd ref="168"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="57" version="1">
+  <nd ref="169"/>
+  <nd ref="170"/>
+  <nd ref="171"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="58" version="1">
+  <nd ref="172"/>
+  <nd ref="173"/>
+  <nd ref="174"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="59" version="1">
+  <nd ref="175"/>
+  <nd ref="176"/>
+  <nd ref="177"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="60" version="1">
+  <nd ref="178"/>
+  <nd ref="179"/>
+  <nd ref="180"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="61" version="1">
+  <nd ref="181"/>
+  <nd ref="182"/>
+  <nd ref="183"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="62" version="1">
+  <nd ref="184"/>
+  <nd ref="185"/>
+  <nd ref="186"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="63" version="1">
+  <nd ref="187"/>
+  <nd ref="188"/>
+  <nd ref="189"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="64" version="1">
+  <nd ref="190"/>
+  <nd ref="191"/>
+  <nd ref="192"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="65" version="1">
+  <nd ref="193"/>
+  <nd ref="194"/>
+  <nd ref="195"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="66" version="1">
+  <nd ref="196"/>
+  <nd ref="197"/>
+  <nd ref="198"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="67" version="1">
+  <nd ref="199"/>
+  <nd ref="200"/>
+  <nd ref="201"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="68" version="1">
+  <nd ref="202"/>
+  <nd ref="203"/>
+  <nd ref="204"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="69" version="1">
+  <nd ref="205"/>
+  <nd ref="206"/>
+  <nd ref="207"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="70" version="1">
+  <nd ref="208"/>
+  <nd ref="209"/>
+  <nd ref="210"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="71" version="1">
+  <nd ref="211"/>
+  <nd ref="212"/>
+  <nd ref="213"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="72" version="1">
+  <nd ref="214"/>
+  <nd ref="215"/>
+  <nd ref="216"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="73" version="1">
+  <nd ref="217"/>
+  <nd ref="218"/>
+  <nd ref="219"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="74" version="1">
+  <nd ref="220"/>
+  <nd ref="221"/>
+  <nd ref="222"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="75" version="1">
+  <nd ref="223"/>
+  <nd ref="224"/>
+  <nd ref="225"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="76" version="1">
+  <nd ref="226"/>
+  <nd ref="227"/>
+  <nd ref="228"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="77" version="1">
+  <nd ref="229"/>
+  <nd ref="230"/>
+  <nd ref="231"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="78" version="1">
+  <nd ref="232"/>
+  <nd ref="233"/>
+  <nd ref="234"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="79" version="1">
+  <nd ref="235"/>
+  <nd ref="236"/>
+  <nd ref="237"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="80" version="1">
+  <nd ref="238"/>
+  <nd ref="239"/>
+  <nd ref="240"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="81" version="1">
+  <nd ref="241"/>
+  <nd ref="242"/>
+  <nd ref="243"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="82" version="1">
+  <nd ref="244"/>
+  <nd ref="245"/>
+  <nd ref="246"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="83" version="1">
+  <nd ref="247"/>
+  <nd ref="248"/>
+  <nd ref="249"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="84" version="1">
+  <nd ref="250"/>
+  <nd ref="251"/>
+  <nd ref="252"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="85" version="1">
+  <nd ref="253"/>
+  <nd ref="254"/>
+  <nd ref="255"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="86" version="1">
+  <nd ref="256"/>
+  <nd ref="257"/>
+  <nd ref="258"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="87" version="1">
+  <nd ref="259"/>
+  <nd ref="260"/>
+  <nd ref="261"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="88" version="1">
+  <nd ref="262"/>
+  <nd ref="263"/>
+  <nd ref="264"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="89" version="1">
+  <nd ref="265"/>
+  <nd ref="266"/>
+  <nd ref="267"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="90" version="1">
+  <nd ref="268"/>
+  <nd ref="269"/>
+  <nd ref="270"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="91" version="1">
+  <nd ref="271"/>
+  <nd ref="272"/>
+  <nd ref="273"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="92" version="1">
+  <nd ref="274"/>
+  <nd ref="275"/>
+  <nd ref="276"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="93" version="1">
+  <nd ref="277"/>
+  <nd ref="278"/>
+  <nd ref="279"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="94" version="1">
+  <nd ref="280"/>
+  <nd ref="281"/>
+  <nd ref="282"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="95" version="1">
+  <nd ref="283"/>
+  <nd ref="284"/>
+  <nd ref="285"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="96" version="1">
+  <nd ref="286"/>
+  <nd ref="287"/>
+  <nd ref="288"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="97" version="1">
+  <nd ref="289"/>
+  <nd ref="290"/>
+  <nd ref="291"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="98" version="1">
+  <nd ref="292"/>
+  <nd ref="293"/>
+  <nd ref="294"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="99" version="1">
+  <nd ref="295"/>
+  <nd ref="296"/>
+  <nd ref="297"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="100" version="1">
+  <nd ref="298"/>
+  <nd ref="299"/>
+  <nd ref="300"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="101" version="1">
+  <nd ref="301"/>
+  <nd ref="302"/>
+  <nd ref="303"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="102" version="1">
+  <nd ref="304"/>
+  <nd ref="305"/>
+  <nd ref="306"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="103" version="1">
+  <nd ref="307"/>
+  <nd ref="308"/>
+  <nd ref="309"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="104" version="1">
+  <nd ref="310"/>
+  <nd ref="311"/>
+  <nd ref="312"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="105" version="1">
+  <nd ref="313"/>
+  <nd ref="314"/>
+  <nd ref="315"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="106" version="1">
+  <nd ref="316"/>
+  <nd ref="317"/>
+  <nd ref="318"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="107" version="1">
+  <nd ref="319"/>
+  <nd ref="320"/>
+  <nd ref="321"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="108" version="1">
+  <nd ref="322"/>
+  <nd ref="323"/>
+  <nd ref="324"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="109" version="1">
+  <nd ref="325"/>
+  <nd ref="326"/>
+  <nd ref="327"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="110" version="1">
+  <nd ref="328"/>
+  <nd ref="329"/>
+  <nd ref="330"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="111" version="1">
+  <nd ref="331"/>
+  <nd ref="332"/>
+  <nd ref="333"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="112" version="1">
+  <nd ref="334"/>
+  <nd ref="335"/>
+  <nd ref="336"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="113" version="1">
+  <nd ref="337"/>
+  <nd ref="338"/>
+  <nd ref="339"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="114" version="1">
+  <nd ref="340"/>
+  <nd ref="341"/>
+  <nd ref="342"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="115" version="1">
+  <nd ref="343"/>
+  <nd ref="344"/>
+  <nd ref="345"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="116" version="1">
+  <nd ref="346"/>
+  <nd ref="347"/>
+  <nd ref="348"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="117" version="1">
+  <nd ref="349"/>
+  <nd ref="350"/>
+  <nd ref="351"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="118" version="1">
+  <nd ref="352"/>
+  <nd ref="353"/>
+  <nd ref="354"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="119" version="1">
+  <nd ref="355"/>
+  <nd ref="356"/>
+  <nd ref="357"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="120" version="1">
+  <nd ref="358"/>
+  <nd ref="359"/>
+  <nd ref="360"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="121" version="1">
+  <nd ref="361"/>
+  <nd ref="362"/>
+  <nd ref="363"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="122" version="1">
+  <nd ref="364"/>
+  <nd ref="365"/>
+  <nd ref="366"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="123" version="1">
+  <nd ref="367"/>
+  <nd ref="368"/>
+  <nd ref="369"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="124" version="1">
+  <nd ref="370"/>
+  <nd ref="371"/>
+  <nd ref="372"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="125" version="1">
+  <nd ref="373"/>
+  <nd ref="374"/>
+  <nd ref="375"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="126" version="1">
+  <nd ref="376"/>
+  <nd ref="377"/>
+  <nd ref="378"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="127" version="1">
+  <nd ref="379"/>
+  <nd ref="380"/>
+  <nd ref="381"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="128" version="1">
+  <nd ref="382"/>
+  <nd ref="383"/>
+  <nd ref="384"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="129" version="1">
+  <nd ref="385"/>
+  <nd ref="386"/>
+  <nd ref="387"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="130" version="1">
+  <nd ref="388"/>
+  <nd ref="389"/>
+  <nd ref="390"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="131" version="1">
+  <nd ref="391"/>
+  <nd ref="392"/>
+  <nd ref="393"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="132" version="1">
+  <nd ref="394"/>
+  <nd ref="395"/>
+  <nd ref="396"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="133" version="1">
+  <nd ref="397"/>
+  <nd ref="398"/>
+  <nd ref="399"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="134" version="1">
+  <nd ref="400"/>
+  <nd ref="401"/>
+  <nd ref="402"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="135" version="1">
+  <nd ref="403"/>
+  <nd ref="404"/>
+  <nd ref="405"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="136" version="1">
+  <nd ref="406"/>
+  <nd ref="407"/>
+  <nd ref="408"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="137" version="1">
+  <nd ref="409"/>
+  <nd ref="410"/>
+  <nd ref="411"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="138" version="1">
+  <nd ref="412"/>
+  <nd ref="413"/>
+  <nd ref="414"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="139" version="1">
+  <nd ref="415"/>
+  <nd ref="416"/>
+  <nd ref="417"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="140" version="1">
+  <nd ref="418"/>
+  <nd ref="419"/>
+  <nd ref="420"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="141" version="1">
+  <nd ref="421"/>
+  <nd ref="422"/>
+  <nd ref="423"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="142" version="1">
+  <nd ref="424"/>
+  <nd ref="425"/>
+  <nd ref="426"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="143" version="1">
+  <nd ref="427"/>
+  <nd ref="428"/>
+  <nd ref="429"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="144" version="1">
+  <nd ref="430"/>
+  <nd ref="431"/>
+  <nd ref="432"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="145" version="1">
+  <nd ref="433"/>
+  <nd ref="434"/>
+  <nd ref="435"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="146" version="1">
+  <nd ref="436"/>
+  <nd ref="437"/>
+  <nd ref="438"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="147" version="1">
+  <nd ref="439"/>
+  <nd ref="440"/>
+  <nd ref="441"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="148" version="1">
+  <nd ref="442"/>
+  <nd ref="443"/>
+  <nd ref="444"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="149" version="1">
+  <nd ref="445"/>
+  <nd ref="446"/>
+  <nd ref="447"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="150" version="1">
+  <nd ref="448"/>
+  <nd ref="449"/>
+  <nd ref="450"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="151" version="1">
+  <nd ref="451"/>
+  <nd ref="452"/>
+  <nd ref="453"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="152" version="1">
+  <nd ref="454"/>
+  <nd ref="455"/>
+  <nd ref="456"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="153" version="1">
+  <nd ref="457"/>
+  <nd ref="458"/>
+  <nd ref="459"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="154" version="1">
+  <nd ref="460"/>
+  <nd ref="461"/>
+  <nd ref="462"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="155" version="1">
+  <nd ref="463"/>
+  <nd ref="464"/>
+  <nd ref="465"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="156" version="1">
+  <nd ref="466"/>
+  <nd ref="467"/>
+  <nd ref="468"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="157" version="1">
+  <nd ref="469"/>
+  <nd ref="470"/>
+  <nd ref="471"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="158" version="1">
+  <nd ref="472"/>
+  <nd ref="473"/>
+  <nd ref="474"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="159" version="1">
+  <nd ref="475"/>
+  <nd ref="476"/>
+  <nd ref="477"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="160" version="1">
+  <nd ref="478"/>
+  <nd ref="479"/>
+  <nd ref="480"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="161" version="1">
+  <nd ref="481"/>
+  <nd ref="482"/>
+  <nd ref="483"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="162" version="1">
+  <nd ref="484"/>
+  <nd ref="485"/>
+  <nd ref="486"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="163" version="1">
+  <nd ref="487"/>
+  <nd ref="488"/>
+  <nd ref="489"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="164" version="1">
+  <nd ref="490"/>
+  <nd ref="491"/>
+  <nd ref="492"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="165" version="1">
+  <nd ref="493"/>
+  <nd ref="494"/>
+  <nd ref="495"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="166" version="1">
+  <nd ref="496"/>
+  <nd ref="497"/>
+  <nd ref="498"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="167" version="1">
+  <nd ref="499"/>
+  <nd ref="500"/>
+  <nd ref="501"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="168" version="1">
+  <nd ref="502"/>
+  <nd ref="503"/>
+  <nd ref="504"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="169" version="1">
+  <nd ref="505"/>
+  <nd ref="506"/>
+  <nd ref="507"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="170" version="1">
+  <nd ref="508"/>
+  <nd ref="509"/>
+  <nd ref="510"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="171" version="1">
+  <nd ref="511"/>
+  <nd ref="512"/>
+  <nd ref="513"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="172" version="1">
+  <nd ref="514"/>
+  <nd ref="515"/>
+  <nd ref="516"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="173" version="1">
+  <nd ref="517"/>
+  <nd ref="518"/>
+  <nd ref="519"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="174" version="1">
+  <nd ref="520"/>
+  <nd ref="521"/>
+  <nd ref="522"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="175" version="1">
+  <nd ref="523"/>
+  <nd ref="524"/>
+  <nd ref="525"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="176" version="1">
+  <nd ref="526"/>
+  <nd ref="527"/>
+  <nd ref="528"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="177" version="1">
+  <nd ref="529"/>
+  <nd ref="530"/>
+  <nd ref="531"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="178" version="1">
+  <nd ref="532"/>
+  <nd ref="533"/>
+  <nd ref="534"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="179" version="1">
+  <nd ref="535"/>
+  <nd ref="536"/>
+  <nd ref="537"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="180" version="1">
+  <nd ref="538"/>
+  <nd ref="539"/>
+  <nd ref="540"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="181" version="1">
+  <nd ref="541"/>
+  <nd ref="542"/>
+  <nd ref="543"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="182" version="1">
+  <nd ref="544"/>
+  <nd ref="545"/>
+  <nd ref="546"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="183" version="1">
+  <nd ref="547"/>
+  <nd ref="548"/>
+  <nd ref="549"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="184" version="1">
+  <nd ref="550"/>
+  <nd ref="551"/>
+  <nd ref="552"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="185" version="1">
+  <nd ref="553"/>
+  <nd ref="554"/>
+  <nd ref="555"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="186" version="1">
+  <nd ref="556"/>
+  <nd ref="557"/>
+  <nd ref="558"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="187" version="1">
+  <nd ref="559"/>
+  <nd ref="560"/>
+  <nd ref="561"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="188" version="1">
+  <nd ref="562"/>
+  <nd ref="563"/>
+  <nd ref="564"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="189" version="1">
+  <nd ref="565"/>
+  <nd ref="566"/>
+  <nd ref="567"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="190" version="1">
+  <nd ref="568"/>
+  <nd ref="569"/>
+  <nd ref="570"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="191" version="1">
+  <nd ref="571"/>
+  <nd ref="572"/>
+  <nd ref="573"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="192" version="1">
+  <nd ref="574"/>
+  <nd ref="575"/>
+  <nd ref="576"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="193" version="1">
+  <nd ref="577"/>
+  <nd ref="578"/>
+  <nd ref="579"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="194" version="1">
+  <nd ref="580"/>
+  <nd ref="581"/>
+  <nd ref="582"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="195" version="1">
+  <nd ref="583"/>
+  <nd ref="584"/>
+  <nd ref="585"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="196" version="1">
+  <nd ref="586"/>
+  <nd ref="587"/>
+  <nd ref="588"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="197" version="1">
+  <nd ref="589"/>
+  <nd ref="590"/>
+  <nd ref="591"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="198" version="1">
+  <nd ref="592"/>
+  <nd ref="593"/>
+  <nd ref="594"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="199" version="1">
+  <nd ref="595"/>
+  <nd ref="596"/>
+  <nd ref="597"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="200" version="1">
+  <nd ref="598"/>
+  <nd ref="599"/>
+  <nd ref="600"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="201" version="1">
+  <nd ref="601"/>
+  <nd ref="602"/>
+  <nd ref="603"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="202" version="1">
+  <nd ref="604"/>
+  <nd ref="605"/>
+  <nd ref="606"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="203" version="1">
+  <nd ref="607"/>
+  <nd ref="608"/>
+  <nd ref="609"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="204" version="1">
+  <nd ref="610"/>
+  <nd ref="611"/>
+  <nd ref="612"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="205" version="1">
+  <nd ref="613"/>
+  <nd ref="614"/>
+  <nd ref="615"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="206" version="1">
+  <nd ref="616"/>
+  <nd ref="617"/>
+  <nd ref="618"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="207" version="1">
+  <nd ref="619"/>
+  <nd ref="620"/>
+  <nd ref="621"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="208" version="1">
+  <nd ref="622"/>
+  <nd ref="623"/>
+  <nd ref="624"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="209" version="1">
+  <nd ref="625"/>
+  <nd ref="626"/>
+  <nd ref="627"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="210" version="1">
+  <nd ref="628"/>
+  <nd ref="629"/>
+  <nd ref="630"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="211" version="1">
+  <nd ref="631"/>
+  <nd ref="632"/>
+  <nd ref="633"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="212" version="1">
+  <nd ref="634"/>
+  <nd ref="635"/>
+  <nd ref="636"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="213" version="1">
+  <nd ref="637"/>
+  <nd ref="638"/>
+  <nd ref="639"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="214" version="1">
+  <nd ref="640"/>
+  <nd ref="641"/>
+  <nd ref="642"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="215" version="1">
+  <nd ref="643"/>
+  <nd ref="644"/>
+  <nd ref="645"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="216" version="1">
+  <nd ref="646"/>
+  <nd ref="647"/>
+  <nd ref="648"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="217" version="1">
+  <nd ref="649"/>
+  <nd ref="650"/>
+  <nd ref="651"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="218" version="1">
+  <nd ref="652"/>
+  <nd ref="653"/>
+  <nd ref="654"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="219" version="1">
+  <nd ref="655"/>
+  <nd ref="656"/>
+  <nd ref="657"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="220" version="1">
+  <nd ref="658"/>
+  <nd ref="659"/>
+  <nd ref="660"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="221" version="1">
+  <nd ref="661"/>
+  <nd ref="662"/>
+  <nd ref="663"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="222" version="1">
+  <nd ref="664"/>
+  <nd ref="665"/>
+  <nd ref="666"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="223" version="1">
+  <nd ref="667"/>
+  <nd ref="668"/>
+  <nd ref="669"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="224" version="1">
+  <nd ref="670"/>
+  <nd ref="671"/>
+  <nd ref="672"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="225" version="1">
+  <nd ref="673"/>
+  <nd ref="674"/>
+  <nd ref="675"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="226" version="1">
+  <nd ref="676"/>
+  <nd ref="677"/>
+  <nd ref="678"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="227" version="1">
+  <nd ref="679"/>
+  <nd ref="680"/>
+  <nd ref="681"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="228" version="1">
+  <nd ref="682"/>
+  <nd ref="683"/>
+  <nd ref="684"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="229" version="1">
+  <nd ref="685"/>
+  <nd ref="686"/>
+  <nd ref="687"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="230" version="1">
+  <nd ref="688"/>
+  <nd ref="689"/>
+  <nd ref="690"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="231" version="1">
+  <nd ref="691"/>
+  <nd ref="692"/>
+  <nd ref="693"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="232" version="1">
+  <nd ref="694"/>
+  <nd ref="695"/>
+  <nd ref="696"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="233" version="1">
+  <nd ref="697"/>
+  <nd ref="698"/>
+  <nd ref="699"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="234" version="1">
+  <nd ref="700"/>
+  <nd ref="701"/>
+  <nd ref="702"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="235" version="1">
+  <nd ref="703"/>
+  <nd ref="704"/>
+  <nd ref="705"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="236" version="1">
+  <nd ref="706"/>
+  <nd ref="707"/>
+  <nd ref="708"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="237" version="1">
+  <nd ref="709"/>
+  <nd ref="710"/>
+  <nd ref="711"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="238" version="1">
+  <nd ref="712"/>
+  <nd ref="713"/>
+  <nd ref="714"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="239" version="1">
+  <nd ref="715"/>
+  <nd ref="716"/>
+  <nd ref="717"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="240" version="1">
+  <nd ref="718"/>
+  <nd ref="719"/>
+  <nd ref="720"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="241" version="1">
+  <nd ref="721"/>
+  <nd ref="722"/>
+  <nd ref="723"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="242" version="1">
+  <nd ref="724"/>
+  <nd ref="725"/>
+  <nd ref="726"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="243" version="1">
+  <nd ref="727"/>
+  <nd ref="728"/>
+  <nd ref="729"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="244" version="1">
+  <nd ref="730"/>
+  <nd ref="731"/>
+  <nd ref="732"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="245" version="1">
+  <nd ref="733"/>
+  <nd ref="734"/>
+  <nd ref="735"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="246" version="1">
+  <nd ref="736"/>
+  <nd ref="737"/>
+  <nd ref="738"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="247" version="1">
+  <nd ref="739"/>
+  <nd ref="740"/>
+  <nd ref="741"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="248" version="1">
+  <nd ref="742"/>
+  <nd ref="743"/>
+  <nd ref="744"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="249" version="1">
+  <nd ref="745"/>
+  <nd ref="746"/>
+  <nd ref="747"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="250" version="1">
+  <nd ref="748"/>
+  <nd ref="749"/>
+  <nd ref="750"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="251" version="1">
+  <nd ref="751"/>
+  <nd ref="752"/>
+  <nd ref="753"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="252" version="1">
+  <nd ref="754"/>
+  <nd ref="755"/>
+  <nd ref="756"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="253" version="1">
+  <nd ref="757"/>
+  <nd ref="758"/>
+  <nd ref="759"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="254" version="1">
+  <nd ref="760"/>
+  <nd ref="761"/>
+  <nd ref="762"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="255" version="1">
+  <nd ref="763"/>
+  <nd ref="764"/>
+  <nd ref="765"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="256" version="1">
+  <nd ref="766"/>
+  <nd ref="767"/>
+  <nd ref="768"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="257" version="1">
+  <nd ref="769"/>
+  <nd ref="770"/>
+  <nd ref="771"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="258" version="1">
+  <nd ref="772"/>
+  <nd ref="773"/>
+  <nd ref="774"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="259" version="1">
+  <nd ref="775"/>
+  <nd ref="776"/>
+  <nd ref="777"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="260" version="1">
+  <nd ref="778"/>
+  <nd ref="779"/>
+  <nd ref="780"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="261" version="1">
+  <nd ref="781"/>
+  <nd ref="782"/>
+  <nd ref="783"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="262" version="1">
+  <nd ref="784"/>
+  <nd ref="785"/>
+  <nd ref="786"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="263" version="1">
+  <nd ref="787"/>
+  <nd ref="788"/>
+  <nd ref="789"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="264" version="1">
+  <nd ref="790"/>
+  <nd ref="791"/>
+  <nd ref="792"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="265" version="1">
+  <nd ref="793"/>
+  <nd ref="794"/>
+  <nd ref="795"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="266" version="1">
+  <nd ref="796"/>
+  <nd ref="797"/>
+  <nd ref="798"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="267" version="1">
+  <nd ref="799"/>
+  <nd ref="800"/>
+  <nd ref="801"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="268" version="1">
+  <nd ref="802"/>
+  <nd ref="803"/>
+  <nd ref="804"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="269" version="1">
+  <nd ref="805"/>
+  <nd ref="806"/>
+  <nd ref="807"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="270" version="1">
+  <nd ref="808"/>
+  <nd ref="809"/>
+  <nd ref="810"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="271" version="1">
+  <nd ref="811"/>
+  <nd ref="812"/>
+  <nd ref="813"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="272" version="1">
+  <nd ref="814"/>
+  <nd ref="815"/>
+  <nd ref="816"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="273" version="1">
+  <nd ref="817"/>
+  <nd ref="818"/>
+  <nd ref="819"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="274" version="1">
+  <nd ref="820"/>
+  <nd ref="821"/>
+  <nd ref="822"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="275" version="1">
+  <nd ref="823"/>
+  <nd ref="824"/>
+  <nd ref="825"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="276" version="1">
+  <nd ref="826"/>
+  <nd ref="827"/>
+  <nd ref="828"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="277" version="1">
+  <nd ref="829"/>
+  <nd ref="830"/>
+  <nd ref="831"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="278" version="1">
+  <nd ref="832"/>
+  <nd ref="833"/>
+  <nd ref="834"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="279" version="1">
+  <nd ref="835"/>
+  <nd ref="836"/>
+  <nd ref="837"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="280" version="1">
+  <nd ref="838"/>
+  <nd ref="839"/>
+  <nd ref="840"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="281" version="1">
+  <nd ref="841"/>
+  <nd ref="842"/>
+  <nd ref="843"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="282" version="1">
+  <nd ref="844"/>
+  <nd ref="845"/>
+  <nd ref="846"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="283" version="1">
+  <nd ref="847"/>
+  <nd ref="848"/>
+  <nd ref="849"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="284" version="1">
+  <nd ref="850"/>
+  <nd ref="851"/>
+  <nd ref="852"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="285" version="1">
+  <nd ref="853"/>
+  <nd ref="854"/>
+  <nd ref="855"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="286" version="1">
+  <nd ref="856"/>
+  <nd ref="857"/>
+  <nd ref="858"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="287" version="1">
+  <nd ref="859"/>
+  <nd ref="860"/>
+  <nd ref="861"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="288" version="1">
+  <nd ref="862"/>
+  <nd ref="863"/>
+  <nd ref="864"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="289" version="1">
+  <nd ref="865"/>
+  <nd ref="866"/>
+  <nd ref="867"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="290" version="1">
+  <nd ref="868"/>
+  <nd ref="869"/>
+  <nd ref="870"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="291" version="1">
+  <nd ref="871"/>
+  <nd ref="872"/>
+  <nd ref="873"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="292" version="1">
+  <nd ref="874"/>
+  <nd ref="875"/>
+  <nd ref="876"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="293" version="1">
+  <nd ref="877"/>
+  <nd ref="878"/>
+  <nd ref="879"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="294" version="1">
+  <nd ref="880"/>
+  <nd ref="881"/>
+  <nd ref="882"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="295" version="1">
+  <nd ref="883"/>
+  <nd ref="884"/>
+  <nd ref="885"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="296" version="1">
+  <nd ref="886"/>
+  <nd ref="887"/>
+  <nd ref="888"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="297" version="1">
+  <nd ref="889"/>
+  <nd ref="890"/>
+  <nd ref="891"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="298" version="1">
+  <nd ref="892"/>
+  <nd ref="893"/>
+  <nd ref="894"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="299" version="1">
+  <nd ref="895"/>
+  <nd ref="896"/>
+  <nd ref="897"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="300" version="1">
+  <nd ref="898"/>
+  <nd ref="899"/>
+  <nd ref="900"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="301" version="1">
+  <nd ref="901"/>
+  <nd ref="902"/>
+  <nd ref="903"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="302" version="1">
+  <nd ref="904"/>
+  <nd ref="905"/>
+  <nd ref="906"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="303" version="1">
+  <nd ref="907"/>
+  <nd ref="908"/>
+  <nd ref="909"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="304" version="1">
+  <nd ref="910"/>
+  <nd ref="911"/>
+  <nd ref="912"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="305" version="1">
+  <nd ref="913"/>
+  <nd ref="914"/>
+  <nd ref="915"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="306" version="1">
+  <nd ref="916"/>
+  <nd ref="917"/>
+  <nd ref="918"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="307" version="1">
+  <nd ref="919"/>
+  <nd ref="920"/>
+  <nd ref="921"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="308" version="1">
+  <nd ref="922"/>
+  <nd ref="923"/>
+  <nd ref="924"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="309" version="1">
+  <nd ref="925"/>
+  <nd ref="926"/>
+  <nd ref="927"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="310" version="1">
+  <nd ref="928"/>
+  <nd ref="929"/>
+  <nd ref="930"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="311" version="1">
+  <nd ref="931"/>
+  <nd ref="932"/>
+  <nd ref="933"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="312" version="1">
+  <nd ref="934"/>
+  <nd ref="935"/>
+  <nd ref="936"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+ <way id="313" version="1">
+  <nd ref="937"/>
+  <nd ref="938"/>
+  <nd ref="939"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="5th St"/>
+ </way>
+ <way id="314" version="1">
+  <nd ref="940"/>
+  <nd ref="941"/>
+  <nd ref="942"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Bay Rd"/>
+ </way>
+ <way id="315" version="1">
+  <nd ref="943"/>
+  <nd ref="944"/>
+  <nd ref="945"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm Ct"/>
+ </way>
+ <way id="316" version="1">
+  <nd ref="946"/>
+  <nd ref="947"/>
+  <nd ref="948"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Elm St"/>
+ </way>
+ <way id="317" version="1">
+  <nd ref="949"/>
+  <nd ref="950"/>
+  <nd ref="951"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak St"/>
+ </way>
+ <way id="318" version="1">
+  <nd ref="952"/>
+  <nd ref="953"/>
+  <nd ref="954"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="1st Ave"/>
+ </way>
+ <way id="319" version="1">
+  <nd ref="955"/>
+  <nd ref="956"/>
+  <nd ref="957"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Main St"/>
+ </way>
+ <way id="320" version="1">
+  <nd ref="958"/>
+  <nd ref="959"/>
+  <nd ref="960"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Pine St"/>
+ </way>
+</osm>

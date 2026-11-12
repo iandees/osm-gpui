@@ -1,0 +1,13 @@
+# Rotated street-name labels along ways (prototype).
+#   cargo run --release -- --script docs/screenshots/line-labels.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels.osm
+viewport 40.7120 -74.0060 17
+wait_idle 5s
+capture out/line-labels-z17.png
+viewport 40.7120 -74.0060 18
+wait_idle 2s
+capture out/line-labels-z18.png
+viewport 40.7120 -74.0045 17.4
+wait_idle 2s
+capture out/line-labels-z17-4.png

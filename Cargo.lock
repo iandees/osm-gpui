@@ -4600,6 +4600,7 @@ dependencies = [
  "rfd",
  "rstar",
  "rust-i18n",
+ "rustybuzz",
  "schemars",
  "serde",
  "serde_json",

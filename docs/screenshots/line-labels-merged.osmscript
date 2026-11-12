@@ -1,0 +1,18 @@
+# Street names together with area labels (park, pond, market, town hall), point
+# labels and icons, and the kept-through-zoom behaviour. One launch.
+#   cargo run --release -- --script docs/screenshots/line-labels-merged.osmscript
+window 1200 800
+load_osm docs/screenshots/fixtures/line-labels-mixed.osm
+viewport 40.7120 -74.0060 17
+wait_idle 5s
+wait 1s
+capture out/merged-z17.png
+viewport 40.7125 -74.0070 18
+wait 1s
+capture out/merged-z18.png
+viewport 40.7120 -74.0060 17
+wait 1s
+viewport 40.7120 -74.0060 17.5
+capture out/merged-z17-5-zooming.png
+wait 1s
+capture out/merged-z17-5-settled.png

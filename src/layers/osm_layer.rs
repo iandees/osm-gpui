@@ -17,7 +17,7 @@ use crate::selection::{
     nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot,
     DeletedRelationSnapshot, FeatureKind, FeatureRef, HitCandidate, PurgedFeatures,
 };
-use crate::style::{Direction, NodeStyle, Stylesheet, WayStyle};
+use crate::style::{Direction, NodeStyle, Stylesheet, TextPosition, WayStyle};
 use crate::viewport::Viewport;
 use rstar::{
     primitives::{GeomWithData, Rectangle},
@@ -248,6 +248,10 @@ pub struct OsmLayer {
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
     layer_bbox: Option<WayBbox>,
+    /// Street-name labels along ways (prototype); see `line_labels`.
+    line_labels: std::sync::Mutex<crate::layers::line_labels::LineLabelCache>,
+    /// The street-name labels chosen at the last settle.
+    line_placed: std::sync::Mutex<crate::layers::line_labels::LineState>,
     /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
     /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
     /// can change: construction, `set_osm_data` (which `merge_download` ends
@@ -1285,6 +1289,8 @@ impl OsmLayer {
             way_fill_tris: Vec::new(),
             mp: MpCache::default(),
             layer_bbox: None,
+            line_labels: Default::default(),
+            line_placed: Default::default(),
             download_rects: Vec::new(),
             node_cache: NodeCache {
                 index_by_id: HashMap::new(),
@@ -1344,6 +1350,8 @@ impl OsmLayer {
             way_fill_tris,
             mp,
             layer_bbox,
+            line_labels: Default::default(),
+            line_placed: Default::default(),
             download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
             node_cache,
             stylesheet,
@@ -3177,6 +3185,13 @@ impl OsmLayer {
             .clone()
     }
 
+    /// Identifies what label placement depends on besides the data: the
+    /// stylesheet, and the benchmark knobs (so a script changing them
+    /// forces a new placement).
+    fn label_sheet_id(&self) -> usize {
+        Arc::as_ptr(&self.stylesheet) as usize ^ crate::layers::line_labels::bench_stamp()
+    }
+
     /// The (cached) label text and style of the area `key` (a closed way or
     /// a tagged multipolygon relation) at `zoom`.
     fn area_label_for(
@@ -3578,7 +3593,7 @@ impl OsmLayer {
         labels::Placement {
             cam,
             revision: self.revision,
-            sheet: Arc::as_ptr(&self.stylesheet) as usize,
+            sheet: self.label_sheet_id(),
             labels: placed,
             by_id,
             fade_end: None,
@@ -3616,7 +3631,7 @@ impl OsmLayer {
             w: f32::from(viewport.transform.screen_size.width),
             h: f32::from(viewport.transform.screen_size.height),
         };
-        let sheet = Arc::as_ptr(&self.stylesheet) as usize;
+        let sheet = self.label_sheet_id();
         let mut cache = self.label_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.validate(self.revision, sheet, zoom.floor() as i32);
         let now = std::time::Instant::now();
@@ -3639,17 +3654,29 @@ impl OsmLayer {
                 })
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
+            self.place_line_labels(viewport, cam, &p, now);
             cache.store(p, now);
         }
         // Frames are requested only while something is in flight: waiting to
         // settle, or a fade-in running.
-        let fade_end = cache.placement.as_ref().and_then(|p| p.fade_end);
+        let line_fade_end = self
+            .line_placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fade_end;
+        let fade_end = cache
+            .placement
+            .as_ref()
+            .and_then(|p| p.fade_end)
+            .max(line_fade_end);
         if labels::wants_frame(step, fade_end, now) {
             window.request_animation_frame();
         }
         if step == labels::Step::HideAndWait {
             return;
         }
+        // Street names under the point labels and icons they yielded to.
+        self.paint_line_labels(viewport, bounds, now, window);
         let ox = bounds.origin.x;
         let oy = bounds.origin.y;
         let (w, h) = (cam.w, cam.h);
@@ -4521,6 +4548,257 @@ impl WayLod {
 #[inline]
 fn bbox_extent_px(b: &WayBbox, ppm_x: f64, ppm_y: f64) -> f32 {
     ((b.max_x - b.min_x) * ppm_x).max((b.max_y - b.min_y) * ppm_y) as f32
+}
+
+impl OsmLayer {
+    /// Ways in view whose MapCSS text style asks for a label along the line
+    /// (`text: name; text-position: line`), with the style resolved at
+    /// `zoom`. Run when placement is recomputed, not every frame.
+    fn line_label_candidates(
+        &self,
+        viewport: &Viewport,
+        zoom: f64,
+    ) -> Vec<crate::layers::line_labels::Candidate<'_>> {
+        use crate::layers::line_labels::{clear_offset, Candidate, LabelStyle};
+        let mut cands = Vec::new();
+        let Some(data) = self.osm_data.as_ref() else {
+            return cands;
+        };
+        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let defaults = LabelStyle::default();
+        for (i, bbox) in self.way_bboxes.iter().enumerate() {
+            let Some(b) = bbox else { continue };
+            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+                continue;
+            }
+            let way_id = self.way_ids[i];
+            let Some(way) = data.ways.get(&way_id) else {
+                continue;
+            };
+            let st = self
+                .stylesheet
+                .way_text_style(&way.tags, way.is_closed(), zoom);
+            if st.position != Some(TextPosition::Line) {
+                continue;
+            }
+            let Some(text) = st
+                .text
+                .as_deref()
+                .and_then(|k| labels::label_text(k, &way.tags))
+            else {
+                continue;
+            };
+            let size_px = st.font_size.unwrap_or(defaults.size_px);
+            // The road's half-width on screen (stroke plus casing), so the
+            // text clears it even when the stylesheet's offset is small.
+            let ws = &self.way_styles[i];
+            let casing = if zoom >= CASING_MIN_ZOOM {
+                ws.casing_width.max(CASING_WIDTH)
+            } else {
+                ws.casing_width
+            };
+            let half_width = ws.width / 2.0 + casing;
+            let offset = clear_offset(
+                st.offset.unwrap_or(0.35 * size_px + 2.0),
+                size_px,
+                half_width,
+            );
+            cands.push(Candidate {
+                way_id,
+                text,
+                verts: &self.way_vertices[i],
+                style: LabelStyle {
+                    size_px,
+                    halo_px: st.halo_radius.unwrap_or(defaults.halo_px),
+                    offset_px: offset,
+                    color: st.color.unwrap_or(defaults.color),
+                    halo_color: st.halo_color.unwrap_or(defaults.halo_color),
+                    halo_alpha: st.halo_opacity.unwrap_or(defaults.halo_alpha),
+                },
+                priority: highway_label_rank(&way.tags),
+            });
+        }
+        cands
+    }
+
+    /// Choose the street-name labels for the current camera, yielding to
+    /// the point labels and icons in `points`. Stores the result for
+    /// `paint_line_labels`.
+    fn place_line_labels(
+        &self,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        points: &labels::Placement,
+        now: std::time::Instant,
+    ) {
+        let fs = crate::frame_stats::start();
+        let mut obstacles: Vec<labels::Rect> = Vec::new();
+        for l in &points.labels {
+            let sp = viewport.mercator_to_screen(l.mx, l.my);
+            let (cx, cy) = (f32::from(sp.x), f32::from(sp.y));
+            if let Some(icon) = &l.icon {
+                let r = icon.choice.backing() / 2.0 + 1.0;
+                obstacles.push(labels::Rect::around(cx, cy, r, r));
+            }
+            if let Some(t) = &l.text {
+                let (w, h) = (
+                    f32::from(t.line.width),
+                    f32::from(t.line.ascent + t.line.descent),
+                );
+                obstacles.push(labels::Rect::new(
+                    cx + t.dx,
+                    cy + t.dy,
+                    cx + t.dx + w,
+                    cy + t.dy + h,
+                ));
+            }
+        }
+        let cands = self.line_label_candidates(viewport, cam.zoom);
+        let mut placed_slot = self.line_placed.lock().unwrap_or_else(|e| e.into_inner());
+        let prev: HashSet<(i64, usize)> = placed_slot
+            .placed
+            .iter()
+            .map(|p| (p.way_id, p.slot))
+            .collect();
+        let to_screen = |mx: f64, my: f64| {
+            let sp = viewport.mercator_to_screen(mx, my);
+            (f32::from(sp.x), f32::from(sp.y))
+        };
+        let (placed, _built) = match self.line_labels.lock() {
+            Ok(mut cache) => cache.place(
+                &cands,
+                cam.zoom,
+                to_screen,
+                (cam.w, cam.h),
+                &obstacles,
+                &prev,
+            ),
+            Err(_) => (Vec::new(), 0),
+        };
+        crate::frame_stats::count("linelabels.candidates", cands.len());
+        crate::frame_stats::count("linelabels.placed", placed.len());
+        placed_slot.store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
+        crate::frame_stats::lap("linelabels.place", fs);
+    }
+
+    /// Paint the placed street-name labels: halos first, then glyph fills.
+    /// Per frame this only re-projects each label's reference point and
+    /// transforms its cached triangles.
+    fn paint_line_labels(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        now: std::time::Instant,
+        window: &mut Window,
+    ) {
+        use crate::layers::line_labels::{emit_frame, FrameOut};
+        if self.drag_preview.is_some() {
+            return;
+        }
+        let fs_phase = crate::frame_stats::start();
+        let placed = self.line_placed.lock().unwrap_or_else(|e| e.into_inner());
+        if placed.placed.is_empty() {
+            return;
+        }
+        let mut out = FrameOut::default();
+        let origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let view = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        emit_frame(
+            &placed.placed,
+            |mx, my| {
+                let sp = viewport.mercator_to_screen(mx, my);
+                (f32::from(sp.x), f32::from(sp.y))
+            },
+            origin,
+            view,
+            now,
+            &mut out,
+        );
+        drop(placed);
+        crate::frame_stats::lap("linelabels.build", fs_phase);
+        let fs_phase = crate::frame_stats::start();
+        let (nf, nh) = out.vertex_counts();
+        crate::frame_stats::count("linelabels.drawn", out.labels);
+        crate::frame_stats::count("linelabels.vertices", nf + nh);
+        // `repeat` > 1 is a GPU-load multiplier for benchmarking.
+        let repeat = crate::layers::line_labels::bench_knobs().repeat;
+        for (verts, color) in out.halo.iter().chain(out.fill.iter()).map(|(c, v)| (v, *c)) {
+            if verts.is_empty() {
+                continue;
+            }
+            let st = point(0., 1.);
+            let mut path = Path::new(point(px(verts[0].0), px(verts[0].1)));
+            let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            );
+            path.vertices.reserve(verts.len());
+            for &(x, y) in verts.iter() {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+                path.vertices.push(PathVertex {
+                    xy_position: point(px(x), px(y)),
+                    st_position: st,
+                    content_mask: Default::default(),
+                });
+            }
+            path.bounds = Bounds {
+                origin: point(px(min_x), px(min_y)),
+                size: size(px(max_x - min_x), px(max_y - min_y)),
+            };
+            for _ in 1..repeat {
+                window.paint_path(path.clone(), rgba(color));
+            }
+            window.paint_path(path, rgba(color));
+        }
+        crate::frame_stats::lap("linelabels.paint", fs_phase);
+    }
+
+    /// Street-name label triangles for the current view with no point labels
+    /// in the way: candidates, placement and emission in one call. For
+    /// `examples/perf_bench.rs`, which has no window.
+    pub fn line_label_frame(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+    ) -> crate::layers::line_labels::FrameOut {
+        use crate::layers::line_labels::FrameOut;
+        let mut out = FrameOut::default();
+        let zoom = viewport.zoom_level();
+        let cands = self.line_label_candidates(viewport, zoom);
+        let proj = viewport.projector();
+        let origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let view = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        if let Ok(mut cache) = self.line_labels.lock() {
+            cache.frame(
+                &cands,
+                zoom,
+                |mx, my| proj.to_screen(mx, my),
+                origin,
+                view,
+                &mut out,
+            );
+        }
+        out
+    }
+}
+
+/// Order among street names: bigger roads first.
+fn highway_label_rank(tags: &HashMap<String, String>) -> i32 {
+    match tags.get("highway").map(String::as_str) {
+        Some("motorway" | "trunk") => 90,
+        Some("primary") => 80,
+        Some("secondary") => 70,
+        Some("tertiary") => 60,
+        Some("unclassified" | "residential") => 50,
+        Some("service" | "living_street" | "pedestrian") => 40,
+        Some(_) => 30,
+        None => 20,
+    }
 }
 
 impl OsmLayer {

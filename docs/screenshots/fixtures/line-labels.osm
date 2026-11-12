@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="gen">
+ <node id="1" lat="40.7100237" lon="-74.0116885" version="1"/>
+ <node id="2" lat="40.7100237" lon="-74.0113923" version="1"/>
+ <node id="3" lat="40.7100237" lon="-74.0110960" version="1"/>
+ <node id="4" lat="40.7100237" lon="-74.0107997" version="1"/>
+ <node id="5" lat="40.7100237" lon="-74.0105034" version="1"/>
+ <node id="6" lat="40.7100237" lon="-74.0102071" version="1"/>
+ <node id="7" lat="40.7100237" lon="-74.0099109" version="1"/>
+ <node id="8" lat="40.7100237" lon="-74.0096146" version="1"/>
+ <node id="9" lat="40.7100237" lon="-74.0093183" version="1"/>
+ <node id="10" lat="40.7100237" lon="-74.0090220" version="1"/>
+ <node id="11" lat="40.7100237" lon="-74.0087258" version="1"/>
+ <node id="12" lat="40.7100237" lon="-74.0084295" version="1"/>
+ <node id="13" lat="40.7100237" lon="-74.0081332" version="1"/>
+ <node id="14" lat="40.7086762" lon="-74.0073036" version="1"/>
+ <node id="15" lat="40.7089008" lon="-74.0073036" version="1"/>
+ <node id="16" lat="40.7091254" lon="-74.0073036" version="1"/>
+ <node id="17" lat="40.7093500" lon="-74.0073036" version="1"/>
+ <node id="18" lat="40.7095746" lon="-74.0073036" version="1"/>
+ <node id="19" lat="40.7097991" lon="-74.0073036" version="1"/>
+ <node id="20" lat="40.7100237" lon="-74.0073036" version="1"/>
+ <node id="21" lat="40.7102483" lon="-74.0073036" version="1"/>
+ <node id="22" lat="40.7104729" lon="-74.0073036" version="1"/>
+ <node id="23" lat="40.7106974" lon="-74.0073036" version="1"/>
+ <node id="24" lat="40.7109220" lon="-74.0073036" version="1"/>
+ <node id="25" lat="40.7111466" lon="-74.0073036" version="1"/>
+ <node id="26" lat="40.7113712" lon="-74.0073036" version="1"/>
+ <node id="27" lat="40.7090709" lon="-74.0059534" version="1"/>
+ <node id="28" lat="40.7092734" lon="-74.0058015" version="1"/>
+ <node id="29" lat="40.7094679" lon="-74.0056391" version="1"/>
+ <node id="30" lat="40.7096545" lon="-74.0054663" version="1"/>
+ <node id="31" lat="40.7098332" lon="-74.0052830" version="1"/>
+ <node id="32" lat="40.7100039" lon="-74.0050892" version="1"/>
+ <node id="33" lat="40.7101666" lon="-74.0048849" version="1"/>
+ <node id="34" lat="40.7103215" lon="-74.0046702" version="1"/>
+ <node id="35" lat="40.7104684" lon="-74.0044450" version="1"/>
+ <node id="36" lat="40.7106073" lon="-74.0042093" version="1"/>
+ <node id="37" lat="40.7107383" lon="-74.0039631" version="1"/>
+ <node id="38" lat="40.7108614" lon="-74.0037065" version="1"/>
+ <node id="39" lat="40.7109765" lon="-74.0034394" version="1"/>
+ <node id="40" lat="40.7109765" lon="-74.0033461" version="1"/>
+ <node id="41" lat="40.7108177" lon="-74.0031366" version="1"/>
+ <node id="42" lat="40.7106589" lon="-74.0029271" version="1"/>
+ <node id="43" lat="40.7105001" lon="-74.0027176" version="1"/>
+ <node id="44" lat="40.7103413" lon="-74.0025081" version="1"/>
+ <node id="45" lat="40.7101825" lon="-74.0022986" version="1"/>
+ <node id="46" lat="40.7100237" lon="-74.0020891" version="1"/>
+ <node id="47" lat="40.7098649" lon="-74.0018796" version="1"/>
+ <node id="48" lat="40.7097061" lon="-74.0016701" version="1"/>
+ <node id="49" lat="40.7095473" lon="-74.0014606" version="1"/>
+ <node id="50" lat="40.7093885" lon="-74.0012511" version="1"/>
+ <node id="51" lat="40.7092297" lon="-74.0010416" version="1"/>
+ <node id="52" lat="40.7090709" lon="-74.0008321" version="1"/>
+ <node id="53" lat="40.7115391" lon="-74.0115813" version="1"/>
+ <node id="54" lat="40.7116159" lon="-74.0113029" version="1"/>
+ <node id="55" lat="40.7116928" lon="-74.0110245" version="1"/>
+ <node id="56" lat="40.7117696" lon="-74.0107461" version="1"/>
+ <node id="57" lat="40.7118464" lon="-74.0104677" version="1"/>
+ <node id="58" lat="40.7119232" lon="-74.0101893" version="1"/>
+ <node id="59" lat="40.7120000" lon="-74.0099109" version="1"/>
+ <node id="60" lat="40.7120768" lon="-74.0096325" version="1"/>
+ <node id="61" lat="40.7121536" lon="-74.0093540" version="1"/>
+ <node id="62" lat="40.7122304" lon="-74.0090756" version="1"/>
+ <node id="63" lat="40.7123072" lon="-74.0087972" version="1"/>
+ <node id="64" lat="40.7123841" lon="-74.0085188" version="1"/>
+ <node id="65" lat="40.7124609" lon="-74.0082404" version="1"/>
+ <node id="66" lat="40.7107338" lon="-74.0079116" version="1"/>
+ <node id="67" lat="40.7109448" lon="-74.0078103" version="1"/>
+ <node id="68" lat="40.7111559" lon="-74.0077090" version="1"/>
+ <node id="69" lat="40.7113669" lon="-74.0076076" version="1"/>
+ <node id="70" lat="40.7115779" lon="-74.0075063" version="1"/>
+ <node id="71" lat="40.7117890" lon="-74.0074050" version="1"/>
+ <node id="72" lat="40.7120000" lon="-74.0073036" version="1"/>
+ <node id="73" lat="40.7122110" lon="-74.0072023" version="1"/>
+ <node id="74" lat="40.7124221" lon="-74.0071010" version="1"/>
+ <node id="75" lat="40.7126331" lon="-74.0069996" version="1"/>
+ <node id="76" lat="40.7128441" lon="-74.0068983" version="1"/>
+ <node id="77" lat="40.7130552" lon="-74.0067970" version="1"/>
+ <node id="78" lat="40.7132662" lon="-74.0066956" version="1"/>
+ <node id="79" lat="40.7124609" lon="-74.0063668" version="1"/>
+ <node id="80" lat="40.7123841" lon="-74.0060884" version="1"/>
+ <node id="81" lat="40.7123072" lon="-74.0058100" version="1"/>
+ <node id="82" lat="40.7122304" lon="-74.0055316" version="1"/>
+ <node id="83" lat="40.7121536" lon="-74.0052532" version="1"/>
+ <node id="84" lat="40.7120768" lon="-74.0049748" version="1"/>
+ <node id="85" lat="40.7120000" lon="-74.0046964" version="1"/>
+ <node id="86" lat="40.7119232" lon="-74.0044180" version="1"/>
+ <node id="87" lat="40.7118464" lon="-74.0041396" version="1"/>
+ <node id="88" lat="40.7117696" lon="-74.0038611" version="1"/>
+ <node id="89" lat="40.7116928" lon="-74.0035827" version="1"/>
+ <node id="90" lat="40.7116159" lon="-74.0033043" version="1"/>
+ <node id="91" lat="40.7115391" lon="-74.0030259" version="1"/>
+ <node id="92" lat="40.7110472" lon="-74.0008321" version="1"/>
+ <node id="93" lat="40.7111623" lon="-74.0010992" version="1"/>
+ <node id="94" lat="40.7112854" lon="-74.0013559" version="1"/>
+ <node id="95" lat="40.7114164" lon="-74.0016020" version="1"/>
+ <node id="96" lat="40.7115554" lon="-74.0018377" version="1"/>
+ <node id="97" lat="40.7117022" lon="-74.0020629" version="1"/>
+ <node id="98" lat="40.7118571" lon="-74.0022777" version="1"/>
+ <node id="99" lat="40.7120199" lon="-74.0024819" version="1"/>
+ <node id="100" lat="40.7121906" lon="-74.0026757" version="1"/>
+ <node id="101" lat="40.7123692" lon="-74.0028590" version="1"/>
+ <node id="102" lat="40.7125558" lon="-74.0030319" version="1"/>
+ <node id="103" lat="40.7127503" lon="-74.0031942" version="1"/>
+ <node id="104" lat="40.7129528" lon="-74.0033461" version="1"/>
+ <node id="105" lat="40.7137423" lon="-74.0116615" version="1"/>
+ <node id="106" lat="40.7137813" lon="-74.0113697" version="1"/>
+ <node id="107" lat="40.7138203" lon="-74.0110780" version="1"/>
+ <node id="108" lat="40.7138593" lon="-74.0107862" version="1"/>
+ <node id="109" lat="40.7138983" lon="-74.0104944" version="1"/>
+ <node id="110" lat="40.7139373" lon="-74.0102026" version="1"/>
+ <node id="111" lat="40.7139763" lon="-74.0099109" version="1"/>
+ <node id="112" lat="40.7140153" lon="-74.0096191" version="1"/>
+ <node id="113" lat="40.7140543" lon="-74.0093273" version="1"/>
+ <node id="114" lat="40.7140933" lon="-74.0090355" version="1"/>
+ <node id="115" lat="40.7141323" lon="-74.0087438" version="1"/>
+ <node id="116" lat="40.7141713" lon="-74.0084520" version="1"/>
+ <node id="117" lat="40.7142103" lon="-74.0081602" version="1"/>
+ <node id="118" lat="40.7152425" lon="-74.0079116" version="1"/>
+ <node id="119" lat="40.7150315" lon="-74.0078103" version="1"/>
+ <node id="120" lat="40.7148204" lon="-74.0077090" version="1"/>
+ <node id="121" lat="40.7146094" lon="-74.0076076" version="1"/>
+ <node id="122" lat="40.7143984" lon="-74.0075063" version="1"/>
+ <node id="123" lat="40.7141873" lon="-74.0074050" version="1"/>
+ <node id="124" lat="40.7139763" lon="-74.0073036" version="1"/>
+ <node id="125" lat="40.7137653" lon="-74.0072023" version="1"/>
+ <node id="126" lat="40.7135542" lon="-74.0071010" version="1"/>
+ <node id="127" lat="40.7133432" lon="-74.0069996" version="1"/>
+ <node id="128" lat="40.7131321" lon="-74.0068983" version="1"/>
+ <node id="129" lat="40.7129211" lon="-74.0067970" version="1"/>
+ <node id="130" lat="40.7127101" lon="-74.0066956" version="1"/>
+ <node id="131" lat="40.7133026" lon="-74.0062359" version="1"/>
+ <node id="132" lat="40.7134148" lon="-74.0059793" version="1"/>
+ <node id="133" lat="40.7135271" lon="-74.0057227" version="1"/>
+ <node id="134" lat="40.7136394" lon="-74.0054661" version="1"/>
+ <node id="135" lat="40.7137517" lon="-74.0052095" version="1"/>
+ <node id="136" lat="40.7138640" lon="-74.0049530" version="1"/>
+ <node id="137" lat="40.7139763" lon="-74.0046964" version="1"/>
+ <node id="138" lat="40.7140886" lon="-74.0044398" version="1"/>
+ <node id="139" lat="40.7142009" lon="-74.0041832" version="1"/>
+ <node id="140" lat="40.7143132" lon="-74.0039266" version="1"/>
+ <node id="141" lat="40.7144254" lon="-74.0036700" version="1"/>
+ <node id="142" lat="40.7145377" lon="-74.0034135" version="1"/>
+ <node id="143" lat="40.7146500" lon="-74.0031569" version="1"/>
+ <node id="144" lat="40.7126493" lon="-74.0017804" version="1"/>
+ <node id="145" lat="40.7128705" lon="-74.0018319" version="1"/>
+ <node id="146" lat="40.7130916" lon="-74.0018833" version="1"/>
+ <node id="147" lat="40.7133128" lon="-74.0019348" version="1"/>
+ <node id="148" lat="40.7135340" lon="-74.0019862" version="1"/>
+ <node id="149" lat="40.7137551" lon="-74.0020377" version="1"/>
+ <node id="150" lat="40.7139763" lon="-74.0020891" version="1"/>
+ <node id="151" lat="40.7141975" lon="-74.0021406" version="1"/>
+ <node id="152" lat="40.7144186" lon="-74.0021920" version="1"/>
+ <node id="153" lat="40.7146398" lon="-74.0022435" version="1"/>
+ <node id="154" lat="40.7148609" lon="-74.0022949" version="1"/>
+ <node id="155" lat="40.7150821" lon="-74.0023464" version="1"/>
+ <node id="156" lat="40.7153033" lon="-74.0023978" version="1"/>
+ <node id="157" lat="40.7090356" lon="-74.0113330" version="1"/>
+ <node id="158" lat="40.7090356" lon="-74.0104442" version="1"/>
+ <node id="159" lat="40.7090356" lon="-74.0095553" version="1"/>
+ <node id="160" lat="40.7090356" lon="-74.0086665" version="1"/>
+ <node id="161" lat="40.7090356" lon="-74.0077777" version="1"/>
+ <node id="162" lat="40.7090356" lon="-74.0068888" version="1"/>
+ <node id="163" lat="40.7090356" lon="-74.0060000" version="1"/>
+ <node id="164" lat="40.7090356" lon="-74.0051112" version="1"/>
+ <node id="165" lat="40.7090356" lon="-74.0042223" version="1"/>
+ <node id="166" lat="40.7090356" lon="-74.0033335" version="1"/>
+ <node id="167" lat="40.7090356" lon="-74.0024447" version="1"/>
+ <node id="168" lat="40.7090356" lon="-74.0015558" version="1"/>
+ <node id="169" lat="40.7090356" lon="-74.0006670" version="1"/>
+ <node id="170" lat="40.7149644" lon="-74.0113330" version="1"/>
+ <node id="171" lat="40.7149644" lon="-74.0104442" version="1"/>
+ <node id="172" lat="40.7149644" lon="-74.0095553" version="1"/>
+ <node id="173" lat="40.7149644" lon="-74.0086665" version="1"/>
+ <node id="174" lat="40.7149644" lon="-74.0077777" version="1"/>
+ <node id="175" lat="40.7149644" lon="-74.0068888" version="1"/>
+ <node id="176" lat="40.7149644" lon="-74.0060000" version="1"/>
+ <node id="177" lat="40.7149644" lon="-74.0051112" version="1"/>
+ <node id="178" lat="40.7149644" lon="-74.0042223" version="1"/>
+ <node id="179" lat="40.7149644" lon="-74.0033335" version="1"/>
+ <node id="180" lat="40.7149644" lon="-74.0024447" version="1"/>
+ <node id="181" lat="40.7149644" lon="-74.0015558" version="1"/>
+ <node id="182" lat="40.7149644" lon="-74.0006670" version="1"/>
+ <node id="183" lat="40.7093051" lon="-74.0116885" version="1"/>
+ <node id="184" lat="40.7097542" lon="-74.0116885" version="1"/>
+ <node id="185" lat="40.7102034" lon="-74.0116885" version="1"/>
+ <node id="186" lat="40.7106525" lon="-74.0116885" version="1"/>
+ <node id="187" lat="40.7111017" lon="-74.0116885" version="1"/>
+ <node id="188" lat="40.7115508" lon="-74.0116885" version="1"/>
+ <node id="189" lat="40.7120000" lon="-74.0116885" version="1"/>
+ <node id="190" lat="40.7124492" lon="-74.0116885" version="1"/>
+ <node id="191" lat="40.7128983" lon="-74.0116885" version="1"/>
+ <node id="192" lat="40.7133475" lon="-74.0116885" version="1"/>
+ <node id="193" lat="40.7137966" lon="-74.0116885" version="1"/>
+ <node id="194" lat="40.7142458" lon="-74.0116885" version="1"/>
+ <node id="195" lat="40.7146949" lon="-74.0116885" version="1"/>
+ <way id="1000" version="1">
+  <nd ref="1"/>
+  <nd ref="2"/>
+  <nd ref="3"/>
+  <nd ref="4"/>
+  <nd ref="5"/>
+  <nd ref="6"/>
+  <nd ref="7"/>
+  <nd ref="8"/>
+  <nd ref="9"/>
+  <nd ref="10"/>
+  <nd ref="11"/>
+  <nd ref="12"/>
+  <nd ref="13"/>
+  <tag k="highway" v="tertiary"/>
+  <tag k="name" v="Main Street"/>
+ </way>
+ <way id="1001" version="1">
+  <nd ref="14"/>
+  <nd ref="15"/>
+  <nd ref="16"/>
+  <nd ref="17"/>
+  <nd ref="18"/>
+  <nd ref="19"/>
+  <nd ref="20"/>
+  <nd ref="21"/>
+  <nd ref="22"/>
+  <nd ref="23"/>
+  <nd ref="24"/>
+  <nd ref="25"/>
+  <nd ref="26"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Oak Avenue"/>
+ </way>
+ <way id="1002" version="1">
+  <nd ref="27"/>
+  <nd ref="28"/>
+  <nd ref="29"/>
+  <nd ref="30"/>
+  <nd ref="31"/>
+  <nd ref="32"/>
+  <nd ref="33"/>
+  <nd ref="34"/>
+  <nd ref="35"/>
+  <nd ref="36"/>
+  <nd ref="37"/>
+  <nd ref="38"/>
+  <nd ref="39"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Maple Drive"/>
+ </way>
+ <way id="1003" version="1">
+  <nd ref="40"/>
+  <nd ref="41"/>
+  <nd ref="42"/>
+  <nd ref="43"/>
+  <nd ref="44"/>
+  <nd ref="45"/>
+  <nd ref="46"/>
+  <nd ref="47"/>
+  <nd ref="48"/>
+  <nd ref="49"/>
+  <nd ref="50"/>
+  <nd ref="51"/>
+  <nd ref="52"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Washington Boulevard"/>
+ </way>
+ <way id="1004" version="1">
+  <nd ref="53"/>
+  <nd ref="54"/>
+  <nd ref="55"/>
+  <nd ref="56"/>
+  <nd ref="57"/>
+  <nd ref="58"/>
+  <nd ref="59"/>
+  <nd ref="60"/>
+  <nd ref="61"/>
+  <nd ref="62"/>
+  <nd ref="63"/>
+  <nd ref="64"/>
+  <nd ref="65"/>
+  <tag k="highway" v="tertiary"/>
+  <tag k="name" v="Elm Street"/>
+ </way>
+ <way id="1005" version="1">
+  <nd ref="66"/>
+  <nd ref="67"/>
+  <nd ref="68"/>
+  <nd ref="69"/>
+  <nd ref="70"/>
+  <nd ref="71"/>
+  <nd ref="72"/>
+  <nd ref="73"/>
+  <nd ref="74"/>
+  <nd ref="75"/>
+  <nd ref="76"/>
+  <nd ref="77"/>
+  <nd ref="78"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Cedar Lane"/>
+ </way>
+ <way id="1006" version="1">
+  <nd ref="79"/>
+  <nd ref="80"/>
+  <nd ref="81"/>
+  <nd ref="82"/>
+  <nd ref="83"/>
+  <nd ref="84"/>
+  <nd ref="85"/>
+  <nd ref="86"/>
+  <nd ref="87"/>
+  <nd ref="88"/>
+  <nd ref="89"/>
+  <nd ref="90"/>
+  <nd ref="91"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Park Place"/>
+ </way>
+ <way id="1007" version="1">
+  <nd ref="92"/>
+  <nd ref="93"/>
+  <nd ref="94"/>
+  <nd ref="95"/>
+  <nd ref="96"/>
+  <nd ref="97"/>
+  <nd ref="98"/>
+  <nd ref="99"/>
+  <nd ref="100"/>
+  <nd ref="101"/>
+  <nd ref="102"/>
+  <nd ref="103"/>
+  <nd ref="104"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Lincoln Road"/>
+ </way>
+ <way id="1008" version="1">
+  <nd ref="105"/>
+  <nd ref="106"/>
+  <nd ref="107"/>
+  <nd ref="108"/>
+  <nd ref="109"/>
+  <nd ref="110"/>
+  <nd ref="111"/>
+  <nd ref="112"/>
+  <nd ref="113"/>
+  <nd ref="114"/>
+  <nd ref="115"/>
+  <nd ref="116"/>
+  <nd ref="117"/>
+  <tag k="highway" v="tertiary"/>
+  <tag k="name" v="Riverside Terrace"/>
+ </way>
+ <way id="1009" version="1">
+  <nd ref="118"/>
+  <nd ref="119"/>
+  <nd ref="120"/>
+  <nd ref="121"/>
+  <nd ref="122"/>
+  <nd ref="123"/>
+  <nd ref="124"/>
+  <nd ref="125"/>
+  <nd ref="126"/>
+  <nd ref="127"/>
+  <nd ref="128"/>
+  <nd ref="129"/>
+  <nd ref="130"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Broadway"/>
+ </way>
+ <way id="1010" version="1">
+  <nd ref="131"/>
+  <nd ref="132"/>
+  <nd ref="133"/>
+  <nd ref="134"/>
+  <nd ref="135"/>
+  <nd ref="136"/>
+  <nd ref="137"/>
+  <nd ref="138"/>
+  <nd ref="139"/>
+  <nd ref="140"/>
+  <nd ref="141"/>
+  <nd ref="142"/>
+  <nd ref="143"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Willow Court"/>
+ </way>
+ <way id="1011" version="1">
+  <nd ref="144"/>
+  <nd ref="145"/>
+  <nd ref="146"/>
+  <nd ref="147"/>
+  <nd ref="148"/>
+  <nd ref="149"/>
+  <nd ref="150"/>
+  <nd ref="151"/>
+  <nd ref="152"/>
+  <nd ref="153"/>
+  <nd ref="154"/>
+  <nd ref="155"/>
+  <nd ref="156"/>
+  <tag k="highway" v="residential"/>
+  <tag k="name" v="Highland Avenue"/>
+ </way>
+ <way id="1012" version="1">
+  <nd ref="157"/>
+  <nd ref="158"/>
+  <nd ref="159"/>
+  <nd ref="160"/>
+  <nd ref="161"/>
+  <nd ref="162"/>
+  <nd ref="163"/>
+  <nd ref="164"/>
+  <nd ref="165"/>
+  <nd ref="166"/>
+  <nd ref="167"/>
+  <nd ref="168"/>
+  <nd ref="169"/>
+  <tag k="highway" v="primary"/>
+  <tag k="name" v="Long Boulevard East"/>
+ </way>
+ <way id="1013" version="1">
+  <nd ref="170"/>
+  <nd ref="171"/>
+  <nd ref="172"/>
+  <nd ref="173"/>
+  <nd ref="174"/>
+  <nd ref="175"/>
+  <nd ref="176"/>
+  <nd ref="177"/>
+  <nd ref="178"/>
+  <nd ref="179"/>
+  <nd ref="180"/>
+  <nd ref="181"/>
+  <nd ref="182"/>
+  <tag k="highway" v="secondary"/>
+  <tag k="name" v="Long Boulevard West"/>
+ </way>
+ <way id="1014" version="1">
+  <nd ref="183"/>
+  <nd ref="184"/>
+  <nd ref="185"/>
+  <nd ref="186"/>
+  <nd ref="187"/>
+  <nd ref="188"/>
+  <nd ref="189"/>
+  <nd ref="190"/>
+  <nd ref="191"/>
+  <nd ref="192"/>
+  <nd ref="193"/>
+  <nd ref="194"/>
+  <nd ref="195"/>
+  <tag k="highway" v="secondary"/>
+  <tag k="name" v="Meridian Parkway"/>
+ </way>
+</osm>
