@@ -9,11 +9,23 @@ way                  { color: #d0d0d0; width: 1.5; }
 
 /* Roads, by importance. */
 way[highway]                 { color: #ffffff; width: 2; }
+way|z16-[highway]            { width: 3; }
+way|z18-[highway]            { width: 5; }
 way[highway=motorway], way[highway=motorway_link],
 way[highway=trunk], way[highway=trunk_link]         { color: #ff7a90; width: 3; }
+way|z15-[highway=motorway], way|z15-[highway=motorway_link],
+way|z15-[highway=trunk], way|z15-[highway=trunk_link]         { width: 4; }
+way|z17-[highway=motorway], way|z17-[highway=motorway_link],
+way|z17-[highway=trunk], way|z17-[highway=trunk_link]         { width: 6; }
 way[highway=primary], way[highway=primary_link]     { color: #ffb347; width: 3; }
+way|z15-[highway=primary], way|z15-[highway=primary_link]     { width: 4; }
+way|z17-[highway=primary], way|z17-[highway=primary_link]     { width: 6; }
 way[highway=secondary], way[highway=secondary_link] { color: #ffe566; width: 2.5; }
+way|z15-[highway=secondary], way|z15-[highway=secondary_link] { width: 3.5; }
+way|z17-[highway=secondary], way|z17-[highway=secondary_link] { width: 5; }
 way[highway=tertiary], way[highway=tertiary_link]   { color: #fff7b0; width: 2.5; }
+way|z15-[highway=tertiary], way|z15-[highway=tertiary_link]   { width: 3.5; }
+way|z17-[highway=tertiary], way|z17-[highway=tertiary_link]   { width: 5; }
 way[highway=track]           { color: #c8935a; width: 1.5; }
 way[highway=footway], way[highway=path], way[highway=pedestrian],
 way[highway=steps], way[highway=bridleway]          { color: #ff9a8a; width: 1.5; }

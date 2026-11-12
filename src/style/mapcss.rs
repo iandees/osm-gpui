@@ -13,11 +13,26 @@
 //! - Colors: `#rgb`, `#rrggbb`, or one of a small named set.
 //! - Comments: `/* ... */` (non-nesting).
 //!
-//! Anything outside that subset (zoom selectors, pseudo-classes,
-//! `eval(...)`, casing, etc.) is parsed permissively: unknown tokens
-//! are skipped and a warning is logged once per parse.
+//! - Zoom-range selectors after the type: `way|z12-`, `way|z-14`,
+//!   `way|z12-16`, `way|z12` (inclusive, tested against the integer zoom
+//!   bucket, `floor(zoom)`).
+//!
+//! Anything outside that subset (other pseudo-classes, `eval(...)`, etc.)
+//! is parsed permissively: unknown tokens are skipped and a warning is
+//! logged once per parse.
+//!
+//! # Zoom and caching
+//!
+//! Resolved styles are cached per feature by the layer. A zoom-dependent
+//! stylesheet cannot be cached per zoom per feature, so a feature's cached
+//! [`WayStyle`] is resolved ignoring zoom ranges (a superset) and carries a
+//! `sig`: an interned id of *which rules matched its tags*. The distinct
+//! signatures are few, so [`Stylesheet::zoom_styles`] resolves all of them
+//! for one zoom bucket (cached until the bucket changes) and the renderer
+//! indexes that table by `sig`.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Baseline node style — applied before any rule, so that an empty
 /// stylesheet still renders features. Mirrors the old hardcoded
@@ -104,7 +119,13 @@ pub struct WayStyle {
     /// than MapCSS, for the same cache-freshness reason as
     /// [`NodeStyle::tagged`].
     pub direction: Direction,
+    /// Interned id of the rules that matched this way's tags, an index into
+    /// [`Stylesheet::zoom_styles`]. [`NO_SIG`] when not interned.
+    pub sig: u32,
 }
+
+/// `WayStyle::sig` of a style that was not resolved through the cache path.
+pub const NO_SIG: u32 = u32::MAX;
 
 impl Default for WayStyle {
     fn default() -> Self {
@@ -113,7 +134,39 @@ impl Default for WayStyle {
             width: DEFAULT_WAY_WIDTH,
             fill: None,
             direction: Direction::None,
+            sig: NO_SIG,
         }
+    }
+}
+
+/// Inclusive range of integer zoom buckets a selector applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoomRange {
+    pub min: i32,
+    pub max: i32,
+}
+
+impl ZoomRange {
+    pub const ALL: ZoomRange = ZoomRange {
+        min: i32::MIN,
+        max: i32::MAX,
+    };
+
+    fn is_all(&self) -> bool {
+        *self == Self::ALL
+    }
+
+    fn contains(&self, bucket: i32) -> bool {
+        (self.min..=self.max).contains(&bucket)
+    }
+}
+
+/// The integer zoom bucket of a fractional zoom level.
+pub fn zoom_bucket(zoom: f64) -> i32 {
+    if zoom.is_finite() {
+        zoom.floor() as i32
+    } else {
+        0
     }
 }
 
@@ -149,9 +202,12 @@ impl TagTest {
 struct Selector {
     kind: TargetKind,
     tests: Vec<TagTest>,
+    zoom: ZoomRange,
 }
 
 impl Selector {
+    /// Kind and tag tests only; the zoom range is checked separately so a
+    /// feature's matches can be cached independent of zoom.
     fn matches(&self, kind: TargetKind, closed: bool, tags: &HashMap<String, String>) -> bool {
         let kind_ok = match self.kind {
             TargetKind::Area => kind == TargetKind::Way && closed,
@@ -185,10 +241,62 @@ struct Rule {
     declarations: Vec<Declaration>,
 }
 
+impl Rule {
+    /// Bitmask of the selectors (first 64) whose kind and tags match.
+    fn tag_mask(&self, kind: TargetKind, closed: bool, tags: &HashMap<String, String>) -> u64 {
+        let mut mask = 0u64;
+        for (i, sel) in self.selectors.iter().enumerate().take(64) {
+            if sel.matches(kind, closed, tags) {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
+
+    /// Whether any selector in `mask` also covers `zoom` (`None` ignores
+    /// zoom ranges).
+    fn applies(&self, mask: u64, zoom: Option<i32>) -> bool {
+        match zoom {
+            None => mask != 0,
+            Some(z) => self
+                .selectors
+                .iter()
+                .enumerate()
+                .take(64)
+                .any(|(i, sel)| mask & (1 << i) != 0 && sel.zoom.contains(z)),
+        }
+    }
+}
+
+/// Which rules matched a feature's tags, ignoring zoom: `(rule index,
+/// bitmask of matching selectors)`.
+type Matches = Vec<(u32, u64)>;
+
+#[derive(Debug, Default)]
+struct SigCache {
+    ids: HashMap<(bool, Matches), u32>,
+    sigs: Vec<(bool, Matches)>,
+    bucket: i32,
+    table: Option<Arc<Vec<WayStyle>>>,
+}
+
 /// Parsed MapCSS stylesheet.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Stylesheet {
     rules: Vec<Rule>,
+    /// Whether any selector carries a zoom range.
+    zoom_dependent: bool,
+    sigs: Mutex<SigCache>,
+}
+
+impl Clone for Stylesheet {
+    fn clone(&self) -> Self {
+        Self {
+            rules: self.rules.clone(),
+            zoom_dependent: self.zoom_dependent,
+            sigs: Mutex::default(),
+        }
+    }
 }
 
 /// Error from [`Stylesheet::parse`].
@@ -228,7 +336,14 @@ impl Stylesheet {
                 rules.push(rule)
             }
         }
-        Ok(Self { rules })
+        let zoom_dependent = rules
+            .iter()
+            .any(|r| r.selectors.iter().any(|s| !s.zoom.is_all()));
+        Ok(Self {
+            rules,
+            zoom_dependent,
+            sigs: Mutex::default(),
+        })
     }
 
     /// Load and parse the compiled-in default stylesheet.
@@ -240,25 +355,28 @@ impl Stylesheet {
         Self::parse(src).expect("default.mapcss must parse")
     }
 
-    /// Resolve a style for a node given its OSM tags.
-    pub fn node_style(&self, tags: &HashMap<String, String>) -> NodeStyle {
+    /// Whether any rule has a zoom-range selector. When false, cached
+    /// styles never need re-resolving on a zoom change.
+    pub fn is_zoom_dependent(&self) -> bool {
+        self.zoom_dependent
+    }
+
+    /// Resolve a style for a node given its OSM tags at `zoom`.
+    pub fn node_style(&self, tags: &HashMap<String, String>, zoom: f64) -> NodeStyle {
+        let bucket = zoom_bucket(zoom);
         let mut s = NodeStyle {
             tagged: !tags.is_empty(),
             ..NodeStyle::default()
         };
         for rule in &self.rules {
-            if !rule
-                .selectors
-                .iter()
-                .any(|sel| sel.matches(TargetKind::Node, false, tags))
-            {
+            let mask = rule.tag_mask(TargetKind::Node, false, tags);
+            if mask == 0 || !rule.applies(mask, Some(bucket)) {
                 continue;
             }
             for d in &rule.declarations {
                 match d {
                     Declaration::Color(c) => s.color = *c,
                     Declaration::SymbolSize(w) => s.size = *w,
-                    Declaration::FillColor(_) | Declaration::FillOpacity(_) => {}
                     // `width` on a pure-node rule aliases to symbol-size.
                     Declaration::Width(w) => {
                         if rule
@@ -269,6 +387,7 @@ impl Stylesheet {
                             s.size = *w;
                         }
                     }
+                    _ => {}
                 }
             }
         }
@@ -276,31 +395,104 @@ impl Stylesheet {
     }
 
     /// Resolve a style for a way given its OSM tags and whether it forms a
-    /// closed ring. `area` and `way:closed` rules only match when `closed`;
-    /// fill declarations only take effect on closed ways (JOSM semantics).
-    pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool) -> WayStyle {
+    /// closed ring, at `zoom`. `area` and `way:closed` rules only match when
+    /// `closed`; fill declarations only take effect on closed ways (JOSM
+    /// semantics).
+    pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool, zoom: f64) -> WayStyle {
+        let matches = self.match_way(tags, closed);
+        self.resolve_way(&matches, closed, Some(zoom_bucket(zoom)), tags)
+    }
+
+    /// The style for caching per feature: zoom ranges ignored (every rule
+    /// that matches the tags applies), with [`WayStyle::sig`] set so the
+    /// renderer can fetch the real per-zoom style from
+    /// [`Stylesheet::zoom_styles`].
+    pub fn way_style_cached(&self, tags: &HashMap<String, String>, closed: bool) -> WayStyle {
+        let matches = self.match_way(tags, closed);
+        let mut s = self.resolve_way(&matches, closed, None, tags);
+        s.sig = self.intern(closed, matches);
+        s
+    }
+
+    /// Every interned signature resolved at `zoom`, indexed by
+    /// [`WayStyle::sig`]. Rebuilt only when the zoom bucket changes or new
+    /// signatures appeared. The `direction` of these entries is meaningless;
+    /// keep the cached style's.
+    pub fn zoom_styles(&self, zoom: f64) -> Arc<Vec<WayStyle>> {
+        let bucket = zoom_bucket(zoom);
+        let mut cache = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = &cache.table {
+            if cache.bucket == bucket && t.len() == cache.sigs.len() {
+                return t.clone();
+            }
+        }
+        let no_tags = HashMap::new();
+        let table: Vec<WayStyle> = cache
+            .sigs
+            .iter()
+            .enumerate()
+            .map(|(i, (closed, m))| {
+                let mut s = self.resolve_way(m, *closed, Some(bucket), &no_tags);
+                s.sig = i as u32;
+                s
+            })
+            .collect();
+        let table = Arc::new(table);
+        cache.bucket = bucket;
+        cache.table = Some(table.clone());
+        table
+    }
+
+    fn intern(&self, closed: bool, matches: Matches) -> u32 {
+        let mut cache = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (closed, matches);
+        if let Some(&id) = cache.ids.get(&key) {
+            return id;
+        }
+        let id = cache.sigs.len() as u32;
+        cache.sigs.push(key.clone());
+        cache.ids.insert(key, id);
+        id
+    }
+
+    fn match_way(&self, tags: &HashMap<String, String>, closed: bool) -> Matches {
+        let mut out = Vec::new();
+        for (i, rule) in self.rules.iter().enumerate() {
+            let mask = rule.tag_mask(TargetKind::Way, closed, tags);
+            if mask != 0 {
+                out.push((i as u32, mask));
+            }
+        }
+        out
+    }
+
+    /// Apply the matched rules in order. `zoom` of `None` ignores ranges.
+    fn resolve_way(
+        &self,
+        matches: &Matches,
+        closed: bool,
+        zoom: Option<i32>,
+        tags: &HashMap<String, String>,
+    ) -> WayStyle {
         let mut s = WayStyle {
             direction: Direction::from_tags(tags),
             ..WayStyle::default()
         };
         let mut fill_color: Option<u32> = None;
         let mut fill_opacity: Option<f32> = None;
-        for rule in &self.rules {
-            if !rule
-                .selectors
-                .iter()
-                .any(|sel| sel.matches(TargetKind::Way, closed, tags))
-            {
+        for &(ri, mask) in matches {
+            let rule = &self.rules[ri as usize];
+            if !rule.applies(mask, zoom) {
                 continue;
             }
             for d in &rule.declarations {
                 match d {
                     Declaration::Color(c) => s.color = *c,
                     Declaration::Width(w) => s.width = *w,
-                    // `symbol-size` on a way rule is meaningless — ignore.
-                    Declaration::SymbolSize(_) => {}
                     Declaration::FillColor(c) => fill_color = Some(*c),
                     Declaration::FillOpacity(o) => fill_opacity = Some(*o),
+                    // `symbol-size` on a way rule is meaningless — ignore.
+                    _ => {}
                 }
             }
         }
@@ -453,6 +645,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut tests = Vec::new();
+        let mut zoom = ZoomRange::ALL;
         loop {
             self.skip_ws();
             match self.peek() {
@@ -478,19 +671,47 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Some('|') => {
-                    // Zoom selector — not supported. Skip.
-                    if !*warned {
-                        eprintln!("mapcss: ignoring unsupported zoom selector suffix");
-                        *warned = true;
-                    }
-                    self.skip_selector_tail();
-                    break;
+                    self.bump();
+                    zoom = self.parse_zoom_range()?;
                 }
                 _ => break,
             }
         }
 
-        Ok(Some(Selector { kind, tests }))
+        Ok(Some(Selector { kind, tests, zoom }))
+    }
+
+    /// The part of a zoom selector after `|`: `z12`, `z12-`, `z-14`,
+    /// `z12-16`.
+    fn parse_zoom_range(&mut self) -> Result<ZoomRange, ParseError> {
+        if !self.eat('z') {
+            return Err(self.err("expected 'z' in zoom selector"));
+        }
+        let min = self.read_uint();
+        let (min, max) = if self.eat('-') {
+            (min, self.read_uint())
+        } else {
+            match min {
+                Some(m) => (Some(m), Some(m)),
+                None => return Err(self.err("expected zoom level after 'z'")),
+            }
+        };
+        let range = ZoomRange {
+            min: min.unwrap_or(i32::MIN),
+            max: max.unwrap_or(i32::MAX),
+        };
+        if range.min > range.max {
+            return Err(self.err("empty zoom range"));
+        }
+        Ok(range)
+    }
+
+    fn read_uint(&mut self) -> Option<i32> {
+        let start = self.pos;
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+            self.bump();
+        }
+        self.src[start..self.pos].parse().ok()
     }
 
     /// Skip forward until we hit `,` or `{` at the top level.
@@ -724,6 +945,9 @@ fn parse_color(s: &str) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// A zoom at which no zoom-range selector in these tests matters.
+    const Z: f64 = 16.0;
+
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
@@ -734,14 +958,14 @@ mod tests {
     #[test]
     fn empty_stylesheet_uses_defaults() {
         let s = Stylesheet::parse("").unwrap();
-        assert_eq!(s.node_style(&tags(&[])), NodeStyle::default());
-        assert_eq!(s.way_style(&tags(&[]), false), WayStyle::default());
+        assert_eq!(s.node_style(&tags(&[]), Z), NodeStyle::default());
+        assert_eq!(s.way_style(&tags(&[]), false, Z), WayStyle::default());
     }
 
     #[test]
     fn parse_minimal_way_rule() {
         let s = Stylesheet::parse("way { color: #ff0000; width: 2; }").unwrap();
-        let w = s.way_style(&tags(&[]), false);
+        let w = s.way_style(&tags(&[]), false, Z);
         assert_eq!(w.color, 0xFF0000);
         assert_eq!(w.width, 2.0);
     }
@@ -749,7 +973,7 @@ mod tests {
     #[test]
     fn parse_minimal_node_rule() {
         let s = Stylesheet::parse("node { color: #00ff00; symbol-size: 14; }").unwrap();
-        let n = s.node_style(&tags(&[]));
+        let n = s.node_style(&tags(&[]), Z);
         assert_eq!(n.color, 0x00FF00);
         assert_eq!(n.size, 14.0);
     }
@@ -757,42 +981,44 @@ mod tests {
     #[test]
     fn multi_selector_applies_to_both() {
         let s = Stylesheet::parse("way, node { color: red; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
-        assert_eq!(s.node_style(&tags(&[])).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, 0xFF0000);
+        assert_eq!(s.node_style(&tags(&[]), Z).color, 0xFF0000);
     }
 
     #[test]
     fn later_rule_overrides_earlier() {
         let s = Stylesheet::parse("way { color: red; } way { color: blue; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[]), false).color, 0x0000FF);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, 0x0000FF);
     }
 
     #[test]
     fn tag_present_matches_any_value() {
         let s = Stylesheet::parse("way[highway] { color: orange; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")]), false)
+            s.way_style(&tags(&[("highway", "residential")]), false, Z)
                 .color,
             0xFFA500
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")]), false).color,
+            s.way_style(&tags(&[("highway", "footway")]), false, Z)
+                .color,
             0xFFA500
         );
         // No tag => default way color.
-        assert_eq!(s.way_style(&tags(&[]), false).color, DEFAULT_WAY_COLOR);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, DEFAULT_WAY_COLOR);
     }
 
     #[test]
     fn tag_equals_matches_exact() {
         let s = Stylesheet::parse("way[highway=residential] { color: orange; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")]), false)
+            s.way_style(&tags(&[("highway", "residential")]), false, Z)
                 .color,
             0xFFA500
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")]), false).color,
+            s.way_style(&tags(&[("highway", "footway")]), false, Z)
+                .color,
             DEFAULT_WAY_COLOR
         );
     }
@@ -801,22 +1027,23 @@ mod tests {
     fn tag_not_equals_matches_others() {
         let s = Stylesheet::parse("way[highway!=motorway] { color: green; }").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("highway", "residential")]), false)
+            s.way_style(&tags(&[("highway", "residential")]), false, Z)
                 .color,
             0x008000
         );
         assert_eq!(
-            s.way_style(&tags(&[("highway", "motorway")]), false).color,
+            s.way_style(&tags(&[("highway", "motorway")]), false, Z)
+                .color,
             DEFAULT_WAY_COLOR
         );
         // No highway tag at all -> not-equals is true by convention.
-        assert_eq!(s.way_style(&tags(&[]), false).color, 0x008000);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, 0x008000);
     }
 
     #[test]
     fn unknown_property_ignored() {
         let s = Stylesheet::parse("way { color: red; casing-width: 2; width: 3; }").unwrap();
-        let w = s.way_style(&tags(&[]), false);
+        let w = s.way_style(&tags(&[]), false, Z);
         assert_eq!(w.color, 0xFF0000);
         assert_eq!(w.width, 3.0);
     }
@@ -824,42 +1051,51 @@ mod tests {
     #[test]
     fn comments_are_stripped() {
         let s = Stylesheet::parse("/* hi */ way { /* c */ color: red; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, 0xFF0000);
     }
 
     #[test]
     fn short_hex_color() {
         let s = Stylesheet::parse("way { color: #f00; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[]), false).color, 0xFF0000);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).color, 0xFF0000);
     }
 
     #[test]
     fn default_stylesheet_parses() {
         let s = Stylesheet::load_default();
         // Spot-check a couple of rules from the embedded asset.
-        let residential = s.way_style(&tags(&[("highway", "residential")]), false);
+        let residential = s.way_style(&tags(&[("highway", "residential")]), false, 12.0);
         assert_eq!((residential.color, residential.width), (0xffffff, 2.0));
         // A specific road class overrides the generic highway rule, including
         // when it's the second selector of a multi-line selector list.
-        let trunk = s.way_style(&tags(&[("highway", "trunk_link")]), false);
+        let trunk = s.way_style(&tags(&[("highway", "trunk_link")]), false, 12.0);
         assert_eq!((trunk.color, trunk.width), (0xff7a90, 3.0));
         assert_eq!(
-            s.way_style(&tags(&[("highway", "footway")]), false).color,
+            s.way_style(&tags(&[("highway", "footway")]), false, Z)
+                .color,
             0xff9a8a
         );
         // Fractional widths parse.
-        assert_eq!(s.way_style(&tags(&[]), false).width, 1.5);
-        assert_eq!(s.node_style(&tags(&[("amenity", "pub")])).color, 0xff5fa2);
+        assert_eq!(s.way_style(&tags(&[]), false, Z).width, 1.5);
+        assert_eq!(
+            s.node_style(&tags(&[("amenity", "pub")]), Z).color,
+            0xff5fa2
+        );
         // Untagged vertices are smaller than any tagged node.
-        assert!(s.node_style(&tags(&[])).size < s.node_style(&tags(&[("shop", "bakery")])).size);
-        let building = s.way_style(&tags(&[("building", "yes")]), true);
+        assert!(
+            s.node_style(&tags(&[]), Z).size < s.node_style(&tags(&[("shop", "bakery")]), Z).size
+        );
+        let building = s.way_style(&tags(&[("building", "yes")]), true, Z);
         let fill = building
             .fill
             .expect("default stylesheet must fill closed buildings");
         assert_eq!(fill.color, 0xe08fc0);
         // Open way with the same tag gets no fill.
-        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
-        let water = s.way_style(&tags(&[("natural", "water")]), true);
+        assert_eq!(
+            s.way_style(&tags(&[("building", "yes")]), false, Z).fill,
+            None
+        );
+        let water = s.way_style(&tags(&[("natural", "water")]), true, Z);
         assert_eq!(water.fill.expect("water fill").color, 0x4aa8ff);
         assert_eq!(water.color, 0x4aa8ff);
     }
@@ -867,8 +1103,8 @@ mod tests {
     #[test]
     fn node_style_records_whether_the_node_is_tagged() {
         let s = Stylesheet::parse("").unwrap();
-        assert!(!s.node_style(&tags(&[])).tagged);
-        assert!(s.node_style(&tags(&[("amenity", "cafe")])).tagged);
+        assert!(!s.node_style(&tags(&[]), Z).tagged);
+        assert!(s.node_style(&tags(&[("amenity", "cafe")]), Z).tagged);
     }
 
     #[test]
@@ -888,7 +1124,7 @@ mod tests {
         // way_style carries it through.
         let s = Stylesheet::parse("").unwrap();
         assert_eq!(
-            s.way_style(&tags(&[("oneway", "yes")]), false).direction,
+            s.way_style(&tags(&[("oneway", "yes")]), false, Z).direction,
             Direction::Forward
         );
     }
@@ -897,28 +1133,34 @@ mod tests {
     fn area_rule_fills_closed_ways_only() {
         let s = Stylesheet::parse("area[building] { fill-color: #808080; fill-opacity: 0.4; }")
             .unwrap();
-        let closed = s.way_style(&tags(&[("building", "yes")]), true);
+        let closed = s.way_style(&tags(&[("building", "yes")]), true, Z);
         let fill = closed.fill.expect("closed building way must have a fill");
         assert_eq!(fill.color, 0x808080);
         assert!((fill.opacity - 0.4).abs() < 1e-6);
         // Same tags, open way: area rule must not match.
-        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
+        assert_eq!(
+            s.way_style(&tags(&[("building", "yes")]), false, Z).fill,
+            None
+        );
     }
 
     #[test]
     fn way_closed_pseudo_class_is_area_equivalent() {
         let s = Stylesheet::parse("way:closed[building] { fill-color: #112233; }").unwrap();
         assert!(s
-            .way_style(&tags(&[("building", "yes")]), true)
+            .way_style(&tags(&[("building", "yes")]), true, Z)
             .fill
             .is_some());
-        assert_eq!(s.way_style(&tags(&[("building", "yes")]), false).fill, None);
+        assert_eq!(
+            s.way_style(&tags(&[("building", "yes")]), false, Z).fill,
+            None
+        );
     }
 
     #[test]
     fn fill_color_without_opacity_defaults() {
         let s = Stylesheet::parse("area { fill-color: red; }").unwrap();
-        let fill = s.way_style(&tags(&[]), true).fill.unwrap();
+        let fill = s.way_style(&tags(&[]), true, Z).fill.unwrap();
         assert_eq!(fill.color, 0xFF0000);
         assert!((fill.opacity - DEFAULT_FILL_OPACITY).abs() < 1e-6);
     }
@@ -926,13 +1168,13 @@ mod tests {
     #[test]
     fn fill_opacity_without_color_is_no_fill() {
         let s = Stylesheet::parse("area { fill-opacity: 0.9; }").unwrap();
-        assert_eq!(s.way_style(&tags(&[]), true).fill, None);
+        assert_eq!(s.way_style(&tags(&[]), true, Z).fill, None);
     }
 
     #[test]
     fn fill_opacity_is_clamped() {
         let s = Stylesheet::parse("area { fill-color: red; fill-opacity: 7; }").unwrap();
-        assert!((s.way_style(&tags(&[]), true).fill.unwrap().opacity - 1.0).abs() < 1e-6);
+        assert!((s.way_style(&tags(&[]), true, Z).fill.unwrap().opacity - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -940,30 +1182,159 @@ mod tests {
         // JOSM semantics: `way { fill-color: … }` fills closed ways, is
         // ignored on open ways.
         let s = Stylesheet::parse("way { fill-color: blue; }").unwrap();
-        assert!(s.way_style(&tags(&[]), true).fill.is_some());
-        assert_eq!(s.way_style(&tags(&[]), false).fill, None);
+        assert!(s.way_style(&tags(&[]), true, Z).fill.is_some());
+        assert_eq!(s.way_style(&tags(&[]), false, Z).fill, None);
     }
 
     #[test]
     fn area_rule_stroke_props_apply_to_closed_way() {
         let s = Stylesheet::parse("area[building] { color: #ff0000; width: 2; }").unwrap();
-        let st = s.way_style(&tags(&[("building", "yes")]), true);
+        let st = s.way_style(&tags(&[("building", "yes")]), true, Z);
         assert_eq!(st.color, 0xFF0000);
         assert_eq!(st.width, 2.0);
         // Open way with same tags keeps defaults.
-        let st = s.way_style(&tags(&[("building", "yes")]), false);
+        let st = s.way_style(&tags(&[("building", "yes")]), false, Z);
         assert_eq!(st.color, DEFAULT_WAY_COLOR);
     }
 
     #[test]
     fn area_selector_never_matches_nodes() {
         let s = Stylesheet::parse("area { color: red; }").unwrap();
-        assert_eq!(s.node_style(&tags(&[])).color, DEFAULT_NODE_COLOR);
+        assert_eq!(s.node_style(&tags(&[]), Z).color, DEFAULT_NODE_COLOR);
+    }
+
+    fn width_at(s: &Stylesheet, zoom: f64) -> f32 {
+        s.way_style(&tags(&[("highway", "primary")]), false, zoom)
+            .width
+    }
+
+    #[test]
+    fn zoom_selector_open_ended_min() {
+        let s = Stylesheet::parse("way[highway] { width: 1; } way|z12-[highway] { width: 5; }")
+            .unwrap();
+        assert_eq!(width_at(&s, 11.9), 1.0);
+        assert_eq!(width_at(&s, 12.0), 5.0);
+        assert_eq!(width_at(&s, 20.0), 5.0);
+    }
+
+    #[test]
+    fn zoom_selector_open_ended_max() {
+        let s = Stylesheet::parse("way[highway] { width: 1; } way|z-14[highway] { width: 5; }")
+            .unwrap();
+        assert_eq!(width_at(&s, 3.0), 5.0);
+        // Inclusive of the whole of zoom 14.
+        assert_eq!(width_at(&s, 14.9), 5.0);
+        assert_eq!(width_at(&s, 15.0), 1.0);
+    }
+
+    #[test]
+    fn zoom_selector_closed_range_and_single_level() {
+        let s = Stylesheet::parse(
+            "way[highway] { width: 1; } way|z12-16[highway] { width: 5; } way|z18[highway] { width: 9; }",
+        )
+        .unwrap();
+        assert_eq!(width_at(&s, 11.0), 1.0);
+        assert_eq!(width_at(&s, 12.0), 5.0);
+        assert_eq!(width_at(&s, 16.5), 5.0);
+        assert_eq!(width_at(&s, 17.0), 1.0);
+        assert_eq!(width_at(&s, 18.2), 9.0);
+        assert_eq!(width_at(&s, 19.0), 1.0);
+    }
+
+    #[test]
+    fn zoom_selector_combines_with_area_and_pseudo_class() {
+        let s = Stylesheet::parse("area|z14-[building] { fill-color: red; }").unwrap();
+        let b = tags(&[("building", "yes")]);
+        assert!(s.way_style(&b, true, 13.0).fill.is_none());
+        assert!(s.way_style(&b, true, 14.0).fill.is_some());
+        let s = Stylesheet::parse("way|z14-:closed[building] { fill-color: red; }").unwrap();
+        assert!(s.way_style(&b, true, 14.0).fill.is_some());
+        assert!(s.way_style(&b, false, 14.0).fill.is_none());
+    }
+
+    #[test]
+    fn zoom_selector_syntax_errors() {
+        assert!(Stylesheet::parse("way|12- { width: 1; }").is_err());
+        assert!(Stylesheet::parse("way|z { width: 1; }").is_err());
+        assert!(Stylesheet::parse("way|z16-12 { width: 1; }").is_err());
+    }
+
+    #[test]
+    fn one_selector_of_a_list_can_carry_the_zoom_range() {
+        let s = Stylesheet::parse("way|z15-[highway=primary], node { width: 5; }").unwrap();
+        assert_eq!(width_at(&s, 14.0), DEFAULT_WAY_WIDTH);
+        assert_eq!(width_at(&s, 15.0), 5.0);
+    }
+
+    #[test]
+    fn node_styles_honor_zoom_too() {
+        let s = Stylesheet::parse("node|z17- { symbol-size: 12; }").unwrap();
+        assert_eq!(s.node_style(&tags(&[]), 16.0).size, DEFAULT_NODE_SIZE);
+        assert_eq!(s.node_style(&tags(&[]), 17.0).size, 12.0);
+    }
+
+    #[test]
+    fn cached_style_ignores_zoom_and_zoom_table_resolves_it() {
+        let s = Stylesheet::parse(
+            "way[highway] { width: 1; } way|z12-[highway] { width: 5; } way|z-11[highway] { width: 2; }",
+        )
+        .unwrap();
+        assert!(s.is_zoom_dependent());
+        let t = tags(&[("highway", "primary")]);
+        let cached = s.way_style_cached(&t, false);
+        assert_ne!(cached.sig, NO_SIG);
+        // Same rules matched: same signature. Different rules: different.
+        assert_eq!(s.way_style_cached(&t, false).sig, cached.sig);
+        assert_ne!(
+            s.way_style_cached(&tags(&[("waterway", "river")]), false)
+                .sig,
+            cached.sig
+        );
+        let at = |z: f64| s.zoom_styles(z)[cached.sig as usize].width;
+        assert_eq!(at(10.0), 2.0);
+        assert_eq!(at(14.0), 5.0);
+        // Back to the first bucket: the table is rebuilt, not stale.
+        assert_eq!(at(10.5), 2.0);
+    }
+
+    #[test]
+    fn zoom_table_grows_with_new_signatures() {
+        let s = Stylesheet::parse("way|z12-[highway] { width: 5; }").unwrap();
+        let a = s.way_style_cached(&tags(&[("highway", "x")]), false);
+        assert_eq!(s.zoom_styles(14.0)[a.sig as usize].width, 5.0);
+        let b = s.way_style_cached(&tags(&[("waterway", "x")]), false);
+        assert_eq!(s.zoom_styles(14.0)[b.sig as usize].width, DEFAULT_WAY_WIDTH);
+    }
+
+    #[test]
+    fn stylesheet_without_zoom_selectors_is_not_zoom_dependent() {
+        assert!(!Stylesheet::parse("way { width: 2; }")
+            .unwrap()
+            .is_zoom_dependent());
+    }
+
+    #[test]
+    fn default_stylesheet_widens_major_roads_with_zoom() {
+        let s = Stylesheet::load_default();
+        assert!(s.is_zoom_dependent());
+        let w = |hw: &str, z: f64| s.way_style(&tags(&[("highway", hw)]), false, z).width;
+        for hw in [
+            "motorway",
+            "primary",
+            "secondary",
+            "tertiary",
+            "residential",
+        ] {
+            assert!(w(hw, 18.5) > w(hw, 12.0), "{hw} must widen with zoom");
+            assert!(w(hw, 16.0) >= w(hw, 12.0), "{hw} must not narrow");
+        }
+        // Minor paths keep their width.
+        assert_eq!(w("footway", 18.5), w("footway", 12.0));
     }
 
     #[test]
     fn width_on_node_aliases_symbol_size() {
         let s = Stylesheet::parse("node { width: 7; }").unwrap();
-        assert_eq!(s.node_style(&tags(&[])).size, 7.0);
+        assert_eq!(s.node_style(&tags(&[]), Z).size, 7.0);
     }
 }

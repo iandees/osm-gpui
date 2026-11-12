@@ -32,6 +32,11 @@ const RELATION_MEMBER_ACCENT: u32 = 0x7C4DFF;
 /// imagery.
 const CASING_COLOR: u32 = 0x1C1C1E;
 
+/// The zoom at which node styles are resolved into the per-node cache.
+/// Node rules with zoom ranges are evaluated at this zoom only (way styles
+/// are re-resolved per zoom bucket; nodes are not yet).
+const NODE_STYLE_ZOOM: f64 = 18.0;
+
 /// How far the casing extends beyond each side of a way's stroke, in pixels.
 const CASING_WIDTH: f32 = 1.0;
 
@@ -307,7 +312,7 @@ fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> NodeCache {
             let (mx, my) = lat_lon_to_mercator(lat, lon);
             index_by_id.insert(node.id, flat.len());
             flat.push((node.id, mx, my));
-            styles.push(stylesheet.node_style(&node.tags));
+            styles.push(stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM));
         }
     }
     NodeCache {
@@ -530,7 +535,7 @@ fn compute_way_tables(
     let mut fill_tris = Vec::with_capacity(data.ways.len());
     for way in sorted_ways(data) {
         let (verts, bbox) = project_way_vertices(way, node_cache);
-        let style = stylesheet.way_style(&way.tags, way.is_closed());
+        let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
         fill_tris.push(compute_fill_tris(&verts, &style));
         ids.push(way.id);
         bboxes.push(bbox);
@@ -657,7 +662,7 @@ fn build_mp(
         Ok(a) => a,
         Err(problem) => return Some(Err(problem)),
     };
-    let style = stylesheet.way_style(&relation.tags, true);
+    let style = stylesheet.way_style_cached(&relation.tags, true);
     let mut polygons = Vec::with_capacity(assembled.polygons.len());
     let mut total = WayBbox::empty();
     for polygon in &assembled.polygons {
@@ -902,7 +907,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = node_cache.index_by_id.get(&id) {
-                node_cache.styles[idx] = stylesheet.node_style(&node.tags);
+                node_cache.styles[idx] = stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
             }
         }
         FeatureKind::Way => {
@@ -910,7 +915,7 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = way_id_to_index.get(&id) {
-                let style = stylesheet.way_style(&way.tags, way.is_closed());
+                let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
                 way_fill_tris[idx] = compute_fill_tris(&way_vertices[idx], &style);
                 way_styles[idx] = style;
             }
@@ -1927,7 +1932,7 @@ impl OsmLayer {
             match validate_coords(node.lat, node.lon) {
                 Some((lat, lon)) => {
                     let (mx, my) = lat_lon_to_mercator(lat, lon);
-                    let style = self.stylesheet.node_style(&node.tags);
+                    let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
                     if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                         self.node_cache.flat[idx] = (id, mx, my);
                         self.node_cache.styles[idx] = style;
@@ -2009,7 +2014,7 @@ impl OsmLayer {
             }
             self.way_vertices[way_idx] = verts;
             self.way_bboxes[way_idx] = new_bbox;
-            let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+            let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
             self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
             self.way_styles[way_idx] = style;
         }
@@ -2210,7 +2215,7 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -2304,7 +2309,7 @@ impl OsmLayer {
                 None => self.layer_bbox = Some(b),
             }
         }
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris[way_idx] = compute_fill_tris(&verts, &style);
         self.way_vertices[way_idx] = verts;
         self.way_bboxes[way_idx] = bbox;
@@ -2792,7 +2797,7 @@ impl OsmLayer {
 
         if let Some((vlat, vlon)) = validate_coords(node.lat, node.lon) {
             let (mx, my) = lat_lon_to_mercator(vlat, vlon);
-            let style = self.stylesheet.node_style(&node.tags);
+            let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
             if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
                 self.node_cache.flat[idx] = (id, mx, my);
                 self.node_cache.styles[idx] = style;
@@ -3023,7 +3028,7 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -3836,6 +3841,22 @@ impl OsmLayer {
         let (ppm_x, ppm_y) = proj.pixels_per_meter();
         let zoom = viewport.zoom_level();
         let lod = WayLod::at(zoom);
+        // Zoom-range rules: cached styles are zoom-agnostic and indexed by
+        // signature into this per-zoom-bucket table (rebuilt only when the
+        // bucket changes). `None` for a stylesheet with no zoom selectors.
+        let zoom_table = self
+            .stylesheet
+            .is_zoom_dependent()
+            .then(|| self.stylesheet.zoom_styles(zoom));
+        let at_zoom = |s: WayStyle| -> WayStyle {
+            match zoom_table.as_ref().and_then(|t| t.get(s.sig as usize)) {
+                Some(z) => WayStyle {
+                    direction: s.direction,
+                    ..*z
+                },
+                None => s,
+            }
+        };
         // While nodes are being dragged the cached bounding boxes are stale,
         // so draw every way in full.
         let dragging = self.drag_preview.is_some();
@@ -3866,7 +3887,7 @@ impl OsmLayer {
         );
         let fs_phase = crate::frame_stats::start();
         for entry in self.mp.entries.values() {
-            let Some(fill) = entry.style.fill else {
+            let Some(fill) = at_zoom(entry.style).fill else {
                 continue;
             };
             let b = &entry.bbox;
@@ -3907,7 +3928,7 @@ impl OsmLayer {
         let fs_phase = crate::frame_stats::start();
         for (i, tris) in self.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
-            let Some(fill) = self.way_styles[i].fill else {
+            let Some(fill) = at_zoom(self.way_styles[i]).fill else {
                 continue;
             };
             let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
@@ -4047,7 +4068,7 @@ impl OsmLayer {
             // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
             // not here — no stylesheet lookup or tags HashMap access in this
             // per-frame loop.
-            let style = self.way_styles[i];
+            let style = at_zoom(self.way_styles[i]);
             if !dragging && !lod.strokes(style.width) {
                 ways_skipped += 1;
                 continue;
@@ -5164,7 +5185,7 @@ impl EditableLayer for OsmLayer {
                 {
                     return;
                 }
-                let node_style = self.stylesheet.node_style(&n.tags);
+                let node_style = self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
                 // it or drawn it small.
@@ -5198,7 +5219,8 @@ impl EditableLayer for OsmLayer {
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
-                                node_styles.push(self.stylesheet.node_style(&n.tags));
+                                node_styles
+                                    .push(self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM));
                             }
                         }
                     }
@@ -5225,7 +5247,9 @@ impl EditableLayer for OsmLayer {
                 }
 
                 // A wide halo stroke under a narrower core stroke.
-                let way_style = self.stylesheet.way_style(&way.tags, way.is_closed());
+                let way_style =
+                    self.stylesheet
+                        .way_style(&way.tags, way.is_closed(), viewport.zoom_level());
                 // Drawn with the way pass's own stroke geometry (mitered
                 // bends, round ends, a joined closing corner) rather than a
                 // tessellated stroke with square ends.
