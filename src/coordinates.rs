@@ -277,7 +277,7 @@ impl CoordinateTransform {
     pub fn zoom_to(&mut self, new_zoom_level: f64) {
         // Validate zoom level
         let zoom = if new_zoom_level.is_finite() {
-            new_zoom_level.clamp(1.0, 20.0)
+            new_zoom_level.clamp(1.0, MAX_MAP_ZOOM)
         } else {
             self.zoom_level
         };
@@ -300,7 +300,7 @@ impl CoordinateTransform {
         let mouse_merc_y = center_merc_y + dy;
 
         // Step 2: Update zoom level
-        let new_zoom = (self.zoom_level + zoom_delta).clamp(1.0, 20.0);
+        let new_zoom = (self.zoom_level + zoom_delta).clamp(1.0, MAX_MAP_ZOOM);
         let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
 
         // Step 3: Calculate new center so mouse_merc_x/y stays under the same screen pixel
@@ -359,12 +359,16 @@ impl CoordinateTransform {
 
     /// Get the current zoom level as used by tile servers (integer)
     pub fn tile_zoom_level(&self) -> u32 {
-        self.zoom_level.round().clamp(0.0, 20.0) as u32
+        self.zoom_level.round().clamp(0.0, MAX_MAP_ZOOM) as u32
     }
 }
 
 /// The zoom [`fit_bounds_to_viewport`] uses for bounds with no extent.
 pub const POINT_ZOOM: f64 = 19.0;
+
+/// Deepest zoom the map can be zoomed to. Tile layers over-zoom (scale their
+/// deepest tiles) past their own max zoom.
+pub const MAX_MAP_ZOOM: f64 = 23.0;
 
 /// Compute the `(center_lat, center_lon, zoom_level)` that fits a
 /// geographic bounding box within a viewport of `screen_width`×
@@ -494,6 +498,16 @@ pub fn validate_coords(lat: f64, lon: f64) -> Option<(f64, f64)> {
 mod tests {
     use super::*;
     use gpui::{px, size};
+
+    #[test]
+    fn zoom_can_go_past_20_up_to_max() {
+        let mut t = CoordinateTransform::new(40.0, -74.0, 19.0, size(px(800.0), px(600.0)));
+        t.zoom_to(22.0);
+        assert_eq!(t.zoom_level, 22.0);
+        t.zoom_at_point(gpui::point(px(100.0), px(100.0)), 10.0);
+        assert_eq!(t.zoom_level, MAX_MAP_ZOOM);
+        assert_eq!(t.tile_zoom_level(), 23);
+    }
 
     #[test]
     fn test_coordinate_conversion() {

@@ -1,6 +1,7 @@
 use gpui::*;
 use std::sync::{Arc, Mutex};
 
+use crate::coordinates::MAX_MAP_ZOOM;
 use crate::imagery::AttributionInfo;
 use crate::imagery_offset::{offset_to_mercator, tiles_covering, ImageryOffset};
 use crate::layers::{LayerId, MapLayer};
@@ -150,7 +151,7 @@ const HIDPI_MIN_SCALE: f32 = 1.5;
 
 /// Global tile zoom cap used when a source advertises no max zoom (the same
 /// cap `compute_effective_tile_zoom` applies).
-const GLOBAL_MAX_TILE_ZOOM: u32 = 18;
+const GLOBAL_MAX_TILE_ZOOM: u32 = 19;
 
 /// Hi-DPI tile selection. A 256px tile spans 256 logical pixels, i.e. 512
 /// device pixels at 2x, so it would be upscaled and look soft. Requesting the
@@ -171,30 +172,21 @@ fn hidpi_tile_zoom(tile_zoom: u32, scale_factor: f32, max_zoom: Option<u32>) -> 
 /// honoring optional `min_zoom` / `max_zoom` ELI bounds.
 ///
 /// Returns `None` when the layer should not draw at all (viewport is
-/// below `min_zoom` or more than one level above `max_zoom`).
-/// When viewport zoom rounds to exactly `max_zoom + 1`, returns
-/// `Some(max_zoom)` so we overzoom by one level. Otherwise returns
-/// the rounded viewport zoom, capped at the global limit of 18.
+/// below `min_zoom`). Past the source's `max_zoom` (or the global cap of 19
+/// when it advertises none) returns that max, so the deepest tiles are
+/// over-zoomed (scaled up) however far the map is zoomed in.
 fn compute_effective_tile_zoom(
     viewport_z: f64,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
 ) -> Option<u32> {
-    let rounded = viewport_z.round().clamp(0.0, 18.0) as u32;
+    let rounded = viewport_z.round().clamp(0.0, MAX_MAP_ZOOM) as u32;
     if let Some(min_z) = min_zoom {
         if rounded < min_z {
             return None;
         }
     }
-    if let Some(max_z) = max_zoom {
-        if rounded > max_z + 1 {
-            return None;
-        }
-        if rounded > max_z {
-            return Some(max_z);
-        }
-    }
-    Some(rounded)
+    Some(rounded.min(max_zoom.unwrap_or(GLOBAL_MAX_TILE_ZOOM)))
 }
 
 /// A small, deliberate overlap added to every tile's rendered size so
@@ -736,9 +728,9 @@ mod tests {
         // z+1 would exceed the source's max: stretch instead.
         assert_eq!(hidpi_tile_zoom(14, 2.0, Some(14)), 14);
         assert_eq!(hidpi_tile_zoom(13, 2.0, Some(14)), 14);
-        // No advertised max: the global cap of 18 applies.
-        assert_eq!(hidpi_tile_zoom(18, 2.0, None), 18);
-        assert_eq!(hidpi_tile_zoom(17, 2.0, None), 18);
+        // No advertised max: the global cap of 19 applies.
+        assert_eq!(hidpi_tile_zoom(19, 2.0, None), 19);
+        assert_eq!(hidpi_tile_zoom(18, 2.0, None), 19);
     }
 
     #[test]
@@ -763,8 +755,8 @@ mod tests {
         assert_eq!(compute_effective_tile_zoom(0.0, None, None), Some(0));
         assert_eq!(compute_effective_tile_zoom(5.4, None, None), Some(5));
         assert_eq!(compute_effective_tile_zoom(12.0, None, None), Some(12));
-        // Existing global cap of 18.
-        assert_eq!(compute_effective_tile_zoom(20.0, None, None), Some(18));
+        // Global cap when the source advertises no max zoom.
+        assert_eq!(compute_effective_tile_zoom(20.0, None, None), Some(19));
     }
 
     #[test]
@@ -791,9 +783,15 @@ mod tests {
     }
 
     #[test]
-    fn two_above_max_returns_none() {
-        assert_eq!(compute_effective_tile_zoom(16.0, None, Some(14)), None);
-        assert_eq!(compute_effective_tile_zoom(17.0, None, Some(14)), None);
+    fn far_above_max_overzooms() {
+        assert_eq!(compute_effective_tile_zoom(16.0, None, Some(14)), Some(14));
+        assert_eq!(compute_effective_tile_zoom(23.0, None, Some(14)), Some(14));
+    }
+
+    #[test]
+    fn deep_source_fetches_to_its_own_max() {
+        assert_eq!(compute_effective_tile_zoom(21.0, None, Some(23)), Some(21));
+        assert_eq!(compute_effective_tile_zoom(23.0, None, Some(23)), Some(23));
     }
 
     #[test]
@@ -812,7 +810,10 @@ mod tests {
             compute_effective_tile_zoom(15.0, Some(5), Some(14)),
             Some(14)
         );
-        assert_eq!(compute_effective_tile_zoom(16.0, Some(5), Some(14)), None);
+        assert_eq!(
+            compute_effective_tile_zoom(16.0, Some(5), Some(14)),
+            Some(14)
+        );
     }
 
     /// Guards against `TileLayer`'s `source_key` field and
