@@ -135,6 +135,36 @@ impl TileLayer {
     pub fn effective_tile_zoom(&self, viewport_z: f64) -> Option<u32> {
         compute_effective_tile_zoom(viewport_z, self.min_zoom, self.max_zoom)
     }
+
+    /// The tile zoom to actually request for a display with `scale_factor`
+    /// device pixels per logical pixel: `effective_tile_zoom`, one level
+    /// deeper on Hi-DPI displays when the source has tiles that deep.
+    fn render_tile_zoom(&self, viewport_z: f64, scale_factor: f32) -> Option<u32> {
+        self.effective_tile_zoom(viewport_z)
+            .map(|z| hidpi_tile_zoom(z, scale_factor, self.max_zoom))
+    }
+}
+
+/// Scale factor from which tiles are requested one zoom level deeper.
+const HIDPI_MIN_SCALE: f32 = 1.5;
+
+/// Global tile zoom cap used when a source advertises no max zoom (the same
+/// cap `compute_effective_tile_zoom` applies).
+const GLOBAL_MAX_TILE_ZOOM: u32 = 18;
+
+/// Hi-DPI tile selection. A 256px tile spans 256 logical pixels, i.e. 512
+/// device pixels at 2x, so it would be upscaled and look soft. Requesting the
+/// tiles one zoom level deeper covers the same screen area with four sharp
+/// 256px tiles per logical tile slot instead. Falls back to `tile_zoom`
+/// (stretching) on standard-DPI displays and when `tile_zoom + 1` would
+/// exceed the source's max zoom (or the global cap if it advertises none).
+fn hidpi_tile_zoom(tile_zoom: u32, scale_factor: f32, max_zoom: Option<u32>) -> u32 {
+    let limit = max_zoom.unwrap_or(GLOBAL_MAX_TILE_ZOOM);
+    if scale_factor >= HIDPI_MIN_SCALE && tile_zoom < limit {
+        tile_zoom + 1
+    } else {
+        tile_zoom
+    }
 }
 
 /// Compute the tile zoom level to request for a given viewport zoom,
@@ -301,11 +331,16 @@ impl MapLayer for TileLayer {
         Some(&self.imagery_id)
     }
 
-    fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {
+    fn render_elements(
+        &self,
+        viewport: &Viewport,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
         let mut elements = Vec::new();
 
         let zoom_level = viewport.zoom_level();
-        let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
+        let Some(tile_zoom) = self.render_tile_zoom(zoom_level, window.scale_factor()) else {
             return elements;
         };
         let visible_tiles = self.visible_tiles(viewport, tile_zoom);
@@ -318,31 +353,46 @@ impl MapLayer for TileLayer {
             // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
 
+            let asset_key = crate::tile_cache::TileAssetKey {
+                url: tile_url.clone(),
+                source_key: self.source_key.clone(),
+            };
+
+            // Probe the child tile first: the parent fallback is only built
+            // (and its asset only requested) while the child is not ready.
+            let child_ready = window
+                .use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
+                .is_some();
+
             // Parent-tile fallback: while the child tile is loading, show the
-            // already-cached parent (z-1) tile scaled 2× and clipped to this
+            // already-cached parent (z-1) tile scaled 2x and clipped to this
             // child's quadrant. Prevents the dark "downloading" flash.
-            let parent_fallback = tile_coord.parent().map(|parent_coord| {
-                let (qx, qy) = tile_coord.quadrant_in_parent();
-                let parent_url = url_from_template(&self.url_template, &parent_coord);
-                let parent_key = crate::tile_cache::TileAssetKey {
-                    url: parent_url,
-                    source_key: self.source_key.clone(),
-                };
-                div()
-                    .absolute()
-                    .left(-tile_width * qx as f32)
-                    .top(-tile_height * qy as f32)
-                    .w(tile_width * 2.0)
-                    .h(tile_height * 2.0)
-                    .child(
-                        img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                            window.use_asset::<crate::tile_cache::TileAsset>(&parent_key, cx)
-                        })
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Cover),
-                    )
-                    .into_any_element()
-            });
+            let parent_fallback = if child_ready {
+                None
+            } else {
+                tile_coord.parent().map(|parent_coord| {
+                    let (qx, qy) = tile_coord.quadrant_in_parent();
+                    let parent_url = url_from_template(&self.url_template, &parent_coord);
+                    let parent_key = crate::tile_cache::TileAssetKey {
+                        url: parent_url,
+                        source_key: self.source_key.clone(),
+                    };
+                    div()
+                        .absolute()
+                        .left(-tile_width * qx as f32)
+                        .top(-tile_height * qy as f32)
+                        .w(tile_width * 2.0)
+                        .h(tile_height * 2.0)
+                        .child(
+                            img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                                window.use_asset::<crate::tile_cache::TileAsset>(&parent_key, cx)
+                            })
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover),
+                        )
+                        .into_any_element()
+                })
+            };
 
             // Create tile element using GPUI's img with asset loading
             let mut tile_element = div()
@@ -363,11 +413,7 @@ impl MapLayer for TileLayer {
             // to a sensible range so very small tiles still get something.
             let bleed = px(edge_bleed_margin(f32::from(tile_width)));
             let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
-            let fallback_url = tile_url.clone();
-            let asset_key = crate::tile_cache::TileAssetKey {
-                url: tile_url,
-                source_key: self.source_key.clone(),
-            };
+            let fallback_url = tile_url;
 
             let tile_element = tile_element
                 .child(
@@ -420,7 +466,7 @@ impl MapLayer for TileLayer {
 
         // Render tile boundaries for debugging
         let zoom_level = viewport.zoom_level();
-        let Some(tile_zoom) = self.effective_tile_zoom(zoom_level) else {
+        let Some(tile_zoom) = self.render_tile_zoom(zoom_level, window.scale_factor()) else {
             return;
         };
         let visible_tiles = self.visible_tiles(viewport, tile_zoom);
@@ -480,8 +526,8 @@ impl MapLayer for TileLayer {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_effective_tile_zoom, edge_bleed_margin, tile_mercator_bounds, tile_screen_rect,
-        TILE_OVERLAP_PX,
+        compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, tile_mercator_bounds,
+        tile_screen_rect, TILE_OVERLAP_PX,
     };
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
@@ -670,6 +716,46 @@ mod tests {
         assert_eq!(edge_bleed_margin(1024.0), 2.0);
         assert_eq!(edge_bleed_margin(0.0), 0.0);
         assert_eq!(edge_bleed_margin(1.0e6), 16.0);
+    }
+
+    #[test]
+    fn hidpi_goes_one_zoom_deeper() {
+        assert_eq!(hidpi_tile_zoom(12, 2.0, Some(19)), 13);
+        assert_eq!(hidpi_tile_zoom(12, 3.0, None), 13);
+        assert_eq!(hidpi_tile_zoom(12, 1.5, None), 13);
+    }
+
+    #[test]
+    fn standard_dpi_is_unchanged() {
+        assert_eq!(hidpi_tile_zoom(12, 1.0, Some(19)), 12);
+        assert_eq!(hidpi_tile_zoom(12, 1.25, None), 12);
+    }
+
+    #[test]
+    fn hidpi_respects_max_zoom() {
+        // z+1 would exceed the source's max: stretch instead.
+        assert_eq!(hidpi_tile_zoom(14, 2.0, Some(14)), 14);
+        assert_eq!(hidpi_tile_zoom(13, 2.0, Some(14)), 14);
+        // No advertised max: the global cap of 18 applies.
+        assert_eq!(hidpi_tile_zoom(18, 2.0, None), 18);
+        assert_eq!(hidpi_tile_zoom(17, 2.0, None), 18);
+    }
+
+    #[test]
+    fn hidpi_slot_is_four_subtiles_of_same_area() {
+        use crate::imagery_offset::tiles_covering;
+        // One logical tile slot at z covers exactly 4 tiles at z+1.
+        let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(&TileCoord::new(5, 7, 4));
+        let eps = 1.0;
+        let tiles = tiles_covering(
+            (min_x + eps, max_x - eps, min_y + eps, max_y - eps),
+            (0.0, 0.0),
+            5,
+        );
+        assert_eq!(tiles.len(), 4);
+        assert!(tiles
+            .iter()
+            .all(|t| t.parent() == Some(TileCoord::new(5, 7, 4))));
     }
 
     #[test]

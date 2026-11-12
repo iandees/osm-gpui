@@ -116,6 +116,8 @@ No `changeset`/`upload`/`osmChange` code exists anywhere in `src/`. `commit_node
 
 **Implement:** probe the child asset first (`window.use_asset::<TileAsset>(&tile_url, cx)` returns `Option`); only attach the parent-fallback element when the child isn't ready yet. Project tile corners via `mercator_to_screen` with precomputed tile mercator bounds (tile edges are already mercator-aligned) instead of `geo_to_screen`.
 
+✅ Done — the child asset is probed first and the parent fallback is only built while it is not ready (tile corners already use mercator bounds).
+
 ### 3.5 Per-frame synchronous `read_dir` on the UI thread
 `TileCache::stats()` (`src/tile_cache.rs:281-294`) counts the cache directory; called via `TileLayer::stats()` from `get_layer_stats` every frame (`src/main.rs:1562`).
 
@@ -145,6 +147,8 @@ Render path draws only lines and dots; `name` tags, `oneway` chevrons, and ameni
 `tile_layer.rs:116-228` stretches 256px tiles across ~512 device pixels on Retina.
 
 **Implement:** read `window.scale_factor()`; at ≥2 request one zoom level deeper for the same screen area (or `@2x` templates where ELI advertises them); size tile divs accordingly.
+
+✅ Done — `hidpi_tile_zoom()` requests z+1 tiles at scale factor >= 1.5 (stretching when z+1 exceeds the source's max zoom).
 
 ### 3.11 Map-area colors bypass the theme; tile pop-in is abrupt
 Map background `rgb(0x1a202c)` (`main.rs:1567`), grid `rgb(0x374151)` (`grid_layer.rs:17`), tile boundaries (`tile_layer.rs:246`), full-tile crimson error blocks (`tile_layer.rs:207`) are all hardcoded; tiles appear with no fade.

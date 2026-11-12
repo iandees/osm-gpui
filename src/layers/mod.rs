@@ -73,7 +73,15 @@ pub trait MapLayer: Send + Sync {
     fn set_visible(&mut self, visible: bool);
 
     /// Render this layer as GPUI elements (for raster/image content)
-    fn render_elements(&self, viewport: &Viewport) -> Vec<AnyElement>;
+    ///
+    /// `window` and `cx` let raster layers read the display scale factor and
+    /// probe their image assets while building elements.
+    fn render_elements(
+        &self,
+        viewport: &Viewport,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement>;
 
     /// Render this layer using canvas drawing (for vector content)
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window);
@@ -636,12 +644,17 @@ impl LayerManager {
     }
 
     /// Render all visible layers as GPUI elements
-    pub fn render_all_elements(&self, viewport: &Viewport) -> Vec<AnyElement> {
+    pub fn render_all_elements(
+        &self,
+        viewport: &Viewport,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
         let mut elements = Vec::new();
 
         for layer in &self.layers {
             if layer.is_visible() {
-                elements.extend(layer.render_elements(viewport));
+                elements.extend(layer.render_elements(viewport, window, cx));
             }
         }
 

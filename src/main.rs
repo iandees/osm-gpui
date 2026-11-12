@@ -7386,7 +7386,7 @@ impl Render for MapViewer {
                             .relative()
                             .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
                             // Render all layer elements (raster content like tiles)
-                            .children(self.layer_manager.render_all_elements(&self.viewport))
+                            .children(self.layer_manager.render_all_elements(&self.viewport, window, cx))
                             // Render canvas layers (vector content)
                             .child(
                                 canvas(|_, _, _| {}, {
