@@ -10029,7 +10029,7 @@ mod way_lod_tests {
         let (v, b) = view(17.0);
         let scene = l.build_way_scene(&v, b);
         assert_eq!(scene.lines.len(), 1);
-        assert_eq!(scene.lines[0].0, 0x123456_00 | 128);
+        assert_eq!(scene.lines[0].0, 0x1234_5600 | 128);
     }
 
     #[test]

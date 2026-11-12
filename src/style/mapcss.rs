@@ -470,14 +470,13 @@ impl Stylesheet {
                     Declaration::Color(c) => s.color = *c,
                     Declaration::SymbolSize(w) => s.size = *w,
                     // `width` on a pure-node rule aliases to symbol-size.
-                    Declaration::Width(w) => {
+                    Declaration::Width(w)
                         if rule
                             .selectors
                             .iter()
-                            .all(|sel| sel.kind == TargetKind::Node)
-                        {
-                            s.size = *w;
-                        }
+                            .all(|sel| sel.kind == TargetKind::Node) =>
+                    {
+                        s.size = *w;
                     }
                     _ => {}
                 }
