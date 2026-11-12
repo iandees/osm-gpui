@@ -5012,8 +5012,8 @@ impl MapViewer {
         self.fields_promoted_more_fields.clear();
     }
 
-    /// Double-click on a segment (no drag): insert a new node at the
-    /// double-click position, splitting that segment.
+    /// Double-click on a segment (no drag): insert a new node on that
+    /// segment, at the point nearest the double-click, splitting it.
     fn insert_node_on_segment(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
         if self.refuse_edit_during_upload() {
             return;
@@ -5021,12 +5021,35 @@ impl MapViewer {
         if self.refuse_way_growth(drag.layer, drag.way_id, 1) {
             return;
         }
-        let (lat, lon) = self.viewport.screen_to_geo(up_pos);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
             return;
         };
         let Some(editable) = layer.as_editable_mut() else {
             return;
+        };
+        // Place the node on the segment itself (the point nearest the click),
+        // not under the cursor, so the way's shape is unchanged.
+        let (Some(a_geo), Some(b_geo)) = (
+            editable.node_lat_lon(drag.node_a),
+            editable.node_lat_lon(drag.node_b),
+        ) else {
+            return;
+        };
+        let (lat, lon) = {
+            let a = self.viewport.geo_to_screen(a_geo.0, a_geo.1);
+            let b = self.viewport.geo_to_screen(b_geo.0, b_geo.1);
+            let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
+            let len_sq = dx * dx + dy * dy;
+            let t = if len_sq <= f64::EPSILON {
+                0.0
+            } else {
+                (((up_pos.x - a.x).to_f64() * dx + (up_pos.y - a.y).to_f64() * dy) / len_sq)
+                    .clamp(0.0, 1.0)
+            };
+            self.viewport.screen_to_geo(gpui::point(
+                px((a.x.to_f64() + t * dx) as f32),
+                px((a.y.to_f64() + t * dy) as f32),
+            ))
         };
         // The segment's start index within the way's node list: `node_a`'s
         // position (the segment is node_a -> node_b, consecutive).
@@ -13290,6 +13313,56 @@ mod tests {
                 assert_eq!(way_nodes(view, layer_id, 100).len(), 2000);
                 assert_eq!(pending(view), before);
                 assert!(view.status_message.is_some());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut TestAppContext) {
+        let window = setup_network(cx);
+        window
+            .update(cx, |view, _window, _cx| {
+                let layer_id = view.active_layer.unwrap();
+                let (a_geo, b_geo) = {
+                    let e = view
+                        .layer_manager
+                        .find_layer(layer_id)
+                        .and_then(|l| l.as_editable())
+                        .unwrap();
+                    (e.node_lat_lon(1).unwrap(), e.node_lat_lon(2).unwrap())
+                };
+                let a = view.viewport.geo_to_screen(a_geo.0, a_geo.1);
+                let b = view.viewport.geo_to_screen(b_geo.0, b_geo.1);
+                // A click 30px off the middle of the segment.
+                let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
+                let len = (dx * dx + dy * dy).sqrt();
+                let click = point(
+                    px(((a.x + b.x).to_f64() / 2.0 - dy / len * 30.0) as f32),
+                    px(((a.y + b.y).to_f64() / 2.0 + dx / len * 30.0) as f32),
+                );
+                let drag = ExtrudeDrag {
+                    layer: layer_id,
+                    way_id: 100,
+                    node_a: 1,
+                    node_b: 2,
+                    segment: 0,
+                    style: ExtrudeStyle::Reshape,
+                    down: click,
+                };
+                view.insert_node_on_segment(&drag, click);
+                let nodes = way_nodes(view, layer_id, 100);
+                assert_eq!(nodes.len(), 4);
+                let new_geo = view
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .and_then(|l| l.as_editable())
+                    .unwrap()
+                    .node_lat_lon(nodes[1])
+                    .unwrap();
+                let n = view.viewport.geo_to_screen(new_geo.0, new_geo.1);
+                let dist = osm_gpui::selection::point_to_segment_distance(n, a, b);
+                assert!(dist < 0.5, "new node is {dist}px off the segment");
+                assert!((n.x - click.x).to_f64().hypot((n.y - click.y).to_f64()) > 20.0);
             })
             .unwrap();
     }
