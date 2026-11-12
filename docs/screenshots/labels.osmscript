@@ -52,7 +52,10 @@ frame_stats labels_pan_warm
 # Zoom, cold: hidden during the gesture, placed (with shaping) on settle.
 frame_stats discard
 scroll 488,388 dy=3
-wait 500ms
+wait 40ms
+# Mid-zoom: the old labels follow their anchors instead of vanishing.
+capture docs/screenshots/labels-07-zoom-in-progress.png
+wait 460ms
 scroll 488,388 dy=-3
 wait 500ms
 scroll 488,388 dy=3
