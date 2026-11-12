@@ -328,8 +328,26 @@ struct BuildingProgress {
 /// through. Both are geo (lat, lon) coordinates.
 #[derive(Clone, Copy)]
 struct ArcProgress {
-    start: (f64, f64),
-    end: Option<(f64, f64)>,
+    start: ArcPoint,
+    end: Option<ArcPoint>,
+}
+
+/// What an Arc-mode click snapped onto.
+#[derive(Clone, Copy)]
+enum ArcSnap {
+    /// An existing node, which the arc then uses as that endpoint.
+    Node(i64),
+    /// A way's segment (`way_id`, index of the segment's first node): the
+    /// endpoint is a new node spliced into the way.
+    Way(i64, usize),
+}
+
+/// A clicked Arc-mode point: its geo position (snapped onto a node or way
+/// when the click was near one) and what it snapped onto.
+#[derive(Clone, Copy)]
+struct ArcPoint {
+    geo: (f64, f64),
+    snap: Option<ArcSnap>,
 }
 
 /// The squared way whose orientation Building mode borrows: captured when
@@ -4507,7 +4525,7 @@ impl MapViewer {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
-            EditMode::Arc => self.handle_arc_click(screen_pt),
+            EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
                 // mouse-down/mouse-move/mouse-up directly); a stray click
@@ -4553,24 +4571,25 @@ impl MapViewer {
     }
 
     /// Arc mode: click 1 sets the arc's start, click 2 its end, click 3 a
-    /// point the arc passes through and commits it.
-    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
+    /// point the arc passes through and commits it. Each click snaps onto a
+    /// nearby way (unless Ctrl/Alt is held).
+    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, no_snap: bool) {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let geo = self.viewport.screen_to_geo(screen_pt);
+        let point = self.arc_point_at(layer_id, screen_pt, no_snap);
 
         match self.arc_progress.take() {
             None => {
                 self.arc_progress = Some(ArcProgress {
-                    start: geo,
+                    start: point,
                     end: None,
                 });
             }
             Some(ArcProgress { start, end: None }) => {
                 self.arc_progress = Some(ArcProgress {
                     start,
-                    end: Some(geo),
+                    end: Some(point),
                 });
             }
             Some(ArcProgress {
@@ -4579,8 +4598,8 @@ impl MapViewer {
             }) => {
                 // A third point in line with the first two defines no arc;
                 // keep waiting for a better one.
-                if self.arc_from_geo(start, end, geo).is_some() {
-                    self.commit_arc(layer_id, start, end, geo);
+                if self.arc_from_geo(start.geo, end.geo, point.geo).is_some() {
+                    self.commit_arc(layer_id, start, end, point.geo);
                 } else {
                     self.arc_progress = Some(ArcProgress {
                         start,
@@ -4588,6 +4607,59 @@ impl MapViewer {
                     });
                 }
             }
+        }
+    }
+
+    /// The geo position for an Arc-mode click at `screen_pt`: snapped onto the
+    /// nearest way in `layer_id` when one is within tolerance.
+    fn arc_point_at(
+        &self,
+        layer_id: LayerId,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        no_snap: bool,
+    ) -> ArcPoint {
+        let plain = ArcPoint {
+            geo: self.viewport.screen_to_geo(screen_pt),
+            snap: None,
+        };
+        if no_snap {
+            return plain;
+        }
+        let sources: Vec<Tags> = Vec::new();
+        // An existing node close by wins over a way.
+        let node_hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
+            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let editable = layer.as_editable()?;
+            let id = osm_layer.snap_to_node_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
+                |id| snap_node_ok(editable, layer_id, &sources, None, id),
+            )?;
+            Some((id, editable.node_lat_lon(id)?))
+        });
+        if let Some((id, geo)) = node_hit {
+            return ArcPoint {
+                geo,
+                snap: Some(ArcSnap::Node(id)),
+            };
+        }
+        let hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
+            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let editable = layer.as_editable()?;
+            osm_layer.snap_to_way_where(
+                &self.viewport,
+                screen_pt,
+                osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
+                |w| snap_way_ok(editable, layer_id, &sources, None, w),
+            )
+        });
+        match hit {
+            Some((way_id, _, _, idx, lat, lon)) => ArcPoint {
+                geo: (lat, lon),
+                snap: Some(ArcSnap::Way(way_id, idx)),
+            },
+            None => plain,
         }
     }
 
@@ -4634,16 +4706,58 @@ impl MapViewer {
     fn commit_arc(
         &mut self,
         layer_id: LayerId,
-        start: (f64, f64),
-        end: (f64, f64),
+        start: ArcPoint,
+        end: ArcPoint,
         through: (f64, f64),
     ) {
         if self.refuse_edit_during_upload() {
             return;
         }
-        let Some(points) = self.arc_from_geo(start, end, through) else {
+        let Some(points) = self.arc_from_geo(start.geo, end.geo, through) else {
             return;
         };
+        // Endpoints snapped onto a node use that node; ones snapped onto a way
+        // get a new node spliced into it (so the arc joins that way), which
+        // grows the way.
+        let way_snap = |p: &ArcPoint| match p.snap {
+            Some(ArcSnap::Way(way_id, idx)) => Some((way_id, idx)),
+            _ => None,
+        };
+        let mut splices: Vec<(usize, ArcPoint)> = [(0, start), (points.len() - 1, end)]
+            .into_iter()
+            .filter(|(_, p)| way_snap(p).is_some())
+            .collect();
+        for (_, p) in &splices {
+            let (way_id, _) = way_snap(p).unwrap();
+            let by = splices
+                .iter()
+                .filter(|(_, q)| way_snap(q).map(|s| s.0) == Some(way_id))
+                .count();
+            if self.refuse_way_growth(layer_id, way_id, by) {
+                return;
+            }
+        }
+        // Splice in descending segment order within a way so earlier indices
+        // stay valid; on a shared segment, the point nearer its far end first.
+        let seg_start = |p: &ArcPoint| {
+            let (way_id, idx) = way_snap(p).unwrap();
+            let editable = self
+                .layer_manager
+                .find_layer(layer_id)
+                .and_then(|l| l.as_editable())?;
+            let id = *editable.way_node_ids(way_id)?.get(idx)?;
+            editable.node_lat_lon(id)
+        };
+        let along = |p: &ArcPoint| {
+            seg_start(p).map_or(0.0, |s| (p.geo.0 - s.0).powi(2) + (p.geo.1 - s.1).powi(2))
+        };
+        splices.sort_by(|(_, a), (_, b)| {
+            let (aw, ai) = way_snap(a).unwrap();
+            let (bw, bi) = way_snap(b).unwrap();
+            aw.cmp(&bw)
+                .then(bi.cmp(&ai))
+                .then_with(|| along(b).total_cmp(&along(a)))
+        });
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
             return;
         };
@@ -4651,16 +4765,47 @@ impl MapViewer {
             return;
         };
 
-        let node_ids: Vec<i64> = points
+        // Nodes the arc doesn't own: reused ones, and ones spliced into other
+        // ways (undone by their own entries).
+        let mut node_ids: Vec<Option<i64>> = vec![None; points.len()];
+        let mut actions = Vec::new();
+        for (i, p) in [(0, start), (points.len() - 1, end)] {
+            if let Some(ArcSnap::Node(id)) = p.snap {
+                node_ids[i] = Some(id);
+            }
+        }
+        for (i, p) in &splices {
+            let (way_id, idx) = way_snap(p).unwrap();
+            let id = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1);
+            actions.push(UndoableAction::InsertNodeIntoWay {
+                layer: layer_id,
+                way_id,
+                index: idx + 1,
+                node_id: id,
+            });
+            node_ids[*i] = Some(id);
+        }
+        let borrowed: Vec<i64> = node_ids.iter().flatten().copied().collect();
+        let all_ids: Vec<i64> = node_ids
             .iter()
-            .map(|&(lat, lon)| editable.add_node(lat, lon))
+            .zip(&points)
+            .map(|(id, &(lat, lon))| id.unwrap_or_else(|| editable.add_node(lat, lon)))
             .collect();
-        let way_id = editable.add_way(node_ids.clone(), Vec::new());
-
-        self.undo_stack.push(UndoableAction::CreateArc {
+        let way_id = editable.add_way(all_ids.clone(), Vec::new());
+        let created: Vec<i64> = all_ids
+            .into_iter()
+            .filter(|id| !borrowed.contains(id))
+            .collect();
+        // The whole arc, splices included, is one undo step: undoing removes
+        // the arc first, then the splices.
+        actions.push(UndoableAction::CreateArc {
             layer: layer_id,
             way_id,
-            node_ids,
+            node_ids: created,
+        });
+        self.undo_stack.push(UndoableAction::Batch {
+            label: tr!("history.created_arc").to_string(),
+            actions,
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,
@@ -7901,10 +8046,16 @@ impl Render for MapViewer {
                                                     blue,
                                                 ));
                                             };
-                                            marker(window, progress.start);
-                                            let cursor_geo = this
-                                                .last_mouse_pos
-                                                .map(|p| viewport_clone.screen_to_geo(p));
+                                            marker(window, progress.start.geo);
+                                            // The cursor, snapped onto a way as a click would be.
+                                            let cursor_geo = this.last_mouse_pos.map(|p| {
+                                                match this.active_layer {
+                                                    Some(layer_id) => {
+                                                        this.arc_point_at(layer_id, p, false).geo
+                                                    }
+                                                    None => viewport_clone.screen_to_geo(p),
+                                                }
+                                            });
                                             // The path to draw: the start..cursor
                                             // rubber band before the end is placed,
                                             // then the arc through the cursor (a
@@ -7913,15 +8064,21 @@ impl Render for MapViewer {
                                                 progress.end,
                                                 cursor_geo,
                                             ) {
-                                                (None, Some(cursor)) => vec![progress.start, cursor],
+                                                (None, Some(cursor)) => vec![progress.start.geo, cursor],
                                                 (None, None) => Vec::new(),
                                                 (Some(end), cursor) => {
-                                                    marker(window, end);
+                                                    marker(window, end.geo);
                                                     cursor
                                                         .and_then(|c| {
-                                                            this.arc_from_geo(progress.start, end, c)
+                                                            this.arc_from_geo(
+                                                                progress.start.geo,
+                                                                end.geo,
+                                                                c,
+                                                            )
                                                         })
-                                                        .unwrap_or_else(|| vec![progress.start, end])
+                                                        .unwrap_or_else(|| {
+                                                            vec![progress.start.geo, end.geo]
+                                                        })
                                                 }
                                             };
                                             let mut builder = PathBuilder::stroke(px(2.0));
