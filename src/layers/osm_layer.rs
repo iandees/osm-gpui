@@ -3275,6 +3275,7 @@ impl OsmLayer {
                         color: l.color,
                         halo_color: l.halo_color,
                         halo_radius: l.halo_radius,
+                        halo_alpha: l.halo_alpha,
                     },
                     anchor,
                 )),
@@ -3283,6 +3284,7 @@ impl OsmLayer {
             by_id.insert(id, placed.len());
             placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
         }
+        let n_text = placed.iter().filter(|l| l.text.is_some()).count();
         crate::frame_stats::lap("labels.place", fs);
         crate::frame_stats::count("labels.candidates", items.len());
         crate::frame_stats::count("labels.placed", placed.len());
@@ -3292,6 +3294,8 @@ impl OsmLayer {
             sheet: Arc::as_ptr(&self.stylesheet) as usize,
             labels: placed,
             by_id,
+            fade_end: None,
+            halo: labels::halo_for(n_text),
         }
     }
 
@@ -3328,7 +3332,8 @@ impl OsmLayer {
         let sheet = Arc::as_ptr(&self.stylesheet) as usize;
         let mut cache = self.label_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.validate(self.revision, sheet, zoom.floor() as i32);
-        let step = cache.step(cam, self.revision, sheet, std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let step = cache.step(cam, self.revision, sheet, now);
         if step == labels::Step::Recompute {
             let ids: HashSet<i64> = selected
                 .iter()
@@ -3337,9 +3342,12 @@ impl OsmLayer {
                 .map(|f| f.id)
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, window);
-            cache.store(p);
+            cache.store(p, now);
         }
-        if matches!(step, labels::Step::DrawAndWait | labels::Step::HideAndWait) {
+        // Frames are requested only while something is in flight: waiting to
+        // settle, or a fade-in running.
+        let fade_end = cache.placement.as_ref().and_then(|p| p.fade_end);
+        if labels::wants_frame(step, fade_end, now) {
             window.request_animation_frame();
         }
         if step == labels::Step::HideAndWait {
@@ -3354,17 +3362,25 @@ impl OsmLayer {
         let Some(placement) = cache.placement.take() else {
             return;
         };
+        let halo = placement.halo;
         for l in &placement.labels {
             let sp = viewport.mercator_to_screen(l.mx, l.my) + self.drag_preview_offset(l.id);
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
             let at = point(sp.x + ox, sp.y + oy);
+            let alpha = labels::fade_alpha(l.born, now);
             if let Some(icon) = &l.icon {
-                labels::paint_icon(window, cx, icon, at);
+                labels::paint_icon(window, cx, icon, at, alpha);
             }
             if let Some(t) = &l.text {
-                labels::paint_text(window, t, point(at.x + px(t.dx), at.y + px(t.dy)));
+                labels::paint_text(
+                    window,
+                    t,
+                    point(at.x + px(t.dx), at.y + px(t.dy)),
+                    alpha,
+                    halo,
+                );
             }
         }
         // Selected and hovered nodes keep their label even where the
@@ -3409,9 +3425,16 @@ impl OsmLayer {
                 color: label.color,
                 halo_color: label.halo_color,
                 halo_radius: label.halo_radius,
+                halo_alpha: label.halo_alpha,
             };
             let at = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(window, &t, point(at.x + px(t.dx), at.y + px(t.dy)));
+            labels::paint_text(
+                window,
+                &t,
+                point(at.x + px(t.dx), at.y + px(t.dy)),
+                1.0,
+                labels::HaloMode::Offsets,
+            );
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);

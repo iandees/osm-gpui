@@ -1,0 +1,23 @@
+# Labels over a dark backdrop (a stand-in for dark imagery), few labels
+# (outline halo) and many (backing quad). Needs a temporary stylesheet rule so
+# the backdrop polygon is opaque; add this to assets/default.mapcss for the run:
+#   area[landuse=quarry] { fill-color: #10131a; fill-opacity: 1; }
+# Run with: cargo run --release -- --script docs/screenshots/labels-dark.osmscript
+
+window 1200 800
+load_osm docs/screenshots/fixtures/labels-dark-backdrop.osm
+load_osm docs/screenshots/fixtures/labels.osm
+viewport 40.7128 -74.0060 17
+wait_idle 5s
+wait 800ms
+capture docs/screenshots/labels-dark-1-few.png
+
+viewport 40.7128 -74.0060 18
+wait 800ms
+capture docs/screenshots/labels-dark-2-few-z18.png
+
+load_osm docs/screenshots/fixtures/labels-stress.osm
+viewport 40.7128 -74.0060 17
+wait 800ms
+capture docs/screenshots/labels-dark-3-many.png
+log done

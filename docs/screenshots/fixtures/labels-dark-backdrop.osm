@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="labels dark backdrop">
+  <!-- One big landuse=quarry square around 40.7128 -74.0060. With a stylesheet rule
+       `area[landuse=quarry] { fill-color: #10131a; fill-opacity: 1; }` it stands in for dark
+       imagery behind the labels (see labels-dark.osmscript). -->
+  <node id="30001" version="1" lat="40.7328" lon="-74.0260"/>
+  <node id="30002" version="1" lat="40.7328" lon="-73.9860"/>
+  <node id="30003" version="1" lat="40.6928" lon="-73.9860"/>
+  <node id="30004" version="1" lat="40.6928" lon="-74.0260"/>
+  <way id="30101" version="1">
+    <nd ref="30001"/>
+    <nd ref="30002"/>
+    <nd ref="30003"/>
+    <nd ref="30004"/>
+    <nd ref="30001"/>
+    <tag k="landuse" v="quarry"/>
+  </way>
+</osm>
