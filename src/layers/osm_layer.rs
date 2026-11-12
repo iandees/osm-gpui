@@ -4108,21 +4108,27 @@ impl OsmLayer {
             }
             let half_width = style.width / 2.0;
             let z = z_key(style.z_index);
+            let stroke_rgba = (style.color << 8) | (style.opacity * 255.0).round() as u32;
             let stroke_idx = match last_stroke {
-                Some(((lz, c), idx)) if lz == z && c == style.color => idx,
+                Some(((lz, c), idx)) if lz == z && c == stroke_rgba => idx,
                 _ => {
                     let idx = batch_index(
                         &mut stroke_index,
                         &mut strokes,
                         BatchKind::Stroke,
                         z,
-                        (style.color << 8) | 0xFF,
+                        stroke_rgba,
                         &hints,
                     );
-                    last_stroke = Some(((z, style.color), idx));
+                    last_stroke = Some(((z, stroke_rgba), idx));
                     idx
                 }
             };
+            // Dashes only where a segment is long enough to show them; a
+            // collapsed way is a single stroke across its bounding box.
+            let dashes = style
+                .dashes
+                .filter(|_| detail == WayDetail::Full && !lod.coarse);
             let stroke = &mut strokes[stroke_idx];
 
             // An explicit casing replaces the default dark one.
@@ -4270,7 +4276,7 @@ impl OsmLayer {
                     overlay_layer,
                     casing_layer,
                     styled_layer,
-                    Some(stroke_layer),
+                    dashes.is_none().then_some(stroke_layer),
                 ]);
             } else {
                 // Plain rectangles, as before joins existed.
@@ -4300,12 +4306,25 @@ impl OsmLayer {
                         };
                         way_stroke::emit_segment(&mut sink, pa, pb, casing_hw);
                     }
-                    let mut sink = PathSink {
-                        path: &mut stroke.path,
-                        bounds: &mut stroke.bounds,
-                    };
-                    way_stroke::emit_segment(&mut sink, pa, pb, half_width);
+                    if dashes.is_none() {
+                        let mut sink = PathSink {
+                            path: &mut stroke.path,
+                            bounds: &mut stroke.bounds,
+                        };
+                        way_stroke::emit_segment(&mut sink, pa, pb, half_width);
+                    }
                 }
+            }
+            if let (Some((dash, gap)), Some(first)) = (dashes, segs.first()) {
+                let anchors: Vec<(f32, f32)> = std::iter::once(scratch_pts[first.0])
+                    .chain(segs.iter().map(|&(_, b)| scratch_pts[b]))
+                    .map(|p| (f32::from(p.x), f32::from(p.y)))
+                    .collect();
+                let mut sink = PathSink {
+                    path: &mut stroke.path,
+                    bounds: &mut stroke.bounds,
+                };
+                way_stroke::emit_dashed(&mut sink, &anchors, dash, gap, half_width);
             }
 
             let arrows = draw_arrows && style.direction != Direction::None;
@@ -10002,6 +10021,33 @@ mod way_lod_tests {
             line_colors(&l, 17.0),
             vec![0x111111, 0x0000ff, 0x222222, 0xff0000]
         );
+    }
+
+    #[test]
+    fn stroke_opacity_becomes_the_batch_alpha() {
+        let l = layer_styled("way { color: #123456; width: 3; opacity: 0.5; }");
+        let (v, b) = view(17.0);
+        let scene = l.build_way_scene(&v, b);
+        assert_eq!(scene.lines.len(), 1);
+        assert_eq!(scene.lines[0].0, 0x123456_00 | 128);
+    }
+
+    #[test]
+    fn a_dashed_stroke_draws_fewer_pixels_than_a_solid_one() {
+        let area = |l: &OsmLayer| {
+            let (v, b) = view(18.0);
+            l.build_way_scene(&v, b)
+                .lines
+                .iter()
+                .map(|(_, p)| p.vertices.len())
+                .sum::<usize>()
+        };
+        let solid = layer_styled("way { width: 3; }");
+        let dashed = layer_styled("way { width: 3; dashes: 8,8; }");
+        // Many short rectangles instead of one long one.
+        assert!(area(&dashed) > area(&solid));
+        // And never below the editing zoom, where the stroke is simplified.
+        assert_eq!(scene_vertices(&dashed, 15.0), scene_vertices(&solid, 15.0));
     }
 
     #[test]

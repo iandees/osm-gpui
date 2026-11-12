@@ -10,7 +10,11 @@
 //!   alias for `symbol-size` on nodes), and `fill-color`/`fill-opacity`
 //!   (closed ways only). Other properties are ignored with a single
 //!   warning.
-//! - Colors: `#rgb`, `#rrggbb`, or one of a small named set.
+//! - Colors: `#rgb`, `#rrggbb`, `rgb(r,g,b)`, `rgba(r,g,b,a)` or one of a
+//!   small named set. The alpha of `rgba(..)` becomes `opacity` (for
+//!   `color`) or `fill-opacity` (for `fill-color`).
+//! - Stroke styling: `casing-width`, `casing-color`, `z-index`, `dashes`
+//!   (`dash,gap` in pixels, or `none`) and `opacity`.
 //! - Comments: `/* ... */` (non-nesting).
 //!
 //! - Zoom-range selectors after the type: `way|z12-`, `way|z-14`,
@@ -128,6 +132,10 @@ pub struct WayStyle {
     /// Draw order (`z-index`): higher draws on top. Fills, then lines in
     /// ascending order, whatever the index; 0 by default.
     pub z_index: f32,
+    /// Stroke opacity, 0..=1.
+    pub opacity: f32,
+    /// `Some((dash, gap))` in pixels for a dashed stroke.
+    pub dashes: Option<(f32, f32)>,
     /// Interned id of the rules that matched this way's tags, an index into
     /// [`Stylesheet::zoom_styles`]. [`NO_SIG`] when not interned.
     pub sig: u32,
@@ -146,6 +154,8 @@ impl Default for WayStyle {
             casing_width: 0.0,
             casing_color: DEFAULT_CASING_COLOR,
             z_index: 0.0,
+            opacity: 1.0,
+            dashes: None,
             sig: NO_SIG,
         }
     }
@@ -250,6 +260,10 @@ enum Declaration {
     CasingColor(u32),
     /// Draw order within a feature class; higher draws on top.
     ZIndex(f32),
+    /// Stroke opacity, clamped to 0..=1 at parse time.
+    Opacity(f32),
+    /// `dashes: dash, gap`; `None` for `dashes: none`.
+    Dashes(Option<(f32, f32)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -511,6 +525,8 @@ impl Stylesheet {
                     Declaration::CasingWidth(w) => s.casing_width = *w,
                     Declaration::CasingColor(c) => s.casing_color = *c,
                     Declaration::ZIndex(z) => s.z_index = *z,
+                    Declaration::Opacity(o) => s.opacity = *o,
+                    Declaration::Dashes(d) => s.dashes = *d,
                     // `symbol-size` on a way rule is meaningless — ignore.
                     _ => {}
                 }
@@ -810,8 +826,13 @@ impl<'a> Parser<'a> {
             self.eat(';');
 
             match prop.as_str() {
-                "color" => match parse_color(&value) {
-                    Some(c) => decls.push(Declaration::Color(c)),
+                "color" => match parse_color_alpha(&value) {
+                    Some((c, alpha)) => {
+                        decls.push(Declaration::Color(c));
+                        if let Some(a) = alpha {
+                            decls.push(Declaration::Opacity(a));
+                        }
+                    }
                     None => {
                         if !*warned {
                             eprintln!("mapcss: ignoring unrecognized color '{}'", value);
@@ -828,8 +849,13 @@ impl<'a> Parser<'a> {
                         }
                     }
                 },
-                "fill-color" => match parse_color(&value) {
-                    Some(c) => decls.push(Declaration::FillColor(c)),
+                "fill-color" => match parse_color_alpha(&value) {
+                    Some((c, alpha)) => {
+                        decls.push(Declaration::FillColor(c));
+                        if let Some(a) = alpha {
+                            decls.push(Declaration::FillOpacity(a));
+                        }
+                    }
                     None => {
                         if !*warned {
                             eprintln!("mapcss: ignoring unrecognized fill-color '{}'", value);
@@ -857,11 +883,29 @@ impl<'a> Parser<'a> {
                         }
                     }
                 },
-                "casing-color" => match parse_color(&value) {
-                    Some(c) => decls.push(Declaration::CasingColor(c)),
+                "casing-color" => match parse_color_alpha(&value) {
+                    Some((c, _)) => decls.push(Declaration::CasingColor(c)),
                     None => {
                         if !*warned {
                             eprintln!("mapcss: ignoring unrecognized casing-color '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
+                "opacity" => match value.trim().parse::<f32>() {
+                    Ok(o) if o.is_finite() => decls.push(Declaration::Opacity(o.clamp(0.0, 1.0))),
+                    _ => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring invalid opacity '{}'", value);
+                            *warned = true;
+                        }
+                    }
+                },
+                "dashes" => match parse_dashes(&value) {
+                    Some(d) => decls.push(Declaration::Dashes(d)),
+                    None => {
+                        if !*warned {
+                            eprintln!("mapcss: ignoring invalid dashes '{}'", value);
                             *warned = true;
                         }
                     }
@@ -960,8 +1004,74 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Parse a CSS-ish color into a packed `0xRRGGBB` u32.
-fn parse_color(s: &str) -> Option<u32> {
+/// Parse a `dashes` value: `none`/`0`, or `dash, gap` (comma or space
+/// separated, pixels; further pairs are ignored). `Some(None)` is a valid
+/// "no dashes"; `None` is invalid.
+fn parse_dashes(s: &str) -> Option<Option<(f32, f32)>> {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    let nums: Vec<f32> = t
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<f32>().ok())
+        .collect::<Option<_>>()?;
+    if nums.iter().any(|n| !n.is_finite() || *n < 0.0) {
+        return None;
+    }
+    match nums.as_slice() {
+        [] => None,
+        [0.0] => Some(None),
+        // A lone number is both the dash and the gap.
+        [d] => Some(Some((d.max(MIN_DASH_PX), d.max(MIN_DASH_PX)))),
+        [d, g, ..] if *d > 0.0 && *g > 0.0 => Some(Some((d.max(MIN_DASH_PX), g.max(MIN_DASH_PX)))),
+        _ => None,
+    }
+}
+
+/// Dash and gap lengths below this are raised to it, so a stroke never
+/// turns into millions of dashes.
+const MIN_DASH_PX: f32 = 1.0;
+
+/// Like [`parse_color`], also returning the alpha (0..=1) of `rgba(..)`.
+fn parse_color_alpha(s: &str) -> Option<(u32, Option<f32>)> {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    for (prefix, has_alpha) in [("rgba(", true), ("rgb(", false)] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let inner = rest.strip_suffix(')')?;
+            let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+            if parts.len() != 3 + has_alpha as usize {
+                return None;
+            }
+            let mut rgb = 0u32;
+            for p in &parts[..3] {
+                let v: f32 = match p.strip_suffix('%') {
+                    Some(pct) => pct.trim().parse::<f32>().ok()? * 2.55,
+                    None => p.parse::<f32>().ok()?,
+                };
+                if !v.is_finite() {
+                    return None;
+                }
+                rgb = (rgb << 8) | v.round().clamp(0.0, 255.0) as u32;
+            }
+            let alpha = if has_alpha {
+                let a = parts[3].parse::<f32>().ok()?;
+                if !a.is_finite() {
+                    return None;
+                }
+                Some(a.clamp(0.0, 1.0))
+            } else {
+                None
+            };
+            return Some((rgb, alpha));
+        }
+    }
+    parse_color_plain(t).map(|c| (c, None))
+}
+
+fn parse_color_plain(s: &str) -> Option<u32> {
     let t = s.trim();
     if let Some(hex) = t.strip_prefix('#') {
         return match hex.len() {
@@ -1156,6 +1266,88 @@ mod tests {
         assert!(z("primary") > z("secondary"));
         assert!(z("secondary") > z("tertiary"));
         assert!(z("tertiary") > z("residential"));
+    }
+
+    fn way_with(css: &str) -> WayStyle {
+        Stylesheet::parse(css)
+            .unwrap()
+            .way_style(&tags(&[]), true, Z)
+    }
+
+    #[test]
+    fn rgb_and_rgba_colors() {
+        assert_eq!(way_with("way { color: rgb(255, 0, 128); }").color, 0xFF0080);
+        assert_eq!(way_with("way { color: RGB(0,255,0); }").color, 0x00FF00);
+        assert_eq!(
+            way_with("way { color: rgb(100%, 0%, 0%); }").color,
+            0xFF0000
+        );
+        // Out-of-range channels clamp.
+        assert_eq!(way_with("way { color: rgb(300, -5, 0); }").color, 0xFF0000);
+        let w = way_with("way { color: rgba(10, 20, 30, 0.5); }");
+        assert_eq!(w.color, 0x0A141E);
+        assert!((w.opacity - 0.5).abs() < 1e-6);
+        // An rgb() color with no alpha leaves opacity alone.
+        assert_eq!(way_with("way { color: rgb(1,2,3); }").opacity, 1.0);
+        // Malformed ones are ignored, keeping the default.
+        for bad in [
+            "rgb(1,2)",
+            "rgba(1,2,3)",
+            "rgb(1,2,3,4)",
+            "rgb(a,b,c)",
+            "rgb(1,2,3",
+        ] {
+            let w = way_with(&format!("way {{ color: {bad}; }}"));
+            assert_eq!(w.color, DEFAULT_WAY_COLOR, "{bad}");
+        }
+    }
+
+    #[test]
+    fn rgba_fill_color_sets_fill_opacity() {
+        let w = way_with("area { fill-color: rgba(255, 0, 0, 0.25); }");
+        let f = w.fill.unwrap();
+        assert_eq!(f.color, 0xFF0000);
+        assert!((f.opacity - 0.25).abs() < 1e-6);
+        // An explicit fill-opacity afterwards wins.
+        let w = way_with("area { fill-color: rgba(255, 0, 0, 0.25); fill-opacity: 0.9; }");
+        assert!((w.fill.unwrap().opacity - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn opacity_property() {
+        assert_eq!(way_with("way { opacity: 0.4; }").opacity, 0.4);
+        assert_eq!(way_with("way { opacity: 7; }").opacity, 1.0);
+        assert_eq!(way_with("way { opacity: -1; }").opacity, 0.0);
+        assert_eq!(way_with("way { opacity: lots; }").opacity, 1.0);
+        // Later wins over the alpha of an earlier rgba().
+        assert_eq!(
+            way_with("way { color: rgba(0,0,0,0.2); opacity: 0.7; }").opacity,
+            0.7
+        );
+    }
+
+    #[test]
+    fn dashes_property() {
+        assert_eq!(way_with("way { dashes: 6,3; }").dashes, Some((6.0, 3.0)));
+        assert_eq!(way_with("way { dashes: 6 3; }").dashes, Some((6.0, 3.0)));
+        // Extra pairs are tolerated; only the first pair is kept.
+        assert_eq!(
+            way_with("way { dashes: 6,3,2,2; }").dashes,
+            Some((6.0, 3.0))
+        );
+        assert_eq!(way_with("way { dashes: 4; }").dashes, Some((4.0, 4.0)));
+        assert_eq!(
+            way_with("way { dashes: 0.1,0.1; }").dashes,
+            Some((1.0, 1.0))
+        );
+        assert_eq!(way_with("way { dashes: 6,3; }").dashes, Some((6.0, 3.0)));
+        // `none` clears an earlier dash pattern.
+        assert_eq!(way_with("way { dashes: 6,3; dashes: none; }").dashes, None);
+        for bad in ["", "x,y", "-1,2", "6,0"] {
+            let w = way_with(&format!("way {{ dashes: {bad}; }}"));
+            assert_eq!(w.dashes, None, "{bad:?}");
+        }
+        assert_eq!(WayStyle::default().dashes, None);
     }
 
     #[test]
