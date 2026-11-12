@@ -1,19 +1,20 @@
 /* osm-gpui "Wireframe" MapCSS stylesheet, after JOSM's wireframe view.
 
-   Every way is a thin 1px line in one contrasting colour and nothing is
-   filled, so the imagery shows through and only the geometry is drawn.
-   Nodes are small simple markers. There are no area (`fill-color`) rules,
-   no casings and no labels. Selection and hover highlighting is drawn by the
-   renderer on top, in its own colours. */
+   A black canvas with no imagery and no fills. Every way is the same 1px
+   dark blue line, whatever its tags. Ways that belong to a relation get a thin
+   cyan outline around the line. Nodes are drawn from zoom 16: the vertices of
+   ways as small yellow hollow squares, nodes shared by several ways as
+   slightly larger squares, and tagged or free-standing nodes as yellow
+   crosses. There are no labels or icons. Selection and hover highlighting is
+   drawn by the renderer on top, in its own colours. */
 
-way     { color: #00e0ff; width: 1; }
+canvas { fill-color: #000000; show-imagery: no; }
 
-/* Nodes. Untagged nodes are way vertices: tiny. Tagged nodes get a slightly
-   larger marker in a second colour so points of interest stand out from the
-   lines. */
-node    { color: #ffd60a; symbol-size: 4; }
-node[highway], node[barrier], node[railway], node[power], node[entrance],
-node[natural], node[leisure], node[tourism], node[historic], node[man_made],
-node[place], node[office], node[craft], node[emergency], node[public_transport],
-node[amenity], node[shop]
-        { color: #ff9f0a; symbol-size: 6; }
+way { color: #2b4bd9; width: 1; }
+way:in-relation { casing-width: 1; casing-color: #17c3c3; }
+
+/* Nodes. The general rule is a way vertex; later rules override it. */
+node            { color: #ffd60a; symbol-shape: square; symbol-size: 4; }
+node:connection { symbol-size: 6; }
+node:tagged, node:unconnected
+                { symbol-shape: cross; symbol-size: 8; }

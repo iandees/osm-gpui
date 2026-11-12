@@ -26,6 +26,8 @@
 //! can see. (Snapping a new point in Add mode is separate: it looks at every
 //! node, drawn or not.)
 
+use crate::style::mapcss::NodeVisual;
+
 /// Tagged and standalone nodes are drawn in full from this zoom.
 pub const FULL_MIN_ZOOM: f64 = 18.0;
 /// Tagged and standalone nodes are shown (as tiny empty squares) from this
@@ -56,6 +58,10 @@ pub const PREVIEW_DIAMETER: f32 = 7.0;
 /// Hit radius, in pixels, of a previewed vertex.
 pub const PREVIEW_HIT_RADIUS: f32 = 7.0;
 
+/// Styled markers (hollow squares and crosses from the stylesheet) are drawn
+/// from this zoom.
+pub const STYLED_MIN_ZOOM: f64 = 16.0;
+
 /// How a node's marker is drawn at a given view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodeForm {
@@ -69,6 +75,9 @@ pub enum NodeForm {
     /// outline, lighter than a selected way's vertices. A hover and click
     /// target.
     Preview,
+    /// The stylesheet's own marker (`symbol-shape: square | cross`): drawn
+    /// from `VERTEX_MIN_ZOOM` for every node it matches, vertices included.
+    Styled(NodeVisual),
 }
 
 impl NodeForm {
@@ -83,6 +92,7 @@ impl NodeForm {
             NodeForm::Simple(_) => SIMPLE_HIT_RADIUS,
             NodeForm::Full => FULL_HIT_RADIUS,
             NodeForm::Preview => PREVIEW_HIT_RADIUS,
+            NodeForm::Styled(v) => (v.size / 2.0 + 3.0).max(SIMPLE_HIT_RADIUS),
         }
     }
 }

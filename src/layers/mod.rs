@@ -665,17 +665,20 @@ impl LayerManager {
         }
     }
 
-    /// Render all visible layers as GPUI elements
+    /// Render all visible layers as GPUI elements. With `show_imagery`
+    /// false the imagery (tile) layers are left out, as a stylesheet's
+    /// `canvas { show-imagery: no; }` asks.
     pub fn render_all_elements(
         &self,
         viewport: &Viewport,
+        show_imagery: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
         let mut elements = Vec::new();
 
         for layer in &self.layers {
-            if layer.is_visible() {
+            if layer.is_visible() && (show_imagery || layer.imagery_id().is_none()) {
                 elements.extend(layer.render_elements(viewport, window, cx));
             }
         }

@@ -7173,6 +7173,9 @@ impl Render for MapViewer {
         let fps = self.tick_fps();
         let status_bar = self.render_status_bar(cx);
 
+        // The stylesheet can set the map's background colour and hide the
+        // imagery (`canvas { fill-color: ..; show-imagery: no; }`).
+        let canvas_style = osm_gpui::style::custom::active_stylesheet().canvas_style();
         let main_row = div()
             .flex_1()
             .min_h_0()
@@ -7445,8 +7448,14 @@ impl Render for MapViewer {
                             .size_full()
                             .relative()
                             .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
+                            .when_some(canvas_style.background, |d, color| d.bg(rgb(color)))
                             // Render all layer elements (raster content like tiles)
-                            .children(self.layer_manager.render_all_elements(&self.viewport, window, cx))
+                            .children(self.layer_manager.render_all_elements(
+                                &self.viewport,
+                                canvas_style.show_imagery,
+                                window,
+                                cx,
+                            ))
                             // Render canvas layers (vector content)
                             .child(
                                 canvas(|_, _, _| {}, {

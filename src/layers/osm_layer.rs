@@ -17,6 +17,7 @@ use crate::selection::{
     nearest_point_on_segment, point_to_segment_distance, DeletedFeatureSnapshot,
     DeletedRelationSnapshot, FeatureKind, FeatureRef, HitCandidate, PurgedFeatures,
 };
+use crate::style::mapcss::{NodeShape, NodeVisual};
 use crate::style::{Direction, NodeStyle, Stylesheet, TextPosition, WayStyle};
 use crate::viewport::Viewport;
 use rstar::{
@@ -242,6 +243,10 @@ pub struct OsmLayer {
     /// style has a fill. Aligned with `way_vertices`/`way_styles` by index.
     /// See `compute_fill_tris`.
     way_fill_tris: Vec<Option<Vec<u32>>>,
+    /// Ids of the ways that are a member of any relation; filled only when
+    /// the stylesheet has `way:in-relation` rules (see
+    /// [`relation_member_ways`]) and kept current by relation edits.
+    member_ways: HashSet<i64>,
     /// Assembled and triangulated multipolygon relations; see [`MpCache`].
     mp: MpCache,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
@@ -543,6 +548,21 @@ fn compute_fill_tris(verts: &[(i64, f64, f64)], style: &WayStyle) -> Option<Vec<
     Some(tris.into_iter().map(|i| i as u32).collect())
 }
 
+/// The ids of the ways that are a member of any relation, for
+/// `way:in-relation` rules. Empty (and not worth computing) for a stylesheet
+/// with no such rule.
+fn relation_member_ways(data: &OsmData, stylesheet: &Stylesheet) -> HashSet<i64> {
+    if !stylesheet.uses_relation_membership() {
+        return HashSet::new();
+    }
+    data.relations
+        .iter()
+        .flat_map(|r| &r.members)
+        .filter(|m| m.member_type == crate::osm::MemberType::Way)
+        .map(|m| m.reference)
+        .collect()
+}
+
 /// Build per-way bboxes, pre-projected vertex lists, resolved styles, and
 /// fill triangulations in a single pass so neither the bbox pass nor the
 /// render path has to walk the node HashMap (or the stylesheet, or the
@@ -551,6 +571,7 @@ fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
     stylesheet: &Stylesheet,
+    members: &HashSet<i64>,
 ) -> WayTables {
     let mut ids = Vec::with_capacity(data.ways.len());
     let mut bboxes = Vec::with_capacity(data.ways.len());
@@ -559,7 +580,8 @@ fn compute_way_tables(
     let mut fill_tris = Vec::with_capacity(data.ways.len());
     for way in sorted_ways(data) {
         let (verts, bbox) = project_way_vertices(way, node_cache);
-        let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
+        let style =
+            stylesheet.way_style_cached(&way.tags, way.is_closed(), members.contains(&way.id));
         fill_tris.push(compute_fill_tris(&verts, &style));
         ids.push(way.id);
         bboxes.push(bbox);
@@ -688,7 +710,7 @@ fn build_mp(
         Ok(a) => a,
         Err(problem) => return Some(Err(problem)),
     };
-    let style = stylesheet.way_style_cached(&relation.tags, true);
+    let style = stylesheet.way_style_cached(&relation.tags, true, false);
     let mut polygons = Vec::with_capacity(assembled.polygons.len());
     let mut total = WayBbox::empty();
     for polygon in &assembled.polygons {
@@ -927,6 +949,7 @@ fn apply_style_refresh(
     way_styles: &mut [WayStyle],
     way_fill_tris: &mut [Option<Vec<u32>>],
     stylesheet: &Stylesheet,
+    members: &HashSet<i64>,
 ) {
     match kind {
         FeatureKind::Node => {
@@ -942,7 +965,8 @@ fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = way_id_to_index.get(&id) {
-                let style = stylesheet.way_style_cached(&way.tags, way.is_closed());
+                let style =
+                    stylesheet.way_style_cached(&way.tags, way.is_closed(), members.contains(&id));
                 way_fill_tris[idx] = compute_fill_tris(&way_vertices[idx], &style);
                 way_styles[idx] = style;
             }
@@ -1183,6 +1207,33 @@ fn push_simple_node_marker(
     rect(x1 - s, y0 + s, x1, y1 - s); // right
 }
 
+/// A stylesheet-drawn node marker (`symbol-shape`) of `visual.size` pixels:
+/// a hollow square or a `+`, in `SIMPLE_STROKE` lines, added to the frame's
+/// shared `path` for its colour.
+fn push_styled_node_marker(
+    path: &mut Option<Path<Pixels>>,
+    bounds_min_max: &mut (f32, f32, f32, f32),
+    center: Point<Pixels>,
+    visual: NodeVisual,
+) {
+    match visual.shape {
+        NodeShape::Cross => {
+            let snap = |v: f32| (v * 2.0).round() / 2.0;
+            let (cx, cy) = (snap(f32::from(center.x)), snap(f32::from(center.y)));
+            let (h, s) = (visual.size / 2.0, node_markers::SIMPLE_STROKE);
+            let mut rect = |l: f32, t: f32, r: f32, b: f32| {
+                let (tl, tr) = (point(px(l), px(t)), point(px(r), px(t)));
+                let (bl, br) = (point(px(l), px(b)), point(px(r), px(b)));
+                push_triangle(path, bounds_min_max, tl, tr, bl);
+                push_triangle(path, bounds_min_max, tr, br, bl);
+            };
+            rect(cx - h, cy - s / 2.0, cx + h, cy + s / 2.0);
+            rect(cx - s / 2.0, cy - h, cx + s / 2.0, cy + h);
+        }
+        _ => push_simple_node_marker(path, bounds_min_max, center, visual.size),
+    }
+}
+
 /// Extra half-width of a route overlay line beyond the way's casing, in
 /// pixels, so the way stays readable on top of it.
 const ROUTE_OVERLAY_EXTRA: f32 = 3.0;
@@ -1287,6 +1338,7 @@ impl OsmLayer {
             way_vertices: Vec::new(),
             way_styles: Vec::new(),
             way_fill_tris: Vec::new(),
+            member_ways: HashSet::new(),
             mp: MpCache::default(),
             layer_bbox: None,
             line_labels: Default::default(),
@@ -1321,8 +1373,9 @@ impl OsmLayer {
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         crate::frame_stats::lap("load.node_cache", fs_phase);
         let fs_phase = crate::frame_stats::start();
+        let member_ways = relation_member_ways(&osm_data, &stylesheet);
         let (way_ids, way_bboxes, way_vertices, way_styles, way_fill_tris) =
-            compute_way_tables(&osm_data, &node_cache, &stylesheet);
+            compute_way_tables(&osm_data, &node_cache, &stylesheet, &member_ways);
         crate::frame_stats::lap("load.way_tables_and_fill_tris", fs_phase);
         let fs_phase = crate::frame_stats::start();
         let mut mp = MpCache::default();
@@ -1348,6 +1401,7 @@ impl OsmLayer {
             way_vertices,
             way_styles,
             way_fill_tris,
+            member_ways,
             mp,
             layer_bbox,
             line_labels: Default::default(),
@@ -1422,8 +1476,13 @@ impl OsmLayer {
     /// Recompute every derived cache and index from `osm_data`.
     fn rebuild_caches(&mut self, osm_data: &Arc<OsmData>) {
         self.node_cache = compute_node_cache(osm_data, &self.stylesheet);
-        let (ids, bboxes, verts, styles, fill_tris) =
-            compute_way_tables(osm_data, &self.node_cache, &self.stylesheet);
+        self.member_ways = relation_member_ways(osm_data, &self.stylesheet);
+        let (ids, bboxes, verts, styles, fill_tris) = compute_way_tables(
+            osm_data,
+            &self.node_cache,
+            &self.stylesheet,
+            &self.member_ways,
+        );
         self.way_ids = ids;
         self.way_bboxes = bboxes;
         self.way_vertices = verts;
@@ -2047,7 +2106,11 @@ impl OsmLayer {
             }
             self.way_vertices[way_idx] = verts;
             self.way_bboxes[way_idx] = new_bbox;
-            let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
+            let style = self.stylesheet.way_style_cached(
+                &way.tags,
+                way.is_closed(),
+                self.member_ways.contains(&way.id),
+            );
             self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
             self.way_styles[way_idx] = style;
         }
@@ -2095,6 +2158,7 @@ impl OsmLayer {
             &mut self.way_styles,
             &mut self.way_fill_tris,
             &self.stylesheet,
+            &self.member_ways,
         );
         if kind == FeatureKind::Relation {
             // The relation's style (or whether it is a multipolygon at all)
@@ -2137,6 +2201,7 @@ impl OsmLayer {
             &mut self.way_styles,
             &mut self.way_fill_tris,
             &self.stylesheet,
+            &self.member_ways,
         );
         if kind == FeatureKind::Relation {
             self.mp_refresh_relations(&[id]);
@@ -2248,7 +2313,11 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(
+            &way.tags,
+            way.is_closed(),
+            self.member_ways.contains(&way.id),
+        );
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -2342,7 +2411,11 @@ impl OsmLayer {
                 None => self.layer_bbox = Some(b),
             }
         }
-        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(
+            &way.tags,
+            way.is_closed(),
+            self.member_ways.contains(&way.id),
+        );
         self.way_fill_tris[way_idx] = compute_fill_tris(&verts, &style);
         self.way_vertices[way_idx] = verts;
         self.way_bboxes[way_idx] = bbox;
@@ -2501,6 +2574,38 @@ impl OsmLayer {
         true
     }
 
+    /// Bring `member_ways` and the styles of the ways whose membership
+    /// changed up to date after a relation was created, deleted or its
+    /// members replaced. Does nothing for a stylesheet with no
+    /// `way:in-relation` rules.
+    fn refresh_member_ways(&mut self) {
+        if !self.stylesheet.uses_relation_membership() {
+            return;
+        }
+        let Some(data) = self.osm_data.clone() else {
+            return;
+        };
+        let now = relation_member_ways(&data, &self.stylesheet);
+        let changed: Vec<i64> = now
+            .symmetric_difference(&self.member_ways)
+            .copied()
+            .collect();
+        self.member_ways = now;
+        for id in changed {
+            let (Some(&idx), Some(way)) = (self.way_id_to_index.get(&id), data.ways.get(&id))
+            else {
+                continue;
+            };
+            let style = self.stylesheet.way_style_cached(
+                &way.tags,
+                way.is_closed(),
+                self.member_ways.contains(&id),
+            );
+            self.way_fill_tris[idx] = compute_fill_tris(&self.way_vertices[idx], &style);
+            self.way_styles[idx] = style;
+        }
+    }
+
     /// Reassemble and retriangulate these relations (and drop any that are
     /// gone or no longer multipolygons). Every edit that can change a
     /// relation's rings ends in one of the `mp_refresh_*` calls.
@@ -2649,6 +2754,7 @@ impl OsmLayer {
         let previous = std::mem::replace(&mut relation.members, members);
         self.mark_modified();
         self.mp_refresh_relations(&[relation_id]);
+        self.refresh_member_ways();
         Some(previous)
     }
 
@@ -2700,6 +2806,7 @@ impl OsmLayer {
         });
         self.mark_modified();
         self.mp_refresh_relations(&[id]);
+        self.refresh_member_ways();
         Some(id)
     }
 
@@ -2723,6 +2830,7 @@ impl OsmLayer {
         let relation = data.relations.remove(index);
         self.mark_modified();
         self.mp_refresh_relations(&[relation_id]);
+        self.refresh_member_ways();
         Some(DeletedRelationSnapshot { relation, index })
     }
 
@@ -2749,6 +2857,7 @@ impl OsmLayer {
         }
         self.mark_modified();
         self.mp_refresh_relations(&[id]);
+        self.refresh_member_ways();
         true
     }
 
@@ -3061,7 +3170,11 @@ impl OsmLayer {
             self.node_to_ways.entry(*nid).or_default().insert(way_idx);
         }
         self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style_cached(&way.tags, way.is_closed());
+        let style = self.stylesheet.way_style_cached(
+            &way.tags,
+            way.is_closed(),
+            self.member_ways.contains(&way.id),
+        );
         self.way_fill_tris.push(compute_fill_tris(&verts, &style));
         self.way_vertices.push(verts);
         self.way_bboxes.push(bbox);
@@ -3130,8 +3243,9 @@ impl OsmLayer {
         self.revision += 1;
         if let Some(data) = self.osm_data.clone() {
             self.node_cache = compute_node_cache(&data, &self.stylesheet);
+            self.member_ways = relation_member_ways(&data, &self.stylesheet);
             let (ids, bboxes, verts, styles, fill_tris) =
-                compute_way_tables(&data, &self.node_cache, &self.stylesheet);
+                compute_way_tables(&data, &self.node_cache, &self.stylesheet, &self.member_ways);
             self.way_ids = ids;
             self.way_bboxes = bboxes;
             self.way_vertices = verts;
@@ -4025,14 +4139,31 @@ impl OsmLayer {
         let pinned = pins.nodes.contains(&id)
             || (!pins.ways.is_empty() && in_way(&|w| pins.ways.contains(w)));
         let previewed = pins.preview.is_some_and(|p| in_way(&|w| *w == p));
-        let tagged = self.node_cache.styles[idx].tagged;
-        node_markers::node_form_previewed(
+        let style = self.node_cache.styles[idx];
+        let tagged = style.tagged;
+        let form = node_markers::node_form_previewed(
             tagged,
             self.is_standalone(tagged, id, zoom),
             pinned,
             previewed,
             zoom,
-        )
+        );
+        match self.styled_node_form(&style, id, zoom) {
+            Some(styled) if !pinned => styled,
+            _ => form,
+        }
+    }
+
+    /// The stylesheet's own marker for node `id`, if its rules ask for a
+    /// hollow square or a cross for a node in as many ways as this one and
+    /// the view is zoomed in far enough.
+    fn styled_node_form(&self, style: &NodeStyle, id: i64, zoom: f64) -> Option<NodeForm> {
+        if zoom < node_markers::STYLED_MIN_ZOOM || !style.has_custom_marker() {
+            return None;
+        }
+        let ways = self.node_to_ways.get(&id).map_or(0, |w| w.len());
+        let visual = style.visual(ways);
+        visual.shape.is_custom().then_some(NodeForm::Styled(visual))
     }
 
     /// The way whose vertices are currently previewed, if any.
@@ -5486,6 +5617,9 @@ impl MapLayer for OsmLayer {
         let show_vertices = zoom >= VERTEX_MIN_ZOOM;
         let mut nodes_in_view = 0usize;
         let mut markers_drawn = 0usize;
+        // The stylesheet's own markers, one path per colour.
+        type MarkerBatch = (Option<Path<Pixels>>, (f32, f32, f32, f32));
+        let mut styled: HashMap<u32, MarkerBatch> = HashMap::new();
         let mut simple: Option<Path<Pixels>> = None;
         let mut simple_bounds = (
             f32::INFINITY,
@@ -5504,8 +5638,10 @@ impl MapLayer for OsmLayer {
             // An untagged vertex of a way is never drawn here (only the
             // highlight pass draws it, when selected): the way lookup runs
             // only for untagged nodes at zooms where a standalone one shows.
-            let standalone = self.is_standalone(style.tagged, id, zoom);
-            let form = node_markers::node_form(style.tagged, standalone, false, zoom);
+            let form = self.styled_node_form(&style, id, zoom).unwrap_or_else(|| {
+                let standalone = self.is_standalone(style.tagged, id, zoom);
+                node_markers::node_form(style.tagged, standalone, false, zoom)
+            });
             if form == NodeForm::Hidden {
                 continue;
             }
@@ -5520,6 +5656,18 @@ impl MapLayer for OsmLayer {
                 NodeForm::Simple(edge) => {
                     push_simple_node_marker(&mut simple, &mut simple_bounds, at, edge)
                 }
+                NodeForm::Styled(visual) => {
+                    let (path, bounds) = styled.entry(visual.color).or_insert((
+                        None,
+                        (
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                        ),
+                    ));
+                    push_styled_node_marker(path, bounds, at, visual);
+                }
                 _ => paint_node_marker(window, at, style),
             }
         }
@@ -5532,6 +5680,15 @@ impl MapLayer for OsmLayer {
                 size: size(px(max_x - min_x), px(max_y - min_y)),
             };
             window.paint_path(path, rgba(node_markers::SIMPLE_RGBA));
+        }
+        for (color, (path, (min_x, max_x, min_y, max_y))) in styled {
+            if let Some(mut path) = path {
+                path.bounds = Bounds {
+                    origin: point(px(min_x), px(min_y)),
+                    size: size(px(max_x - min_x), px(max_y - min_y)),
+                };
+                window.paint_path(path, rgb(color));
+            }
         }
         // The preview way's vertices (only this one way's, so hovering costs
         // a handful of quads): the ones no other rule shows.
@@ -10137,6 +10294,63 @@ mod tests {
             NodeForm::Simple(node_markers::SIMPLE_SIZE)
         );
         assert_eq!(layer.node_form_at(&pins, stray, 2000, 18.5), NodeForm::Full);
+    }
+
+    #[test]
+    fn a_stylesheet_with_square_and_cross_markers_shows_every_node_from_z16() {
+        let mut layer = way_with_poi_layer(5);
+        let wire = crate::style::custom::BUILT_IN_STYLES
+            .iter()
+            .find(|s| s.id == "wireframe")
+            .unwrap();
+        layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
+        let pins = layer.pins();
+        let vertex = layer.node_cache.index_by_id[&3];
+        let poi = layer.node_cache.index_by_id[&1000];
+        let stray = layer.node_cache.index_by_id[&2000];
+        let form = |idx, id, z| layer.node_form_at(&pins, idx, id, z);
+        // Vertices are hidden when zoomed out, then a small square.
+        assert_eq!(form(vertex, 3, 15.0), NodeForm::Hidden);
+        let NodeForm::Styled(v) = form(vertex, 3, 16.0) else {
+            panic!("vertex should be styled");
+        };
+        assert_eq!(v.shape, crate::style::mapcss::NodeShape::Square);
+        // Tagged and free-standing nodes are crosses.
+        let NodeForm::Styled(p) = form(poi, 1000, 16.0) else {
+            panic!("poi should be styled");
+        };
+        assert_eq!(p.shape, crate::style::mapcss::NodeShape::Cross);
+        let NodeForm::Styled(f) = form(stray, 2000, 19.0) else {
+            panic!("free node should be styled");
+        };
+        assert_eq!(f.shape, crate::style::mapcss::NodeShape::Cross);
+        assert!(NodeForm::Styled(v).hit_radius() > 0.0);
+    }
+
+    #[test]
+    fn relation_membership_restyles_ways_when_a_relation_changes() {
+        let mut layer = way_with_poi_layer(5);
+        let wire = crate::style::custom::BUILT_IN_STYLES
+            .iter()
+            .find(|s| s.id == "wireframe")
+            .unwrap();
+        layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
+        let idx = layer.way_id_to_index[&100];
+        assert_eq!(layer.way_styles[idx].casing_width, 0.0);
+        let members = vec![crate::osm::OsmMember {
+            member_type: crate::osm::MemberType::Way,
+            reference: 100,
+            role: String::new(),
+        }];
+        let rel = layer.create_relation(vec![], members.clone()).unwrap();
+        assert!(layer.way_styles[idx].casing_width > 0.0);
+        let snapshot = layer.delete_relation(rel).unwrap();
+        assert_eq!(layer.way_styles[idx].casing_width, 0.0);
+        assert!(layer.restore_relation(snapshot));
+        assert!(layer.way_styles[idx].casing_width > 0.0);
+        let rel2 = layer.relations()[0].id;
+        layer.set_relation_members(rel2, vec![]).unwrap();
+        assert_eq!(layer.way_styles[idx].casing_width, 0.0);
     }
 
     #[test]
