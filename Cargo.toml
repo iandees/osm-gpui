@@ -1,6 +1,6 @@
 [package]
 name = "osm-gpui"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "A high-performance map rendering system built with Rust and the GPUI framework"
 license = "MIT"
