@@ -121,6 +121,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|layer| layer.as_osm())
             .filter(|layer| layer.is_modified())
             .map(|layer| {
                 let (created, modified, deleted) = layer.diff_for_upload().counts();

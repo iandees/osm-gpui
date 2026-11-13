@@ -77,14 +77,14 @@ impl MapViewer {
             .layers()
             .iter()
             .map(|layer| {
-                let is_osm = layer.as_editable().is_some();
+                let osm = layer.as_osm();
                 (
                     layer.id(),
                     layer.name().to_string(),
                     layer.is_visible(),
-                    layer.is_modified(),
-                    is_osm,
-                    layer.imagery_offset(),
+                    osm.is_some_and(|o| o.is_modified()),
+                    osm.is_some(),
+                    layer.as_imagery().map(|i| i.imagery_offset()),
                 )
             })
             .collect();
@@ -1309,9 +1309,7 @@ impl MapViewer {
                                 .layer_manager
                                 .layers()
                                 .get(index)
-                                .and_then(|l| {
-                                    l.as_any().downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-                                })
+                                .and_then(|l| l.as_reference())
                                 .map(|l| l.format().tag());
                             let trace_style = self
                                 .layer_manager

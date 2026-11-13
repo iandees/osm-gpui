@@ -654,7 +654,6 @@ impl PastedFeatures {
 mod tests {
     use super::*;
     use crate::layers::osm_layer::OsmLayer;
-    use crate::layers::MapLayer;
     use crate::osm::{OsmData, OsmNode, OsmRelation, OsmWay};
     use std::sync::Arc;
 

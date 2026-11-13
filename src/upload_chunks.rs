@@ -446,10 +446,13 @@ pub struct CompletedChunk {
 /// advances the layer's baseline by just its own objects and leaves the rest
 /// pending.
 pub fn apply_to_layer(layer: &mut dyn crate::layers::MapLayer, done: &CompletedChunk) {
+    let Some(osm) = layer.as_osm_mut() else {
+        return;
+    };
     if done.last {
-        layer.apply_upload_result(&done.result);
+        osm.apply_upload_result(&done.result);
     } else {
-        layer.apply_chunk_result(&done.result, &done.chunk);
+        osm.apply_chunk_result(&done.result, &done.chunk);
     }
 }
 

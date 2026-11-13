@@ -133,7 +133,7 @@ pub(crate) fn trace_style_menu(
 
 /// The trace style of `layer` if it is a GPS Traces layer.
 pub(crate) fn trace_style_of(layer: &dyn osm_gpui::layers::MapLayer) -> Option<TraceStyle> {
-    let r = layer.as_any().downcast_ref::<ReferenceLayer>()?;
+    let r = layer.as_reference()?;
     (r.format() == Format::OsmTraces).then(|| *r.trace_style())
 }
 
@@ -169,6 +169,7 @@ impl MapViewer {
             .layers()
             .iter()
             .filter(|l| l.is_visible())
+            .filter_map(|l| l.as_osm())
             .flat_map(|l| l.download_rects().iter().map(osm_gpui::notes::merc_to_geo))
             .collect();
         let cells = match gps_traces::plan(&downloaded, &self.viewport.visible_bounds()) {
@@ -307,8 +308,7 @@ impl MapViewer {
             return;
         };
         let Some(layer) = layer
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<ReferenceLayer>())
+            .as_reference_mut()
             .filter(|l| l.format() == Format::OsmTraces)
         else {
             return;

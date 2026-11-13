@@ -210,6 +210,7 @@ impl MapViewer {
             .layers()
             .iter()
             .filter(|l| l.is_visible())
+            .filter_map(|l| l.as_osm())
             .flat_map(|l| l.download_rects().iter().map(notes::merc_to_geo))
             .collect();
         let view = self.viewport.visible_bounds();

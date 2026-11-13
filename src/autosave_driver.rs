@@ -11,7 +11,7 @@ use std::time::Instant;
 use gpui::{AppContext as _, Context, Window};
 
 use osm_gpui::autosave::{self, CrashedSession, RecoverableLayer, Session, Snapshot, Tracker};
-use osm_gpui::layers::{osm_layer::OsmLayer, LayerId};
+use osm_gpui::layers::{osm_layer::OsmLayer, LayerId, MapLayer};
 use osm_gpui::osm::{FileEdits, OsmData};
 use osm_gpui::script::AutosaveCmd;
 use osm_gpui::settings_store;
@@ -210,7 +210,12 @@ impl MapViewer {
 
         let now = Instant::now();
         let mut jobs: Vec<(u64, u64, Snapshot)> = Vec::new();
-        for layer in self.layer_manager.layers() {
+        for layer in self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+        {
             let id = layer.id();
             let revision = layer.edit_revision();
             if !state.tracker.poll(now, id.0, revision, layer.is_modified()) {
@@ -568,7 +573,12 @@ impl MapViewer {
         if state.busy > 0 {
             return Err("a restore or discard is still running".into());
         }
-        for layer in self.layer_manager.layers() {
+        for layer in self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+        {
             if !state
                 .tracker
                 .is_settled(layer.id().0, layer.edit_revision(), layer.is_modified())

@@ -3758,7 +3758,13 @@ mod tests {
         assert_eq!(per_layer.len(), 1);
         assert_eq!(per_layer[0].1.len(), 4);
         assert_ne!(node_positions(&f), before);
-        assert!(f.layers.find_layer(f.layer_id).unwrap().is_modified());
+        assert!(f
+            .layers
+            .find_layer(f.layer_id)
+            .unwrap()
+            .as_osm()
+            .unwrap()
+            .is_modified());
 
         // Squaring again finds nothing left to do.
         let again = (find("square").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id));
@@ -4074,8 +4080,12 @@ mod tests {
                 .as_editable()
                 .unwrap()
         }
-        fn layer(&self) -> &dyn osm_gpui::layers::MapLayer {
-            self.layers.find_layer(self.layer_id).unwrap()
+        fn layer(&self) -> &osm_gpui::layers::osm_layer::OsmLayer {
+            self.layers
+                .find_layer(self.layer_id)
+                .unwrap()
+                .as_osm()
+                .unwrap()
         }
         fn applicable(&self, sel: &[FeatureRef]) -> Vec<&'static str> {
             let e = ActionEnv {

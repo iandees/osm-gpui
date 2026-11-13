@@ -978,7 +978,10 @@ impl MapViewer {
         let layer = self
             .active_layer
             .and_then(|id| self.layer_manager.find_layer(id))?;
-        let (created, modified, deleted) = layer.diff_for_upload().counts();
+        let Some(osm) = layer.as_osm() else {
+            return Some(0);
+        };
+        let (created, modified, deleted) = osm.diff_for_upload().counts();
         Some(created + modified + deleted)
     }
 
@@ -998,16 +1001,15 @@ impl MapViewer {
             Check::NodeShared { node, ways } => self.script_check_node_shared(*node, ways),
             Check::Layer { kind, name } => {
                 let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
-                    use osm_gpui::layers::reference_layer::ReferenceLayer;
                     use osm_gpui::reference::Format;
-                    if let Some(r) = layer.as_any().downcast_ref::<ReferenceLayer>() {
+                    if let Some(r) = layer.as_reference() {
                         match r.format() {
                             Format::Gpx | Format::OsmTraces => script::LayerKind::Gpx,
                             Format::GeoJson => script::LayerKind::GeoJson,
                         }
                     } else if layer.as_editable().is_some() {
                         script::LayerKind::Osm
-                    } else if layer.imagery_offset().is_some() {
+                    } else if layer.as_imagery().is_some() {
                         script::LayerKind::Imagery
                     } else {
                         script::LayerKind::Grid
