@@ -640,6 +640,83 @@ pub enum Op {
     AssertNote(super::note_ops::NoteCheck),
 }
 
+impl Op {
+    /// Whether running this op can write to the OSM server (an upload, a
+    /// conflict resolution, signing in to upload, a note write). The runner
+    /// refuses these unless the active server is the development server. The
+    /// match has no wildcard so a new op must be classified here.
+    pub fn writes_to_server(&self) -> bool {
+        match self {
+            Op::UploadConfirm | Op::ResolveConflict { .. } | Op::SignIn => true,
+            Op::Note(note) => note.is_write(),
+            Op::Window { .. }
+            | Op::Viewport { .. }
+            | Op::WaitIdle { .. }
+            | Op::Wait { .. }
+            | Op::Drag { .. }
+            | Op::Click { .. }
+            | Op::Pointer { .. }
+            | Op::Modifiers { .. }
+            | Op::Scroll { .. }
+            | Op::Key { .. }
+            | Op::Action { .. }
+            | Op::Capture { .. }
+            | Op::Log { .. }
+            | Op::FrameStats { .. }
+            | Op::LoadOsm { .. }
+            | Op::LoadFile { .. }
+            | Op::AssertLayer { .. }
+            | Op::AssertSelectedAt { .. }
+            | Op::AssertMode { .. }
+            | Op::AssertSelected { .. }
+            | Op::Type { .. }
+            | Op::SetTag { .. }
+            | Op::RemoveTag { .. }
+            | Op::SetComment { .. }
+            | Op::UploadDialog(..)
+            | Op::AssertChangesetTag { .. }
+            | Op::UploadCancel
+            | Op::ConfirmDeleteLayer
+            | Op::CancelDeleteLayer
+            | Op::WaitTransfer { .. }
+            | Op::CaptureWhileTransferring { .. }
+            | Op::AssertPending { .. }
+            | Op::AssertStatusContains { .. }
+            | Op::AssertSnap { .. }
+            | Op::AssertWayNodes { .. }
+            | Op::AssertNodeShared { .. }
+            | Op::AssertZoom { .. }
+            | Op::AssertImageryOffset { .. }
+            | Op::AssertAdjustingOffset { .. }
+            | Op::AssertDialog { .. }
+            | Op::AssertSelection { .. }
+            | Op::AssertValidation { .. }
+            | Op::ShowFinding { .. }
+            | Op::AssertValidationPanel { .. }
+            | Op::SetPanelOpen { .. }
+            | Op::AssertPanelOpen { .. }
+            | Op::AssertNativeAppearance { .. }
+            | Op::AssertSelectedCount { .. }
+            | Op::AssertLayerCount { .. }
+            | Op::AssertFindPreview { .. }
+            | Op::ExportLayer { .. }
+            | Op::AutosaveNow
+            | Op::AssertAutosaveExists { .. }
+            | Op::RestoreAutosave
+            | Op::DiscardAutosave
+            | Op::Crash
+            | Op::ShowHistory
+            | Op::LoadHistoryFile { .. }
+            | Op::AssertHistoryVersions { .. }
+            | Op::WaitSignedIn { .. }
+            | Op::AssertSignedIn
+            | Op::AssertServerDev
+            | Op::Pause { .. }
+            | Op::AssertNote(..) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
     pub line_no: usize,
