@@ -8,6 +8,45 @@ pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
 pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 
+/// A node a step created, with what redo needs to recreate it under the same id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NewNode {
+    pub(crate) id: i64,
+    pub(crate) lat: f64,
+    pub(crate) lon: f64,
+}
+
+/// A way a step created together with the nodes created for it. `way` is the
+/// way exactly as it was committed (id, node list, tags), so redo can restore
+/// it; `new_nodes` excludes any nodes the way merely reuses, which undo must
+/// leave alone.
+#[derive(Clone, Debug)]
+pub(crate) struct CreatedWay {
+    pub(crate) way: osm_gpui::selection::DeletedFeatureSnapshot,
+    pub(crate) new_nodes: Vec<NewNode>,
+}
+
+impl CreatedWay {
+    pub(crate) fn new(
+        way_id: i64,
+        way_nodes: Vec<i64>,
+        tags: Vec<(String, String)>,
+        new_nodes: Vec<NewNode>,
+    ) -> Self {
+        CreatedWay {
+            way: osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: osm_gpui::selection::FeatureKind::Way,
+                id: way_id,
+                tags,
+                way_nodes,
+                node_lat_lon: None,
+                version: 0,
+            },
+            new_nodes,
+        }
+    }
+}
+
 /// A single reversible data mutation, recorded on the global undo stack.
 /// Only one kind exists today (produced by committing a drag-to-move), but
 /// the enum leaves room for future mutation kinds (tag edits, deletes, ...)
@@ -65,11 +104,17 @@ pub(crate) enum UndoableAction {
     /// whole way (if `way_created`) or by removing just that node from the
     /// way's node list (if not) — and only deletes `node_id` itself when
     /// `node_created` is true, since a pre-existing node may be shared with
-    /// other ways or carry its own tags.
+    /// other ways or carry its own tags. Redo recreates exactly what undo
+    /// removed, under the same ids.
     ExtendWay {
         layer: LayerId,
         way_id: i64,
         node_id: i64,
+        /// Where `node_id` is, for recreating it on redo.
+        node_lat_lon: (f64, f64),
+        /// The node the way was started from; a created way's node list is
+        /// `[prev_node_id, node_id]`.
+        prev_node_id: i64,
         way_created: bool,
         node_created: bool,
         /// True if the node was prepended (continuing a way from its first
@@ -78,27 +123,15 @@ pub(crate) enum UndoableAction {
     },
     /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
     /// way, committed atomically. Undo deletes the way then all 4 nodes.
-    CreateBuilding {
-        layer: LayerId,
-        way_id: i64,
-        node_ids: [i64; 4],
-    },
+    CreateBuilding { layer: LayerId, created: CreatedWay },
     /// Arc mode's 3rd click: the arc's new nodes + one open, untagged way
-    /// through them, committed atomically. Undo deletes the way then every
-    /// node.
-    CreateArc {
-        layer: LayerId,
-        way_id: i64,
-        node_ids: Vec<i64>,
-    },
+    /// through them (and through any nodes the arc reused), committed
+    /// atomically. Undo deletes the way then every new node.
+    CreateArc { layer: LayerId, created: CreatedWay },
     /// Extrude mode's drag commit: 2 new nodes + one closed, untagged way
     /// off an existing segment. The segment's own 2 nodes are untouched.
     /// Undo deletes the way then the 2 new nodes.
-    ExtrudeWay {
-        layer: LayerId,
-        way_id: i64,
-        new_node_ids: [i64; 2],
-    },
+    ExtrudeWay { layer: LayerId, created: CreatedWay },
     /// Extrude mode's double-click: one new node spliced into an existing
     /// way at `index`. Undo removes it from the way, then deletes it.
     InsertNodeIntoWay {
@@ -106,6 +139,8 @@ pub(crate) enum UndoableAction {
         way_id: i64,
         index: usize,
         node_id: i64,
+        /// Where `node_id` is, for recreating it on redo.
+        node_lat_lon: (f64, f64),
     },
     /// Add mode's 2nd+ click when it snaps onto an existing way: a node
     /// spliced into `snap_way_id` at `snap_index` (like `InsertNodeIntoWay`),
@@ -123,6 +158,11 @@ pub(crate) enum UndoableAction {
         snap_way_id: i64,
         snap_index: usize,
         node_id: i64,
+        /// Where `node_id` is, for recreating it on redo.
+        node_lat_lon: (f64, f64),
+        /// The node the way was started from; a created way's node list is
+        /// `[prev_node_id, node_id]`.
+        prev_node_id: i64,
         /// True if the node was prepended to the drawn way, not appended.
         at_start: bool,
     },
@@ -236,9 +276,11 @@ impl UndoableAction {
             }
             // The helper nodes of a building / extrusion are an
             // implementation detail; the way is what the user made.
-            UndoableAction::CreateBuilding { layer, way_id, .. }
-            | UndoableAction::CreateArc { layer, way_id, .. }
-            | UndoableAction::ExtrudeWay { layer, way_id, .. } => out.push(way(*layer, *way_id)),
+            UndoableAction::CreateBuilding { layer, created }
+            | UndoableAction::CreateArc { layer, created }
+            | UndoableAction::ExtrudeWay { layer, created } => {
+                out.push(way(*layer, created.way.id))
+            }
             UndoableAction::InsertNodeIntoWay {
                 layer,
                 way_id,
@@ -854,8 +896,7 @@ mod undo_stack_tests {
     fn create_building_description() {
         let action = UndoableAction::CreateBuilding {
             layer: LayerId(1),
-            way_id: -1,
-            node_ids: [-1, -2, -3, -4],
+            created: created_way(-1, &[-1, -2, -3, -4]),
         };
         assert_eq!(action.description(), "Created a building");
     }
@@ -864,10 +905,25 @@ mod undo_stack_tests {
     fn extrude_way_description() {
         let action = UndoableAction::ExtrudeWay {
             layer: LayerId(1),
-            way_id: -1,
-            new_node_ids: [-1, -2],
+            created: created_way(-1, &[-1, -2]),
         };
         assert_eq!(action.description(), "Extruded a way");
+    }
+
+    fn created_way(way_id: i64, node_ids: &[i64]) -> super::CreatedWay {
+        super::CreatedWay::new(
+            way_id,
+            node_ids.to_vec(),
+            Vec::new(),
+            node_ids
+                .iter()
+                .map(|&id| super::NewNode {
+                    id,
+                    lat: 0.0,
+                    lon: 0.0,
+                })
+                .collect(),
+        )
     }
 
     fn extend_way(
@@ -880,6 +936,8 @@ mod undo_stack_tests {
             layer: LayerId(1),
             way_id,
             node_id,
+            node_lat_lon: (0.0, 0.0),
+            prev_node_id: 1,
             way_created,
             node_created,
             at_start: false,
@@ -1120,8 +1178,7 @@ mod undo_stack_tests {
 
         let building = UndoableAction::CreateBuilding {
             layer,
-            way_id: -30,
-            node_ids: [-1, -2, -3, -4],
+            created: created_way(-30, &[-1, -2, -3, -4]),
         };
         assert_eq!(building.affected_features(), vec![fref(Way, -30)]);
 
@@ -1132,6 +1189,8 @@ mod undo_stack_tests {
             snap_way_id: 8,
             snap_index: 1,
             node_id: -5,
+            node_lat_lon: (0.0, 0.0),
+            prev_node_id: -6,
             at_start: false,
         };
         assert_eq!(

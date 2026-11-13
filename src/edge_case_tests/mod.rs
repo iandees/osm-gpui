@@ -16,6 +16,7 @@ mod parse_and_export;
 mod relation_sort;
 
 mod purge;
+mod redo_drawing;
 mod reverse;
 mod shared_members;
 mod simplify_way;
