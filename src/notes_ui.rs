@@ -408,6 +408,7 @@ impl MapViewer {
                 .placeholder(tr!("notes.panel.placeholder"))
         });
         self.set_selection(Vec::new());
+        self.close_photo_panel();
         self.notes.store.set_selected(Some(id));
         self.notes.open = Some(OpenNote {
             note,

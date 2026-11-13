@@ -387,6 +387,10 @@ geometry:
 
 settings:
   window_title: "Einstellungen"
+  street_imagery:
+    group: "Straßenfotos"
+    mapillary_token: "Mapillary-Zugriffstoken"
+    mapillary_token_description: "Mapillary benötigt ein Zugriffstoken, um seine Fotos anzuzeigen. Lege unter mapillary.com/dashboard/developers eine Anwendung an und füge ihr Client-Token hier ein."
   save: "Sichern"
   language:
     group: "Sprache"
@@ -660,6 +664,12 @@ action:
     error:
       end_node: "Lösen nicht möglich: Der Knoten ist ein Ende des Weges, es gibt nichts abzulösen (Knoten abtrennen verwenden)"
       not_shared: "Lösen nicht möglich: Kein anderer Weg nutzt den Knoten"
+  extract:
+    label: "Punkt herauslösen"
+    hint: "Einen geschlossenen Weg (z. B. ein Gebäude) mit weiteren Tags außer Gebäude und Adresse wählen, um sie auf einen neuen Punkt zu verschieben"
+    done:
+      one: "%{count} Punkt aus einem Weg herausgelöst"
+      other: "%{count} Punkte aus Wegen herausgelöst"
   delete_segment:
     label: "Wegsegment löschen"
     hint: "Zwei benachbarte Knoten eines Weges wählen, um das Segment dazwischen zu löschen"
@@ -885,6 +895,8 @@ dialog:
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
+    mapillary_title: "Mapillary-Zugriffstoken nötig"
+    mapillary_body: "Mapillary liefert Fotos nur an Anwendungen mit Zugriffstoken. Öffne die Einstellungen und füge unter Straßenfotos auf der Seite Hintergrundbild ein Token ein. Du kannst eines unter mapillary.com/dashboard/developers anlegen."
     notes_title: "Für Hinweise anmelden"
     notes_body: "Zum Erstellen, Kommentieren, Schließen oder Wiedereröffnen von Hinweisen ist die Anmeldung bei OpenStreetMap nötig. Wenn du dich angemeldet hast, bevor Hinweise unterstützt wurden, melde dich erneut an, um die zusätzliche Berechtigung zu erteilen. Die Einstellungen öffnen, um sich anzumelden."
     open_settings: "Einstellungen öffnen"
@@ -1202,6 +1214,34 @@ validator:
     tag_whitespace: "Das Tag „%{key}“ hat führende oder abschließende Leerzeichen"
     fixme: "Enthält einen Korrekturhinweis: %{key}=%{value}"
     deprecated_tag: "Veraltetes Tag %{old}; stattdessen %{new} verwenden"
+street_imagery:
+  menu:
+    mapillary: "Mapillary-Fotos anzeigen"
+    fotoshi: "Fotoshi-Fotos anzeigen"
+    refresh: "Straßenfotos aktualisieren"
+  layer_name: "%{provider}-Fotos"
+  state:
+    loading: "%{provider}-Fotos werden geladen …"
+    loaded:
+      one: "%{provider}: 1 Foto"
+      other: "%{provider}: %{count} Fotos"
+    truncated: "%{provider}: die ersten %{count} Fotos werden angezeigt; zum Anzeigen weiterer hineinzoomen"
+    zoom_in: "Zum Anzeigen der %{provider}-Fotos hineinzoomen"
+    no_token: "Trage in den Einstellungen ein Mapillary-Zugriffstoken ein, um Mapillary-Fotos zu sehen"
+    unauthorized: "Mapillary hat das Zugriffstoken abgelehnt; prüfe es in den Einstellungen"
+    rate_limited: "Anfragelimit von %{provider} erreicht; versuche es später erneut"
+    fetch_failed: "%{provider}-Fotos konnten nicht geladen werden: %{detail}"
+  panel:
+    title: "Straßenfoto"
+    close: "Foto schließen"
+    loading: "Foto wird geladen …"
+    load_failed: "Das Foto konnte nicht geladen werden"
+    open_in_browser: "Auf %{provider} öffnen"
+    captured: "Aufgenommen am %{date}"
+    by: "von %{creator}"
+    license: "Lizenz: %{license}"
+    heading: "Blickrichtung %{degrees}°"
+
 notes:
   layer_name: "Hinweise"
   menu:

@@ -178,6 +178,10 @@ pub struct AppSettings {
     /// in older files, meaning the defaults.
     #[serde(default)]
     pub gps_trace_style: crate::trace_style::TraceStyle,
+    /// Mapillary access token (a client token from the Mapillary developer
+    /// dashboard), needed to show Mapillary street imagery. Empty when unset.
+    #[serde(default)]
+    pub mapillary_token: String,
 }
 
 /// A saved window placement in logical pixels (screen coordinates).
@@ -297,6 +301,7 @@ impl Default for AppSettings {
             last_map_view: None,
             window_bounds: None,
             gps_trace_style: Default::default(),
+            mapillary_token: String::new(),
         }
     }
 }
@@ -376,6 +381,19 @@ pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     let mut settings = snapshot();
     settings.suggest_from_taginfo = on;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the Mapillary access token, on top of the store's current
+/// settings. Surrounding whitespace is dropped. Written to disk when
+/// `persist` is true.
+pub fn set_mapillary_token(token: &str, persist: bool) {
+    let mut settings = snapshot();
+    settings.mapillary_token = token.trim().to_string();
     if persist {
         update_store(settings);
     } else {
@@ -638,6 +656,7 @@ mod tests {
                 color_by: crate::trace_style::ColorBy::Speed,
                 ..Default::default()
             },
+            mapillary_token: "MLY|123|abc".into(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -855,6 +874,7 @@ mod tests {
             last_map_view: None,
             window_bounds: None,
             gps_trace_style: Default::default(),
+            mapillary_token: String::new(),
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);

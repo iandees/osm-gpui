@@ -1034,9 +1034,97 @@ pub fn plan_delete_segment(
     })
 }
 
+/// How Extract Point divides a closed way's tags between the way and the new
+/// point.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ExtractSplit {
+    /// Tags that leave the way and go onto the new node.
+    pub moved: Vec<(String, String)>,
+    /// Tags the node gets a copy of while the way keeps them (`source`).
+    pub copied: Vec<(String, String)>,
+    /// The way would lose everything that makes it an area, so it gets
+    /// `area=yes` to stay one.
+    pub add_area: bool,
+}
+
+/// Whether a tag describes the way itself (the building, its address, its
+/// shape) rather than something located in it, so Extract Point leaves it.
+fn stays_on_area(key: &str) -> bool {
+    matches!(
+        key,
+        "building"
+            | "area"
+            | "type"
+            | "height"
+            | "min_height"
+            | "layer"
+            | "architect"
+            | "nycdoitt:bin"
+            | "ref:nycdoitt:bin"
+    ) || ["addr:", "building:", "roof:"]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
+/// Split a closed way's tags for Extract Point (what iD's and JOSM's Extract
+/// do): the building and address tags stay, `source` stays and is also
+/// copied, and every other tag (the point of interest) moves to the new
+/// node. `moved` is empty when there is nothing to extract.
+pub fn extract_split(tags: &[(String, String)]) -> ExtractSplit {
+    let mut split = ExtractSplit::default();
+    for (key, value) in tags {
+        let pair = (key.clone(), value.clone());
+        if key == "source" || key.starts_with("source:") {
+            split.copied.push(pair);
+        } else if !stays_on_area(key) {
+            split.moved.push(pair);
+        }
+    }
+    if split.moved.is_empty() {
+        split.copied.clear();
+        return split;
+    }
+    split.add_area = !tags.iter().any(|(k, _)| k == "building" || k == "area");
+    split
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_moves_the_poi_and_keeps_building_and_address() {
+        let split = extract_split(&tags(&[
+            ("building", "retail"),
+            ("building:levels", "2"),
+            ("addr:housenumber", "5"),
+            ("shop", "bakery"),
+            ("name", "Bread"),
+            ("source", "survey"),
+        ]));
+        assert_eq!(split.moved, tags(&[("shop", "bakery"), ("name", "Bread")]));
+        assert_eq!(split.copied, tags(&[("source", "survey")]));
+        assert!(!split.add_area);
+    }
+
+    #[test]
+    fn extract_has_nothing_to_move_for_a_plain_building() {
+        let split = extract_split(&tags(&[("building", "yes"), ("addr:street", "Elm")]));
+        assert!(split.moved.is_empty() && split.copied.is_empty() && !split.add_area);
+        assert_eq!(
+            extract_split(&tags(&[("source", "x")])),
+            ExtractSplit::default()
+        );
+    }
+
+    #[test]
+    fn extract_keeps_a_non_building_area_an_area() {
+        let split = extract_split(&tags(&[("amenity", "parking")]));
+        assert_eq!(split.moved, tags(&[("amenity", "parking")]));
+        assert!(split.add_area);
+        let split = extract_split(&tags(&[("amenity", "parking"), ("area", "yes")]));
+        assert!(!split.add_area);
+    }
 
     fn way(id: i64, nodes: &[i64], tags: &[(&str, &str)]) -> JoinWay {
         JoinWay {

@@ -143,7 +143,9 @@ impl MapViewer {
         let selection_header = self.render_selection_header(cx);
 
         // An open note takes the Selection zone's place.
-        let note_section = self.render_note_section(cx);
+        let note_section = self
+            .render_note_section(cx)
+            .or_else(|| self.render_photo_section(cx));
         let note_open = note_section.is_some();
         let (note_title, note_status, note_body) = match note_section {
             Some((title, status, body)) => (Some(title), Some(status), Some(body)),

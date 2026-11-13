@@ -397,6 +397,20 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 3),
         apply: apply_simplify,
     },
+    SelectionAction {
+        id: "extract",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        in_tools_menu: true,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            !extract_plans(editable, layer_id, env.selection).is_empty()
+        },
+        apply: apply_extract,
+    },
     // Copy, Paste, Paste at Source Position and Duplicate need the pointer
     // position and the window's clipboard, so `MapViewer::run_selection_action`
     // hands them to `clipboard_actions` instead of calling `apply`.
@@ -1257,6 +1271,111 @@ fn apply_join(
         status: label,
         clear_selection: false,
         select: Some(vec![way_ref(plan.keep)]),
+        continue_way: None,
+    })
+}
+
+/// One selected closed way Extract Point can pull a point out of.
+struct ExtractPlan {
+    way: FeatureRef,
+    at: LatLon,
+    split: topology::ExtractSplit,
+}
+
+/// The selected closed ways of the active layer that have tags to extract,
+/// each with where the new point goes: the pole of inaccessibility, so it
+/// lies inside even a concave outline.
+fn extract_plans(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Vec<ExtractPlan> {
+    selected_ways_in(editable, layer_id, selection)
+        .into_iter()
+        .filter(|w| w.node_ids.len() >= 4 && w.node_ids.first() == w.node_ids.last())
+        .filter_map(|w| {
+            let way = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Way,
+                id: w.way_id,
+            };
+            let split = topology::extract_split(&editable.feature_tags(&way)?);
+            if split.moved.is_empty() {
+                return None;
+            }
+            let projection = geometry::LocalProjection::new(w.points[0]);
+            let ring: Vec<osm_gpui::polylabel::Pt> =
+                w.points.iter().map(|&p| projection.project(p)).collect();
+            let pole = osm_gpui::polylabel::polylabel(&[&ring], 0.05)?;
+            let at = if pole.dist > 0.0 {
+                projection.unproject((pole.x, pole.y))
+            } else {
+                geometry::mean_point(&w.points)
+            };
+            Some(ExtractPlan { way, at, split })
+        })
+        .collect()
+}
+
+/// Extract Point: for each selected closed way, a new node inside it takes
+/// the tags that describe what is there (shop, name, ...) while the way
+/// keeps its building and address tags. One undo step; the new points end up
+/// selected.
+fn apply_extract(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let plans = extract_plans(editable, layer_id, selection);
+    if plans.is_empty() {
+        return Err(tr!("action.extract.hint").to_string());
+    }
+
+    let mut actions = Vec::new();
+    let mut created = Vec::new();
+    for plan in plans {
+        let (lat, lon) = plan.at;
+        let id = editable
+            .create_node(lat, lon, None)
+            .expect("the layer has data, since the way exists");
+        let node = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id,
+        };
+        actions.push(UndoableAction::CreateNode {
+            layer: layer_id,
+            id,
+            lat,
+            lon,
+        });
+        let mut entries = Vec::new();
+        for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
+            editable.set_tag(FeatureKind::Node, id, key, value);
+            entries.push((node, key.clone(), None, Some(value.clone())));
+        }
+        for (key, value) in &plan.split.moved {
+            editable.remove_tag(FeatureKind::Way, plan.way.id, key);
+            entries.push((plan.way, key.clone(), Some(value.clone()), None));
+        }
+        if plan.split.add_area {
+            editable.set_tag(FeatureKind::Way, plan.way.id, "area", "yes");
+            entries.push((plan.way, "area".to_string(), None, Some("yes".to_string())));
+        }
+        actions.push(UndoableAction::SetTags { entries });
+        created.push(node);
+    }
+
+    let label = tr_count!("action.extract.done", created.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::Batch {
+            label: label.clone(),
+            actions,
+        }),
+        status: label,
+        clear_selection: true,
+        select: Some(created),
         continue_way: None,
     })
 }
@@ -4218,6 +4337,68 @@ mod tests {
         list.iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn extract_moves_poi_tags_onto_a_new_node_inside_the_building() {
+        let mut n = net();
+        for (k, v) in [
+            ("shop", "bakery"),
+            ("name", "Bread"),
+            ("addr:housenumber", "5"),
+        ] {
+            n.tag(FeatureKind::Way, 108, k, v);
+        }
+        let ring = n.ways(&[108]);
+        assert!(n.applicable(&ring).contains(&"extract"));
+
+        let out = n.run("extract", &ring).unwrap();
+        assert_eq!(out.status, "Extracted 1 point from a way");
+        let new = out.select.as_ref().unwrap()[0];
+        assert!(new.kind == FeatureKind::Node && new.id < 0);
+        assert!(out.clear_selection);
+
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 108),
+            pairs(&[("addr:housenumber", "5"), ("building", "yes")])
+        );
+        assert_eq!(
+            n.tags_of(FeatureKind::Node, new.id),
+            pairs(&[("name", "Bread"), ("shop", "bakery")])
+        );
+        // Inside the ring's bounding box.
+        let (lat, lon) = n.editable().node_lat_lon(new.id).unwrap();
+        let pts: Vec<_> = [14, 15, 16]
+            .iter()
+            .map(|&i| n.editable().node_lat_lon(i).unwrap())
+            .collect();
+        let range = |f: fn(&(f64, f64)) -> f64| {
+            let v: Vec<f64> = pts.iter().map(f).collect();
+            (
+                v.iter().cloned().fold(f64::MAX, f64::min),
+                v.iter().cloned().fold(f64::MIN, f64::max),
+            )
+        };
+        let (la, lb) = range(|p| p.0);
+        let (oa, ob) = range(|p| p.1);
+        assert!((la..=lb).contains(&lat) && (oa..=ob).contains(&lon));
+
+        // Nothing left to extract.
+        assert!(!n.applicable(&ring).contains(&"extract"));
+        assert!(n.run("extract", &ring).is_err());
+        // Open ways never qualify.
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"extract"));
+
+        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
+            panic!("expected one Batch step");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                UndoableAction::CreateNode { .. },
+                UndoableAction::SetTags { .. }
+            ]
+        ));
     }
 
     #[test]

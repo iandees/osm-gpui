@@ -393,6 +393,10 @@ geometry:
 
 settings:
   window_title: "Settings"
+  street_imagery:
+    group: "Street imagery"
+    mapillary_token: "Mapillary access token"
+    mapillary_token_description: "Mapillary needs an access token to show its photos. Create an application at mapillary.com/dashboard/developers and paste its client token here."
   save: "Save"
   language:
     group: "Language"
@@ -666,6 +670,12 @@ action:
     error:
       end_node: "Can't unjoin: the node is an end of the way, so there is nothing to pull it off (use Separate Node)"
       not_shared: "Can't unjoin: no other way uses the node"
+  extract:
+    label: "Extract Point"
+    hint: "Select a closed way (such as a building) that has tags besides building and address to move them onto a new point"
+    done:
+      one: "Extracted %{count} point from a way"
+      other: "Extracted %{count} points from ways"
   delete_segment:
     label: "Delete Way Segment"
     hint: "Select two nodes that are next to each other in a way to delete the segment between them"
@@ -900,6 +910,8 @@ dialog:
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
+    mapillary_title: "Mapillary access token needed"
+    mapillary_body: "Mapillary only serves photos to apps with an access token. Open Settings, then paste a token in Street imagery on the Imagery page. You can create one at mapillary.com/dashboard/developers."
     notes_title: "Sign in to work with notes"
     notes_body: "You need to sign in to OpenStreetMap to create, comment on, close or reopen notes. If you signed in before notes were supported, sign in again to grant the extra permission. Open Settings to sign in."
     open_settings: "Open Settings"
@@ -1230,6 +1242,34 @@ validator:
     tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
     fixme: "Has a note to fix: %{key}=%{value}"
     deprecated_tag: "Deprecated tag %{old}; use %{new}"
+street_imagery:
+  menu:
+    mapillary: "Show Mapillary Photos"
+    fotoshi: "Show Fotoshi Photos"
+    refresh: "Refresh Street Imagery"
+  layer_name: "%{provider} photos"
+  state:
+    loading: "Loading %{provider} photos…"
+    loaded:
+      one: "%{provider}: 1 photo"
+      other: "%{provider}: %{count} photos"
+    truncated: "%{provider}: showing the first %{count} photos; zoom in for more"
+    zoom_in: "Zoom in to see %{provider} photos"
+    no_token: "Add a Mapillary access token in Settings to see Mapillary photos"
+    unauthorized: "Mapillary refused the access token; check it in Settings"
+    rate_limited: "%{provider} rate limit reached; try again later"
+    fetch_failed: "Could not load %{provider} photos: %{detail}"
+  panel:
+    title: "Street photo"
+    close: "Close photo"
+    loading: "Loading photo…"
+    load_failed: "Could not load the photo"
+    open_in_browser: "Open on %{provider}"
+    captured: "Taken %{date}"
+    by: "by %{creator}"
+    license: "License: %{license}"
+    heading: "Facing %{degrees}°"
+
 notes:
   layer_name: "Notes"
   menu:
