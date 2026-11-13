@@ -46,8 +46,8 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     let clamped_lat = lat.clamp(-85.051128779807, 85.051128779807);
 
     // Standard Web Mercator projection (EPSG:3857)
-    let x = lon * 20037508.34 / 180.0;
-    let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * 20037508.34 / PI;
+    let x = lon * MERCATOR_HALF_WORLD_M / 180.0;
+    let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * MERCATOR_HALF_WORLD_M / PI;
 
     // Ensure finite values
     let x = if x.is_finite() { x } else { 0.0 };
@@ -56,22 +56,49 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     (x, y)
 }
 
-pub fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
-    let lon = x * 180.0 / 20037508.34;
-    let lat = (2.0 * (y * PI / 20037508.34).exp().atan() - PI / 2.0) * 180.0 / PI;
+/// Half the width of the Web Mercator world in metres (the projection's
+/// radius times pi); the extent of EPSG:3857 on both axes.
+pub const MERCATOR_HALF_WORLD_M: f64 = 20037508.34;
 
-    // Ensure finite values and clamp to valid ranges
-    let lat = if lat.is_finite() {
-        lat.clamp(-85.051128779807, 85.051128779807)
-    } else {
-        0.0
-    };
+/// Equatorial circumference in metres, as the zoom-to-scale maths uses it.
+/// Slightly different from `2 * MERCATOR_HALF_WORLD_M`; both are kept because
+/// each is what its callers have always been calibrated against.
+pub const WORLD_WIDTH_M: f64 = 40075016.686;
+
+/// Latitude where Web Mercator ends: the projection is undefined beyond it.
+const MAX_MERCATOR_LAT: f64 = 85.051128779807;
+
+/// Inverse of `lat_lon_to_mercator`: latitude clamped to the projection's
+/// limit, longitude clamped to [-180, 180].
+pub fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
+    let (lat, lon) = unproject(x, y);
     let lon = if lon.is_finite() {
         lon.clamp(-180.0, 180.0)
     } else {
         0.0
     };
+    (lat, lon)
+}
 
+/// Like `mercator_to_lat_lon`, but a longitude beyond the antimeridian wraps
+/// around into [-180, 180] instead of sticking to the edge.
+pub fn mercator_to_lat_lon_wrapped(x: f64, y: f64) -> (f64, f64) {
+    let (lat, mut lon) = unproject(x, y);
+    if !(-180.0..=180.0).contains(&lon) {
+        lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    }
+    (lat, if lon.is_finite() { lon } else { 0.0 })
+}
+
+/// Latitude (clamped, 0 if not finite) and unclamped longitude of a point.
+fn unproject(x: f64, y: f64) -> (f64, f64) {
+    let lon = x * 180.0 / MERCATOR_HALF_WORLD_M;
+    let lat = (2.0 * (y * PI / MERCATOR_HALF_WORLD_M).exp().atan() - PI / 2.0) * 180.0 / PI;
+    let lat = if lat.is_finite() {
+        lat.clamp(-MAX_MERCATOR_LAT, MAX_MERCATOR_LAT)
+    } else {
+        0.0
+    };
     (lat, lon)
 }
 
@@ -109,7 +136,7 @@ impl CoordinateTransform {
 
         // Calculate the scale factor for this zoom level
         // At zoom level 0, the entire world (40075016.686 m) fits in 256 pixels
-        let world_width_meters = 40075016.686; // Earth's circumference
+        let world_width_meters = WORLD_WIDTH_M;
         let tile_size = 256.0;
         let world_width_pixels = tile_size * 2.0_f64.powf(zoom_level);
         let meters_per_pixel = world_width_meters / world_width_pixels;
@@ -409,7 +436,7 @@ pub fn fit_bounds_to_viewport(
     let bbox_height = (max_y - min_y).abs();
 
     // Calculate zoom to fit bbox in screen
-    let world_width_meters = 40075016.686;
+    let world_width_meters = WORLD_WIDTH_M;
     let tile_size = 256.0;
     let zoom_x = if flat_lon {
         f64::INFINITY
@@ -479,6 +506,14 @@ pub fn validate_coords(lat: f64, lon: f64) -> Option<(f64, f64)> {
 mod tests {
     use super::*;
     use gpui::{px, size};
+
+    #[test]
+    fn mercator_to_lat_lon_clamps_longitude_past_the_antimeridian() {
+        let (_, lon) = mercator_to_lat_lon(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
+        assert_eq!(lon, 180.0);
+        let (_, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
+        assert!((lon - -90.0).abs() < 1e-9);
+    }
 
     #[test]
     fn mercator_round_trips_over_a_grid() {

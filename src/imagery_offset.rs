@@ -10,16 +10,11 @@
 //! The offset is applied to where imagery pixels are painted only: OSM data,
 //! the grid, hit-testing and every coordinate stay where they are.
 
+use crate::coordinates::WORLD_WIDTH_M;
 use crate::persist::{self, JsonStore, WriteOpts};
-use crate::tiles::TileCoord;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Circumference of the Earth at the equator in Web Mercator metres; the same
-/// constant `CoordinateTransform` uses.
-const WORLD_WIDTH_M: f64 = 40_075_016.686;
-/// Half the width of the Web Mercator world, in metres.
-const WORLD_HALF_M: f64 = 20_037_508.34;
 /// Edge of a tile in screen pixels at its own zoom.
 const TILE_PX: f64 = 256.0;
 
@@ -145,33 +140,6 @@ pub fn parse_metres(text: &str) -> Option<f64> {
         .replace(',', ".");
     let value: f64 = cleaned.parse().ok()?;
     value.is_finite().then_some(value)
-}
-
-/// The tiles at `zoom` that must be fetched and painted so that every pixel of
-/// a view covering the Web Mercator box `[min_x, max_x] x [min_y, max_y]` shows
-/// imagery, when the imagery is painted shifted by `(off_x, off_y)` Mercator
-/// metres: the tile under a view pixel is the one at that pixel *minus* the
-/// shift. Clamped to the tile grid.
-pub fn tiles_covering(
-    (min_x, max_x, min_y, max_y): (f64, f64, f64, f64),
-    (off_x, off_y): (f64, f64),
-    zoom: u32,
-) -> Vec<TileCoord> {
-    let n = 1u32.checked_shl(zoom).unwrap_or(u32::MAX);
-    let tile_m = WORLD_HALF_M * 2.0 / n as f64;
-    let max_index = (n - 1) as f64;
-    let col = |mx: f64| ((mx + WORLD_HALF_M) / tile_m).floor().clamp(0.0, max_index) as u32;
-    let row = |my: f64| ((WORLD_HALF_M - my) / tile_m).floor().clamp(0.0, max_index) as u32;
-    let (x0, x1) = (col(min_x - off_x), col(max_x - off_x));
-    // North is up: the largest y is the smallest tile row.
-    let (y0, y1) = (row(max_y - off_y), row(min_y - off_y));
-    let mut tiles = Vec::new();
-    for x in x0..=x1 {
-        for y in y0..=y1 {
-            tiles.push(TileCoord::new(x, y, zoom));
-        }
-    }
-    tiles
 }
 
 /// An offset being adjusted: the value at entry (what Escape goes back to)
@@ -450,86 +418,6 @@ mod tests {
         assert_eq!(parse_metres("abc"), None);
         assert_eq!(parse_metres("NaN"), None);
         assert_eq!(parse_metres(""), None);
-    }
-
-    /// Every pixel of the view, when the imagery is painted shifted, must lie
-    /// on one of the returned tiles.
-    fn assert_covered(view: (f64, f64, f64, f64), off: (f64, f64), zoom: u32) {
-        let tiles = tiles_covering(view, off, zoom);
-        let n = 2f64.powi(zoom as i32);
-        let tile_m = WORLD_HALF_M * 2.0 / n;
-        let (min_x, max_x, min_y, max_y) = view;
-        let steps = 40;
-        for i in 0..=steps {
-            for j in 0..=steps {
-                let px = min_x + (max_x - min_x) * i as f64 / steps as f64;
-                let py = min_y + (max_y - min_y) * j as f64 / steps as f64;
-                // The imagery point painted at this view point.
-                let (sx, sy) = (px - off.0, py - off.1);
-                let tx = ((sx + WORLD_HALF_M) / tile_m).floor() as u32;
-                let ty = ((WORLD_HALF_M - sy) / tile_m).floor() as u32;
-                assert!(
-                    tiles.contains(&TileCoord::new(tx, ty, zoom)),
-                    "view point ({px}, {py}) shifted by {off:?} needs tile {tx},{ty} which is missing"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn tile_coverage_holds_for_offsets_in_every_direction() {
-        let zoom = 18;
-        let tile_m = WORLD_HALF_M * 2.0 / 2f64.powi(zoom as i32);
-        // A 1000 x 700 px view somewhere in the world.
-        let (cx, cy) = (-8_238_000.0, 4_970_000.0);
-        let view = (
-            cx - 500.0 * tile_m / 256.0,
-            cx + 500.0 * tile_m / 256.0,
-            cy - 350.0 * tile_m / 256.0,
-            cy + 350.0 * tile_m / 256.0,
-        );
-        let steps = [0.0, 3.0, -3.0, 0.4 * tile_m, -0.9 * tile_m, 1.0 * tile_m];
-        let big = [2.5 * tile_m, -3.2 * tile_m];
-        for &ox in steps.iter().chain(big.iter()) {
-            for &oy in steps.iter().chain(big.iter()) {
-                assert_covered(view, (ox, oy), zoom);
-            }
-        }
-    }
-
-    #[test]
-    fn zero_offset_selects_exactly_the_view_tiles() {
-        let zoom = 5;
-        let tile_m = WORLD_HALF_M * 2.0 / 32.0;
-        let view = (
-            tile_m * 0.1 - WORLD_HALF_M,
-            tile_m * 1.9 - WORLD_HALF_M,
-            0.0,
-            1.0,
-        );
-        let tiles = tiles_covering(view, (0.0, 0.0), zoom);
-        let xs: std::collections::BTreeSet<u32> = tiles.iter().map(|t| t.x).collect();
-        assert_eq!(xs.into_iter().collect::<Vec<_>>(), vec![0, 1]);
-    }
-
-    #[test]
-    fn tile_coverage_is_clamped_to_the_grid() {
-        let tiles = tiles_covering((-1.0e9, 1.0e9, -1.0e9, 1.0e9), (0.0, 0.0), 2);
-        assert_eq!(tiles.len(), 16);
-        assert!(tiles.iter().all(|t| t.x < 4 && t.y < 4));
-    }
-
-    #[test]
-    fn shifting_east_fetches_tiles_to_the_west() {
-        // Imagery shifted east: the view's west edge now shows imagery that
-        // lies west of it.
-        let zoom = 10;
-        let tile_m = WORLD_HALF_M * 2.0 / 1024.0;
-        let view = (0.5 * tile_m, 1.5 * tile_m, 0.5 * tile_m, 0.6 * tile_m);
-        let plain = tiles_covering(view, (0.0, 0.0), zoom);
-        let shifted = tiles_covering(view, (tile_m, 0.0), zoom);
-        let min_x = |t: &[TileCoord]| t.iter().map(|t| t.x).min().unwrap();
-        assert_eq!(min_x(&shifted) + 1, min_x(&plain));
     }
 
     #[test]

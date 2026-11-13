@@ -2,11 +2,12 @@ use gpui::*;
 use std::sync::{Arc, Mutex};
 
 use crate::coordinates::MAX_MAP_ZOOM;
+use crate::download_bounds::MercRect;
 use crate::imagery::AttributionInfo;
-use crate::imagery_offset::{offset_to_mercator, tiles_covering, ImageryOffset};
+use crate::imagery_offset::{offset_to_mercator, ImageryOffset};
 use crate::layers::{LayerId, MapLayer};
 use crate::tile_cache::TileCache;
-use crate::tiles::{url_from_template, TileCoord};
+use crate::tiles::{tiles_covering, url_from_template, TileCoord};
 use crate::viewport::Viewport;
 
 /// The built-in OpenStreetMap Carto tile URL template.
@@ -97,7 +98,7 @@ impl TileLayer {
     /// the shift, so no strip at the viewport edge is left empty.
     fn visible_tiles(&self, viewport: &Viewport, tile_zoom: u32) -> Vec<TileCoord> {
         tiles_covering(
-            viewport.mercator_view_bounds(),
+            viewport.mercator_view_rect(),
             self.mercator_offset(viewport),
             tile_zoom,
         )
@@ -242,23 +243,6 @@ fn edge_bleed_margin(tile_width_px: f32) -> f32 {
     (0.5 * tile_width_px / TILE_TEXELS).clamp(0.0, 16.0)
 }
 
-/// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
-/// directly from its XYZ grid index (no trig — the XYZ scheme is a
-/// uniform grid in this projected space, so every tile at a given zoom is
-/// exactly the same size). Matches the constant used by
-/// `coordinates::lat_lon_to_mercator`.
-fn tile_mercator_bounds(tile: &TileCoord) -> (f64, f64, f64, f64) {
-    let world_half = 20037508.34_f64;
-    let n = 2.0_f64.powi(tile.z as i32);
-    let tile_size_m = (world_half * 2.0) / n;
-
-    let min_x = -world_half + tile.x as f64 * tile_size_m;
-    let max_x = min_x + tile_size_m;
-    let max_y = world_half - tile.y as f64 * tile_size_m;
-    let min_y = max_y - tile_size_m;
-    (min_x, min_y, max_x, max_y)
-}
-
 /// Screen rect (x, y, width, height) for one tile: each tile is projected
 /// independently at its exact, continuous (sub-pixel) screen position —
 /// deliberately *not* rounded, so tiles move perfectly smoothly and in
@@ -284,7 +268,12 @@ fn tile_screen_rect_shifted(
     tile: &TileCoord,
     (off_x, off_y): (f64, f64),
 ) -> (Pixels, Pixels, Pixels, Pixels) {
-    let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(tile);
+    let MercRect {
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    } = tile.mercator_bounds();
     let top_left = viewport.mercator_to_screen(min_x + off_x, max_y + off_y);
     let bottom_right = viewport.mercator_to_screen(max_x + off_x, min_y + off_y);
 
@@ -503,8 +492,8 @@ impl MapLayer for TileLayer {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, tile_mercator_bounds,
-        tile_screen_rect, TILE_OVERLAP_PX,
+        compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, tile_screen_rect,
+        TILE_OVERLAP_PX,
     };
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
@@ -533,8 +522,8 @@ mod tests {
 
         // Corner mercator coordinate shared by all four tiles: top-left
         // tile's right edge / bottom edge.
-        let (_, min_y_a, max_x_a, _) = tile_mercator_bounds(&tiles[0]);
-        let corner = viewport.mercator_to_screen(max_x_a, min_y_a);
+        let a = tiles[0].mercator_bounds();
+        let corner = viewport.mercator_to_screen(a.max_x, a.min_y);
 
         // The corner must be a comfortable *interior* point of each tile's
         // box, not merely on its boundary — an edge that only touches the
@@ -728,12 +717,18 @@ mod tests {
 
     #[test]
     fn hidpi_slot_is_four_subtiles_of_same_area() {
-        use crate::imagery_offset::tiles_covering;
+        use crate::download_bounds::MercRect;
+        use crate::tiles::tiles_covering;
         // One logical tile slot at z covers exactly 4 tiles at z+1.
-        let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(&TileCoord::new(5, 7, 4));
+        let slot = TileCoord::new(5, 7, 4).mercator_bounds();
         let eps = 1.0;
         let tiles = tiles_covering(
-            (min_x + eps, max_x - eps, min_y + eps, max_y - eps),
+            MercRect::new(
+                slot.min_x + eps,
+                slot.max_x - eps,
+                slot.min_y + eps,
+                slot.max_y - eps,
+            ),
             (0.0, 0.0),
             5,
         );

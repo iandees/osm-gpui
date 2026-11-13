@@ -205,6 +205,13 @@ impl Viewport {
         )
     }
 
+    /// `mercator_view_bounds` as a rectangle.
+    #[inline]
+    pub fn mercator_view_rect(&self) -> crate::download_bounds::MercRect {
+        let (min_x, max_x, min_y, max_y) = self.mercator_view_bounds();
+        crate::download_bounds::MercRect::new(min_x, max_x, min_y, max_y)
+    }
+
     /// Convert screen coordinates to geographic coordinates
     pub fn screen_to_geo(&self, point: Point<Pixels>) -> (f64, f64) {
         self.transform.screen_to_geo(point)

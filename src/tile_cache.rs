@@ -81,16 +81,7 @@ fn cache_filename(url: &str) -> String {
 pub(crate) fn source_key_for_template(template: &str) -> String {
     let mut normalized = template.to_string();
 
-    // Collapse a `{switch:a,b,c}` span to a single marker, mirroring the
-    // span-detection logic in `tiles::url_from_template` (anchored on the
-    // literal "{switch:" prefix, then the next '}').
-    if let Some(start) = normalized.find("{switch:") {
-        if let Some(rel_end) = normalized[start..].find('}') {
-            let end = start + rel_end;
-            normalized.replace_range(start..=end, "s");
-        }
-    }
-    normalized = normalized.replace("{s}", "s");
+    normalized = crate::tiles::collapse_switch(&normalized, "s").replace("{s}", "s");
 
     normalized = normalized.replace("{zoom}", "z");
     normalized = normalized.replace("{z}", "z");
