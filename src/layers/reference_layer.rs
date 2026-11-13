@@ -44,6 +44,54 @@ pub const HIT_TOLERANCE_PX: f32 = 6.0;
 /// Sides of the polygon a marker is drawn as.
 const MARKER_SIDES: usize = 8;
 
+/// Downloaded OSM traces: many overlap, so no casing and a translucent core
+/// (a well-travelled path builds up a darker line), and small plain dots.
+const TRACES_LINE: u32 = 0x00a5d6b3;
+const TRACES_LINE_HW: f32 = 0.75;
+const TRACES_DOT_RADIUS: f32 = 1.5;
+const TRACES_DOT_SIDES: usize = 4;
+const TRACES_MAX_DOTS: usize = 30_000;
+
+/// How one format draws.
+struct Style {
+    line: u32,
+    line_hw: f32,
+    /// `None` draws no casing.
+    casing_hw: Option<f32>,
+    marker_radius: f32,
+    /// `None` draws no halo.
+    halo_radius: Option<f32>,
+    marker_sides: usize,
+    max_markers: usize,
+}
+
+impl Style {
+    fn of(format: Format) -> Style {
+        let file = |line| Style {
+            line,
+            line_hw: LINE_HW,
+            casing_hw: Some(CASING_HW),
+            marker_radius: MARKER_RADIUS,
+            halo_radius: Some(HALO_RADIUS),
+            marker_sides: MARKER_SIDES,
+            max_markers: MAX_MARKERS,
+        };
+        match format {
+            Format::Gpx => file(GPX_LINE),
+            Format::GeoJson => file(GEOJSON_LINE),
+            Format::OsmTraces => Style {
+                line: TRACES_LINE,
+                line_hw: TRACES_LINE_HW,
+                casing_hw: None,
+                marker_radius: TRACES_DOT_RADIUS,
+                halo_radius: None,
+                marker_sides: TRACES_DOT_SIDES,
+                max_markers: TRACES_MAX_DOTS,
+            },
+        }
+    }
+}
+
 pub struct ReferenceLayer {
     id: LayerId,
     name: String,
@@ -92,13 +140,6 @@ impl ReferenceLayer {
             .map(|n| n.lat_lon())
     }
 
-    fn line_color(&self) -> u32 {
-        match self.data.format {
-            Format::Gpx => GPX_LINE,
-            Format::GeoJson => GEOJSON_LINE,
-        }
-    }
-
     /// Cull, project and batch this frame's strokes and markers. Needs no
     /// `Window`, so it can be timed on its own (`examples/reference_bench.rs`).
     pub fn build_scene(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> RefScene {
@@ -114,6 +155,7 @@ impl ReferenceLayer {
             max_y: vmax_y,
         }
         .padded(margin);
+        let style = Style::of(self.data.format);
 
         let mut casing = Batch::new();
         let mut line = Batch::new();
@@ -154,12 +196,12 @@ impl ReferenceLayer {
             };
             polyline.set(pts.iter().copied());
             polyline.emit_layers(&mut [
-                Some(Layer {
+                style.casing_hw.map(|hw| Layer {
                     sink: PathSink {
                         path: &mut casing.path,
                         bounds: &mut casing.bounds,
                     },
-                    hw: CASING_HW,
+                    hw,
                     shape,
                 }),
                 Some(Layer {
@@ -167,7 +209,7 @@ impl ReferenceLayer {
                         path: &mut line.path,
                         bounds: &mut line.bounds,
                     },
-                    hw: LINE_HW,
+                    hw: style.line_hw,
                     shape,
                 }),
             ]);
@@ -175,32 +217,36 @@ impl ReferenceLayer {
 
         // Markers: thin out when there are very many in view.
         let in_view = self.data.visible_markers(&view).count();
-        let stride = in_view.div_ceil(MAX_MARKERS).max(1);
+        let stride = in_view.div_ceil(style.max_markers).max(1);
         for m in self.data.visible_markers(&view).step_by(stride) {
             let (x, y) = proj.to_screen(m.at[0], m.at[1]);
             if !(x.is_finite() && y.is_finite()) {
                 continue;
             }
             let c = (x + ox, y + oy);
-            polygon(
-                &mut PathSink {
-                    path: &mut halo.path,
-                    bounds: &mut halo.bounds,
-                },
-                c,
-                HALO_RADIUS,
-            );
+            if let Some(radius) = style.halo_radius {
+                polygon(
+                    &mut PathSink {
+                        path: &mut halo.path,
+                        bounds: &mut halo.bounds,
+                    },
+                    c,
+                    radius,
+                    style.marker_sides,
+                );
+            }
             polygon(
                 &mut PathSink {
                     path: &mut fill.path,
                     bounds: &mut fill.bounds,
                 },
                 c,
-                MARKER_RADIUS,
+                style.marker_radius,
+                style.marker_sides,
             );
         }
 
-        let color = self.line_color();
+        let color = style.line;
         let mut paths = Vec::new();
         for (rgba, batch) in [
             (CASING, casing),
@@ -216,15 +262,15 @@ impl ReferenceLayer {
     }
 }
 
-/// A filled regular polygon around `c`.
-fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32) {
+/// A filled regular polygon of `sides` sides around `c`.
+fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32, sides: usize) {
     use way_stroke::TriSink;
-    let step = std::f32::consts::TAU / MARKER_SIDES as f32;
+    let step = std::f32::consts::TAU / sides as f32;
     let at = |i: usize| {
         let a = step * i as f32 + step / 2.0;
         (c.0 + radius * a.cos(), c.1 + radius * a.sin())
     };
-    for i in 0..MARKER_SIDES {
+    for i in 0..sides {
         sink.tri(c, at(i), at(i + 1));
     }
 }
@@ -405,6 +451,15 @@ mod tests {
         // Far away: nothing.
         let (vp, bounds) = view(-30.0, 100.0, 17.0);
         assert_eq!(layer.build_scene(&vp, bounds).path_count(), 0);
+    }
+
+    #[test]
+    fn osm_traces_draw_without_casing_or_halos() {
+        let layer = line_layer(1, Format::OsmTraces);
+        let (vp, bounds) = view(40.0, -74.0, 17.0);
+        let scene = layer.build_scene(&vp, bounds);
+        // line and dot fill only
+        assert_eq!(scene.path_count(), 2);
     }
 
     #[test]

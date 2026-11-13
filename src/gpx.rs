@@ -3,6 +3,12 @@
 //! types and symbols are kept; elevation, time and everything else is skipped.
 //!
 //! The document is read as a stream, so a 50 MB track never exists as a tree.
+//!
+//! [`parse_trackpoints`] reads the pages the OSM API returns for
+//! `/api/0.6/trackpoints`. There a segment whose points carry a `<time>` is a
+//! real path (a trackable or identifiable trace), while the points of private
+//! traces come in one segment without times, sorted by position: joined up
+//! they would zigzag across the area, so they are kept as separate points.
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -23,6 +29,8 @@ enum Tag {
     Cmt,
     Type,
     Sym,
+    Url,
+    Time,
     Other,
 }
 
@@ -40,6 +48,8 @@ fn classify(local: &[u8]) -> Tag {
         b"cmt" => Tag::Cmt,
         b"type" => Tag::Type,
         b"sym" => Tag::Sym,
+        b"url" => Tag::Url,
+        b"time" => Tag::Time,
         _ => Tag::Other,
     }
 }
@@ -51,6 +61,8 @@ struct Item {
     props: Vec<(String, String)>,
     /// `(lon, lat)` runs: one per `trkseg`, or the single run of a route.
     segments: Vec<Vec<(f64, f64)>>,
+    /// Per segment: whether any of its points had a `<time>`.
+    timed: Vec<bool>,
     /// A waypoint's position.
     point: Option<(f64, f64)>,
 }
@@ -70,6 +82,7 @@ impl Item {
             Tag::Cmt => "cmt",
             Tag::Type => "type",
             Tag::Sym => "sym",
+            Tag::Url => "url",
             _ => return,
         };
         self.props.push((key.to_string(), text));
@@ -93,10 +106,36 @@ fn position(e: &BytesStart) -> Option<(f64, f64)> {
 
 /// Parse a GPX document.
 pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
+    let mut builder = Builder::new(Format::Gpx);
+    read_into(&mut builder, bytes, false)?;
+    builder.finish()
+}
+
+/// Parse the pages of an OSM API `trackpoints` answer into one layer's data.
+/// Timed segments become tracks, untimed points become
+/// [`FeatureKind::TracePoints`] markers. `NoGeometry` when no page held a
+/// point.
+pub fn parse_trackpoints(pages: &[&[u8]]) -> Result<ReferenceData, RefError> {
+    let mut builder = Builder::new(Format::OsmTraces);
+    for page in pages {
+        read_into(&mut builder, page, true)?;
+    }
+    builder.finish()
+}
+
+/// How many `<trkpt>` elements `bytes` holds, without parsing it: the API
+/// pages trackpoints, and a full page means there may be another.
+pub fn count_trackpoints(bytes: &[u8]) -> usize {
+    const NEEDLE: &[u8] = b"<trkpt";
+    bytes.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count()
+}
+
+/// Read one GPX document into `builder`. With `traces`, segments are split
+/// into paths and loose points as described in the module docs.
+fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), RefError> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
-    let mut builder = Builder::new(Format::Gpx);
     let mut buf = Vec::new();
     let mut stack: Vec<Tag> = Vec::new();
     let mut seen_root = false;
@@ -170,6 +209,14 @@ pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
                 Tag::Trkseg if parent == Some(Tag::Trk) => {
                     if let Some((_, it)) = item.as_mut() {
                         it.segments.push(Vec::new());
+                        it.timed.push(false);
+                    }
+                }
+                Tag::Time if parent == Some(Tag::Trkpt) => {
+                    if let Some((_, it)) = item.as_mut() {
+                        if let Some(t) = it.timed.last_mut() {
+                            *t = true;
+                        }
                     }
                 }
                 Tag::Trkpt if parent == Some(Tag::Trkseg) => {
@@ -186,7 +233,7 @@ pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
                         }
                     }
                 }
-                Tag::Name | Tag::Desc | Tag::Cmt | Tag::Type | Tag::Sym
+                Tag::Name | Tag::Desc | Tag::Cmt | Tag::Type | Tag::Sym | Tag::Url
                     if matches!(parent, Some(Tag::Wpt | Tag::Trk | Tag::Rte)) && item.is_some() =>
                 {
                     text_for = Some(tag);
@@ -206,7 +253,7 @@ pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
             // `stack` now holds the parents of the element that ended.
             let parent = stack.last().copied();
             match tag {
-                Tag::Name | Tag::Desc | Tag::Cmt | Tag::Type | Tag::Sym
+                Tag::Name | Tag::Desc | Tag::Cmt | Tag::Type | Tag::Sym | Tag::Url
                     if text_for == Some(tag) =>
                 {
                     if let Some((_, it)) = item.as_mut() {
@@ -216,7 +263,11 @@ pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
                 }
                 Tag::Wpt | Tag::Trk | Tag::Rte if parent == Some(Tag::Gpx) => {
                     if let Some((kind, it)) = item.take() {
-                        add_item(&mut builder, kind, it)?;
+                        if traces {
+                            add_trace(builder, it)?;
+                        } else {
+                            add_item(builder, kind, it)?;
+                        }
                     }
                 }
                 _ => {}
@@ -230,7 +281,33 @@ pub fn parse(bytes: &[u8]) -> Result<ReferenceData, RefError> {
             crate::tr!("reference.error.not_gpx").to_string(),
         ));
     }
-    builder.finish()
+    Ok(())
+}
+
+/// One `<trk>` of a trackpoints answer: its timed segments as one track
+/// feature, its untimed points as one feature of loose points.
+fn add_trace(builder: &mut Builder, item: Item) -> Result<(), RefError> {
+    let (mut timed, mut loose): (Vec<_>, Vec<_>) = (Vec::new(), Vec::new());
+    for (seg, &has_time) in item.segments.iter().zip(&item.timed) {
+        if has_time {
+            timed.push(seg);
+        } else {
+            loose.push(seg);
+        }
+    }
+    if !timed.is_empty() {
+        let id = builder.feature(FeatureKind::Track, "", item.name, item.props);
+        for seg in timed {
+            builder.line(id, seg)?;
+        }
+    }
+    if loose.iter().any(|s| !s.is_empty()) {
+        let id = builder.feature(FeatureKind::TracePoints, "", None, Vec::new());
+        for &(lon, lat) in loose.into_iter().flatten() {
+            builder.point(id, lon, lat)?;
+        }
+    }
+    Ok(())
 }
 
 fn add_item(builder: &mut Builder, kind: Tag, item: Item) -> Result<(), RefError> {
@@ -368,6 +445,80 @@ mod tests {
             parse(b"<gpx><trk><name>x</name><trkseg/></trk></gpx>").unwrap_err(),
             RefError::NoGeometry
         );
+    }
+
+    /// Shaped like an `/api/0.6/trackpoints` page: an identifiable trace, a
+    /// trackable one (no name, but timed), then private points.
+    const TRACKPOINTS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.0" creator="OpenStreetMap.org" xmlns="http://www.topografix.com/GPX/1/0">
+  <trk>
+    <name>20190626.gpx</name>
+    <desc>Footpath near station</desc>
+    <url>https://www.openstreetmap.org/user/someone/traces/123</url>
+    <trkseg>
+      <trkpt lat="51.5" lon="-0.1"><time>2019-06-26T07:00:00Z</time></trkpt>
+      <trkpt lat="51.501" lon="-0.101"><time>2019-06-26T07:00:05Z</time></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <trkseg>
+      <trkpt lat="51.52" lon="-0.12"><time>2020-01-01T00:00:00Z</time></trkpt>
+      <trkpt lat="51.521" lon="-0.121"><time>2020-01-01T00:00:01Z</time></trkpt>
+      <trkpt lat="51.522" lon="-0.12"><time>2020-01-01T00:00:02Z</time></trkpt>
+    </trkseg>
+  </trk>
+  <trk>
+    <trkseg>
+      <trkpt lat="51.49" lon="-0.13"/>
+      <trkpt lat="51.49" lon="-0.09"/>
+      <trkpt lat="51.51" lon="-0.13"/>
+      <trkpt lat="51.51" lon="-0.09"/>
+    </trkseg>
+  </trk>
+</gpx>"#;
+
+    #[test]
+    fn trackpoints_draw_timed_segments_as_lines_and_private_points_as_dots() {
+        let data = parse_trackpoints(&[TRACKPOINTS.as_bytes()]).unwrap();
+        assert_eq!(data.format, Format::OsmTraces);
+        let kinds: Vec<_> = data.features.iter().map(|f| f.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                FeatureKind::Track,
+                FeatureKind::Track,
+                FeatureKind::TracePoints
+            ]
+        );
+        assert_eq!(data.parts.len(), 2);
+        assert_eq!(data.markers.len(), 4);
+        assert_eq!(data.vertex_count, 2 + 3 + 4);
+        let named = &data.features[0];
+        assert_eq!(named.name.as_deref(), Some("20190626.gpx"));
+        assert!(named
+            .props
+            .iter()
+            .any(|(k, v)| k == "url" && v.ends_with("/123")));
+    }
+
+    #[test]
+    fn trackpoint_pages_add_up_and_an_empty_answer_has_nothing_to_draw() {
+        let empty: &[u8] = br#"<gpx version="1.0" creator="OpenStreetMap.org"></gpx>"#;
+        assert_eq!(
+            parse_trackpoints(&[empty]).unwrap_err(),
+            RefError::NoGeometry
+        );
+        let data =
+            parse_trackpoints(&[TRACKPOINTS.as_bytes(), empty, TRACKPOINTS.as_bytes()]).unwrap();
+        assert_eq!(data.features.len(), 6);
+        assert_eq!(data.markers.len(), 8);
+    }
+
+    #[test]
+    fn counts_trackpoints_without_parsing() {
+        assert_eq!(count_trackpoints(TRACKPOINTS.as_bytes()), 9);
+        // `<trkseg` does not count.
+        assert_eq!(count_trackpoints(b"<gpx><trk><trkseg/></trk></gpx>"), 0);
     }
 
     #[test]

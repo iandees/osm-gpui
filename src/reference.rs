@@ -20,6 +20,10 @@ pub const CHUNK_VERTICES: usize = 256;
 pub enum Format {
     Gpx,
     GeoJson,
+    /// Public GPS traces downloaded from the OSM API (`/api/0.6/trackpoints`,
+    /// see `gps_traces`): timed segments are lines, the points of private
+    /// traces (sorted by position, so not a path) are dots.
+    OsmTraces,
 }
 
 impl Format {
@@ -28,6 +32,7 @@ impl Format {
         match self {
             Format::Gpx => "GPX",
             Format::GeoJson => "GeoJSON",
+            Format::OsmTraces => "GPS",
         }
     }
 }
@@ -38,6 +43,9 @@ pub enum FeatureKind {
     Track,
     Route,
     Waypoint,
+    /// Downloaded GPS points that are not a path (private traces, which the
+    /// OSM API sends sorted by position and without times).
+    TracePoints,
     /// A GeoJSON feature or bare geometry.
     Geo,
 }
@@ -443,6 +451,7 @@ pub fn load_file(path: &std::path::Path, format: Format) -> Result<ReferenceData
     match format {
         Format::Gpx => crate::gpx::parse(&bytes),
         Format::GeoJson => crate::geojson::parse(&bytes),
+        Format::OsmTraces => crate::gpx::parse_trackpoints(&[bytes.as_slice()]),
     }
 }
 
@@ -466,6 +475,7 @@ pub fn describe(feature: &RefFeature) -> String {
         FeatureKind::Track => tr!("reference.kind.track").to_string(),
         FeatureKind::Route => tr!("reference.kind.route").to_string(),
         FeatureKind::Waypoint => tr!("reference.kind.waypoint").to_string(),
+        FeatureKind::TracePoints => tr!("reference.kind.trace_points").to_string(),
         FeatureKind::Geo => feature.geometry.to_string(),
     };
     let title = match &feature.name {
