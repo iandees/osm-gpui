@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::coordinates::GeoBounds;
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
 use crate::street_imagery_tiles::TileId;
 
@@ -128,14 +128,15 @@ pub enum ImageryError {
     Parse(String),
 }
 
-impl ImageryError {
-    pub(crate) fn from_http(e: HttpError) -> Self {
-        match e {
-            HttpError::Status {
+impl From<HttpError> for ImageryError {
+    fn from(e: HttpError) -> Self {
+        let text = e.to_string();
+        match HttpFailure::from(e) {
+            HttpFailure::Status {
                 status: 401 | 403, ..
             } => ImageryError::Unauthorized,
-            HttpError::Status { status: 429, .. } => ImageryError::RateLimited,
-            other => ImageryError::Network(other.to_string()),
+            HttpFailure::Status { status: 429, .. } => ImageryError::RateLimited,
+            _ => ImageryError::Network(text),
         }
     }
 }
@@ -169,13 +170,8 @@ pub fn fotoshi_url(b: &GeoBounds, limit: usize) -> String {
 
 /// Download an image's bytes (for the viewer).
 pub fn fetch_image_with(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, ImageryError> {
-    let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::standard())
-        .map_err(ImageryError::from_http)?;
+    let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::standard())?;
     Ok(resp.body)
-}
-
-pub fn fetch_image(url: &str) -> Result<Vec<u8>, ImageryError> {
-    fetch_image_with(&UreqClient::new(), url)
 }
 
 // ---------------------------------------------------------------------------
@@ -392,16 +388,11 @@ pub fn fetch_object_photos_with(
     }
     let req = HttpRequest::get(fotoshi_object_url(osm_id)).bearer(key);
     // One attempt: Fotoshi meters requests.
-    let resp =
-        fetch_with_retries(client, &req, &RetryPolicy::none()).map_err(ImageryError::from_http)?;
+    let resp = fetch_with_retries(client, &req, &RetryPolicy::none())?;
     let body = resp
         .into_string()
         .map_err(|e| ImageryError::Network(e.to_string()))?;
     parse_fotoshi_object(&body)
-}
-
-pub fn fetch_object_photos(osm_id: &str, key: &str) -> Result<ObjectPhotos, ImageryError> {
-    fetch_object_photos_with(&UreqClient::new(), osm_id, key)
 }
 
 /// Panoramax STAC `{"features":[{id, geometry, properties, assets, providers}]}`

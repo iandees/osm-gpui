@@ -10,7 +10,7 @@
 //! `MapLayer::set_stylesheet`.
 
 use super::Stylesheet;
-use crate::http::{HttpClient, HttpRequest, UreqClient};
+use crate::http::{HttpClient, HttpRequest};
 use std::sync::{Arc, OnceLock, RwLock};
 
 static ACTIVE: RwLock<Option<Arc<Stylesheet>>> = RwLock::new(None);
@@ -125,11 +125,6 @@ pub fn read_source(location: &str, client: &dyn HttpClient) -> Result<String, St
 pub fn load(location: &str, client: &dyn HttpClient) -> Result<Stylesheet, String> {
     let src = read_source(location, client)?;
     Stylesheet::parse(&src).map_err(|e| e.to_string())
-}
-
-/// [`load`] with the real HTTP client.
-pub fn load_blocking(location: &str) -> Result<Stylesheet, String> {
-    load(location, &UreqClient::new())
 }
 
 /// The stylesheet for the `active` choice. `(Some(sheet), None)` when a

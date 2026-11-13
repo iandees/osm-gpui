@@ -1777,8 +1777,9 @@ impl AppHandle for LiveApp {
         let base_url = settings_store::api_base_url();
         // `auth::login` opens the browser and blocks until the approval comes
         // back (or three minutes pass), so it runs on its own thread.
+        let http = osm_gpui::http::default_client();
         std::thread::spawn(move || {
-            if let Err(e) = osm_gpui::auth::login(&base_url) {
+            if let Err(e) = osm_gpui::auth::login(http.as_ref(), &base_url) {
                 eprintln!("sign_in: {e}");
                 *SIGN_IN_FAILURE.lock().unwrap() = Some(e.to_string());
             }

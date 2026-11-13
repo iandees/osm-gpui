@@ -9,6 +9,35 @@
 
 use std::collections::HashMap;
 
+use crate::http::{fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy};
+
+/// Why the NSI could not be loaded. `Display` reads like the underlying
+/// failure, for the log line the caller prints.
+#[derive(Debug)]
+pub enum NsiError {
+    /// The download failed.
+    Fetch(HttpError),
+    /// The body is not an NSI dist build.
+    Parse(String),
+}
+
+impl From<HttpError> for NsiError {
+    fn from(e: HttpError) -> Self {
+        NsiError::Fetch(e)
+    }
+}
+
+impl std::fmt::Display for NsiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NsiError::Fetch(e) => write!(f, "{e}"),
+            NsiError::Parse(detail) => write!(f, "unreadable nsi.json: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for NsiError {}
+
 /// One NSI brand entry: a display name, its aliases, and the tags to apply.
 #[derive(Debug, Clone)]
 pub struct NsiEntry {
@@ -84,17 +113,14 @@ fn normalize(s: &str) -> String {
 /// Parse the upstream `dist/nsi.json` body into a flat list of entries.
 /// Tolerant of missing/unexpected fields: skips any item missing
 /// `displayName` or `tags`. Ignores `locationSet` (no geo-filtering in v1).
-pub fn parse(body: &str) -> Vec<NsiEntry> {
-    let root: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("nsi: failed to parse nsi.json: {}", e);
-            return Vec::new();
-        }
-    };
+/// A body that is not JSON, or has no `nsi` object, is an error rather than
+/// an empty index.
+pub fn parse(body: &str) -> Result<Vec<NsiEntry>, NsiError> {
+    let root: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| NsiError::Parse(e.to_string()))?;
 
     let Some(categories) = root.get("nsi").and_then(|v| v.as_object()) else {
-        return Vec::new();
+        return Err(NsiError::Parse("no \"nsi\" object".to_string()));
     };
 
     let mut out = Vec::new();
@@ -108,7 +134,7 @@ pub fn parse(body: &str) -> Vec<NsiEntry> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn parse_item(item: &serde_json::Value) -> Option<NsiEntry> {
@@ -152,22 +178,25 @@ const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
 /// Fetch the NSI dist build (on-disk cache with a 7-day TTL, same policy as
 /// `crate::imagery::fetch_and_cache`). On network failure, falls back to any
 /// existing cache file regardless of age.
-pub fn fetch_and_cache() -> anyhow::Result<String> {
-    let cache_path = cache_file_path();
-    if let Some(body) = read_fresh_cache(&cache_path) {
+pub fn fetch_and_cache(client: &dyn HttpClient) -> Result<String, NsiError> {
+    fetch_and_cache_at(client, &cache_file_path())
+}
+
+fn fetch_and_cache_at(client: &dyn HttpClient, cache_path: &PathBuf) -> Result<String, NsiError> {
+    if let Some(body) = read_fresh_cache(cache_path) {
         return Ok(body);
     }
 
-    match download() {
+    match download_with(client) {
         Ok(body) => {
             if let Some(parent) = cache_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            write_cache_atomically(&cache_path, &body);
+            write_cache_atomically(cache_path, &body);
             Ok(body)
         }
         Err(e) => {
-            if let Ok(body) = fs::read_to_string(&cache_path) {
+            if let Ok(body) = fs::read_to_string(cache_path) {
                 eprintln!("nsi: fetch failed ({}), using stale cache", e);
                 Ok(body)
             } else {
@@ -181,7 +210,7 @@ pub fn fetch_and_cache() -> anyhow::Result<String> {
 /// `rename` it into place (atomic on the same filesystem). This avoids
 /// leaving a truncated-but-fresh-mtime cache file behind if the process is
 /// killed mid-write, which `read_fresh_cache` would otherwise treat as valid
-/// for the full TTL. Mirrors `settings_store::save_to`. Errors are ignored:
+/// for the full TTL. Errors are ignored:
 /// the in-memory `body` is still returned to the caller even if disk-caching
 /// fails.
 fn write_cache_atomically(path: &Path, body: &str) {
@@ -209,18 +238,9 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
 
 /// `GET` the NSI dist build with a small bounded retry on transport errors and
 /// retryable HTTP status codes (see `crate::is_retryable_status`).
-fn download() -> anyhow::Result<String> {
-    download_with(&crate::http::UreqClient::new())
-}
-
-/// Same as `download`, but against an injected `HttpClient` so it's testable
-/// without a real network.
-fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
-    let req = crate::http::HttpRequest::get(NSI_URL);
-    let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    resp.into_string()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))
+fn download_with(client: &dyn HttpClient) -> Result<String, NsiError> {
+    let req = HttpRequest::get(NSI_URL);
+    Ok(fetch_with_retries(client, &req, &RetryPolicy::standard())?.into_string()?)
 }
 
 /// Global in-memory index, populated by a background fetch at startup.
@@ -303,7 +323,7 @@ mod tests {
 
     #[test]
     fn parse_extracts_valid_entries_and_skips_tagless_ones() {
-        let entries = parse(FIXTURE);
+        let entries = parse(FIXTURE).unwrap();
         assert_eq!(entries.len(), 2, "expected McDonald's and Starbucks only");
         assert!(entries.iter().any(|e| e.display_name == "McDonald's"));
         assert!(entries.iter().any(|e| e.display_name == "Starbucks"));
@@ -311,7 +331,7 @@ mod tests {
 
     #[test]
     fn parse_captures_tags_and_match_names() {
-        let entries = parse(FIXTURE);
+        let entries = parse(FIXTURE).unwrap();
         let mcd = entries
             .iter()
             .find(|e| e.display_name == "McDonald's")
@@ -322,13 +342,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_malformed_json_returns_empty() {
-        assert!(parse("not json").is_empty());
+    fn parse_malformed_json_is_an_error() {
+        assert!(matches!(parse("not json"), Err(NsiError::Parse(_))));
+    }
+
+    #[test]
+    fn parse_json_without_an_nsi_object_is_an_error() {
+        assert!(matches!(parse("{\"other\":1}"), Err(NsiError::Parse(_))));
+        assert!(parse("{\"nsi\":{}}").unwrap().is_empty());
     }
 
     #[test]
     fn search_matches_display_name_case_insensitively() {
-        let index = NsiIndex::from_entries(parse(FIXTURE));
+        let index = NsiIndex::from_entries(parse(FIXTURE).unwrap());
         let results = index.search("starbucks", 30);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].display_name, "Starbucks");
@@ -336,7 +362,7 @@ mod tests {
 
     #[test]
     fn search_matches_via_match_names() {
-        let index = NsiIndex::from_entries(parse(FIXTURE));
+        let index = NsiIndex::from_entries(parse(FIXTURE).unwrap());
         let results = index.search("mickey d", 30);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].display_name, "McDonald's");
@@ -379,13 +405,13 @@ mod tests {
 
     #[test]
     fn search_empty_query_returns_nothing() {
-        let index = NsiIndex::from_entries(parse(FIXTURE));
+        let index = NsiIndex::from_entries(parse(FIXTURE).unwrap());
         assert!(index.search("", 30).is_empty());
     }
 
     #[test]
     fn search_no_match_returns_empty() {
-        let index = NsiIndex::from_entries(parse(FIXTURE));
+        let index = NsiIndex::from_entries(parse(FIXTURE).unwrap());
         assert!(index.search("totally-not-a-brand-xyz", 30).is_empty());
     }
 
@@ -463,9 +489,47 @@ mod tests {
     fn download_with_does_not_retry_non_retryable_status() {
         use crate::http::fake::{status_err, FakeClient};
         let client = FakeClient::new(vec![status_err(400, "bad request")]);
-        let err = download_with(&client);
-        assert!(err.is_err());
+        let err = download_with(&client).unwrap_err();
+        assert!(matches!(
+            err,
+            NsiError::Fetch(HttpError::Status { status: 400, .. })
+        ));
+        assert_eq!(err.to_string(), "HTTP 400");
         assert_eq!(client.request_count(), 1);
+    }
+
+    #[test]
+    fn download_with_rejects_a_body_that_is_not_utf8() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, vec![0xff, 0xfe])]);
+        assert!(matches!(
+            download_with(&client),
+            Err(NsiError::Fetch(HttpError::Transport(_)))
+        ));
+    }
+
+    #[test]
+    fn fetch_and_cache_falls_back_to_a_stale_cache_when_the_download_fails() {
+        use crate::http::fake::{status_err, FakeClient};
+        let dir = tmp_cache_dir("stale-fallback");
+        let path = dir.join("nsi.json");
+        fs::write(&path, "{\"nsi\":{}}").unwrap();
+        let old_time = SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+        fs::File::open(&path)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
+        let client = FakeClient::new(vec![status_err(404, "gone")]);
+        assert_eq!(fetch_and_cache_at(&client, &path).unwrap(), "{\"nsi\":{}}");
+    }
+
+    #[test]
+    fn fetch_and_cache_reports_the_download_error_when_there_is_no_cache() {
+        use crate::http::fake::{status_err, FakeClient};
+        let dir = tmp_cache_dir("no-cache");
+        let client = FakeClient::new(vec![status_err(404, "gone")]);
+        let err = fetch_and_cache_at(&client, &dir.join("nsi.json")).unwrap_err();
+        assert!(matches!(err, NsiError::Fetch(_)));
     }
 
     #[test]

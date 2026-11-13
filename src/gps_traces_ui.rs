@@ -16,7 +16,7 @@ use std::sync::Arc;
 use gpui::{actions, div, prelude::*, px, Action, AnyElement, Context, Window};
 use gpui_component::{h_flex, menu::PopupMenu, v_flex, ActiveTheme};
 use osm_gpui::auth;
-use osm_gpui::gps_traces::{self, PageWalker, TracePlan};
+use osm_gpui::gps_traces::{self, GpsTracesError, PageWalker, TracePlan};
 use osm_gpui::layers::reference_layer::ReferenceLayer;
 use osm_gpui::layers::{LayerId, MapLayer as _};
 use osm_gpui::reference::{Format, ReferenceData};
@@ -186,17 +186,28 @@ impl MapViewer {
         cx.notify();
 
         let base_url = settings_store::api_base_url();
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let mut walker = PageWalker::new(cells);
             let mut pages: Vec<Arc<[u8]>> = Vec::new();
             while let Some((cell, page)) = walker.next_request() {
                 let base = base_url.clone();
+                let http = http.clone();
                 let body = cx
                     .background_executor()
                     .spawn(async move {
-                        let token = auth::fresh_token_if_loaded(&auth::oauth_base_for(&base))
-                            .map(|t| t.access_token);
-                        gps_traces::fetch_page(&base, &cell, page, token.as_deref())
+                        let token = auth::fresh_token_if_loaded(
+                            http.as_ref(),
+                            &auth::oauth_base_for(&base),
+                        )
+                        .map(|t| t.access_token);
+                        gps_traces::fetch_page_with(
+                            http.as_ref(),
+                            &base,
+                            &cell,
+                            page,
+                            token.as_deref(),
+                        )
                     })
                     .await;
                 let body = match body {
@@ -236,7 +247,7 @@ impl MapViewer {
     /// whether to keep downloading.
     fn gps_traces_page(
         &mut self,
-        parsed: Result<Option<ReferenceData>, String>,
+        parsed: Result<Option<ReferenceData>, GpsTracesError>,
         points: usize,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -412,7 +423,11 @@ impl MapViewer {
     }
 
     /// The download is over: every page fetched (`Ok`) or one failed.
-    fn end_gps_traces(&mut self, result: Result<PageWalker, String>, cx: &mut Context<Self>) {
+    fn end_gps_traces(
+        &mut self,
+        result: Result<PageWalker, GpsTracesError>,
+        cx: &mut Context<Self>,
+    ) {
         self.gps_traces.fetching = false;
         match result {
             Ok(_) if !self.gps_traces.shown => {
@@ -429,7 +444,7 @@ impl MapViewer {
             }
             Err(detail) => {
                 // What already arrived stays on the map.
-                self.set_status(tr!("gps_traces.state.failed", detail = detail));
+                self.set_status(tr!("gps_traces.state.failed", detail = detail.to_string()));
             }
         }
         cx.notify();

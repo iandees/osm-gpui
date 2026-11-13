@@ -23,7 +23,6 @@ use gpui_component::{
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use osm_gpui::coordinates::GeoBounds;
-use osm_gpui::http::UreqClient;
 use osm_gpui::layers::street_imagery_layer::{self, StreetImageryLayer};
 use osm_gpui::layers::LayerId;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
@@ -440,11 +439,12 @@ impl MapViewer {
         cx.notify();
         for t in started {
             let cred = cred.clone();
+            let http = self.http.clone();
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        tiles::fetch_tile_with(&UreqClient::new(), provider, t, cred.as_deref())
+                        tiles::fetch_tile_with(http.as_ref(), provider, t, cred.as_deref())
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -559,10 +559,13 @@ impl MapViewer {
         });
         let epoch = self.imagery.object_epoch;
         let key = settings_store::snapshot().fotoshi_api_key;
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { imagery::fetch_object_photos(&osm_id, &key) })
+                .spawn(
+                    async move { imagery::fetch_object_photos_with(http.as_ref(), &osm_id, &key) },
+                )
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if epoch != this.imagery.object_epoch {
@@ -700,14 +703,15 @@ impl MapViewer {
         });
         cx.notify();
         let cred = credential(photo.provider);
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let client = UreqClient::new();
+                    let client = http.as_ref();
                     // A tile leaves out the image URLs and the author.
                     let photo = if photo.large_url.is_none() {
-                        match tiles::fetch_detail_with(&client, &photo, cred.as_deref()) {
+                        match tiles::fetch_detail_with(client, &photo, cred.as_deref()) {
                             Ok(detailed) => detailed,
                             Err(e) => return (photo, Err(e)),
                         }
@@ -720,7 +724,7 @@ impl MapViewer {
                             .clone()
                             .or_else(|| photo.thumb_url.clone())
                             .ok_or_else(|| ImageryError::Parse("no image".into()))?;
-                        let bytes = imagery::fetch_image(&url)?;
+                        let bytes = imagery::fetch_image_with(client, &url)?;
                         decode(&bytes).map_err(ImageryError::Parse)
                     })();
                     (photo, image)
