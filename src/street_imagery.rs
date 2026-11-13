@@ -1,18 +1,18 @@
-//! Street-level imagery: photo locations from Mapillary and Fotoshi.
+//! Street-level imagery: photo locations from Mapillary, Fotoshi and
+//! Panoramax.
 //!
-//! The part of the feature that needs no window: the photo model, the two
-//! providers' search calls (against an injected [`HttpClient`], so all of it is
-//! tested with the `FakeClient`), their JSON parsers, and the shared store the
-//! Street Imagery layer draws from. Photos are not OSM data: nothing here
-//! touches a data layer, the undo stack, the validator, autosave or search.
+//! The part of the feature that needs no window: the photo model, the
+//! providers' JSON parsers, and the shared store the Street Imagery layer
+//! draws from. Where the photos come from, by map tile, is in
+//! `street_imagery_tiles`. Photos are not OSM data: nothing here touches a
+//! data layer, the undo stack, the validator, autosave or search.
 //!
-//! - Mapillary Graph API v4: `GET https://graph.mapillary.com/images?bbox=..
-//!   &fields=..&limit=..` with an access token. A bbox must cover less than
-//!   0.01 square degrees.
+//! - Mapillary and Panoramax publish vector tiles of their photo points.
 //! - Fotoshi STAC: `GET https://api.fotoshi.com/v1/stac/search?bbox=..` works
-//!   anonymously (20 photos a page, 200 requests a day); a bbox spans at most
-//!   2 degrees on each axis.
+//!   anonymously (20 photos a page, 200 requests a day, a bbox of at most 2
+//!   degrees); an API key raises the page to 100.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -22,19 +22,17 @@ use crate::coordinates::GeoBounds;
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
 };
+use crate::street_imagery_tiles::TileId;
 
-/// Mapillary refuses bboxes of 0.01 square degrees or more.
-pub const MAPILLARY_MAX_AREA_DEG2: f64 = 0.01;
-/// Fotoshi refuses bboxes wider or taller than this many degrees.
-pub const FOTOSHI_MAX_SPAN_DEG: f64 = 2.0;
-/// Photos asked for per request. Fotoshi serves anonymous callers at most 20.
-pub const MAPILLARY_LIMIT: usize = 2000;
-pub const FOTOSHI_LIMIT: usize = 20;
+/// Fotoshi photos per search: anonymous callers get at most 20 a page.
+pub const FOTOSHI_ANON_LIMIT: usize = 20;
+pub const FOTOSHI_KEYED_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
     Mapillary,
     Fotoshi,
+    Panoramax,
 }
 
 impl Provider {
@@ -42,22 +40,24 @@ impl Provider {
         match self {
             Provider::Mapillary => "Mapillary",
             Provider::Fotoshi => "Fotoshi",
+            Provider::Panoramax => "Panoramax",
         }
     }
+
+    /// Position in [`Provider::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            Provider::Mapillary => 0,
+            Provider::Fotoshi => 1,
+            Provider::Panoramax => 2,
+        }
+    }
+
+    pub const ALL: [Provider; 3] = [Provider::Mapillary, Provider::Fotoshi, Provider::Panoramax];
 
     /// Whether the provider needs a token from the user's settings.
     pub fn needs_token(self) -> bool {
         matches!(self, Provider::Mapillary)
-    }
-
-    /// The largest area one request may cover is limited, so the map must be
-    /// zoomed in at least this far: the widest view, in degrees of longitude.
-    pub fn max_view_width_deg(self) -> f64 {
-        match self {
-            // A 0.1 x 0.1 degree box is 0.01 square degrees; stay under it.
-            Provider::Mapillary => 0.09,
-            Provider::Fotoshi => 1.9,
-        }
     }
 }
 
@@ -88,6 +88,28 @@ impl StreetPhoto {
                 self.id
             ),
             Provider::Fotoshi => format!("https://fotoshi.com/photos/{}", self.id),
+            Provider::Panoramax => {
+                format!("https://api.panoramax.xyz/#focus=pic&pic={}", self.id)
+            }
+        }
+    }
+}
+
+impl StreetPhoto {
+    /// This photo (from a tile) with what `detail` knows: its values win,
+    /// except that a value it lacks keeps this photo's.
+    pub fn merged_with(&self, detail: StreetPhoto) -> StreetPhoto {
+        StreetPhoto {
+            provider: self.provider,
+            id: self.id.clone(),
+            lat: self.lat,
+            lon: self.lon,
+            heading: detail.heading.or(self.heading),
+            captured: detail.captured.or_else(|| self.captured.clone()),
+            creator: detail.creator.or_else(|| self.creator.clone()),
+            license: detail.license.or_else(|| self.license.clone()),
+            thumb_url: detail.thumb_url.or_else(|| self.thumb_url.clone()),
+            large_url: detail.large_url.or_else(|| self.large_url.clone()),
         }
     }
 }
@@ -96,7 +118,7 @@ impl StreetPhoto {
 pub enum ImageryError {
     /// Mapillary needs an access token and none is set.
     NoToken,
-    /// The visible area is larger than the provider accepts.
+    /// The map is zoomed out too far to show photos.
     TooLarge,
     /// 401/403: the token was refused.
     Unauthorized,
@@ -107,7 +129,7 @@ pub enum ImageryError {
 }
 
 impl ImageryError {
-    fn from_http(e: HttpError) -> Self {
+    pub(crate) fn from_http(e: HttpError) -> Self {
         match e {
             HttpError::Status {
                 status: 401 | 403, ..
@@ -137,78 +159,12 @@ impl std::error::Error for ImageryError {}
 // Requests
 // ---------------------------------------------------------------------------
 
-/// Whether `bounds` is small enough for one request to `provider`.
-pub fn area_allowed(provider: Provider, b: &GeoBounds) -> bool {
-    let (w, h) = (b.width(), b.height());
-    match provider {
-        Provider::Mapillary => w * h < MAPILLARY_MAX_AREA_DEG2,
-        Provider::Fotoshi => w <= FOTOSHI_MAX_SPAN_DEG && h <= FOTOSHI_MAX_SPAN_DEG,
-    }
-}
-
-pub fn mapillary_url(b: &GeoBounds, token: &str) -> String {
-    format!(
-        "https://graph.mapillary.com/images?bbox={:.6},{:.6},{:.6},{:.6}&limit={}\
-         &fields=id,geometry,computed_geometry,compass_angle,computed_compass_angle,\
-         captured_at,creator,thumb_256_url,thumb_1024_url&access_token={}",
-        b.min_lon,
-        b.min_lat,
-        b.max_lon,
-        b.max_lat,
-        MAPILLARY_LIMIT,
-        urlencoding::encode(token)
-    )
-}
-
-pub fn fotoshi_url(b: &GeoBounds) -> String {
+/// A Fotoshi STAC search of `b`, `limit` photos a page.
+pub fn fotoshi_url(b: &GeoBounds, limit: usize) -> String {
     format!(
         "https://api.fotoshi.com/v1/stac/search?bbox={:.6},{:.6},{:.6},{:.6}&limit={}",
-        b.min_lon, b.min_lat, b.max_lon, b.max_lat, FOTOSHI_LIMIT
+        b.min_lon, b.min_lat, b.max_lon, b.max_lat, limit
     )
-}
-
-/// The photos in `bounds` from `provider`. `token` is Mapillary's access
-/// token. Returns the photos and whether the provider's page limit was hit
-/// (so there may be more).
-pub fn fetch_with(
-    client: &dyn HttpClient,
-    provider: Provider,
-    bounds: &GeoBounds,
-    token: Option<&str>,
-) -> Result<(Vec<StreetPhoto>, bool), ImageryError> {
-    if !area_allowed(provider, bounds) {
-        return Err(ImageryError::TooLarge);
-    }
-    let (url, limit) = match provider {
-        Provider::Mapillary => {
-            let token = token
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .ok_or(ImageryError::NoToken)?;
-            (mapillary_url(bounds, token), MAPILLARY_LIMIT)
-        }
-        Provider::Fotoshi => (fotoshi_url(bounds), FOTOSHI_LIMIT),
-    };
-    // One attempt: both providers meter requests, and a pan refetches anyway.
-    let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::none())
-        .map_err(ImageryError::from_http)?;
-    let body = resp
-        .into_string()
-        .map_err(|e| ImageryError::Network(e.to_string()))?;
-    let photos = match provider {
-        Provider::Mapillary => parse_mapillary(&body)?,
-        Provider::Fotoshi => parse_fotoshi(&body)?,
-    };
-    let truncated = photos.len() >= limit;
-    Ok((photos, truncated))
-}
-
-pub fn fetch(
-    provider: Provider,
-    bounds: &GeoBounds,
-    token: Option<&str>,
-) -> Result<(Vec<StreetPhoto>, bool), ImageryError> {
-    fetch_with(&UreqClient::new(), provider, bounds, token)
 }
 
 /// Download an image's bytes (for the viewer).
@@ -239,7 +195,7 @@ fn str_of(v: Option<&Value>) -> Option<String> {
 }
 
 /// `YYYY-MM-DD` (UTC) from a Unix time in milliseconds.
-fn date_from_millis(ms: i64) -> String {
+pub(crate) fn date_from_millis(ms: i64) -> String {
     let days = ms.div_euclid(86_400_000);
     // Civil-from-days (Howard Hinnant's algorithm).
     let z = days + 719_468;
@@ -255,55 +211,110 @@ fn date_from_millis(ms: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// Mapillary `{"data":[{id, geometry, ...}]}`. The computed (corrected)
-/// position and heading win over the raw ones.
+/// One Mapillary image object (`id`, `geometry`, ...). The computed
+/// (corrected) position and heading win over the raw ones.
+pub fn parse_mapillary_image(item: &Value) -> Option<StreetPhoto> {
+    let id = item.get("id").and_then(|i| {
+        i.as_str()
+            .map(str::to_string)
+            .or_else(|| i.as_i64().map(|n| n.to_string()))
+    })?;
+    let (lat, lon) = item
+        .get("computed_geometry")
+        .and_then(point_of)
+        .or_else(|| item.get("geometry").and_then(point_of))?;
+    Some(StreetPhoto {
+        provider: Provider::Mapillary,
+        id,
+        lat,
+        lon,
+        heading: item
+            .get("computed_compass_angle")
+            .or_else(|| item.get("compass_angle"))
+            .and_then(Value::as_f64)
+            .map(|h| h as f32),
+        captured: item
+            .get("captured_at")
+            .and_then(Value::as_i64)
+            .map(date_from_millis),
+        creator: item
+            .get("creator")
+            .and_then(|c| c.get("username"))
+            .and_then(|u| u.as_str().map(str::to_string)),
+        license: Some("CC BY-SA 4.0".to_string()),
+        thumb_url: str_of(item.get("thumb_256_url")),
+        large_url: str_of(item.get("thumb_1024_url")),
+    })
+}
+
+/// Mapillary `{"data":[{id, geometry, ...}]}` (the images endpoint).
 pub fn parse_mapillary(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
     let v: Value = serde_json::from_str(body).map_err(|e| ImageryError::Parse(e.to_string()))?;
     let data = v
         .get("data")
         .and_then(Value::as_array)
         .ok_or_else(|| ImageryError::Parse("no \"data\" array".into()))?;
-    let mut out = Vec::with_capacity(data.len());
-    for item in data {
-        let Some(id) = item.get("id").and_then(|i| {
+    Ok(data.iter().filter_map(parse_mapillary_image).collect())
+}
+
+/// The first `[lon, lat]` position in a GeoJSON geometry, whatever its type.
+fn first_position(geometry: &Value) -> Option<(f64, f64)> {
+    fn dig(v: &Value) -> Option<(f64, f64)> {
+        let arr = v.as_array()?;
+        if let (Some(lon), Some(lat)) = (arr.first()?.as_f64(), arr.get(1).and_then(Value::as_f64))
+        {
+            return Some((lat, lon));
+        }
+        arr.iter().find_map(dig)
+    }
+    dig(geometry.get("coordinates")?)
+}
+
+/// One Fotoshi photo. Two shapes carry it: a STAC item (`id`, `geometry`,
+/// `properties`, `assets`) and a photo embedded in a feature of the data API
+/// (`photo_id`, `captured_at`, `username`, `assets`, with the position, if
+/// any, on the photo or else on the feature: `fallback`).
+fn fotoshi_photo(item: &Value, fallback: Option<(f64, f64)>) -> Option<StreetPhoto> {
+    let id = str_of(item.get("photo_id")).or_else(|| {
+        item.get("id").and_then(|i| {
             i.as_str()
                 .map(str::to_string)
                 .or_else(|| i.as_i64().map(|n| n.to_string()))
-        }) else {
-            continue;
-        };
-        let Some((lat, lon)) = item
-            .get("computed_geometry")
-            .and_then(point_of)
-            .or_else(|| item.get("geometry").and_then(point_of))
-        else {
-            continue;
-        };
-        let heading = item
-            .get("computed_compass_angle")
-            .or_else(|| item.get("compass_angle"))
+        })
+    })?;
+    let (lat, lon) = item.get("geometry").and_then(point_of).or(fallback)?;
+    // STAC items nest these in `properties`; embedded photos do not.
+    let props = item.get("properties").unwrap_or(item);
+    let prop = |key: &str| props.get(key).or_else(|| item.get(key));
+    let asset = |key: &str| {
+        str_of(
+            item.get("assets")
+                .and_then(|a| a.get(key))
+                .and_then(|a| a.get("href")),
+        )
+    };
+    let any_asset_license = || {
+        item.get("assets")
+            .and_then(Value::as_object)
+            .and_then(|m| m.values().find_map(|a| str_of(a.get("license"))))
+    };
+    Some(StreetPhoto {
+        provider: Provider::Fotoshi,
+        id,
+        lat,
+        lon,
+        heading: prop("view:azimuth")
+            .or_else(|| prop("heading"))
             .and_then(Value::as_f64)
-            .map(|h| h as f32);
-        out.push(StreetPhoto {
-            provider: Provider::Mapillary,
-            id,
-            lat,
-            lon,
-            heading,
-            captured: item
-                .get("captured_at")
-                .and_then(Value::as_i64)
-                .map(date_from_millis),
-            creator: item
-                .get("creator")
-                .and_then(|c| c.get("username"))
-                .and_then(|u| u.as_str().map(str::to_string)),
-            license: Some("CC BY-SA 4.0".to_string()),
-            thumb_url: str_of(item.get("thumb_256_url")),
-            large_url: str_of(item.get("thumb_1024_url")),
-        });
-    }
-    Ok(out)
+            .map(|h| h as f32),
+        captured: str_of(prop("capture_date")).or_else(|| str_of(prop("captured_at"))),
+        creator: str_of(prop("creator_name")).or_else(|| str_of(prop("username"))),
+        license: str_of(prop("image_license")).or_else(any_asset_license),
+        thumb_url: asset("thumbnail").or_else(|| asset("image-640")),
+        large_url: asset("image-1280")
+            .or_else(|| asset("image-640"))
+            .or_else(|| asset("thumbnail")),
+    })
 }
 
 /// Fotoshi STAC `{"features":[{id, geometry, properties, assets}]}`.
@@ -313,13 +324,97 @@ pub fn parse_fotoshi(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
         .get("features")
         .and_then(Value::as_array)
         .ok_or_else(|| ImageryError::Parse("no \"features\" array".into()))?;
+    Ok(features
+        .iter()
+        .filter_map(|f| fotoshi_photo(f, None))
+        .collect())
+}
+
+/// What Fotoshi has of one OSM feature.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ObjectPhotos {
+    /// All the public photos of the feature (more than `photos` when the
+    /// request's limit cut the list).
+    pub count: usize,
+    pub photos: Vec<StreetPhoto>,
+}
+
+/// The data API's answer to an `osm_id` lookup: a FeatureCollection whose
+/// features carry `coverage.photo_count` and a `photos` array. An empty
+/// collection means no public coverage.
+pub fn parse_fotoshi_object(body: &str) -> Result<ObjectPhotos, ImageryError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageryError::Parse(e.to_string()))?;
+    let features = v
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ImageryError::Parse("no \"features\" array".into()))?;
+    let mut out = ObjectPhotos::default();
+    for f in features {
+        let fallback = f.get("geometry").and_then(first_position);
+        let before = out.photos.len();
+        if let Some(photos) = f.get("photos").and_then(Value::as_array) {
+            out.photos
+                .extend(photos.iter().filter_map(|p| fotoshi_photo(p, fallback)));
+        }
+        let listed = out.photos.len() - before;
+        out.count += f
+            .get("coverage")
+            .and_then(|c| c.get("photo_count"))
+            .and_then(Value::as_u64)
+            .map_or(listed, |n| n as usize);
+    }
+    Ok(out)
+}
+
+/// `osm_id` for an OSM element: `n123`, `w456` or `r789`.
+pub fn fotoshi_osm_id(kind: char, id: i64) -> String {
+    format!("{kind}{id}")
+}
+
+pub fn fotoshi_object_url(osm_id: &str) -> String {
+    format!(
+        "https://api.fotoshi.com/v1/data/features?osm_id={}&photo_limit=20&photo_size=thumbnail,1280",
+        urlencoding::encode(osm_id)
+    )
+}
+
+/// Ask Fotoshi (with `key`, which this lookup requires) for the photos of an
+/// OSM feature. This tells Fotoshi what the user is looking at; the caller
+/// only does it when the user has turned that on.
+pub fn fetch_object_photos_with(
+    client: &dyn HttpClient,
+    osm_id: &str,
+    key: &str,
+) -> Result<ObjectPhotos, ImageryError> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(ImageryError::Unauthorized);
+    }
+    let req = HttpRequest::get(fotoshi_object_url(osm_id)).bearer(key);
+    // One attempt: Fotoshi meters requests.
+    let resp =
+        fetch_with_retries(client, &req, &RetryPolicy::none()).map_err(ImageryError::from_http)?;
+    let body = resp
+        .into_string()
+        .map_err(|e| ImageryError::Network(e.to_string()))?;
+    parse_fotoshi_object(&body)
+}
+
+pub fn fetch_object_photos(osm_id: &str, key: &str) -> Result<ObjectPhotos, ImageryError> {
+    fetch_object_photos_with(&UreqClient::new(), osm_id, key)
+}
+
+/// Panoramax STAC `{"features":[{id, geometry, properties, assets, providers}]}`
+/// (the federated `api.panoramax.xyz/api/search`).
+pub fn parse_panoramax(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ImageryError::Parse(e.to_string()))?;
+    let features = v
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ImageryError::Parse("no \"features\" array".into()))?;
     let mut out = Vec::with_capacity(features.len());
     for f in features {
-        let Some(id) = f.get("id").and_then(|i| {
-            i.as_str()
-                .map(str::to_string)
-                .or_else(|| i.as_i64().map(|n| n.to_string()))
-        }) else {
+        let Some(id) = str_of(f.get("id")) else {
             continue;
         };
         let Some((lat, lon)) = f.get("geometry").and_then(point_of) else {
@@ -333,8 +428,21 @@ pub fn parse_fotoshi(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
                     .and_then(|a| a.get("href")),
             )
         };
+        // The producer is named both in `providers` and in a property.
+        let producer = f
+            .get("providers")
+            .and_then(Value::as_array)
+            .and_then(|ps| {
+                ps.iter().find(|p| {
+                    p.get("roles")
+                        .and_then(Value::as_array)
+                        .is_some_and(|r| r.iter().any(|r| r.as_str() == Some("producer")))
+                })
+            })
+            .and_then(|p| str_of(p.get("name")))
+            .or_else(|| str_of(props.get("geovisio:producer")));
         out.push(StreetPhoto {
-            provider: Provider::Fotoshi,
+            provider: Provider::Panoramax,
             id,
             lat,
             lon,
@@ -342,13 +450,14 @@ pub fn parse_fotoshi(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
                 .get("view:azimuth")
                 .and_then(Value::as_f64)
                 .map(|h| h as f32),
-            captured: str_of(props.get("capture_date")),
-            creator: str_of(props.get("creator_name")).or_else(|| str_of(props.get("username"))),
-            license: str_of(props.get("image_license")),
-            thumb_url: asset("thumbnail").or_else(|| asset("image-640")),
-            large_url: asset("image-1280")
-                .or_else(|| asset("image-640"))
-                .or_else(|| asset("thumbnail")),
+            // An RFC 3339 time; the date is its first ten characters.
+            captured: str_of(props.get("datetime")).and_then(|d| d.get(..10).map(str::to_string)),
+            creator: producer,
+            license: str_of(props.get("license")),
+            thumb_url: asset("thumb").or_else(|| str_of(props.get("geovisio:thumbnail"))),
+            large_url: asset("sd")
+                .or_else(|| asset("hd"))
+                .or_else(|| asset("thumb")),
         });
     }
     Ok(out)
@@ -360,9 +469,27 @@ pub fn parse_fotoshi(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
 
 #[derive(Debug, Default)]
 pub struct PhotoStoreInner {
+    /// Every photo of every loaded tile, for drawing and hit-testing.
     pub photos: Vec<StreetPhoto>,
+    /// The photos of each loaded tile.
+    pub tiles: HashMap<TileId, Vec<StreetPhoto>>,
     /// The photo open in the viewer, drawn highlighted: (provider, id).
     pub selected: Option<(Provider, String)>,
+}
+
+impl PhotoStoreInner {
+    fn rebuild(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.photos = self
+            .tiles
+            .values()
+            .flatten()
+            .filter(|p| seen.insert(p.id.clone()))
+            .cloned()
+            .collect();
+        // A stable order, so drawing does not flicker between rebuilds.
+        self.photos.sort_by(|a, b| a.id.cmp(&b.id));
+    }
 }
 
 /// The photos on the map, shared between the app (which fills it) and the
@@ -376,8 +503,41 @@ impl PhotoStore {
         f(&mut g)
     }
 
-    pub fn replace(&self, photos: Vec<StreetPhoto>) {
-        self.with(|s| s.photos = photos);
+    /// Set the photos of tile `t`. A photo on a tile's edge can come from two
+    /// tiles; it is kept once.
+    pub fn insert_tile(&self, t: TileId, photos: Vec<StreetPhoto>) {
+        self.with(|s| {
+            s.tiles.insert(t, photos);
+            s.rebuild();
+        });
+    }
+
+    pub fn has_tile(&self, t: TileId) -> bool {
+        self.with(|s| s.tiles.contains_key(&t))
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.with(|s| s.tiles.len())
+    }
+
+    /// Drop the tiles for which `keep` is false.
+    pub fn retain_tiles(&self, keep: impl Fn(&TileId) -> bool) {
+        self.with(|s| {
+            s.tiles.retain(|t, _| keep(t));
+            s.rebuild();
+        });
+    }
+
+    /// Replace a photo (after its details arrived) wherever it is stored.
+    pub fn update_photo(&self, photo: &StreetPhoto) {
+        self.with(|s| {
+            for list in s.tiles.values_mut() {
+                for p in list.iter_mut().filter(|p| p.id == photo.id) {
+                    *p = photo.clone();
+                }
+            }
+            s.rebuild();
+        });
     }
 
     pub fn get(&self, provider: Provider, id: &str) -> Option<StreetPhoto> {
@@ -404,6 +564,7 @@ impl PhotoStore {
     pub fn clear(&self) {
         self.with(|s| {
             s.photos.clear();
+            s.tiles.clear();
             s.selected = None;
         });
     }
@@ -411,25 +572,23 @@ impl PhotoStore {
 
 /// Which providers are on, for the View menu's checkmarks (the menus are built
 /// outside the window, which owns the real state).
-static MENU_MAPILLARY: AtomicBool = AtomicBool::new(false);
-static MENU_FOTOSHI: AtomicBool = AtomicBool::new(false);
+static MENU_SHOWS: [AtomicBool; 3] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
 
-pub fn set_menu_shows(mapillary: bool, fotoshi: bool) {
-    MENU_MAPILLARY.store(mapillary, Ordering::Relaxed);
-    MENU_FOTOSHI.store(fotoshi, Ordering::Relaxed);
+pub fn set_menu_shows(provider: Provider, on: bool) {
+    MENU_SHOWS[provider.index()].store(on, Ordering::Relaxed);
 }
 
 pub fn menu_shows(provider: Provider) -> bool {
-    match provider {
-        Provider::Mapillary => MENU_MAPILLARY.load(Ordering::Relaxed),
-        Provider::Fotoshi => MENU_FOTOSHI.load(Ordering::Relaxed),
-    }
+    MENU_SHOWS[provider.index()].load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::fake::{ok, status_err, FakeClient};
 
     const MAPILLARY: &str = r#"{"data":[
         {"id":"111","geometry":{"type":"Point","coordinates":[-111.0,45.0]},
@@ -484,6 +643,89 @@ mod tests {
         assert_eq!(photos[1].thumb_url, None);
     }
 
+    const PANORAMAX: &str = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","id":"aaa","geometry":{"type":"Point","coordinates":[-93.2234,44.926]},
+         "properties":{"datetime":"2025-09-16T18:02:01.262000+00:00","view:azimuth":334,
+           "license":"CC-BY-SA-4.0","geovisio:producer":"fallback",
+           "exif":{"big":"ignored"}},
+         "providers":[{"name":"someone","roles":["producer"]}],
+         "assets":{"hd":{"href":"https://p/hd.jpg"},"sd":{"href":"https://p/sd.jpg"},
+                   "thumb":{"href":"https://p/thumb.jpg"}}},
+        {"type":"Feature","id":"bbb","geometry":{"type":"Point","coordinates":[-93.2,44.9]},
+         "properties":{"geovisio:producer":"fallback","geovisio:thumbnail":"https://p/t2.jpg"},
+         "assets":{}}
+    ]}"#;
+
+    #[test]
+    fn panoramax_reads_stac_features() {
+        let photos = parse_panoramax(PANORAMAX).unwrap();
+        assert_eq!(photos.len(), 2);
+        let p = &photos[0];
+        assert_eq!((p.lat, p.lon), (44.926, -93.2234));
+        assert_eq!(p.heading, Some(334.0));
+        assert_eq!(p.captured.as_deref(), Some("2025-09-16"));
+        assert_eq!(p.creator.as_deref(), Some("someone"));
+        assert_eq!(p.license.as_deref(), Some("CC-BY-SA-4.0"));
+        assert_eq!(p.thumb_url.as_deref(), Some("https://p/thumb.jpg"));
+        assert_eq!(p.large_url.as_deref(), Some("https://p/sd.jpg"));
+        // Without `providers` or assets, the properties fill in.
+        assert_eq!(photos[1].creator.as_deref(), Some("fallback"));
+        assert_eq!(photos[1].thumb_url.as_deref(), Some("https://p/t2.jpg"));
+        assert_eq!(photos[1].large_url, None);
+        assert_eq!(photos[1].heading, None);
+        assert!(p.web_url().ends_with("pic=aaa"));
+    }
+
+    const OBJECT: &str = r#"{"type":"FeatureCollection","numberReturned":1,"features":[
+        {"type":"Feature","osm_id":"w456","fid":"f1",
+         "geometry":{"type":"LineString","coordinates":[[-93.2,44.9],[-93.21,44.91]]},
+         "coverage":{"photo_count":37},
+         "photos":[
+           {"photo_id":"ph1","username":"dana","captured_at":"2026-05-27",
+            "assets":{"thumbnail":{"href":"https://f/t1.jpg","license":"CC-BY-4.0"},
+                      "image-1280":{"href":"https://f/1280-1.jpg"}}},
+           {"photo_id":"ph2","creator_name":"Eli","username":"eli",
+            "geometry":{"type":"Point","coordinates":[-93.205,44.905]},
+            "assets":{"thumbnail":{"href":"https://f/t2.jpg"}}}
+         ]}]}"#;
+
+    #[test]
+    fn a_fotoshi_object_lookup_reads_embedded_photos() {
+        let o = parse_fotoshi_object(OBJECT).unwrap();
+        assert_eq!(o.count, 37, "the total, not the page");
+        assert_eq!(o.photos.len(), 2);
+        let p = &o.photos[0];
+        assert_eq!(p.id, "ph1");
+        // No position of its own: the feature's first vertex.
+        assert_eq!((p.lat, p.lon), (44.9, -93.2));
+        assert_eq!(p.creator.as_deref(), Some("dana"));
+        assert_eq!(p.captured.as_deref(), Some("2026-05-27"));
+        assert_eq!(p.license.as_deref(), Some("CC-BY-4.0"));
+        assert_eq!(p.large_url.as_deref(), Some("https://f/1280-1.jpg"));
+        let q = &o.photos[1];
+        assert_eq!((q.lat, q.lon), (44.905, -93.205));
+        assert_eq!(q.creator.as_deref(), Some("Eli"));
+        assert_eq!(q.large_url.as_deref(), Some("https://f/t2.jpg"));
+        // No coverage: an empty collection.
+        let none = parse_fotoshi_object(r#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        assert_eq!(none, ObjectPhotos::default());
+    }
+
+    #[test]
+    fn the_object_lookup_needs_a_key_and_sends_the_osm_id() {
+        use crate::http::fake::{ok, FakeClient};
+        assert_eq!(fotoshi_osm_id('w', 456), "w456");
+        assert!(fotoshi_object_url("w456").contains("osm_id=w456&photo_limit=20"));
+        let c = FakeClient::new(vec![]);
+        assert_eq!(
+            fetch_object_photos_with(&c, "w456", " ").unwrap_err(),
+            ImageryError::Unauthorized
+        );
+        assert_eq!(c.request_count(), 0, "no key, no request");
+        let c = FakeClient::new(vec![ok(200, OBJECT)]);
+        assert_eq!(fetch_object_photos_with(&c, "w456", "k").unwrap().count, 37);
+    }
+
     #[test]
     fn bad_json_is_a_parse_error() {
         assert!(matches!(parse_mapillary("{}"), Err(ImageryError::Parse(_))));
@@ -497,68 +739,39 @@ mod tests {
     }
 
     #[test]
-    fn area_limits() {
-        // 0.05 x 0.05 = 0.0025 deg2: fine for Mapillary.
-        assert!(area_allowed(Provider::Mapillary, &small()));
-        let big = GeoBounds::new(45.0, 45.2, -111.2, -111.0);
-        assert!(!area_allowed(Provider::Mapillary, &big));
-        assert!(area_allowed(Provider::Fotoshi, &big));
-        let huge = GeoBounds::new(40.0, 43.0, -111.2, -111.0);
-        assert!(!area_allowed(Provider::Fotoshi, &huge));
+    fn the_fotoshi_search_url_carries_the_box_and_limit() {
+        let u = fotoshi_url(&small(), 20);
+        assert!(u.starts_with("https://api.fotoshi.com/v1/stac/search?bbox=-111.050000,45.000000,"));
+        assert!(u.ends_with("&limit=20"));
     }
 
     #[test]
-    fn mapillary_needs_a_token_and_never_calls_without_one() {
-        let client = FakeClient::new(vec![]);
-        assert_eq!(
-            fetch_with(&client, Provider::Mapillary, &small(), None).unwrap_err(),
-            ImageryError::NoToken
-        );
-        assert_eq!(
-            fetch_with(&client, Provider::Mapillary, &small(), Some("  ")).unwrap_err(),
-            ImageryError::NoToken
-        );
-        assert_eq!(client.request_count(), 0);
-    }
-
-    #[test]
-    fn fetch_maps_statuses() {
-        let c = FakeClient::new(vec![status_err(401, "")]);
-        assert_eq!(
-            fetch_with(&c, Provider::Mapillary, &small(), Some("t")).unwrap_err(),
-            ImageryError::Unauthorized
-        );
-        let c = FakeClient::new(vec![status_err(429, "")]);
-        assert_eq!(
-            fetch_with(&c, Provider::Fotoshi, &small(), None).unwrap_err(),
-            ImageryError::RateLimited
-        );
-    }
-
-    #[test]
-    fn fetch_returns_photos_and_flags_a_full_page() {
-        let c = FakeClient::new(vec![ok(200, FOTOSHI)]);
-        let (photos, truncated) = fetch_with(&c, Provider::Fotoshi, &small(), None).unwrap();
-        assert_eq!(photos.len(), 2);
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn urls_carry_bbox_and_token() {
-        let u = mapillary_url(&small(), "MLY|a b");
-        assert!(u.contains("bbox=-111.050000,45.000000,-111.000000,45.050000"));
-        assert!(u.contains("access_token=MLY%7Ca%20b"));
-        assert!(fotoshi_url(&small()).starts_with("https://api.fotoshi.com/v1/stac/search?bbox="));
-    }
-
-    #[test]
-    fn store_roundtrip() {
+    fn store_keeps_tiles_and_dedupes_edge_photos() {
         let store = PhotoStore::default();
-        store.replace(parse_fotoshi(FOTOSHI).unwrap());
+        let all = parse_fotoshi(FOTOSHI).unwrap();
+        let (a, b) = (TileId { z: 15, x: 1, y: 1 }, TileId { z: 15, x: 2, y: 1 });
+        store.insert_tile(a, all.clone());
+        // The second tile repeats p1, which sits on the edge.
+        store.insert_tile(b, vec![all[0].clone()]);
         assert_eq!(store.len(), 2);
+        assert!(store.has_tile(a) && store.has_tile(b));
         assert!(store.get(Provider::Fotoshi, "p1").is_some());
         assert!(store.get(Provider::Mapillary, "p1").is_none());
+        store.retain_tiles(|t| *t == b);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.tile_count(), 1);
+        let mut p = all[0].clone();
+        p.creator = Some("renamed".into());
+        store.update_photo(&p);
+        assert_eq!(
+            store
+                .get(Provider::Fotoshi, "p1")
+                .unwrap()
+                .creator
+                .as_deref(),
+            Some("renamed")
+        );
         store.clear();
-        assert!(store.is_empty());
+        assert!(store.is_empty() && store.tile_count() == 0);
     }
 }
