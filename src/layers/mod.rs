@@ -14,6 +14,7 @@ pub mod notes_layer;
 pub mod osm_layer;
 pub mod reference_layer;
 pub mod resolve;
+pub mod street_imagery_layer;
 pub mod tile_layer;
 pub mod way_stroke;
 
