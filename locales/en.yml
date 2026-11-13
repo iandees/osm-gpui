@@ -666,6 +666,12 @@ action:
     error:
       end_node: "Can't unjoin: the node is an end of the way, so there is nothing to pull it off (use Separate Node)"
       not_shared: "Can't unjoin: no other way uses the node"
+  extract:
+    label: "Extract Point"
+    hint: "Select a closed way (such as a building) that has tags besides building and address to move them onto a new point"
+    done:
+      one: "Extracted %{count} point from a way"
+      other: "Extracted %{count} points from ways"
   delete_segment:
     label: "Delete Way Segment"
     hint: "Select two nodes that are next to each other in a way to delete the segment between them"

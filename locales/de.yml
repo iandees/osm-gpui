@@ -660,6 +660,12 @@ action:
     error:
       end_node: "Lösen nicht möglich: Der Knoten ist ein Ende des Weges, es gibt nichts abzulösen (Knoten abtrennen verwenden)"
       not_shared: "Lösen nicht möglich: Kein anderer Weg nutzt den Knoten"
+  extract:
+    label: "Punkt herauslösen"
+    hint: "Einen geschlossenen Weg (z. B. ein Gebäude) mit weiteren Tags außer Gebäude und Adresse wählen, um sie auf einen neuen Punkt zu verschieben"
+    done:
+      one: "%{count} Punkt aus einem Weg herausgelöst"
+      other: "%{count} Punkte aus Wegen herausgelöst"
   delete_segment:
     label: "Wegsegment löschen"
     hint: "Zwei benachbarte Knoten eines Weges wählen, um das Segment dazwischen zu löschen"
