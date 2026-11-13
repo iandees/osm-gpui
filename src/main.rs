@@ -906,8 +906,24 @@ pub(crate) fn uploaded_taint(
 enum UploadStop {
     /// The server refused the diff (409/410/412); the changeset is closed.
     Refused(osm_upload::UploadConflict),
+    /// The server may have applied the diff (always an
+    /// `UploadError::OutcomeUnknown`); the upload must not be offered again
+    /// without the user checking the server first.
+    OutcomeUnknown(osm_upload::UploadError),
     /// Any other failure, as a message.
     Failed(String),
+}
+
+impl UploadStop {
+    fn from_error(error: osm_upload::UploadError) -> Self {
+        match error {
+            osm_upload::UploadError::Conflict(conflict) => UploadStop::Refused(conflict),
+            unknown @ osm_upload::UploadError::OutcomeUnknown { .. } => {
+                UploadStop::OutcomeUnknown(unknown)
+            }
+            other => UploadStop::Failed(other.to_string()),
+        }
+    }
 }
 
 struct MapViewer {
@@ -7013,12 +7029,7 @@ impl MapViewer {
                             chunk,
                             &mut |part, phase| progress.set_upload_phase(part, phase),
                         )
-                        .map_err(|failure| match failure.error {
-                            osm_upload::UploadError::Conflict(conflict) => {
-                                UploadStop::Refused(conflict)
-                            }
-                            other => UploadStop::Failed(other.to_string()),
-                        })
+                        .map_err(|failure| UploadStop::from_error(failure.error))
                     })
                     .await;
                 match sent {
@@ -7100,6 +7111,17 @@ impl MapViewer {
                                 if let Some(dialog) = &this.upload_dialog {
                                     dialog.update(cx, |dialog, cx| {
                                         dialog.fail_with_conflict(view, cx)
+                                    });
+                                }
+                                this.set_status(message);
+                            }
+                            UploadStop::OutcomeUnknown(error) => {
+                                // The dialog says to check the server first
+                                // and does not offer a plain retry.
+                                let message = error.to_string();
+                                if let Some(dialog) = &this.upload_dialog {
+                                    dialog.update(cx, |dialog, cx| {
+                                        dialog.fail_outcome_unknown(message.clone().into(), cx)
                                     });
                                 }
                                 this.set_status(message);

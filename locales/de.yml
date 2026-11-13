@@ -237,6 +237,7 @@ status:
   restored_autosave:
     one: "%{count} Ebene mit ungesicherten Änderungen wiederhergestellt"
     other: "%{count} Ebenen mit ungesicherten Änderungen wiederhergestellt"
+  autosave_newer_version: "Eine neuere Version dieser App hat automatisch gesicherte Änderungen hinterlassen, die diese Version nicht wiederherstellen kann. Sie wurden behalten; öffne diese Version, um sie zu retten."
   restore_failed: "„%{layer}“ konnte nicht wiederhergestellt werden: %{error}"
   downloaded: "OSM-Daten heruntergeladen: %{summary}"
   # Die Teile der obigen Zusammenfassung, verbunden mit `separator`.
@@ -878,6 +879,9 @@ dialog:
     failed: "Hochladen fehlgeschlagen"
     refused_title: "Hochladen noch nicht möglich"
     retry: "Erneut versuchen"
+    unknown_title: "Upload möglicherweise durchgegangen"
+    unknown_hint: "Prüfe zuerst deine letzten Changesets auf der OpenStreetMap-Website. Lade nur erneut hoch, wenn diese Änderungen dort fehlen."
+    retry_after_check: "Ich habe nachgesehen, erneut hochladen"
     large:
       one: "Dieser Upload ist groß und wird als %{count} Änderungssatz gesendet."
       other: "Dieser Upload ist groß und wird als %{count} Änderungssätze gesendet."
