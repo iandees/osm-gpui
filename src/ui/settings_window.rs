@@ -12,7 +12,7 @@ use gpui_component::{
     input::InputState,
     label::Label,
     radio::{Radio, RadioGroup},
-    setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    setting::{SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 
@@ -44,7 +44,21 @@ pub enum SettingsEvent {
     MapStyleChanged,
 }
 
+/// The page to open the next Settings window on (`usize::MAX`: the first).
+static REQUESTED_PAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Index of the Imagery page, where the street-imagery token lives.
+pub const IMAGERY_PAGE: usize = 3;
+
+/// Ask for the next Settings window to open on page `ix`.
+pub fn request_page(ix: usize) {
+    REQUESTED_PAGE.store(ix, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub struct SettingsWindow {
+    /// The page the window opened on, when one was requested.
+    start_page: Option<usize>,
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     editing_index: Option<usize>,
@@ -63,6 +77,7 @@ pub struct SettingsWindow {
     cache_budget_error: Option<SharedString>,
     edit_simplify_tolerance: Entity<InputState>,
     simplify_tolerance_error: Option<SharedString>,
+    edit_mapillary_token: Entity<InputState>,
     cache_clear_error: Option<SharedString>,
     map_style_input: Entity<InputState>,
     map_style_error: Option<SharedString>,
@@ -104,12 +119,19 @@ impl SettingsWindow {
                 .placeholder("3")
                 .default_value(app_settings.simplify_tolerance().to_string())
         });
+        let edit_mapillary_token = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("MLY|…")
+                .default_value(app_settings.mapillary_token.clone())
+        });
         let map_style_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
         });
         let login_state = Self::current_login_state(&app_settings);
 
+        let requested = REQUESTED_PAGE.swap(usize::MAX, std::sync::atomic::Ordering::Relaxed);
         Self {
+            start_page: (requested != usize::MAX).then_some(requested),
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
             editing_index: None,
@@ -128,6 +150,7 @@ impl SettingsWindow {
             cache_budget_error: None,
             edit_simplify_tolerance,
             simplify_tolerance_error: None,
+            edit_mapillary_token,
             cache_clear_error: None,
             map_style_input,
             map_style_error: None,
@@ -206,6 +229,7 @@ impl SettingsWindow {
         self.app_settings.recent_comments = live.recent_comments;
         self.app_settings.suggest_from_taginfo = live.suggest_from_taginfo;
         self.app_settings.simplify_tolerance_m = live.simplify_tolerance_m;
+        self.app_settings.mapillary_token = live.mapillary_token;
         settings_store::update_store(self.app_settings.clone());
     }
 
@@ -339,6 +363,14 @@ impl SettingsWindow {
             self.app_settings.client_ids.insert(oauth_base, client_id);
         }
         self.save_settings();
+        cx.notify();
+    }
+
+    /// Store the Mapillary access token typed into its field.
+    fn save_mapillary_token(&mut self, cx: &mut Context<Self>) {
+        let raw = self.edit_mapillary_token.read(cx).value().to_string();
+        settings_store::set_mapillary_token(&raw, true);
+        self.app_settings.mapillary_token = raw.trim().to_string();
         cx.notify();
     }
 
@@ -1053,8 +1085,43 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .title(tr!("settings.imagery.custom_sources"))
                     .items(items),
+                self.street_imagery_group(view.clone()),
                 self.cache_group(view),
             ])
+    }
+
+    /// The street-imagery group: the Mapillary access token.
+    fn street_imagery_group(&self, view: Entity<Self>) -> SettingGroup {
+        let token_view = view.clone();
+        let token_input = self.edit_mapillary_token.clone();
+        let token_item = SettingItem::new(
+            tr!("settings.street_imagery.mapillary_token"),
+            SettingField::render(move |_options, _window, cx| {
+                let muted = cx.theme().muted_foreground;
+                let view = token_view.clone();
+                v_flex()
+                    .gap_2()
+                    .child(field_row(
+                        tr!("settings.street_imagery.mapillary_token"),
+                        &token_input,
+                        muted,
+                    ))
+                    .child(
+                        Button::new("save-mapillary-token")
+                            .label(tr!("settings.save"))
+                            .primary()
+                            .compact()
+                            .on_click(move |_ev, _window, cx| {
+                                view.update(cx, |this, cx| this.save_mapillary_token(cx));
+                            }),
+                    )
+            }),
+        )
+        .description(tr!("settings.street_imagery.mapillary_token_description"))
+        .layout(Axis::Vertical);
+        SettingGroup::new()
+            .title(tr!("settings.street_imagery.group"))
+            .item(token_item)
     }
 
     fn cache_group(&self, view: Entity<Self>) -> SettingGroup {
@@ -1727,6 +1794,15 @@ impl Render for SettingsWindow {
             .size_full()
             .bg(cx.theme().background)
             .text_size(crate::ui::style::current_text_scale().body)
-            .child(Settings::new("app-settings").pages(self.setting_pages(cx)))
+            .child({
+                let mut settings = Settings::new("app-settings").pages(self.setting_pages(cx));
+                if let Some(page_ix) = self.start_page {
+                    settings = settings.default_selected_index(SelectIndex {
+                        page_ix,
+                        group_ix: None,
+                    });
+                }
+                settings
+            })
     }
 }

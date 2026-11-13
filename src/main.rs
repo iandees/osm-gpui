@@ -41,6 +41,7 @@ mod selection_actions;
 mod side_panel;
 mod side_panel_layout;
 mod status_bar;
+mod street_imagery_ui;
 mod tag_suggest_ui;
 mod undo;
 mod validation_panel;
@@ -1074,6 +1075,8 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// Street-level photos from Mapillary and Fotoshi (see `street_imagery_ui`).
+    imagery: street_imagery_ui::ImageryState,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -1347,6 +1350,7 @@ impl MapViewer {
             context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
+            imagery: Default::default(),
         }
     }
 
@@ -1509,6 +1513,10 @@ impl MapViewer {
         let pending = Self::unsaved_edit_count(layer.as_ref());
         if pending == 0 {
             self.delete_layer_now(id, cx);
+            // The layer list's context menu held focus and is gone; without
+            // focus in the window the View/Edit menu items have no handler
+            // and all grey out.
+            window.focus(&self.focus_handle, cx);
         } else {
             self.show_delete_layer_dialog(id, name, pending, window, cx);
         }
@@ -4553,6 +4561,9 @@ impl MapViewer {
         if self.notes_click(screen_pt) {
             return;
         }
+        if self.imagery_click(screen_pt) {
+            return;
+        }
         match self.mode {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
@@ -6806,10 +6817,15 @@ impl MapViewer {
             cx.new(|cx| osm_gpui::ui::sign_in_dialog::SignInDialog::new(purpose, window, cx));
         cx.subscribe(
             &dialog,
-            |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
+            move |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
                 use osm_gpui::ui::sign_in_dialog::DialogEvent;
                 this.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
+                    if purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary {
+                        osm_gpui::ui::settings_window::request_page(
+                            osm_gpui::ui::settings_window::IMAGERY_PAGE,
+                        );
+                    }
                     // Deferred so the window is opened outside this entity update.
                     cx.defer(|cx| crate::menu::open_settings(&OpenSettings, cx));
                 }
@@ -7642,6 +7658,7 @@ impl Render for MapViewer {
         self.check_for_pending_parallel_dialog(window, cx);
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
+        self.imagery_frame(cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
         // Validation section was last filled.
@@ -7839,6 +7856,8 @@ impl Render for MapViewer {
                             // imagery, Escape cancels, Enter keeps.
                         } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
                             // Arrow keys pan; +/- zoom.
+                        } else if ev.keystroke.key == "escape" && this.close_photo_fullscreen() {
+                            cx.notify();
                         } else if ev.keystroke.key == "escape" && this.cancel_rotate() {
                             // A Rotate in progress is undone.
                             cx.notify();
@@ -8664,6 +8683,9 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
             .on_action(cx.listener(Self::on_toggle_notes))
             .on_action(cx.listener(Self::on_refresh_notes))
+            .on_action(cx.listener(Self::on_toggle_mapillary))
+            .on_action(cx.listener(Self::on_toggle_fotoshi))
+            .on_action(cx.listener(Self::on_refresh_street_imagery))
             .on_action(cx.listener(Self::on_new_note))
             .on_action(cx.listener(Self::on_minimize_window))
             .on_action(cx.listener(Self::on_zoom_window))
@@ -8701,6 +8723,7 @@ impl Render for MapViewer {
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
             .children(self.new_note_dialog_element())
+            .children(self.render_photo_fullscreen(window, cx))
             .children(self.render_context_menu(window, cx))
     }
 }
