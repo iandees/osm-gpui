@@ -7,6 +7,20 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.11.0
+
+### Editing
+
+- A new Improve Way mode (shortcut I) refines a way's shape: click to move the nearest node to the cursor, Cmd/Ctrl/Alt-click to splice in a new node at the nearest segment, or Shift-click to delete the nearest node, with a live preview and one undo step per click. ([#251](https://github.com/iandees/osm-gpui/pull/251))
+- Arc mode snaps its clicks onto nearby nodes and ways: a snapped start or end reuses the node or splices a new one into the way, the bulge snaps in position only, and Ctrl/Alt disables snapping. The whole arc is still one undo step. ([#250](https://github.com/iandees/osm-gpui/pull/250))
+- Double-clicking a segment in Extrude mode now inserts the node on the segment instead of under the cursor, so the way's shape is unchanged. ([#249](https://github.com/iandees/osm-gpui/pull/249))
+- The change-feature-type dialog closes when you click outside it or press its new close button, as well as with Esc. ([#252](https://github.com/iandees/osm-gpui/pull/252))
+
+### Map
+
+- Tile downloads for tiles that scroll off the map are cancelled, so panning quickly no longer queues up unneeded requests. ([#248](https://github.com/iandees/osm-gpui/pull/248))
+- On high-resolution displays, OSM Carto tiles are no longer requested one zoom level deeper, so their labels and symbols keep their intended size. ([#247](https://github.com/iandees/osm-gpui/pull/247))
+
 ## 0.10.0
 
 ### Map styles
