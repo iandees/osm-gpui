@@ -58,6 +58,7 @@ pub mod selection;
 pub mod settings_store;
 pub mod snap;
 pub mod street_imagery;
+pub mod street_imagery_tiles;
 pub mod style;
 pub mod svg_normalize;
 pub mod tag_suggest;

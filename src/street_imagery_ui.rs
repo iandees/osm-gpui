@@ -1,15 +1,18 @@
-//! Street-level imagery in the window: View > Show Mapillary/Fotoshi Photos,
-//! fetching for the visible map, the dots, and the photo viewer in the side
-//! panel.
+//! Street-level imagery in the window: View > Show Mapillary/Fotoshi/Panoramax
+//! Photos, fetching for the visible map, the dots, and the photo viewer in the
+//! side panel.
 //!
-//! The model, the provider calls and the layer live in the library
-//! (`osm_gpui::street_imagery`, `osm_gpui::layers::street_imagery_layer`);
-//! this is the part that needs the window. Photos are fetched in the
-//! background for the visible map once it is zoomed in far enough for the
-//! provider to accept the area, never block editing, and report failures in
-//! the status bar. Clicking a dot downloads that photo's larger rendition and
+//! The model, the tile fetching and the layer live in the library
+//! (`osm_gpui::street_imagery`, `osm_gpui::street_imagery_tiles`,
+//! `osm_gpui::layers::street_imagery_layer`); this is the part that needs the
+//! window. The tiles under the view are fetched in the background, a few at a
+//! time and cached, once the map is zoomed in far enough that there are not
+//! too many of them; this never blocks editing, and failures show in the
+//! status bar. Clicking a dot fetches that photo's details (image URLs and
+//! author, which the tiles leave out), downloads the larger rendition and
 //! shows it in the side panel with its attribution.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,10 +23,15 @@ use gpui_component::{
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use osm_gpui::coordinates::GeoBounds;
+use osm_gpui::http::UreqClient;
 use osm_gpui::layers::street_imagery_layer::{self, StreetImageryLayer};
 use osm_gpui::layers::LayerId;
+use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::settings_store;
-use osm_gpui::street_imagery::{self as imagery, ImageryError, PhotoStore, Provider, StreetPhoto};
+use osm_gpui::street_imagery::{
+    self as imagery, ImageryError, ObjectPhotos, PhotoStore, Provider, StreetPhoto,
+};
+use osm_gpui::street_imagery_tiles::{self as tiles, TileId};
 use osm_gpui::tr;
 use osm_gpui::ui::sign_in_dialog::SignInPurpose;
 use osm_gpui::ui::style::muted_text_size;
@@ -32,22 +40,30 @@ use crate::{EditMode, MapViewer};
 
 gpui::actions!(
     osm_gpui,
-    [ToggleMapillary, ToggleFotoshi, RefreshStreetImagery]
+    [
+        ToggleMapillary,
+        ToggleFotoshi,
+        TogglePanoramax,
+        RefreshStreetImagery
+    ]
 );
 
-/// How long a pan waits before the photos for the new view are fetched.
-const REFETCH_DELAY: Duration = Duration::from_millis(1200);
+/// How long a tile that failed to load is left alone before it is tried again.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Tiles in flight at once, per provider.
+const MAX_CONCURRENT_TILES: usize = 6;
+
+/// Cached tiles per provider before those out of view are dropped.
+const MAX_CACHED_TILES: usize = 300;
 
 /// Height of the photo in the side panel.
 const PREVIEW_HEIGHT: f32 = 200.0;
 
-const PROVIDERS: [Provider; 2] = [Provider::Mapillary, Provider::Fotoshi];
+const PROVIDERS: [Provider; 3] = Provider::ALL;
 
 fn index(p: Provider) -> usize {
-    match p {
-        Provider::Mapillary => 0,
-        Provider::Fotoshi => 1,
-    }
+    p.index()
 }
 
 /// `b` grown by `factor` of its size on every side.
@@ -61,37 +77,34 @@ fn expand(b: &GeoBounds, factor: f64) -> GeoBounds {
     )
 }
 
-fn contains(outer: &GeoBounds, inner: &GeoBounds) -> bool {
-    inner.min_lat >= outer.min_lat
-        && inner.max_lat <= outer.max_lat
-        && inner.min_lon >= outer.min_lon
-        && inner.max_lon <= outer.max_lon
-}
-
-/// A view that is a little smaller than the provider allows still gets a
-/// margin around the screen, so a small pan needs no new fetch.
-fn fetch_area(provider: Provider, view: &GeoBounds) -> Option<GeoBounds> {
-    let wide = expand(view, 0.25);
-    if imagery::area_allowed(provider, &wide) {
-        Some(wide)
-    } else if imagery::area_allowed(provider, view) {
-        Some(*view)
-    } else {
-        None
-    }
-}
-
 #[derive(Default)]
 struct ProviderState {
     store: PhotoStore,
     layer: Option<LayerId>,
-    fetching: bool,
-    /// Bumped to discard the answer of a fetch that is no longer wanted.
+    /// Tiles being fetched.
+    in_flight: HashSet<TileId>,
+    /// Tiles that failed, and when; they are left alone for a while.
+    failed: HashMap<TileId, Instant>,
+    /// Bumped to discard the answers of fetches that are no longer wanted.
     epoch: u64,
-    /// The area of the last fetch and when it started.
-    covered: Option<(GeoBounds, Instant)>,
-    /// The last failure that stops refetching until the user acts.
+    /// The view needs more tiles than are fetched; the status bar said so.
+    zoomed_out: bool,
+    /// A failure that would only repeat (no or refused token, spent budget)
+    /// stops fetching until the user acts.
     blocked: bool,
+}
+
+/// The credential `provider` is asked with: Mapillary's access token, or the
+/// optional Fotoshi API key.
+fn credential(provider: Provider) -> Option<String> {
+    let s = settings_store::snapshot();
+    let c = match provider {
+        Provider::Mapillary => s.mapillary_token,
+        Provider::Fotoshi => s.fotoshi_api_key,
+        Provider::Panoramax => String::new(),
+    };
+    let c = c.trim().to_string();
+    (!c.is_empty()).then_some(c)
 }
 
 /// Zoom and pan of the full-size photo. The photo is drawn in a box the size
@@ -155,11 +168,27 @@ enum Picture {
 pub(crate) struct OpenPhoto {
     photo: StreetPhoto,
     picture: Picture,
+    /// Set when the photo was opened from a feature's Fotoshi list: it then
+    /// stays while that feature stays selected, instead of replacing the
+    /// selection.
+    for_feature: Option<FeatureRef>,
+}
+
+/// What a feature's Fotoshi lookup found.
+enum ObjectState {
+    Loading,
+    Found(ObjectPhotos),
+    Failed(SharedString),
+}
+
+struct ObjectLookup {
+    feature: FeatureRef,
+    state: ObjectState,
 }
 
 #[derive(Default)]
 pub(crate) struct ImageryState {
-    providers: [ProviderState; 2],
+    providers: [ProviderState; 3],
     open: Option<OpenPhoto>,
     /// Bumped to discard a photo download that is no longer wanted.
     photo_epoch: u64,
@@ -169,6 +198,10 @@ pub(crate) struct ImageryState {
     view: PhotoView,
     /// A dot was clicked; handled on the next frame.
     pending_open: Option<StreetPhoto>,
+    /// The Fotoshi lookup for the selected feature, when that is on.
+    object: Option<ObjectLookup>,
+    /// Bumped to discard the answer of a lookup that is no longer wanted.
+    object_epoch: u64,
 }
 
 /// Decode downloaded bytes into what gpui draws (BGRA).
@@ -204,10 +237,9 @@ impl MapViewer {
     }
 
     fn refresh_menus_for_imagery(&mut self, cx: &mut Context<Self>) {
-        osm_gpui::street_imagery::set_menu_shows(
-            self.shows_imagery(Provider::Mapillary),
-            self.shows_imagery(Provider::Fotoshi),
-        );
+        for provider in PROVIDERS {
+            osm_gpui::street_imagery::set_menu_shows(provider, self.shows_imagery(provider));
+        }
         let (lat, lon, state) = self.imagery_menu_context();
         crate::menu::rebuild_menus(
             &mut *cx,
@@ -241,7 +273,7 @@ impl MapViewer {
             self.imagery.providers[i].layer = Some(id);
             self.imagery.providers[i].blocked = false;
             self.refresh_menus_for_imagery(cx);
-            self.fetch_imagery(provider, cx);
+            self.fetch_tiles(provider, cx);
         } else {
             if let Some(id) = self.imagery.providers[i].layer {
                 if let Some(pos) = self
@@ -264,9 +296,11 @@ impl MapViewer {
         let st = &mut self.imagery.providers[index(provider)];
         st.layer = None;
         st.store.clear();
-        st.fetching = false;
+        st.in_flight.clear();
+        st.failed.clear();
         st.epoch += 1;
-        st.covered = None;
+        st.zoomed_out = false;
+        st.blocked = false;
         if self
             .imagery
             .open
@@ -311,6 +345,19 @@ impl MapViewer {
         );
     }
 
+    pub(crate) fn on_toggle_panoramax(
+        &mut self,
+        _: &TogglePanoramax,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_show_imagery(
+            Provider::Panoramax,
+            !self.shows_imagery(Provider::Panoramax),
+            cx,
+        );
+    }
+
     pub(crate) fn on_refresh_street_imagery(
         &mut self,
         _: &RefreshStreetImagery,
@@ -318,82 +365,115 @@ impl MapViewer {
         cx: &mut Context<Self>,
     ) {
         for provider in PROVIDERS {
-            self.imagery.providers[index(provider)].blocked = false;
-            self.fetch_imagery(provider, cx);
+            // Refresh means: forget what was loaded and look again.
+            let st = &mut self.imagery.providers[index(provider)];
+            if st.layer.is_none() {
+                continue;
+            }
+            st.blocked = false;
+            st.failed.clear();
+            st.in_flight.clear();
+            st.epoch += 1;
+            st.store.retain_tiles(|_| false);
+            self.fetch_tiles(provider, cx);
         }
     }
 
-    /// Fetch `provider`'s photos for the visible map, in the background.
-    fn fetch_imagery(&mut self, provider: Provider, cx: &mut Context<Self>) {
+    /// Start fetching the tiles `provider` still needs for the visible map
+    /// (and a margin around it), a few at a time, in the background. Cheap
+    /// when nothing is missing, so it runs every frame.
+    fn fetch_tiles(&mut self, provider: Provider, cx: &mut Context<Self>) {
         let i = index(provider);
-        if !self.shows_imagery(provider) || self.imagery.providers[i].fetching {
+        if !self.shows_imagery(provider) {
             return;
         }
-        let token = settings_store::snapshot().mapillary_token;
-        if provider.needs_token() && token.trim().is_empty() {
+        let cred = credential(provider);
+        if provider.needs_token() && cred.is_none() {
             self.imagery.providers[i].blocked = true;
             self.set_status(tr!("street_imagery.state.no_token"));
             cx.notify();
             return;
         }
-        let view = self.viewport.visible_bounds();
-        let Some(area) = fetch_area(provider, &view) else {
-            // Too far out: nothing to draw until the user zooms in.
-            self.imagery.providers[i].store.clear();
-            self.imagery.providers[i].covered = None;
-            self.set_status(tr!(
-                "street_imagery.state.zoom_in",
-                provider = provider.name()
-            ));
-            cx.notify();
+        let view = expand(&self.viewport.visible_bounds(), 0.15);
+        let needed = tiles::tiles_covering(&view, tiles::tile_zoom(provider));
+        if needed.len() > tiles::MAX_TILES_PER_VIEW {
+            // Too far out to show photos: say so once.
+            if !std::mem::replace(&mut self.imagery.providers[i].zoomed_out, true) {
+                self.set_status(tr!(
+                    "street_imagery.state.zoom_in",
+                    provider = provider.name()
+                ));
+                cx.notify();
+            }
             return;
-        };
+        }
         let st = &mut self.imagery.providers[i];
-        st.fetching = true;
-        st.epoch += 1;
+        st.zoomed_out = false;
+        if st.store.tile_count() > MAX_CACHED_TILES {
+            let keep: HashSet<TileId> = needed.iter().copied().collect();
+            st.store.retain_tiles(|t| keep.contains(t));
+        }
+        let now = Instant::now();
+        let mut started = Vec::new();
+        for t in needed {
+            if st.in_flight.len() >= MAX_CONCURRENT_TILES {
+                break;
+            }
+            let recently_failed = st
+                .failed
+                .get(&t)
+                .is_some_and(|at| now.duration_since(*at) < RETRY_AFTER);
+            if st.store.has_tile(t) || st.in_flight.contains(&t) || recently_failed {
+                continue;
+            }
+            st.in_flight.insert(t);
+            started.push(t);
+        }
+        if started.is_empty() {
+            return;
+        }
         let epoch = st.epoch;
-        st.covered = Some((area, Instant::now()));
         self.set_status(tr!(
             "street_imagery.state.loading",
             provider = provider.name()
         ));
         cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { imagery::fetch(provider, &area, Some(&token)) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.finish_imagery_fetch(provider, epoch, result, cx)
-            });
-        })
-        .detach();
+        for t in started {
+            let cred = cred.clone();
+            cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        tiles::fetch_tile_with(&UreqClient::new(), provider, t, cred.as_deref())
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_tile(provider, t, epoch, result, cx)
+                });
+            })
+            .detach();
+        }
     }
 
-    fn finish_imagery_fetch(
+    fn finish_tile(
         &mut self,
         provider: Provider,
+        t: TileId,
         epoch: u64,
         result: Result<(Vec<StreetPhoto>, bool), ImageryError>,
         cx: &mut Context<Self>,
     ) {
-        let i = index(provider);
-        if epoch != self.imagery.providers[i].epoch || !self.shows_imagery(provider) {
+        let st = &mut self.imagery.providers[index(provider)];
+        if epoch != st.epoch || st.layer.is_none() {
             return;
         }
-        self.imagery.providers[i].fetching = false;
+        st.in_flight.remove(&t);
         match result {
-            Ok((photos, truncated)) => {
-                let count = photos.len();
-                self.imagery.providers[i].store.replace(photos);
-                if truncated {
-                    self.set_status(tr!(
-                        "street_imagery.state.truncated",
-                        provider = provider.name(),
-                        count = count
-                    ));
-                } else {
+            Ok((photos, _may_have_more)) => {
+                st.failed.remove(&t);
+                st.store.insert_tile(t, photos);
+                if st.in_flight.is_empty() {
+                    let count = st.store.len();
                     self.set_status(osm_gpui::tr_count!(
                         "street_imagery.state.loaded",
                         count,
@@ -402,8 +482,9 @@ impl MapViewer {
                 }
             }
             Err(e) => {
+                st.failed.insert(t, Instant::now());
                 // A refused token or a spent budget would only repeat.
-                self.imagery.providers[i].blocked = matches!(
+                st.blocked = matches!(
                     e,
                     ImageryError::NoToken | ImageryError::Unauthorized | ImageryError::RateLimited
                 );
@@ -414,8 +495,8 @@ impl MapViewer {
     }
 
     /// Per-frame upkeep, called from `render`: follows a layer being deleted
-    /// from the Layers list, follows the map once it leaves the fetched area,
-    /// and opens the photo the last click asked for.
+    /// from the Layers list, fetches the tiles the map has moved onto, and
+    /// opens the photo the last click asked for.
     pub(crate) fn imagery_frame(&mut self, cx: &mut Context<Self>) {
         for provider in PROVIDERS {
             let i = index(provider);
@@ -427,25 +508,140 @@ impl MapViewer {
                 self.refresh_menus_for_imagery(cx);
                 continue;
             }
-            let st = &self.imagery.providers[i];
-            if st.fetching || st.blocked || self.viewport.is_dragging {
-                continue;
-            }
-            let stale = match &st.covered {
-                Some((area, at)) => {
-                    at.elapsed() >= REFETCH_DELAY
-                        && !contains(area, &self.viewport.visible_bounds())
-                }
-                // Zoomed out earlier: try again once the view fits.
-                None => fetch_area(provider, &self.viewport.visible_bounds()).is_some(),
-            };
-            if stale {
-                self.fetch_imagery(provider, cx);
+            if !self.imagery.providers[i].blocked && !self.viewport.is_dragging {
+                self.fetch_tiles(provider, cx);
             }
         }
+        self.update_object_lookup(cx);
         if let Some(photo) = self.imagery.pending_open.take() {
-            self.open_photo(photo, cx);
+            self.open_photo(photo, None, cx);
         }
+    }
+
+    /// The one OSM feature selected, as a Fotoshi `osm_id`, when looking up
+    /// its photos is turned on, has a key, and the feature is on the server
+    /// (new features have negative ids).
+    fn fotoshi_lookup_target(&self) -> Option<(FeatureRef, String)> {
+        let settings = settings_store::snapshot();
+        if !settings.fotoshi_lookup_selected || settings.fotoshi_api_key.trim().is_empty() {
+            return None;
+        }
+        let [f] = self.selected.as_slice() else {
+            return None;
+        };
+        let kind = match f.kind {
+            FeatureKind::Node => 'n',
+            FeatureKind::Way => 'w',
+            FeatureKind::Relation => 'r',
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        };
+        (f.id > 0).then(|| (*f, imagery::fotoshi_osm_id(kind, f.id)))
+    }
+
+    /// Keep the lookup in step with the selection: start one when a
+    /// feature is selected, forget it when the selection moves on.
+    fn update_object_lookup(&mut self, cx: &mut Context<Self>) {
+        let want = self.fotoshi_lookup_target();
+        let have = self.imagery.object.as_ref().map(|o| o.feature);
+        if want.as_ref().map(|(f, _)| *f) == have {
+            return;
+        }
+        self.imagery.object_epoch += 1;
+        self.imagery.object = None;
+        cx.notify();
+        let Some((feature, osm_id)) = want else {
+            return;
+        };
+        self.imagery.object = Some(ObjectLookup {
+            feature,
+            state: ObjectState::Loading,
+        });
+        let epoch = self.imagery.object_epoch;
+        let key = settings_store::snapshot().fotoshi_api_key;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { imagery::fetch_object_photos(&osm_id, &key) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if epoch != this.imagery.object_epoch {
+                    return;
+                }
+                if let Some(o) = &mut this.imagery.object {
+                    o.state = match result {
+                        Ok(found) => ObjectState::Found(found),
+                        Err(e) => ObjectState::Failed(failure_message(Provider::Fotoshi, &e)),
+                    };
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The selected feature's Fotoshi photos, as a section for the side
+    /// panel: a row per photo that opens it in the viewer. Nothing while
+    /// there is no lookup or Fotoshi has no photos of the feature.
+    pub(crate) fn render_object_photos_section(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let lookup = self.imagery.object.as_ref()?;
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let feature = lookup.feature;
+        let body = match &lookup.state {
+            ObjectState::Loading => Label::new(tr!("street_imagery.object.checking"))
+                .text_size(muted_text_size())
+                .text_color(muted)
+                .into_any_element(),
+            ObjectState::Failed(message) => Label::new(message.clone())
+                .text_size(muted_text_size())
+                .text_color(theme.danger)
+                .into_any_element(),
+            ObjectState::Found(found) if found.photos.is_empty() => return None,
+            ObjectState::Found(found) => {
+                let rows = found.photos.iter().enumerate().map(|(n, photo)| {
+                    let label = match (&photo.captured, &photo.creator) {
+                        (Some(d), Some(c)) => format!("{d} · {c}"),
+                        (Some(d), None) => d.clone(),
+                        (None, Some(c)) => c.clone(),
+                        (None, None) => {
+                            tr!("street_imagery.object.photo", number = n + 1).to_string()
+                        }
+                    };
+                    let photo = photo.clone();
+                    Button::new(("object-photo", n))
+                        .ghost()
+                        .compact()
+                        .label(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_photo(photo.clone(), Some(feature), cx);
+                        }))
+                });
+                v_flex()
+                    .gap_0p5()
+                    .child(
+                        Label::new(osm_gpui::tr_count!(
+                            "street_imagery.object.title",
+                            found.count
+                        ))
+                        .font_weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .children(rows)
+                    .into_any_element()
+            }
+        };
+        Some(
+            div()
+                .px_2()
+                .py_1p5()
+                .border_b_1()
+                .border_color(border)
+                .child(body)
+                .into_any_element(),
+        )
     }
 
     /// A click on the map at `pos` (map-local pixels): opens the photo whose
@@ -479,8 +675,15 @@ impl MapViewer {
         }
     }
 
-    fn open_photo(&mut self, photo: StreetPhoto, cx: &mut Context<Self>) {
-        self.set_selection(Vec::new());
+    fn open_photo(
+        &mut self,
+        photo: StreetPhoto,
+        for_feature: Option<FeatureRef>,
+        cx: &mut Context<Self>,
+    ) {
+        if for_feature.is_none() {
+            self.set_selection(Vec::new());
+        }
         self.close_note_panel();
         for st in &self.imagery.providers {
             st.store.set_selected(None);
@@ -490,32 +693,57 @@ impl MapViewer {
             .set_selected(Some((photo.provider, photo.id.clone())));
         self.imagery.photo_epoch += 1;
         let epoch = self.imagery.photo_epoch;
-        let url = photo.large_url.clone().or_else(|| photo.thumb_url.clone());
-        let picture = if url.is_some() {
-            Picture::Loading
-        } else {
-            Picture::Failed
-        };
-        self.imagery.open = Some(OpenPhoto { photo, picture });
+        self.imagery.open = Some(OpenPhoto {
+            photo: photo.clone(),
+            picture: Picture::Loading,
+            for_feature,
+        });
         cx.notify();
-        let Some(url) = url else { return };
+        let cred = credential(photo.provider);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let bytes = imagery::fetch_image(&url).map_err(|e| e.to_string())?;
-                    decode(&bytes)
+                    let client = UreqClient::new();
+                    // A tile leaves out the image URLs and the author.
+                    let photo = if photo.large_url.is_none() {
+                        match tiles::fetch_detail_with(&client, &photo, cred.as_deref()) {
+                            Ok(detailed) => detailed,
+                            Err(e) => return (photo, Err(e)),
+                        }
+                    } else {
+                        photo
+                    };
+                    let image = (|| {
+                        let url = photo
+                            .large_url
+                            .clone()
+                            .or_else(|| photo.thumb_url.clone())
+                            .ok_or_else(|| ImageryError::Parse("no image".into()))?;
+                        let bytes = imagery::fetch_image(&url)?;
+                        decode(&bytes).map_err(ImageryError::Parse)
+                    })();
+                    (photo, image)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if epoch != this.imagery.photo_epoch {
                     return;
                 }
+                let (photo, image) = result;
+                this.imagery.providers[index(photo.provider)]
+                    .store
+                    .update_photo(&photo);
+                let failure = image.as_ref().err().cloned();
                 if let Some(open) = &mut this.imagery.open {
-                    open.picture = match result {
+                    open.photo = photo.clone();
+                    open.picture = match image {
                         Ok(image) => Picture::Ready(Arc::new(image)),
                         Err(_) => Picture::Failed,
                     };
+                }
+                if let Some(e) = failure {
+                    this.set_status(failure_message(photo.provider, &e));
                 }
                 cx.notify();
             });
@@ -678,7 +906,13 @@ impl MapViewer {
     ) -> Option<(SharedString, AnyElement, AnyElement)> {
         let open = self.imagery.open.as_ref()?;
         let photo = &open.photo;
-        if !self.selected.is_empty() {
+        // A dot's photo replaces the selection; a feature's own photo stays
+        // while that feature is the selection.
+        let stays = match open.for_feature {
+            Some(f) => self.selected.as_slice() == [f],
+            None => self.selected.is_empty(),
+        };
+        if !stays {
             self.close_photo_panel();
             return None;
         }
@@ -796,23 +1030,6 @@ impl MapViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_fetch_area_gets_a_margin_only_when_the_provider_allows_it() {
-        // 0.08 x 0.08 deg: fine for Mapillary alone (0.0064 < 0.01) but not
-        // with a 25% margin on each side (0.12 x 0.12 = 0.0144).
-        let view = GeoBounds::new(45.0, 45.08, -111.08, -111.0);
-        let area = fetch_area(Provider::Mapillary, &view).unwrap();
-        assert_eq!(area, view);
-        // A small view gets the margin.
-        let small = GeoBounds::new(45.0, 45.02, -111.02, -111.0);
-        let area = fetch_area(Provider::Mapillary, &small).unwrap();
-        assert!(contains(&area, &small) && area != small);
-        // Too wide for the provider at all.
-        let wide = GeoBounds::new(45.0, 45.2, -111.2, -111.0);
-        assert!(fetch_area(Provider::Mapillary, &wide).is_none());
-        assert!(fetch_area(Provider::Fotoshi, &wide).is_some());
-    }
 
     #[test]
     fn zoom_keeps_the_point_under_the_cursor_and_stays_covering_the_window() {

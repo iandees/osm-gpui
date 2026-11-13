@@ -147,6 +147,7 @@ impl MapViewer {
             .render_note_section(cx)
             .or_else(|| self.render_photo_section(cx));
         let note_open = note_section.is_some();
+        let object_photos = self.render_object_photos_section(cx);
         let (note_title, note_status, note_body) = match note_section {
             Some((title, status, body)) => (Some(title), Some(status), Some(body)),
             None => (None, None, None),
@@ -292,6 +293,7 @@ impl MapViewer {
                                                     cx,
                                                 ))
                                             })
+                                            .children(object_photos)
                                             .child(self.collapsible_section(
                                                 tr!("panel.tags.title"),
                                                 3,

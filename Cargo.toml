@@ -42,6 +42,8 @@ futures = "0.3"
 earcutr = "0.4"
 rust-i18n = "4.1"
 sys-locale = "0.3.2"
+mvt-reader = "2.5.0"
+geo-types = "0.7"
 
 # gpui_linux is pulled in with default-features = false, so without these two
 # features no windowing backend is compiled in and gpui panics at startup
