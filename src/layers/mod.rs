@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use crate::viewport::Viewport;
 
 pub mod area_labels;
+pub mod changeset_layer;
 pub mod diff;
 pub mod grid_layer;
 pub mod labels;
