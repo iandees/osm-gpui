@@ -44,6 +44,8 @@ mod side_panel_layout;
 mod status_bar;
 mod street_imagery_ui;
 mod tag_suggest_ui;
+#[cfg(test)]
+mod test_support;
 mod undo;
 mod validation_panel;
 mod welcome;
