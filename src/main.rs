@@ -41,6 +41,8 @@ mod notes_ui;
 mod reference_tests;
 mod script_harness;
 mod selection_actions;
+#[cfg(test)]
+mod selection_dispatch_tests;
 mod side_panel;
 mod side_panel_layout;
 mod status_bar;
@@ -2878,13 +2880,18 @@ impl MapViewer {
         self.run_selection_action("delete", cx);
     }
 
-    /// Run the selection action `id` on the current selection: check it is
-    /// applicable (else show why in the status bar), apply it, and record the
-    /// result as a single undo step.
+    /// Run the selection action `id` on the current selection: refuse it
+    /// during an upload if it edits, check it is applicable (else show why in
+    /// the status bar), carry it out as its `Run` says, and record the result
+    /// as a single undo step. Every entry point (menus, shortcuts, the context
+    /// menu) ends here, so this is the one place the upload guard lives.
     fn run_selection_action(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(action) = selection_actions::find(id) else {
             return;
         };
+        if action.run.edits() && self.edits_blocked(cx) {
+            return;
+        }
         // A rotation in progress owns the selection until it is applied or
         // cancelled (Enter, click, Escape).
         if self.rotate_session.is_some() {
@@ -2901,34 +2908,23 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        if let Some(op) = clipboard_actions::op_for(action.id) {
-            self.run_clipboard_op(op, cx);
-            return;
-        }
-        if action.id == selection_actions::ADD_TO_RELATION {
-            // Which relation? Ask; `render` opens the picker (it needs the
-            // window), and the choice comes back through
-            // `add_selection_to_relation`.
-            self.pending_relation_picker = true;
-            cx.notify();
-            return;
-        }
-        if action.id == selection_actions::ROTATE {
-            self.start_rotate();
-            cx.notify();
-            return;
-        }
-        if action.id == selection_actions::PARALLEL {
-            // Same shape: ask for the offset first, then
-            // `create_parallel_ways` applies it.
-            if !self.refuse_edit_during_upload() {
-                self.pending_parallel_dialog = true;
+        match action.run {
+            selection_actions::Run::Apply(apply) => {
+                let result = apply(&mut self.layer_manager, &self.selected, self.active_layer);
+                self.finish_selection_action(result);
             }
-            cx.notify();
-            return;
+            selection_actions::Run::Clipboard(op) => self.run_clipboard_op(op, cx),
+            selection_actions::Run::Dialog(dialog) => match dialog {
+                // `render` opens the dialog (it needs the window); the answer
+                // comes back through `add_selection_to_relation` or
+                // `create_parallel_ways`.
+                selection_actions::Dialog::RelationPicker => self.pending_relation_picker = true,
+                selection_actions::Dialog::ParallelOffset => self.pending_parallel_dialog = true,
+            },
+            selection_actions::Run::Interactive(selection_actions::Interactive::Rotate) => {
+                self.start_rotate()
+            }
         }
-        let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
-        self.finish_selection_action(result);
         cx.notify();
     }
 
@@ -2937,9 +2933,6 @@ impl MapViewer {
     /// it (Shift snaps to 15 degrees). A click or Enter applies it as one
     /// undo step; Escape puts everything back.
     fn start_rotate(&mut self) {
-        if self.refuse_edit_during_upload() {
-            return;
-        }
         let Some(layer) = self.active_layer else {
             return;
         };
@@ -3220,11 +3213,6 @@ impl MapViewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Copy is not an edit; the other clipboard actions check for
-        // themselves (see `run_clipboard_op`).
-        if clipboard_actions::op_for(&action.id).is_none() && self.edits_blocked(cx) {
-            return;
-        }
         self.run_selection_action(&action.id, cx);
     }
 
@@ -5924,7 +5912,7 @@ impl MapViewer {
             menu = menu.action_context(focus).min_w(px(190.0));
             for (i, action) in actions.iter().enumerate() {
                 // Keep the destructive action apart from the edits.
-                if i > 0 && action.id == "delete" {
+                if i > 0 && action.destructive {
                     menu = menu.separator();
                 }
                 let label = action.label();
@@ -8036,11 +8024,7 @@ impl Render for MapViewer {
                                 // Like the mode keys above, these only fire
                                 // while the map area has focus, so typing in
                                 // a text input never triggers them.
-                                // Every bare-key action edits, so none runs
-                                // while an upload is in flight.
-                                if !this.edits_blocked(cx) {
-                                    this.run_selection_action(action.id, cx);
-                                }
+                                this.run_selection_action(action.id, cx);
                             }
                         }
                     }))
@@ -10837,7 +10821,7 @@ mod tests {
             kind: Node,
             id: 8105,
         }];
-        (action.apply)(&mut layers, &sel, Some(LayerId(1))).unwrap();
+        (action.apply())(&mut layers, &sel, Some(LayerId(1))).unwrap();
         assert_eq!(hit_at(&layers, 760.0, 200.0), Some((Way, -1)));
         assert_eq!(hit_at(&layers, 520.0, 200.0), Some((Way, 8202)));
         let route = layers
@@ -10914,7 +10898,7 @@ mod tests {
                 layers,
             };
             assert!((action.is_applicable)(&env), "{id} not offered");
-            (action.apply)(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
+            (action.apply())(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
         };
 
         select_way(&mut layers, 5101);

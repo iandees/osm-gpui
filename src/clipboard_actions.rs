@@ -4,9 +4,9 @@
 //!
 //! They are entries of `selection_actions::ACTIONS` (so the Edit menu, the
 //! context menu and the keyboard shortcuts treat them like any other action),
-//! but `MapViewer::run_selection_action` calls [`MapViewer::run_clipboard_op`]
-//! for them instead of `apply`, because they need the pointer position and
-//! the system clipboard, which an `ApplyFn` does not get.
+//! but they run as `Run::Clipboard`, through [`MapViewer::run_clipboard_op`],
+//! because they need the pointer position and the system clipboard, which an
+//! `ApplyFn` does not get.
 
 use std::cell::RefCell;
 
@@ -17,7 +17,7 @@ use osm_gpui::limits::Limits;
 use osm_gpui::selection::FeatureRef;
 use osm_gpui::{settings_store, tr, tr_count};
 
-use crate::selection_actions::{ActionEnv, ActionOutcome};
+use crate::selection_actions::ActionEnv;
 use crate::undo::UndoableAction;
 use crate::MapViewer;
 
@@ -53,17 +53,6 @@ pub(crate) enum ClipboardOp {
     Paste,
     PasteAtSource,
     Duplicate,
-}
-
-/// The clipboard operation behind the selection action `id`, if it is one.
-pub(crate) fn op_for(id: &str) -> Option<ClipboardOp> {
-    match id {
-        "copy_features" => Some(ClipboardOp::Copy),
-        "paste_features" => Some(ClipboardOp::Paste),
-        "paste_features_source" => Some(ClipboardOp::PasteAtSource),
-        "duplicate_features" => Some(ClipboardOp::Duplicate),
-        _ => None,
-    }
 }
 
 fn is_editable(layers: &LayerManager, id: LayerId) -> bool {
@@ -104,24 +93,8 @@ pub(crate) fn can_paste(env: &ActionEnv) -> bool {
             .is_some_and(|id| is_editable(env.layers, id))
 }
 
-/// The `apply` of the four actions: never called, as
-/// `MapViewer::run_selection_action` runs them itself (see the module docs).
-pub(crate) fn apply_elsewhere(
-    _: &mut LayerManager,
-    _: &[FeatureRef],
-    _: Option<LayerId>,
-) -> Result<ActionOutcome, String> {
-    Err(tr!("action.copy_features.hint").to_string())
-}
-
 impl MapViewer {
     pub(crate) fn run_clipboard_op(&mut self, op: ClipboardOp, cx: &mut Context<Self>) {
-        // Copying changes nothing, so it works during an upload; the rest
-        // create objects and are refused like every other edit.
-        if op != ClipboardOp::Copy && self.refuse_edit_during_upload() {
-            cx.notify();
-            return;
-        }
         match op {
             ClipboardOp::Copy => self.copy_features(cx),
             ClipboardOp::Paste => {

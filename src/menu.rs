@@ -356,6 +356,12 @@ fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
     rebuild_menus_for_live_viewer(cx);
 }
 
+/// The Edit menu entries for the selection actions listed in `slot`.
+fn edit_action_items(slot: selection_actions::MenuSlot) -> impl Iterator<Item = MenuItem> {
+    selection_actions::in_menu(slot)
+        .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
+}
+
 pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // rebuild_menus needs a map center and imagery-load state; pull the
     // live map viewer's if it exists yet, else fall back to the same
@@ -823,43 +829,13 @@ fn build_menus(
                     MenuItem::action(tr!("menu.edit.undo"), Undo),
                     MenuItem::action(tr!("menu.edit.redo"), Redo),
                     MenuItem::separator(),
-                    MenuItem::action(
-                        tr!("menu.edit.copy_features"),
-                        RunSelectionAction {
-                            id: "copy_features".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_features"),
-                        RunSelectionAction {
-                            id: "paste_features".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_features_source"),
-                        RunSelectionAction {
-                            id: "paste_features_source".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.duplicate_features"),
-                        RunSelectionAction {
-                            id: "duplicate_features".into(),
-                        },
-                    ),
-                    MenuItem::separator(),
-                    MenuItem::action(
-                        tr!("menu.edit.copy_tags"),
-                        RunSelectionAction {
-                            id: "copy_tags".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_tags"),
-                        RunSelectionAction {
-                            id: "paste_tags".into(),
-                        },
-                    ),
+                ])
+                .chain(edit_action_items(
+                    selection_actions::MenuSlot::EditClipboard,
+                ))
+                .chain([MenuItem::separator()])
+                .chain(edit_action_items(selection_actions::MenuSlot::EditTags))
+                .chain(vec![
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
                     MenuItem::separator(),
@@ -881,14 +857,7 @@ fn build_menus(
             // doesn't fit the selection explains why in the status bar.
             items: std::iter::once(MenuItem::action(tr!("validator.menu"), Validate))
                 .chain(std::iter::once(MenuItem::separator()))
-                .chain(
-                    selection_actions::ACTIONS
-                        .iter()
-                        .filter(|a| a.in_tools_menu)
-                        .map(|a| {
-                            MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() })
-                        }),
-                )
+                .chain(edit_action_items(selection_actions::MenuSlot::Tools))
                 .chain([
                     MenuItem::separator(),
                     MenuItem::action(tr!("notes.menu.new"), NewNote),
