@@ -226,20 +226,6 @@ impl Viewport {
         self.transform.tile_zoom_level()
     }
 
-    /// Animate smooth zoom to a specific level
-    pub fn animate_zoom_to(&mut self, target_zoom: f64, _duration_ms: u64) {
-        // For now, just set the zoom directly
-        // In a full implementation, you'd want to use gpui's animation system
-        self.set_zoom(target_zoom);
-    }
-
-    /// Animate smooth pan to a location
-    pub fn animate_pan_to(&mut self, lat: f64, lon: f64, _duration_ms: u64) {
-        // For now, just pan directly
-        // In a full implementation, you'd want to use gpui's animation system
-        self.pan_to(lat, lon);
-    }
-
     /// Reset viewport to initial state
     pub fn reset(&mut self, center_lat: f64, center_lon: f64, zoom_level: f64) {
         self.is_dragging = false;
@@ -253,27 +239,6 @@ impl Viewport {
             self.transform.screen_size,
         );
     }
-
-    /// Get viewport info for debugging
-    pub fn debug_info(&self) -> String {
-        format!(
-            "Center: ({:.6}, {:.6}), Zoom: {:.2}, Bounds: ({:.6}, {:.6}) - ({:.6}, {:.6})",
-            self.transform.center_lat,
-            self.transform.center_lon,
-            self.transform.zoom_level,
-            self.transform.bounds.min_lat,
-            self.transform.bounds.min_lon,
-            self.transform.bounds.max_lat,
-            self.transform.bounds.max_lon,
-        )
-    }
-}
-
-/// Viewport interaction handler trait for components that need to handle viewport events
-pub trait ViewportInteraction {
-    fn on_viewport_changed(&mut self, viewport: &Viewport);
-    fn on_zoom_changed(&mut self, old_zoom: f64, new_zoom: f64);
-    fn on_pan_changed(&mut self, old_center: (f64, f64), new_center: (f64, f64));
 }
 
 #[cfg(test)]

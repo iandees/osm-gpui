@@ -183,15 +183,6 @@ impl CoordinateTransform {
         }
     }
 
-    /// Cheap visibility test in Mercator space (no trig, no GeoBounds conversion).
-    #[inline]
-    pub fn mercator_in_view(&self, mx: f64, my: f64) -> bool {
-        mx >= self.mercator_min_x
-            && mx <= self.mercator_max_x
-            && my >= self.mercator_min_y
-            && my <= self.mercator_max_y
-    }
-
     /// Convert geographic coordinates (lat, lon) to screen coordinates (x, y)
     pub fn geo_to_screen(&self, lat: f64, lon: f64) -> GpuiPoint<Pixels> {
         let (merc_x, merc_y) = lat_lon_to_mercator(lat, lon);
@@ -469,16 +460,6 @@ impl MercatorProjector {
 /// Validates that a point has finite coordinates
 pub fn is_point_valid(point: GpuiPoint<Pixels>) -> bool {
     point.x.as_f32().is_finite() && point.y.as_f32().is_finite()
-}
-
-/// Creates a safe point with finite coordinates, falling back to defaults if needed
-pub fn safe_point(x: f32, y: f32, default_x: f32, default_y: f32) -> GpuiPoint<Pixels> {
-    let safe_x = if x.is_finite() { x } else { default_x };
-    let safe_y = if y.is_finite() { y } else { default_y };
-    GpuiPoint {
-        x: px(safe_x),
-        y: px(safe_y),
-    }
 }
 
 /// Validates coordinates before using them in Lyon paths

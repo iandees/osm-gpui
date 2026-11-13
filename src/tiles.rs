@@ -1,4 +1,3 @@
-use gpui::SharedString;
 use std::f64::consts::PI;
 
 /// A tile coordinate in the Web Mercator projection
@@ -135,139 +134,6 @@ pub fn get_tiles_for_bounds(
     tiles
 }
 
-// Legacy functions kept for compatibility but no longer used with GPUI assets
-pub fn screen_to_tile_coords(
-    screen_x: f32,
-    screen_y: f32,
-    bounds_width: f32,
-    bounds_height: f32,
-    center_lat: f64,
-    center_lon: f64,
-    zoom_level: f64,
-) -> (f64, f64) {
-    let lat_span = 180.0 / (2.0_f64.powf(zoom_level));
-    let lon_span = 360.0 / (2.0_f64.powf(zoom_level));
-
-    let pixels_per_degree_lat = bounds_height as f64 / lat_span;
-    let pixels_per_degree_lon = bounds_width as f64 / lon_span;
-
-    let lon = center_lon + ((screen_x - bounds_width / 2.0) as f64 / pixels_per_degree_lon);
-    let lat = center_lat - ((screen_y - bounds_height / 2.0) as f64 / pixels_per_degree_lat);
-
-    (lat, lon)
-}
-
-pub fn geo_to_screen(
-    lat: f64,
-    lon: f64,
-    bounds_width: f32,
-    bounds_height: f32,
-    center_lat: f64,
-    center_lon: f64,
-    zoom_level: f64,
-) -> (f32, f32) {
-    let lat_span = 180.0 / (2.0_f64.powf(zoom_level));
-    let lon_span = 360.0 / (2.0_f64.powf(zoom_level));
-
-    let pixels_per_degree_lat = bounds_height as f64 / lat_span;
-    let pixels_per_degree_lon = bounds_width as f64 / lon_span;
-
-    let x = (bounds_width / 2.0) + ((lon - center_lon) * pixels_per_degree_lon) as f32;
-    let y = (bounds_height / 2.0) - ((lat - center_lat) * pixels_per_degree_lat) as f32;
-
-    (x, y)
-}
-
-pub fn calculate_mercator_bounds(
-    center_lat: f64,
-    center_lon: f64,
-    zoom_level: f64,
-    _screen_width: f32,
-    _screen_height: f32,
-) -> (f64, f64, f64, f64) {
-    let lat_span = 180.0 / (2.0_f64.powf(zoom_level));
-    let lon_span = 360.0 / (2.0_f64.powf(zoom_level));
-
-    let min_lat = center_lat - lat_span / 2.0;
-    let max_lat = center_lat + lat_span / 2.0;
-    let min_lon = center_lon - lon_span / 2.0;
-    let max_lon = center_lon + lon_span / 2.0;
-
-    (min_lat, min_lon, max_lat, max_lon)
-}
-
-// Legacy types kept for compatibility
-#[derive(Debug, Clone)]
-pub enum TileLoadState {
-    NotLoaded,
-    Loading,
-    Loaded(SharedString),
-    Failed(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct Tile {
-    pub coord: TileCoord,
-    pub state: TileLoadState,
-    pub url: SharedString,
-    pub loading_started: bool,
-}
-
-impl Tile {
-    pub fn new(coord: TileCoord) -> Self {
-        let url =
-            url_from_template("https://tile.openstreetmap.org/{z}/{x}/{y}.png", &coord).into();
-        Self {
-            coord,
-            state: TileLoadState::NotLoaded,
-            url,
-            loading_started: false,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum TileMessage {
-    RequestTile(TileCoord),
-    TileLoaded(TileCoord),
-    TileFailed(TileCoord, String),
-}
-
-// Legacy TileManager - no longer used with GPUI assets
-pub struct TileManager;
-
-impl Default for TileManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TileManager {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn get_tile(&self, coord: TileCoord) -> Option<Tile> {
-        Some(Tile::new(coord))
-    }
-
-    pub fn process_messages(&mut self) -> bool {
-        false
-    }
-
-    pub fn init_loader(&mut self) {
-        // No-op - GPUI handles loading now
-    }
-
-    pub fn get_stats(&self) -> (usize, usize, usize, usize) {
-        (0, 0, 0, 0)
-    }
-
-    pub fn clear_cache(&self) {
-        // No-op - GPUI handles caching now
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,18 +216,5 @@ mod tests {
         let inner = u.trim_start_matches("https://");
         let first = inner.split('.').next().unwrap();
         assert!(u.contains(&format!("/{}/", first)), "got {}", u);
-    }
-
-    #[test]
-    fn test_tile_creation() {
-        let coord = TileCoord::new(1, 2, 3);
-        let tile = Tile::new(coord);
-        assert_eq!(tile.coord, coord);
-        assert_eq!(
-            tile.url,
-            SharedString::from("https://tile.openstreetmap.org/3/1/2.png")
-        );
-        matches!(tile.state, TileLoadState::NotLoaded);
-        assert!(!tile.loading_started);
     }
 }

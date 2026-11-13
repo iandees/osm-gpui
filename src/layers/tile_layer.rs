@@ -30,7 +30,6 @@ pub struct TileLayer {
     source_key: String,
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
-    show_boundaries: bool,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
     attribution: Option<AttributionInfo>,
@@ -74,7 +73,6 @@ impl TileLayer {
             source_key,
             visible: true,
             tile_cache,
-            show_boundaries: false,
             min_zoom: None,
             max_zoom: None,
             attribution: None,
@@ -125,10 +123,6 @@ impl TileLayer {
     pub fn with_attribution(mut self, attribution: Option<AttributionInfo>) -> Self {
         self.attribution = attribution;
         self
-    }
-
-    pub fn set_show_boundaries(&mut self, show: bool) {
-        self.show_boundaries = show;
     }
 
     /// Compute the tile zoom level to request for a given viewport zoom,
@@ -483,44 +477,7 @@ impl MapLayer for TileLayer {
         elements
     }
 
-    fn render_canvas(&self, viewport: &Viewport, _bounds: Bounds<Pixels>, window: &mut Window) {
-        if !self.show_boundaries {
-            return;
-        }
-
-        // Render tile boundaries for debugging
-        let zoom_level = viewport.zoom_level();
-        let Some(tile_zoom) = self.render_tile_zoom(zoom_level, window.scale_factor()) else {
-            return;
-        };
-        let visible_tiles = self.visible_tiles(viewport, tile_zoom);
-        let merc_offset = self.mercator_offset(viewport);
-
-        let tile_color = rgb(0x4a5568);
-        for tile_coord in &visible_tiles {
-            // Use the same positioning as render_elements for consistency
-            let (tile_x, tile_y, tile_width, tile_height) =
-                tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
-            let screen_top_left = point(tile_x, tile_y);
-            let screen_bottom_right = point(tile_x + tile_width, tile_y + tile_height);
-
-            // Validate coordinates before using in Lyon path
-            use crate::coordinates::is_point_valid;
-            if is_point_valid(screen_top_left) && is_point_valid(screen_bottom_right) {
-                // Draw tile boundary rectangle
-                let mut builder = PathBuilder::stroke(px(1.0));
-                builder.move_to(point(screen_top_left.x, screen_top_left.y));
-                builder.line_to(point(screen_bottom_right.x, screen_top_left.y));
-                builder.line_to(point(screen_bottom_right.x, screen_bottom_right.y));
-                builder.line_to(point(screen_top_left.x, screen_bottom_right.y));
-                builder.close();
-
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, tile_color);
-                }
-            }
-        }
-    }
+    fn render_canvas(&self, _viewport: &Viewport, _bounds: Bounds<Pixels>, _window: &mut Window) {}
 
     fn stats(&self) -> Vec<(String, String)> {
         let (cached_files, active_downloads) = if let Ok(tile_cache) = self.tile_cache.try_lock() {
@@ -532,10 +489,6 @@ impl MapLayer for TileLayer {
         let mut stats = vec![
             ("Cached Files".to_string(), cached_files.to_string()),
             ("Active Downloads".to_string(), active_downloads.to_string()),
-            (
-                "Show Boundaries".to_string(),
-                self.show_boundaries.to_string(),
-            ),
         ];
         if let Some(min_z) = self.min_zoom {
             stats.push(("Min Zoom".to_string(), min_z.to_string()));
