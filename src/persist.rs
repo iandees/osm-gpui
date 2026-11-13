@@ -221,6 +221,10 @@ fn restrict_permissions(_path: &Path) -> std::io::Result<()> {
 /// Deserialize `T` from the JSON file at `path`. Missing, unreadable, or
 /// malformed files fall back to `T::default()` (logged to stderr, tagged
 /// with `label` and `path`, for anything other than a plain missing file).
+///
+/// A file that exists but cannot be parsed is copied to a `.bak` sibling
+/// first (when the [`Policy`] permits writing there), because the caller's
+/// next save would otherwise replace the user's data with defaults.
 pub fn load_json<T: DeserializeOwned + Default>(path: &Path, label: &str) -> T {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -234,9 +238,30 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path, label: &str) -> T {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{label}: parse {:?} failed: {}", path, e);
+            let mut name = path.as_os_str().to_owned();
+            name.push(".bak");
+            let backup = PathBuf::from(name);
+            if write_permitted(&backup) {
+                match std::fs::copy(path, &backup) {
+                    Ok(_) => eprintln!("{label}: kept the unreadable file as {:?}", backup),
+                    Err(e) => eprintln!("{label}: backup to {:?} failed: {}", backup, e),
+                }
+            }
             T::default()
         }
     }
+}
+
+/// `deserialize_with` for an enum-valued field: a value this build does not
+/// know (written by a newer version) becomes the field's default instead of
+/// failing the whole file.
+pub fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// Serialize `value` as pretty JSON and atomically write it to `path` (see
@@ -558,6 +583,42 @@ mod tests {
         fs::write(&path, b"not valid json {{").unwrap();
         let loaded: Sample = load_json(&path, "test");
         assert_eq!(loaded, Sample::default());
+    }
+
+    #[test]
+    fn load_json_corrupt_file_is_kept_as_bak() {
+        let dir = tmp_dir("corrupt-bak");
+        let path = dir.join("sample.json");
+        fs::write(&path, b"not valid json {{").unwrap();
+        let loaded: Sample = load_json(&path, "test");
+        assert_eq!(loaded, Sample::default());
+        assert_eq!(
+            fs::read(dir.join("sample.json.bak")).unwrap(),
+            b"not valid json {{"
+        );
+    }
+
+    #[test]
+    fn load_json_good_or_missing_file_makes_no_bak() {
+        let dir = tmp_dir("no-bak");
+        let path = dir.join("sample.json");
+        let _: Sample = load_json(&path, "test");
+        fs::write(&path, br#"{"name":"a","count":1}"#).unwrap();
+        let _: Sample = load_json(&path, "test");
+        assert!(!dir.join("sample.json.bak").exists());
+    }
+
+    #[test]
+    fn load_json_does_not_back_up_into_protected_state() {
+        let Some(config) = dirs::config_dir() else {
+            return;
+        };
+        let mut name = config
+            .join("osm-gpui")
+            .join("persist-guard-probe.json")
+            .into_os_string();
+        name.push(".bak");
+        assert!(!write_permitted(Path::new(&name)));
     }
 
     #[test]

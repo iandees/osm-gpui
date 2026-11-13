@@ -26,9 +26,7 @@ impl RecentsStore for SettingsRecents {
     }
 
     fn save(&mut self, ids: &[String]) {
-        let mut settings = crate::settings_store::snapshot();
-        settings.recent_presets = ids.to_vec();
-        crate::settings_store::update_store(settings);
+        crate::settings_store::update(true, |s| s.recent_presets = ids.to_vec());
     }
 }
 

@@ -776,13 +776,12 @@ impl MapViewer {
         }
         if let Cmd::AddRecentComment(text) = cmd {
             // In memory only: this is a script run, never the settings file.
-            let mut settings = osm_gpui::settings_store::snapshot();
-            osm_gpui::changeset_tags::push_recent_comment(&mut settings.recent_comments, text);
-            osm_gpui::settings_store::update_store_in_memory(settings.clone());
+            osm_gpui::settings_store::update(false, |s| {
+                osm_gpui::changeset_tags::push_recent_comment(&mut s.recent_comments, text)
+            });
+            let recent_comments = osm_gpui::settings_store::snapshot().recent_comments;
             if let Some(dialog) = self.upload_dialog.clone() {
-                dialog.update(cx, |d, cx| {
-                    d.set_recent_comments(settings.recent_comments, cx)
-                });
+                dialog.update(cx, |d, cx| d.set_recent_comments(recent_comments, cx));
             }
             return Ok(());
         }
