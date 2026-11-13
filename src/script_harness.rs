@@ -1589,14 +1589,6 @@ impl AppHandle for LiveApp {
     }
 
     fn assert_mode(&mut self, want: script::EditMode) -> Result<(), String> {
-        let want = match want {
-            script::EditMode::Select => crate::EditMode::Select,
-            script::EditMode::Add => crate::EditMode::Add,
-            script::EditMode::Building => crate::EditMode::Building,
-            script::EditMode::Extrude => crate::EditMode::Extrude,
-            script::EditMode::Arc => crate::EditMode::Arc,
-            script::EditMode::Improve => crate::EditMode::Improve,
-        };
         self.bus.submit(ScriptCommand::AssertMode(want));
         self.bus.take_assert_result()
     }

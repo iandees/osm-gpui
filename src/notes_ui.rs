@@ -438,11 +438,18 @@ impl MapViewer {
             return;
         }
         self.set_show_notes(true, cx);
+        self.arm_new_note();
+        cx.notify();
+    }
+
+    /// Leave the current mode (the click that places the note must reach the
+    /// notes handler, not an editing mode) and wait for that click.
+    fn arm_new_note(&mut self) {
         self.mode = EditMode::Select;
-        self.add_progress = None;
+        self.reset_mode_progress();
+        self.building_reference = None;
         self.notes.armed = true;
         self.set_status(tr!("notes.new.armed"));
-        cx.notify();
     }
 
     pub(crate) fn open_new_note_dialog(
@@ -931,6 +938,37 @@ impl MapViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AddProgress, BuildingProgress};
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn arming_a_note_drops_every_modes_unfinished_gesture(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _w, _cx| {
+                view.mode = EditMode::Building;
+                view.add_progress = Some(AddProgress {
+                    way_id: None,
+                    last_node_id: -1,
+                    at_start: false,
+                });
+                view.building_progress = Some(BuildingProgress {
+                    corner_a: (0.0, 0.0),
+                    corner_b: None,
+                });
+                view.arm_new_note();
+                assert_eq!(view.mode, EditMode::Select);
+                assert!(view.add_progress.is_none());
+                assert!(view.arc_progress.is_none());
+                assert!(view.building_progress.is_none());
+                assert!(view.building_press.is_none());
+                assert!(view.extrude_drag.is_none());
+                assert!(view.building_reference.is_none());
+                assert!(view.notes.armed);
+            })
+            .unwrap();
+    }
 
     #[test]
     fn expand_grows_every_side_and_stays_on_the_map() {

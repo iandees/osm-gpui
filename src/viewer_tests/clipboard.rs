@@ -5,8 +5,8 @@ use super::{
     undo_step, way_nodes, ways_at_node,
 };
 use crate::{
-    clipboard_actions, key_bindings_from_settings, HideApp, HideOtherApps, MapViewer,
-    MinimizeWindow, OpenSettings, Quit, RunSelectionAction, MAP_VIEWER_KEY_CONTEXT,
+    clipboard_actions, key_binding_for, key_bindings_from_settings, HideApp, HideOtherApps,
+    MapViewer, MinimizeWindow, OpenSettings, Quit, RunSelectionAction, MAP_VIEWER_KEY_CONTEXT,
 };
 use gpui::{point, px, Context, KeyBinding, TestAppContext, Window};
 use osm_gpui::layers::osm_layer::OsmLayer;
@@ -479,4 +479,32 @@ fn macos_only_fixed_bindings_are_registered_only_on_macos() {
     // The functional shortcuts are unaffected.
     assert!(has(&other, |a| a.as_any().is::<Quit>()));
     assert!(has(&other, |a| a.as_any().is::<OpenSettings>()));
+}
+
+/// A shortcut listed in Settings must do something: modifier shortcuts get
+/// a `KeyBinding`; only the bare-key categories are matched by the map's
+/// key handler instead.
+#[test]
+fn every_listed_shortcut_is_bound_or_handled_as_a_bare_key() {
+    for def in osm_gpui::keybindings::SHORTCUTS {
+        let bound = key_binding_for(def.id, def.default_spec).is_some();
+        if def.category.is_bare_key_category() {
+            assert!(
+                !bound,
+                "{} is a bare key handled by the map but also has a KeyBinding",
+                def.id
+            );
+            assert!(
+                osm_gpui::keybindings::is_bare_key(def.default_spec),
+                "{} is in a bare-key category but its default has a modifier",
+                def.id
+            );
+        } else {
+            assert!(
+                bound,
+                "shortcut `{}` is listed in Settings but key_binding_for binds nothing to it",
+                def.id
+            );
+        }
+    }
 }

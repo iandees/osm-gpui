@@ -1,5 +1,6 @@
 //! Parsed script operations.
 
+use crate::edit_mode::EditMode;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,16 +97,6 @@ pub struct Chord {
     pub alt: bool,
     pub ctrl: bool,
     pub key: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EditMode {
-    Select,
-    Add,
-    Building,
-    Extrude,
-    Arc,
-    Improve,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
