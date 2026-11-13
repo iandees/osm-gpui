@@ -1077,6 +1077,52 @@ gps_traces:
     failed: "GPS-Tracks konnten nicht heruntergeladen werden: %{detail}"
   error:
     parse: "Unlesbare Antwort des GPS-Track-Servers: %{detail}"
+  style:
+    color_by:
+      title: "Einfärben nach"
+      single: "Einheitliche Farbe"
+      speed: "Geschwindigkeit"
+      direction: "Richtung"
+      age: "Alter"
+    color:
+      title: "Linienfarbe"
+      cyan: "Cyan"
+      magenta: "Magenta"
+      orange: "Orange"
+      yellow: "Gelb"
+      black: "Schwarz"
+    width:
+      title: "Linienbreite"
+      thin: "Dünn"
+      medium: "Mittel"
+      thick: "Dick"
+    age:
+      title: "Tracks anzeigen aus"
+      all: "Allen Jahren"
+      months6: "Den letzten 6 Monaten"
+      year1: "Dem letzten Jahr"
+      years: "Den letzten %{n} Jahren"
+    speed_range:
+      title: "Geschwindigkeitsbereich"
+      walking: "Zu Fuß (0–%{max} km/h)"
+      cycling: "Fahrrad (0–%{max} km/h)"
+      town: "Innerorts (0–%{max} km/h)"
+      highway: "Autobahn (0–%{max} km/h)"
+    show_private: "Undatierte private Punkte anzeigen"
+    reset: "Track-Darstellung zurücksetzen"
+  legend:
+    title: "GPS-Tracks nach %{by}"
+    unknown: "Unbekannt"
+    kmh_max: "%{n}+ km/h"
+    years:
+      below: "< %{n} Jahr"
+      range: "%{a}–%{b} Jahre"
+      above: "≥ %{n} Jahre"
+    dir:
+      n: "N"
+      e: "O"
+      s: "S"
+      w: "W"
 
 error:
   network: "Netzwerkfehler: %{detail}"

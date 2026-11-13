@@ -63,6 +63,11 @@ struct Item {
     segments: Vec<Vec<(f64, f64)>>,
     /// Per segment: whether any of its points had a `<time>`.
     timed: Vec<bool>,
+    /// Per segment, per point: its `<time>` (Unix seconds), kept only for
+    /// trackpoints answers.
+    times: Vec<Vec<Option<i64>>>,
+    /// The `trkpt` being read was kept (it had a usable position).
+    in_point: bool,
     /// A waypoint's position.
     point: Option<(f64, f64)>,
 }
@@ -210,6 +215,7 @@ fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), Re
                     if let Some((_, it)) = item.as_mut() {
                         it.segments.push(Vec::new());
                         it.timed.push(false);
+                        it.times.push(Vec::new());
                     }
                 }
                 Tag::Time if parent == Some(Tag::Trkpt) => {
@@ -217,12 +223,21 @@ fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), Re
                         if let Some(t) = it.timed.last_mut() {
                             *t = true;
                         }
+                        if traces && it.in_point {
+                            text_for = Some(Tag::Time);
+                            text.clear();
+                        }
                     }
                 }
                 Tag::Trkpt if parent == Some(Tag::Trkseg) => {
-                    if let (Some((_, it)), Some(p)) = (item.as_mut(), position(e)) {
-                        if let Some(seg) = it.segments.last_mut() {
+                    if let Some((_, it)) = item.as_mut() {
+                        it.in_point = false;
+                        if let (Some(p), Some(seg)) = (position(e), it.segments.last_mut()) {
                             seg.push(p);
+                            if let Some(times) = it.times.last_mut() {
+                                times.push(None);
+                            }
+                            it.in_point = true;
                         }
                     }
                 }
@@ -261,6 +276,16 @@ fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), Re
                     }
                     text_for = None;
                 }
+                Tag::Time if text_for == Some(Tag::Time) => {
+                    if let Some((_, it)) = item.as_mut() {
+                        let t = crate::object_history::parse_timestamp(text.trim());
+                        if let Some(slot) = it.times.last_mut().and_then(|s| s.last_mut()) {
+                            *slot = t;
+                        }
+                    }
+                    text.clear();
+                    text_for = None;
+                }
                 Tag::Wpt | Tag::Trk | Tag::Rte if parent == Some(Tag::Gpx) => {
                     if let Some((kind, it)) = item.take() {
                         if traces {
@@ -288,17 +313,22 @@ fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), Re
 /// feature, its untimed points as one feature of loose points.
 fn add_trace(builder: &mut Builder, item: Item) -> Result<(), RefError> {
     let (mut timed, mut loose): (Vec<_>, Vec<_>) = (Vec::new(), Vec::new());
-    for (seg, &has_time) in item.segments.iter().zip(&item.timed) {
+    for ((seg, &has_time), times) in item.segments.iter().zip(&item.timed).zip(&item.times) {
         if has_time {
-            timed.push(seg);
+            timed.push((seg, times));
         } else {
             loose.push(seg);
         }
     }
     if !timed.is_empty() {
+        let start = timed
+            .iter()
+            .flat_map(|(_, times)| times.iter().flatten())
+            .min()
+            .copied();
         let id = builder.feature(FeatureKind::Track, "", item.name, item.props);
-        for seg in timed {
-            builder.line(id, seg)?;
+        for (seg, times) in timed {
+            builder.line_timed(id, seg, times, start)?;
         }
     }
     if loose.iter().any(|s| !s.is_empty()) {
@@ -499,6 +529,46 @@ mod tests {
             .props
             .iter()
             .any(|(k, v)| k == "url" && v.ends_with("/123")));
+    }
+
+    #[test]
+    fn trackpoint_traces_carry_speed_bearing_and_start_time() {
+        let data = parse_trackpoints(&[TRACKPOINTS.as_bytes()]).unwrap();
+        let first = data.parts[0].track.as_ref().unwrap();
+        // 2019-06-26T07:00:00Z
+        assert_eq!(first.start, Some(1_561_532_400));
+        // ~133 m to the north-west in 5 s.
+        assert_eq!(first.speed.len(), 2);
+        assert!((first.speed[0] - 26.6).abs() < 1.0, "{:?}", first.speed);
+        assert!(
+            (300.0..340.0).contains(&first.bearing[0]),
+            "{:?}",
+            first.bearing
+        );
+        assert_eq!(first.speed[1], first.speed[0]);
+        // One-second steps are measured over two seconds.
+        let second = data.parts[1].track.as_ref().unwrap();
+        assert!(second.speed.iter().all(|s| s.is_finite() && *s > 0.0));
+        // Files keep no measures.
+        assert!(parse(FULL.as_bytes()).unwrap().parts[0].track.is_none());
+    }
+
+    #[test]
+    fn points_sharing_a_second_still_get_a_speed() {
+        let doc = r#"<gpx><trk><trkseg>
+            <trkpt lat="1.0" lon="2.0"><time>2020-01-01T00:00:00Z</time></trkpt>
+            <trkpt lat="1.0001" lon="2.0"><time>2020-01-01T00:00:00Z</time></trkpt>
+            <trkpt lat="1.0002" lon="2.0"><time>2020-01-01T00:00:01Z</time></trkpt>
+            <trkpt lat="1.0003" lon="2.0"><time>2020-01-01T00:00:02Z</time></trkpt>
+            </trkseg></trk></gpx>"#;
+        let data = parse_trackpoints(&[doc.as_bytes()]).unwrap();
+        let t = data.parts[0].track.as_ref().unwrap();
+        // ~11 m a step at about a step a second, heading north. Times are
+        // whole seconds, so the measure is rough.
+        for s in &t.speed {
+            assert!((8.0..25.0).contains(s), "{:?}", t.speed);
+        }
+        assert!(t.bearing[0] < 1.0 || t.bearing[0] > 359.0);
     }
 
     #[test]

@@ -19,3 +19,25 @@ capture out/gps-traces-02-done.png
 viewport 42.0255 -93.6465 18
 wait_idle 10s
 capture out/gps-traces-03-z18.png
+
+# Trace styles (the layer's right-click menu sends the same action). The
+# choice is remembered in the settings file, so put it back at the end.
+viewport 42.030 -93.640 15
+wait_idle 10s
+action layers::SetGpsTraceStyle {"change":{"ColorBy":"Speed"}}
+wait 1s
+capture out/gps-traces-04-speed.png
+action layers::SetGpsTraceStyle {"change":{"ColorBy":"Direction"}}
+action layers::SetGpsTraceStyle {"change":{"Width":"Medium"}}
+viewport 42.0255 -93.6465 17
+wait_idle 10s
+capture out/gps-traces-05-direction.png
+action layers::SetGpsTraceStyle {"change":{"ColorBy":"Age"}}
+viewport 42.030 -93.640 15
+wait_idle 10s
+capture out/gps-traces-06-age.png
+action layers::SetGpsTraceStyle {"change":{"MaxAge":"Years2"}}
+action layers::SetGpsTraceStyle {"change":{"ShowPrivate":false}}
+wait 1s
+capture out/gps-traces-07-last-2-years.png
+action layers::SetGpsTraceStyle {"change":"Reset"}

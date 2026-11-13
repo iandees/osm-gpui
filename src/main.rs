@@ -8538,6 +8538,7 @@ impl Render for MapViewer {
                     .children(self.render_welcome(cx))
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
+                    .children(self.render_gps_traces_legend(cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -8678,6 +8679,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
             .on_action(cx.listener(Self::on_adjust_imagery_offset))
             .on_action(cx.listener(Self::on_adjust_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_set_gps_trace_style))
             .on_action(cx.listener(Self::on_reset_imagery_offset))
             .on_action(cx.listener(Self::on_reset_layer_imagery_offset))
             .on_action(cx.listener(Self::on_set_imagery_offset))

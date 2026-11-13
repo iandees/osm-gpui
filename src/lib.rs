@@ -65,6 +65,7 @@ pub mod taginfo;
 pub mod tile_cache;
 pub mod tiles;
 pub mod topology;
+pub mod trace_style;
 pub mod transfer;
 pub mod ui;
 pub mod upload_chunks;

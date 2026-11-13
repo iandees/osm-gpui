@@ -69,6 +69,12 @@ pub trait MapLayer: Send + Sync {
     /// instead — `is_some()` there already answers that without a downcast.
     fn as_any(&self) -> &dyn std::any::Any;
 
+    /// `as_any` for changing a layer's own settings (a reference layer's
+    /// trace style). `None` for layers that offer nothing to change.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
 
