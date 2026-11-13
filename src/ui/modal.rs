@@ -4,8 +4,8 @@
 //! the standard Cancel + primary-confirm footer button row.
 
 use gpui::{
-    div, prelude::*, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent, Pixels,
-    SharedString, Window,
+    div, prelude::*, AnyView, App, ClickEvent, Div, ElementId, FocusHandle, Hsla, KeyDownEvent,
+    Pixels, SharedString, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -31,21 +31,25 @@ pub trait ModalDialog: gpui::Focusable {
 }
 
 /// What the host needs of one open dialog: the handle that contains every
-/// control of it, and the one to focus when none of them is focused.
+/// control of it, the one to focus when none of them is focused, and the view
+/// to mount.
 pub struct OpenModal {
     pub container: FocusHandle,
     pub initial: FocusHandle,
+    pub view: AnyView,
 }
 
 /// Describe `dialog` for [`ensure_modal_focus`] (`None` when it is closed).
-pub fn open_modal<T: ModalDialog + 'static>(
+pub fn open_modal<T: ModalDialog + gpui::Render + 'static>(
     dialog: &Option<gpui::Entity<T>>,
     cx: &App,
 ) -> Option<OpenModal> {
-    let dialog = dialog.as_ref()?.read(cx);
+    let entity = dialog.as_ref()?;
+    let dialog = entity.read(cx);
     Some(OpenModal {
         container: gpui::Focusable::focus_handle(dialog, cx),
         initial: dialog.initial_focus(cx),
+        view: entity.clone().into(),
     })
 }
 

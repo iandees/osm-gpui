@@ -25,6 +25,8 @@ mod arc_click_tests;
 mod autosave_driver;
 mod clipboard_actions;
 #[cfg(test)]
+mod dialog_tests;
+#[cfg(test)]
 mod edge_case_tests;
 mod fields_section;
 mod gps_traces_ui;
@@ -3364,17 +3366,7 @@ impl MapViewer {
         if self.find_dialog.is_some() {
             return;
         }
-        let other_dialog_open = self.quit_confirm_dialog.is_some()
-            || self.delete_layer_dialog.is_some()
-            || self.upload_dialog.is_some()
-            || self.sign_in_dialog.is_some()
-            || self.notice_dialog.is_some()
-            || self.preset_picker_dialog.is_some()
-            || self.nsi_dialog.is_some()
-            || self.relation_picker_dialog.is_some()
-            || self.parallel_dialog.is_some()
-            || self.about_dialog.is_some()
-            || self.custom_imagery_dialog.is_some();
+        let other_dialog_open = self.any_dialog_open(cx);
         if other_dialog_open {
             return;
         }
@@ -3999,7 +3991,6 @@ impl MapViewer {
     /// took it from once an item is chosen). Skipped while a menu is open,
     /// which owns the keyboard then. Returns whether focus moved.
     fn keep_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        use osm_gpui::ui::modal::open_modal;
         // Asking the dispatch tree anything before the first frame is drawn
         // trips an assertion; a dialog open at launch focused itself anyway.
         if !std::mem::replace(&mut self.drawn_once, true) {
@@ -4008,8 +3999,16 @@ impl MapViewer {
         if menu::in_window_menu_open(window) {
             return false;
         }
-        // Mount order, so the last one is the one drawn on top.
-        let open: Vec<_> = [
+        let open = self.open_modals(cx);
+        osm_gpui::ui::modal::ensure_modal_focus(&open, window, cx)
+    }
+
+    /// Every open modal dialog, in mount order, so the last one is the one
+    /// drawn on top. The only list of dialogs: focus, rendering and
+    /// `any_dialog_open` all derive from it.
+    fn open_modals(&self, cx: &App) -> Vec<osm_gpui::ui::modal::OpenModal> {
+        use osm_gpui::ui::modal::open_modal;
+        [
             open_modal(&self.custom_imagery_dialog, cx),
             open_modal(&self.quit_confirm_dialog, cx),
             open_modal(&self.delete_layer_dialog, cx),
@@ -4027,23 +4026,12 @@ impl MapViewer {
         ]
         .into_iter()
         .flatten()
-        .collect();
-        osm_gpui::ui::modal::ensure_modal_focus(&open, window, cx)
+        .collect()
     }
 
     /// Whether a modal dialog is open (the vertex preview is suppressed).
-    fn any_dialog_open(&self) -> bool {
-        self.quit_confirm_dialog.is_some()
-            || self.delete_layer_dialog.is_some()
-            || self.upload_dialog.is_some()
-            || self.sign_in_dialog.is_some()
-            || self.notice_dialog.is_some()
-            || self.preset_picker_dialog.is_some()
-            || self.nsi_dialog.is_some()
-            || self.relation_picker_dialog.is_some()
-            || self.about_dialog.is_some()
-            || self.custom_imagery_dialog.is_some()
-            || self.find_dialog.is_some()
+    fn any_dialog_open(&self, cx: &App) -> bool {
+        !self.open_modals(cx).is_empty()
     }
 
     /// Drop the vertex preview (the pointer left the map, or the mode changed).
@@ -4270,7 +4258,7 @@ impl MapViewer {
         let move_dragging = event.pressed_button.is_some()
             && matches!(self.interaction, Interaction::MoveDrag { .. });
         if !move_dragging {
-            let enabled = hover_enabled && !self.any_dialog_open();
+            let enabled = hover_enabled && !self.any_dialog_open(cx);
             let changed = self.layer_manager.update_vertex_preview(
                 &self.viewport,
                 adjusted_position,
@@ -8773,20 +8761,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_validate))
             .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
             .on_action(cx.listener(Self::on_show_about))
-            .children(self.custom_imagery_dialog.clone())
-            .children(self.quit_confirm_dialog.clone())
-            .children(self.delete_layer_dialog.clone())
-            .children(self.restore_dialog.clone())
-            .children(self.find_dialog.clone())
-            .children(self.about_dialog.clone())
-            .children(self.nsi_dialog.clone())
-            .children(self.preset_picker_dialog.clone())
-            .children(self.relation_picker_dialog.clone())
-            .children(self.parallel_dialog.clone())
-            .children(self.upload_dialog.clone())
-            .children(self.sign_in_dialog.clone())
-            .children(self.notice_dialog.clone())
-            .children(self.new_note_dialog_element())
+            .children(self.open_modals(cx).into_iter().map(|m| m.view))
             .children(self.render_photo_fullscreen(window, cx))
             .children(self.render_context_menu(window, cx))
     }
