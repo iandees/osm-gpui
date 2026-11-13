@@ -251,7 +251,7 @@ pub fn to_osm_xml_with_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layers::diff::baseline_for_loaded_file;
+    use crate::layers::diff::{baseline_for_loaded_file, LayerDiff};
     use crate::osm::{MemberType, OsmMember, OsmParser};
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -589,5 +589,171 @@ mod tests {
         )));
         let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
         assert_eq!(reloaded, current);
+    }
+
+    #[test]
+    fn a_precomputed_diff_gives_the_same_document_as_to_osm_xml() {
+        let (original, current) = edited();
+        let diff = diff_osm_data(&original, &current);
+        assert_eq!(
+            to_osm_xml_with_diff(&original, &current, &diff),
+            to_osm_xml(&original, &current)
+        );
+    }
+
+    #[test]
+    fn an_empty_diff_marks_nothing_and_leaves_out_deleted_elements() {
+        let (original, current) = edited();
+        let xml = to_osm_xml_with_diff(&original, &current, &LayerDiff::default());
+        assert!(!xml.contains("action="), "{xml}");
+        assert!(!xml.contains("id=\"3\""), "the deleted node is not written");
+        assert!(xml.contains("<node id=\"2\" version=\"5\" visible=\"true\" lat=\"40.125\""));
+        assert!(xml.contains("<node id=\"-1\" visible=\"true\""), "{xml}");
+    }
+
+    #[test]
+    fn the_diff_decides_which_elements_are_marked_modified() {
+        let (original, _) = edited();
+        let diff = LayerDiff {
+            modified_nodes: vec![original.nodes[&2].clone()],
+            modified_ways: vec![original.ways[&10].clone()],
+            ..Default::default()
+        };
+        let xml = to_osm_xml_with_diff(&original, &original, &diff);
+        assert!(
+            xml.contains("<node id=\"2\" action=\"modify\" version=\"5\""),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<way id=\"10\" action=\"modify\" version=\"4\""),
+            "{xml}"
+        );
+        assert!(xml.contains("<node id=\"1\" version=\"3\""), "{xml}");
+        assert_eq!(xml.matches("action=").count(), 2, "{xml}");
+    }
+
+    #[test]
+    fn a_deleted_id_the_baseline_does_not_hold_is_not_written() {
+        let (original, current) = edited();
+        let diff = LayerDiff {
+            deleted_node_ids: vec![(99, 1)],
+            deleted_way_ids: vec![(98, 1)],
+            deleted_relation_ids: vec![(97, 1)],
+            ..Default::default()
+        };
+        let xml = to_osm_xml_with_diff(&original, &current, &diff);
+        for id in ["id=\"99\"", "id=\"98\"", "id=\"97\""] {
+            assert!(!xml.contains(id), "{id} in {xml}");
+        }
+        assert!(!xml.contains("action=\"delete\""));
+    }
+
+    #[test]
+    fn deleted_and_live_elements_are_interleaved_in_id_order() {
+        let original = data(
+            vec![
+                node(1, 1.0, 1.0, 1, &[]),
+                node(2, 2.0, 2.0, 1, &[("note", "x")]),
+                node(3, 3.0, 3.0, 1, &[]),
+            ],
+            vec![
+                way(10, vec![1, 3], 1, &[]),
+                way(11, vec![1, 2], 1, &[("highway", "path")]),
+                way(12, vec![2, 3], 1, &[]),
+            ],
+        );
+        let mut current = original.clone();
+        current.ways.remove(&11);
+        current.nodes.remove(&2);
+        current.ways.get_mut(&12).unwrap().nodes = vec![3];
+        let xml = to_osm_xml(&original, &current);
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        assert!(at("<node id=\"1\"") < at("<node id=\"2\" action=\"delete\""));
+        assert!(at("<node id=\"2\" action=\"delete\"") < at("<node id=\"3\""));
+        assert!(at("<way id=\"10\"") < at("<way id=\"11\" action=\"delete\""));
+        assert!(at("<way id=\"11\" action=\"delete\"") < at("<way id=\"12\" action=\"modify\""));
+    }
+
+    #[test]
+    fn a_deleted_node_and_way_are_written_without_their_tags() {
+        let original = data(
+            vec![
+                node(1, 1.0, 1.0, 2, &[("amenity", "cafe")]),
+                node(2, 2.0, 2.0, 2, &[]),
+            ],
+            vec![way(10, vec![1, 2], 3, &[("highway", "path")])],
+        );
+        let current = data(vec![node(2, 2.0, 2.0, 2, &[])], vec![]);
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains("  <node id=\"1\" action=\"delete\" version=\"2\" visible=\"true\" lat=\"1\" lon=\"1\"/>\n"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(concat!(
+                "  <way id=\"10\" action=\"delete\" version=\"3\" visible=\"true\">\n",
+                "    <nd ref=\"1\"/>\n",
+                "    <nd ref=\"2\"/>\n",
+                "  </way>\n",
+            )),
+            "{xml}"
+        );
+        assert!(!xml.contains("<tag"), "{xml}");
+    }
+
+    #[test]
+    #[ignore = "a deleted relation is written with its tags, unlike a deleted node or way"]
+    fn a_deleted_relation_is_written_without_its_tags() {
+        let relation = OsmRelation {
+            id: 6,
+            version: 3,
+            tags: tags(&[("type", "route"), ("route", "bus")]),
+            members: vec![OsmMember {
+                member_type: MemberType::Node,
+                reference: 1,
+                role: "stop".to_string(),
+            }],
+        };
+        let mut original = data(vec![node(1, 1.0, 1.0, 1, &[])], vec![]);
+        original.relations.push(relation);
+        let mut current = original.clone();
+        current.relations.clear();
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains("<relation id=\"6\" action=\"delete\""),
+            "{xml}"
+        );
+        assert!(!xml.contains("<tag"), "{xml}");
+    }
+
+    #[test]
+    fn a_modified_relation_keeps_its_server_version_and_a_created_one_has_none() {
+        let relation = |id: i64, version: i32, role: &str| OsmRelation {
+            id,
+            version,
+            tags: tags(&[("type", "route")]),
+            members: vec![OsmMember {
+                member_type: MemberType::Node,
+                reference: 1,
+                role: role.to_string(),
+            }],
+        };
+        let mut original = data(vec![node(1, 1.0, 1.0, 1, &[])], vec![]);
+        original.relations.push(relation(5, 4, "a"));
+        let mut current = original.clone();
+        current.relations[0].members[0].role = "b".to_string();
+        current.relations.push(relation(-3, 1, "c"));
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains("<relation id=\"5\" action=\"modify\" version=\"4\" visible=\"true\">"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<relation id=\"-3\" action=\"modify\" visible=\"true\">"),
+            "{xml}"
+        );
     }
 }

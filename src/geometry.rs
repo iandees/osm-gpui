@@ -744,4 +744,141 @@ mod tests {
         assert_eq!(reversed(&reversed(&v)), v);
         assert!(reversed::<i64>(&[]).is_empty());
     }
+
+    fn kept(points: &[LatLon], pinned: &[bool], tolerance: f64) -> Vec<bool> {
+        let keep = simplify_keep(points, pinned, tolerance);
+        assert_eq!(keep.len(), points.len());
+        keep
+    }
+
+    #[test]
+    fn simplify_keeps_the_ends_of_anything_shorter_than_three_points() {
+        assert!(simplify_keep(&[], &[], 3.0).is_empty());
+        assert_eq!(simplify_keep(&[(1.0, 1.0)], &[false], 3.0), vec![true]);
+        assert_eq!(
+            simplify_keep(&[(1.0, 1.0), (1.0, 1.1)], &[false, false], 3.0),
+            vec![true, true]
+        );
+    }
+
+    #[test]
+    fn simplify_drops_wobble_within_the_tolerance_and_keeps_a_real_bend() {
+        let flat = line_with(100.0, &[(30.0, 1.0), (60.0, -1.5)]);
+        assert_eq!(
+            kept(&flat, &[false; 4], 3.0),
+            vec![true, false, false, true]
+        );
+        let bent = line_with(100.0, &[(10.0, 0.5), (50.0, 12.0)]);
+        assert_eq!(kept(&bent, &[false; 4], 3.0), vec![true, false, true, true]);
+    }
+
+    #[test]
+    fn simplify_always_keeps_the_end_points_and_the_pinned_ones() {
+        let flat = line_with(100.0, &[(25.0, 0.0), (50.0, 0.0), (75.0, 0.0)]);
+        assert_eq!(
+            kept(&flat, &[false, true, false, true, false], 3.0),
+            vec![true, true, false, true, true]
+        );
+        assert_eq!(
+            kept(&flat, &[true; 5], 1000.0),
+            vec![true; 5],
+            "pinned everywhere keeps everything"
+        );
+    }
+
+    #[test]
+    fn simplify_treats_missing_pin_flags_as_unpinned_and_ignores_extra_ones() {
+        let flat = line_with(100.0, &[(25.0, 0.0), (50.0, 0.0), (75.0, 0.0)]);
+        assert_eq!(kept(&flat, &[], 3.0), vec![true, false, false, false, true]);
+        assert_eq!(
+            kept(&flat, &[false, false, true], 3.0),
+            vec![true, false, true, false, true]
+        );
+        assert_eq!(
+            kept(&flat, &[false; 9], 3.0),
+            vec![true, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn simplify_with_no_tolerance_keeps_every_vertex_that_is_off_the_line() {
+        let bent = line_with(100.0, &[(30.0, 0.5), (60.0, -0.5)]);
+        assert_eq!(kept(&bent, &[false; 4], 0.0), vec![true; 4]);
+        let straight = line_with(100.0, &[(50.0, 0.0)]);
+        assert_eq!(kept(&straight, &[false; 3], 0.0), vec![true, false, true]);
+    }
+
+    #[test]
+    fn simplify_with_a_huge_tolerance_keeps_only_the_ends_and_the_pins() {
+        let zigzag = line_with(
+            100.0,
+            &[(20.0, 15.0), (40.0, -15.0), (60.0, 15.0), (80.0, -15.0)],
+        );
+        assert_eq!(
+            kept(&zigzag, &[false; 6], 1e6),
+            vec![true, false, false, false, false, true]
+        );
+        assert_eq!(
+            kept(&zigzag, &[false, false, false, true, false, false], 1e6),
+            vec![true, false, false, true, false, true]
+        );
+    }
+
+    #[test]
+    fn a_larger_tolerance_never_keeps_a_vertex_a_smaller_one_dropped() {
+        let wiggle: Vec<(f64, f64)> = (1..20)
+            .map(|i| (i as f64 * 5.0, ((i * 7) % 11) as f64 - 5.0))
+            .collect();
+        let line = line_with(100.0, &wiggle);
+        let pins = vec![false; line.len()];
+        let mut previous = kept(&line, &pins, 0.0);
+        for tolerance in [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 100.0] {
+            let now = kept(&line, &pins, tolerance);
+            for (i, (&was, &is)) in previous.iter().zip(&now).enumerate() {
+                assert!(was || !is, "vertex {i} at tolerance {tolerance}");
+            }
+            previous = now;
+        }
+        assert_eq!(previous.iter().filter(|&&k| k).count(), 2);
+    }
+
+    #[test]
+    fn simplify_keeps_a_ring_a_ring() {
+        let octagon = polygon(8, 0.0);
+        assert_eq!(octagon.len(), 9);
+        assert_eq!(
+            kept(&octagon, &[false; 9], 3.0),
+            vec![true; 9],
+            "every corner is 8 m off the line through its neighbours"
+        );
+        assert_eq!(
+            kept(&octagon, &[false; 9], 10.0),
+            vec![true, false, true, false, true, false, true, false, true]
+        );
+        let kept_at_huge = kept(&octagon, &[false; 9], 1e6);
+        assert_eq!(
+            kept_at_huge,
+            vec![true, false, false, false, false, false, false, false, true],
+            "past the ring's size only its two coincident ends are left; callers refuse such a result"
+        );
+    }
+
+    #[test]
+    fn simplify_measures_across_the_antimeridian() {
+        let near = [(10.0, 179.9990), (10.00001, 179.9995), (10.0, -179.9990)];
+        assert_eq!(kept(&near, &[false; 3], 3.0), vec![true, false, true]);
+        let off = [(10.0, 179.9990), (10.0003, 179.9995), (10.0, -179.9990)];
+        assert_eq!(kept(&off, &[false; 3], 3.0), vec![true, true, true]);
+    }
+
+    #[test]
+    fn simplify_survives_repeated_points() {
+        let p = (42.0, -71.0);
+        let q = (42.001, -71.0);
+        assert_eq!(kept(&[p, p, p], &[false; 3], 3.0), vec![true, false, true]);
+        assert_eq!(
+            kept(&[p, p, q, q], &[false; 4], 3.0),
+            vec![true, false, false, true]
+        );
+    }
 }
