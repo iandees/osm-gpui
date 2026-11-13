@@ -9,7 +9,6 @@
 //! `LayerManager` and returns a single `UndoableAction` — use
 //! `UndoableAction::Batch` to bundle several steps.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gpui::SharedString;
@@ -21,26 +20,8 @@ use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
-use crate::clipboard_actions::ClipboardOp;
+use crate::clipboard_actions::{ClipboardOp, Clipboards};
 use crate::undo::{NodeMoveUndoEntry, UndoableAction};
-
-thread_local! {
-    /// The tags set aside by Copy Tags, for Paste Tags: the app's own tag
-    /// clipboard, kept apart from the system pasteboard. Actions only ever
-    /// run on the UI thread, which is why this can be a thread-local (it also
-    /// keeps parallel tests from sharing one).
-    static TAG_CLIPBOARD: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// The tags currently on the tag clipboard, sorted by key.
-pub(crate) fn tag_clipboard() -> Vec<(String, String)> {
-    TAG_CLIPBOARD.with(|c| c.borrow().clone())
-}
-
-fn set_tag_clipboard(mut tags: Vec<(String, String)>) {
-    tags.sort();
-    TAG_CLIPBOARD.with(|c| *c.borrow_mut() = tags);
-}
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -48,6 +29,8 @@ pub(crate) struct ActionEnv<'a> {
     /// The layer geometry actions are allowed to edit.
     pub active_layer: Option<LayerId>,
     pub layers: &'a LayerManager,
+    /// What Copy and Copy Tags set aside; Paste and Paste Tags need it.
+    pub clipboards: &'a Clipboards,
 }
 
 impl<'a> ActionEnv<'a> {
@@ -265,6 +248,8 @@ pub(crate) enum MenuSlot {
 pub(crate) enum Run {
     /// Change the layers right away.
     Apply(ApplyFn),
+    /// Like `Apply`, and reads or writes the tag clipboard.
+    TagClipboard(TagClipboardFn),
     /// Needs the pointer position and the system clipboard.
     Clipboard(ClipboardOp),
     /// Needs an answer from a dialog first.
@@ -300,6 +285,14 @@ pub(crate) enum Interactive {
 
 /// What is wrong with the selection for an action, if anything.
 pub(crate) type ProblemFn = fn(&dyn EditableLayer, LayerId, &[FeatureRef]) -> Option<String>;
+
+/// An `ApplyFn` that also gets the clipboards.
+pub(crate) type TagClipboardFn = fn(
+    &mut LayerManager,
+    &[FeatureRef],
+    Option<LayerId>,
+    &mut Clipboards,
+) -> Result<ActionOutcome, String>;
 
 /// Performs an action on the selection in the active layer (if any). `Err`
 /// carries a short message for the status bar and means nothing changed.
@@ -610,7 +603,7 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
             };
             copy_source(editable, layer_id, env.selection).is_some()
         },
-        run: Run::Apply(apply_copy_tags),
+        run: Run::TagClipboard(apply_copy_tags),
     },
     SelectionAction {
         id: "paste_tags",
@@ -623,11 +616,11 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         is_applicable: |env| {
             env.active_layer.is_some_and(|layer_id| {
                 env.active_editable().is_some()
-                    && !tag_clipboard().is_empty()
+                    && !env.clipboards.tags.is_empty()
                     && !paste_targets(layer_id, env.selection).is_empty()
             })
         },
-        run: Run::Apply(apply_paste_tags),
+        run: Run::TagClipboard(apply_paste_tags),
     },
     SelectionAction {
         id: "add_to_relation",
@@ -1685,6 +1678,7 @@ fn apply_copy_tags(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
+    clipboards: &mut Clipboards,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let tags = copy_source(editable, layer_id, selection)
@@ -1694,7 +1688,7 @@ fn apply_copy_tags(
         tags = tr_count!("action.tag_count", tags.len())
     )
     .to_string();
-    set_tag_clipboard(tags);
+    clipboards.set_tags(tags);
     Ok(ActionOutcome {
         undo: None,
         status,
@@ -1711,8 +1705,9 @@ fn apply_paste_tags(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
+    clipboards: &mut Clipboards,
 ) -> Result<ActionOutcome, String> {
-    let clipboard = tag_clipboard();
+    let clipboard = clipboards.tags.clone();
     if clipboard.is_empty() {
         return Err(tr!("action.paste_tags.hint").to_string());
     }
@@ -3643,6 +3638,11 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    static NO_CLIPBOARDS: Clipboards = Clipboards {
+        tags: Vec::new(),
+        features: None,
+    };
+
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::osm::{OsmMember, OsmRelation};
@@ -3700,6 +3700,7 @@ mod tests {
             selection: sel,
             active_layer: Some(f.layer_id),
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         }
     }
 
@@ -3835,12 +3836,14 @@ mod tests {
             selection: &sel,
             active_layer: Some(LayerId(99)),
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert!(!(find("square").unwrap().is_applicable)(&other));
         let none = ActionEnv {
             selection: &sel,
             active_layer: None,
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("square").unwrap().why_not(&none),
@@ -4144,12 +4147,10 @@ mod tests {
     struct Net {
         layers: LayerManager,
         layer_id: LayerId,
+        clipboards: Clipboards,
     }
 
     fn net() -> Net {
-        // Each test starts with an empty tag clipboard, even when the test
-        // harness runs several tests on one thread.
-        set_tag_clipboard(Vec::new());
         let layer_id = LayerId(1);
         let layer = OsmLayer::new_with_data(
             layer_id,
@@ -4158,7 +4159,11 @@ mod tests {
         );
         let mut layers = LayerManager::new();
         layers.add_layer(Box::new(layer));
-        Net { layers, layer_id }
+        Net {
+            layers,
+            layer_id,
+            clipboards: Clipboards::default(),
+        }
     }
 
     impl Net {
@@ -4175,7 +4180,14 @@ mod tests {
                 .collect()
         }
         fn run(&mut self, action: &str, sel: &[FeatureRef]) -> Result<ActionOutcome, String> {
-            (find(action).unwrap().apply())(&mut self.layers, sel, Some(self.layer_id))
+            let layer = Some(self.layer_id);
+            match find(action).unwrap().run {
+                Run::Apply(apply) => apply(&mut self.layers, sel, layer),
+                Run::TagClipboard(apply) => {
+                    apply(&mut self.layers, sel, layer, &mut self.clipboards)
+                }
+                _ => panic!("{action} does not apply directly"),
+            }
         }
         fn editable(&self) -> &dyn EditableLayer {
             self.layers
@@ -4192,6 +4204,7 @@ mod tests {
                 selection: sel,
                 active_layer: Some(self.layer_id),
                 layers: &self.layers,
+                clipboards: &self.clipboards,
             };
             SelectionAction::applicable(&e).map(|a| a.id).collect()
         }
@@ -4600,12 +4613,12 @@ mod tests {
     #[test]
     fn copy_remembers_the_tags_of_exactly_one_tagged_feature() {
         let mut n = net();
-        assert_eq!(tag_clipboard(), vec![]);
+        assert_eq!(n.clipboards.tags, vec![]);
         let out = n.run("copy_tags", &n.ways(&[101])).unwrap();
         assert_eq!(out.status, "Copied 2 tags");
         assert!(out.undo.is_none() && out.select.is_none() && !out.clear_selection);
         assert_eq!(
-            tag_clipboard(),
+            n.clipboards.tags,
             pairs(&[("highway", "residential"), ("name", "Main")])
         );
         // Copying changes no data.
@@ -4620,7 +4633,7 @@ mod tests {
         assert!(n.run("copy_tags", &n.ways(&[100, 101])).is_err());
         assert!(n.run("copy_tags", &n.nodes(&[1])).is_err());
         assert!(n.run("copy_tags", &[]).is_err());
-        assert_eq!(tag_clipboard(), pairs(&[("highway", "footway")]));
+        assert_eq!(n.clipboards.tags, pairs(&[("highway", "footway")]));
         assert!(n.applicable(&n.ways(&[101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.nodes(&[1])).contains(&"copy_tags"));
@@ -4892,7 +4905,11 @@ mod tests {
         let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), std::sync::Arc::new(data));
         let mut layers = LayerManager::new();
         layers.add_layer(Box::new(layer));
-        Net { layers, layer_id }
+        Net {
+            layers,
+            layer_id,
+            clipboards: Clipboards::default(),
+        }
     }
 
     impl Net {
@@ -5343,6 +5360,7 @@ mod tests {
             selection: &[],
             active_layer: Some(n.layer_id),
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("join").unwrap().why_not(&none),
@@ -5356,6 +5374,7 @@ mod tests {
             selection: &[],
             active_layer: None,
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("join").unwrap().why_not(&no_layer),
@@ -5413,6 +5432,7 @@ mod tests {
             selection: &n.ways(&[108]),
             active_layer: Some(n.layer_id),
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("extend").unwrap().why_not(&none),

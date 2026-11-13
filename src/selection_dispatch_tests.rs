@@ -133,3 +133,76 @@ fn the_upload_guard_refuses_every_editing_action_in_one_place(cx: &mut TestAppCo
         assert_ne!(s.status(), blocked);
     });
 }
+
+mod paste_applicability {
+    use crate::clipboard_actions::Clipboards;
+    use crate::selection_actions::{find, ActionEnv};
+    use crate::test_support::{Build, N, W};
+    use osm_gpui::feature_clipboard::FeatureClipboard;
+    use osm_gpui::layers::osm_layer::OsmLayer;
+    use osm_gpui::layers::{LayerId, LayerManager};
+    use osm_gpui::selection::FeatureRef;
+    use std::sync::Arc;
+
+    fn applicable(id: &str, env: &ActionEnv) -> bool {
+        (find(id).unwrap().is_applicable)(env)
+    }
+
+    /// Paste and Paste Tags are decided by the `ActionEnv` alone: the same
+    /// selection and layers give a different answer only when the clipboards
+    /// in the env differ, and the answer repeats.
+    #[test]
+    fn paste_applicability_is_a_pure_function_of_the_env() {
+        let layer_id = LayerId(1);
+        let data = Build::new()
+            .nodes(&[1, 2])
+            .way(10, &[1, 2], &[("highway", "path")])
+            .done();
+        let mut layers = LayerManager::new();
+        layers.add_layer(Box::new(OsmLayer::new_with_data(
+            layer_id,
+            "L".to_string(),
+            Arc::new(data),
+        )));
+        let way = FeatureRef {
+            layer_id,
+            kind: W,
+            id: 10,
+        };
+        let node = FeatureRef {
+            layer_id,
+            kind: N,
+            id: 1,
+        };
+        let selection = [way];
+        let empty = Clipboards::default();
+        let any_paste = |clipboards: &Clipboards| -> (bool, bool) {
+            let env = ActionEnv {
+                selection: &selection,
+                active_layer: Some(layer_id),
+                layers: &layers,
+                clipboards,
+            };
+            let tags = applicable("paste_tags", &env);
+            let features = applicable("paste_features", &env);
+            assert_eq!(features, applicable("paste_features_source", &env));
+            assert_eq!(tags, applicable("paste_tags", &env), "repeatable");
+            (tags, features)
+        };
+        assert_eq!(any_paste(&empty), (false, false));
+
+        let mut tags_only = Clipboards::default();
+        tags_only.set_tags(vec![("a".into(), "b".into())]);
+        let editable = layers.find_layer(layer_id).unwrap().as_editable().unwrap();
+        let features_only = Clipboards {
+            features: FeatureClipboard::copy(editable, layer_id, &[node]),
+            ..Default::default()
+        };
+        assert!(features_only.has_features());
+
+        assert_eq!(any_paste(&tags_only), (true, false));
+        assert_eq!(any_paste(&features_only), (false, true));
+        // Back to the empty env: nothing carried over between calls.
+        assert_eq!(any_paste(&empty), (false, false));
+    }
+}

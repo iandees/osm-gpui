@@ -955,6 +955,8 @@ struct MapViewer {
     /// `(undo_stack.revision, data_generation)`.
     pending_edits: Option<((u64, u64), usize)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
+    /// What Copy and Copy Tags set aside, for Paste and Paste Tags.
+    clipboards: clipboard_actions::Clipboards,
     /// Current mouse interaction: idle, a pending press, an in-progress
     /// box-select, or an in-progress move-drag of the selection. See
     /// `osm_gpui::interaction` for the pure click/drag/box-select decision
@@ -1338,6 +1340,7 @@ impl MapViewer {
             data_generation: 0,
             pending_edits: None,
             selected: Vec::new(),
+            clipboards: Default::default(),
             interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
@@ -2901,6 +2904,7 @@ impl MapViewer {
             selection: &self.selected,
             active_layer: self.active_layer,
             layers: &self.layer_manager,
+            clipboards: &self.clipboards,
         };
         if !(action.is_applicable)(&env) {
             let why = action.why_not(&env);
@@ -2911,6 +2915,15 @@ impl MapViewer {
         match action.run {
             selection_actions::Run::Apply(apply) => {
                 let result = apply(&mut self.layer_manager, &self.selected, self.active_layer);
+                self.finish_selection_action(result);
+            }
+            selection_actions::Run::TagClipboard(apply) => {
+                let result = apply(
+                    &mut self.layer_manager,
+                    &self.selected,
+                    self.active_layer,
+                    &mut self.clipboards,
+                );
                 self.finish_selection_action(result);
             }
             selection_actions::Run::Clipboard(op) => self.run_clipboard_op(op, cx),
@@ -5897,6 +5910,7 @@ impl MapViewer {
             selection: &self.selected,
             active_layer: self.active_layer,
             layers: &self.layer_manager,
+            clipboards: &self.clipboards,
         };
         let actions: Vec<&'static selection_actions::SelectionAction> =
             selection_actions::SelectionAction::applicable(&env).collect();
@@ -10896,6 +10910,7 @@ mod tests {
                 selection: sel,
                 active_layer: Some(LayerId(1)),
                 layers,
+                clipboards: &clipboard_actions::Clipboards::default(),
             };
             assert!((action.is_applicable)(&env), "{id} not offered");
             (action.apply())(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
@@ -11432,7 +11447,7 @@ mod tests {
             .update(cx, |view, _window, cx| {
                 select(view, Way, &[102]);
                 view.run_selection_action("copy_features", cx);
-                let copied = clipboard_actions::clipboard_content();
+                let copied = view.clipboards.features.clone();
 
                 select(view, Way, &[103]);
                 let ways_before = ids_of(view, Way);
@@ -11466,7 +11481,7 @@ mod tests {
                 };
                 assert_eq!(at(dup.id), at(103));
                 // Duplicating does not touch what Copy put on the clipboard.
-                assert_eq!(clipboard_actions::clipboard_content(), copied);
+                assert_eq!(view.clipboards.features.clone(), copied);
                 // Drag the duplicate away: the original stays where it was.
                 let first = editable.way_node_ids(dup.id).unwrap()[0];
                 assert!(first < 0 && editable.node_lat_lon(8).is_some());
