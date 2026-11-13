@@ -27,6 +27,13 @@ fn every_action_has_the_run_kind_its_id_implies() {
         };
         match (action.run, expected) {
             (Run::Apply(_), None) => {}
+            (Run::TagClipboard(_), None) => {
+                assert!(
+                    matches!(action.id, "copy_tags" | "paste_tags"),
+                    "{}",
+                    action.id
+                )
+            }
             (Run::Clipboard(a), Some(Run::Clipboard(b))) => assert_eq!(a, b, "{}", action.id),
             (Run::Dialog(a), Some(Run::Dialog(b))) => assert_eq!(a, b, "{}", action.id),
             (Run::Interactive(a), Some(Run::Interactive(b))) => assert_eq!(a, b, "{}", action.id),

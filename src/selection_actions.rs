@@ -754,6 +754,23 @@ impl SelectionAction {
         }
     }
 
+    /// Run an action that changes layers directly (`Apply` or `TagClipboard`),
+    /// for tests that drive actions without a viewer.
+    #[cfg(test)]
+    pub(crate) fn run_direct(
+        &self,
+        layers: &mut LayerManager,
+        selection: &[FeatureRef],
+        active: Option<LayerId>,
+        clipboards: &mut Clipboards,
+    ) -> Result<ActionOutcome, String> {
+        match self.run {
+            Run::Apply(apply) => apply(layers, selection, active),
+            Run::TagClipboard(apply) => apply(layers, selection, active, clipboards),
+            _ => panic!("{} does not run directly", self.id),
+        }
+    }
+
     /// Catalog key of [`Self::label`].
     pub(crate) fn label_key(&self) -> String {
         format!("action.{}.label", self.id)

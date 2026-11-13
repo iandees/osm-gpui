@@ -44,17 +44,8 @@ pub enum SettingsEvent {
     MapStyleChanged,
 }
 
-/// The page to open the next Settings window on (`usize::MAX`: the first).
-static REQUESTED_PAGE: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(usize::MAX);
-
 /// Index of the Imagery page, where the street-imagery token lives.
 pub const IMAGERY_PAGE: usize = 3;
-
-/// Ask for the next Settings window to open on page `ix`.
-pub fn request_page(ix: usize) {
-    REQUESTED_PAGE.store(ix, std::sync::atomic::Ordering::Relaxed);
-}
 
 pub struct SettingsWindow {
     /// The page the window opened on, when one was requested.
@@ -91,7 +82,8 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// A window opened on page `start_page` (the first when `None`).
+    pub fn new(start_page: Option<usize>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let app_settings = settings_store::snapshot();
         let custom_api_url_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -133,9 +125,8 @@ impl SettingsWindow {
         });
         let login_state = Self::current_login_state(&app_settings);
 
-        let requested = REQUESTED_PAGE.swap(usize::MAX, std::sync::atomic::Ordering::Relaxed);
         Self {
-            start_page: (requested != usize::MAX).then_some(requested),
+            start_page,
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
             editing_index: None,

@@ -29,9 +29,31 @@ use crate::{
     ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
-/// Guard to prevent opening multiple settings windows simultaneously.
-static SETTINGS_WINDOW_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// The Settings window, once opened. Whether it is still open is read from
+/// the app's window list, not remembered, so closing it any way at all
+/// leaves nothing stale.
+#[derive(Default)]
+struct SettingsWindowSlot(Option<gpui::AnyWindowHandle>);
+
+impl gpui::Global for SettingsWindowSlot {}
+
+/// What asking for Settings does.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SettingsOpen {
+    /// Open a window, on `page` when one was asked for.
+    New { page: Option<usize> },
+    /// There is one already: bring it to the front.
+    Focus,
+}
+
+/// Settings is a single window: open it, or focus the one that exists.
+pub(crate) fn settings_open_decision(already_open: bool, page: Option<usize>) -> SettingsOpen {
+    if already_open {
+        SettingsOpen::Focus
+    } else {
+        SettingsOpen::New { page }
+    }
+}
 
 pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
     custom_imagery_store::snapshot()
@@ -147,10 +169,25 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
-    if SETTINGS_WINDOW_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    SETTINGS_WINDOW_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    open_settings_page(None, cx);
+}
+
+/// Open the Settings window on `page` (the first when `None`), or focus it if
+/// it is already open.
+pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
+    let existing = cx
+        .try_global::<SettingsWindowSlot>()
+        .and_then(|slot| slot.0)
+        .filter(|handle| cx.windows().contains(handle));
+    let page = match settings_open_decision(existing.is_some(), page) {
+        SettingsOpen::Focus => {
+            if let Some(handle) = existing {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+            return;
+        }
+        SettingsOpen::New { page } => page,
+    };
 
     let settings_window = cx
         .open_window(
@@ -168,8 +205,8 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                 ..Default::default()
             },
             |window, cx| {
-                let view =
-                    cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
+                let view = cx
+                    .new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(page, window, cx));
                 cx.subscribe(
                     &view,
                     |_entity, event: &osm_gpui::ui::settings_window::SettingsEvent, cx| match event
@@ -187,14 +224,7 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
             },
         )
         .unwrap();
-
-    let settings_window_id = settings_window.window_id();
-    cx.on_window_closed(move |_cx, window_id| {
-        if window_id == settings_window_id {
-            SETTINGS_WINDOW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-    })
-    .detach();
+    cx.set_global(SettingsWindowSlot(Some(settings_window.into())));
 }
 
 // Handle the File > Download from OSM menu action
@@ -1149,6 +1179,20 @@ mod tests {
             .into_iter()
             .map(|m| fit_owned_menu(m.owned()))
             .collect()
+    }
+
+    #[test]
+    fn settings_opens_one_window_and_focuses_it_afterwards() {
+        assert_eq!(
+            settings_open_decision(false, None),
+            SettingsOpen::New { page: None }
+        );
+        assert_eq!(
+            settings_open_decision(false, Some(3)),
+            SettingsOpen::New { page: Some(3) }
+        );
+        assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
+        assert_eq!(settings_open_decision(true, Some(3)), SettingsOpen::Focus);
     }
 
     /// No menu is over the limit unless it is a leaf without submenus.

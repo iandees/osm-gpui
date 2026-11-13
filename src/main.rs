@@ -33,6 +33,8 @@ mod gps_traces_ui;
 mod history_actions;
 mod imagery_offset_ui;
 #[cfg(test)]
+mod imagery_state_tests;
+#[cfg(test)]
 mod improve_click_tests;
 mod menu;
 mod mode_panel;
@@ -702,12 +704,9 @@ enum LayerRequest {
     },
 }
 
-/// Stores the full ELI list once loaded (populated on the background executor).
+/// The full ELI list, filled by `MapViewer::imagery_index_loaded` once the
+/// background load finishes; the menus read it.
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
-
-/// Set to true when the imagery index is loaded (or failed) so the render loop
-/// knows to refresh the menu.
-static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ImageryLoadState {
@@ -721,7 +720,7 @@ enum ImageryLoadState {
 /// which only have `&mut App` (menu action handlers, and app-level window
 /// callbacks like the `on_window_should_close` hook) reach the *real* view
 /// and either query its live state or call ordinary `MapViewer` methods on
-/// it directly — no polling queues involved.
+/// it directly.
 ///
 /// Note: actions that fire via keybinding/menu while `MapViewer`'s own
 /// window is dispatching (e.g. `Quit`) should NOT be routed through this
@@ -764,8 +763,7 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
 
 /// Run `f` against the live `MapViewer` (via `MAP_VIEWER_HANDLE`), if it
 /// still exists. This is the standard way for menu action handlers (which
-/// only have `&mut App`) to call an ordinary `MapViewer` method — replacing
-/// the old push-into-a-queue-and-wait-for-render-to-drain-it pattern.
+/// only have `&mut App`) to call an ordinary `MapViewer` method.
 pub(crate) fn with_map_viewer(
     cx: &mut App,
     f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>),
@@ -965,7 +963,9 @@ struct MapViewer {
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
-    /// Imagery load state observed on the previous frame; detect transitions.
+    /// Where the Editor Layer Index load stands.
+    imagery_load_state: ImageryLoadState,
+    /// The load state the Imagery menu was last rebuilt for.
     last_imagery_load_state: Option<ImageryLoadState>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
@@ -1344,6 +1344,7 @@ impl MapViewer {
             interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
+            imagery_load_state: ImageryLoadState::Loading,
             last_imagery_load_state: None,
             show_debug_overlay: false,
             show_downloaded_area: true,
@@ -1433,11 +1434,7 @@ impl MapViewer {
     /// immediate menu rebuild without duplicating this lookup.
     pub(crate) fn imagery_menu_context(&self) -> (f64, f64, ImageryLoadState) {
         let (lat, lon) = self.viewport.center();
-        let state = IMAGERY_LOAD_STATE
-            .get()
-            .and_then(|s| s.lock().ok().map(|g| *g))
-            .unwrap_or(ImageryLoadState::Loading);
-        (lat, lon, state)
+        (lat, lon, self.imagery_load_state)
     }
 
     /// Whether View > Show Downloaded Area is on (drives its menu checkmark).
@@ -1445,15 +1442,53 @@ impl MapViewer {
         self.show_downloaded_area
     }
 
+    /// Load the Editor Layer Index in the background; the viewer is told when
+    /// it finishes.
+    fn load_imagery_index(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    imagery::fetch_and_cache()
+                        .map(|body| imagery::parse(&body))
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| this.imagery_index_loaded(result, cx));
+        })
+        .detach();
+    }
+
+    /// The Editor Layer Index load finished: keep the entries for the menus
+    /// and rebuild the Imagery menu.
+    fn imagery_index_loaded(
+        &mut self,
+        result: Result<Vec<ImageryEntry>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.imagery_load_state = match result {
+            Ok(entries) => {
+                eprintln!("imagery: loaded {} ELI entries", entries.len());
+                if let Some(index) = IMAGERY_INDEX.get() {
+                    if let Ok(mut guard) = index.lock() {
+                        *guard = entries;
+                    }
+                }
+                ImageryLoadState::Ready
+            }
+            Err(e) => {
+                eprintln!("imagery: failed to load ELI: {e}");
+                ImageryLoadState::Failed
+            }
+        };
+        self.maybe_rebuild_imagery_menu(cx);
+    }
+
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
         let (lat, lon) = self.viewport.center();
 
-        // Pull current load state.
-        let current_state = IMAGERY_LOAD_STATE
-            .get()
-            .and_then(|s| s.lock().ok().map(|g| *g))
-            .unwrap_or(ImageryLoadState::Loading);
+        let current_state = self.imagery_load_state;
 
         let state_changed = self.last_imagery_load_state != Some(current_state);
         let center_moved = match self.last_menu_center {
@@ -4589,10 +4624,8 @@ impl MapViewer {
             EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
             EditMode::Improve => self.handle_improve_click(screen_pt, cx),
             EditMode::Extrude => {
-                // Extrude doesn't use the plain-click path (Task 8 hooks
-                // mouse-down/mouse-move/mouse-up directly); a stray click
-                // here (e.g. a zero-movement mouse-up while extruding) is a
-                // no-op.
+                // Extrude works from mouse-down/move/up directly; a stray
+                // click here (a zero-movement mouse-up) does nothing.
             }
         }
     }
@@ -6050,8 +6083,7 @@ impl MapViewer {
 
     /// Add a newly-loaded OSM dataset as a new layer. Called directly by
     /// `menu::open_osm_file` (once its background parse completes) and by
-    /// the script harness's `ScriptCommand::LoadOsm` — replaces the old
-    /// `SHARED_OSM_DATA` queue drained once per frame.
+    /// the script harness's `ScriptCommand::LoadOsm`.
     ///
     /// `edits` are the pending local edits the file recorded (empty for a
     /// plain server extract); they stay pending in the new layer.
@@ -6226,8 +6258,7 @@ impl MapViewer {
 
     /// Apply a `LayerRequest`, adding the corresponding layer. Called
     /// directly by menu handlers (via `with_map_viewer`) and by the custom
-    /// imagery dialog's `Submitted` event — replaces the old `LAYER_REQUESTS`
-    /// queue drained once per frame.
+    /// imagery dialog's `Submitted` event.
     fn apply_layer_request(&mut self, req: LayerRequest, cx: &mut Context<Self>) {
         match req {
             LayerRequest::OsmCarto => {
@@ -6365,9 +6396,7 @@ impl MapViewer {
     }
 
     /// Flip the debug overlay. Called directly from the `View > Toggle Debug
-    /// Overlay` menu handler (via `with_map_viewer`) — replaces the old
-    /// `TOGGLE_DEBUG_OVERLAY` queue (which used push-count parity to emulate
-    /// a single flip per click; a direct call needs no such trick).
+    /// Overlay` menu handler (via `with_map_viewer`).
     pub(crate) fn toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
         self.show_debug_overlay = !self.show_debug_overlay;
         cx.notify();
@@ -6414,8 +6443,8 @@ impl MapViewer {
     }
 
     /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
-    /// Called directly from the menu handler (via `with_map_viewer_in`) —
-    /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike an inline
+    /// Called directly from the menu handler (via `with_map_viewer_in`).
+    /// Unlike an inline
     /// tag edit, this dialog has no post-paint focus requirement, so
     /// it's safe to construct straight from the menu-triggered `update_in`
     /// call rather than deferring to the next render pass.
@@ -6501,7 +6530,7 @@ impl MapViewer {
     /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
     /// already open. Called directly by `on_quit` and by the
     /// `on_window_should_close` hook (which already has a `Window` in
-    /// scope) — replaces the old `SHOW_QUIT_CONFIRM` queue. Like
+    /// scope). Like
     /// `open_custom_imagery_dialog`, this dialog has no post-paint focus
     /// requirement, so it's safe to construct directly rather than
     /// deferring to the next render pass.
@@ -6554,9 +6583,7 @@ impl MapViewer {
     /// Open the upload-review dialog, if one isn't already open — either
     /// showing the "nothing to upload" status or the dialog itself,
     /// depending on whether any layer has changes. Called directly by
-    /// `menu::upload_to_osm` (via `with_map_viewer_in`) — replaces the old
-    /// `SHOW_UPLOAD_DIALOG` queue, same as `show_quit_confirm_dialog`
-    /// replaced `SHOW_QUIT_CONFIRM`.
+    /// `menu::upload_to_osm` (via `with_map_viewer_in`).
     pub(crate) fn open_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let signed_in_name =
             auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
@@ -6864,13 +6891,10 @@ impl MapViewer {
                 use osm_gpui::ui::sign_in_dialog::DialogEvent;
                 this.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
-                    if purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary {
-                        osm_gpui::ui::settings_window::request_page(
-                            osm_gpui::ui::settings_window::IMAGERY_PAGE,
-                        );
-                    }
+                    let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
+                        .then_some(osm_gpui::ui::settings_window::IMAGERY_PAGE);
                     // Deferred so the window is opened outside this entity update.
-                    cx.defer(|cx| crate::menu::open_settings(&OpenSettings, cx));
+                    cx.defer(move |cx| crate::menu::open_settings_page(page, cx));
                 }
                 cx.notify();
             },
@@ -7572,9 +7596,7 @@ impl MapViewer {
     /// Kick off a background fetch of the OSM data within the current
     /// viewport bounds, applying the result to `self` on completion. Called
     /// directly from the `File > Download from OSM` menu handler (via
-    /// `with_map_viewer`) — replaces the old `DOWNLOAD_REQUESTS` queue (the
-    /// queue only ever carried a trigger; the actual background-fetch and
-    /// apply-on-completion logic already used `cx.spawn` and is unchanged).
+    /// `with_map_viewer`).
     /// Restyle every open layer with the active MapCSS style (the built-in
     /// one when no custom style is active) and repaint.
     pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
@@ -8809,9 +8831,6 @@ fn main() {
     KEYSTROKE_QUEUE.set(Arc::new(Mutex::new(Vec::new()))).ok();
 
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    IMAGERY_LOAD_STATE
-        .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
-        .unwrap();
 
     // If there's a script, spawn it on a background OS thread before the app
     // starts. The thread blocks until the window is visible, then drives the
@@ -8973,36 +8992,6 @@ fn main() {
             false,
         );
 
-        // Kick off background download/parse of the Editor Layer Index.
-        cx.background_executor()
-            .spawn(async move {
-                match imagery::fetch_and_cache() {
-                    Ok(body) => {
-                        let entries = imagery::parse(&body);
-                        eprintln!("imagery: loaded {} ELI entries", entries.len());
-                        if let Some(index) = IMAGERY_INDEX.get() {
-                            if let Ok(mut guard) = index.lock() {
-                                *guard = entries;
-                            }
-                        }
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Ready;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("imagery: failed to load ELI: {}", e);
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Failed;
-                            }
-                        }
-                    }
-                }
-            })
-            .detach();
-
         // Kick off background fetch/parse of the Name Suggestion Index.
         osm_gpui::nsi::init_store();
         cx.background_executor()
@@ -9099,6 +9088,9 @@ fn main() {
                     });
                     #[cfg(debug_assertions)]
                     view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
+                    // Download and parse the Editor Layer Index in the
+                    // background; the viewer is told when it is done.
+                    view.update(cx, |v, cx| v.load_imagery_index(cx));
 
                     // Publish a weak handle to the live view so the
                     // `on_window_should_close` closure below (which only has
@@ -10904,17 +10896,21 @@ mod tests {
                     id,
                 }]);
         };
-        let run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
-            let action = selection_actions::find(id).unwrap();
-            let env = selection_actions::ActionEnv {
-                selection: sel,
-                active_layer: Some(LayerId(1)),
-                layers,
-                clipboards: &clipboard_actions::Clipboards::default(),
+        let mut clipboards = clipboard_actions::Clipboards::default();
+        let mut run =
+            |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
+                let action = selection_actions::find(id).unwrap();
+                let env = selection_actions::ActionEnv {
+                    selection: sel,
+                    active_layer: Some(LayerId(1)),
+                    layers,
+                    clipboards: &clipboards,
+                };
+                assert!((action.is_applicable)(&env), "{id} not offered");
+                action
+                    .run_direct(layers, sel, Some(LayerId(1)), &mut clipboards)
+                    .unwrap_or_else(|e| panic!("{id}: {e}"))
             };
-            assert!((action.is_applicable)(&env), "{id} not offered");
-            (action.apply())(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
-        };
 
         select_way(&mut layers, 5101);
         for (x, y, kind, id) in [
