@@ -9,6 +9,7 @@ pub mod assets;
 pub mod auth;
 pub mod autosave;
 pub mod building;
+pub mod building3d;
 pub mod capabilities;
 pub mod changeset_tags;
 pub mod coordinates;

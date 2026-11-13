@@ -20,6 +20,7 @@ const SQUARE_MAX_ITERATIONS: usize = 5000;
 
 /// An equirectangular projection around a fixed origin, accurate to well
 /// under a millimetre across the size of a single way.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LocalProjection {
     lat0: f64,
     lon0: f64,

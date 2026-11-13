@@ -40,6 +40,12 @@ ureq = { version = "2.12", features = ["json"] }
 urlencoding = "2"
 futures = "0.3"
 earcutr = "0.4"
+# 3D building view: offscreen GPU rendering (see `building3d::gpu`). The
+# same wgpu fork/rev gpui's Linux renderer uses, so Linux builds share it.
+wgpu = { git = "https://github.com/zed-industries/wgpu.git", rev = "357a0c56e0070480ad9daea5d2eaa83150b79e88" }
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.30"
+pollster = "0.4"
 rust-i18n = "4.1"
 sys-locale = "0.3.2"
 

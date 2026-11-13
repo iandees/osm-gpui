@@ -285,14 +285,72 @@ pub fn set_wanted_tiles(source_key: &str, urls: HashSet<String>) -> Vec<TileAsse
     revived
 }
 
+/// Tiles wanted by views other than the map (the 3D building view's ground),
+/// keyed by (consumer, source key). These are never cancelled by the map's
+/// own wanted set changing.
+/// (consumer, source key) -> wanted tile URLs.
+type ExtraWanted = HashMap<(String, String), HashSet<String>>;
+
+static EXTRA_WANTED_TILES: OnceLock<Mutex<ExtraWanted>> = OnceLock::new();
+
+fn extra_wanted_tiles() -> &'static Mutex<ExtraWanted> {
+    EXTRA_WANTED_TILES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Like `set_wanted_tiles`, for a view other than the map: record the tiles
+/// `consumer` needs from `source_key` (replacing its previous set; an empty
+/// set clears it) and return the previously cancelled ones among them, which
+/// the caller must evict from gpui's asset cache so they refetch.
+pub fn set_extra_wanted_tiles(
+    consumer: &str,
+    source_key: &str,
+    urls: HashSet<String>,
+) -> Vec<TileAssetKey> {
+    let revived: Vec<TileAssetKey> = {
+        let mut cancelled = cancelled_tiles().lock().unwrap();
+        let revived: Vec<_> = cancelled
+            .iter()
+            .filter(|k| k.source_key == source_key && urls.contains(&k.url))
+            .cloned()
+            .collect();
+        for k in &revived {
+            cancelled.remove(k);
+        }
+        revived
+    };
+    let mut extra = extra_wanted_tiles().lock().unwrap();
+    let key = (consumer.to_string(), source_key.to_string());
+    if urls.is_empty() {
+        extra.remove(&key);
+    } else {
+        extra.insert(key, urls);
+    }
+    revived
+}
+
+/// Drop every tile set `consumer` registered with `set_extra_wanted_tiles`.
+pub fn clear_extra_wanted_tiles(consumer: &str) {
+    extra_wanted_tiles()
+        .lock()
+        .unwrap()
+        .retain(|(c, _), _| c != consumer);
+}
+
 /// Whether a download for `url` is still wanted. Sources that have not
-/// reported a wanted set (nothing rendered yet) are never cancelled.
+/// reported a wanted set (nothing rendered yet) are never cancelled, nor are
+/// tiles another view asked for.
 fn is_tile_wanted(source_key: &str, url: &str) -> bool {
-    wanted_tiles()
+    let by_map = wanted_tiles()
         .lock()
         .unwrap()
         .get(source_key)
-        .is_none_or(|set| set.contains(url))
+        .is_none_or(|set| set.contains(url));
+    by_map
+        || extra_wanted_tiles()
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|((_, key), set)| key == source_key && set.contains(url))
 }
 
 /// Per-URL last-error map. Populated by `TileAsset::load` whenever a tile

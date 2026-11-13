@@ -23,6 +23,9 @@ mod add_click_tests;
 #[cfg(test)]
 mod arc_click_tests;
 mod autosave_driver;
+mod building3d_pane;
+#[cfg(test)]
+mod building3d_tests;
 mod clipboard_actions;
 #[cfg(test)]
 mod edge_case_tests;
@@ -254,6 +257,8 @@ enum EditMode {
     Extrude,
     Arc,
     Improve,
+    /// 3D building modelling: a click on a building opens the 3D pane.
+    Building3d,
 }
 
 /// Action to switch the current `EditMode`.
@@ -275,6 +280,7 @@ enum EditModeAction {
     Extrude,
     Arc,
     Improve,
+    Building3d,
 }
 
 /// Undo of a node attached to an existing way's end: pull `node_id` out of
@@ -305,6 +311,7 @@ impl From<EditModeAction> for EditMode {
             EditModeAction::Extrude => EditMode::Extrude,
             EditModeAction::Arc => EditMode::Arc,
             EditModeAction::Improve => EditMode::Improve,
+            EditModeAction::Building3d => EditMode::Building3d,
         }
     }
 }
@@ -1055,6 +1062,18 @@ struct MapViewer {
     /// Extrude mode's in-progress drag, or `None` when not dragging (see
     /// `ExtrudeDrag`).
     extrude_drag: Option<ExtrudeDrag>,
+    /// 3D mode's building pane, when open (see `building3d_pane`).
+    building3d: Option<building3d_pane::Building3dPane>,
+    /// The 3D pane's GPU renderer, made on first use and kept across panes;
+    /// `Err` when the machine has no usable GPU.
+    building3d_renderer: Option<Result<osm_gpui::building3d::gpu::Renderer, String>>,
+    /// Width of the 3D pane, in logical pixels.
+    building3d_pane_width: f32,
+    /// A 3D pane resize drag: (pointer x at the press, width at the press).
+    building3d_resize: Option<(f32, f32)>,
+    /// 3D frames replaced since the last render, to free from the sprite
+    /// atlas (that needs the window).
+    building3d_stale_images: Vec<std::sync::Arc<gpui::RenderImage>>,
     /// The interactive Rotate in progress, if any (see `RotateSession`).
     rotate_session: Option<RotateSession>,
     /// Window position of the last right-button press on the map, kept until
@@ -1158,8 +1177,8 @@ fn map_cursor(
             EditMode::Add | EditMode::Building | EditMode::Arc | EditMode::Improve => {
                 CursorStyle::Crosshair
             }
-            EditMode::Select if hovering => CursorStyle::PointingHand,
-            EditMode::Select | EditMode::Extrude => CursorStyle::Arrow,
+            EditMode::Select | EditMode::Building3d if hovering => CursorStyle::PointingHand,
+            EditMode::Select | EditMode::Extrude | EditMode::Building3d => CursorStyle::Arrow,
         }
     }
 }
@@ -1340,6 +1359,11 @@ impl MapViewer {
             hovered: None,
             vertex_grab: None,
             extrude_drag: None,
+            building3d: None,
+            building3d_renderer: None,
+            building3d_pane_width: building3d_pane::DEFAULT_WIDTH,
+            building3d_resize: None,
+            building3d_stale_images: Vec::new(),
             rotate_session: None,
             right_press: None,
             menu_swallow_press: false,
@@ -1728,6 +1752,10 @@ impl MapViewer {
         self.arc_progress = None;
         self.extrude_drag = None;
         self.cancel_rotate();
+        // The 3D pane belongs to its mode.
+        if mode != EditMode::Building3d {
+            self.close_building3d(window);
+        }
         cx.notify();
     }
 
@@ -4559,6 +4587,7 @@ impl MapViewer {
             EditMode::Building => self.handle_building_click(screen_pt),
             EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
             EditMode::Improve => self.handle_improve_click(screen_pt, cx),
+            EditMode::Building3d => self.handle_building3d_map_click(screen_pt, click_count),
             EditMode::Extrude => {
                 // Extrude doesn't use the plain-click path (Task 8 hooks
                 // mouse-down/mouse-move/mouse-up directly); a stray click
@@ -7657,8 +7686,9 @@ impl Render for MapViewer {
         // Size the viewport to the map area: the window's content area (not
         // `window.bounds()`, which includes the title bar) minus the side
         // panels and the status bar.
+        self.building3d_frame(window, cx);
         let window_size = window.viewport_size();
-        let panel_width = px(self.side_panel_width);
+        let panel_width = px(self.side_panel_width + self.building3d_width());
         let left_panel_width = px(Self::MODE_PANEL_WIDTH);
         let map_size = gpui::size(
             window_size.width - panel_width - left_panel_width,
@@ -7884,6 +7914,13 @@ impl Render for MapViewer {
                                         this.mode = EditMode::Select;
                                     }
                                 }
+                                EditMode::Building3d => {
+                                    // A pane tool first, then the pane,
+                                    // then the mode.
+                                    if !this.building3d_escape(window) {
+                                        this.mode = EditMode::Select;
+                                    }
+                                }
                                 EditMode::Select => {
                                     if !cancelled_drag {
                                         this.set_selection(Vec::new());
@@ -7960,6 +7997,19 @@ impl Render for MapViewer {
                                 this.on_set_mode(
                                     &SetMode {
                                         mode: EditModeAction::Improve,
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            } else if key
+                                == osm_gpui::keybindings::effective_spec(
+                                    &settings,
+                                    "mode_building3d",
+                                )
+                            {
+                                this.on_set_mode(
+                                    &SetMode {
+                                        mode: EditModeAction::Building3d,
                                     },
                                     window,
                                     cx,
@@ -8594,6 +8644,7 @@ impl Render for MapViewer {
                         }
                     }),
             )
+            .children(self.render_building3d_pane(cx))
             .child(
                 // Right panel with layer controls
                 self.render_side_panel(window, cx),
@@ -8632,6 +8683,24 @@ impl Render for MapViewer {
             // A side panel resize drag is tracked here, on the window-sized
             // root, so it keeps following the pointer over the map and the
             // panel alike.
+            // A 3D view drag follows the pointer beyond the pane, and the
+            // pane's resize handle is dragged like the side panel's.
+            .when(self.building3d_gesture_active(), |root| {
+                Self::building3d_root_handlers(root, cx)
+            })
+            .when(self.building3d_resizing(), |root| {
+                root.cursor_col_resize()
+                    .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                        this.drag_building3d_resize(ev, window, cx);
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _ev: &MouseUpEvent, _, cx| {
+                            this.finish_building3d_resize();
+                            cx.notify();
+                        }),
+                    )
+            })
             .when(self.side_panel_resize.is_some(), |root| {
                 root.cursor_col_resize()
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {

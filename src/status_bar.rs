@@ -62,6 +62,8 @@ pub(crate) fn mode_hint(
         (EditMode::Arc, ModeProgress::EdgePlaced) => tr!("status.hint.arc_end_placed"),
         (EditMode::Improve, ModeProgress::Idle) => tr!("status.hint.improve_idle"),
         (EditMode::Improve, _) => tr!("status.hint.improve_way_chosen"),
+        (EditMode::Building3d, ModeProgress::Idle) => tr!("status.hint.building3d_idle"),
+        (EditMode::Building3d, _) => tr!("status.hint.building3d_open"),
     }
 }
 
@@ -88,6 +90,7 @@ impl MapViewer {
                 Some(_) => ModeProgress::EdgePlaced,
             },
             EditMode::Improve if self.improve_target().is_some() => ModeProgress::Started,
+            EditMode::Building3d if self.building3d.is_some() => ModeProgress::Started,
             _ => ModeProgress::Idle,
         }
     }
@@ -318,6 +321,7 @@ mod tests {
             EditMode::Extrude,
             EditMode::Arc,
             EditMode::Improve,
+            EditMode::Building3d,
         ] {
             for progress in [
                 ModeProgress::Idle,

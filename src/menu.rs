@@ -900,6 +900,7 @@ fn build_menus(
                 mode_item(tr!("mode.extrude.name"), EditModeAction::Extrude),
                 mode_item(tr!("mode.arc.name"), EditModeAction::Arc),
                 mode_item(tr!("mode.improve.name"), EditModeAction::Improve),
+                mode_item(tr!("mode.building3d.name"), EditModeAction::Building3d),
             ],
             disabled: false,
         },

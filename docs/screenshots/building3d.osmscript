@@ -1,0 +1,102 @@
+# 3D Building mode: click a building to open the 3D pane, then push/pull,
+# split, stack and draw parts in it.
+#
+# Window 1400x900; the side panel is 280 px and the 3D pane 520 px, so the
+# pane's canvas spans window x 605..1120, y 40..876, and its toolbar is the
+# 40 px row above it (Select 658, Draw 725, Split 786, Stack 848). Pane
+# positions below were worked out from the default camera framing of each
+# fixture building. Drags in the pane need button=left (the default drag is
+# a map pan).
+#
+# Captures go to out/ (not committed).
+
+window 1400 900
+load_osm docs/screenshots/fixtures/building3d.osm
+viewport 40.71215 -74.00570 19
+wait_idle 5s
+
+key 3
+wait_idle 1s
+assert_mode building3d
+capture out/b3d-00-mode.png
+
+# Click the building on the map: the pane opens on its relation.
+click geo:40.71209,-74.00582
+wait_idle 3s
+capture out/b3d-01-open.png
+
+# Hovering a face highlights it.
+hover 922,256
+wait_idle 1s
+capture out/b3d-02-hover-roof.png
+
+# Pull the tower's roof up: a taller tower, one undo step.
+drag 922,256 922,180 button=left duration=400ms
+wait_idle 2s
+capture out/b3d-03-taller.png
+assert_pending 1
+key cmd+z
+wait_idle 2s
+assert_pending 0
+capture out/b3d-04-undone.png
+
+# Push the tower's south wall out.
+drag 950,389 925,445 button=left duration=400ms
+wait_idle 2s
+capture out/b3d-05-wall.png
+key cmd+z
+wait_idle 2s
+assert_pending 0
+
+# Split the podium along a line across its roof.
+click 786,20
+wait_idle 1s
+click 872,534
+hover 788,463
+wait_idle 1s
+capture out/b3d-06-split-preview.png
+click 788,463
+wait_idle 2s
+capture out/b3d-07-split.png
+
+# Stack: cut the tower at a height.
+click 848,20
+wait_idle 1s
+hover 884,381
+wait_idle 1s
+capture out/b3d-08-stack-preview.png
+click 884,381
+wait_idle 2s
+capture out/b3d-09-stacked.png
+
+# Draw a new part on the podium's roof.
+click 725,20
+wait_idle 1s
+drag 810,546 805,478 button=left duration=400ms
+wait_idle 2s
+capture out/b3d-10-drawn.png
+
+# Orbit.
+drag 640,80 760,110 button=left duration=400ms
+wait_idle 2s
+capture out/b3d-11-orbit.png
+
+# Another building, one with no parts, from the map (the camera turns so
+# the tall neighbour doesn't hide it): split it into its first two parts.
+click geo:40.71242,-74.00541
+wait_idle 3s
+capture out/b3d-12-other-building.png
+click 786,20
+wait_idle 1s
+click 984,402
+click 732,381
+wait_idle 2s
+capture out/b3d-13-split-partless.png
+
+# Escape closes the pane, then leaves the mode.
+key escape
+wait_idle 1s
+capture out/b3d-14-closed.png
+key escape
+wait_idle 1s
+assert_mode select

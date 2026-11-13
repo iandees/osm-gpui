@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="handwritten">
+  <bounds minlat="40.7110" minlon="-74.0075" maxlat="40.7130" maxlon="-74.0045"/>
+  <!-- 3D Building mode: "Harbor Office" (relation 500: outline 100, podium
+       101, tower 102) among neighbours; 300 is a building with no parts. -->
+  <node id="1" version="1" lat="40.7120000" lon="-74.0060000"/>
+  <node id="2" version="1" lat="40.7120000" lon="-74.0056441"/>
+  <node id="3" version="1" lat="40.7121799" lon="-74.0056441"/>
+  <node id="4" version="1" lat="40.7121799" lon="-74.0060000"/>
+  <node id="5" version="1" lat="40.7120360" lon="-74.0057864"/>
+  <node id="6" version="1" lat="40.7120360" lon="-74.0056678"/>
+  <node id="7" version="1" lat="40.7121439" lon="-74.0056678"/>
+  <node id="8" version="1" lat="40.7121439" lon="-74.0057864"/>
+  <node id="9" version="1" lat="40.7120000" lon="-74.0062966"/>
+  <node id="10" version="1" lat="40.7120000" lon="-74.0060593"/>
+  <node id="11" version="1" lat="40.7121349" lon="-74.0060593"/>
+  <node id="12" version="1" lat="40.7121349" lon="-74.0062966"/>
+  <node id="13" version="1" lat="40.7119550" lon="-74.0055254"/>
+  <node id="14" version="1" lat="40.7119550" lon="-74.0052881"/>
+  <node id="15" version="1" lat="40.7122248" lon="-74.0052881"/>
+  <node id="16" version="1" lat="40.7122248" lon="-74.0055254"/>
+  <node id="17" version="1" lat="40.7123148" lon="-74.0060000"/>
+  <node id="18" version="1" lat="40.7123148" lon="-74.0057034"/>
+  <node id="19" version="1" lat="40.7124497" lon="-74.0057034"/>
+  <node id="20" version="1" lat="40.7124497" lon="-74.0060000"/>
+  <node id="21" version="1" lat="40.7117302" lon="-74.0062373"/>
+  <node id="22" version="1" lat="40.7117302" lon="-74.0058814"/>
+  <node id="23" version="1" lat="40.7118651" lon="-74.0058814"/>
+  <node id="24" version="1" lat="40.7118651" lon="-74.0062373"/>
+  <node id="25" version="1" lat="40.7123597" lon="-74.0055254"/>
+  <node id="26" version="1" lat="40.7123597" lon="-74.0052881"/>
+  <node id="27" version="1" lat="40.7124946" lon="-74.0052881"/>
+  <node id="28" version="1" lat="40.7124946" lon="-74.0055254"/>
+  <way id="100" version="1">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <nd ref="1"/>
+    <tag k="building" v="office"/>
+    <tag k="name" v="Harbor Office"/>
+    <tag k="height" v="36"/>
+    <tag k="building:levels" v="12"/>
+  </way>
+  <way id="101" version="1">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <nd ref="1"/>
+    <tag k="building:part" v="yes"/>
+    <tag k="height" v="9"/>
+    <tag k="building:levels" v="3"/>
+    <tag k="building:colour" v="#cdbf9f"/>
+  </way>
+  <way id="102" version="1">
+    <nd ref="5"/>
+    <nd ref="6"/>
+    <nd ref="7"/>
+    <nd ref="8"/>
+    <nd ref="5"/>
+    <tag k="building:part" v="yes"/>
+    <tag k="min_height" v="9"/>
+    <tag k="height" v="36"/>
+    <tag k="building:min_level" v="3"/>
+    <tag k="building:levels" v="12"/>
+    <tag k="building:colour" v="#9fb6cc"/>
+  </way>
+  <way id="200" version="1">
+    <nd ref="9"/>
+    <nd ref="10"/>
+    <nd ref="11"/>
+    <nd ref="12"/>
+    <nd ref="9"/>
+    <tag k="building" v="yes"/>
+    <tag k="building:levels" v="4"/>
+  </way>
+  <way id="201" version="1">
+    <nd ref="13"/>
+    <nd ref="14"/>
+    <nd ref="15"/>
+    <nd ref="16"/>
+    <nd ref="13"/>
+    <tag k="building" v="yes"/>
+    <tag k="height" v="18"/>
+  </way>
+  <way id="202" version="1">
+    <nd ref="17"/>
+    <nd ref="18"/>
+    <nd ref="19"/>
+    <nd ref="20"/>
+    <nd ref="17"/>
+    <tag k="building" v="house"/>
+    <tag k="height" v="9"/>
+    <tag k="roof:shape" v="gabled"/>
+    <tag k="roof:height" v="4"/>
+  </way>
+  <way id="203" version="1">
+    <nd ref="21"/>
+    <nd ref="22"/>
+    <nd ref="23"/>
+    <nd ref="24"/>
+    <nd ref="21"/>
+    <tag k="building" v="yes"/>
+    <tag k="height" v="6"/>
+  </way>
+  <way id="300" version="1">
+    <nd ref="25"/>
+    <nd ref="26"/>
+    <nd ref="27"/>
+    <nd ref="28"/>
+    <nd ref="25"/>
+    <tag k="building" v="yes"/>
+    <tag k="height" v="8"/>
+  </way>
+  <relation id="500" version="1">
+    <member type="way" ref="100" role="outline"/>
+    <member type="way" ref="101" role="part"/>
+    <member type="way" ref="102" role="part"/>
+    <tag k="type" v="building"/>
+  </relation>
+</osm>

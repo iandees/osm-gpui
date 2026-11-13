@@ -1,4 +1,4 @@
-//! The left-hand mode-selector toolbar: Select / Add / Building / Extrude / Arc / Improve.
+//! The left-hand mode-selector toolbar: Select / Add / Building / Extrude / Arc / Improve / 3D.
 
 use gpui::{div, prelude::*, px, Context, SharedString};
 use gpui_component::{
@@ -41,6 +41,12 @@ impl MapViewer {
             .child(self.mode_button("mode-extrude", EditMode::Extrude, has_active_layer, cx))
             .child(self.mode_button("mode-arc", EditMode::Arc, has_active_layer, cx))
             .child(self.mode_button("mode-improve", EditMode::Improve, has_active_layer, cx))
+            .child(self.mode_button(
+                "mode-building3d",
+                EditMode::Building3d,
+                has_active_layer,
+                cx,
+            ))
     }
 
     fn mode_button(
@@ -58,12 +64,13 @@ impl MapViewer {
             EditMode::Extrude => EditModeAction::Extrude,
             EditMode::Arc => EditModeAction::Arc,
             EditMode::Improve => EditModeAction::Improve,
+            EditMode::Building3d => EditModeAction::Building3d,
         };
         let mut button = Button::new(id).w(px(46.0)).h(px(46.0)).child(
             v_flex()
                 .items_center()
                 .gap_0p5()
-                .child(Icon::new(mode_icon(mode)).small())
+                .child(mode_icon(mode).icon().small())
                 .child(div().text_size(muted_text_size()).child(mode_label(mode))),
         );
         let shortcut = osm_gpui::keybindings::effective_spec(
@@ -93,6 +100,7 @@ fn mode_label(mode: EditMode) -> SharedString {
         EditMode::Extrude => tr!("mode.extrude.label"),
         EditMode::Arc => tr!("mode.arc.label"),
         EditMode::Improve => tr!("mode.improve.label"),
+        EditMode::Building3d => tr!("mode.building3d.label"),
     }
 }
 
@@ -105,6 +113,7 @@ fn mode_shortcut_id(mode: EditMode) -> &'static str {
         EditMode::Extrude => "mode_extrude",
         EditMode::Arc => "mode_arc",
         EditMode::Improve => "mode_improve",
+        EditMode::Building3d => "mode_building3d",
     }
 }
 
@@ -118,6 +127,7 @@ fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> SharedString {
         EditMode::Extrude => tr!("mode.extrude.tooltip"),
         EditMode::Arc => tr!("mode.arc.tooltip"),
         EditMode::Improve => tr!("mode.improve.tooltip"),
+        EditMode::Building3d => tr!("mode.building3d.tooltip"),
     };
     let shortcut = shortcut.to_uppercase();
     if enabled {
@@ -127,14 +137,31 @@ fn mode_tooltip(mode: EditMode, shortcut: &str, enabled: bool) -> SharedString {
     }
 }
 
-fn mode_icon(mode: EditMode) -> IconName {
+/// A mode button's icon: one of gpui-component's, or one of the app's own
+/// (served by `osm_gpui::assets`) for glyphs the bundle lacks.
+enum ModeIcon {
+    Named(IconName),
+    Path(&'static str),
+}
+
+impl ModeIcon {
+    fn icon(self) -> Icon {
+        match self {
+            ModeIcon::Named(name) => Icon::new(name),
+            ModeIcon::Path(path) => Icon::empty().path(path),
+        }
+    }
+}
+
+fn mode_icon(mode: EditMode) -> ModeIcon {
     match mode {
-        EditMode::Select => IconName::Frame,
-        EditMode::Add => IconName::Plus,
-        EditMode::Building => IconName::Building2,
-        EditMode::Extrude => IconName::LayoutDashboard,
-        EditMode::Arc => IconName::Redo2,
-        EditMode::Improve => IconName::Replace,
+        EditMode::Select => ModeIcon::Named(IconName::Frame),
+        EditMode::Add => ModeIcon::Named(IconName::Plus),
+        EditMode::Building => ModeIcon::Named(IconName::Building2),
+        EditMode::Extrude => ModeIcon::Named(IconName::LayoutDashboard),
+        EditMode::Arc => ModeIcon::Named(IconName::Redo2),
+        EditMode::Improve => ModeIcon::Named(IconName::Replace),
+        EditMode::Building3d => ModeIcon::Path(osm_gpui::assets::BOX_ICON_PATH),
     }
 }
 
@@ -151,15 +178,23 @@ mod tests {
             mode_icon(EditMode::Extrude),
             mode_icon(EditMode::Arc),
             mode_icon(EditMode::Improve),
+            mode_icon(EditMode::Building3d),
         ];
         // Assert the exact mode -> icon mapping so a change to any one
         // mode's icon is caught here.
-        assert!(matches!(icons[0], IconName::Frame));
-        assert!(matches!(icons[1], IconName::Plus));
-        assert!(matches!(icons[2], IconName::Building2));
-        assert!(matches!(icons[3], IconName::LayoutDashboard));
-        assert!(matches!(icons[4], IconName::Redo2));
-        assert!(matches!(icons[5], IconName::Replace));
+        assert!(matches!(icons[0], ModeIcon::Named(IconName::Frame)));
+        assert!(matches!(icons[1], ModeIcon::Named(IconName::Plus)));
+        assert!(matches!(icons[2], ModeIcon::Named(IconName::Building2)));
+        assert!(matches!(
+            icons[3],
+            ModeIcon::Named(IconName::LayoutDashboard)
+        ));
+        assert!(matches!(icons[4], ModeIcon::Named(IconName::Redo2)));
+        assert!(matches!(icons[5], ModeIcon::Named(IconName::Replace)));
+        assert!(matches!(
+            icons[6],
+            ModeIcon::Path(osm_gpui::assets::BOX_ICON_PATH)
+        ));
     }
 
     #[test]
@@ -180,6 +215,7 @@ mod tests {
             EditMode::Extrude,
             EditMode::Arc,
             EditMode::Improve,
+            EditMode::Building3d,
         ] {
             // `def` panics on an unknown id.
             osm_gpui::keybindings::def(mode_shortcut_id(mode));
@@ -194,5 +230,6 @@ mod tests {
         assert_eq!(mode_label(EditMode::Extrude), "Extr");
         assert_eq!(mode_label(EditMode::Arc), "Arc");
         assert_eq!(mode_label(EditMode::Improve), "Impr");
+        assert_eq!(mode_label(EditMode::Building3d), "3D");
     }
 }

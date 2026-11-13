@@ -19,6 +19,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 - Extrude: drag a way segment to reshape the way (pull out an L, push in a notch); Cmd/Ctrl-drag moves the segment, Alt-drag makes a new way.
 - Arc: click the start, click the end, then move the mouse to bend the arc and click to finish; nodes are placed every 5° along the circle.
 - Improve Way: select a way; click to move the nearest node to the cursor (the way previews live), Cmd/Ctrl/Alt-click to insert a node at the cursor into the way instead, Shift-click to delete the nearest node.
+- 3D Building: click a building (or one of its parts) to open a 3D view of it beside the map, with the neighbouring buildings and the imagery on the ground. Drag a roof to set the height (Shift lifts the whole part), the underside of a raised part to set `min_height`, or a wall to push it out or pull it in; draw new parts on a roof or the ground, split a part along a line or stack it at a height. Edits write `building:part` ways (joining the `type=building` relation when there is one) and `height` / `min_height`, keeping `building:levels` in step. Drag elsewhere to orbit, right-drag to pan, scroll to zoom.
 
 **Selection actions**
 - Square, Circularize, Reverse Way, Join Ways, Separate Node, Extend Way, Split Way, Merge Nodes, Straighten Way, Copy Tags, Paste Tags, Add to Relation, and Delete.
@@ -138,7 +139,7 @@ These are the defaults, written with macOS modifier symbols. Everything in the t
 | Edit | `⇧⌘C` / `⇧⌘V` | Copy Tags / Paste Tags |
 | View | `⌘=` / `⌘-` | Zoom In / Zoom Out |
 | View | `⌘0` / `⌘J` | Zoom to Data / Zoom to Selection |
-| Modes | `S` `A` `B` `X` `V` `I` | Select / Add / Building / Extrude / Arc / Improve Way |
+| Modes | `S` `A` `B` `X` `V` `I` `3` | Select / Add / Building / Extrude / Arc / Improve Way / 3D Building |
 | Selection actions | `Q` `O` | Square / Circularize |
 | Selection actions | `R` `C` | Reverse Way / Join Ways |
 | Selection actions | `G` `E` | Separate Node / Extend Way |
