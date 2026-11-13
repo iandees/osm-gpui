@@ -8535,7 +8535,6 @@ impl Render for MapViewer {
                             div().into_any_element()
                         }
                     })
-                    .children(self.render_welcome(cx))
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
                     .children(self.render_gps_traces_legend(cx))
@@ -8597,7 +8596,9 @@ impl Render for MapViewer {
                                 ))
                                 .into_any_element()
                         }
-                    }),
+                    })
+                    // Last, so it paints over every other map overlay.
+                    .children(self.render_welcome(cx)),
             )
             .child(
                 // Right panel with layer controls
