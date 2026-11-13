@@ -9592,16 +9592,8 @@ mod tests {
             let hints = HashMap::new();
             let mut index = HashMap::new();
             let mut batches = Vec::new();
-            let mut idx = |z, rgba| {
-                batch_index(
-                    &mut index,
-                    &mut batches,
-                    BatchKind::Stroke,
-                    z,
-                    rgba,
-                    &hints,
-                )
-            };
+            let mut idx =
+                |z, rgba| batch_index(&mut index, &mut batches, BatchKind::Stroke, z, rgba, &hints);
             let a = idx(0, 0xff);
             assert_eq!(idx(0, 0xff), a);
             assert_ne!(idx(1, 0xff), a);
@@ -9616,14 +9608,7 @@ mod tests {
             let mut batches = Vec::new();
             // First-seen order: (z 8, A), (z -4, B), (z 8, C), (z -4, D).
             for (z, rgba) in [(8, 0xA), (-4, 0xB), (8, 0xC), (-4, 0xD)] {
-                batch_index(
-                    &mut index,
-                    &mut batches,
-                    BatchKind::Fill,
-                    z,
-                    rgba,
-                    &hints,
-                );
+                batch_index(&mut index, &mut batches, BatchKind::Fill, z, rgba, &hints);
             }
             let batches: Vec<Batch> = batches.into_iter().map(with_triangle).collect();
             let mut next = HashMap::new();
