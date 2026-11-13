@@ -98,7 +98,7 @@ impl SettingsWindow {
                 .placeholder("https://example.com")
                 .default_value(app_settings.custom_api_url.clone())
         });
-        let oauth_base = auth::oauth_base_for(&app_settings.api_base_url());
+        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&app_settings));
         let client_id_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(tr!("settings.account.client_id_placeholder"))
@@ -168,8 +168,23 @@ impl SettingsWindow {
         }
     }
 
+    /// The server this window signs in to and keeps client IDs for: the one in
+    /// use this run (`--api-server` wins over the saved choice), not the one
+    /// the picker shows.
+    fn acting_base_url(saved: &AppSettings) -> String {
+        settings_store::effective_base_url(saved, settings_store::run_override().as_deref())
+    }
+
+    /// Write the changes `f` makes to the store, then take the store's value
+    /// as this window's copy. Only what `f` touches is written, so settings
+    /// changed elsewhere while the window was open are never reverted.
+    fn commit(&mut self, f: impl FnOnce(&mut AppSettings)) {
+        settings_store::update(true, f);
+        self.app_settings = settings_store::snapshot();
+    }
+
     fn current_login_state(settings: &AppSettings) -> LoginState {
-        let oauth_base = auth::oauth_base_for(&settings.api_base_url());
+        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(settings));
         // Only the display name is shown, so use the metadata-only lookup: it never
         // touches the keychain (this runs on the UI thread).
         match auth::stored_login(&oauth_base) {
@@ -181,7 +196,7 @@ impl SettingsWindow {
     /// Refresh `client_id_input`'s displayed value to match the currently-selected
     /// server's configured override (or blank, if using the default client_id).
     fn refresh_client_id_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
         let value = self
             .app_settings
             .client_ids
@@ -198,8 +213,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.app_settings.api_server = choice;
-        self.save_settings();
+        self.commit(|s| s.api_server = choice);
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
         cx.notify();
@@ -214,45 +228,24 @@ impl SettingsWindow {
             return;
         }
         self.custom_url_error = None;
-        self.app_settings.custom_api_url = url.trim_end_matches('/').to_string();
-        self.save_settings();
+        let url = url.trim_end_matches('/').to_string();
+        self.commit(|s| s.custom_api_url = url);
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
         cx.notify();
     }
 
-    /// Persist `app_settings`. The appearance can also change from the View
-    /// menu while this window is open, so the store's value wins over this
-    /// window's possibly stale copy. The same goes for the welcome-card flag,
-    /// which the card's close button changes from the main window.
-    fn save_settings(&mut self) {
-        let live = settings_store::snapshot();
-        self.app_settings.theme = live.theme;
-        self.app_settings.welcome_dismissed = live.welcome_dismissed;
-        self.app_settings.invert_scroll_zoom = live.invert_scroll_zoom;
-        self.app_settings.last_source = live.last_source;
-        self.app_settings.recent_comments = live.recent_comments;
-        self.app_settings.suggest_from_taginfo = live.suggest_from_taginfo;
-        self.app_settings.simplify_tolerance_m = live.simplify_tolerance_m;
-        self.app_settings.mapillary_token = live.mapillary_token;
-        self.app_settings.fotoshi_api_key = live.fotoshi_api_key;
-        self.app_settings.fotoshi_lookup_selected = live.fotoshi_lookup_selected;
-        settings_store::update_store(self.app_settings.clone());
-    }
-
     /// Turn taginfo tag suggestions on or off. Written straight to the
     /// store, which the main window reads before every lookup.
     fn set_suggest_from_taginfo(&mut self, on: bool, cx: &mut Context<Self>) {
-        settings_store::set_suggest_from_taginfo(on, true);
-        self.app_settings.suggest_from_taginfo = on;
+        self.commit(|s| s.suggest_from_taginfo = on);
         cx.notify();
     }
 
     /// Reverse (or restore) the scroll-zoom direction. Written straight to the
     /// store, which the main window reads on every scroll.
     fn set_invert_scroll_zoom(&mut self, invert: bool, cx: &mut Context<Self>) {
-        settings_store::set_invert_scroll_zoom(invert, true);
-        self.app_settings.invert_scroll_zoom = invert;
+        self.commit(|s| s.invert_scroll_zoom = invert);
         cx.notify();
     }
 
@@ -264,7 +257,8 @@ impl SettingsWindow {
     fn activate_map_style(&mut self, location: Option<String>, add: bool, cx: &mut Context<Self>) {
         self.map_style_error = None;
         let Some(loc) = location else {
-            self.finish_map_style(None, None, cx);
+            self.commit(|s| s.active_map_style = None);
+            self.finish_map_style(None, cx);
             return;
         };
         self.map_style_loading = true;
@@ -279,13 +273,13 @@ impl SettingsWindow {
                 this.map_style_loading = false;
                 match result {
                     Ok(sheet) => {
-                        if add {
-                            crate::style::custom::add_location(
-                                &mut this.app_settings.map_styles,
-                                &loc,
-                            );
-                        }
-                        this.finish_map_style(Some(loc), Some(Arc::new(sheet)), cx);
+                        this.commit(|s| {
+                            if add {
+                                crate::style::custom::add_location(&mut s.map_styles, &loc);
+                            }
+                            s.active_map_style = Some(loc);
+                        });
+                        this.finish_map_style(Some(Arc::new(sheet)), cx);
                     }
                     Err(e) => {
                         this.map_style_error = Some(tr!("settings.map_style.error", error = e));
@@ -297,14 +291,12 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Apply the already-saved style choice to the running app.
     fn finish_map_style(
         &mut self,
-        location: Option<String>,
         sheet: Option<Arc<crate::style::Stylesheet>>,
         cx: &mut Context<Self>,
     ) {
-        self.app_settings.active_map_style = location;
-        self.save_settings();
         crate::style::custom::set_active(sheet);
         cx.emit(SettingsEvent::MapStyleChanged);
         cx.notify();
@@ -320,22 +312,23 @@ impl SettingsWindow {
 
     /// Forget the active custom style and go back to the built-in one.
     fn remove_active_map_style(&mut self, cx: &mut Context<Self>) {
-        if let Some(active) = self.app_settings.active_map_style.clone() {
-            self.app_settings.map_styles.retain(|s| *s != active);
-        }
+        self.commit(|s| {
+            if let Some(active) = s.active_map_style.take() {
+                s.map_styles.retain(|l| *l != active);
+            }
+        });
         self.map_style_error = None;
-        self.finish_map_style(None, None, cx);
+        self.finish_map_style(None, cx);
     }
 
     fn set_theme(&mut self, theme: ThemePreference, cx: &mut Context<Self>) {
         crate::appearance::set_preference(theme, true, cx);
-        self.app_settings.theme = theme;
+        self.app_settings = settings_store::snapshot();
         cx.notify();
     }
 
     fn set_autosave(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.app_settings.autosave = on;
-        self.save_settings();
+        self.commit(|s| s.autosave = on);
         cx.notify();
     }
 
@@ -343,33 +336,31 @@ impl SettingsWindow {
     /// the main window reads on every render) and the windows are repainted,
     /// so the card reappears at once when no data layer is open.
     fn set_show_welcome(&mut self, show: bool, cx: &mut Context<Self>) {
-        settings_store::set_welcome_dismissed(!show, true);
-        self.app_settings.welcome_dismissed = !show;
+        self.commit(|s| s.welcome_dismissed = !show);
         cx.refresh_windows();
         cx.notify();
     }
 
     fn set_text_size_preset(&mut self, preset: TextSizePreset, cx: &mut Context<Self>) {
-        self.app_settings.text_size_preset = preset;
-        self.save_settings();
+        self.commit(|s| s.text_size_preset = preset);
         cx.notify();
     }
 
     fn set_language(&mut self, language: Option<String>, cx: &mut Context<Self>) {
-        self.app_settings.language = language;
-        self.save_settings();
+        self.commit(|s| s.language = language);
         cx.notify();
     }
 
     fn save_client_id(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
         let client_id = self.client_id_input.read(cx).value().trim().to_string();
-        if client_id.is_empty() {
-            self.app_settings.client_ids.remove(&oauth_base);
-        } else {
-            self.app_settings.client_ids.insert(oauth_base, client_id);
-        }
-        self.save_settings();
+        self.commit(|s| {
+            if client_id.is_empty() {
+                s.client_ids.remove(&oauth_base);
+            } else {
+                s.client_ids.insert(oauth_base, client_id);
+            }
+        });
         cx.notify();
     }
 
@@ -377,14 +368,13 @@ impl SettingsWindow {
     fn save_fotoshi_key(&mut self, cx: &mut Context<Self>) {
         let raw = self.edit_fotoshi_key.read(cx).value().to_string();
         settings_store::set_fotoshi_api_key(&raw, true);
-        self.app_settings.fotoshi_api_key = raw.trim().to_string();
+        self.app_settings = settings_store::snapshot();
         cx.notify();
     }
 
     /// Turn the per-feature Fotoshi lookup on or off.
     fn set_fotoshi_lookup(&mut self, on: bool, cx: &mut Context<Self>) {
-        settings_store::set_fotoshi_lookup_selected(on, true);
-        self.app_settings.fotoshi_lookup_selected = on;
+        self.commit(|s| s.fotoshi_lookup_selected = on);
         cx.notify();
     }
 
@@ -392,7 +382,7 @@ impl SettingsWindow {
     fn save_mapillary_token(&mut self, cx: &mut Context<Self>) {
         let raw = self.edit_mapillary_token.read(cx).value().to_string();
         settings_store::set_mapillary_token(&raw, true);
-        self.app_settings.mapillary_token = raw.trim().to_string();
+        self.app_settings = settings_store::snapshot();
         cx.notify();
     }
 
@@ -403,7 +393,7 @@ impl SettingsWindow {
             Some(metres) => {
                 self.simplify_tolerance_error = None;
                 settings_store::set_simplify_tolerance(metres, true);
-                self.app_settings.simplify_tolerance_m = metres;
+                self.app_settings = settings_store::snapshot();
             }
             None => {
                 self.simplify_tolerance_error =
@@ -418,8 +408,7 @@ impl SettingsWindow {
         match raw.parse::<u64>() {
             Ok(mb) if mb >= 10 => {
                 self.cache_budget_error = None;
-                self.app_settings.cache_budget_mb = mb;
-                self.save_settings();
+                self.commit(|s| s.cache_budget_mb = mb);
                 crate::tile_cache::set_budget_mb(mb);
             }
             Ok(_) => {
@@ -466,16 +455,16 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        self.app_settings.keybindings.remove(id);
-        self.save_settings();
+        self.commit(|s| {
+            s.keybindings.remove(id);
+        });
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
 
     /// Clear every shortcut override, restoring all ten defaults.
     fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
-        self.app_settings.keybindings.clear();
-        self.save_settings();
+        self.commit(|s| s.keybindings.clear());
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
@@ -517,8 +506,9 @@ impl SettingsWindow {
             return;
         }
 
-        self.app_settings.keybindings.insert(id.to_string(), spec);
-        self.save_settings();
+        self.commit(|s| {
+            s.keybindings.insert(id.to_string(), spec);
+        });
         self.recording = None;
         self.shortcut_error = None;
         cx.emit(SettingsEvent::KeybindingsChanged);
@@ -529,7 +519,7 @@ impl SettingsWindow {
         self.login_state = LoginState::LoggingIn;
         cx.notify();
 
-        let api_base_url = self.app_settings.api_base_url();
+        let api_base_url = Self::acting_base_url(&self.app_settings);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -552,7 +542,7 @@ impl SettingsWindow {
     }
 
     fn logout(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&self.app_settings.api_base_url());
+        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
         auth::logout(&oauth_base);
         self.login_state = LoginState::LoggedOut;
         cx.notify();

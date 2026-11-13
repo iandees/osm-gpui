@@ -6305,10 +6305,9 @@ impl MapViewer {
         if self.side_panel_resize.take().is_none() {
             return;
         }
-        let mut settings = settings_store::snapshot();
-        if settings.side_panel_width != Some(self.side_panel_width) {
-            settings.side_panel_width = Some(self.side_panel_width);
-            settings_store::update_store(settings);
+        let width = Some(self.side_panel_width);
+        if settings_store::snapshot().side_panel_width != width {
+            settings_store::update(true, |s| s.side_panel_width = width);
         }
         cx.notify();
     }
@@ -15758,9 +15757,7 @@ mod autosave_tests {
         };
         let before = mtimes(&probe_paths);
 
-        let mut settings = settings_store::snapshot();
-        settings.welcome_dismissed = true;
-        settings_store::update_store(settings);
+        settings_store::update(true, |s| s.welcome_dismissed = true);
         settings_store::set_welcome_dismissed(true, true);
         settings_store::set_invert_scroll_zoom(true, true);
         custom_imagery_store::update_store(Vec::new());

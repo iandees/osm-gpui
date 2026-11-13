@@ -179,14 +179,19 @@ impl MaxAge {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TraceStyle {
+    #[serde(deserialize_with = "crate::persist::lenient")]
     pub color_by: ColorBy,
+    #[serde(deserialize_with = "crate::persist::lenient")]
     pub color: LineColor,
+    #[serde(deserialize_with = "crate::persist::lenient")]
     pub width: LineWidth,
+    #[serde(deserialize_with = "crate::persist::lenient")]
     pub max_age: MaxAge,
     /// Draw the undated points of private traces (they have no time, so the
     /// age filter cannot apply to them).
     pub show_private: bool,
     /// The speeds the `Speed` gradient spreads over.
+    #[serde(deserialize_with = "crate::persist::lenient")]
     pub speed_range: SpeedRange,
 }
 
