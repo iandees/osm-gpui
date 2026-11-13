@@ -59,6 +59,7 @@ use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAct
 use gpui_component::ActiveTheme;
 use osm_gpui::auth;
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
+use osm_gpui::edit_mode::EditMode;
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
@@ -147,43 +148,50 @@ pub(crate) fn key_bindings_from_settings(
     };
     osm_gpui::keybindings::effective_bindings(settings)
         .into_iter()
-        .filter_map(|(id, spec)| match id {
-            "select_all" => Some(KeyBinding::new(
-                &spec,
-                SelectAll,
-                Some(MAP_VIEWER_KEY_CONTEXT),
-            )),
-            "find" => Some(KeyBinding::new(&spec, Find, Some(MAP_VIEWER_KEY_CONTEXT))),
-            "show_history" => Some(KeyBinding::new(
-                &spec,
-                history_actions::ShowObjectHistory,
-                Some(MAP_VIEWER_KEY_CONTEXT),
-            )),
-            // Copy/Paste Tags run the same selection actions as the menus.
-            // Scoped to the map like Select All, so they never steal the
-            // keys from a focused text input.
-            "copy_tags" | "paste_tags" | "copy_features" | "paste_features"
-            | "duplicate_features" => Some(KeyBinding::new(
-                &spec,
-                RunSelectionAction { id: id.into() },
-                Some(MAP_VIEWER_KEY_CONTEXT),
-            )),
-            "zoom_in" => Some(KeyBinding::new(&spec, ZoomIn, None)),
-            "zoom_out" => Some(KeyBinding::new(&spec, ZoomOut, None)),
-            "zoom_to_data" => Some(KeyBinding::new(&spec, ZoomToData, None)),
-            "zoom_to_selection" => Some(KeyBinding::new(&spec, ZoomToSelection, None)),
-            "open_settings" => Some(KeyBinding::new(&spec, OpenSettings, None)),
-            "quit" => Some(KeyBinding::new(&spec, Quit, None)),
-            "open_osm_file" => Some(KeyBinding::new(&spec, OpenOsmFile, None)),
-            "download_osm" => Some(KeyBinding::new(&spec, DownloadFromOsm, None)),
-            "upload_osm" => Some(KeyBinding::new(&spec, UploadToOsm, None)),
-            "export_osm_file" => Some(KeyBinding::new(&spec, ExportOsmFile, None)),
-            "undo" => Some(KeyBinding::new(&spec, Undo, Some(MAP_VIEWER_KEY_CONTEXT))),
-            "redo" => Some(KeyBinding::new(&spec, Redo, Some(MAP_VIEWER_KEY_CONTEXT))),
-            _ => None,
-        })
+        .filter_map(|(id, spec)| key_binding_for(id, &spec))
         .chain(fixed)
         .collect()
+}
+
+/// The live binding for the modifier shortcut `id`, or `None` for the
+/// bare-key categories, which the map canvas's key handler matches instead.
+fn key_binding_for(id: &'static str, spec: &str) -> Option<KeyBinding> {
+    match id {
+        "select_all" => Some(KeyBinding::new(
+            spec,
+            SelectAll,
+            Some(MAP_VIEWER_KEY_CONTEXT),
+        )),
+        "find" => Some(KeyBinding::new(spec, Find, Some(MAP_VIEWER_KEY_CONTEXT))),
+        "show_history" => Some(KeyBinding::new(
+            spec,
+            history_actions::ShowObjectHistory,
+            Some(MAP_VIEWER_KEY_CONTEXT),
+        )),
+        // Copy/Paste Tags run the same selection actions as the menus.
+        // Scoped to the map like Select All, so they never steal the
+        // keys from a focused text input.
+        "copy_tags" | "paste_tags" | "copy_features" | "paste_features" | "duplicate_features" => {
+            Some(KeyBinding::new(
+                spec,
+                RunSelectionAction { id: id.into() },
+                Some(MAP_VIEWER_KEY_CONTEXT),
+            ))
+        }
+        "zoom_in" => Some(KeyBinding::new(spec, ZoomIn, None)),
+        "zoom_out" => Some(KeyBinding::new(spec, ZoomOut, None)),
+        "zoom_to_data" => Some(KeyBinding::new(spec, ZoomToData, None)),
+        "zoom_to_selection" => Some(KeyBinding::new(spec, ZoomToSelection, None)),
+        "open_settings" => Some(KeyBinding::new(spec, OpenSettings, None)),
+        "quit" => Some(KeyBinding::new(spec, Quit, None)),
+        "open_osm_file" => Some(KeyBinding::new(spec, OpenOsmFile, None)),
+        "download_osm" => Some(KeyBinding::new(spec, DownloadFromOsm, None)),
+        "upload_osm" => Some(KeyBinding::new(spec, UploadToOsm, None)),
+        "export_osm_file" => Some(KeyBinding::new(spec, ExportOsmFile, None)),
+        "undo" => Some(KeyBinding::new(spec, Undo, Some(MAP_VIEWER_KEY_CONTEXT))),
+        "redo" => Some(KeyBinding::new(spec, Redo, Some(MAP_VIEWER_KEY_CONTEXT))),
+        _ => None,
+    }
 }
 
 /// Action for adding an imagery layer from the ELI by id.
@@ -245,38 +253,12 @@ struct RunSelectionAction {
     id: SharedString,
 }
 
-/// The current map-interaction mode. `Select` is today's existing click/
-/// drag/box-select behavior; the others place new geometry (see
-/// docs/superpowers/specs/2026-07-07-mode-selector-design.md).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EditMode {
-    Select,
-    Add,
-    Building,
-    Extrude,
-    Arc,
-    Improve,
-}
-
 /// Action to switch the current `EditMode`.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = mode)]
 #[serde(deny_unknown_fields)]
 struct SetMode {
-    mode: EditModeAction,
-}
-
-/// `EditMode` isn't itself `Deserialize`/`JsonSchema` (gpui's `Action` derive
-/// requires both on every field); this mirrors it 1:1 purely so `SetMode`
-/// can carry a mode value through the action-dispatch system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
-enum EditModeAction {
-    Select,
-    Add,
-    Building,
-    Extrude,
-    Arc,
-    Improve,
+    mode: EditMode,
 }
 
 /// Undo of a node attached to an existing way's end: pull `node_id` out of
@@ -295,19 +277,6 @@ fn detach_end_node(
     };
     if let Some(idx) = idx {
         editable.remove_node_from_way(way_id, idx);
-    }
-}
-
-impl From<EditModeAction> for EditMode {
-    fn from(a: EditModeAction) -> Self {
-        match a {
-            EditModeAction::Select => EditMode::Select,
-            EditModeAction::Add => EditMode::Add,
-            EditModeAction::Building => EditMode::Building,
-            EditModeAction::Extrude => EditMode::Extrude,
-            EditModeAction::Arc => EditMode::Arc,
-            EditModeAction::Improve => EditMode::Improve,
-        }
     }
 }
 
@@ -1605,11 +1574,8 @@ impl MapViewer {
         let was_active = self.active_layer == Some(id);
         if was_active {
             self.active_layer = None;
-            // Add/Building progress is relative to the active layer.
-            self.add_progress = None;
-            self.building_progress = None;
-            self.arc_progress = None;
-            self.building_press = None;
+            // Mode progress is relative to the active layer.
+            self.reset_mode_progress();
         }
         if self.building_reference.is_some_and(|r| r.layer_id == id) {
             self.building_reference = None;
@@ -1714,7 +1680,7 @@ impl MapViewer {
     /// handler is added here as a no-op placeholder for those clears and
     /// extended in each later task).
     fn on_set_mode(&mut self, action: &SetMode, window: &mut Window, cx: &mut Context<Self>) {
-        let mode: EditMode = action.mode.into();
+        let mode = action.mode;
         // The drawing modes need a layer to write into. The toolbar buttons
         // are disabled in that state; this covers the keyboard and menu paths.
         if mode != EditMode::Select && self.active_layer.is_none() {
@@ -1731,16 +1697,25 @@ impl MapViewer {
             EditMode::Building => self.squared_selection_reference(),
             _ => None,
         };
-        self.building_press = None;
         self.mode = mode;
         self.hovered = None;
         self.clear_vertex_preview();
-        self.add_progress = None;
-        self.building_progress = None;
-        self.arc_progress = None;
-        self.extrude_drag = None;
+        self.reset_mode_progress();
         self.cancel_rotate();
         cx.notify();
+    }
+
+    /// Discard every mode's half-finished gesture without committing it.
+    /// Every path that leaves a mode or invalidates the layer the gesture
+    /// refers to calls this, so a mode's state can't survive its mode.
+    /// `building_reference` is not progress: it outlives a Building session's
+    /// gestures and is managed by whoever changes the mode.
+    pub(crate) fn reset_mode_progress(&mut self) {
+        self.add_progress = None;
+        self.building_progress = None;
+        self.building_press = None;
+        self.arc_progress = None;
+        self.extrude_drag = None;
     }
 
     /// If the selection is exactly one closed, squared way, the reference a
@@ -3209,11 +3184,8 @@ impl MapViewer {
         self.mode = EditMode::Add;
         self.hovered = None;
         self.clear_vertex_preview();
-        self.building_press = None;
-        self.building_progress = None;
-        self.arc_progress = None;
+        self.reset_mode_progress();
         self.building_reference = None;
-        self.extrude_drag = None;
         self.add_progress = Some(AddProgress {
             way_id: Some(from.way_id),
             last_node_id: from.from_node,
@@ -7927,66 +7899,14 @@ impl Render for MapViewer {
                             // than as global key bindings so they only fire
                             // while the map area has focus (see the comment
                             // by `cx.bind_keys` in `main()`).
-                            if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_select")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Select,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_add")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Add,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_building")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Building,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_extrude")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Extrude,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_arc")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Arc,
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else if key
-                                == osm_gpui::keybindings::effective_spec(&settings, "mode_improve")
-                            {
-                                this.on_set_mode(
-                                    &SetMode {
-                                        mode: EditModeAction::Improve,
-                                    },
-                                    window,
-                                    cx,
-                                );
+                            let key_mode = EditMode::ALL.into_iter().find(|m| {
+                                key == osm_gpui::keybindings::effective_spec(
+                                    &settings,
+                                    m.shortcut_id(),
+                                )
+                            });
+                            if let Some(mode) = key_mode {
+                                this.on_set_mode(&SetMode { mode }, window, cx);
                             } else if let Some(action) =
                                 selection_actions::find_by_key(&settings, key)
                             {
@@ -11700,6 +11620,34 @@ mod tests {
         // The functional shortcuts are unaffected.
         assert!(has(&other, |a| a.as_any().is::<Quit>()));
         assert!(has(&other, |a| a.as_any().is::<OpenSettings>()));
+    }
+
+    /// A shortcut listed in Settings must do something: modifier shortcuts get
+    /// a `KeyBinding`; only the bare-key categories are matched by the map's
+    /// key handler instead.
+    #[test]
+    fn every_listed_shortcut_is_bound_or_handled_as_a_bare_key() {
+        for def in osm_gpui::keybindings::SHORTCUTS {
+            let bound = key_binding_for(def.id, def.default_spec).is_some();
+            if def.category.is_bare_key_category() {
+                assert!(
+                    !bound,
+                    "{} is a bare key handled by the map but also has a KeyBinding",
+                    def.id
+                );
+                assert!(
+                    osm_gpui::keybindings::is_bare_key(def.default_spec),
+                    "{} is in a bare-key category but its default has a modifier",
+                    def.id
+                );
+            } else {
+                assert!(
+                    bound,
+                    "shortcut `{}` is listed in Settings but key_binding_for binds nothing to it",
+                    def.id
+                );
+            }
+        }
     }
 
     #[gpui::test]

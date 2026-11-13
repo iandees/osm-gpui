@@ -12,9 +12,10 @@ mod changeset_op_tests;
 #[cfg(test)]
 mod upload_op_tests;
 
+pub use crate::edit_mode::EditMode;
 pub use note_ops::{NoteCheck, NoteOp};
 pub use op::{
-    AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods, EditMode,
+    AutosaveCmd, Check, Chord, ConflictChoice, ConflictKindName, DialogExpect, DragMods,
     FeatureKind, FindingTarget, HistoryCmd, LayerKind, Mods, MouseButton, NativeAppearanceWant, Op,
     PanelSection, Point2, PointerKind, SelectionKind, SnapExpect, Step, UploadDialogCmd, Where,
 };

@@ -1,8 +1,8 @@
 //! Menu bar construction and the free-function menu action handlers.
 
 use gpui::{
-    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SharedString,
-    SystemMenuType, WindowOptions,
+    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType,
+    WindowOptions,
 };
 
 use gpui_component::menu::AppMenuBar;
@@ -22,7 +22,7 @@ use crate::street_imagery_ui::{
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditModeAction, ExportOsmFile, Find, HideApp, HideOtherApps,
+    DeselectAll, DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
     RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
     ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
@@ -751,9 +751,6 @@ fn build_menus(
         }
     }
 
-    let mode_item =
-        |label: SharedString, mode: EditModeAction| MenuItem::action(label, SetMode { mode });
-
     // Off macOS there is no app-name menu (see `build_menus`): Quit goes at
     // the end of File, Settings at the end of Edit, About at the end of Help.
     let mut file_items = vec![
@@ -898,14 +895,10 @@ fn build_menus(
         },
         Menu {
             name: tr!("menu.mode.title"),
-            items: vec![
-                mode_item(tr!("mode.select.name"), EditModeAction::Select),
-                mode_item(tr!("mode.add.name"), EditModeAction::Add),
-                mode_item(tr!("mode.building.name"), EditModeAction::Building),
-                mode_item(tr!("mode.extrude.name"), EditModeAction::Extrude),
-                mode_item(tr!("mode.arc.name"), EditModeAction::Arc),
-                mode_item(tr!("mode.improve.name"), EditModeAction::Improve),
-            ],
+            items: EditMode::ALL
+                .into_iter()
+                .map(|mode| MenuItem::action(mode.name(), SetMode { mode }))
+                .collect(),
             disabled: false,
         },
         Menu {
