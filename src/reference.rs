@@ -20,6 +20,10 @@ pub const CHUNK_VERTICES: usize = 256;
 pub enum Format {
     Gpx,
     GeoJson,
+    /// Public GPS traces downloaded from the OSM API (`/api/0.6/trackpoints`,
+    /// see `gps_traces`): timed segments are lines, the points of private
+    /// traces (sorted by position, so not a path) are dots.
+    OsmTraces,
 }
 
 impl Format {
@@ -28,6 +32,7 @@ impl Format {
         match self {
             Format::Gpx => "GPX",
             Format::GeoJson => "GeoJSON",
+            Format::OsmTraces => "GPS",
         }
     }
 }
@@ -38,6 +43,9 @@ pub enum FeatureKind {
     Track,
     Route,
     Waypoint,
+    /// Downloaded GPS points that are not a path (private traces, which the
+    /// OSM API sends sorted by position and without times).
+    TracePoints,
     /// A GeoJSON feature or bare geometry.
     Geo,
 }
@@ -136,6 +144,86 @@ pub struct Part {
     pub feature: u32,
     pub bbox: MercBox,
     pub pts: Vec<[f64; 2]>,
+    /// For a timed GPS trace: what it is coloured and filtered by.
+    pub track: Option<Box<TrackAttrs>>,
+}
+
+/// Per-vertex measures of a timed trace. The values at vertex `i` are those
+/// of the segment from `i` to `i + 1` (the last vertex repeats the one before),
+/// NaN where they cannot be known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackAttrs {
+    /// The trace's first time (Unix seconds), the same for all its parts.
+    pub start: Option<i64>,
+    /// Metres per second.
+    pub speed: Vec<f32>,
+    /// Degrees clockwise from north.
+    pub bearing: Vec<f32>,
+}
+
+/// Speeds are measured over at least this many seconds: the API gives times
+/// to the second, often with several points in the same second, and GPS
+/// positions jitter.
+const SPEED_MIN_SECONDS: i64 = 4;
+/// ... and over at most this many segments, whatever the times say.
+const SPEED_MAX_SPAN: usize = 64;
+
+/// `TrackAttrs` (without the chunking) for a line of `(lon, lat)` positions,
+/// their Web Mercator projections `merc` and their times.
+fn track_measures(
+    lon_lat: &[(f64, f64)],
+    merc: &[[f64; 2]],
+    times: &[Option<i64>],
+) -> (Vec<f32>, Vec<f32>) {
+    let n = lon_lat.len();
+    // Metres along the line up to each vertex.
+    let mut along = Vec::with_capacity(n);
+    let mut total = 0.0;
+    for (i, &(lon, lat)) in lon_lat.iter().enumerate() {
+        if i > 0 {
+            let (plon, plat) = lon_lat[i - 1];
+            total += crate::imagery_offset::distance_m(plat, plon, lat, lon);
+        }
+        along.push(total);
+    }
+    let mut speed = Vec::with_capacity(n);
+    let mut bearing = Vec::with_capacity(n);
+    for i in 0..n.saturating_sub(1) {
+        // Widen the window around segment i until it spans enough time.
+        let (mut a, mut b) = (i, i + 1);
+        let span = |a: usize, b: usize| match (times[a], times[b]) {
+            (Some(ta), Some(tb)) => Some(tb - ta),
+            _ => None,
+        };
+        // Grow forwards and backwards in turn, so the window stays centred.
+        let mut forward = true;
+        while span(a, b).is_some_and(|s| s < SPEED_MIN_SECONDS) && b - a < SPEED_MAX_SPAN {
+            if (forward || a == 0) && b + 1 < n {
+                b += 1;
+            } else if a > 0 {
+                a -= 1;
+            } else {
+                break;
+            }
+            forward = !forward;
+        }
+        speed.push(match span(a, b) {
+            Some(s) if s > 0 => ((along[b] - along[a]) / s as f64) as f32,
+            _ => f32::NAN,
+        });
+        // Mercator keeps angles, so the bearing is read off it directly.
+        let (dx, dy) = (merc[b][0] - merc[a][0], merc[b][1] - merc[a][1]);
+        bearing.push(if dx == 0.0 && dy == 0.0 {
+            f32::NAN
+        } else {
+            dx.atan2(dy).to_degrees().rem_euclid(360.0) as f32
+        });
+    }
+    if n >= 2 {
+        speed.push(speed[n - 2]);
+        bearing.push(bearing[n - 2]);
+    }
+    (speed, bearing)
 }
 
 /// A point feature.
@@ -354,6 +442,28 @@ impl Builder {
     /// Add a polyline of `(lon, lat)` positions. Fewer than two positions
     /// draw nothing (but are still checked).
     pub fn line(&mut self, feature: u32, lon_lat: &[(f64, f64)]) -> Result<(), RefError> {
+        self.add_line(feature, lon_lat, None)
+    }
+
+    /// `line` for a GPS trace: `times` (one per position, Unix seconds) give
+    /// each segment a speed, and `start` is the whole trace's first time.
+    pub fn line_timed(
+        &mut self,
+        feature: u32,
+        lon_lat: &[(f64, f64)],
+        times: &[Option<i64>],
+        start: Option<i64>,
+    ) -> Result<(), RefError> {
+        debug_assert_eq!(lon_lat.len(), times.len());
+        self.add_line(feature, lon_lat, Some((times, start)))
+    }
+
+    fn add_line(
+        &mut self,
+        feature: u32,
+        lon_lat: &[(f64, f64)],
+        timed: Option<(&[Option<i64>], Option<i64>)>,
+    ) -> Result<(), RefError> {
         let mut merc: Vec<[f64; 2]> = Vec::with_capacity(lon_lat.len());
         for &(lon, lat) in lon_lat {
             let (x, y) = self.accept(lon, lat)?;
@@ -362,6 +472,10 @@ impl Builder {
         if merc.len() < 2 {
             return Ok(());
         }
+        let measures = timed.map(|(times, start)| {
+            let (speed, bearing) = track_measures(lon_lat, &merc, times);
+            (start, speed, bearing)
+        });
         let mut start = 0;
         while start + 1 < merc.len() {
             let end = (start + CHUNK_VERTICES).min(merc.len());
@@ -370,7 +484,19 @@ impl Builder {
             for p in &pts {
                 bbox.extend(p[0], p[1]);
             }
-            self.parts.push(Part { feature, bbox, pts });
+            let track = measures.as_ref().map(|(t0, speed, bearing)| {
+                Box::new(TrackAttrs {
+                    start: *t0,
+                    speed: speed[start..end].to_vec(),
+                    bearing: bearing[start..end].to_vec(),
+                })
+            });
+            self.parts.push(Part {
+                feature,
+                bbox,
+                pts,
+                track,
+            });
             // The next chunk starts at this one's last vertex: no gap.
             start = end - 1;
         }
@@ -443,6 +569,7 @@ pub fn load_file(path: &std::path::Path, format: Format) -> Result<ReferenceData
     match format {
         Format::Gpx => crate::gpx::parse(&bytes),
         Format::GeoJson => crate::geojson::parse(&bytes),
+        Format::OsmTraces => crate::gpx::parse_trackpoints(&[bytes.as_slice()]),
     }
 }
 
@@ -466,6 +593,7 @@ pub fn describe(feature: &RefFeature) -> String {
         FeatureKind::Track => tr!("reference.kind.track").to_string(),
         FeatureKind::Route => tr!("reference.kind.route").to_string(),
         FeatureKind::Waypoint => tr!("reference.kind.waypoint").to_string(),
+        FeatureKind::TracePoints => tr!("reference.kind.trace_points").to_string(),
         FeatureKind::Geo => feature.geometry.to_string(),
     };
     let title = match &feature.name {

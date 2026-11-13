@@ -1311,6 +1311,11 @@ impl MapViewer {
                                     l.as_any().downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
                                 })
                                 .map(|l| l.format().tag());
+                            let trace_style = self
+                                .layer_manager
+                                .layers()
+                                .get(index)
+                                .and_then(|l| crate::gps_traces_ui::trace_style_of(l.as_ref()));
 
                             row.gap_2()
                                 .child(eye)
@@ -1354,8 +1359,14 @@ impl MapViewer {
                                             .child(tr!("panel.layers.editing")),
                                     )
                                 })
-                                .context_menu(move |menu, _window, _cx| {
+                                .context_menu(move |menu, window, cx| {
                                     let mut menu = menu;
+                                    if let Some(style) = trace_style {
+                                        menu = crate::gps_traces_ui::trace_style_menu(
+                                            menu, index, style, window, cx,
+                                        )
+                                        .separator();
+                                    }
                                     if is_osm && !is_active {
                                         menu = menu.menu(
                                             tr!("panel.layers.set_active"),

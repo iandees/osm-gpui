@@ -27,6 +27,7 @@ mod clipboard_actions;
 #[cfg(test)]
 mod edge_case_tests;
 mod fields_section;
+mod gps_traces_ui;
 mod history_actions;
 mod imagery_offset_ui;
 #[cfg(test)]
@@ -1075,6 +1076,8 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// Downloaded OSM GPS traces (see `gps_traces_ui`).
+    gps_traces: gps_traces_ui::GpsTracesState,
     /// Street-level photos from Mapillary and Fotoshi (see `street_imagery_ui`).
     imagery: street_imagery_ui::ImageryState,
 }
@@ -1350,6 +1353,7 @@ impl MapViewer {
             context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
+            gps_traces: Default::default(),
             imagery: Default::default(),
         }
     }
@@ -8550,9 +8554,9 @@ impl Render for MapViewer {
                             div().into_any_element()
                         }
                     })
-                    .children(self.render_welcome(cx))
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
+                    .children(self.render_gps_traces_legend(cx))
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -8611,7 +8615,9 @@ impl Render for MapViewer {
                                 ))
                                 .into_any_element()
                         }
-                    }),
+                    })
+                    // Last, so it paints over every other map overlay.
+                    .children(self.render_welcome(cx)),
             )
             .child(
                 // Right panel with layer controls
@@ -8681,6 +8687,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_zoom_to_data))
             .on_action(cx.listener(Self::on_zoom_to_selection))
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
+            .on_action(cx.listener(Self::on_download_gps_traces))
             .on_action(cx.listener(Self::on_toggle_notes))
             .on_action(cx.listener(Self::on_refresh_notes))
             .on_action(cx.listener(Self::on_toggle_mapillary))
@@ -8695,6 +8702,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
             .on_action(cx.listener(Self::on_adjust_imagery_offset))
             .on_action(cx.listener(Self::on_adjust_layer_imagery_offset))
+            .on_action(cx.listener(Self::on_set_gps_trace_style))
             .on_action(cx.listener(Self::on_reset_imagery_offset))
             .on_action(cx.listener(Self::on_reset_layer_imagery_offset))
             .on_action(cx.listener(Self::on_set_imagery_offset))

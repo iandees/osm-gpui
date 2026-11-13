@@ -174,6 +174,10 @@ pub struct AppSettings {
     /// in older files, meaning the default placement.
     #[serde(default)]
     pub window_bounds: Option<WindowRect>,
+    /// How downloaded GPS traces draw (colours, width, age filter). Missing
+    /// in older files, meaning the defaults.
+    #[serde(default)]
+    pub gps_trace_style: crate::trace_style::TraceStyle,
     /// Mapillary access token (a client token from the Mapillary developer
     /// dashboard), needed to show Mapillary street imagery. Empty when unset.
     #[serde(default)]
@@ -296,6 +300,7 @@ impl Default for AppSettings {
             active_map_style: None,
             last_map_view: None,
             window_bounds: None,
+            gps_trace_style: Default::default(),
             mapillary_token: String::new(),
         }
     }
@@ -430,6 +435,18 @@ pub fn set_last_map_view(view: MapView, persist: bool) {
 pub fn set_window_bounds(rect: WindowRect, persist: bool) {
     let mut settings = snapshot();
     settings.window_bounds = Some(rect);
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the GPS trace style, on top of the store's current settings so
+/// nothing else is touched. Written to disk when `persist` is true.
+pub fn set_gps_trace_style(style: crate::trace_style::TraceStyle, persist: bool) {
+    let mut settings = snapshot();
+    settings.gps_trace_style = style;
     if persist {
         update_store(settings);
     } else {
@@ -635,6 +652,10 @@ mod tests {
                 width: 900.0,
                 height: 700.0,
             }),
+            gps_trace_style: crate::trace_style::TraceStyle {
+                color_by: crate::trace_style::ColorBy::Speed,
+                ..Default::default()
+            },
             mapillary_token: "MLY|123|abc".into(),
         };
         save_to(&path, &settings).unwrap();
@@ -852,6 +873,7 @@ mod tests {
             active_map_style: None,
             last_map_view: None,
             window_bounds: None,
+            gps_trace_style: Default::default(),
             mapillary_token: String::new(),
         };
         save_to(&path, &settings).unwrap();

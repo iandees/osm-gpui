@@ -70,6 +70,12 @@ pub trait MapLayer: Send + Sync {
     /// instead — `is_some()` there already answers that without a downcast.
     fn as_any(&self) -> &dyn std::any::Any;
 
+    /// `as_any` for changing a layer's own settings (a reference layer's
+    /// trace style). `None` for layers that offer nothing to change.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
 
@@ -599,6 +605,13 @@ impl LayerManager {
             return None;
         }
         Some(self.layers.remove(index))
+    }
+
+    /// Put `layer` where the layer `id` is, keeping its place in the list.
+    /// Returns the old layer, or `None` (and drops `layer`) if `id` is gone.
+    pub fn replace(&mut self, id: LayerId, layer: Box<dyn MapLayer>) -> Option<Box<dyn MapLayer>> {
+        let slot = self.layers.iter_mut().find(|l| l.id() == id)?;
+        Some(std::mem::replace(slot, layer))
     }
 
     /// Move the layer at `from` to position `to`. No-op if either index is

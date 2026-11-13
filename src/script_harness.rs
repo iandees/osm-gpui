@@ -1003,7 +1003,7 @@ impl MapViewer {
                     use osm_gpui::reference::Format;
                     if let Some(r) = layer.as_any().downcast_ref::<ReferenceLayer>() {
                         match r.format() {
-                            Format::Gpx => script::LayerKind::Gpx,
+                            Format::Gpx | Format::OsmTraces => script::LayerKind::Gpx,
                             Format::GeoJson => script::LayerKind::GeoJson,
                         }
                     } else if layer.as_editable().is_some() {

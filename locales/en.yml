@@ -1090,6 +1090,74 @@ reference:
     track: "Track"
     route: "Route"
     waypoint: "Waypoint"
+    trace_points: "GPS points (private traces)"
+
+# Public GPS traces downloaded from OSM (File > Download GPS Traces).
+gps_traces:
+  layer_name: "GPS Traces"
+  menu:
+    download: "Download GPS Traces"
+  state:
+    loading: "Downloading GPS traces…"
+    progress:
+      one: "Downloading GPS traces… %{count} point so far"
+      other: "Downloading GPS traces… %{count} points so far"
+    busy: "GPS traces are already downloading."
+    loaded:
+      one: "%{count} GPS point downloaded"
+      other: "%{count} GPS points downloaded"
+    truncated: "Downloaded the first %{count} GPS points; zoom in to see the rest."
+    none: "No public GPS traces in this area."
+    too_large: "The area is too large for GPS traces. Zoom in."
+    failed: "Could not download GPS traces: %{detail}"
+  error:
+    parse: "Unreadable answer from the GPS traces server: %{detail}"
+  style:
+    color_by:
+      title: "Color By"
+      single: "Single Color"
+      speed: "Speed"
+      direction: "Direction"
+      age: "Age"
+    color:
+      title: "Line Color"
+      cyan: "Cyan"
+      magenta: "Magenta"
+      orange: "Orange"
+      yellow: "Yellow"
+      black: "Black"
+    width:
+      title: "Line Width"
+      thin: "Thin"
+      medium: "Medium"
+      thick: "Thick"
+    age:
+      title: "Show Traces From"
+      all: "All Time"
+      months6: "Last 6 Months"
+      year1: "Last Year"
+      years: "Last %{n} Years"
+    speed_range:
+      title: "Speed Range"
+      walking: "Walking (0–%{max} km/h)"
+      cycling: "Cycling (0–%{max} km/h)"
+      town: "Town (0–%{max} km/h)"
+      highway: "Highway (0–%{max} km/h)"
+    show_private: "Show Undated Private Points"
+    reset: "Reset Trace Style"
+  legend:
+    title: "GPS traces by %{by}"
+    unknown: "Unknown"
+    kmh_max: "%{n}+ km/h"
+    years:
+      below: "< %{n} year"
+      range: "%{a}–%{b} years"
+      above: "≥ %{n} years"
+    dir:
+      n: "N"
+      e: "E"
+      s: "S"
+      w: "W"
 
 error:
   network: "Network error: %{detail}"

@@ -15,6 +15,7 @@ use gpui::*;
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
 use crate::layers::{LayerId, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
+use crate::trace_style::{ColorBy, TraceStyle};
 use crate::viewport::Viewport;
 
 /// Colours, as `0xRRGGBBAA`. A pale casing under a saturated core reads on the
@@ -44,11 +45,74 @@ pub const HIT_TOLERANCE_PX: f32 = 6.0;
 /// Sides of the polygon a marker is drawn as.
 const MARKER_SIDES: usize = 8;
 
+/// Downloaded OSM traces: many overlap, so no casing and a translucent core
+/// (a well-travelled path builds up a darker line), and small plain dots.
+/// Colours, width and filters come from the layer's `TraceStyle`.
+const TRACES_DOT_SIDES: usize = 4;
+const TRACES_MAX_DOTS: usize = 30_000;
+
+/// How one format draws.
+struct Style {
+    /// One colour per line class (see `TraceStyle::class`); files have one.
+    line: Vec<u32>,
+    /// The colour of markers.
+    marker: u32,
+    line_hw: f32,
+    /// `None` draws no casing.
+    casing_hw: Option<f32>,
+    marker_radius: f32,
+    /// `None` draws no halo.
+    halo_radius: Option<f32>,
+    marker_sides: usize,
+    max_markers: usize,
+}
+
+impl Style {
+    fn of(format: Format, traces: &TraceStyle) -> Style {
+        let file = |line| Style {
+            line: vec![line],
+            marker: line,
+            line_hw: LINE_HW,
+            casing_hw: Some(CASING_HW),
+            marker_radius: MARKER_RADIUS,
+            halo_radius: Some(HALO_RADIUS),
+            marker_sides: MARKER_SIDES,
+            max_markers: MAX_MARKERS,
+        };
+        match format {
+            Format::Gpx => file(GPX_LINE),
+            Format::GeoJson => file(GEOJSON_LINE),
+            Format::OsmTraces => Style {
+                line: traces.palette(),
+                // Private points have no time, speed or direction: they
+                // keep the single colour.
+                marker: TraceStyle {
+                    color_by: ColorBy::Single,
+                    ..*traces
+                }
+                .palette()[0],
+                line_hw: traces.width.half_width(),
+                casing_hw: None,
+                marker_radius: traces.width.dot_radius(),
+                halo_radius: None,
+                marker_sides: TRACES_DOT_SIDES,
+                max_markers: if traces.show_private {
+                    TRACES_MAX_DOTS
+                } else {
+                    0
+                },
+            },
+        }
+    }
+}
+
 pub struct ReferenceLayer {
     id: LayerId,
     name: String,
     visible: bool,
     data: ReferenceData,
+    /// How downloaded GPS traces draw; unused for files.
+    trace_style: TraceStyle,
 }
 
 impl ReferenceLayer {
@@ -58,7 +122,16 @@ impl ReferenceLayer {
             name: name.into(),
             visible: true,
             data,
+            trace_style: TraceStyle::default(),
         }
+    }
+
+    pub fn trace_style(&self) -> &TraceStyle {
+        &self.trace_style
+    }
+
+    pub fn set_trace_style(&mut self, style: TraceStyle) {
+        self.trace_style = style;
     }
 
     pub fn data(&self) -> &ReferenceData {
@@ -92,16 +165,23 @@ impl ReferenceLayer {
             .map(|n| n.lat_lon())
     }
 
-    fn line_color(&self) -> u32 {
-        match self.data.format {
-            Format::Gpx => GPX_LINE,
-            Format::GeoJson => GEOJSON_LINE,
-        }
-    }
-
     /// Cull, project and batch this frame's strokes and markers. Needs no
     /// `Window`, so it can be timed on its own (`examples/reference_bench.rs`).
     pub fn build_scene(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> RefScene {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.build_scene_at(viewport, bounds, now)
+    }
+
+    /// `build_scene` with `now` (Unix seconds) for the age colours and
+    /// filter.
+    pub fn build_scene_at(
+        &self,
+        viewport: &Viewport,
+        bounds: Bounds<Pixels>,
+        now: i64,
+    ) -> RefScene {
         let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let proj = viewport.projector();
         let (ppm, _) = proj.pixels_per_meter();
@@ -114,21 +194,34 @@ impl ReferenceLayer {
             max_y: vmax_y,
         }
         .padded(margin);
+        let traces = &self.trace_style;
+        let style = Style::of(self.data.format, traces);
+        let cutoff = traces.cutoff(now);
+        // Only GPS traces have more than one class.
+        let classed = style.line.len() > 1;
 
         let mut casing = Batch::new();
-        let mut line = Batch::new();
+        let mut lines: Vec<Batch> = style.line.iter().map(|_| Batch::new()).collect();
         let mut halo = Batch::new();
         let mut fill = Batch::new();
 
         let mut polyline = Polyline::default();
         let mut pts: Vec<way_stroke::Pt> = Vec::new();
+        // The class of the segment starting at each kept vertex.
+        let mut classes: Vec<usize> = Vec::new();
         let min_seg2 = MIN_SEGMENT_PX * MIN_SEGMENT_PX;
         for part in self.data.visible_parts(&view) {
+            if let (Some(cutoff), Some(track)) = (cutoff, part.track.as_deref()) {
+                if track.start.is_none_or(|t| t < cutoff) {
+                    continue;
+                }
+            }
             let extent_m =
                 (part.bbox.max_x - part.bbox.min_x).max(part.bbox.max_y - part.bbox.min_y);
             // A chunk under a pixel across still draws as one short segment
             // (first to last vertex), so a zoomed-out track stays unbroken.
             pts.clear();
+            classes.clear();
             let last = part.pts.len() - 1;
             for (i, p) in part.pts.iter().enumerate() {
                 let (x, y) = proj.to_screen(p[0], p[1]);
@@ -143,6 +236,12 @@ impl ReferenceLayer {
                     }
                 }
                 pts.push((x, y));
+                if classed {
+                    classes.push(match part.track.as_deref() {
+                        Some(t) => traces.class(t.speed[i], t.bearing[i], t.start, now),
+                        None => style.line.len() - 1,
+                    });
+                }
             }
             if pts.len() < 2 {
                 continue;
@@ -152,62 +251,84 @@ impl ReferenceLayer {
             } else {
                 way_stroke::Shape::PLAIN
             };
-            polyline.set(pts.iter().copied());
-            polyline.emit_layers(&mut [
-                Some(Layer {
-                    sink: PathSink {
-                        path: &mut casing.path,
-                        bounds: &mut casing.bounds,
-                    },
-                    hw: CASING_HW,
-                    shape,
-                }),
-                Some(Layer {
-                    sink: PathSink {
-                        path: &mut line.path,
-                        bounds: &mut line.bounds,
-                    },
-                    hw: LINE_HW,
-                    shape,
-                }),
-            ]);
+            // Runs of segments of one class, each stroked into its class's
+            // batch; neighbouring runs share their end vertex.
+            let mut from = 0;
+            while from + 1 < pts.len() {
+                let class = if classed { classes[from] } else { 0 };
+                let mut to = from + 1;
+                while to + 1 < pts.len() && (!classed || classes[to] == class) {
+                    to += 1;
+                }
+                let line = &mut lines[class];
+                polyline.set(pts[from..=to].iter().copied());
+                polyline.emit_layers(&mut [
+                    style.casing_hw.map(|hw| Layer {
+                        sink: PathSink {
+                            path: &mut casing.path,
+                            bounds: &mut casing.bounds,
+                        },
+                        hw,
+                        shape,
+                    }),
+                    Some(Layer {
+                        sink: PathSink {
+                            path: &mut line.path,
+                            bounds: &mut line.bounds,
+                        },
+                        hw: style.line_hw,
+                        shape,
+                    }),
+                ]);
+                from = to;
+            }
         }
 
         // Markers: thin out when there are very many in view.
-        let in_view = self.data.visible_markers(&view).count();
-        let stride = in_view.div_ceil(MAX_MARKERS).max(1);
-        for m in self.data.visible_markers(&view).step_by(stride) {
+        let in_view = if style.max_markers == 0 {
+            0
+        } else {
+            self.data.visible_markers(&view).count()
+        };
+        let stride = in_view.div_ceil(style.max_markers.max(1)).max(1);
+        for m in self
+            .data
+            .visible_markers(&view)
+            .take(in_view)
+            .step_by(stride)
+        {
             let (x, y) = proj.to_screen(m.at[0], m.at[1]);
             if !(x.is_finite() && y.is_finite()) {
                 continue;
             }
             let c = (x + ox, y + oy);
-            polygon(
-                &mut PathSink {
-                    path: &mut halo.path,
-                    bounds: &mut halo.bounds,
-                },
-                c,
-                HALO_RADIUS,
-            );
+            if let Some(radius) = style.halo_radius {
+                polygon(
+                    &mut PathSink {
+                        path: &mut halo.path,
+                        bounds: &mut halo.bounds,
+                    },
+                    c,
+                    radius,
+                    style.marker_sides,
+                );
+            }
             polygon(
                 &mut PathSink {
                     path: &mut fill.path,
                     bounds: &mut fill.bounds,
                 },
                 c,
-                MARKER_RADIUS,
+                style.marker_radius,
+                style.marker_sides,
             );
         }
 
-        let color = self.line_color();
         let mut paths = Vec::new();
-        for (rgba, batch) in [
-            (CASING, casing),
-            (color, line),
-            (MARKER_HALO, halo),
-            (color, fill),
-        ] {
+        let batches = std::iter::once((CASING, casing))
+            .chain(style.line.iter().copied().zip(lines))
+            .chain([(MARKER_HALO, halo), (style.marker, fill)]);
+        for (rgba, batch) in batches {
             if let Some(path) = batch.finish() {
                 paths.push((rgba, path));
             }
@@ -216,15 +337,15 @@ impl ReferenceLayer {
     }
 }
 
-/// A filled regular polygon around `c`.
-fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32) {
+/// A filled regular polygon of `sides` sides around `c`.
+fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32, sides: usize) {
     use way_stroke::TriSink;
-    let step = std::f32::consts::TAU / MARKER_SIDES as f32;
+    let step = std::f32::consts::TAU / sides as f32;
     let at = |i: usize| {
         let a = step * i as f32 + step / 2.0;
         (c.0 + radius * a.cos(), c.1 + radius * a.sin())
     };
-    for i in 0..MARKER_SIDES {
+    for i in 0..sides {
         sink.tri(c, at(i), at(i + 1));
     }
 }
@@ -296,6 +417,10 @@ impl MapLayer for ReferenceLayer {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn is_visible(&self) -> bool {
@@ -405,6 +530,96 @@ mod tests {
         // Far away: nothing.
         let (vp, bounds) = view(-30.0, 100.0, 17.0);
         assert_eq!(layer.build_scene(&vp, bounds).path_count(), 0);
+    }
+
+    #[test]
+    fn osm_traces_draw_without_casing_or_halos() {
+        let layer = line_layer(1, Format::OsmTraces);
+        let (vp, bounds) = view(40.0, -74.0, 17.0);
+        let scene = layer.build_scene(&vp, bounds);
+        // line and dot fill only
+        assert_eq!(scene.path_count(), 2);
+    }
+
+    /// A trace walked, then driven through town, then along a fast road
+    /// (10 s between points), recorded at `start`.
+    fn timed_layer(start: i64) -> ReferenceLayer {
+        let mut b = Builder::new(Format::OsmTraces);
+        let f = b.feature(FeatureKind::Track, "", None, vec![]);
+        let pts = [
+            (-74.001, 40.0),
+            (-74.0009, 40.0),
+            (-74.0008, 40.0),
+            (-73.9997, 40.0),
+            (-73.9977, 40.0),
+        ];
+        let times = [0, 10, 20, 30, 40].map(|t| Some(start + t));
+        b.line_timed(f, &pts, &times, Some(start)).unwrap();
+        ReferenceLayer::new(LayerId(1), "GPS", b.finish().unwrap())
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn traces_coloured_by_speed_draw_one_path_per_class_in_view() {
+        let mut layer = timed_layer(NOW - 86_400);
+        let (vp, bounds) = view(40.0, -73.999, 17.0);
+        assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 1);
+        layer.set_trace_style(TraceStyle {
+            color_by: ColorBy::Speed,
+            ..TraceStyle::default()
+        });
+        // walking (< 5 km/h), ~40 km/h, ~60 km/h
+        assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 3);
+        layer.set_trace_style(TraceStyle {
+            color_by: ColorBy::Direction,
+            ..TraceStyle::default()
+        });
+        // All due east.
+        assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 1);
+    }
+
+    #[test]
+    fn thicker_traces_cover_more() {
+        let mut layer = timed_layer(NOW);
+        let (vp, bounds) = view(40.0, -73.999, 17.0);
+        let area = |l: &ReferenceLayer| {
+            let s = l.build_scene_at(&vp, bounds, NOW);
+            let b = s.paths[0].1.bounds;
+            f32::from(b.size.height)
+        };
+        let thin = area(&layer);
+        layer.set_trace_style(TraceStyle {
+            width: crate::trace_style::LineWidth::Thick,
+            ..TraceStyle::default()
+        });
+        assert!(area(&layer) > thin);
+    }
+
+    #[test]
+    fn old_traces_and_private_points_can_be_hidden() {
+        let mut layer = timed_layer(NOW - 2 * 365 * 86_400);
+        let (vp, bounds) = view(40.0, -73.999, 17.0);
+        layer.set_trace_style(TraceStyle {
+            max_age: crate::trace_style::MaxAge::Year1,
+            ..TraceStyle::default()
+        });
+        assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 0);
+        layer.set_trace_style(TraceStyle {
+            max_age: crate::trace_style::MaxAge::Years5,
+            ..TraceStyle::default()
+        });
+        assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 1);
+
+        // Dots: line_layer has one marker.
+        let mut dots = line_layer(1, Format::OsmTraces);
+        let (vp, bounds) = view(40.0, -74.0, 17.0);
+        assert_eq!(dots.build_scene_at(&vp, bounds, NOW).path_count(), 2);
+        dots.set_trace_style(TraceStyle {
+            show_private: false,
+            ..TraceStyle::default()
+        });
+        assert_eq!(dots.build_scene_at(&vp, bounds, NOW).path_count(), 1);
     }
 
     #[test]
