@@ -525,6 +525,15 @@ impl Runner {
             Op::LoadHistoryFile { path } => app
                 .history(crate::script::HistoryCmd::LoadFile(path.into()))
                 .map_err(|e| fail(format!("load_history_file: {e}"))),
+            Op::ShowChangeset { id, dir } => app
+                .history(crate::script::HistoryCmd::Changeset {
+                    id: *id,
+                    dir: dir.into(),
+                })
+                .map_err(|e| fail(format!("show_changeset: {e}"))),
+            Op::ChangesetPart { part } => app
+                .history(crate::script::HistoryCmd::ChangesetPart(part.clone()))
+                .map_err(|e| fail(format!("changeset_part: {e}"))),
             Op::AssertHistoryVersions { count } => app
                 .check(&Check::HistoryVersions(*count))
                 .map_err(|e| fail(format!("assert_history_versions: {e}"))),
@@ -837,6 +846,8 @@ fn describe(op: &Op) -> String {
         Op::DiscardAutosave => "discard_autosave".to_string(),
         Op::Crash => "crash".to_string(),
         Op::ShowHistory => "show_history".to_string(),
+        Op::ChangesetPart { part } => format!("changeset_part {part}"),
+        Op::ShowChangeset { id, dir } => format!("show_changeset {id} {dir}"),
         Op::LoadHistoryFile { path } => format!("load_history_file {}", path),
         Op::AssertHistoryVersions { count } => format!("assert_history_versions {}", count),
         Op::SignIn => "sign_in".to_string(),

@@ -1,0 +1,25 @@
+# Show Changeset: a changeset becomes three layers (changes, before, after).
+# The API answers come from docs/screenshots/fixtures/changeset/ instead of the
+# network. Captures go to out/ (not committed).
+
+window 1200 800
+viewport 40.7120 -74.0060 18
+wait_idle 3s
+
+# Dismiss the welcome card.
+click 742,606
+wait_idle 1s
+
+show_changeset 9001 docs/screenshots/fixtures/changeset
+wait_idle 2s
+changeset_part changes
+wait_idle 1s
+capture out/changeset-01-changes.png
+
+changeset_part before
+wait_idle 1s
+capture out/changeset-02-before.png
+
+changeset_part after
+wait_idle 1s
+capture out/changeset-03-after.png

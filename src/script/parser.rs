@@ -341,6 +341,21 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             }),
             _ => Err(err(line_no, "load_history_file: want PATH")),
         },
+        "show_changeset" => match rest.as_slice() {
+            [id, dir] => Ok(Op::ShowChangeset {
+                id: id
+                    .parse::<i64>()
+                    .map_err(|e| err(line_no, format!("show_changeset: bad id '{id}': {e}")))?,
+                dir: dir.to_string(),
+            }),
+            _ => Err(err(line_no, "show_changeset: want ID DIR")),
+        },
+        "changeset_part" => match rest.as_slice() {
+            [part @ ("changes" | "before" | "after")] => Ok(Op::ChangesetPart {
+                part: part.to_string(),
+            }),
+            _ => Err(err(line_no, "changeset_part: want changes|before|after")),
+        },
         "assert_history_versions" => match rest.as_slice() {
             [n] => Ok(Op::AssertHistoryVersions {
                 count: n.parse::<usize>().map_err(|e| {

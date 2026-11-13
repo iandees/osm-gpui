@@ -334,6 +334,8 @@ impl MapViewer {
         use osm_gpui::script::HistoryCmd;
         match cmd {
             HistoryCmd::Show => self.show_object_history(cx),
+            HistoryCmd::ChangesetPart(part) => self.script_changeset_part(&part, cx),
+            HistoryCmd::Changeset { id, dir } => self.script_show_changeset(id, &dir, cx),
             HistoryCmd::LoadFile(path) => {
                 if !path.is_file() {
                     return Err(format!("{} is not a file", path.display()));

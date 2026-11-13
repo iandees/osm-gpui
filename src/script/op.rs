@@ -172,6 +172,12 @@ pub enum HistoryCmd {
     Show,
     /// Answer the next request from this file.
     LoadFile(std::path::PathBuf),
+    /// Show changeset `id` as layers, answering the API requests from the
+    /// files in `dir` (see `changeset_actions::FixtureClient`).
+    Changeset { id: i64, dir: std::path::PathBuf },
+    /// Show only the changeset layer for this part (`changes`, `before` or
+    /// `after`).
+    ChangesetPart(String),
 }
 
 /// What the autosave script ops ask the app to do.
@@ -613,6 +619,16 @@ pub enum Op {
     /// `/history` document instead of the server.
     LoadHistoryFile {
         path: String,
+    },
+    /// Script-only: show changeset `id` from the fixture files in `dir`.
+    ShowChangeset {
+        id: i64,
+        dir: String,
+    },
+    /// Script-only: show only one part (`changes`, `before`, `after`) of the
+    /// changeset layers.
+    ChangesetPart {
+        part: String,
     },
     /// Assert the open object history view lists exactly `count` versions.
     AssertHistoryVersions {

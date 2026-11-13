@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="fixture">
+ <create>
+  <node id="101" version="1" changeset="9001" lat="40.71120" lon="-74.00560"><tag k="amenity" v="cafe"/><tag k="name" v="Corner Cafe"/></node>
+  <node id="102" version="1" changeset="9001" lat="40.71165" lon="-74.00640"/>
+  <node id="103" version="1" changeset="9001" lat="40.71175" lon="-74.00520"/>
+  <way id="201" version="1" changeset="9001"><nd ref="102"/><nd ref="103"/><tag k="highway" v="footway"/></way>
+ </create>
+ <modify>
+  <node id="10" version="2" changeset="9001" lat="40.71290" lon="-74.00600"/>
+  <node id="11" version="2" changeset="9001" lat="40.71250" lon="-74.00700"><tag k="shop" v="bakery"/></node>
+  <way id="202" version="2" changeset="9001"><nd ref="7"/><nd ref="10"/><nd ref="6"/><tag k="highway" v="residential"/><tag k="name" v="Mill Street"/></way>
+ </modify>
+ <delete>
+  <way id="203" version="2" changeset="9001"/>
+  <node id="20" version="2" changeset="9001"/>
+  <node id="21" version="2" changeset="9001"/>
+  <node id="22" version="2" changeset="9001"/>
+  <node id="23" version="2" changeset="9001"/>
+ </delete>
+</osmChange>
