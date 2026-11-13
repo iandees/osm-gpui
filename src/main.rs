@@ -23,6 +23,7 @@ mod add_click_tests;
 #[cfg(test)]
 mod arc_click_tests;
 mod autosave_driver;
+mod changeset_actions;
 mod clipboard_actions;
 #[cfg(test)]
 mod edge_case_tests;
@@ -920,6 +921,8 @@ struct MapViewer {
     /// The object history view and what was learned from the server's
     /// version history of objects (see `history_actions`).
     object_history: history_actions::HistoryState,
+    /// The Show Changeset dialog and its request (see `changeset_actions`).
+    changeset: changeset_actions::ChangesetState,
     /// Edit > Find, while open.
     find_dialog: Option<gpui::Entity<osm_gpui::ui::find_dialog::FindDialog>>,
     /// The last few queries run through Find this session, newest first.
@@ -1280,6 +1283,7 @@ impl MapViewer {
             restore_dialog: None,
             autosave: None,
             object_history: Default::default(),
+            changeset: Default::default(),
             find_dialog: None,
             find_history: Default::default(),
             find_mode: Default::default(),
@@ -3987,6 +3991,7 @@ impl MapViewer {
             open_modal(&self.sign_in_dialog, cx),
             open_modal(&self.notice_dialog, cx),
             open_modal(&self.new_note_dialog_element(), cx),
+            open_modal(&self.changeset_dialog_element(), cx),
         ]
         .into_iter()
         .flatten()
@@ -4007,6 +4012,7 @@ impl MapViewer {
             || self.about_dialog.is_some()
             || self.custom_imagery_dialog.is_some()
             || self.find_dialog.is_some()
+            || self.changeset.dialog.is_some()
     }
 
     /// Drop the vertex preview (the pointer left the map, or the mode changed).
@@ -8656,6 +8662,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_deselect_all))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(Self::on_show_object_history))
+            .on_action(cx.listener(Self::on_show_changeset))
             .on_action(cx.listener(Self::on_delete_selection))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
@@ -8701,6 +8708,7 @@ impl Render for MapViewer {
             .children(self.sign_in_dialog.clone())
             .children(self.notice_dialog.clone())
             .children(self.new_note_dialog_element())
+            .children(self.changeset_dialog_element())
             .children(self.render_context_menu(window, cx))
     }
 }

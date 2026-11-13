@@ -12,6 +12,7 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
 
+use crate::changeset_actions::ShowChangeset;
 use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::selection_actions;
@@ -757,6 +758,7 @@ fn build_menus(
         MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
+        MenuItem::action(tr!("menu.file.show_changeset"), ShowChangeset),
         MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!can_upload),
     ];
     let mut edit_tail = vec![];
@@ -1367,6 +1369,6 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, gpui::OwnedMenuItem::Action { .. }))
             .count();
-        assert_eq!(actions, 4);
+        assert_eq!(actions, 5);
     }
 }

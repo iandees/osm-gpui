@@ -22,6 +22,7 @@ menu:
     open: "Öffnen …"
     export: "Exportieren …"
     download: "Von OSM herunterladen"
+    show_changeset: "Änderungssatz anzeigen…"
     upload: "Auf OSM hochladen …"
   edit:
     title: "Bearbeiten"
@@ -1198,3 +1199,25 @@ relation_sort:
     one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
     other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
   already: "Die Mitglieder sind bereits in Reihenfolge"
+
+changeset:
+  dialog:
+    title: "Änderungssatz anzeigen"
+    hint: "Gib eine Änderungssatz-Nummer oder einen Link dazu ein. Er wird als Ebenen mit den Änderungen, der Karte davor und der Karte danach hinzugefügt."
+    placeholder: "Änderungssatz-Nummer oder Link"
+    show: "Anzeigen"
+    loading: "Lädt…"
+    invalid: "Das ist keine Änderungssatz-Nummer."
+  layer:
+    changes: "Änderungen"
+    before: "davor"
+    after: "danach"
+  status:
+    loaded: "Änderungssatz %{id}: %{created} erstellt, %{modified} geändert, %{deleted} gelöscht."
+    latest: "%{count} Wegknoten wurden an ihrer aktuellen Position platziert."
+  error:
+    not_found: "Diesen Änderungssatz gibt es nicht."
+    http: "Der Server antwortete mit Status %{status}."
+    network: "Der Server ist nicht erreichbar: %{detail}"
+    parse: "Die Antwort des Servers konnte nicht gelesen werden: %{detail}"
+    cancelled: "Abgebrochen."

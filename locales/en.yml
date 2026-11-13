@@ -22,6 +22,7 @@ menu:
     open: "Open…"
     export: "Export…"
     download: "Download from OSM"
+    show_changeset: "Show Changeset…"
     upload: "Upload to OSM…"
   edit:
     title: "Edit"
@@ -1225,3 +1226,25 @@ relation_sort:
     one: "Sorted the members into one connected chain"
     other: "Sorted the members; the ways form %{count} separate chains"
   already: "The members are already in order"
+
+changeset:
+  dialog:
+    title: "Show Changeset"
+    hint: "Enter a changeset number or a link to one. It is added as layers showing the changes, the map before, and the map after."
+    placeholder: "Changeset number or link"
+    show: "Show"
+    loading: "Loading…"
+    invalid: "That is not a changeset number."
+  layer:
+    changes: "changes"
+    before: "before"
+    after: "after"
+  status:
+    loaded: "Changeset %{id}: %{created} created, %{modified} modified, %{deleted} deleted."
+    latest: "%{count} way nodes were placed from their current position."
+  error:
+    not_found: "No such changeset."
+    http: "The server answered with status %{status}."
+    network: "Could not reach the server: %{detail}"
+    parse: "The server's answer could not be read: %{detail}"
+    cancelled: "Cancelled."
