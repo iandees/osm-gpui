@@ -92,8 +92,8 @@
     <nd ref="17"/>
     <tag k="building" v="house"/>
     <tag k="height" v="9"/>
-    <tag k="roof:shape" v="pyramidal"/>
-    <tag k="roof:height" v="3"/>
+    <tag k="roof:shape" v="gabled"/>
+    <tag k="roof:height" v="4"/>
   </way>
   <way id="203" version="1">
     <nd ref="21"/>

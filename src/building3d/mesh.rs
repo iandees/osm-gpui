@@ -4,8 +4,8 @@
 
 use glam::Vec3;
 
-use super::model::{centroid, signed_area, Scene, Solid};
-use super::tags::Heights;
+use super::model::{centroid, signed_area, Pt, Scene, Solid};
+use super::tags::{Heights, RoofShape};
 
 /// Which solid a face belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -95,6 +95,15 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 /// Build the mesh for `scene`, with `overrides` replacing the geometry of
 /// the given parts (a drag in progress) without touching the scene.
 pub fn build_mesh(scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]) -> Mesh {
+    let mut mesh = build_context_mesh(scene);
+    add_building(&mut mesh, scene, style, overrides);
+    mesh
+}
+
+/// The neighbouring buildings alone. They never change look while a scene
+/// is open (only the building's own parts are highlighted), so this is built
+/// once per scene and kept, on the GPU too.
+pub fn build_context_mesh(scene: &Scene) -> Mesh {
     let mut mesh = Mesh::default();
     for (i, solid) in scene.context.iter().enumerate() {
         add_solid(
@@ -108,9 +117,22 @@ pub fn build_mesh(scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]
                 .roof_colour
                 .map_or(CONTEXT_ROOF, |c| mix(c, CONTEXT_ROOF, 0.6)),
             EDGE_CONTEXT,
-            style.hovered,
+            None,
         );
     }
+    mesh
+}
+
+/// The building being edited: its parts (with `overrides` standing in for
+/// parts being dragged) and its outline, styled for this frame. Small, so
+/// rebuilt every frame.
+pub fn build_building_mesh(scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]) -> Mesh {
+    let mut mesh = Mesh::default();
+    add_building(&mut mesh, scene, style, overrides);
+    mesh
+}
+
+fn add_building(mesh: &mut Mesh, scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]) {
     for (i, part) in scene.building.parts.iter().enumerate() {
         let solid = overrides
             .iter()
@@ -125,7 +147,7 @@ pub fn build_mesh(scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]
         }
         let edge = if selected { EDGE_SELECTED } else { EDGE };
         add_solid(
-            &mut mesh,
+            mesh,
             solid,
             Some(SolidRef::Part(i)),
             wall,
@@ -140,11 +162,10 @@ pub fn build_mesh(scene: &Scene, style: &MeshStyle, overrides: &[(usize, Solid)]
             let n = outline.ring.len();
             for i in 0..n {
                 let (p, q) = (outline.ring[i], outline.ring[(i + 1) % n]);
-                push_line(&mut mesh, v3(p, 0.05), v3(q, 0.05), EDGE_OUTLINE);
+                push_line(mesh, v3(p, 0.05), v3(q, 0.05), EDGE_OUTLINE);
             }
         }
     }
-    mesh
 }
 
 fn v3(p: (f64, f64), z: f64) -> Vec3 {
@@ -202,6 +223,75 @@ pub fn add_guide_line(mesh: &mut Mesh, a: Vec3, b: Vec3) {
     push_line(mesh, a, b, [0.98, 0.72, 0.08, 1.0]);
 }
 
+/// A gabled roof planned over a footprint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gable {
+    /// The wall outline: the ring's vertices plus the ridge's two ends, each
+    /// with the height the wall reaches there and the ring segment it is on.
+    pub walls: Vec<(Pt, f64, usize)>,
+    /// The two roof slopes, as planar polygons.
+    pub slopes: [Vec<Vec3>; 2],
+    /// The ridge's two ends.
+    pub ridge: (Vec3, Vec3),
+}
+
+/// Plan a gabled roof over `ring` rising from `wall_top` by `roof_height`:
+/// the ridge runs through the middle of the footprint, along its longest
+/// side (or across it), and each slope falls to the eaves on its side.
+/// `None` when the ridge would cut the footprint into more than two pieces
+/// (a concave footprint); the caller draws something simpler.
+pub fn gable(ring: &[Pt], wall_top: f64, roof_height: f64, across: bool) -> Option<Gable> {
+    use super::edit::{dominant_angle, split_ring, RingVertex};
+    let mut angle = dominant_angle(ring);
+    if across {
+        angle += std::f64::consts::FRAC_PI_2;
+    }
+    let (d, nrm) = ((angle.cos(), angle.sin()), (-angle.sin(), angle.cos()));
+    let side = |p: Pt| p.0 * nrm.0 + p.1 * nrm.1;
+    let (lo, hi) = ring
+        .iter()
+        .map(|&p| side(p))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| {
+            (a.min(s), b.max(s))
+        });
+    let (mid, half) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
+    if half < 1e-6 {
+        return None;
+    }
+    let z = |p: Pt| wall_top + roof_height * (1.0 - ((side(p) - mid).abs() / half).min(1.0));
+    let c = (nrm.0 * mid, nrm.1 * mid);
+    let split = split_ring(ring, c, (c.0 + d.0, c.1 + d.1)).ok()?;
+    let mut walls = Vec::with_capacity(ring.len() + 2);
+    for (i, &p) in ring.iter().enumerate() {
+        walls.push((p, z(p), i));
+        for &(q, seg) in &split.new_points {
+            if seg == i {
+                walls.push((q, z(q), i));
+            }
+        }
+    }
+    let point = |r: &RingVertex| match *r {
+        RingVertex::Existing(i) => ring[i],
+        RingVertex::New(k) => split.new_points[k].0,
+    };
+    let lift = |piece: &[RingVertex]| -> Vec<Vec3> {
+        piece
+            .iter()
+            .map(|r| {
+                let p = point(r);
+                v3(p, z(p))
+            })
+            .collect()
+    };
+    let (a, b) = (lift(&split.a), lift(&split.b));
+    let ridge = (a[0], *a.last().unwrap());
+    Some(Gable {
+        walls,
+        slopes: [a, b],
+        ridge,
+    })
+}
+
 /// `sref` is `None` for a solid that isn't pickable (a preview).
 fn add_solid(
     mesh: &mut Mesh,
@@ -230,9 +320,25 @@ fn add_solid(
         }
     };
 
+    let pitched = !solid.roof.is_flat() && solid.heights.roof_height > 1e-6;
+    let gable = match solid.roof {
+        RoofShape::Gabled { across } if pitched => {
+            gable(ring, top, solid.heights.roof_height, across)
+        }
+        _ => None,
+    };
+    // The wall outline: each vertex with the height its wall reaches there
+    // and the ring segment it starts. A gable adds the ridge's ends, where
+    // the gable-end walls peak.
+    let walls: Vec<(Pt, f64, usize)> = match &gable {
+        Some(g) => g.walls.clone(),
+        None => ring.iter().enumerate().map(|(i, &p)| (p, top, i)).collect(),
+    };
+
     // Walls.
-    for i in 0..n {
-        let (p, q) = (ring[i], ring[(i + 1) % n]);
+    let m = walls.len();
+    for k in 0..m {
+        let ((p, p_top, i), (q, q_top, _)) = (walls[k], walls[(k + 1) % m]);
         let (dx, dy) = (q.0 - p.0, q.1 - p.1);
         let len = dx.hypot(dy);
         if len < 1e-9 {
@@ -245,17 +351,38 @@ fn add_solid(
         let kind = FaceKind::Wall(i);
         let face = face_id(kind);
         let c = tint(kind, wall_colour);
-        let (a0, b0, b1, a1) = (v3(p, min_height), v3(q, min_height), v3(q, top), v3(p, top));
+        let (a0, b0, b1, a1) = (
+            v3(p, min_height),
+            v3(q, min_height),
+            v3(q, q_top),
+            v3(p, p_top),
+        );
         push_tri(mesh, [a0, b0, b1], normal, c, face);
         push_tri(mesh, [a0, b1, a1], normal, c, face);
         push_line(mesh, a0, b0, edge);
         push_line(mesh, a1, b1, edge);
-        push_line(mesh, a0, a1, edge);
+        // Vertical edges at real corners only, not at a gable's ridge point.
+        if (p_top - top).abs() < 1e-9 || k == 0 || walls[k - 1].2 != i {
+            push_line(mesh, a0, a1, edge);
+        }
     }
 
     let roof_face = face_id(FaceKind::Roof);
     let rc = tint(FaceKind::Roof, roof_colour);
-    if solid.roof.is_flat() || solid.heights.roof_height <= 1e-6 {
+    if let Some(g) = &gable {
+        for slope in &g.slopes {
+            let flat: Vec<Pt> = slope.iter().map(|v| (v.x as f64, v.y as f64)).collect();
+            for t in triangulate(&flat) {
+                let tri = [slope[t[0]], slope[t[1]], slope[t[2]]];
+                let mut normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+                if normal.z < 0.0 {
+                    normal = -normal;
+                }
+                push_tri(mesh, tri, normal, rc, roof_face);
+            }
+        }
+        push_line(mesh, g.ridge.0, g.ridge.1, edge);
+    } else if !pitched {
         for t in triangulate(ring) {
             push_tri(
                 mesh,
@@ -392,6 +519,94 @@ mod tests {
         let apex = roof[0].v[2];
         assert!((apex.z - 9.0).abs() < 1e-5);
         assert!((apex.x - 5.0).abs() < 1e-4 && (apex.y - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gable_over_a_rectangle() {
+        // 20 x 10, ridge along x at y = 5, eaves at 6, ridge at 9.
+        let ring = vec![(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)];
+        let g = gable(&ring, 6.0, 3.0, false).unwrap();
+        // Corners at the eaves; the gable ends gain a ridge point each.
+        assert_eq!(g.walls.len(), 6);
+        let peaks: Vec<_> = g
+            .walls
+            .iter()
+            .filter(|w| (w.1 - 9.0).abs() < 1e-9)
+            .collect();
+        assert_eq!(peaks.len(), 2);
+        for w in &peaks {
+            assert!((w.0 .1 - 5.0).abs() < 1e-9);
+            assert!(w.0 .0.abs() < 1e-9 || (w.0 .0 - 20.0).abs() < 1e-9);
+        }
+        assert!(g
+            .walls
+            .iter()
+            .filter(|w| (w.1 - 9.0).abs() > 1e-9)
+            .all(|w| (w.1 - 6.0).abs() < 1e-9));
+        assert!((g.ridge.0.z - 9.0).abs() < 1e-5 && (g.ridge.1.z - 9.0).abs() < 1e-5);
+        assert!((g.ridge.0 - g.ridge.1).length() > 19.9);
+        // Each slope is planar: every vertex on the plane of its first three.
+        for slope in &g.slopes {
+            let n = (slope[1] - slope[0]).cross(slope[2] - slope[0]).normalize();
+            for v in slope {
+                assert!((v - slope[0]).dot(n).abs() < 1e-4);
+            }
+        }
+        // Across: the ridge runs along y instead.
+        let g = gable(&ring, 6.0, 3.0, true).unwrap();
+        assert!((g.ridge.0.x - 10.0).abs() < 1e-4 && (g.ridge.1.x - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn gabled_part_meshes_with_peaked_gable_ends() {
+        let mut b = DataBuilder::new();
+        b.ring(
+            11,
+            &rect(0.0, 0.0, 20.0, 10.0),
+            &[
+                ("building:part", "yes"),
+                ("height", "9"),
+                ("roof:shape", "gabled"),
+                ("roof:height", "3"),
+            ],
+        );
+        let scene = build_scene(&b.data, BuildingRoot::Way(11)).unwrap();
+        let mesh = build_mesh(&scene, &MeshStyle::default(), &[]);
+        let roof: Vec<_> = mesh
+            .tris
+            .iter()
+            .filter(|t| t.face.kind == FaceKind::Roof)
+            .collect();
+        assert_eq!(roof.len(), 4, "two quads");
+        let top = mesh
+            .vertices
+            .iter()
+            .map(|v| v.pos[2])
+            .fold(f32::MIN, f32::max);
+        assert!((top - 9.0).abs() < 1e-5);
+        // The gable-end walls reach the ridge; their pick faces keep the
+        // original segment index.
+        let peak_walls: Vec<_> = mesh
+            .tris
+            .iter()
+            .filter(|t| matches!(t.face.kind, FaceKind::Wall(_)))
+            .filter(|t| t.v.iter().any(|v| (v.z - 9.0).abs() < 1e-5))
+            .map(|t| t.face.kind)
+            .collect();
+        assert!(peak_walls.contains(&FaceKind::Wall(1)));
+        assert!(peak_walls.contains(&FaceKind::Wall(3)));
+        // A concave footprint falls back to a pyramid rather than failing.
+        let u = vec![
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 20.0),
+            (20.0, 20.0),
+            (20.0, 5.0),
+            (10.0, 5.0),
+            (10.0, 20.0),
+            (0.0, 20.0),
+        ];
+        assert!(gable(&u, 6.0, 3.0, true).is_none() || gable(&u, 6.0, 3.0, false).is_none());
     }
 
     #[test]

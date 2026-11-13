@@ -52,8 +52,58 @@ pub struct FrameInput<'a> {
     pub height: u32,
     pub view_proj: Mat4,
     pub eye: Vec3,
+    /// Geometry that rarely changes (the neighbouring buildings), with a key
+    /// identifying it: its GPU buffers are kept and only re-uploaded when the
+    /// key changes.
+    pub static_mesh: Option<(u64, &'a Mesh)>,
+    /// Geometry re-uploaded every frame (the building being edited, guides).
     pub mesh: &'a Mesh,
     pub ground: GroundInput<'a>,
+}
+
+/// A mesh's triangles and lines in GPU buffers.
+struct MeshBuffers {
+    tris: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+    lines: Option<(wgpu::Buffer, u32)>,
+}
+
+impl MeshBuffers {
+    fn upload(device: &wgpu::Device, mesh: &Mesh) -> Self {
+        let buffer = |label: &str, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
+        };
+        Self {
+            tris: (!mesh.indices.is_empty()).then(|| {
+                (
+                    buffer(
+                        "vertices",
+                        bytemuck::cast_slice(&mesh.vertices),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                    buffer(
+                        "indices",
+                        bytemuck::cast_slice(&mesh.indices),
+                        wgpu::BufferUsages::INDEX,
+                    ),
+                    mesh.indices.len() as u32,
+                )
+            }),
+            lines: (!mesh.lines.is_empty()).then(|| {
+                (
+                    buffer(
+                        "lines",
+                        bytemuck::cast_slice(&mesh.lines),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                    mesh.lines.len() as u32,
+                )
+            }),
+        }
+    }
 }
 
 /// A rendered frame: tightly packed BGRA rows.
@@ -92,6 +142,8 @@ pub struct Renderer {
     ground_pipeline: wgpu::RenderPipeline,
     targets: Option<Targets>,
     ground: Option<GroundGpu>,
+    /// The static mesh's buffers and the key they were uploaded for.
+    static_buffers: Option<(u64, MeshBuffers)>,
 }
 
 impl Renderer {
@@ -307,6 +359,7 @@ impl Renderer {
             ground_pipeline,
             targets: None,
             ground: None,
+            static_buffers: None,
         })
     }
 
@@ -488,28 +541,15 @@ impl Renderer {
             bytemuck::cast_slice(&ground_vertices),
             wgpu::BufferUsages::VERTEX,
         );
-        let mesh = input.mesh;
-        let mesh_bufs = (!mesh.indices.is_empty()).then(|| {
-            (
-                buffer(
-                    "vertices",
-                    bytemuck::cast_slice(&mesh.vertices),
-                    wgpu::BufferUsages::VERTEX,
-                ),
-                buffer(
-                    "indices",
-                    bytemuck::cast_slice(&mesh.indices),
-                    wgpu::BufferUsages::INDEX,
-                ),
-            )
-        });
-        let line_buf = (!mesh.lines.is_empty()).then(|| {
-            buffer(
-                "lines",
-                bytemuck::cast_slice(&mesh.lines),
-                wgpu::BufferUsages::VERTEX,
-            )
-        });
+        match input.static_mesh {
+            Some((key, mesh)) => {
+                if self.static_buffers.as_ref().is_none_or(|(k, _)| *k != key) {
+                    self.static_buffers = Some((key, MeshBuffers::upload(&self.device, mesh)));
+                }
+            }
+            None => self.static_buffers = None,
+        }
+        let dynamic = MeshBuffers::upload(&self.device, input.mesh);
 
         let targets = self.targets.as_ref().expect("ensured above");
         let ground = self.ground.as_ref().expect("ensured above");
@@ -556,16 +596,24 @@ impl Renderer {
             pass.set_vertex_buffer(0, ground_buf.slice(..));
             pass.draw(0..6, 0..1);
 
-            if let Some((vb, ib)) = &mesh_bufs {
-                pass.set_pipeline(&self.mesh_pipeline);
-                pass.set_vertex_buffer(0, vb.slice(..));
-                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-            }
-            if let Some(lb) = &line_buf {
-                pass.set_pipeline(&self.line_pipeline);
-                pass.set_vertex_buffer(0, lb.slice(..));
-                pass.draw(0..mesh.lines.len() as u32, 0..1);
+            let meshes = self
+                .static_buffers
+                .as_ref()
+                .map(|(_, b)| b)
+                .into_iter()
+                .chain(std::iter::once(&dynamic));
+            for buffers in meshes {
+                if let Some((vb, ib, count)) = &buffers.tris {
+                    pass.set_pipeline(&self.mesh_pipeline);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*count, 0, 0..1);
+                }
+                if let Some((lb, count)) = &buffers.lines {
+                    pass.set_pipeline(&self.line_pipeline);
+                    pass.set_vertex_buffer(0, lb.slice(..));
+                    pass.draw(0..*count, 0..1);
+                }
             }
         }
         encoder.copy_texture_to_buffer(
@@ -651,6 +699,7 @@ mod tests {
             height: h,
             view_proj: cam.view_proj(w as f32 / h as f32, 100.0),
             eye: cam.eye(),
+            static_mesh: None,
             mesh: &mesh,
             ground: GroundInput {
                 key: 1,

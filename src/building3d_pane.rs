@@ -21,7 +21,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex, ActiveTheme, Disableable, Sizable,
 };
-use osm_gpui::building3d::camera::{pick, Hit, OrbitCamera};
+use osm_gpui::building3d::camera::{Hit, OrbitCamera, PickIndex};
 use osm_gpui::building3d::edit::{self, Tags, VerticalEdit};
 use osm_gpui::building3d::ground::{self, Texture, TileBlock};
 use osm_gpui::building3d::mesh::{self, FaceKind, MeshStyle, SolidRef};
@@ -102,13 +102,24 @@ enum Gesture {
 
 #[derive(Default)]
 struct GroundState {
+    /// The imagery source and tile block currently wanted.
     source_key: Option<String>,
     block: Option<TileBlock>,
-    loaded: usize,
     offset: ImageryOffset,
-    texture: Option<Texture>,
+    /// The texture shown and the block it covers (it may lag `block` while
+    /// a new one is stitched).
+    texture: Option<(Texture, TileBlock)>,
+    /// Bumped whenever `texture` changes (the GPU re-uploads it).
     key: u64,
+    /// How many of the block's tiles had loaded when the shown (or
+    /// in-flight) texture was stitched.
+    loaded: usize,
+    /// The stitch running in the background, if any (a request id).
+    stitching: Option<u64>,
 }
+
+/// Source of ground stitch request ids, unique across panes.
+static NEXT_STITCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 pub(crate) struct Building3dPane {
     layer_id: LayerId,
@@ -132,7 +143,17 @@ pub(crate) struct Building3dPane {
     version: u64,
     ground: GroundState,
     error: Option<SharedString>,
+    /// Built once per scene (see `set_scene`): the neighbours' mesh, kept on
+    /// the GPU under `scene_id`, and the picking index over every solid.
+    context_mesh: mesh::Mesh,
+    pick_index: PickIndex,
+    /// Unique per scene built, across panes: the GPU cache key of
+    /// `context_mesh`.
+    scene_id: u64,
 }
+
+/// Source of `Building3dPane::scene_id`s.
+static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Clone, PartialEq)]
 struct FrameKey {
@@ -180,16 +201,30 @@ impl Building3dPane {
         Some(self.camera.ray(p, size, radius))
     }
 
-    fn pick_at(&self, p: Vec2, tris: &[mesh::PickTri]) -> Option<Hit> {
-        pick(&self.ray(p)?, tris)
+    /// What the pointer at canvas pixel `p` is over, in the scene as it
+    /// stands.
+    fn pick_at(&self, p: Vec2) -> Option<Hit> {
+        self.pick_index.pick(&self.ray(p)?)
     }
 
-    /// Triangles to pick against: the scene as it stands.
-    fn pick_tris(&self) -> Vec<mesh::PickTri> {
-        match &self.scene {
-            Some(scene) => mesh::build_mesh(scene, &MeshStyle::default(), &[]).tris,
-            None => Vec::new(),
+    /// Whether the picture depends on exactly where the pointer is (a tool
+    /// guide follows it), not just on which face it is over.
+    fn hover_point_shown(&self) -> bool {
+        match self.tool {
+            Tool::Split => self.split_start.is_some(),
+            Tool::SplitHeight => true,
+            Tool::Select | Tool::DrawPart => false,
         }
+    }
+
+    /// Install a freshly built scene and the caches derived from it.
+    fn set_scene(&mut self, scene: Scene) {
+        self.context_mesh = mesh::build_context_mesh(&scene);
+        let mut tris = self.context_mesh.tris.clone();
+        tris.extend(mesh::build_building_mesh(&scene, &MeshStyle::default(), &[]).tris);
+        self.pick_index = PickIndex::new(tris);
+        self.scene_id = NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.scene = Some(scene);
     }
 
     fn frame_camera(&mut self) {
@@ -220,11 +255,7 @@ impl Building3dPane {
         );
         // Look from a side where the neighbours don't hide the building:
         // check sightlines to its middle and its footprint's corners.
-        let blockers: Vec<mesh::PickTri> = mesh::build_mesh(scene, &MeshStyle::default(), &[])
-            .tris
-            .into_iter()
-            .filter(|t| matches!(t.face.solid, SolidRef::Context(_)))
-            .collect();
+        let blockers = &self.context_mesh.tris;
         let mid_z = (top / 2.0) as f32;
         let mut look_at = vec![Vec3::new(base.target.x, base.target.y, mid_z)];
         look_at.extend(
@@ -236,7 +267,7 @@ impl Building3dPane {
             ]
             .map(|(x, y)| Vec3::new(x as f32, y as f32, mid_z)),
         );
-        self.camera = osm_gpui::building3d::camera::least_obstructed(base, &look_at, &blockers);
+        self.camera = osm_gpui::building3d::camera::least_obstructed(base, &look_at, blockers);
         self.touch();
     }
 
@@ -288,6 +319,15 @@ impl Building3dPane {
             }
             _ => None,
         }
+    }
+}
+
+/// The face of the building's own parts a hover highlights (neighbours and
+/// the ground are never highlighted).
+fn hovered_part_face(hit: Option<Hit>) -> Option<mesh::FaceId> {
+    match hit {
+        Some(Hit::Face { face, .. }) if matches!(face.solid, SolidRef::Part(_)) => Some(face),
+        _ => None,
     }
 }
 
@@ -432,7 +472,7 @@ impl MapViewer {
             layer_id,
             root,
             scene_key: self.building3d_scene_key(layer_id),
-            scene: Some(scene),
+            scene: None,
             camera: OrbitCamera::framing(Vec3::ZERO, 10.0, 0.0),
             tool: Tool::Select,
             gesture: None,
@@ -444,7 +484,11 @@ impl MapViewer {
             version: 0,
             ground: GroundState::default(),
             error: None,
+            context_mesh: mesh::Mesh::default(),
+            pick_index: PickIndex::default(),
+            scene_id: 0,
         };
+        pane.set_scene(scene);
         pane.frame_camera();
         self.building3d = Some(pane);
         self.select_building3d_root();
@@ -534,6 +578,8 @@ impl MapViewer {
     /// ground imagery loaded, and re-render the 3D image when anything
     /// visible changed.
     pub(crate) fn building3d_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _scope =
+            osm_gpui::frame_stats::Scoped::new("b3d.frame", osm_gpui::frame_stats::start());
         for image in self.building3d_stale_images.drain(..) {
             let _ = window.drop_image(image);
         }
@@ -544,10 +590,13 @@ impl MapViewer {
         let key = self.building3d_scene_key(layer_id);
         if self.building3d.as_ref().is_some_and(|p| p.scene_key != key) {
             let root = self.building3d.as_ref().unwrap().root;
-            match self.build_building3d_scene(layer_id, root) {
+            let fs = osm_gpui::frame_stats::start();
+            let built = self.build_building3d_scene(layer_id, root);
+            osm_gpui::frame_stats::lap("b3d.scene", fs);
+            match built {
                 Some(scene) => {
                     let pane = self.building3d.as_mut().unwrap();
-                    pane.scene = Some(scene);
+                    pane.set_scene(scene);
                     pane.scene_key = key;
                     pane.gesture = None;
                     pane.hover = None;
@@ -561,7 +610,9 @@ impl MapViewer {
                 }
             }
         }
+        let fs = osm_gpui::frame_stats::start();
         self.building3d_sync_ground(window, cx);
+        osm_gpui::frame_stats::lap("b3d.ground", fs);
         self.building3d_render_image(window);
     }
 
@@ -637,24 +688,61 @@ impl MapViewer {
             }
         }
         let pane = self.building3d.as_mut().unwrap();
+        if source_changed {
+            pane.ground.source_key = Some(source_key.clone());
+            pane.ground.block = Some(block);
+            pane.ground.loaded = usize::MAX;
+        }
+        if pane.ground.offset != offset {
+            // Only where the texture lies changes.
+            pane.ground.offset = offset;
+            pane.touch();
+        }
         let loaded = images.len();
-        if !source_changed && loaded == pane.ground.loaded && pane.ground.offset == offset {
+        if pane.ground.stitching.is_some() || loaded == pane.ground.loaded {
             return;
         }
-        let texture = ground::stitch(&block, |c| {
-            images.get(&c).and_then(|img| {
-                let size = img.size(0);
-                Some((img.as_bytes(0)?, size.width.0 as u32, size.height.0 as u32))
-            })
-        });
-        pane.ground = GroundState {
-            source_key: Some(source_key),
-            block: Some(block),
-            loaded,
-            offset,
-            texture: Some(texture),
-            key: pane.ground.key.wrapping_add(1),
-        };
+        // Stitching (and building the mip chain of) a couple of thousand
+        // pixels square takes milliseconds — tens of them in a debug build —
+        // and runs again as each tile arrives, so it is done off the main
+        // thread. Tiles that arrive meanwhile are picked up by the next run.
+        let request = NEXT_STITCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        pane.ground.stitching = Some(request);
+        pane.ground.loaded = loaded;
+        let images: Vec<(osm_gpui::tiles::TileCoord, Arc<RenderImage>)> =
+            images.into_iter().collect();
+        cx.spawn(async move |this, cx| {
+            let texture = cx
+                .background_executor()
+                .spawn(async move {
+                    let by_coord: HashMap<_, _> = images.into_iter().collect();
+                    ground::stitch(&block, |c| {
+                        by_coord.get(&c).and_then(|img: &Arc<RenderImage>| {
+                            let size = img.size(0);
+                            Some((img.as_bytes(0)?, size.width.0 as u32, size.height.0 as u32))
+                        })
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(pane) = this.building3d.as_mut() else {
+                    return;
+                };
+                if pane.ground.stitching != Some(request) {
+                    // A different pane (or a cleared ground) since.
+                    return;
+                }
+                pane.ground.stitching = None;
+                if pane.ground.block == Some(block)
+                    && pane.ground.source_key.as_deref() == Some(source_key.as_str())
+                {
+                    pane.ground.texture = Some((texture, block));
+                    pane.ground.key = pane.ground.key.wrapping_add(1);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn building3d_selected_part(&self) -> Option<usize> {
@@ -716,22 +804,19 @@ impl MapViewer {
         let style = MeshStyle {
             selected_part: preview.as_ref().map(|(i, _)| *i).or(selected_part),
             hovered: if pane.gesture.is_none() {
-                match pane.hover {
-                    Some(Hit::Face { face, .. }) if matches!(face.solid, SolidRef::Part(_)) => {
-                        Some(face)
-                    }
-                    _ => None,
-                }
+                hovered_part_face(pane.hover)
             } else {
                 None
             },
         };
         let overrides: Vec<(usize, Solid)> = preview.into_iter().collect();
-        let mut m = mesh::build_mesh(scene, &style, &overrides);
+        let fs = osm_gpui::frame_stats::start();
+        let mut m = mesh::build_building_mesh(scene, &style, &overrides);
         building3d_guides(pane, scene, &mut m);
+        osm_gpui::frame_stats::lap("b3d.mesh", fs);
 
-        let corners = match (&pane.ground.block, &pane.ground.texture) {
-            (Some(block), Some(_)) => block.corners(&scene.frame, pane.ground.offset),
+        let corners = match &pane.ground.texture {
+            Some((_, block)) => block.corners(&scene.frame, pane.ground.offset),
             _ => {
                 let r = scene.ground_radius;
                 let c = pane.camera.target;
@@ -751,14 +836,19 @@ impl MapViewer {
             height,
             view_proj: pane.camera.view_proj(aspect, radius),
             eye: pane.camera.eye(),
+            static_mesh: Some((pane.scene_id, &pane.context_mesh)),
             mesh: &m,
             ground: gpu::GroundInput {
                 key: pane.ground.key,
-                texture: pane.ground.texture.as_ref(),
+                texture: pane.ground.texture.as_ref().map(|(t, _)| t),
                 corners,
             },
         };
-        match renderer.render(&input) {
+        let fs = osm_gpui::frame_stats::start();
+        let rendered = renderer.render(&input);
+        osm_gpui::frame_stats::lap("b3d.gpu", fs);
+        let fs = osm_gpui::frame_stats::start();
+        match rendered {
             Ok(frame) => {
                 let Some(buffer) =
                     image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra)
@@ -772,6 +862,7 @@ impl MapViewer {
                     self.building3d_stale_images.push(old);
                 }
                 pane.error = None;
+                osm_gpui::frame_stats::lap("b3d.image", fs);
             }
             Err(e) => pane.error = Some(tr!("building3d.no_gpu", error = e)),
         }
@@ -781,17 +872,13 @@ impl MapViewer {
     // --- input --------------------------------------------------------------
 
     fn building3d_mouse_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
-        let tris = match &self.building3d {
-            Some(p) => p.pick_tris(),
-            None => return,
-        };
         let Some(pane) = self.building3d.as_mut() else {
             return;
         };
         let Some(p) = pane.local(ev.position) else {
             return;
         };
-        let hit = pane.pick_at(p, &tris);
+        let hit = pane.pick_at(p);
         pane.gesture = Some(Gesture::Press {
             down: p,
             hit,
@@ -814,10 +901,19 @@ impl MapViewer {
         match pane.gesture.take() {
             None => {
                 // Hover: highlight and tool previews.
-                let tris = pane.pick_tris();
-                let hit = pane.pick_at(p, &tris);
-                if hit != pane.hover {
-                    pane.hover = hit;
+                let fs = osm_gpui::frame_stats::start();
+                let hit = pane.pick_at(p);
+                osm_gpui::frame_stats::lap("b3d.hover_pick", fs);
+                // Only redraw when what the hover shows changes: the
+                // highlighted part face, or (for the tools that draw a guide
+                // from it) the point itself.
+                let changed = if pane.hover_point_shown() {
+                    hit != pane.hover
+                } else {
+                    hovered_part_face(hit) != hovered_part_face(pane.hover)
+                };
+                pane.hover = hit;
+                if changed {
                     pane.touch();
                     cx.notify();
                 }
@@ -1796,7 +1892,9 @@ impl MapViewer {
             },
             move |bounds, _, window, _| {
                 if let Some(image) = image {
+                    let fs = osm_gpui::frame_stats::start();
                     let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
+                    osm_gpui::frame_stats::lap("b3d.paint_image", fs);
                 }
             },
         )

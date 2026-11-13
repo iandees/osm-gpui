@@ -152,6 +152,31 @@ impl Ray {
         (t > 0.0).then(|| self.at(t))
     }
 
+    /// Distance along the ray to where it enters the box (0 if it starts
+    /// inside), if it crosses it at all (slab test, slightly padded).
+    pub fn hit_box(&self, min: Vec3, max: Vec3) -> Option<f32> {
+        const PAD: f32 = 1e-3;
+        let (min, max) = (min - Vec3::splat(PAD), max + Vec3::splat(PAD));
+        let mut t0 = 0.0f32;
+        let mut t1 = f32::INFINITY;
+        for axis in 0..3 {
+            let (o, d) = (self.origin[axis], self.dir[axis]);
+            if d.abs() < 1e-12 {
+                if o < min[axis] || o > max[axis] {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((min[axis] - o) / d, (max[axis] - o) / d);
+            t0 = t0.max(a.min(b));
+            t1 = t1.min(a.max(b));
+            if t0 > t1 {
+                return None;
+            }
+        }
+        Some(t0)
+    }
+
     /// Möller–Trumbore: distance along the ray to the triangle, if hit.
     pub fn hit_triangle(&self, v: &[Vec3; 3]) -> Option<f32> {
         let e1 = v[1] - v[0];
@@ -204,6 +229,71 @@ pub fn pick(ray: &Ray, tris: &[PickTri]) -> Option<Hit> {
             point: ray.at(t),
         }),
         None => ray.hit_horizontal(0.0).map(|point| Hit::Ground { point }),
+    }
+}
+
+/// Pick triangles grouped by solid, each group with its bounding box, so a
+/// ray only tests the triangles of solids whose box it crosses. Built once
+/// per scene; [`PickIndex::pick`] answers exactly as [`pick`] would.
+#[derive(Clone, Debug, Default)]
+pub struct PickIndex {
+    tris: Vec<PickTri>,
+    /// (box min, box max, start, end) over `tris`.
+    groups: Vec<(Vec3, Vec3, usize, usize)>,
+}
+
+impl PickIndex {
+    /// Index `tris`, grouping runs of triangles from the same solid (as the
+    /// mesher emits them).
+    pub fn new(tris: Vec<PickTri>) -> Self {
+        let mut groups = Vec::new();
+        let mut start = 0;
+        while start < tris.len() {
+            let solid = tris[start].face.solid;
+            let mut end = start;
+            let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+            while end < tris.len() && tris[end].face.solid == solid {
+                for v in tris[end].v {
+                    min = min.min(v);
+                    max = max.max(v);
+                }
+                end += 1;
+            }
+            groups.push((min, max, start, end));
+            start = end;
+        }
+        Self { tris, groups }
+    }
+
+    /// The nearest face the ray hits, else the ground.
+    pub fn pick(&self, ray: &Ray) -> Option<Hit> {
+        let mut best: Option<(f32, FaceId)> = None;
+        for &(min, max, start, end) in &self.groups {
+            let Some(enter) = ray.hit_box(min, max) else {
+                continue;
+            };
+            if best.is_some_and(|(d, _)| enter > d) {
+                continue;
+            }
+            for t in &self.tris[start..end] {
+                if let Some(d) = ray.hit_triangle(&t.v) {
+                    if best.is_none_or(|(b, _)| d < b) {
+                        best = Some((d, t.face));
+                    }
+                }
+            }
+        }
+        match best {
+            Some((t, face)) => Some(Hit::Face {
+                face,
+                point: ray.at(t),
+            }),
+            None => ray.hit_horizontal(0.0).map(|point| Hit::Ground { point }),
+        }
+    }
+
+    pub fn tris(&self) -> &[PickTri] {
+        &self.tris
     }
 }
 
@@ -298,6 +388,82 @@ mod tests {
         assert_eq!(cam.distance, base.distance);
         // With nothing in the way the camera is left alone.
         assert_eq!(least_obstructed(base, &targets, &[]), base);
+    }
+
+    #[test]
+    fn pick_index_agrees_with_brute_force() {
+        use super::super::mesh::build_mesh;
+        use super::super::model::test_data::*;
+        use super::super::model::{build_scene, BuildingRoot};
+        let mut b = DataBuilder::new();
+        b.ring(
+            10,
+            &rect(0.0, 0.0, 20.0, 12.0),
+            &[("building", "yes"), ("height", "15")],
+        );
+        for i in -3..=3 {
+            for j in -3..=3 {
+                if (i, j) != (0, 0) {
+                    let (x, y) = (i as f64 * 25.0, j as f64 * 25.0);
+                    let h = format!("{}", 5 + (i + j + 6) * 2);
+                    b.ring(
+                        100 + (i * 10 + j) as i64 + 50,
+                        &rect(x, y, x + 10.0, y + 8.0),
+                        &[("building", "yes"), ("height", &h)],
+                    );
+                }
+            }
+        }
+        let scene = build_scene(&b.data, BuildingRoot::Way(10)).unwrap();
+        let tris = build_mesh(&scene, &Default::default(), &[]).tris;
+        let index = PickIndex::new(tris.clone());
+        assert!(index.groups.len() > 10);
+        let cam = OrbitCamera::framing(Vec3::new(10.0, 6.0, 0.0), 30.0, 15.0);
+        let size = Vec2::new(640.0, 480.0);
+        let mut faces = 0;
+        for y in (0..480).step_by(23) {
+            for x in (0..640).step_by(19) {
+                let ray = cam.ray(Vec2::new(x as f32, y as f32), size, 200.0);
+                let (a, b) = (index.pick(&ray), pick(&ray, &tris));
+                assert_eq!(
+                    a.map(|h| matches!(h, Hit::Face { .. })),
+                    b.map(|h| matches!(h, Hit::Face { .. }))
+                );
+                if let (
+                    Some(Hit::Face {
+                        face: fa,
+                        point: pa,
+                    }),
+                    Some(Hit::Face { point: pb, .. }),
+                ) = (a, b)
+                {
+                    assert!((pa - pb).length() < 1e-3, "{fa:?}");
+                    faces += 1;
+                }
+            }
+        }
+        assert!(faces > 50, "{faces}");
+    }
+
+    #[test]
+    fn ray_box() {
+        let ray = Ray {
+            origin: Vec3::new(-5.0, 0.5, 0.5),
+            dir: Vec3::X,
+        };
+        assert_eq!(
+            ray.hit_box(Vec3::ZERO, Vec3::ONE).map(|t| t.round()),
+            Some(5.0)
+        );
+        assert_eq!(
+            ray.hit_box(Vec3::new(0.0, 2.0, 0.0), Vec3::new(1.0, 3.0, 1.0)),
+            None
+        );
+        let inside = Ray {
+            origin: Vec3::splat(0.5),
+            dir: Vec3::Z,
+        };
+        assert_eq!(inside.hit_box(Vec3::ZERO, Vec3::ONE), Some(0.0));
     }
 
     #[test]

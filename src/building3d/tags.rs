@@ -19,12 +19,17 @@ pub const DEFAULT_ROOF_HEIGHT_M: f64 = 3.0;
 /// visible and pickable.
 pub const MIN_THICKNESS_M: f64 = 0.2;
 
-/// The roof shapes the 3D view draws. Everything that isn't flat is drawn as
-/// a pyramid over the footprint, the closest one-size-fits-all shape.
+/// The roof shapes the 3D view draws. Shapes it doesn't model are drawn as a
+/// pyramid over the footprint, the closest one-size-fits-all shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoofShape {
     Flat,
     Pyramidal,
+    /// Two slopes meeting at a ridge, which runs along the footprint's
+    /// longest side — or across it with `roof:orientation=across`.
+    Gabled {
+        across: bool,
+    },
     /// Any other tagged shape (`gabled`, `hipped`, `dome`, ...), drawn as a
     /// pyramid; the tag value is kept for display.
     Other(String),
@@ -103,6 +108,11 @@ pub fn roof_shape(tags: &HashMap<String, String>) -> RoofShape {
     match tags.get("roof:shape").map(|s| s.trim()) {
         None | Some("") | Some("flat") => RoofShape::Flat,
         Some("pyramidal") => RoofShape::Pyramidal,
+        Some("gabled") => RoofShape::Gabled {
+            across: tags
+                .get("roof:orientation")
+                .is_some_and(|o| o.trim() == "across"),
+        },
         Some(other) => RoofShape::Other(other.to_string()),
     }
 }
@@ -308,6 +318,17 @@ mod tests {
         assert_eq!(
             roof_shape(&tags(&[("roof:shape", "pyramidal")])),
             RoofShape::Pyramidal
+        );
+        assert_eq!(
+            roof_shape(&tags(&[("roof:shape", "gabled")])),
+            RoofShape::Gabled { across: false }
+        );
+        assert_eq!(
+            roof_shape(&tags(&[
+                ("roof:shape", "gabled"),
+                ("roof:orientation", "across")
+            ])),
+            RoofShape::Gabled { across: true }
         );
         assert_eq!(
             roof_shape(&tags(&[("roof:shape", "dome")])),
