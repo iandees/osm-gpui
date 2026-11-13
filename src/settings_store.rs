@@ -182,6 +182,16 @@ pub struct AppSettings {
     /// dashboard), needed to show Mapillary street imagery. Empty when unset.
     #[serde(default)]
     pub mapillary_token: String,
+    /// Fotoshi API key. Optional: it raises the size of the photo searches
+    /// that draw the Fotoshi layer, and is required to look up the photos of
+    /// a selected OSM feature. Empty when unset.
+    #[serde(default)]
+    pub fotoshi_api_key: String,
+    /// Whether selecting a feature asks Fotoshi for photos of it. Off by
+    /// default: the lookup sends the feature's OSM id to Fotoshi, which tells
+    /// it what the user is looking at.
+    #[serde(default)]
+    pub fotoshi_lookup_selected: bool,
 }
 
 /// A saved window placement in logical pixels (screen coordinates).
@@ -302,6 +312,8 @@ impl Default for AppSettings {
             window_bounds: None,
             gps_trace_style: Default::default(),
             mapillary_token: String::new(),
+            fotoshi_api_key: String::new(),
+            fotoshi_lookup_selected: false,
         }
     }
 }
@@ -381,6 +393,30 @@ pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     let mut settings = snapshot();
     settings.suggest_from_taginfo = on;
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Set only the Fotoshi API key, on top of the store's current settings.
+/// Surrounding whitespace is dropped. Written to disk when `persist` is true.
+pub fn set_fotoshi_api_key(key: &str, persist: bool) {
+    let mut settings = snapshot();
+    settings.fotoshi_api_key = key.trim().to_string();
+    if persist {
+        update_store(settings);
+    } else {
+        update_store_in_memory(settings);
+    }
+}
+
+/// Turn the per-feature Fotoshi lookup on or off (see
+/// `AppSettings::fotoshi_lookup_selected`).
+pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
+    let mut settings = snapshot();
+    settings.fotoshi_lookup_selected = on;
     if persist {
         update_store(settings);
     } else {
@@ -657,6 +693,8 @@ mod tests {
                 ..Default::default()
             },
             mapillary_token: "MLY|123|abc".into(),
+            fotoshi_api_key: "fsk_123".into(),
+            fotoshi_lookup_selected: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -875,6 +913,8 @@ mod tests {
             window_bounds: None,
             gps_trace_style: Default::default(),
             mapillary_token: String::new(),
+            fotoshi_api_key: String::new(),
+            fotoshi_lookup_selected: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);

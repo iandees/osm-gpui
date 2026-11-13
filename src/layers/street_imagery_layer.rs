@@ -14,6 +14,7 @@ use crate::viewport::Viewport;
 /// Mapillary's green and Fotoshi's blue, so the two read apart on the map.
 const MAPILLARY_RGBA: u32 = 0x05cb63ff;
 const FOTOSHI_RGBA: u32 = 0x2563ebff;
+const PANORAMAX_RGBA: u32 = 0x9333eaff;
 const HALO_RGBA: u32 = 0xfffffff0;
 const SELECTED_RGBA: u32 = 0xf59e0bff;
 
@@ -22,11 +23,15 @@ const WEDGE_LENGTH: f32 = 15.0;
 /// Half the wedge's opening angle, in degrees.
 const WEDGE_HALF_ANGLE: f32 = 22.0;
 const HIT_RADIUS: f32 = 9.0;
+/// Past this many loaded photos the layer draws plain dots, no wedges.
+const DENSE_PHOTOS: usize = 1500;
+const DENSE_DOT_RADIUS: f32 = 3.0;
 
 fn color_of(provider: Provider) -> u32 {
     match provider {
         Provider::Mapillary => MAPILLARY_RGBA,
         Provider::Fotoshi => FOTOSHI_RGBA,
+        Provider::Panoramax => PANORAMAX_RGBA,
     }
 }
 
@@ -153,6 +158,7 @@ impl MapLayer for StreetImageryLayer {
         let (ox, oy) = (bounds.origin.x.as_f32(), bounds.origin.y.as_f32());
         let color = color_of(self.provider);
         self.store.with(|s| {
+            let dense = s.photos.len() > DENSE_PHOTOS;
             for p in &s.photos {
                 let sp = viewport.geo_to_screen(p.lat, p.lon);
                 let (x, y) = (sp.x.as_f32(), sp.y.as_f32());
@@ -171,6 +177,12 @@ impl MapLayer for StreetImageryLayer {
                     .is_some_and(|(pr, id)| *pr == p.provider && *id == p.id);
                 let scale = if selected { 1.3 } else { 1.0 };
                 let fill = if selected { SELECTED_RGBA } else { color };
+                // With thousands of photos on the map, plain small dots keep
+                // the frame fast; the photo that is open is always drawn in full.
+                if dense && !selected {
+                    paint_polygon(window, &circle_outline(x, y, DENSE_DOT_RADIUS), fill, None);
+                    continue;
+                }
                 if let Some(heading) = p.heading {
                     let wedge = wedge_outline(x, y, heading, scale);
                     paint_polygon(window, &wedge, HALO_RGBA, Some(2.0));
@@ -233,7 +245,10 @@ mod tests {
     fn hit_test_picks_the_nearest_dot_within_reach() {
         let vp = viewport();
         let store = PhotoStore::default();
-        store.replace(vec![photo("a", 10.0, 20.0), photo("b", 10.0, 20.00005)]);
+        store.insert_tile(
+            crate::street_imagery_tiles::TileId { z: 15, x: 0, y: 0 },
+            vec![photo("a", 10.0, 20.0), photo("b", 10.0, 20.00005)],
+        );
         let at = vp.geo_to_screen(10.0, 20.0);
         let hit = hit_test(&[&store], &vp, at).expect("on a dot");
         assert_eq!(hit.id, "a");

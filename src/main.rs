@@ -8692,6 +8692,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_refresh_notes))
             .on_action(cx.listener(Self::on_toggle_mapillary))
             .on_action(cx.listener(Self::on_toggle_fotoshi))
+            .on_action(cx.listener(Self::on_toggle_panoramax))
             .on_action(cx.listener(Self::on_refresh_street_imagery))
             .on_action(cx.listener(Self::on_new_note))
             .on_action(cx.listener(Self::on_minimize_window))

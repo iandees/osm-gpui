@@ -78,6 +78,7 @@ pub struct SettingsWindow {
     edit_simplify_tolerance: Entity<InputState>,
     simplify_tolerance_error: Option<SharedString>,
     edit_mapillary_token: Entity<InputState>,
+    edit_fotoshi_key: Entity<InputState>,
     cache_clear_error: Option<SharedString>,
     map_style_input: Entity<InputState>,
     map_style_error: Option<SharedString>,
@@ -124,6 +125,9 @@ impl SettingsWindow {
                 .placeholder("MLY|…")
                 .default_value(app_settings.mapillary_token.clone())
         });
+        let edit_fotoshi_key = cx.new(|cx| {
+            InputState::new(window, cx).default_value(app_settings.fotoshi_api_key.clone())
+        });
         let map_style_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
         });
@@ -151,6 +155,7 @@ impl SettingsWindow {
             edit_simplify_tolerance,
             simplify_tolerance_error: None,
             edit_mapillary_token,
+            edit_fotoshi_key,
             cache_clear_error: None,
             map_style_input,
             map_style_error: None,
@@ -230,6 +235,8 @@ impl SettingsWindow {
         self.app_settings.suggest_from_taginfo = live.suggest_from_taginfo;
         self.app_settings.simplify_tolerance_m = live.simplify_tolerance_m;
         self.app_settings.mapillary_token = live.mapillary_token;
+        self.app_settings.fotoshi_api_key = live.fotoshi_api_key;
+        self.app_settings.fotoshi_lookup_selected = live.fotoshi_lookup_selected;
         settings_store::update_store(self.app_settings.clone());
     }
 
@@ -363,6 +370,21 @@ impl SettingsWindow {
             self.app_settings.client_ids.insert(oauth_base, client_id);
         }
         self.save_settings();
+        cx.notify();
+    }
+
+    /// Store the Fotoshi API key typed into its field.
+    fn save_fotoshi_key(&mut self, cx: &mut Context<Self>) {
+        let raw = self.edit_fotoshi_key.read(cx).value().to_string();
+        settings_store::set_fotoshi_api_key(&raw, true);
+        self.app_settings.fotoshi_api_key = raw.trim().to_string();
+        cx.notify();
+    }
+
+    /// Turn the per-feature Fotoshi lookup on or off.
+    fn set_fotoshi_lookup(&mut self, on: bool, cx: &mut Context<Self>) {
+        settings_store::set_fotoshi_lookup_selected(on, true);
+        self.app_settings.fotoshi_lookup_selected = on;
         cx.notify();
     }
 
@@ -1119,9 +1141,49 @@ impl SettingsWindow {
         )
         .description(tr!("settings.street_imagery.mapillary_token_description"))
         .layout(Axis::Vertical);
+        let key_view = view.clone();
+        let key_input = self.edit_fotoshi_key.clone();
+        let key_item = SettingItem::new(
+            tr!("settings.street_imagery.fotoshi_key"),
+            SettingField::render(move |_options, _window, cx| {
+                let muted = cx.theme().muted_foreground;
+                let view = key_view.clone();
+                v_flex()
+                    .gap_2()
+                    .child(field_row(
+                        tr!("settings.street_imagery.fotoshi_key"),
+                        &key_input,
+                        muted,
+                    ))
+                    .child(
+                        Button::new("save-fotoshi-key")
+                            .label(tr!("settings.save"))
+                            .primary()
+                            .compact()
+                            .on_click(move |_ev, _window, cx| {
+                                view.update(cx, |this, cx| this.save_fotoshi_key(cx));
+                            }),
+                    )
+            }),
+        )
+        .description(tr!("settings.street_imagery.fotoshi_key_description"))
+        .layout(Axis::Vertical);
+        let lookup_view = view;
+        let lookup_item = SettingItem::new(
+            tr!("settings.street_imagery.fotoshi_lookup"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().fotoshi_lookup_selected,
+                move |on: bool, cx: &mut App| {
+                    lookup_view.update(cx, |this, cx| this.set_fotoshi_lookup(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.street_imagery.fotoshi_lookup_description"));
         SettingGroup::new()
             .title(tr!("settings.street_imagery.group"))
             .item(token_item)
+            .item(key_item)
+            .item(lookup_item)
     }
 
     fn cache_group(&self, view: Entity<Self>) -> SettingGroup {

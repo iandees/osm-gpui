@@ -396,6 +396,10 @@ settings:
   street_imagery:
     group: "Street imagery"
     mapillary_token: "Mapillary access token"
+    fotoshi_key: "Fotoshi API key"
+    fotoshi_key_description: "Optional. With a key, Fotoshi shows up to 100 photos per area instead of 20, and the lookup below becomes available. Create one at fotoshi.com/account/developer."
+    fotoshi_lookup: "Look up Fotoshi photos of the selected feature"
+    fotoshi_lookup_description: "When on, selecting an OpenStreetMap feature sends its id (such as w123) and your API key to Fotoshi to find photos of it. That tells Fotoshi what you are looking at, so it is off unless you turn it on. Needs an API key."
     mapillary_token_description: "Mapillary needs an access token to show its photos. Create an application at mapillary.com/dashboard/developers and paste its client token here."
   save: "Save"
   language:
@@ -1246,6 +1250,7 @@ street_imagery:
   menu:
     mapillary: "Show Mapillary Photos"
     fotoshi: "Show Fotoshi Photos"
+    panoramax: "Show Panoramax Photos"
     refresh: "Refresh Street Imagery"
   layer_name: "%{provider} photos"
   state:
@@ -1253,12 +1258,17 @@ street_imagery:
     loaded:
       one: "%{provider}: 1 photo"
       other: "%{provider}: %{count} photos"
-    truncated: "%{provider}: showing the first %{count} photos; zoom in for more"
     zoom_in: "Zoom in to see %{provider} photos"
     no_token: "Add a Mapillary access token in Settings to see Mapillary photos"
     unauthorized: "Mapillary refused the access token; check it in Settings"
     rate_limited: "%{provider} rate limit reached; try again later"
     fetch_failed: "Could not load %{provider} photos: %{detail}"
+  object:
+    title:
+      one: "Fotoshi photo"
+      other: "Fotoshi photos (%{count})"
+    checking: "Checking Fotoshi for photos…"
+    photo: "Photo %{number}"
   panel:
     title: "Street photo"
     close: "Close photo"

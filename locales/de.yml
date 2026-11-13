@@ -390,6 +390,10 @@ settings:
   street_imagery:
     group: "Straßenfotos"
     mapillary_token: "Mapillary-Zugriffstoken"
+    fotoshi_key: "Fotoshi-API-Schlüssel"
+    fotoshi_key_description: "Optional. Mit Schlüssel zeigt Fotoshi bis zu 100 statt 20 Fotos pro Gebiet, und die Suche unten wird verfügbar. Einen Schlüssel erstellst du unter fotoshi.com/account/developer."
+    fotoshi_lookup: "Fotoshi-Fotos des ausgewählten Objekts suchen"
+    fotoshi_lookup_description: "Wenn aktiviert, sendet die Auswahl eines OpenStreetMap-Objekts dessen ID (z. B. w123) und deinen API-Schlüssel an Fotoshi, um Fotos davon zu finden. Fotoshi erfährt dadurch, was du dir ansiehst; deshalb ist die Funktion standardmäßig aus. Benötigt einen API-Schlüssel."
     mapillary_token_description: "Mapillary benötigt ein Zugriffstoken, um seine Fotos anzuzeigen. Lege unter mapillary.com/dashboard/developers eine Anwendung an und füge ihr Client-Token hier ein."
   save: "Sichern"
   language:
@@ -1218,6 +1222,7 @@ street_imagery:
   menu:
     mapillary: "Mapillary-Fotos anzeigen"
     fotoshi: "Fotoshi-Fotos anzeigen"
+    panoramax: "Panoramax-Fotos anzeigen"
     refresh: "Straßenfotos aktualisieren"
   layer_name: "%{provider}-Fotos"
   state:
@@ -1225,12 +1230,17 @@ street_imagery:
     loaded:
       one: "%{provider}: 1 Foto"
       other: "%{provider}: %{count} Fotos"
-    truncated: "%{provider}: die ersten %{count} Fotos werden angezeigt; zum Anzeigen weiterer hineinzoomen"
     zoom_in: "Zum Anzeigen der %{provider}-Fotos hineinzoomen"
     no_token: "Trage in den Einstellungen ein Mapillary-Zugriffstoken ein, um Mapillary-Fotos zu sehen"
     unauthorized: "Mapillary hat das Zugriffstoken abgelehnt; prüfe es in den Einstellungen"
     rate_limited: "Anfragelimit von %{provider} erreicht; versuche es später erneut"
     fetch_failed: "%{provider}-Fotos konnten nicht geladen werden: %{detail}"
+  object:
+    title:
+      one: "Fotoshi-Foto"
+      other: "Fotoshi-Fotos (%{count})"
+    checking: "Fotoshi wird nach Fotos gefragt …"
+    photo: "Foto %{number}"
   panel:
     title: "Straßenfoto"
     close: "Foto schließen"

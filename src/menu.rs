@@ -16,7 +16,9 @@ use crate::gps_traces_ui::DownloadGpsTraces;
 use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::selection_actions;
-use crate::street_imagery_ui::{RefreshStreetImagery, ToggleFotoshi, ToggleMapillary};
+use crate::street_imagery_ui::{
+    RefreshStreetImagery, ToggleFotoshi, ToggleMapillary, TogglePanoramax,
+};
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCoordinateGrid, AddCustomImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
@@ -934,6 +936,11 @@ fn build_menus(
                 MenuItem::action(tr!("street_imagery.menu.fotoshi"), ToggleFotoshi).checked(
                     osm_gpui::street_imagery::menu_shows(
                         osm_gpui::street_imagery::Provider::Fotoshi,
+                    ),
+                ),
+                MenuItem::action(tr!("street_imagery.menu.panoramax"), TogglePanoramax).checked(
+                    osm_gpui::street_imagery::menu_shows(
+                        osm_gpui::street_imagery::Provider::Panoramax,
                     ),
                 ),
                 MenuItem::action(tr!("street_imagery.menu.refresh"), RefreshStreetImagery),
