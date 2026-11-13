@@ -146,3 +146,48 @@ impl MapLayer for GridLayer {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: it would pull in gpui's `test` attribute macro.
+    use super::GridLayer;
+
+    #[test]
+    fn spacing_steps_at_zoom_boundaries() {
+        let cases = [
+            (0.0, 10.0),
+            (3.0, 10.0),
+            (3.01, 5.0),
+            (6.0, 5.0),
+            (6.01, 1.0),
+            (8.0, 1.0),
+            (8.01, 0.5),
+            (10.0, 0.5),
+            (10.01, 0.1),
+            (12.0, 0.1),
+            (12.01, 0.05),
+            (14.0, 0.05),
+            (14.01, 0.01),
+            (16.0, 0.01),
+            (16.01, 0.005),
+            (18.0, 0.005),
+            (18.01, 0.001),
+            (23.0, 0.001),
+        ];
+        for (zoom, want) in cases {
+            assert_eq!(GridLayer::calculate_grid_spacing(zoom), want, "zoom {zoom}");
+        }
+    }
+
+    #[test]
+    fn spacing_never_grows_with_zoom() {
+        let mut prev = f64::INFINITY;
+        let mut zoom = -2.0;
+        while zoom <= 24.0 {
+            let s = GridLayer::calculate_grid_spacing(zoom);
+            assert!(s > 0.0 && s <= prev, "zoom {zoom}: {s} after {prev}");
+            prev = s;
+            zoom += 0.25;
+        }
+    }
+}
