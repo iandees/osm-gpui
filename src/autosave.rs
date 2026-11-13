@@ -732,7 +732,7 @@ impl Tracker {
 mod tests {
     use super::*;
     use crate::layers::osm_layer::OsmLayer;
-    use crate::layers::LayerId;
+    use crate::layers::{EditableLayer, LayerId};
     use crate::osm::{MemberType, OsmMember, OsmNode, OsmRelation, OsmWay};
     use crate::selection::FeatureKind;
 

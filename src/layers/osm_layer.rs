@@ -1500,116 +1500,6 @@ impl OsmLayer {
         self.download_rects = crate::download_bounds::merc_rects(&osm_data.bounds);
     }
 
-    /// Whether the object was created here or differs from the baseline.
-    pub fn has_pending_edit(&self, kind: FeatureKind, id: i64) -> bool {
-        let (Some(current), Some(original)) = (&self.osm_data, &self.original_data) else {
-            return self.osm_data.is_some();
-        };
-        match kind {
-            FeatureKind::Node => match (current.nodes.get(&id), original.nodes.get(&id)) {
-                (Some(a), Some(b)) => a != b,
-                (Some(_), None) => true,
-                _ => false,
-            },
-            FeatureKind::Way => match (current.ways.get(&id), original.ways.get(&id)) {
-                (Some(a), Some(b)) => a != b,
-                (Some(_), None) => true,
-                _ => false,
-            },
-            FeatureKind::Relation => {
-                let find = |d: &OsmData| d.relations.iter().find(|r| r.id == id).cloned();
-                match (find(current), find(original)) {
-                    (Some(a), Some(b)) => a != b,
-                    (Some(_), None) => true,
-                    _ => false,
-                }
-            }
-        }
-    }
-
-    /// Purge: remove objects from the data and the baseline together, so the
-    /// diff never sees them. See `EditableLayer::purge_features`.
-    pub fn purge_features(
-        &mut self,
-        nodes: &[i64],
-        ways: &[i64],
-        relations: &[i64],
-    ) -> PurgedFeatures {
-        let mut purged = PurgedFeatures::default();
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
-            return purged;
-        };
-        let mut data = (*current).clone();
-        let mut base = (*original).clone();
-        for &id in nodes {
-            base.nodes.remove(&id);
-            if let Some(n) = data.nodes.remove(&id) {
-                purged.nodes.push(n);
-            }
-        }
-        for &id in ways {
-            base.ways.remove(&id);
-            if let Some(w) = data.ways.remove(&id) {
-                purged.ways.push(w);
-            }
-        }
-        for &id in relations {
-            let base_index = base.relations.iter().position(|r| r.id == id);
-            if let Some(i) = base_index {
-                base.relations.remove(i);
-            }
-            if let Some(i) = data.relations.iter().position(|r| r.id == id) {
-                let r = data.relations.remove(i);
-                purged.relations.push((r, i, base_index.unwrap_or(i)));
-            }
-        }
-        if purged.is_empty() {
-            return purged;
-        }
-        let data = Arc::new(data);
-        self.rebuild_caches(&data);
-        self.osm_data = Some(data);
-        self.original_data = Some(Arc::new(base));
-        self.revision += 1;
-        purged
-    }
-
-    /// Undo of `purge_features`.
-    pub fn restore_purged(&mut self, purged: PurgedFeatures) {
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
-            return;
-        };
-        let mut data = (*current).clone();
-        let mut base = (*original).clone();
-        for n in purged.nodes {
-            base.nodes.insert(n.id, n.clone());
-            data.nodes.insert(n.id, n);
-        }
-        for w in purged.ways {
-            base.ways.insert(w.id, w.clone());
-            data.ways.insert(w.id, w);
-        }
-        // Lowest index first, so each insert lands where it used to be.
-        let mut relations = purged.relations;
-        relations.sort_by_key(|(_, i, _)| *i);
-        for (r, i, _) in &relations {
-            let at = (*i).min(data.relations.len());
-            data.relations.insert(at, r.clone());
-        }
-        relations.sort_by_key(|(_, _, j)| *j);
-        for (r, _, j) in relations {
-            let at = j.min(base.relations.len());
-            base.relations.insert(at, r);
-        }
-        let data = Arc::new(data);
-        self.rebuild_caches(&data);
-        self.osm_data = Some(data);
-        self.original_data = Some(Arc::new(base));
-        self.revision += 1;
-    }
-
     /// Record that the layer's data changed by a local edit (or the undo or
     /// redo of one).
     fn mark_modified(&mut self) {
@@ -1635,33 +1525,6 @@ impl OsmLayer {
         Some((current, original))
     }
 
-    /// Merge freshly downloaded server data into this layer by object id,
-    /// keeping local edits — see `merge::merge_download` for the rules.
-    /// Rebuilds every derived cache from scratch (like `set_osm_data`; a
-    /// download is not a per-frame path), but preserves the split between
-    /// the server baseline and local edits, and the `modified` flag.
-    pub fn merge_download(&mut self, incoming: OsmData) -> MergeStats {
-        let empty = || OsmData {
-            nodes: HashMap::new(),
-            ways: HashMap::new(),
-            relations: Vec::new(),
-            bounds: Vec::new(),
-        };
-        let mut current = self.osm_data.as_deref().cloned().unwrap_or_else(empty);
-        let mut original = self.original_data.as_deref().cloned().unwrap_or_else(empty);
-
-        let stats = merge::merge_download(&mut original, &mut current, incoming);
-
-        let modified = self.modified;
-        self.set_osm_data(Arc::new(current));
-        // `set_osm_data` treats its argument as a fresh server baseline;
-        // restore the real one so pending edits stay pending.
-        self.original_data = Some(Arc::new(original));
-        self.modified = modified;
-        self.revision += 1;
-        stats
-    }
-
     /// Run `change` on copies of the baseline and current data and, if it
     /// reports a change, install them: caches rebuilt like `merge_download`
     /// (this is a once-per-conflict path), the baseline kept separate from
@@ -1684,42 +1547,6 @@ impl OsmLayer {
         self.modified = !self.diff_for_upload().is_empty();
         self.revision += 1;
         true
-    }
-
-    /// See `resolve::set_base_version`. Only versions change, so nothing
-    /// derived needs rebuilding.
-    pub fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
-        let (Some(current), Some(original)) = (self.osm_data.as_mut(), self.original_data.as_mut())
-        else {
-            return false;
-        };
-        self.revision += 1;
-        resolve::set_base_version(
-            Arc::make_mut(original),
-            Arc::make_mut(current),
-            kind,
-            id,
-            version,
-        )
-    }
-
-    /// See `resolve::adopt_server_element`.
-    pub fn adopt_server_element(
-        &mut self,
-        kind: FeatureKind,
-        id: i64,
-        server: crate::osm_api::ServerElement,
-    ) -> bool {
-        self.change_snapshots(|original, current| {
-            resolve::adopt_server_element(original, current, kind, id, server)
-        })
-    }
-
-    /// See `resolve::forget_local_delete`.
-    pub fn forget_local_delete(&mut self, kind: FeatureKind, id: i64) -> bool {
-        self.change_snapshots(|original, current| {
-            resolve::forget_local_delete(original, current, kind, id)
-        })
     }
 
     /// Compute the diff between this layer's original (last-synced)
@@ -1948,437 +1775,6 @@ impl OsmLayer {
         self.mark_modified();
     }
 
-    /// Commit a set of node moves: clones the current `OsmData`, applies the
-    /// given `(node_id, new_lat, new_lon)` updates, marks the layer modified,
-    /// and incrementally patches the derived caches/indices in place:
-    /// - `node_cache` entries for the moved node ids only.
-    /// - `way_vertices`/`way_bboxes`/`way_styles` for exactly the ways
-    ///   referencing a moved node (via `node_to_ways`), not every way.
-    /// - `node_index`/`way_index` via targeted remove+insert, not a full
-    ///   `bulk_load`.
-    /// - `layer_bbox`, extended conservatively (never shrinks).
-    ///
-    /// Mutates `osm_data` via `Arc::make_mut` — in place, with no dataset
-    /// clone at all, as long as this is the only live `Arc<OsmData>`
-    /// reference (true for every production call path: nothing outside
-    /// tests holds a second clone of the layer's `Arc<OsmData>` across an
-    /// edit; see `get_osm_data`'s doc comment). If some other clone *is*
-    /// alive (e.g. a test snapshot taken before this call), `make_mut`
-    /// transparently falls back to cloning once, preserving the old
-    /// snapshot-isolation semantics that the previous always-clone code
-    /// gave by construction.
-    ///
-    /// The expensive part this whole function replaces was always the
-    /// *derived-cache rebuild* (rebuilding every way's vertex/bbox table and
-    /// bulk-loading both R-trees from scratch), not the `OsmData` clone —
-    /// that rebuild is still avoided here by patching only the touched
-    /// nodes/ways.
-    ///
-    /// No-op if this layer has no data or `moves` is empty.
-    pub fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
-        if moves.is_empty() {
-            return;
-        }
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-
-        let mut moved_ids: Vec<i64> = Vec::with_capacity(moves.len());
-        for &(id, lat, lon) in moves {
-            if let Some(node) = data.nodes.get_mut(&id) {
-                node.lat = lat;
-                node.lon = lon;
-                moved_ids.push(id);
-            }
-        }
-        self.modified = true;
-        self.revision += 1;
-        if moved_ids.is_empty() {
-            // None of the moved ids were actually present; nothing to patch.
-            return;
-        }
-
-        // Ways referencing any moved node — these are the only ones whose
-        // cached vertex list/bbox can possibly have changed.
-        let mut touched_ways: HashSet<usize> = HashSet::new();
-        for &id in &moved_ids {
-            if let Some(way_idxs) = self.node_to_ways.get(&id) {
-                touched_ways.extend(way_idxs.iter().copied());
-            }
-        }
-
-        // -- Patch node_cache + node_index for each moved node. --
-        for &id in &moved_ids {
-            // Remove the stale R-tree entry (old mercator position) first —
-            // we need the OLD position, which is still in node_cache here.
-            if let Some(&old_idx) = self.node_cache.index_by_id.get(&id) {
-                let (_, old_mx, old_my) = self.node_cache.flat[old_idx];
-                self.node_index
-                    .remove(&GeomWithData::new([old_mx, old_my], id));
-            }
-
-            let Some(node) = data.nodes.get(&id) else {
-                continue;
-            };
-            match validate_coords(node.lat, node.lon) {
-                Some((lat, lon)) => {
-                    let (mx, my) = lat_lon_to_mercator(lat, lon);
-                    let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
-                    if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
-                        self.node_cache.flat[idx] = (id, mx, my);
-                        self.node_cache.styles[idx] = style;
-                    } else {
-                        let idx = self.node_cache.flat.len();
-                        self.node_cache.flat.push((id, mx, my));
-                        self.node_cache.styles.push(style);
-                        self.node_cache.index_by_id.insert(id, idx);
-                    }
-                    self.node_index.insert(GeomWithData::new([mx, my], id));
-
-                    // Conservatively extend layer_bbox — never shrinks, so a
-                    // move away from a bbox extreme won't shrink it back
-                    // (harmless: it just means slightly less aggressive
-                    // off-screen culling until the next full reload).
-                    match &mut self.layer_bbox {
-                        Some(lb) => lb.extend(mx, my),
-                        None => {
-                            self.layer_bbox = Some(WayBbox {
-                                min_x: mx,
-                                max_x: mx,
-                                min_y: my,
-                                max_y: my,
-                            })
-                        }
-                    }
-                }
-                None => {
-                    // New coords are invalid: drop this node from the
-                    // position caches/index (mirrors compute_node_cache,
-                    // which never included invalid-coordinate nodes).
-                    if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
-                        self.node_cache.flat.remove(idx);
-                        self.node_cache.styles.remove(idx);
-                        // Removing from the middle of `flat` shifts every
-                        // later index by one; fix up index_by_id.
-                        for v in self.node_cache.index_by_id.values_mut() {
-                            if *v > idx {
-                                *v -= 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // -- Patch way_vertices/way_bboxes/way_styles + way_index for the
-        // touched ways only. --
-        for &way_idx in &touched_ways {
-            let way_id = self.way_ids[way_idx];
-            let Some(way) = data.ways.get(&way_id) else {
-                continue;
-            };
-
-            // Remove the way's stale R-tree entry (old bbox), if any.
-            if let Some(old_bbox) = self.way_bboxes[way_idx] {
-                self.way_index.remove(&GeomWithData::new(
-                    Rectangle::from_corners(
-                        [old_bbox.min_x, old_bbox.min_y],
-                        [old_bbox.max_x, old_bbox.max_y],
-                    ),
-                    way.id,
-                ));
-            }
-
-            let (verts, new_bbox) = project_way_vertices(way, &self.node_cache);
-            if let Some(b) = new_bbox {
-                self.way_index.insert(GeomWithData::new(
-                    Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
-                    way.id,
-                ));
-                match &mut self.layer_bbox {
-                    Some(lb) => {
-                        lb.extend(b.min_x, b.min_y);
-                        lb.extend(b.max_x, b.max_y);
-                    }
-                    None => self.layer_bbox = Some(b),
-                }
-            }
-            self.way_vertices[way_idx] = verts;
-            self.way_bboxes[way_idx] = new_bbox;
-            let style = self.stylesheet.way_style_cached(
-                &way.tags,
-                way.is_closed(),
-                self.member_ways.contains(&way.id),
-            );
-            self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
-            self.way_styles[way_idx] = style;
-        }
-
-        // Multipolygons made of those ways follow the move.
-        let touched_way_ids: Vec<i64> = touched_ways.iter().map(|&i| self.way_ids[i]).collect();
-        self.mp_refresh_ways(&touched_way_ids);
-        self.mp_refresh_nodes(&moved_ids);
-    }
-
-    /// Set (insert or overwrite) a single tag on one node or way this layer
-    /// owns. Marks the layer modified whenever the feature is found (same
-    /// precedent as `commit_node_moves`: called at all implies modified,
-    /// no finer no-op distinction). Doesn't rebuild geometry caches since
-    /// tags don't affect vertex positions, but DOES refresh the cached
-    /// resolved style for the affected feature, since that's tag-derived.
-    /// No-op if the feature isn't found.
-    pub fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-        let tags = match kind {
-            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
-            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
-            FeatureKind::Relation => data
-                .relations
-                .iter_mut()
-                .find(|r| r.id == id)
-                .map(|r| &mut r.tags),
-        };
-        let Some(tags) = tags else {
-            return;
-        };
-        tags.insert(key.to_string(), value.to_string());
-        self.modified = true;
-        self.revision += 1;
-        apply_style_refresh(
-            kind,
-            id,
-            data,
-            &mut self.node_cache,
-            &self.way_id_to_index,
-            &self.way_vertices,
-            &mut self.way_styles,
-            &mut self.way_fill_tris,
-            &self.stylesheet,
-            &self.member_ways,
-        );
-        if kind == FeatureKind::Relation {
-            // The relation's style (or whether it is a multipolygon at all)
-            // follows its tags.
-            self.mp_refresh_relations(&[id]);
-        }
-    }
-
-    /// Remove a single tag key from one node or way this layer owns. Marks
-    /// the layer modified whenever the feature is found, same precedent as
-    /// `set_tag`. Also refreshes the cached resolved style, same as
-    /// `set_tag`. No-op if the feature isn't found.
-    pub fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-        let tags = match kind {
-            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
-            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
-            FeatureKind::Relation => data
-                .relations
-                .iter_mut()
-                .find(|r| r.id == id)
-                .map(|r| &mut r.tags),
-        };
-        let Some(tags) = tags else {
-            return;
-        };
-        tags.remove(key);
-        self.modified = true;
-        self.revision += 1;
-        apply_style_refresh(
-            kind,
-            id,
-            data,
-            &mut self.node_cache,
-            &self.way_id_to_index,
-            &self.way_vertices,
-            &mut self.way_styles,
-            &mut self.way_fill_tris,
-            &self.stylesheet,
-            &self.member_ways,
-        );
-        if kind == FeatureKind::Relation {
-            self.mp_refresh_relations(&[id]);
-        }
-    }
-
-    /// Insert a brand-new node at `(lat, lon)`, assigning the next
-    /// placeholder id. Reuses `create_node`'s existing `next_new_id`
-    /// allocator/patch path (rather than a separate counter) so ids handed
-    /// out through this new editing-mode entry point can never collide with
-    /// ids handed out through the pre-existing `create_node`/delete-undo
-    /// path. Lazily initializes empty `OsmData` if this layer had none yet
-    /// (`create_node` alone refuses to allocate against a `None` data set).
-    /// Marks the layer modified. Returns the new node's id.
-    pub fn add_node(&mut self, lat: f64, lon: f64) -> i64 {
-        if self.osm_data.is_none() {
-            self.osm_data = Some(Arc::new(OsmData {
-                nodes: HashMap::new(),
-                ways: HashMap::new(),
-                relations: Vec::new(),
-                bounds: Vec::new(),
-            }));
-        }
-        self.create_node(lat, lon, None)
-            .expect("osm_data was just ensured to be Some")
-    }
-
-    /// Remove a node this layer owns from `OsmData` and every derived
-    /// cache/index. Unlike `delete_node` (the existing delete-with-undo
-    /// path), this does NOT refuse a node still referenced by a way — it's
-    /// meant to be composed with `remove_node_from_way` by callers (e.g.
-    /// undo of `insert_node_into_way`) that already know what they're doing.
-    /// No-op if the node isn't present.
-    pub fn remove_node(&mut self, node_id: i64) {
-        let Some(current) = self.osm_data.clone() else {
-            return;
-        };
-        let mut data = (*current).clone();
-        if data.nodes.remove(&node_id).is_none() {
-            return;
-        }
-        if let Some(idx) = self.node_cache.index_by_id.remove(&node_id) {
-            let (_, mx, my) = self.node_cache.flat[idx];
-            self.node_index
-                .remove(&GeomWithData::new([mx, my], node_id));
-            self.node_cache.flat.remove(idx);
-            self.node_cache.styles.remove(idx);
-            for v in self.node_cache.index_by_id.values_mut() {
-                if *v > idx {
-                    *v -= 1;
-                }
-            }
-        }
-        let using_ways = self.ways_using_node(node_id);
-        self.node_to_ways.remove(&node_id);
-        self.mark_modified();
-        self.osm_data = Some(Arc::new(data));
-        self.mp_refresh_ways(&using_ways);
-        self.mp_refresh_nodes(&[node_id]);
-    }
-
-    /// Insert a brand-new way referencing existing node ids (must already
-    /// exist in this layer — callers create nodes with `add_node` first),
-    /// assigning the next placeholder way id. Appended at the end of the
-    /// index-aligned caches, mirroring `restore_way`. Marks the layer
-    /// modified. Returns the new way's id.
-    pub fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64 {
-        let id = self.next_placeholder_way_id;
-        self.next_placeholder_way_id -= 1;
-
-        if self.osm_data.is_none() {
-            self.osm_data = Some(Arc::new(OsmData {
-                nodes: HashMap::new(),
-                ways: HashMap::new(),
-                relations: Vec::new(),
-                bounds: Vec::new(),
-            }));
-        }
-        let arc = self
-            .osm_data
-            .as_mut()
-            .expect("osm_data was just ensured to be Some");
-        let data = Arc::make_mut(arc);
-        let way = OsmWay {
-            id,
-            nodes: node_ids,
-            version: 0,
-            tags: tags.into_iter().collect(),
-        };
-
-        let (verts, bbox) = project_way_vertices(&way, &self.node_cache);
-        if let Some(b) = bbox {
-            self.way_index.insert(GeomWithData::new(
-                Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
-                way.id,
-            ));
-            match &mut self.layer_bbox {
-                Some(lb) => {
-                    lb.extend(b.min_x, b.min_y);
-                    lb.extend(b.max_x, b.max_y);
-                }
-                None => self.layer_bbox = Some(b),
-            }
-        }
-
-        let way_idx = self.way_vertices.len();
-        self.way_id_to_index.insert(way.id, way_idx);
-        for nid in &way.nodes {
-            self.node_to_ways.entry(*nid).or_default().insert(way_idx);
-        }
-        self.way_ids.push(way.id);
-        let style = self.stylesheet.way_style_cached(
-            &way.tags,
-            way.is_closed(),
-            self.member_ways.contains(&way.id),
-        );
-        self.way_fill_tris.push(compute_fill_tris(&verts, &style));
-        self.way_vertices.push(verts);
-        self.way_bboxes.push(bbox);
-        self.way_styles.push(style);
-        data.ways.insert(way.id, way);
-
-        self.mark_modified();
-        self.mp_refresh_ways(&[id]);
-        id
-    }
-
-    /// Remove a way this layer owns from `OsmData` and every derived cache/
-    /// index. Its member nodes are untouched. No-op if the way isn't
-    /// present. Mirrors `delete_way`'s incremental index-shift patching
-    /// (`data.ways` is a `HashMap` and needs no shifting; the index-aligned
-    /// caches do).
-    pub fn remove_way(&mut self, way_id: i64) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-        if data.ways.remove(&way_id).is_none() {
-            return;
-        }
-
-        if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
-            self.way_index.remove(&GeomWithData::new(
-                Rectangle::from_corners(
-                    [old_bbox.min_x, old_bbox.min_y],
-                    [old_bbox.max_x, old_bbox.max_y],
-                ),
-                way_id,
-            ));
-        }
-        self.way_ids.remove(way_idx);
-        self.way_vertices.remove(way_idx);
-        self.way_bboxes.remove(way_idx);
-        self.way_styles.remove(way_idx);
-        self.way_fill_tris.remove(way_idx);
-        self.way_id_to_index.remove(&way_id);
-        for v in self.way_id_to_index.values_mut() {
-            if *v > way_idx {
-                *v -= 1;
-            }
-        }
-        for ways in self.node_to_ways.values_mut() {
-            *ways = ways
-                .iter()
-                .filter(|&&w| w != way_idx)
-                .map(|&w| if w > way_idx { w - 1 } else { w })
-                .collect();
-        }
-        self.node_to_ways.retain(|_, ways| !ways.is_empty());
-
-        self.mark_modified();
-        self.mp_refresh_ways(&[way_id]);
-    }
-
     /// Recompute and store the vertex/bbox/style/fill-tri cache entries for
     /// the way at `way_idx`, given its current (already-mutated) node list —
     /// shared tail of `extend_way`/`insert_node_into_way`/
@@ -2422,156 +1818,6 @@ impl OsmLayer {
         self.way_styles[way_idx] = style;
         // A reshaped way reshapes the multipolygons it belongs to.
         self.mp_refresh_ways(&[way_id]);
-    }
-
-    /// Append `node_id` (must already exist in this layer) to an existing
-    /// way's node list, and refresh that one way's derived caches. No-op if
-    /// the way isn't found.
-    pub fn extend_way(&mut self, way_id: i64, node_id: i64) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else {
-            return;
-        };
-        way.nodes.push(node_id);
-        let way_snapshot = way.clone();
-
-        self.node_to_ways
-            .entry(node_id)
-            .or_default()
-            .insert(way_idx);
-        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-
-        self.mark_modified();
-    }
-
-    /// Create a new node at `(lat, lon)` (via `add_node`'s same allocator/
-    /// patch path) and splice it into an existing way's node list at `index`
-    /// (0-based, into the node list — e.g. `index = 1` inserts between the
-    /// way's 1st and 2nd nodes). Returns the new node's id. No-op on the way
-    /// side (the node is still created, but never spliced into any way) if
-    /// the way isn't found — callers only invoke this against a way just
-    /// found via hit-testing, so this should not happen in practice.
-    pub fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64 {
-        let new_id = self.add_node(lat, lon);
-
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return new_id;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return new_id;
-        };
-        let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else {
-            return new_id;
-        };
-        if index > way.nodes.len() {
-            return new_id;
-        }
-        way.nodes.insert(index, new_id);
-        let way_snapshot = way.clone();
-
-        self.node_to_ways.entry(new_id).or_default().insert(way_idx);
-        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-
-        self.mark_modified();
-        new_id
-    }
-
-    /// Inverse of `insert_node_into_way`: splice the node out of `way_id`'s
-    /// node list at `index`, and refresh that way's derived caches. Does
-    /// NOT delete the node itself — callers combine this with `remove_node`
-    /// when fully undoing an insert. No-op if the way isn't found or
-    /// `index` is out of bounds.
-    pub fn remove_node_from_way(&mut self, way_id: i64, index: usize) {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return;
-        };
-        let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else {
-            return;
-        };
-        if index >= way.nodes.len() {
-            return;
-        }
-        let removed_node_id = way.nodes.remove(index);
-        let way_snapshot = way.clone();
-
-        // Only drop this way's `node_to_ways` entry for `removed_node_id` if
-        // the way no longer references that node at all — a closed way can
-        // reference the same node twice (ring closure), so removing one
-        // occurrence must not erase the way's remaining reference.
-        if !way_snapshot.nodes.contains(&removed_node_id) {
-            if let Some(way_idxs) = self.node_to_ways.get_mut(&removed_node_id) {
-                way_idxs.remove(&way_idx);
-            }
-        }
-        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-
-        self.mark_modified();
-    }
-
-    /// Reverse the node order of a way and refresh that way's derived caches.
-    /// Applying it twice restores the original order, so it is its own
-    /// inverse for undo/redo. Returns whether the way was found.
-    pub fn reverse_way(&mut self, way_id: i64) -> bool {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return false;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return false;
-        };
-        let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else {
-            return false;
-        };
-        way.nodes = crate::geometry::reversed(&way.nodes);
-        let way_snapshot = way.clone();
-        // The set of nodes (and so `node_to_ways`) is unchanged.
-        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-        self.mark_modified();
-        true
-    }
-
-    /// Replace a way's node list and refresh its derived caches and the
-    /// node-to-ways index. The nodes must already exist. Marks the layer
-    /// modified. Returns whether the way was found.
-    pub fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool {
-        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
-            return false;
-        };
-        let Some(arc) = self.osm_data.as_mut() else {
-            return false;
-        };
-        let data = Arc::make_mut(arc);
-        let Some(way) = data.ways.get_mut(&way_id) else {
-            return false;
-        };
-        let old = std::mem::replace(&mut way.nodes, node_ids);
-        let way_snapshot = way.clone();
-
-        for dropped in old.iter().filter(|n| !way_snapshot.nodes.contains(n)) {
-            if let Some(way_idxs) = self.node_to_ways.get_mut(dropped) {
-                way_idxs.remove(&way_idx);
-                if way_idxs.is_empty() {
-                    self.node_to_ways.remove(dropped);
-                }
-            }
-        }
-        for &added in &way_snapshot.nodes {
-            self.node_to_ways.entry(added).or_default().insert(way_idx);
-        }
-        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
-        self.mark_modified();
-        true
     }
 
     /// Bring `member_ways` and the styles of the ways whose membership
@@ -2707,160 +1953,6 @@ impl OsmLayer {
         }
     }
 
-    /// The ids of the ways whose node list includes `node_id`, ascending.
-    pub fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
-        let mut ids: Vec<i64> = self
-            .node_to_ways
-            .get(&node_id)
-            .into_iter()
-            .flatten()
-            .filter_map(|&idx| self.way_ids.get(idx).copied())
-            .collect();
-        ids.sort_unstable();
-        ids
-    }
-
-    /// The ids of the relations that have `way_id` as a member.
-    pub fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
-        self.relations_containing(crate::osm::MemberType::Way, way_id)
-    }
-
-    /// The ids of the relations that have `node_id` as a member.
-    pub fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
-        self.relations_containing(crate::osm::MemberType::Node, node_id)
-    }
-
-    /// A copy of the relation with this id, if the layer has it.
-    pub fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
-        self.osm_data
-            .as_ref()?
-            .relations
-            .iter()
-            .find(|r| r.id == relation_id)
-            .cloned()
-    }
-
-    /// Replace a relation's whole member list and return the previous one,
-    /// or `None` (changing nothing) if the layer has no such relation. Marks
-    /// the layer modified. Members don't feed any render cache, so nothing
-    /// else needs refreshing.
-    pub fn set_relation_members(
-        &mut self,
-        relation_id: i64,
-        members: Vec<crate::osm::OsmMember>,
-    ) -> Option<Vec<crate::osm::OsmMember>> {
-        let data = Arc::make_mut(self.osm_data.as_mut()?);
-        let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
-        let previous = std::mem::replace(&mut relation.members, members);
-        self.mark_modified();
-        self.mp_refresh_relations(&[relation_id]);
-        self.refresh_member_ways();
-        Some(previous)
-    }
-
-    /// Copies of every relation in the layer, in storage order.
-    pub fn relations(&self) -> Vec<crate::osm::OsmRelation> {
-        self.osm_data
-            .as_ref()
-            .map(|d| d.relations.clone())
-            .unwrap_or_default()
-    }
-
-    /// The ids of the relations that have `relation_id` as a member.
-    pub fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64> {
-        self.relations_containing(crate::osm::MemberType::Relation, relation_id)
-    }
-
-    /// Create a relation with these tags and members, assigning a fresh
-    /// negative id, and return it. `None` (changing nothing) if the layer has
-    /// no data loaded. The id is below every id the node, way and relation
-    /// allocators have handed out or hold, so ids never collide across
-    /// kinds. Member refs aren't resolved, so a member may be a feature that
-    /// only exists while a neighbouring undo step is applied. Marks the layer
-    /// modified.
-    pub fn create_relation(
-        &mut self,
-        tags: Vec<(String, String)>,
-        members: Vec<crate::osm::OsmMember>,
-    ) -> Option<i64> {
-        let lowest_relation = self
-            .osm_data
-            .as_ref()?
-            .relations
-            .iter()
-            .map(|r| r.id)
-            .min()
-            .unwrap_or(0);
-        let id = self
-            .next_new_id
-            .min(self.next_placeholder_way_id)
-            .min(lowest_relation.min(0) - 1);
-        self.next_new_id = id - 1;
-        self.next_placeholder_way_id = id - 1;
-        let data = Arc::make_mut(self.osm_data.as_mut()?);
-        data.relations.push(crate::osm::OsmRelation {
-            id,
-            members,
-            version: 0,
-            tags: tags.into_iter().collect(),
-        });
-        self.mark_modified();
-        self.mp_refresh_relations(&[id]);
-        self.refresh_member_ways();
-        Some(id)
-    }
-
-    /// Remove a relation, returning a snapshot for `restore_relation`.
-    /// Refuses (`None`, changing nothing) if the relation doesn't exist or is
-    /// itself a member of another relation; the caller removes that
-    /// membership first. Its own members are untouched. Marks the layer
-    /// modified.
-    pub fn delete_relation(&mut self, relation_id: i64) -> Option<DeletedRelationSnapshot> {
-        let data = self.osm_data.as_ref()?;
-        if data.relations.iter().any(|r| {
-            r.id != relation_id
-                && r.members.iter().any(|m| {
-                    m.member_type == crate::osm::MemberType::Relation && m.reference == relation_id
-                })
-        }) {
-            return None;
-        }
-        let index = data.relations.iter().position(|r| r.id == relation_id)?;
-        let data = Arc::make_mut(self.osm_data.as_mut()?);
-        let relation = data.relations.remove(index);
-        self.mark_modified();
-        self.mp_refresh_relations(&[relation_id]);
-        self.refresh_member_ways();
-        Some(DeletedRelationSnapshot { relation, index })
-    }
-
-    /// Put a relation back exactly as the snapshot recorded it: same id,
-    /// version, tags and members, at its original position. `false`
-    /// (changing nothing) if a relation with that id exists or the layer has
-    /// no data. Also the redo of a create.
-    pub fn restore_relation(&mut self, snapshot: DeletedRelationSnapshot) -> bool {
-        let Some(arc) = self.osm_data.as_mut() else {
-            return false;
-        };
-        if arc.relations.iter().any(|r| r.id == snapshot.relation.id) {
-            return false;
-        }
-        let data = Arc::make_mut(arc);
-        let id = snapshot.relation.id;
-        let at = snapshot.index.min(data.relations.len());
-        data.relations.insert(at, snapshot.relation);
-        if id <= self.next_new_id {
-            self.next_new_id = id - 1;
-        }
-        if id <= self.next_placeholder_way_id {
-            self.next_placeholder_way_id = id - 1;
-        }
-        self.mark_modified();
-        self.mp_refresh_relations(&[id]);
-        self.refresh_member_ways();
-        true
-    }
-
     fn relations_containing(&self, member_type: crate::osm::MemberType, id: i64) -> Vec<i64> {
         self.osm_data
             .as_ref()
@@ -2876,37 +1968,6 @@ impl OsmLayer {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// Create a new, tag-less node at `(lat, lon)`. If `id` is `None`, a
-    /// fresh negative (not-yet-uploaded) id is allocated via `next_new_id`;
-    /// if `Some(id)` is given (the redo path, so a recreated node reuses its
-    /// original id), the call is refused (`None`) if a node with that id
-    /// already exists. Incrementally patches `node_cache`/`node_index`
-    /// exactly the way `commit_node_moves` does when it discovers a node
-    /// needs a fresh cache entry — no full rebuild. No-op (`None`) if this
-    /// layer has no data loaded at all.
-    pub fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
-        self.osm_data.as_ref()?;
-        let new_id = match id {
-            Some(id) => {
-                if self
-                    .osm_data
-                    .as_ref()
-                    .is_some_and(|d| d.nodes.contains_key(&id))
-                {
-                    return None;
-                }
-                id
-            }
-            None => {
-                let id = self.next_new_id;
-                self.next_new_id -= 1;
-                id
-            }
-        };
-        self.insert_node(new_id, lat, lon, HashMap::new(), 0);
-        Some(new_id)
     }
 
     /// Insert (or overwrite) a node with `id`/`lat`/`lon`/`tags` into
@@ -2967,19 +2028,6 @@ impl OsmLayer {
             self.next_new_id = id - 1;
         }
         self.mark_modified();
-    }
-
-    /// Delete a node or way this layer owns. Dispatches to `delete_node`/
-    /// `delete_way` — see each for its specific rules. Returns a snapshot
-    /// sufficient to restore the feature via `restore_feature`, or `None` if
-    /// nothing was deleted.
-    pub fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
-        match kind {
-            FeatureKind::Node => self.delete_node(id),
-            FeatureKind::Way => self.delete_way(id),
-            // Relations can't be deleted yet.
-            FeatureKind::Relation => None,
-        }
     }
 
     /// Delete a standalone node.
@@ -3090,43 +2138,6 @@ impl OsmLayer {
             version: way.version,
         };
         Some(snapshot)
-    }
-
-    /// Re-insert a feature previously removed by `delete_feature`, using
-    /// exactly the id/tags/geometry captured in `snapshot`. A restored way
-    /// is appended at the end of `osm_data.ways` (not necessarily its
-    /// original position) — draw/iteration order isn't semantically
-    /// meaningful here, only correctness of the restored data and caches.
-    /// No-op if a feature with that id already exists (defensive; shouldn't
-    /// happen in the normal undo/redo flow).
-    pub fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
-        match snapshot.kind {
-            FeatureKind::Node => {
-                let Some((lat, lon)) = snapshot.node_lat_lon else {
-                    return;
-                };
-                if self
-                    .osm_data
-                    .as_ref()
-                    .is_some_and(|d| d.nodes.contains_key(&snapshot.id))
-                {
-                    return;
-                }
-                let id = snapshot.id;
-                self.insert_node(
-                    id,
-                    lat,
-                    lon,
-                    snapshot.tags.into_iter().collect(),
-                    snapshot.version,
-                );
-                // A restriction whose via this was draws again.
-                self.mp_refresh_nodes(&[id]);
-            }
-            FeatureKind::Way => self.restore_way(snapshot),
-            // Relations are never deleted yet, so there is nothing to restore.
-            FeatureKind::Relation => {}
-        }
     }
 
     /// `restore_feature`'s way case: rebuilds the way's vertex list/bbox from
@@ -4178,52 +3189,6 @@ impl OsmLayer {
                 .get(&node_id)
                 .is_some_and(|ws| ws.contains(idx))
         })
-    }
-
-    /// Decide which way's vertices to preview after a pointer move to `pt`.
-    /// `hovered` is what the hover hit test picked (which already gives
-    /// previewed vertices priority over the way's line); `enabled` is false
-    /// outside Select mode, while a dialog is open, and so on.
-    ///
-    /// * hovering a way previews that way (the hit test's pick, so with
-    ///   overlapping ways the same one the hover highlight shows);
-    /// * hovering one of the preview way's vertices keeps it previewed;
-    /// * hovering anything else drops it;
-    /// * hovering nothing keeps it while the pointer is within the way's hit
-    ///   tolerance plus a vertex's hit radius of the way (hysteresis, so a
-    ///   vertex slightly off the line stays reachable).
-    ///
-    /// Returns whether the preview way changed. Reads one way's vertices at
-    /// most; never touches the way scene or any cache.
-    pub fn update_vertex_preview(
-        &mut self,
-        viewport: &Viewport,
-        pt: Point<Pixels>,
-        hovered: Option<&FeatureRef>,
-        enabled: bool,
-    ) -> bool {
-        let next = if !enabled
-            || self.osm_data.is_none()
-            || viewport.zoom_level() < node_markers::PREVIEW_MIN_ZOOM
-        {
-            None
-        } else {
-            match hovered {
-                Some(h) if h.layer_id == self.id => match h.kind {
-                    FeatureKind::Way => self.way_id_to_index.contains_key(&h.id).then_some(h.id),
-                    FeatureKind::Node => self.preview_way.filter(|&w| self.node_in_way(h.id, w)),
-                    FeatureKind::Relation => None,
-                },
-                Some(_) => None,
-                None => self.preview_way.filter(|&w| {
-                    self.way_screen_distance(viewport, pt, w)
-                        .is_some_and(|d| d <= WAY_HIT_TOL + node_markers::PREVIEW_HIT_RADIUS)
-                }),
-            }
-        };
-        let changed = next != self.preview_way;
-        self.preview_way = next;
-        changed
     }
 
     /// Distance in pixels from `pt` to the polyline of way `way_id`.
@@ -5766,7 +4731,28 @@ impl EditableLayer for OsmLayer {
         hovered: Option<&FeatureRef>,
         enabled: bool,
     ) -> bool {
-        OsmLayer::update_vertex_preview(self, viewport, pt, hovered, enabled)
+        let next = if !enabled
+            || self.osm_data.is_none()
+            || viewport.zoom_level() < node_markers::PREVIEW_MIN_ZOOM
+        {
+            None
+        } else {
+            match hovered {
+                Some(h) if h.layer_id == self.id => match h.kind {
+                    FeatureKind::Way => self.way_id_to_index.contains_key(&h.id).then_some(h.id),
+                    FeatureKind::Node => self.preview_way.filter(|&w| self.node_in_way(h.id, w)),
+                    FeatureKind::Relation => None,
+                },
+                Some(_) => None,
+                None => self.preview_way.filter(|&w| {
+                    self.way_screen_distance(viewport, pt, w)
+                        .is_some_and(|d| d <= WAY_HIT_TOL + node_markers::PREVIEW_HIT_RADIUS)
+                }),
+            }
+        };
+        let changed = next != self.preview_way;
+        self.preview_way = next;
+        changed
     }
 
     fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
@@ -5790,80 +4776,591 @@ impl EditableLayer for OsmLayer {
     }
 
     fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) {
-        let fs_phase = crate::frame_stats::start();
-        OsmLayer::commit_node_moves(self, moves);
-        crate::frame_stats::lap("edit.commit_node_moves_total", fs_phase);
+        if moves.is_empty() {
+            return;
+        }
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+
+        let mut moved_ids: Vec<i64> = Vec::with_capacity(moves.len());
+        for &(id, lat, lon) in moves {
+            if let Some(node) = data.nodes.get_mut(&id) {
+                node.lat = lat;
+                node.lon = lon;
+                moved_ids.push(id);
+            }
+        }
+        self.modified = true;
+        self.revision += 1;
+        if moved_ids.is_empty() {
+            // None of the moved ids were actually present; nothing to patch.
+            return;
+        }
+
+        // Ways referencing any moved node — these are the only ones whose
+        // cached vertex list/bbox can possibly have changed.
+        let mut touched_ways: HashSet<usize> = HashSet::new();
+        for &id in &moved_ids {
+            if let Some(way_idxs) = self.node_to_ways.get(&id) {
+                touched_ways.extend(way_idxs.iter().copied());
+            }
+        }
+
+        // -- Patch node_cache + node_index for each moved node. --
+        for &id in &moved_ids {
+            // Remove the stale R-tree entry (old mercator position) first —
+            // we need the OLD position, which is still in node_cache here.
+            if let Some(&old_idx) = self.node_cache.index_by_id.get(&id) {
+                let (_, old_mx, old_my) = self.node_cache.flat[old_idx];
+                self.node_index
+                    .remove(&GeomWithData::new([old_mx, old_my], id));
+            }
+
+            let Some(node) = data.nodes.get(&id) else {
+                continue;
+            };
+            match validate_coords(node.lat, node.lon) {
+                Some((lat, lon)) => {
+                    let (mx, my) = lat_lon_to_mercator(lat, lon);
+                    let style = self.stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
+                    if let Some(&idx) = self.node_cache.index_by_id.get(&id) {
+                        self.node_cache.flat[idx] = (id, mx, my);
+                        self.node_cache.styles[idx] = style;
+                    } else {
+                        let idx = self.node_cache.flat.len();
+                        self.node_cache.flat.push((id, mx, my));
+                        self.node_cache.styles.push(style);
+                        self.node_cache.index_by_id.insert(id, idx);
+                    }
+                    self.node_index.insert(GeomWithData::new([mx, my], id));
+
+                    // Conservatively extend layer_bbox — never shrinks, so a
+                    // move away from a bbox extreme won't shrink it back
+                    // (harmless: it just means slightly less aggressive
+                    // off-screen culling until the next full reload).
+                    match &mut self.layer_bbox {
+                        Some(lb) => lb.extend(mx, my),
+                        None => {
+                            self.layer_bbox = Some(WayBbox {
+                                min_x: mx,
+                                max_x: mx,
+                                min_y: my,
+                                max_y: my,
+                            })
+                        }
+                    }
+                }
+                None => {
+                    // New coords are invalid: drop this node from the
+                    // position caches/index (mirrors compute_node_cache,
+                    // which never included invalid-coordinate nodes).
+                    if let Some(idx) = self.node_cache.index_by_id.remove(&id) {
+                        self.node_cache.flat.remove(idx);
+                        self.node_cache.styles.remove(idx);
+                        // Removing from the middle of `flat` shifts every
+                        // later index by one; fix up index_by_id.
+                        for v in self.node_cache.index_by_id.values_mut() {
+                            if *v > idx {
+                                *v -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -- Patch way_vertices/way_bboxes/way_styles + way_index for the
+        // touched ways only. --
+        for &way_idx in &touched_ways {
+            let way_id = self.way_ids[way_idx];
+            let Some(way) = data.ways.get(&way_id) else {
+                continue;
+            };
+
+            // Remove the way's stale R-tree entry (old bbox), if any.
+            if let Some(old_bbox) = self.way_bboxes[way_idx] {
+                self.way_index.remove(&GeomWithData::new(
+                    Rectangle::from_corners(
+                        [old_bbox.min_x, old_bbox.min_y],
+                        [old_bbox.max_x, old_bbox.max_y],
+                    ),
+                    way.id,
+                ));
+            }
+
+            let (verts, new_bbox) = project_way_vertices(way, &self.node_cache);
+            if let Some(b) = new_bbox {
+                self.way_index.insert(GeomWithData::new(
+                    Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
+                    way.id,
+                ));
+                match &mut self.layer_bbox {
+                    Some(lb) => {
+                        lb.extend(b.min_x, b.min_y);
+                        lb.extend(b.max_x, b.max_y);
+                    }
+                    None => self.layer_bbox = Some(b),
+                }
+            }
+            self.way_vertices[way_idx] = verts;
+            self.way_bboxes[way_idx] = new_bbox;
+            let style = self.stylesheet.way_style_cached(
+                &way.tags,
+                way.is_closed(),
+                self.member_ways.contains(&way.id),
+            );
+            self.way_fill_tris[way_idx] = compute_fill_tris(&self.way_vertices[way_idx], &style);
+            self.way_styles[way_idx] = style;
+        }
+
+        // Multipolygons made of those ways follow the move.
+        let touched_way_ids: Vec<i64> = touched_ways.iter().map(|&i| self.way_ids[i]).collect();
+        self.mp_refresh_ways(&touched_way_ids);
+        self.mp_refresh_nodes(&moved_ids);
     }
 
     fn set_tag(&mut self, kind: FeatureKind, id: i64, key: &str, value: &str) {
-        OsmLayer::set_tag(self, kind, id, key, value);
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+        let tags = match kind {
+            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
+            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
+            FeatureKind::Relation => data
+                .relations
+                .iter_mut()
+                .find(|r| r.id == id)
+                .map(|r| &mut r.tags),
+        };
+        let Some(tags) = tags else {
+            return;
+        };
+        tags.insert(key.to_string(), value.to_string());
+        self.modified = true;
+        self.revision += 1;
+        apply_style_refresh(
+            kind,
+            id,
+            data,
+            &mut self.node_cache,
+            &self.way_id_to_index,
+            &self.way_vertices,
+            &mut self.way_styles,
+            &mut self.way_fill_tris,
+            &self.stylesheet,
+            &self.member_ways,
+        );
+        if kind == FeatureKind::Relation {
+            // The relation's style (or whether it is a multipolygon at all)
+            // follows its tags.
+            self.mp_refresh_relations(&[id]);
+        }
     }
 
     fn remove_tag(&mut self, kind: FeatureKind, id: i64, key: &str) {
-        OsmLayer::remove_tag(self, kind, id, key);
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+        let tags = match kind {
+            FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
+            FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
+            FeatureKind::Relation => data
+                .relations
+                .iter_mut()
+                .find(|r| r.id == id)
+                .map(|r| &mut r.tags),
+        };
+        let Some(tags) = tags else {
+            return;
+        };
+        tags.remove(key);
+        self.modified = true;
+        self.revision += 1;
+        apply_style_refresh(
+            kind,
+            id,
+            data,
+            &mut self.node_cache,
+            &self.way_id_to_index,
+            &self.way_vertices,
+            &mut self.way_styles,
+            &mut self.way_fill_tris,
+            &self.stylesheet,
+            &self.member_ways,
+        );
+        if kind == FeatureKind::Relation {
+            self.mp_refresh_relations(&[id]);
+        }
     }
 
     fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64> {
-        OsmLayer::create_node(self, lat, lon, id)
+        self.osm_data.as_ref()?;
+        let new_id = match id {
+            Some(id) => {
+                if self
+                    .osm_data
+                    .as_ref()
+                    .is_some_and(|d| d.nodes.contains_key(&id))
+                {
+                    return None;
+                }
+                id
+            }
+            None => {
+                let id = self.next_new_id;
+                self.next_new_id -= 1;
+                id
+            }
+        };
+        self.insert_node(new_id, lat, lon, HashMap::new(), 0);
+        Some(new_id)
     }
 
     fn delete_feature(&mut self, kind: FeatureKind, id: i64) -> Option<DeletedFeatureSnapshot> {
-        OsmLayer::delete_feature(self, kind, id)
+        match kind {
+            FeatureKind::Node => self.delete_node(id),
+            FeatureKind::Way => self.delete_way(id),
+            // Relations can't be deleted yet.
+            FeatureKind::Relation => None,
+        }
     }
 
     fn restore_feature(&mut self, snapshot: DeletedFeatureSnapshot) {
-        OsmLayer::restore_feature(self, snapshot);
+        match snapshot.kind {
+            FeatureKind::Node => {
+                let Some((lat, lon)) = snapshot.node_lat_lon else {
+                    return;
+                };
+                if self
+                    .osm_data
+                    .as_ref()
+                    .is_some_and(|d| d.nodes.contains_key(&snapshot.id))
+                {
+                    return;
+                }
+                let id = snapshot.id;
+                self.insert_node(
+                    id,
+                    lat,
+                    lon,
+                    snapshot.tags.into_iter().collect(),
+                    snapshot.version,
+                );
+                // A restriction whose via this was draws again.
+                self.mp_refresh_nodes(&[id]);
+            }
+            FeatureKind::Way => self.restore_way(snapshot),
+            // Relations are never deleted yet, so there is nothing to restore.
+            FeatureKind::Relation => {}
+        }
     }
 
     fn add_node(&mut self, lat: f64, lon: f64) -> i64 {
-        OsmLayer::add_node(self, lat, lon)
+        if self.osm_data.is_none() {
+            self.osm_data = Some(Arc::new(OsmData {
+                nodes: HashMap::new(),
+                ways: HashMap::new(),
+                relations: Vec::new(),
+                bounds: Vec::new(),
+            }));
+        }
+        self.create_node(lat, lon, None)
+            .expect("osm_data was just ensured to be Some")
     }
 
     fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64 {
-        OsmLayer::add_way(self, node_ids, tags)
+        let id = self.next_placeholder_way_id;
+        self.next_placeholder_way_id -= 1;
+
+        if self.osm_data.is_none() {
+            self.osm_data = Some(Arc::new(OsmData {
+                nodes: HashMap::new(),
+                ways: HashMap::new(),
+                relations: Vec::new(),
+                bounds: Vec::new(),
+            }));
+        }
+        let arc = self
+            .osm_data
+            .as_mut()
+            .expect("osm_data was just ensured to be Some");
+        let data = Arc::make_mut(arc);
+        let way = OsmWay {
+            id,
+            nodes: node_ids,
+            version: 0,
+            tags: tags.into_iter().collect(),
+        };
+
+        let (verts, bbox) = project_way_vertices(&way, &self.node_cache);
+        if let Some(b) = bbox {
+            self.way_index.insert(GeomWithData::new(
+                Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
+                way.id,
+            ));
+            match &mut self.layer_bbox {
+                Some(lb) => {
+                    lb.extend(b.min_x, b.min_y);
+                    lb.extend(b.max_x, b.max_y);
+                }
+                None => self.layer_bbox = Some(b),
+            }
+        }
+
+        let way_idx = self.way_vertices.len();
+        self.way_id_to_index.insert(way.id, way_idx);
+        for nid in &way.nodes {
+            self.node_to_ways.entry(*nid).or_default().insert(way_idx);
+        }
+        self.way_ids.push(way.id);
+        let style = self.stylesheet.way_style_cached(
+            &way.tags,
+            way.is_closed(),
+            self.member_ways.contains(&way.id),
+        );
+        self.way_fill_tris.push(compute_fill_tris(&verts, &style));
+        self.way_vertices.push(verts);
+        self.way_bboxes.push(bbox);
+        self.way_styles.push(style);
+        data.ways.insert(way.id, way);
+
+        self.mark_modified();
+        self.mp_refresh_ways(&[id]);
+        id
     }
 
     fn extend_way(&mut self, way_id: i64, node_id: i64) {
-        OsmLayer::extend_way(self, way_id, node_id);
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return;
+        };
+        way.nodes.push(node_id);
+        let way_snapshot = way.clone();
+
+        self.node_to_ways
+            .entry(node_id)
+            .or_default()
+            .insert(way_idx);
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+
+        self.mark_modified();
     }
 
     fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64 {
-        OsmLayer::insert_node_into_way(self, way_id, index, lat, lon)
+        let new_id = self.add_node(lat, lon);
+
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return new_id;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return new_id;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return new_id;
+        };
+        if index > way.nodes.len() {
+            return new_id;
+        }
+        way.nodes.insert(index, new_id);
+        let way_snapshot = way.clone();
+
+        self.node_to_ways.entry(new_id).or_default().insert(way_idx);
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+
+        self.mark_modified();
+        new_id
     }
 
     fn remove_node(&mut self, node_id: i64) {
-        OsmLayer::remove_node(self, node_id);
+        let Some(current) = self.osm_data.clone() else {
+            return;
+        };
+        let mut data = (*current).clone();
+        if data.nodes.remove(&node_id).is_none() {
+            return;
+        }
+        if let Some(idx) = self.node_cache.index_by_id.remove(&node_id) {
+            let (_, mx, my) = self.node_cache.flat[idx];
+            self.node_index
+                .remove(&GeomWithData::new([mx, my], node_id));
+            self.node_cache.flat.remove(idx);
+            self.node_cache.styles.remove(idx);
+            for v in self.node_cache.index_by_id.values_mut() {
+                if *v > idx {
+                    *v -= 1;
+                }
+            }
+        }
+        let using_ways = self.ways_using_node(node_id);
+        self.node_to_ways.remove(&node_id);
+        self.mark_modified();
+        self.osm_data = Some(Arc::new(data));
+        self.mp_refresh_ways(&using_ways);
+        self.mp_refresh_nodes(&[node_id]);
     }
 
     fn remove_way(&mut self, way_id: i64) {
-        OsmLayer::remove_way(self, way_id);
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+        if data.ways.remove(&way_id).is_none() {
+            return;
+        }
+
+        if let Some(old_bbox) = self.way_bboxes.get(way_idx).copied().flatten() {
+            self.way_index.remove(&GeomWithData::new(
+                Rectangle::from_corners(
+                    [old_bbox.min_x, old_bbox.min_y],
+                    [old_bbox.max_x, old_bbox.max_y],
+                ),
+                way_id,
+            ));
+        }
+        self.way_ids.remove(way_idx);
+        self.way_vertices.remove(way_idx);
+        self.way_bboxes.remove(way_idx);
+        self.way_styles.remove(way_idx);
+        self.way_fill_tris.remove(way_idx);
+        self.way_id_to_index.remove(&way_id);
+        for v in self.way_id_to_index.values_mut() {
+            if *v > way_idx {
+                *v -= 1;
+            }
+        }
+        for ways in self.node_to_ways.values_mut() {
+            *ways = ways
+                .iter()
+                .filter(|&&w| w != way_idx)
+                .map(|&w| if w > way_idx { w - 1 } else { w })
+                .collect();
+        }
+        self.node_to_ways.retain(|_, ways| !ways.is_empty());
+
+        self.mark_modified();
+        self.mp_refresh_ways(&[way_id]);
     }
 
     fn remove_node_from_way(&mut self, way_id: i64, index: usize) {
-        OsmLayer::remove_node_from_way(self, way_id, index);
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return;
+        };
+        if index >= way.nodes.len() {
+            return;
+        }
+        let removed_node_id = way.nodes.remove(index);
+        let way_snapshot = way.clone();
+
+        // Only drop this way's `node_to_ways` entry for `removed_node_id` if
+        // the way no longer references that node at all — a closed way can
+        // reference the same node twice (ring closure), so removing one
+        // occurrence must not erase the way's remaining reference.
+        if !way_snapshot.nodes.contains(&removed_node_id) {
+            if let Some(way_idxs) = self.node_to_ways.get_mut(&removed_node_id) {
+                way_idxs.remove(&way_idx);
+            }
+        }
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+
+        self.mark_modified();
     }
 
     fn reverse_way(&mut self, way_id: i64) -> bool {
-        OsmLayer::reverse_way(self, way_id)
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return false;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return false;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return false;
+        };
+        way.nodes = crate::geometry::reversed(&way.nodes);
+        let way_snapshot = way.clone();
+        // The set of nodes (and so `node_to_ways`) is unchanged.
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+        self.mark_modified();
+        true
     }
 
     fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool {
-        OsmLayer::set_way_nodes(self, way_id, node_ids)
+        let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            return false;
+        };
+        let Some(arc) = self.osm_data.as_mut() else {
+            return false;
+        };
+        let data = Arc::make_mut(arc);
+        let Some(way) = data.ways.get_mut(&way_id) else {
+            return false;
+        };
+        let old = std::mem::replace(&mut way.nodes, node_ids);
+        let way_snapshot = way.clone();
+
+        for dropped in old.iter().filter(|n| !way_snapshot.nodes.contains(n)) {
+            if let Some(way_idxs) = self.node_to_ways.get_mut(dropped) {
+                way_idxs.remove(&way_idx);
+                if way_idxs.is_empty() {
+                    self.node_to_ways.remove(dropped);
+                }
+            }
+        }
+        for &added in &way_snapshot.nodes {
+            self.node_to_ways.entry(added).or_default().insert(way_idx);
+        }
+        self.refresh_way_geometry_cache(way_idx, way_id, &way_snapshot);
+        self.mark_modified();
+        true
     }
 
     fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
-        OsmLayer::ways_using_node(self, node_id)
+        let mut ids: Vec<i64> = self
+            .node_to_ways
+            .get(&node_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|&idx| self.way_ids.get(idx).copied())
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     fn relations_containing_way(&self, way_id: i64) -> Vec<i64> {
-        OsmLayer::relations_containing_way(self, way_id)
+        self.relations_containing(crate::osm::MemberType::Way, way_id)
     }
     fn relations_containing_node(&self, node_id: i64) -> Vec<i64> {
-        OsmLayer::relations_containing_node(self, node_id)
+        self.relations_containing(crate::osm::MemberType::Node, node_id)
     }
 
     fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
-        OsmLayer::relation(self, relation_id)
+        self.osm_data
+            .as_ref()?
+            .relations
+            .iter()
+            .find(|r| r.id == relation_id)
+            .cloned()
     }
 
     fn relation_ids(&self) -> Vec<i64> {
@@ -5878,15 +5375,24 @@ impl EditableLayer for OsmLayer {
         relation_id: i64,
         members: Vec<crate::osm::OsmMember>,
     ) -> Option<Vec<crate::osm::OsmMember>> {
-        OsmLayer::set_relation_members(self, relation_id, members)
+        let data = Arc::make_mut(self.osm_data.as_mut()?);
+        let relation = data.relations.iter_mut().find(|r| r.id == relation_id)?;
+        let previous = std::mem::replace(&mut relation.members, members);
+        self.mark_modified();
+        self.mp_refresh_relations(&[relation_id]);
+        self.refresh_member_ways();
+        Some(previous)
     }
 
     fn relations(&self) -> Vec<crate::osm::OsmRelation> {
-        OsmLayer::relations(self)
+        self.osm_data
+            .as_ref()
+            .map(|d| d.relations.clone())
+            .unwrap_or_default()
     }
 
     fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64> {
-        OsmLayer::relations_containing_relation(self, relation_id)
+        self.relations_containing(crate::osm::MemberType::Relation, relation_id)
     }
 
     fn create_relation(
@@ -5894,35 +5400,174 @@ impl EditableLayer for OsmLayer {
         tags: Vec<(String, String)>,
         members: Vec<crate::osm::OsmMember>,
     ) -> Option<i64> {
-        OsmLayer::create_relation(self, tags, members)
+        let lowest_relation = self
+            .osm_data
+            .as_ref()?
+            .relations
+            .iter()
+            .map(|r| r.id)
+            .min()
+            .unwrap_or(0);
+        let id = self
+            .next_new_id
+            .min(self.next_placeholder_way_id)
+            .min(lowest_relation.min(0) - 1);
+        self.next_new_id = id - 1;
+        self.next_placeholder_way_id = id - 1;
+        let data = Arc::make_mut(self.osm_data.as_mut()?);
+        data.relations.push(crate::osm::OsmRelation {
+            id,
+            members,
+            version: 0,
+            tags: tags.into_iter().collect(),
+        });
+        self.mark_modified();
+        self.mp_refresh_relations(&[id]);
+        self.refresh_member_ways();
+        Some(id)
     }
 
-    fn delete_relation(
-        &mut self,
-        relation_id: i64,
-    ) -> Option<crate::selection::DeletedRelationSnapshot> {
-        OsmLayer::delete_relation(self, relation_id)
+    fn delete_relation(&mut self, relation_id: i64) -> Option<DeletedRelationSnapshot> {
+        let data = self.osm_data.as_ref()?;
+        if data.relations.iter().any(|r| {
+            r.id != relation_id
+                && r.members.iter().any(|m| {
+                    m.member_type == crate::osm::MemberType::Relation && m.reference == relation_id
+                })
+        }) {
+            return None;
+        }
+        let index = data.relations.iter().position(|r| r.id == relation_id)?;
+        let data = Arc::make_mut(self.osm_data.as_mut()?);
+        let relation = data.relations.remove(index);
+        self.mark_modified();
+        self.mp_refresh_relations(&[relation_id]);
+        self.refresh_member_ways();
+        Some(DeletedRelationSnapshot { relation, index })
     }
 
-    fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool {
-        OsmLayer::restore_relation(self, snapshot)
+    fn restore_relation(&mut self, snapshot: DeletedRelationSnapshot) -> bool {
+        let Some(arc) = self.osm_data.as_mut() else {
+            return false;
+        };
+        if arc.relations.iter().any(|r| r.id == snapshot.relation.id) {
+            return false;
+        }
+        let data = Arc::make_mut(arc);
+        let id = snapshot.relation.id;
+        let at = snapshot.index.min(data.relations.len());
+        data.relations.insert(at, snapshot.relation);
+        if id <= self.next_new_id {
+            self.next_new_id = id - 1;
+        }
+        if id <= self.next_placeholder_way_id {
+            self.next_placeholder_way_id = id - 1;
+        }
+        self.mark_modified();
+        self.mp_refresh_relations(&[id]);
+        self.refresh_member_ways();
+        true
     }
 
     fn has_pending_edit(&self, kind: FeatureKind, id: i64) -> bool {
-        OsmLayer::has_pending_edit(self, kind, id)
+        let (Some(current), Some(original)) = (&self.osm_data, &self.original_data) else {
+            return self.osm_data.is_some();
+        };
+        match kind {
+            FeatureKind::Node => match (current.nodes.get(&id), original.nodes.get(&id)) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            FeatureKind::Way => match (current.ways.get(&id), original.ways.get(&id)) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            FeatureKind::Relation => {
+                let find = |d: &OsmData| d.relations.iter().find(|r| r.id == id).cloned();
+                match (find(current), find(original)) {
+                    (Some(a), Some(b)) => a != b,
+                    (Some(_), None) => true,
+                    _ => false,
+                }
+            }
+        }
     }
 
-    fn purge_features(
-        &mut self,
-        nodes: &[i64],
-        ways: &[i64],
-        relations: &[i64],
-    ) -> crate::selection::PurgedFeatures {
-        OsmLayer::purge_features(self, nodes, ways, relations)
+    fn purge_features(&mut self, nodes: &[i64], ways: &[i64], relations: &[i64]) -> PurgedFeatures {
+        let mut purged = PurgedFeatures::default();
+        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
+        else {
+            return purged;
+        };
+        let mut data = (*current).clone();
+        let mut base = (*original).clone();
+        for &id in nodes {
+            base.nodes.remove(&id);
+            if let Some(n) = data.nodes.remove(&id) {
+                purged.nodes.push(n);
+            }
+        }
+        for &id in ways {
+            base.ways.remove(&id);
+            if let Some(w) = data.ways.remove(&id) {
+                purged.ways.push(w);
+            }
+        }
+        for &id in relations {
+            let base_index = base.relations.iter().position(|r| r.id == id);
+            if let Some(i) = base_index {
+                base.relations.remove(i);
+            }
+            if let Some(i) = data.relations.iter().position(|r| r.id == id) {
+                let r = data.relations.remove(i);
+                purged.relations.push((r, i, base_index.unwrap_or(i)));
+            }
+        }
+        if purged.is_empty() {
+            return purged;
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.osm_data = Some(data);
+        self.original_data = Some(Arc::new(base));
+        self.revision += 1;
+        purged
     }
 
-    fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures) {
-        OsmLayer::restore_purged(self, purged);
+    fn restore_purged(&mut self, purged: PurgedFeatures) {
+        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
+        else {
+            return;
+        };
+        let mut data = (*current).clone();
+        let mut base = (*original).clone();
+        for n in purged.nodes {
+            base.nodes.insert(n.id, n.clone());
+            data.nodes.insert(n.id, n);
+        }
+        for w in purged.ways {
+            base.ways.insert(w.id, w.clone());
+            data.ways.insert(w.id, w);
+        }
+        // Lowest index first, so each insert lands where it used to be.
+        let mut relations = purged.relations;
+        relations.sort_by_key(|(_, i, _)| *i);
+        for (r, i, _) in &relations {
+            let at = (*i).min(data.relations.len());
+            data.relations.insert(at, r.clone());
+        }
+        relations.sort_by_key(|(_, _, j)| *j);
+        for (r, _, j) in relations {
+            let at = j.min(base.relations.len());
+            base.relations.insert(at, r);
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.osm_data = Some(data);
+        self.original_data = Some(Arc::new(base));
+        self.revision += 1;
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -6197,7 +5842,25 @@ impl EditableLayer for OsmLayer {
     }
 
     fn merge_download(&mut self, incoming: OsmData) -> MergeStats {
-        OsmLayer::merge_download(self, incoming)
+        let empty = || OsmData {
+            nodes: HashMap::new(),
+            ways: HashMap::new(),
+            relations: Vec::new(),
+            bounds: Vec::new(),
+        };
+        let mut current = self.osm_data.as_deref().cloned().unwrap_or_else(empty);
+        let mut original = self.original_data.as_deref().cloned().unwrap_or_else(empty);
+
+        let stats = merge::merge_download(&mut original, &mut current, incoming);
+
+        let modified = self.modified;
+        self.set_osm_data(Arc::new(current));
+        // `set_osm_data` treats its argument as a fresh server baseline;
+        // restore the real one so pending edits stay pending.
+        self.original_data = Some(Arc::new(original));
+        self.modified = modified;
+        self.revision += 1;
+        stats
     }
 
     fn has_feature(&self, kind: FeatureKind, id: i64) -> bool {
@@ -6237,7 +5900,18 @@ impl EditableLayer for OsmLayer {
     }
 
     fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
-        OsmLayer::set_base_version(self, kind, id, version)
+        let (Some(current), Some(original)) = (self.osm_data.as_mut(), self.original_data.as_mut())
+        else {
+            return false;
+        };
+        self.revision += 1;
+        resolve::set_base_version(
+            Arc::make_mut(original),
+            Arc::make_mut(current),
+            kind,
+            id,
+            version,
+        )
     }
 
     fn adopt_server_element(
@@ -6246,11 +5920,15 @@ impl EditableLayer for OsmLayer {
         id: i64,
         server: crate::osm_api::ServerElement,
     ) -> bool {
-        OsmLayer::adopt_server_element(self, kind, id, server)
+        self.change_snapshots(|original, current| {
+            resolve::adopt_server_element(original, current, kind, id, server)
+        })
     }
 
     fn forget_local_delete(&mut self, kind: FeatureKind, id: i64) -> bool {
-        OsmLayer::forget_local_delete(self, kind, id)
+        self.change_snapshots(|original, current| {
+            resolve::forget_local_delete(original, current, kind, id)
+        })
     }
 
     fn all_features(&self) -> Vec<FeatureRef> {
