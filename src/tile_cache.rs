@@ -469,7 +469,7 @@ pub struct TileAsset;
 /// Identifies both the concrete tile URL to fetch and the cache
 /// subdirectory (derived from the source's URL template via
 /// `source_key_for_template`) it belongs in.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TileAssetKey {
     pub url: String,
     pub source_key: String,
@@ -491,139 +491,160 @@ impl Asset for TileAsset {
         let executor = cx.background_executor().clone();
         let store = shared_store().clone();
         let idle = store.idle.get().cloned();
-        let TileAssetKey { url, source_key } = key;
 
         async move {
             let _active = store.begin_load();
-            // Signal that a tile fetch has started (if idle tracker is wired up).
             if let Some(ref tracker) = idle {
                 tracker.tile_fetch_started();
             }
-            // Use GPUI's background executor to run the HTTP request synchronously.
-            // We await the spawned future and call tile_fetch_finished exactly once
-            // after it resolves, covering all success and error paths.
-            let result = executor
-                .spawn({
-                    let store = store.clone();
-                    async move {
-                        let base_dir = cache_dir();
-                        let file_path = tile_file_path(&base_dir, &source_key, &url);
-                        let source_dir = file_path
-                            .parent()
-                            .expect("tile_file_path always has a parent")
-                            .to_path_buf();
-
-                        // Check if file already exists, load it directly
-                        if file_path.exists() {
-                            match load_image_from_file(&file_path) {
-                                Ok(image) => {
-                                    store.clear_error(&url);
-                                    return Ok(Arc::new(image));
-                                }
-                                Err(_) => {
-                                    // If cached file is corrupted, delete it and re-download
-                                    let _ = fs::remove_file(&file_path);
-                                }
-                            }
+            // The blocking HTTP request runs on the background executor.
+            let result =
+                executor
+                    .spawn({
+                        let store = store.clone();
+                        async move {
+                            load_tile(&store, &crate::http::UreqClient::new(), &cache_dir(), &key)
                         }
-
-                        // Ensure cache directory exists
-                        if let Err(e) = fs::create_dir_all(&source_dir) {
-                            let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
-                            store.record_error(&url, reason.clone());
-                            return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
-                        }
-
-                        // Use a simple synchronous HTTP request that doesn't require Tokio
-                        let keep = {
-                            let (store, source_key, url) =
-                                (store.clone(), source_key.clone(), url.clone());
-                            move || store.is_wanted(&source_key, &url)
-                        };
-                        let downloaded = if keep() {
-                            download_file_cancellable(&crate::http::UreqClient::new(), &url, &keep)
-                        } else {
-                            Err(TileFetchError::Cancelled)
-                        };
-                        match downloaded {
-                            Err(TileFetchError::Cancelled) => {
-                                store.mark_cancelled(TileAssetKey {
-                                    url: url.clone(),
-                                    source_key: source_key.clone(),
-                                });
-                                Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                    "cancelled"
-                                ))))
-                            }
-                            Ok(bytes) => {
-                                // Check if the response actually contains image data
-                                if bytes.is_empty() {
-                                    let reason = TileFetchError::EmptyBody.to_string();
-                                    store.record_error(&url, reason.clone());
-                                    return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                        reason
-                                    ))));
-                                }
-
-                                // Check if this looks like an actual image file
-                                // PNG: bytes 1..4 == "PNG", JPEG: bytes 0..3 == FF D8 FF
-                                let is_png = bytes.len() >= 8 && &bytes[1..4] == b"PNG";
-                                let is_jpeg = bytes.len() >= 3
-                                    && bytes[0] == 0xFF
-                                    && bytes[1] == 0xD8
-                                    && bytes[2] == 0xFF;
-                                if !is_png && !is_jpeg {
-                                    let reason = TileFetchError::NotImage.to_string();
-                                    store.record_error(&url, reason.clone());
-                                    return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                        reason
-                                    ))));
-                                }
-
-                                // Write to file atomically (temp file + rename) so a
-                                // concurrent fetch for the same cache path can never
-                                // observe a torn/truncated file.
-                                if let Err(e) = write_atomic(&file_path, &bytes) {
-                                    let reason =
-                                        TileFetchError::Io(format!("write: {}", e)).to_string();
-                                    store.record_error(&url, reason.clone());
-                                    return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                        reason
-                                    ))));
-                                }
-                                store.maybe_evict(&base_dir);
-
-                                // Load the saved file as an image
-                                match load_image_from_file(&file_path) {
-                                    Ok(image) => {
-                                        store.clear_error(&url);
-                                        Ok(Arc::new(image))
-                                    }
-                                    Err(e) => {
-                                        let reason = format!("Decode: {}", e);
-                                        store.record_error(&url, reason.clone());
-                                        Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                            reason
-                                        ))))
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let reason = e.to_string();
-                                store.record_error(&url, reason.clone());
-                                Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))))
-                            }
-                        }
-                    }
-                })
-                .await;
+                    })
+                    .await;
             // Exactly one finished call for the one started call above,
-            // regardless of which success or error branch the inner future took.
+            // whichever way the load ended.
             if let Some(ref tracker) = idle {
                 tracker.tile_fetch_finished();
             }
             result
         }
+    }
+}
+
+fn cache_error(reason: String) -> ImageCacheError {
+    ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason)))
+}
+
+/// Record `reason` as `url`'s failure (shown inside the tile) and return it as
+/// the asset's error.
+fn fail_tile(store: &TileStore, url: &str, reason: String) -> ImageCacheError {
+    store.record_error(url, reason.clone());
+    cache_error(reason)
+}
+
+/// Load one tile: from the disk cache under `base_dir` if it is there,
+/// otherwise download it through `client`, cache it and decode it. Failures
+/// are recorded in `store` for the tile's fallback to show; a download
+/// abandoned because the tile scrolled off the map is remembered as cancelled.
+fn load_tile(
+    store: &TileStore,
+    client: &dyn crate::http::HttpClient,
+    base_dir: &Path,
+    key: &TileAssetKey,
+) -> Result<Arc<RenderImage>, ImageCacheError> {
+    let TileAssetKey { url, source_key } = key;
+    let file_path = tile_file_path(base_dir, source_key, url);
+
+    if let CacheRead::Hit(image) = read_cached(&file_path) {
+        store.clear_error(url);
+        return Ok(Arc::new(image));
+    }
+
+    // Created even if the download then fails, so a failing source still
+    // shows (empty) in the cache settings.
+    if let Some(source_dir) = file_path.parent() {
+        if let Err(e) = fs::create_dir_all(source_dir) {
+            let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
+            return Err(fail_tile(store, url, reason));
+        }
+    }
+
+    let keep = || store.is_wanted(source_key, url);
+    let bytes = match fetch(client, url, &keep) {
+        Ok(bytes) => bytes,
+        Err(TileFetchError::Cancelled) => {
+            store.mark_cancelled(key.clone());
+            return Err(cache_error("cancelled".to_string()));
+        }
+        Err(e) => return Err(fail_tile(store, url, e.to_string())),
+    };
+
+    // Atomic (temp file + rename) so a concurrent fetch for the same cache
+    // path can never observe a torn/truncated file.
+    if let Err(e) = write_atomic(&file_path, &bytes) {
+        let reason = TileFetchError::Io(format!("write: {}", e)).to_string();
+        return Err(fail_tile(store, url, reason));
+    }
+    store.maybe_evict(base_dir);
+
+    match decode(&bytes) {
+        Ok(image) => {
+            store.clear_error(url);
+            Ok(Arc::new(image))
+        }
+        Err(e) => Err(fail_tile(store, url, format!("Decode: {}", e))),
+    }
+}
+
+/// What looking for a tile in the disk cache found.
+enum CacheRead {
+    Hit(RenderImage),
+    Miss,
+    /// A file was there but would not decode; it has been deleted.
+    Corrupt,
+}
+
+/// The cached tile at `path`, if any. A corrupt file is deleted so the tile is
+/// downloaded again.
+fn read_cached(path: &Path) -> CacheRead {
+    if !path.exists() {
+        return CacheRead::Miss;
+    }
+    match fs::read(path)
+        .map_err(|e| format!("Failed to read image file: {}", e))
+        .and_then(|bytes| decode(&bytes))
+    {
+        Ok(image) => CacheRead::Hit(image),
+        Err(_) => {
+            let _ = fs::remove_file(path);
+            CacheRead::Corrupt
+        }
+    }
+}
+
+/// What a downloaded body looks like, judged by its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniffedImage {
+    Png,
+    Jpeg,
+    /// Not a format tiles are accepted in (an HTML error page, WebP, ...).
+    Other,
+}
+
+fn sniff_image(bytes: &[u8]) -> SniffedImage {
+    // PNG starts 0x89 "PNG\r\n\x1a\n"; the 0x89 is not checked, as before.
+    if bytes.len() >= 8 && &bytes[1..4] == b"PNG" {
+        SniffedImage::Png
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        SniffedImage::Jpeg
+    } else {
+        SniffedImage::Other
+    }
+}
+
+/// Download `url`, giving up with `Cancelled` once `keep` says the tile is no
+/// longer wanted, and check that the body is a PNG or JPEG.
+fn fetch(
+    client: &dyn crate::http::HttpClient,
+    url: &str,
+    keep: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, TileFetchError> {
+    if !keep() {
+        return Err(TileFetchError::Cancelled);
+    }
+    let bytes = download_file_cancellable(client, url, keep)?;
+    if bytes.is_empty() {
+        return Err(TileFetchError::EmptyBody);
+    }
+    match sniff_image(&bytes) {
+        SniffedImage::Other => Err(TileFetchError::NotImage),
+        SniffedImage::Png | SniffedImage::Jpeg => Ok(bytes),
     }
 }
 
@@ -689,9 +710,7 @@ fn tile_download_semaphore() -> &'static Semaphore {
 /// for display inside a tile.
 const ERROR_SNIPPET_BYTES: usize = 120;
 
-/// Same as `download_file_sync`, but against an injected `HttpClient` so it's
-/// testable without a real network. Kept `pub(crate)` since tests are the only
-/// other caller.
+/// `download_file_cancellable` that is never cancelled.
 #[cfg(test)]
 pub(crate) fn download_file_sync_with(
     client: &dyn crate::http::HttpClient,
@@ -700,16 +719,15 @@ pub(crate) fn download_file_sync_with(
     download_file_cancellable(client, url, &|| true)
 }
 
-/// `download_file_sync_with`, abandoning the download (with
-/// `TileFetchError::Cancelled`) once `keep` returns false. `keep` is checked
-/// after waiting for a download slot and while the body is being read.
+/// Download `url`, abandoning it (with `TileFetchError::Cancelled`) once
+/// `keep` returns false. `keep` is checked after waiting for a download slot
+/// and while the body is being read.
 pub(crate) fn download_file_cancellable(
     client: &dyn crate::http::HttpClient,
     url: &str,
     keep: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, TileFetchError> {
-    // Cap concurrent in-flight tile downloads (see MAX_CONCURRENT_TILE_DOWNLOADS).
-    // Held for the duration of the request (including retries) below.
+    // Held for the whole request, retries included.
     let _permit = tile_download_semaphore().acquire();
     if !keep() {
         return Err(TileFetchError::Cancelled);
@@ -757,25 +775,19 @@ fn sanitize_snippet(body: &[u8]) -> Option<String> {
     }
 }
 
-fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, String> {
-    let bytes = fs::read(file_path).map_err(|e| format!("Failed to read image file: {}", e))?;
-
+/// Decode image bytes into the BGRA frame gpui draws.
+fn decode(bytes: &[u8]) -> Result<RenderImage, String> {
     let img =
-        image::load_from_memory(&bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
+        image::load_from_memory(bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
 
-    // Convert to RGBA8 format first
     let mut rgba = img.to_rgba8();
-
-    // Convert RGBA to BGRA format that GPUI expects
-    // We need to swap the red and blue channels for each pixel
+    // gpui wants BGRA: swap red and blue.
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2); // Swap R and B channels (RGBA -> BGRA)
+        pixel.swap(0, 2);
     }
 
-    // Create a frame for the image
-    let frame = image::Frame::new(rgba);
     let mut frames = smallvec::SmallVec::new();
-    frames.push(frame);
+    frames.push(image::Frame::new(rgba));
     Ok(RenderImage::new(frames))
 }
 
@@ -1760,6 +1772,262 @@ mod tests {
         );
         store.maybe_evict(&dir);
         assert!(!dir.join("big.png").exists(), "the Nth write sweeps");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]))
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sniff_recognises_png_and_jpeg() {
+        assert_eq!(sniff_image(&tiny_png()), SniffedImage::Png);
+        assert_eq!(sniff_image(&tiny_jpeg()), SniffedImage::Jpeg);
+    }
+
+    #[test]
+    fn sniff_rejects_html_webp_garbage_and_short_input() {
+        assert_eq!(
+            sniff_image(b"<!DOCTYPE html><html>Too many requests</html>"),
+            SniffedImage::Other
+        );
+        // WebP is not accepted as a tile format.
+        assert_eq!(
+            sniff_image(b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            SniffedImage::Other
+        );
+        assert_eq!(sniff_image(&[0u8; 32]), SniffedImage::Other);
+        assert_eq!(sniff_image(b""), SniffedImage::Other);
+        assert_eq!(sniff_image(&[0xFF, 0xD8]), SniffedImage::Other);
+        // A PNG signature needs 8 bytes to count.
+        assert_eq!(sniff_image(b"\x89PNG"), SniffedImage::Other);
+    }
+
+    #[test]
+    fn sanitize_snippet_replaces_control_characters_and_trims() {
+        assert_eq!(
+            sanitize_snippet(b"\n\tover\x00 capacity\r\n").as_deref(),
+            Some("over  capacity")
+        );
+    }
+
+    #[test]
+    fn sanitize_snippet_of_nothing_printable_is_none() {
+        assert_eq!(sanitize_snippet(b""), None);
+        assert_eq!(sanitize_snippet(b" \n\t\x00\x01 "), None);
+    }
+
+    #[test]
+    fn sanitize_snippet_survives_binary_input() {
+        let snippet = sanitize_snippet(&[0x89, b'P', b'N', b'G', 0x00, 0xFF, 0xFE, b'x']).unwrap();
+        assert!(snippet.contains("PNG"));
+        assert!(snippet.ends_with('x'));
+        assert!(!snippet.chars().any(|c| c.is_control()));
+    }
+
+    #[test]
+    fn sanitize_snippet_keeps_only_the_first_bytes() {
+        let long = vec![b'a'; ERROR_SNIPPET_BYTES * 3];
+        assert_eq!(sanitize_snippet(&long).unwrap().len(), ERROR_SNIPPET_BYTES);
+    }
+
+    #[test]
+    fn decode_swaps_red_and_blue() {
+        let image = decode(&tiny_png()).unwrap();
+        let bgra = image.as_bytes(0).unwrap();
+        assert_eq!(&bgra[..4], &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        assert!(decode(b"definitely not an image").is_err());
+    }
+
+    #[test]
+    fn read_cached_hit_miss_and_corrupt() {
+        let dir = temp_dir("read-cached");
+        let good = dir.join("good.png");
+        fs::write(&good, tiny_png()).unwrap();
+        assert!(matches!(read_cached(&good), CacheRead::Hit(_)));
+        assert!(good.exists());
+
+        assert!(matches!(
+            read_cached(&dir.join("missing.png")),
+            CacheRead::Miss
+        ));
+
+        let bad = dir.join("bad.png");
+        fs::write(&bad, b"half a tile").unwrap();
+        assert!(matches!(read_cached(&bad), CacheRead::Corrupt));
+        assert!(
+            !bad.exists(),
+            "a corrupt file is deleted so it is refetched"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const URL: &str = "https://tile.example.test/1/2/3.png";
+
+    fn always() -> bool {
+        true
+    }
+
+    #[test]
+    fn fetch_returns_an_image_body() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        assert_eq!(fetch(&client, URL, &always).unwrap(), tiny_png());
+    }
+
+    #[test]
+    fn fetch_reports_http_errors() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(404, "no such tile")]);
+        let err = fetch(&client, URL, &always).unwrap_err();
+        assert_eq!(err.to_string(), "HTTP 404: no such tile");
+    }
+
+    #[test]
+    fn fetch_rejects_an_html_error_page_served_with_200() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, b"<html>Rate limited</html>".to_vec())]);
+        assert!(matches!(
+            fetch(&client, URL, &always),
+            Err(TileFetchError::NotImage)
+        ));
+    }
+
+    #[test]
+    fn fetch_rejects_an_empty_body() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, Vec::new())]);
+        assert!(matches!(
+            fetch(&client, URL, &always),
+            Err(TileFetchError::EmptyBody)
+        ));
+    }
+
+    #[test]
+    fn fetch_cancelled_before_the_request_sends_nothing() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        assert!(matches!(
+            fetch(&client, URL, &|| false),
+            Err(TileFetchError::Cancelled)
+        ));
+        assert_eq!(client.request_count(), 0);
+    }
+
+    fn key(source: &str) -> TileAssetKey {
+        TileAssetKey {
+            url: URL.to_string(),
+            source_key: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn load_tile_downloads_caches_then_serves_from_disk() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile");
+        let store = TileStore::new();
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(client.request_count(), 1);
+        let cached = tile_file_path(&dir, "src", URL);
+        assert_eq!(fs::read(&cached).unwrap(), tiny_png());
+
+        // The second load needs no response: the client has none left.
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(client.request_count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_refetches_over_a_corrupt_cache_file() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile-corrupt");
+        let store = TileStore::new();
+        let cached = tile_file_path(&dir, "src", URL);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"garbage").unwrap();
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+
+        assert!(load_tile(&store, &client, &dir, &key("src")).is_ok());
+        assert_eq!(client.request_count(), 1);
+        assert_eq!(fs::read(&cached).unwrap(), tiny_png());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_records_why_a_tile_failed_and_clears_it_on_success() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let dir = temp_dir("load-tile-error");
+        let store = TileStore::new();
+        let client = FakeClient::new(vec![
+            status_err(404, "gone"),
+            ok(200, b"<html></html>".to_vec()),
+            ok(200, tiny_png()),
+        ]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(store.last_error(URL).as_deref(), Some("HTTP 404: gone"));
+        assert!(!tile_file_path(&dir, "src", URL).exists());
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(store.last_error(URL).as_deref(), Some("Not an image"));
+        assert!(!tile_file_path(&dir, "src", URL).exists());
+
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(store.last_error(URL), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_for_an_unwanted_tile_is_cancelled_without_a_request() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile-cancel");
+        let store = TileStore::new();
+        store.set_wanted("src", HashSet::from(["some other url".to_string()]));
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(client.request_count(), 0);
+        assert_eq!(store.last_error(URL), None, "a cancel is not a failure");
+        // Wanted again: the cancelled tile is handed back for re-requesting.
+        let revived = store.set_wanted("src", HashSet::from([URL.to_string()]));
+        assert_eq!(revived, vec![key]);
 
         let _ = fs::remove_dir_all(&dir);
     }
