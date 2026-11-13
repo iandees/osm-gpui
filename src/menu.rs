@@ -12,6 +12,7 @@ use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
 
+use crate::gps_traces_ui::DownloadGpsTraces;
 use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::selection_actions;
@@ -757,6 +758,7 @@ fn build_menus(
         MenuItem::action(tr!("menu.file.export"), ExportOsmFile),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
+        MenuItem::action(tr!("gps_traces.menu.download"), DownloadGpsTraces),
         MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!can_upload),
     ];
     let mut edit_tail = vec![];
@@ -1367,6 +1369,7 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, gpui::OwnedMenuItem::Action { .. }))
             .count();
-        assert_eq!(actions, 4);
+        // Open, Export, Download, Download GPS Traces, Upload.
+        assert_eq!(actions, 5);
     }
 }

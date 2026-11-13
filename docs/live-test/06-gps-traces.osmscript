@@ -1,0 +1,21 @@
+# GPS traces, read only: File > Download GPS Traces over a small town, using the
+# visible map (nothing is downloaded first). Anonymous reads against the
+# production API; nothing is written, so it needs no sign-in. A page takes the
+# server several seconds, so the traces fill in over a minute or two.
+#
+#   cargo run -- --script docs/live-test/06-gps-traces.osmscript
+#
+# Captures go to out/gps-traces-*.png.
+
+window 1200 800
+viewport 42.030 -93.640 15
+wait_idle 10s
+action DownloadGpsTraces
+wait 30s
+assert_layer gpx GPS Traces
+capture out/gps-traces-01-first-pages.png
+wait 120s
+capture out/gps-traces-02-done.png
+viewport 42.0255 -93.6465 18
+wait_idle 10s
+capture out/gps-traces-03-z18.png

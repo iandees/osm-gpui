@@ -1078,6 +1078,28 @@ reference:
     track: "Track"
     route: "Route"
     waypoint: "Waypoint"
+    trace_points: "GPS points (private traces)"
+
+# Public GPS traces downloaded from OSM (File > Download GPS Traces).
+gps_traces:
+  layer_name: "GPS Traces"
+  menu:
+    download: "Download GPS Traces"
+  state:
+    loading: "Downloading GPS traces…"
+    progress:
+      one: "Downloading GPS traces… %{count} point so far"
+      other: "Downloading GPS traces… %{count} points so far"
+    busy: "GPS traces are already downloading."
+    loaded:
+      one: "%{count} GPS point downloaded"
+      other: "%{count} GPS points downloaded"
+    truncated: "Downloaded the first %{count} GPS points; zoom in to see the rest."
+    none: "No public GPS traces in this area."
+    too_large: "The area is too large for GPS traces. Zoom in."
+    failed: "Could not download GPS traces: %{detail}"
+  error:
+    parse: "Unreadable answer from the GPS traces server: %{detail}"
 
 error:
   network: "Network error: %{detail}"

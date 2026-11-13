@@ -27,6 +27,7 @@ mod clipboard_actions;
 #[cfg(test)]
 mod edge_case_tests;
 mod fields_section;
+mod gps_traces_ui;
 mod history_actions;
 mod imagery_offset_ui;
 #[cfg(test)]
@@ -1074,6 +1075,8 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// Downloaded OSM GPS traces (see `gps_traces_ui`).
+    gps_traces: gps_traces_ui::GpsTracesState,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -1347,6 +1350,7 @@ impl MapViewer {
             context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
+            gps_traces: Default::default(),
         }
     }
 
@@ -8662,6 +8666,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_zoom_to_data))
             .on_action(cx.listener(Self::on_zoom_to_selection))
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
+            .on_action(cx.listener(Self::on_download_gps_traces))
             .on_action(cx.listener(Self::on_toggle_notes))
             .on_action(cx.listener(Self::on_refresh_notes))
             .on_action(cx.listener(Self::on_new_note))

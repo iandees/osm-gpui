@@ -1056,6 +1056,27 @@ reference:
     track: "Track"
     route: "Route"
     waypoint: "Wegpunkt"
+    trace_points: "GPS-Punkte (private Tracks)"
+
+gps_traces:
+  layer_name: "GPS-Tracks"
+  menu:
+    download: "GPS-Tracks herunterladen"
+  state:
+    loading: "GPS-Tracks werden heruntergeladen…"
+    progress:
+      one: "GPS-Tracks werden heruntergeladen… bisher %{count} Punkt"
+      other: "GPS-Tracks werden heruntergeladen… bisher %{count} Punkte"
+    busy: "GPS-Tracks werden bereits heruntergeladen."
+    loaded:
+      one: "%{count} GPS-Punkt heruntergeladen"
+      other: "%{count} GPS-Punkte heruntergeladen"
+    truncated: "Die ersten %{count} GPS-Punkte wurden heruntergeladen; hineinzoomen, um den Rest zu sehen."
+    none: "Keine öffentlichen GPS-Tracks in diesem Gebiet."
+    too_large: "Das Gebiet ist für GPS-Tracks zu groß. Hineinzoomen."
+    failed: "GPS-Tracks konnten nicht heruntergeladen werden: %{detail}"
+  error:
+    parse: "Unlesbare Antwort des GPS-Track-Servers: %{detail}"
 
 error:
   network: "Netzwerkfehler: %{detail}"
