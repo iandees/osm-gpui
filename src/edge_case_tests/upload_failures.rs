@@ -1238,3 +1238,88 @@ fn editing_then_undoing_an_element_the_server_changed_uploads_nothing_and_cannot
         assert!(server.uploads().is_empty());
     });
 }
+
+#[gpui::test]
+fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retry(
+    cx: &mut TestAppContext,
+) {
+    use crate::UploadStop;
+    use gpui::AppContext as _;
+    use osm_gpui::ui::upload_dialog::{ConfirmKind, FailureKind, UploadDialog};
+
+    cx.update(gpui_component::init);
+    let data = ways_net();
+    let server = Server::holding(&data);
+    let window = cx.add_window(MapViewer::new);
+    window
+        .update(cx, |view, window, cx| {
+            let layer = view.layer_manager.alloc_id();
+            view.layer_manager.add_layer(Box::new(
+                osm_gpui::layers::osm_layer::OsmLayer::new_with_data(
+                    layer,
+                    "Net".to_string(),
+                    Arc::new(data),
+                ),
+            ));
+            view.active_layer = Some(layer);
+            let dialog = cx.new(|cx| UploadDialog::new(window, cx, Vec::new()));
+            let mut s = Session { view, cx, layer };
+            s.editable_mut().add_node(40.5, -74.5);
+            server.fail_uploads(vec![Some(Fault::DropAfterApply)]);
+            let error = upload(&mut s, &server, CAP)
+                .failure
+                .expect("the upload failed")
+                .error;
+            let UploadStop::OutcomeUnknown(error) = UploadStop::from_error(error) else {
+                panic!("an unknown outcome must not be reported as a plain failure");
+            };
+            dialog.update(s.cx, |d, cx| {
+                d.fail_outcome_unknown(error.to_string().into(), cx)
+            });
+            let dialog = dialog.read(s.cx);
+            assert_eq!(dialog.failure_kind(), Some(FailureKind::OutcomeUnknown));
+            assert_eq!(
+                dialog.confirm_button_kind(),
+                ConfirmKind::UploadAgainAfterCheck
+            );
+            assert_ne!(dialog.confirm_button_kind(), ConfirmKind::Retry);
+        })
+        .unwrap();
+}
+
+#[test]
+fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
+    use crate::UploadStop;
+    assert!(matches!(
+        UploadStop::from_error(UploadError::Network("x".into())),
+        UploadStop::Failed(_)
+    ));
+    assert!(matches!(
+        UploadStop::from_error(UploadError::Parse("x".into())),
+        UploadStop::Failed(_)
+    ));
+    assert!(matches!(
+        UploadStop::from_error(UploadError::Http {
+            status: 400,
+            body: String::new()
+        }),
+        UploadStop::Failed(_)
+    ));
+    assert!(matches!(
+        UploadStop::from_error(UploadError::OutcomeUnknown {
+            changeset_id: 1,
+            url: "u".into(),
+            detail: "d".into()
+        }),
+        UploadStop::OutcomeUnknown(_)
+    ));
+    assert!(matches!(
+        UploadStop::from_error(UploadError::Conflict(UploadConflict {
+            kind: ConflictKind::Other,
+            object: None,
+            status: 409,
+            message: String::new()
+        })),
+        UploadStop::Refused(_)
+    ));
+}

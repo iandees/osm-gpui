@@ -891,6 +891,10 @@ dialog:
     # one of `limits.upload.*`).
     refused_title: "Can't upload yet"
     retry: "Try again"
+    # After an upload the server may have applied (the body names the changeset).
+    unknown_title: "Upload may have gone through"
+    unknown_hint: "Check your recent changesets on the OpenStreetMap website first. Upload again only if these changes are not there."
+    retry_after_check: "I've checked, upload again"
     # More changes than one changeset holds: `%{count}` changesets will be used.
     large:
       one: "This upload is large and will be sent as %{count} changeset."

@@ -82,8 +82,11 @@ pub fn plan_upload(signed_in_display_name: Option<&str>, summaries: &[LayerSumma
 /// Which label the dialog's confirm button carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmKind {
-    /// After a failed attempt.
+    /// After a failed attempt whose outcome is known.
     Retry,
+    /// After an attempt the server may have applied: pressing it says the
+    /// user has checked the server and wants to upload anyway.
+    UploadAgainAfterCheck,
     /// The validator found warnings and no errors: the upload is allowed.
     UploadAnyway,
     /// No findings, or errors that block the upload (the button is disabled
@@ -92,11 +95,44 @@ pub enum ConfirmKind {
     Upload,
 }
 
-/// The confirm button's label from the dialog's state and the validator's
-/// error and warning counts.
-pub fn confirm_kind(failed: bool, errors: usize, warnings: usize) -> ConfirmKind {
-    if failed {
-        ConfirmKind::Retry
+/// Why an upload stopped, which decides what the dialog offers next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// The server refused the diff (409/410/412) and applied none of it.
+    Refused,
+    /// The request may have reached the server, so sending it again could
+    /// create every new object twice.
+    OutcomeUnknown,
+    /// Anything else: nothing was applied, sending again is safe.
+    Other,
+}
+
+/// The kind of failure an upload error is.
+pub fn failure_kind_of(error: &crate::osm_upload::UploadError) -> FailureKind {
+    use crate::osm_upload::UploadError;
+    match error {
+        UploadError::Conflict(_) => FailureKind::Refused,
+        UploadError::OutcomeUnknown { .. } => FailureKind::OutcomeUnknown,
+        UploadError::Network(_) | UploadError::Http { .. } | UploadError::Parse(_) => {
+            FailureKind::Other
+        }
+    }
+}
+
+/// Whether pressing Enter in a failed dialog sends the upload again. Never
+/// after an unknown outcome: that needs a deliberate click on the button.
+pub fn enter_uploads(failure: Option<FailureKind>) -> bool {
+    failure != Some(FailureKind::OutcomeUnknown)
+}
+
+/// The confirm button's label from how the last attempt failed (if it did)
+/// and the validator's error and warning counts.
+pub fn confirm_kind(failure: Option<FailureKind>, errors: usize, warnings: usize) -> ConfirmKind {
+    if let Some(kind) = failure {
+        match kind {
+            FailureKind::OutcomeUnknown => ConfirmKind::UploadAgainAfterCheck,
+            FailureKind::Refused | FailureKind::Other => ConfirmKind::Retry,
+        }
     } else if errors == 0 && warnings > 0 {
         ConfirmKind::UploadAnyway
     } else {
@@ -219,6 +255,7 @@ pub enum Phase {
 /// An upload that stopped: the message, and for a refusal by the server the
 /// conflict with its actions.
 struct Failure {
+    kind: FailureKind,
     message: SharedString,
     conflict: Option<ConflictView>,
     /// Why the last attempt to resolve the conflict didn't work, if it didn't.
@@ -503,6 +540,19 @@ impl UploadDialog {
     /// Show why the upload stopped and let the user try again.
     pub fn fail(&mut self, message: SharedString, cx: &mut Context<Self>) {
         self.state = UploadState::Failed(Failure {
+            kind: FailureKind::Other,
+            message,
+            conflict: None,
+            resolve_error: None,
+        });
+        cx.notify();
+    }
+
+    /// Show an upload the server may have applied. The dialog explains that
+    /// and only offers to upload again after the user says they checked.
+    pub fn fail_outcome_unknown(&mut self, message: SharedString, cx: &mut Context<Self>) {
+        self.state = UploadState::Failed(Failure {
+            kind: FailureKind::OutcomeUnknown,
             message,
             conflict: None,
             resolve_error: None,
@@ -514,6 +564,7 @@ impl UploadDialog {
     /// forward `view` allows.
     pub fn fail_with_conflict(&mut self, view: ConflictView, cx: &mut Context<Self>) {
         self.state = UploadState::Failed(Failure {
+            kind: FailureKind::Refused,
             message: view.conflict.describe().into(),
             conflict: Some(view),
             resolve_error: None,
@@ -543,6 +594,7 @@ impl UploadDialog {
         cx: &mut Context<Self>,
     ) {
         self.state = UploadState::Failed(Failure {
+            kind: FailureKind::Refused,
             message: view.conflict.describe().into(),
             conflict: Some(view),
             resolve_error: Some(error),
@@ -569,6 +621,24 @@ impl UploadDialog {
             UploadState::InFlight(_) | UploadState::Resolving(_) => Phase::Busy,
             UploadState::Failed(failure) => Phase::Failed(failure.conflict.clone()),
         }
+    }
+
+    /// How the last attempt failed, or `None` when the dialog is not showing
+    /// a failure.
+    pub fn failure_kind(&self) -> Option<FailureKind> {
+        match &self.state {
+            UploadState::Failed(failure) => Some(failure.kind),
+            _ => None,
+        }
+    }
+
+    /// What the confirm button currently says.
+    pub fn confirm_button_kind(&self) -> ConfirmKind {
+        confirm_kind(
+            self.failure_kind(),
+            self.validation.errors(),
+            self.validation.warnings(),
+        )
     }
 
     /// Why pressing the Upload / Try again button would do nothing right now,
@@ -660,7 +730,7 @@ impl UploadDialog {
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         match ev.keystroke.key.as_str() {
             "escape" => self.cancel(cx),
-            "enter" => self.upload(cx),
+            "enter" if enter_uploads(self.failure_kind()) => self.upload(cx),
             _ => {}
         }
     }
@@ -1002,10 +1072,16 @@ impl Render for UploadDialog {
                 body = body.child(busy_row(label.clone()));
             }
             UploadState::Failed(failure) => {
+                let unknown = failure.kind == FailureKind::OutcomeUnknown;
+                let title = if unknown {
+                    tr!("dialog.upload.unknown_title")
+                } else {
+                    tr!("dialog.upload.failed")
+                };
                 let mut failed = v_flex()
                     .gap_2()
                     .child(
-                        Label::new(tr!("dialog.upload.failed"))
+                        Label::new(title)
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(cx.theme().danger),
                     )
@@ -1014,6 +1090,13 @@ impl Render for UploadDialog {
                     failed = failed.child(
                         Label::new(tr!("dialog.upload.partial", done = done, total = total))
                             .text_color(cx.theme().foreground),
+                    );
+                }
+                if unknown {
+                    failed = failed.child(
+                        Label::new(tr!("dialog.upload.unknown_hint"))
+                            .text_size(muted_text_size())
+                            .text_color(muted),
                     );
                 }
                 if let Some(view) = &failure.conflict {
@@ -1049,12 +1132,9 @@ impl Render for UploadDialog {
             }
         }
 
-        let confirm_label = match confirm_kind(
-            matches!(self.state, UploadState::Failed(_)),
-            self.validation.errors(),
-            self.validation.warnings(),
-        ) {
+        let confirm_label = match self.confirm_button_kind() {
             ConfirmKind::Retry => tr!("dialog.upload.retry"),
+            ConfirmKind::UploadAgainAfterCheck => tr!("dialog.upload.retry_after_check"),
             ConfirmKind::UploadAnyway => tr!("validator.upload_anyway"),
             ConfirmKind::Upload => tr!("dialog.upload.confirm"),
         };
@@ -1135,23 +1215,77 @@ mod tests {
     #[test]
     fn confirm_label_follows_the_findings() {
         // No findings.
-        assert_eq!(confirm_kind(false, 0, 0), ConfirmKind::Upload);
+        assert_eq!(confirm_kind(None, 0, 0), ConfirmKind::Upload);
         // Warnings only: allowed, "anyway".
-        assert_eq!(confirm_kind(false, 0, 3), ConfirmKind::UploadAnyway);
+        assert_eq!(confirm_kind(None, 0, 3), ConfirmKind::UploadAnyway);
         // Errors only: blocked, plain "Upload".
-        assert_eq!(confirm_kind(false, 2, 0), ConfirmKind::Upload);
+        assert_eq!(confirm_kind(None, 2, 0), ConfirmKind::Upload);
         // Errors and warnings: still blocked, plain "Upload".
-        assert_eq!(confirm_kind(false, 2, 3), ConfirmKind::Upload);
+        assert_eq!(confirm_kind(None, 2, 3), ConfirmKind::Upload);
         // A failed attempt offers a retry whatever was found.
-        assert_eq!(confirm_kind(true, 0, 0), ConfirmKind::Retry);
+        assert_eq!(
+            confirm_kind(Some(FailureKind::Other), 0, 0),
+            ConfirmKind::Retry
+        );
+        assert_eq!(
+            confirm_kind(Some(FailureKind::Refused), 0, 3),
+            ConfirmKind::Retry
+        );
+    }
+
+    #[test]
+    fn an_unknown_outcome_is_never_offered_as_a_plain_retry() {
+        for (errors, warnings) in [(0, 0), (0, 3), (2, 0)] {
+            assert_eq!(
+                confirm_kind(Some(FailureKind::OutcomeUnknown), errors, warnings),
+                ConfirmKind::UploadAgainAfterCheck
+            );
+        }
+        assert!(!enter_uploads(Some(FailureKind::OutcomeUnknown)));
+        assert!(enter_uploads(Some(FailureKind::Other)));
+        assert!(enter_uploads(Some(FailureKind::Refused)));
+        assert!(enter_uploads(None));
+    }
+
+    #[test]
+    fn upload_errors_map_to_failure_kinds() {
+        use crate::osm_upload::UploadError;
+        let conflict = UploadConflict {
+            kind: ConflictKind::Other,
+            object: None,
+            status: 409,
+            message: String::new(),
+        };
+        assert_eq!(
+            failure_kind_of(&UploadError::Conflict(conflict)),
+            FailureKind::Refused
+        );
+        assert_eq!(
+            failure_kind_of(&UploadError::OutcomeUnknown {
+                changeset_id: 1,
+                url: "u".into(),
+                detail: "d".into(),
+            }),
+            FailureKind::OutcomeUnknown
+        );
+        for other in [
+            UploadError::Network("x".into()),
+            UploadError::Http {
+                status: 400,
+                body: String::new(),
+            },
+            UploadError::Parse("x".into()),
+        ] {
+            assert_eq!(failure_kind_of(&other), FailureKind::Other);
+        }
     }
 
     #[test]
     fn preview_label_uses_the_same_rule() {
         // The preview only disables the button; it has no label of its own,
         // so errors in a preview read "Upload" and warnings "Upload anyway".
-        assert_eq!(confirm_kind(false, 1, 1), ConfirmKind::Upload);
-        assert_eq!(confirm_kind(false, 0, 1), ConfirmKind::UploadAnyway);
+        assert_eq!(confirm_kind(None, 1, 1), ConfirmKind::Upload);
+        assert_eq!(confirm_kind(None, 0, 1), ConfirmKind::UploadAnyway);
     }
 
     #[test]
@@ -1204,6 +1338,7 @@ mod tests {
         assert!(UploadState::Editing.can_dismiss());
 
         let failed = UploadState::Failed(Failure {
+            kind: FailureKind::Other,
             message: "nope".into(),
             conflict: None,
             resolve_error: None,

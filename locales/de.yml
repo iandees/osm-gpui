@@ -878,6 +878,9 @@ dialog:
     failed: "Hochladen fehlgeschlagen"
     refused_title: "Hochladen noch nicht möglich"
     retry: "Erneut versuchen"
+    unknown_title: "Upload möglicherweise durchgegangen"
+    unknown_hint: "Prüfe zuerst deine letzten Changesets auf der OpenStreetMap-Website. Lade nur erneut hoch, wenn diese Änderungen dort fehlen."
+    retry_after_check: "Ich habe nachgesehen, erneut hochladen"
     large:
       one: "Dieser Upload ist groß und wird als %{count} Änderungssatz gesendet."
       other: "Dieser Upload ist groß und wird als %{count} Änderungssätze gesendet."
