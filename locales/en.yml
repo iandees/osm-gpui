@@ -242,6 +242,8 @@ status:
   restored_autosave:
     one: "Restored %{count} layer with unsaved edits"
     other: "Restored %{count} layers with unsaved edits"
+  # At startup, when a newer version of the app left autosaved edits behind.
+  autosave_newer_version: "A newer version of this app left autosaved edits that this version cannot restore. They were kept; open that version to recover them."
   # `%{layer}` is the layer's name, `%{error}` the reason.
   restore_failed: "Could not restore \"%{layer}\": %{error}"
   downloaded: "Downloaded OSM data: %{summary}"
@@ -891,6 +893,10 @@ dialog:
     # one of `limits.upload.*`).
     refused_title: "Can't upload yet"
     retry: "Try again"
+    # After an upload the server may have applied (the body names the changeset).
+    unknown_title: "Upload may have gone through"
+    unknown_hint: "Check your recent changesets on the OpenStreetMap website first. Upload again only if these changes are not there."
+    retry_after_check: "I've checked, upload again"
     # More changes than one changeset holds: `%{count}` changesets will be used.
     large:
       one: "This upload is large and will be sent as %{count} changeset."

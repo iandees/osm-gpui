@@ -46,6 +46,35 @@ fn comments_still_end_a_text_argument() {
 }
 
 #[test]
+fn the_ops_that_write_to_the_server_are_pinned() {
+    for line in [
+        "upload_confirm",
+        "resolve_conflict keep_mine",
+        "sign_in",
+        "note_comment hello",
+        "note_close",
+        "note_reopen",
+    ] {
+        assert!(op(line).writes_to_server(), "{line}");
+    }
+    for line in [
+        "show_notes on",
+        "set_comment hello",
+        "upload_cancel",
+        "assert_signed_in",
+        "wait_signed_in",
+        "capture out.png",
+        "crash",
+        "autosave_now",
+    ] {
+        match parse(line) {
+            Ok(mut steps) => assert!(!steps.remove(0).op.writes_to_server(), "{line}"),
+            Err(e) => panic!("{line}: {e}"),
+        }
+    }
+}
+
+#[test]
 fn upload_buttons() {
     assert_eq!(op("upload_confirm"), Op::UploadConfirm);
     assert!(parse("upload_confirm now").is_err());

@@ -452,7 +452,7 @@ impl MapViewer {
         self.set_status(tr!("notes.new.armed"));
     }
 
-    fn open_new_note_dialog(
+    pub(crate) fn open_new_note_dialog(
         &mut self,
         lat: f64,
         lon: f64,

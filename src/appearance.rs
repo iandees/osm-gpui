@@ -180,13 +180,7 @@ pub fn apply_run_override(mode: ThemeMode, cx: &mut App) {
 /// per-run override so the choice shows, and repaint every window.
 pub fn set_preference(preference: ThemePreference, persist: bool, cx: &mut App) {
     set_run_override(None);
-    let mut settings = settings_store::snapshot();
-    settings.theme = preference;
-    if persist {
-        settings_store::update_store(settings);
-    } else {
-        settings_store::update_store_in_memory(settings);
-    }
+    settings_store::update(persist, |s| s.theme = preference);
     apply(cx);
 }
 

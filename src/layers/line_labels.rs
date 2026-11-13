@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::layers::area_labels::Fingerprint;
 use crate::layers::labels::{CollisionGrid, Rect, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER};
 use crate::layers::way_stroke::{Polyline, Shape};
 
@@ -723,7 +724,7 @@ pub struct PlacedLabel {
     pub anchor: Pt,
 }
 
-type LayoutSig = ((usize, u64, u64), [u32; 3]);
+type LayoutSig = (Fingerprint, [u32; 3]);
 
 struct CacheEntry {
     text: String,
@@ -874,13 +875,12 @@ impl Default for LineLabelCache {
     }
 }
 
-fn geometry_sig(verts: &[(i64, f64, f64)]) -> (usize, u64, u64) {
-    let (mut sx, mut sy) = (0.0f64, 0.0f64);
-    for &(_, x, y) in verts {
-        sx += x;
-        sy += y;
-    }
-    (verts.len(), sx.to_bits(), sy.to_bits())
+/// Order-sensitive: the cached layout is relative to the first vertex and
+/// follows the way's direction, so a reversed way needs a new layout.
+fn geometry_sig(verts: &[(i64, f64, f64)]) -> Fingerprint {
+    let mut f = Fingerprint::default();
+    f.ring(verts.iter().map(|&(_, x, y)| (x, y)));
+    f
 }
 
 fn style_sig(s: &LabelStyle) -> [u32; 3] {
@@ -1241,6 +1241,33 @@ pub fn emit_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn way(pts: &[(f64, f64)]) -> Vec<(i64, f64, f64)> {
+        pts.iter()
+            .enumerate()
+            .map(|(i, &(x, y))| (i as i64, x, y))
+            .collect()
+    }
+
+    #[test]
+    fn geometry_sig_is_order_sensitive() {
+        let pts = [(0.0, 0.0), (10.0, 5.0), (20.0, 0.0), (30.0, 7.0)];
+        let fwd = way(&pts);
+        let mut rev_pts = pts;
+        rev_pts.reverse();
+        let rev = way(&rev_pts);
+        assert_ne!(geometry_sig(&fwd), geometry_sig(&rev));
+        assert_eq!(geometry_sig(&fwd), geometry_sig(&way(&pts)));
+
+        let mut moved = pts;
+        moved[2].1 += 0.5;
+        assert_ne!(geometry_sig(&fwd), geometry_sig(&way(&moved)));
+
+        // Same vertex count and same coordinate sums, different shape.
+        let a = way(&[(0.0, 0.0), (4.0, 1.0), (2.0, 5.0)]);
+        let b = way(&[(1.0, 2.0), (2.0, 2.0), (3.0, 2.0)]);
+        assert_ne!(geometry_sig(&a), geometry_sig(&b));
+    }
 
     fn straight(len: f32) -> Vec<Pt> {
         vec![(0.0, 0.0), (len / 2.0, 0.0), (len, 0.0)]

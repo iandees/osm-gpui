@@ -1,7 +1,8 @@
 //! Persistent storage for app-wide settings (currently: which OSM API server to use).
 //!
 //! Stored as JSON in `<config_dir>/osm-gpui/settings.json`. Missing, unreadable, or
-//! malformed files fall back to defaults (logged to stderr).
+//! malformed files fall back to defaults (logged to stderr); a malformed file is
+//! first copied to `settings.json.bak`.
 
 use crate::persist::{self, JsonStore, WriteOpts};
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,9 @@ use std::path::{Path, PathBuf};
 pub const PRIMARY_API_URL: &str = "https://api.openstreetmap.org";
 pub const DEV_API_URL: &str = "https://master.apis.dev.openstreetmap.org";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ApiServerChoice {
+    #[default]
     Primary,
     Dev,
     Custom,
@@ -87,21 +89,25 @@ impl ThemePreference {
     }
 }
 
+/// Every field falls back to its `Default` value when absent, so a file from
+/// an older build (or one missing a field) keeps the rest of its settings.
+/// Enum-valued fields also fall back when the file holds a variant this build
+/// does not know.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
+    #[serde(deserialize_with = "persist::lenient")]
     pub api_server: ApiServerChoice,
     pub custom_api_url: String,
     /// OAuth client IDs, keyed by OAuth base URL (see `auth::oauth_base_for`). OSM's
     /// primary and dev instances have entirely separate app registrations, so a
     /// client_id registered on one is unknown to the other; this lets each server use
     /// its own registered app instead of sharing a single hardcoded client_id.
-    #[serde(default)]
     pub client_ids: HashMap<String, String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "persist::lenient")]
     pub text_size_preset: TextSizePreset,
     /// Tile cache size budget, in megabytes. Defaults to 500 for
     /// `settings.json` files written before this field existed.
-    #[serde(default = "default_cache_budget_mb")]
     pub cache_budget_mb: u64,
     /// User overrides for customizable keyboard shortcuts, keyed by the
     /// shortcut id (see `crate::keybindings::SHORTCUTS`), valued by a gpui
@@ -109,88 +115,69 @@ pub struct AppSettings {
     /// appear here — everything else uses its built-in default, so a future
     /// default change isn't silently frozen for users who never touched
     /// this setting.
-    #[serde(default)]
     pub keybindings: HashMap<String, String>,
     /// Width of the main window's side panel in pixels, if the user has
     /// resized it; `None` means the default width.
-    #[serde(default)]
     pub side_panel_width: Option<f32>,
     /// UI language as a locale tag (e.g. `"en"`). `None` follows the system
     /// locale. Read once at startup, so a change applies after a restart.
-    #[serde(default)]
     pub language: Option<String>,
     /// Ids of the presets most recently applied in the preset picker, most
     /// recent first (see `crate::preset_recents`).
-    #[serde(default)]
     pub recent_presets: Vec<String>,
     /// Light, dark, or follow the OS. Missing in older files, meaning System.
-    #[serde(default)]
+    #[serde(deserialize_with = "persist::lenient")]
     pub theme: ThemePreference,
     /// Whether layers with unsaved edits are autosaved for crash recovery
     /// (see `crate::autosave`). On by default, including for settings files
     /// written before this field existed.
-    #[serde(default = "default_autosave")]
     pub autosave: bool,
     /// True once the user closed the welcome card. Missing in older files,
     /// meaning the card is shown.
-    #[serde(default)]
     pub welcome_dismissed: bool,
     /// Reverse the direction in which scrolling zooms the map. Missing in
     /// older files, meaning the default direction.
-    #[serde(default)]
     pub invert_scroll_zoom: bool,
     /// The `source` text of the last upload, prefilled in the next upload
     /// dialog. Missing in older files, meaning empty.
-    #[serde(default)]
     pub last_source: String,
     /// The last distinct changeset comments, most recent first (see
     /// `crate::changeset_tags::push_recent_comment`). Missing in older files,
     /// meaning none.
-    #[serde(default)]
     pub recent_comments: Vec<String>,
     /// Whether the tag key/value inputs ask taginfo.openstreetmap.org for
     /// suggestions (see `crate::taginfo`). On by default, including for
     /// settings files written before this field existed.
-    #[serde(default = "default_suggest_from_taginfo")]
     pub suggest_from_taginfo: bool,
     /// Simplify Way's Douglas-Peucker tolerance in metres. Use
     /// [`AppSettings::simplify_tolerance`] to read it: a value outside
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
-    #[serde(default = "default_simplify_tolerance_m")]
     pub simplify_tolerance_m: f64,
     /// Locations (local file paths or http(s) URLs) of the custom MapCSS
     /// styles the user added. Missing in older files, meaning none.
-    #[serde(default)]
     pub map_styles: Vec<String>,
     /// The location in `map_styles` that is in use; `None` is the built-in
     /// style. Missing in older files, meaning the built-in style.
-    #[serde(default)]
     pub active_map_style: Option<String>,
     /// Where the map was when the app last quit, reopened there next time.
     /// Missing in older files, meaning the built-in starting view.
-    #[serde(default)]
     pub last_map_view: Option<MapView>,
     /// The main window's position and size when the app last quit. Missing
     /// in older files, meaning the default placement.
-    #[serde(default)]
     pub window_bounds: Option<WindowRect>,
     /// How downloaded GPS traces draw (colours, width, age filter). Missing
     /// in older files, meaning the defaults.
-    #[serde(default)]
     pub gps_trace_style: crate::trace_style::TraceStyle,
     /// Mapillary access token (a client token from the Mapillary developer
     /// dashboard), needed to show Mapillary street imagery. Empty when unset.
-    #[serde(default)]
     pub mapillary_token: String,
     /// Fotoshi API key. Optional: it raises the size of the photo searches
     /// that draw the Fotoshi layer, and is required to look up the photos of
     /// a selected OSM feature. Empty when unset.
-    #[serde(default)]
     pub fotoshi_api_key: String,
     /// Whether selecting a feature asks Fotoshi for photos of it. Off by
     /// default: the lookup sends the feature's OSM id to Fotoshi, which tells
     /// it what the user is looking at.
-    #[serde(default)]
     pub fotoshi_lookup_selected: bool,
 }
 
@@ -299,12 +286,12 @@ impl Default for AppSettings {
             language: None,
             recent_presets: Vec::new(),
             theme: ThemePreference::default(),
-            autosave: true,
+            autosave: default_autosave(),
             welcome_dismissed: false,
             invert_scroll_zoom: false,
             last_source: String::new(),
             recent_comments: Vec::new(),
-            suggest_from_taginfo: true,
+            suggest_from_taginfo: default_suggest_from_taginfo(),
             simplify_tolerance_m: default_simplify_tolerance_m(),
             map_styles: Vec::new(),
             active_map_style: None,
@@ -344,165 +331,114 @@ pub fn init_store(settings: AppSettings) {
     APP_SETTINGS.init(settings);
 }
 
-/// Replace the in-memory settings and persist to disk.
-pub fn update_store(settings: AppSettings) {
-    APP_SETTINGS.update("settings_store", |g| *g = settings.clone());
-    save(&settings);
+/// Apply `f` to the store's current settings, so only the fields `f` touches
+/// change and a value written elsewhere in the meantime is never reverted.
+/// Written to disk when `persist` is true.
+pub fn update(persist: bool, f: impl FnOnce(&mut AppSettings)) {
+    let Some(updated) = update_in(&APP_SETTINGS, default_path().as_deref(), persist, f) else {
+        return;
+    };
     // The server may have changed: learn its capabilities in the background
     // (a no-op when already known). Never from unit tests: no network there.
     #[cfg(not(test))]
-    {
-        let base = settings.api_base_url();
+    if persist {
+        let base = updated.api_base_url();
         if base.starts_with("http://") || base.starts_with("https://") {
             crate::capabilities::ensure_fetched(&base);
         }
     }
+    #[cfg(test)]
+    let _ = updated;
 }
 
-/// Replace the in-memory settings only, without writing the settings file.
-pub fn update_store_in_memory(settings: AppSettings) {
-    APP_SETTINGS.update("settings_store", |g| *g = settings);
+/// [`update`] against an explicit store and file. `None` when the store is
+/// not initialized.
+fn update_in(
+    store: &JsonStore<AppSettings>,
+    path: Option<&Path>,
+    persist: bool,
+    f: impl FnOnce(&mut AppSettings),
+) -> Option<AppSettings> {
+    let updated = store.update("settings_store", f)?;
+    if persist {
+        match path {
+            Some(p) => {
+                if let Err(e) = save_to(p, &updated) {
+                    eprintln!("settings_store: save {:?} failed: {}", p, e);
+                }
+            }
+            None => eprintln!("settings_store: no config dir, skipping save"),
+        }
+    }
+    Some(updated)
 }
 
-/// Set only the welcome-card flag, on top of the store's current settings so
-/// nothing else is touched. Written to disk when `persist` is true.
+/// Set only the welcome-card flag. Written to disk when `persist` is true.
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
-    let mut settings = snapshot();
-    settings.welcome_dismissed = dismissed;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.welcome_dismissed = dismissed);
 }
 
-/// Set only the invert-scroll-zoom flag, on top of the store's current
-/// settings so nothing else is touched. Written to disk when `persist` is true.
+/// Set only the invert-scroll-zoom flag. Written to disk when `persist` is true.
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
-    let mut settings = snapshot();
-    settings.invert_scroll_zoom = invert;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.invert_scroll_zoom = invert);
 }
 
-/// Set only the taginfo-suggestions flag, on top of the store's current
-/// settings so nothing else is touched. Written to disk when `persist` is true.
+/// Set only the taginfo-suggestions flag. Written to disk when `persist` is true.
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
-    let mut settings = snapshot();
-    settings.suggest_from_taginfo = on;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.suggest_from_taginfo = on);
 }
 
-/// Set only the Fotoshi API key, on top of the store's current settings.
-/// Surrounding whitespace is dropped. Written to disk when `persist` is true.
+/// Set only the Fotoshi API key. Surrounding whitespace is dropped. Written to
+/// disk when `persist` is true.
 pub fn set_fotoshi_api_key(key: &str, persist: bool) {
-    let mut settings = snapshot();
-    settings.fotoshi_api_key = key.trim().to_string();
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.fotoshi_api_key = key.trim().to_string());
 }
 
 /// Turn the per-feature Fotoshi lookup on or off (see
 /// `AppSettings::fotoshi_lookup_selected`).
 pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
-    let mut settings = snapshot();
-    settings.fotoshi_lookup_selected = on;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.fotoshi_lookup_selected = on);
 }
 
-/// Set only the Mapillary access token, on top of the store's current
-/// settings. Surrounding whitespace is dropped. Written to disk when
-/// `persist` is true.
+/// Set only the Mapillary access token. Surrounding whitespace is dropped.
+/// Written to disk when `persist` is true.
 pub fn set_mapillary_token(token: &str, persist: bool) {
-    let mut settings = snapshot();
-    settings.mapillary_token = token.trim().to_string();
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.mapillary_token = token.trim().to_string());
 }
 
-/// Set only the Simplify Way tolerance (metres), on top of the store's current
-/// settings. Values outside the allowed range are ignored (`false`). Written
-/// to disk when `persist` is true.
+/// Set only the Simplify Way tolerance (metres). Values outside the allowed
+/// range are ignored (`false`). Written to disk when `persist` is true.
 pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
     let Some(metres) = valid_simplify_tolerance(metres) else {
         return false;
     };
-    let mut settings = snapshot();
-    settings.simplify_tolerance_m = metres;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.simplify_tolerance_m = metres);
     true
 }
 
-/// Set only the last map view, on top of the store's current settings so
-/// nothing else is touched. Written to disk when `persist` is true.
+/// Set only the last map view. Written to disk when `persist` is true.
 pub fn set_last_map_view(view: MapView, persist: bool) {
-    let mut settings = snapshot();
-    settings.last_map_view = Some(view);
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.last_map_view = Some(view));
 }
 
-/// Set only the window bounds, on top of the store's current settings so
-/// nothing else is touched. Written to disk when `persist` is true.
+/// Set only the window bounds. Written to disk when `persist` is true.
 pub fn set_window_bounds(rect: WindowRect, persist: bool) {
-    let mut settings = snapshot();
-    settings.window_bounds = Some(rect);
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.window_bounds = Some(rect));
 }
 
-/// Set only the GPS trace style, on top of the store's current settings so
-/// nothing else is touched. Written to disk when `persist` is true.
+/// Set only the GPS trace style. Written to disk when `persist` is true.
 pub fn set_gps_trace_style(style: crate::trace_style::TraceStyle, persist: bool) {
-    let mut settings = snapshot();
-    settings.gps_trace_style = style;
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| s.gps_trace_style = style);
 }
 
 /// Remember the source text and the comment of an upload that went through:
 /// the source is prefilled next time and the comment joins the recent list.
-/// Applied on top of the store's current settings so nothing else is touched.
 /// Written to disk when `persist` is true.
 pub fn remember_upload_text(source: &str, comment: &str, persist: bool) {
-    let mut settings = snapshot();
-    settings.last_source = source.trim().to_string();
-    crate::changeset_tags::push_recent_comment(&mut settings.recent_comments, comment);
-    if persist {
-        update_store(settings);
-    } else {
-        update_store_in_memory(settings);
-    }
+    update(persist, |s| {
+        s.last_source = source.trim().to_string();
+        crate::changeset_tags::push_recent_comment(&mut s.recent_comments, comment);
+    });
 }
 
 /// Return a snapshot of the current in-memory settings.
@@ -586,8 +522,9 @@ pub fn load_from(path: &Path) -> AppSettings {
     persist::load_json(path, "settings_store")
 }
 
+/// Owner-only: the file holds API tokens in plain text.
 pub fn save_to(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
-    persist::save_json(path, settings, WriteOpts::default())
+    persist::save_json(path, settings, WriteOpts::new().restrict_permissions())
 }
 
 /// Default on-disk location: `<config_dir>/osm-gpui/settings.json`. `None`
@@ -602,17 +539,6 @@ pub fn load() -> AppSettings {
     match default_path() {
         Some(p) => load_from(&p),
         None => AppSettings::default(),
-    }
-}
-
-/// Save to the default path. Silently succeeds (logging only) when there is no config dir.
-pub fn save(settings: &AppSettings) {
-    let Some(p) = default_path() else {
-        eprintln!("settings_store: no config dir, skipping save");
-        return;
-    };
-    if let Err(e) = save_to(&p, settings) {
-        eprintln!("settings_store: save {:?} failed: {}", p, e);
     }
 }
 
@@ -641,16 +567,163 @@ mod tests {
         let before = real
             .as_ref()
             .and_then(|p| fs::metadata(p).ok()?.modified().ok());
-        update_store(AppSettings::default());
-        save(&AppSettings::default());
-        set_welcome_dismissed(true, true);
-        set_invert_scroll_zoom(true, true);
-        set_suggest_from_taginfo(false, true);
-        set_simplify_tolerance(5.0, true);
+        init_store(AppSettings::default());
+        // Every setter is a wrapper over `update`, so this covers them all.
+        update(true, |s| s.welcome_dismissed = true);
         let after = real
             .as_ref()
             .and_then(|p| fs::metadata(p).ok()?.modified().ok());
         assert_eq!(before, after);
+    }
+
+    fn local_store() -> JsonStore<AppSettings> {
+        let store = JsonStore::new();
+        store.init(AppSettings::default());
+        store
+    }
+
+    #[test]
+    fn update_persists_only_when_asked() {
+        let dir = tmp_dir("update-persist");
+        let path = dir.join("settings.json");
+        let store = local_store();
+
+        update_in(&store, Some(&path), false, |s| s.last_source = "a".into()).unwrap();
+        assert!(!path.exists());
+        assert_eq!(store.snapshot("t").last_source, "a");
+
+        update_in(&store, Some(&path), true, |s| {
+            s.mapillary_token = "t".into()
+        })
+        .unwrap();
+        let on_disk = load_from(&path);
+        assert_eq!(on_disk.mapillary_token, "t");
+        // The earlier in-memory-only change rode along with the next write.
+        assert_eq!(on_disk.last_source, "a");
+    }
+
+    #[test]
+    fn update_before_init_does_nothing() {
+        let dir = tmp_dir("update-uninit");
+        let path = dir.join("settings.json");
+        let store = JsonStore::new();
+        assert!(update_in(&store, Some(&path), true, |s| s.autosave = false).is_none());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn update_keeps_fields_written_elsewhere_after_a_stale_snapshot() {
+        let dir = tmp_dir("update-stale");
+        let path = dir.join("settings.json");
+        let store = local_store();
+
+        // A window opened earlier and holds this copy.
+        let stale = store.snapshot("t");
+        assert_eq!(stale.side_panel_width, None);
+
+        update_in(&store, Some(&path), true, |s| {
+            s.side_panel_width = Some(321.0);
+            s.recent_presets = vec!["building".into()];
+        })
+        .unwrap();
+
+        // The window now changes just the theme.
+        let after = update_in(&store, Some(&path), true, |s| {
+            s.theme = ThemePreference::Dark;
+        })
+        .unwrap();
+        assert_eq!(after.theme, ThemePreference::Dark);
+        assert_eq!(after.side_panel_width, Some(321.0));
+        assert_eq!(after.recent_presets, vec!["building".to_string()]);
+        let on_disk = load_from(&path);
+        assert_eq!(on_disk, after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp_dir("owner-only");
+        let path = dir.join("settings.json");
+        save_to(&path, &AppSettings::default()).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn file_missing_a_field_keeps_the_others() {
+        let dir = tmp_dir("missing-field");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"custom_api_url":"https://x.example","side_panel_width":300.0,"theme":"Dark","cache_budget_mb":42,"autosave":false}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.api_server, ApiServerChoice::Primary);
+        assert_eq!(loaded.custom_api_url, "https://x.example");
+        assert_eq!(loaded.side_panel_width, Some(300.0));
+        assert_eq!(loaded.theme, ThemePreference::Dark);
+        assert_eq!(loaded.cache_budget_mb, 42);
+        assert!(!loaded.autosave);
+        assert!(!dir.join("settings.json.bak").exists());
+    }
+
+    #[test]
+    fn unknown_enum_value_falls_back_for_that_field_only() {
+        let dir = tmp_dir("unknown-enum");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            br#"{"api_server":"Staging","custom_api_url":"https://x.example","theme":"Sepia","text_size_preset":"Huge","side_panel_width":300.0,"gps_trace_style":{"color_by":"Rainbow","width":"Medium","show_private":false}}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.api_server, ApiServerChoice::Primary);
+        assert_eq!(loaded.theme, ThemePreference::System);
+        assert_eq!(loaded.text_size_preset, TextSizePreset::Medium);
+        assert_eq!(loaded.custom_api_url, "https://x.example");
+        assert_eq!(loaded.side_panel_width, Some(300.0));
+        assert_eq!(
+            loaded.gps_trace_style.color_by,
+            crate::trace_style::ColorBy::default()
+        );
+        assert!(!loaded.gps_trace_style.show_private);
+        assert_eq!(
+            loaded.gps_trace_style.width,
+            crate::trace_style::LineWidth::Medium
+        );
+        assert!(!dir.join("settings.json.bak").exists());
+    }
+
+    #[test]
+    fn unparseable_file_is_kept_as_bak() {
+        let dir = tmp_dir("unparseable-bak");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"side_panel_width": "wide"}"#).unwrap();
+        assert_eq!(load_from(&path), AppSettings::default());
+        assert_eq!(
+            fs::read(dir.join("settings.json.bak")).unwrap(),
+            br#"{"side_panel_width": "wide"}"#
+        );
+    }
+
+    #[test]
+    fn run_override_wins_over_the_saved_choice_the_window_edits() {
+        let dev_saved = AppSettings {
+            api_server: ApiServerChoice::Dev,
+            ..AppSettings::default()
+        };
+        let primary_saved = AppSettings::default();
+        // Switching the saved picker never moves a session that has an override.
+        for saved in [&dev_saved, &primary_saved] {
+            assert_eq!(
+                effective_base_url(saved, Some(DEV_API_URL)),
+                DEV_API_URL.to_string()
+            );
+        }
+        assert_eq!(effective_base_url(&dev_saved, None), DEV_API_URL);
+        assert_eq!(effective_base_url(&primary_saved, None), PRIMARY_API_URL);
     }
 
     #[test]
@@ -742,7 +815,7 @@ mod tests {
             effective_base_url(&saved, Some("http://127.0.0.1:9/")),
             "http://127.0.0.1:9"
         );
-        // The settings value itself (what `update_store` would write) is untouched.
+        // The settings value itself (what gets written to disk) is untouched.
         assert_eq!(saved.api_server, ApiServerChoice::Primary);
         let json = serde_json::to_string(&saved).unwrap();
         assert!(json.contains("\"Primary\"") && !json.contains("Dev"));

@@ -126,14 +126,15 @@ pub trait AppHandle {
 /// development server (exact host match), so a script can never write to the
 /// production server.
 pub fn upload_guard(op: &Op, server: &str) -> Result<(), String> {
+    if !op.writes_to_server() {
+        return Ok(());
+    }
     let name = match op {
-        Op::UploadConfirm => "upload_confirm",
-        Op::ResolveConflict { .. } => "resolve_conflict",
-        Op::SignIn => "sign_in",
-        // Writing to notes (comment, close, reopen, create) is held to the
-        // same rule as an upload.
-        Op::Note(n) if n.is_write() => n.name(),
-        _ => return Ok(()),
+        Op::UploadConfirm => "upload_confirm".to_string(),
+        Op::ResolveConflict { .. } => "resolve_conflict".to_string(),
+        Op::SignIn => "sign_in".to_string(),
+        Op::Note(n) => n.name().to_string(),
+        other => describe(other),
     };
     if crate::settings_store::is_dev_server(server) {
         Ok(())
@@ -185,11 +186,7 @@ impl Runner {
             message,
         };
         // Checked before anything else, whatever the op: see `upload_guard`.
-        if matches!(
-            &step.op,
-            Op::UploadConfirm | Op::ResolveConflict { .. } | Op::SignIn
-        ) || matches!(&step.op, Op::Note(n) if n.is_write())
-        {
+        if step.op.writes_to_server() {
             let server = app.api_server();
             upload_guard(&step.op, &server).map_err(fail)?;
         }
