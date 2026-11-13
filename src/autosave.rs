@@ -488,25 +488,71 @@ fn probe(dir: &Path) -> Liveness {
     }
 }
 
-fn read_manifest(path: &Path) -> Option<Manifest> {
-    let manifest: Manifest = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (manifest.format == FORMAT).then_some(manifest)
+/// What reading one layer's manifest found.
+#[derive(Debug, PartialEq)]
+enum ManifestRead {
+    Current(Manifest),
+    /// A well-formed manifest written in a format this build does not know.
+    /// Another build wrote it and may still be able to restore it, so it must
+    /// be left on disk.
+    OtherFormat(u32),
+    /// Missing, torn or not a manifest at all.
+    Unreadable,
+}
+
+/// Just enough of any manifest to tell which format wrote it, so a newer
+/// build's manifest is recognised even when its other fields have changed.
+#[derive(Deserialize)]
+struct FormatProbe {
+    format: u32,
+}
+
+fn read_manifest(path: &Path) -> ManifestRead {
+    let Ok(bytes) = std::fs::read(path) else {
+        return ManifestRead::Unreadable;
+    };
+    let Ok(probe) = serde_json::from_slice::<FormatProbe>(&bytes) else {
+        return ManifestRead::Unreadable;
+    };
+    if probe.format != FORMAT {
+        return ManifestRead::OtherFormat(probe.format);
+    }
+    match serde_json::from_slice::<Manifest>(&bytes) {
+        Ok(manifest) => ManifestRead::Current(manifest),
+        Err(_) => ManifestRead::Unreadable,
+    }
+}
+
+/// The result of looking for what earlier runs left behind.
+#[derive(Default)]
+pub struct CrashScan {
+    /// Sessions that can be offered for restore, oldest first.
+    pub sessions: Vec<CrashedSession>,
+    /// How many dead sessions hold autosaves from another format version.
+    /// They are kept on disk but cannot be restored by this build.
+    pub other_format: usize,
 }
 
 /// The sessions under `root` whose owner is gone and that left at least one
 /// complete layer behind, oldest first. Sessions with nothing recoverable
 /// are removed. Never touches a live session (including `own`).
 pub fn find_crashed(root: &Path, own: Option<&str>) -> Vec<CrashedSession> {
+    scan_crashed(root, own).sessions
+}
+
+/// [`find_crashed`], also counting the sessions kept because another build
+/// wrote them in a format this one cannot read.
+pub fn scan_crashed(root: &Path, own: Option<&str>) -> CrashScan {
     let mut dirs: Vec<PathBuf> = match std::fs::read_dir(root) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.is_dir())
             .collect(),
-        Err(_) => return Vec::new(),
+        Err(_) => return CrashScan::default(),
     };
     dirs.sort();
-    let mut found = Vec::new();
+    let mut scan = CrashScan::default();
     for dir in dirs {
         if own.is_some_and(|id| dir.file_name().is_some_and(|n| n == id)) {
             continue;
@@ -515,23 +561,36 @@ pub fn find_crashed(root: &Path, own: Option<&str>) -> Vec<CrashedSession> {
             continue;
         };
         let mut layers = Vec::new();
+        let mut other_format = false;
         for manifest_path in list_manifests(&dir) {
-            let Some(manifest) = read_manifest(&manifest_path) else {
-                continue;
+            let manifest = match read_manifest(&manifest_path) {
+                ManifestRead::Current(manifest) => manifest,
+                ManifestRead::OtherFormat(_) => {
+                    other_format = true;
+                    continue;
+                }
+                ManifestRead::Unreadable => continue,
             };
             let osm_path = manifest_path.with_extension("osm");
             if osm_path.is_file() {
                 layers.push(RecoverableLayer { manifest, osm_path });
             }
         }
+        if other_format {
+            scan.other_format += 1;
+        }
         if layers.is_empty() {
             drop(lock);
-            let _ = std::fs::remove_dir_all(&dir);
+            // A newer build's edits are not junk: an older build running
+            // after it must not delete them.
+            if !other_format {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             continue;
         }
-        found.push(CrashedSession { dir, layers, lock });
+        scan.sessions.push(CrashedSession { dir, layers, lock });
     }
-    found
+    scan
 }
 
 /// Decides when a layer is written. Pure, driven by the clock the caller
@@ -1057,7 +1116,9 @@ mod tests {
             outcome,
             WriteOutcome::Written(expected.0 + expected.1 + expected.2)
         );
-        let manifest = read_manifest(&session.manifest_path(3)).unwrap();
+        let ManifestRead::Current(manifest) = read_manifest(&session.manifest_path(3)) else {
+            panic!("a current manifest");
+        };
         assert_eq!(manifest.layer_name, "Edited");
         assert_eq!(manifest.layer_id, 3);
         assert_eq!(manifest.source_path.as_deref(), Some("/tmp/area.osm"));
@@ -1254,6 +1315,34 @@ mod tests {
     }
 
     #[test]
+    fn a_session_from_a_newer_format_is_kept_and_not_offered() {
+        let root = tmp_root("newer");
+        let newer = Session::start(&root).unwrap();
+        // A newer build may add required fields, so only `format` is relied on.
+        std::fs::write(
+            newer.manifest_path(1),
+            format!(r#"{{"format":{},"something_new":true}}"#, FORMAT + 1),
+        )
+        .unwrap();
+        std::fs::write(newer.osm_path(1), b"<osm/>").unwrap();
+        let newer_dir = newer.dir().to_path_buf();
+        assert_eq!(
+            read_manifest(&newer.manifest_path(1)),
+            ManifestRead::OtherFormat(FORMAT + 1)
+        );
+        drop(newer);
+
+        let scan = scan_crashed(&root, None);
+        assert!(scan.sessions.is_empty());
+        assert_eq!(scan.other_format, 1);
+        assert!(newer_dir.exists(), "the newer build's autosave is kept");
+        // Still kept on the next start.
+        assert!(find_crashed(&root, None).is_empty());
+        assert!(newer_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_missing_root_is_no_crashed_sessions() {
         let root = tmp_root("absent").join("not-created");
         assert!(find_crashed(&root, None).is_empty());
@@ -1276,7 +1365,9 @@ mod tests {
             old.layers[0].osm_path.exists(),
             "the old copy is still there"
         );
-        let manifest = read_manifest(&session.manifest_path(9)).unwrap();
+        let ManifestRead::Current(manifest) = read_manifest(&session.manifest_path(9)) else {
+            panic!("a current manifest");
+        };
         assert_eq!(manifest.layer_id, 9);
         assert_eq!(manifest.layer_name, "Edited");
         old.discard();

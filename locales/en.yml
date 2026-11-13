@@ -242,6 +242,8 @@ status:
   restored_autosave:
     one: "Restored %{count} layer with unsaved edits"
     other: "Restored %{count} layers with unsaved edits"
+  # At startup, when a newer version of the app left autosaved edits behind.
+  autosave_newer_version: "A newer version of this app left autosaved edits that this version cannot restore. They were kept; open that version to recover them."
   # `%{layer}` is the layer's name, `%{error}` the reason.
   restore_failed: "Could not restore \"%{layer}\": %{error}"
   downloaded: "Downloaded OSM data: %{summary}"

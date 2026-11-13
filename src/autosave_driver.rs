@@ -109,12 +109,16 @@ impl MapViewer {
         cx.spawn(async move |this, cx| {
             let found = cx
                 .background_executor()
-                .spawn(async move { autosave::find_crashed(&root, None) })
+                .spawn(async move { autosave::scan_crashed(&root, None) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if found.other_format > 0 {
+                    this.set_status(tr!("status.autosave_newer_version"));
+                    cx.notify();
+                }
                 if let Some(state) = this.autosave.as_mut() {
-                    if !found.is_empty() {
-                        state.offer = Some(found);
+                    if !found.sessions.is_empty() {
+                        state.offer = Some(found.sessions);
                         cx.notify();
                     }
                 }
