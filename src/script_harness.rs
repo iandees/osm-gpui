@@ -1597,6 +1597,7 @@ impl AppHandle for LiveApp {
             script::EditMode::Extrude => crate::EditMode::Extrude,
             script::EditMode::Arc => crate::EditMode::Arc,
             script::EditMode::Improve => crate::EditMode::Improve,
+            script::EditMode::Building3d => crate::EditMode::Building3d,
         };
         self.bus.submit(ScriptCommand::AssertMode(want));
         self.bus.take_assert_result()

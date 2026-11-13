@@ -127,6 +127,22 @@ impl TileLayer {
         self
     }
 
+    /// The tile URL template (`{z}/{x}/{y}` placeholders).
+    pub fn url_template(&self) -> &str {
+        &self.url_template
+    }
+
+    /// The tile cache's key for this source (see
+    /// `tile_cache::source_key_for_template`).
+    pub fn source_key(&self) -> &str {
+        &self.source_key
+    }
+
+    /// The deepest zoom the source offers, if it says.
+    pub fn max_zoom(&self) -> Option<u32> {
+        self.max_zoom
+    }
+
     pub fn set_show_boundaries(&mut self, show: bool) {
         self.show_boundaries = show;
     }

@@ -112,6 +112,10 @@ mode:
     name: "Improve Way"
     label: "Impr"
     tooltip: "Improve the shape of the selected way"
+  building3d:
+    name: "3D Building"
+    label: "3D"
+    tooltip: "Model a building's parts and heights in 3D"
   # `%{shortcut}` is the key that activates the mode, e.g. "A".
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
@@ -191,6 +195,8 @@ status:
     arc_end_placed: "Move to bend the arc, then click to finish · Esc to cancel"
     improve_idle: "Click a way to improve · Esc to exit"
     improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Shift-click to delete the nearest node · Esc to pick another way"
+    building3d_idle: "Click a building to model it in 3D · Esc to exit"
+    building3d_open: "Click another building to switch · edit in the 3D view · Esc to close it"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
@@ -597,6 +603,7 @@ shortcut:
   mode_extrude: "Switch to Extrude mode"
   mode_arc: "Switch to Arc mode"
   mode_improve: "Switch to Improve Way mode"
+  mode_building3d: "Switch to 3D Building mode"
   action_square: "Square"
   action_circularize: "Circularize"
   action_reverse: "Reverse Way"
@@ -1225,3 +1232,50 @@ relation_sort:
     one: "Sorted the members into one connected chain"
     other: "Sorted the members; the ways form %{count} separate chains"
   already: "The members are already in order"
+
+# The 3D building view (3D Building mode's pane). Heights are in metres.
+building3d:
+  no_gpu: "The 3D view couldn't start the GPU: %{error}"
+  delete_part: "Delete part"
+  reset_view: "Reset view"
+  close: "Close the 3D view"
+  tool:
+    select: "Select"
+    select_tip: "Pick parts and drag their roofs and walls; drag elsewhere to orbit"
+    draw: "Draw"
+    draw_tip: "Drag out a new part on a roof or on the ground"
+    split: "Split"
+    split_tip: "Cut a part in two along a line across its roof"
+    split_height: "Stack"
+    split_height_tip: "Cut a part in two at a height, one piece on top of the other"
+  info:
+    # `%{min}`/`%{max}`: the part's bottom and top, in metres.
+    part: "Part %{n} of %{count} · %{min}–%{max} m"
+    building_parts:
+      one: "Building with %{count} part — click it to select it"
+      other: "Building with %{count} parts — click one to select it"
+    building_no_parts: "Building, %{max} m tall, no parts yet"
+  hint:
+    select: "Drag a roof to set the height (Shift: lift the whole part) · drag a wall to push or pull it (Shift: move it) · drag elsewhere to orbit · right-drag to pan · scroll to zoom · Alt: no snapping"
+    draw: "Drag on a roof or on the ground to draw the new part"
+    split_first: "Click on a part's roof where the cut starts"
+    split_second: "Click where the cut ends"
+    split_height: "Click on a part's wall at the height to cut it"
+  status:
+    click_a_building: "Click a building or a building part to model it in 3D"
+    not_a_building: "That isn't a building — click a building or a building part"
+    gone: "The building being modelled no longer exists"
+    neighbour: "A neighbouring building — double-click it to model that one instead"
+    split_click_roof: "Click on a part's roof to start the cut"
+    split_height_click_wall: "Click on a part's wall at the height to cut it"
+    split_misses: "The cut has to cross the part from one side to the other"
+    split_too_many: "That cut would make more than two pieces — cut across a narrower spot"
+    split_height_outside: "Pick a height between the bottom of the part and its roof"
+    height_set: "The part now spans %{min}–%{max} m"
+    part_added: "Part added — drag its roof to set its height"
+  history:
+    height: "Set building part height"
+    wall: "Moved building part wall"
+    split: "Split building part"
+    split_height: "Stacked building part"
+    new_part: "Added building part"

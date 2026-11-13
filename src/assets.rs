@@ -10,6 +10,10 @@ use std::borrow::Cow;
 pub const PENCIL_ICON_PATH: &str = "icons/pencil.svg";
 const PENCIL_ICON_SVG: &str = include_str!("../assets/icons/pencil.svg");
 
+/// A cube (lucide "box", ISC) for the 3D building mode's toolbar button.
+pub const BOX_ICON_PATH: &str = "icons/box.svg";
+const BOX_ICON_SVG: &str = include_str!("../assets/icons/box.svg");
+
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
@@ -19,6 +23,9 @@ impl AssetSource for AppAssets {
         }
         if path == PENCIL_ICON_PATH {
             return Ok(Some(Cow::Borrowed(PENCIL_ICON_SVG.as_bytes())));
+        }
+        if path == BOX_ICON_PATH {
+            return Ok(Some(Cow::Borrowed(BOX_ICON_SVG.as_bytes())));
         }
         gpui_component_assets::Assets.load(path)
     }
@@ -51,6 +58,8 @@ mod tests {
     #[test]
     fn serves_the_pencil_icon() {
         let bytes = AppAssets.load(PENCIL_ICON_PATH).unwrap().expect("pencil");
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+        let bytes = AppAssets.load(BOX_ICON_PATH).unwrap().expect("box");
         assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
     }
 

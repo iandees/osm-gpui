@@ -112,6 +112,10 @@ mode:
     name: "Weg verbessern"
     label: "Verb"
     tooltip: "Form des ausgewählten Wegs verbessern"
+  building3d:
+    name: "3D-Gebäude"
+    label: "3D"
+    tooltip: "Gebäudeteile und Höhen in 3D modellieren"
   # `%{shortcut}` ist die Taste, die den Modus aktiviert, z. B. „A“.
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
@@ -188,6 +192,8 @@ status:
     arc_end_placed: "Bogen durch Bewegen formen, dann klicken zum Abschließen · Esc zum Abbrechen"
     improve_idle: "Weg zum Verbessern anklicken · Esc zum Beenden"
     improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Umschalt-Klick löscht den nächsten Knoten · Esc, um einen anderen Weg zu wählen"
+    building3d_idle: "Ein Gebäude anklicken, um es in 3D zu modellieren · Esc zum Beenden"
+    building3d_open: "Ein anderes Gebäude anklicken, um zu wechseln · in der 3D-Ansicht bearbeiten · Esc schließt sie"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
@@ -591,6 +597,7 @@ shortcut:
   mode_extrude: "Zum Modus „Ausziehen“ wechseln"
   mode_arc: "Zum Modus „Bogen“ wechseln"
   mode_improve: "Zum Modus „Weg verbessern“ wechseln"
+  mode_building3d: "Zum Modus „3D-Gebäude“ wechseln"
   action_square: "Rechtwinklig machen"
   action_circularize: "Kreisförmig anordnen"
   action_reverse: "Weg umkehren"
@@ -1198,3 +1205,48 @@ relation_sort:
     one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
     other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
   already: "Die Mitglieder sind bereits in Reihenfolge"
+
+building3d:
+  no_gpu: "Die 3D-Ansicht konnte die GPU nicht starten: %{error}"
+  delete_part: "Teil löschen"
+  reset_view: "Ansicht zurücksetzen"
+  close: "3D-Ansicht schließen"
+  tool:
+    select: "Auswählen"
+    select_tip: "Teile auswählen, Dächer und Wände ziehen; anderswo ziehen dreht die Ansicht"
+    draw: "Zeichnen"
+    draw_tip: "Ein neues Teil auf einem Dach oder dem Boden aufziehen"
+    split: "Teilen"
+    split_tip: "Ein Teil entlang einer Linie über sein Dach zerschneiden"
+    split_height: "Stapeln"
+    split_height_tip: "Ein Teil auf einer Höhe zerschneiden, ein Stück über dem anderen"
+  info:
+    part: "Teil %{n} von %{count} · %{min}–%{max} m"
+    building_parts:
+      one: "Gebäude mit %{count} Teil — zum Auswählen anklicken"
+      other: "Gebäude mit %{count} Teilen — eines zum Auswählen anklicken"
+    building_no_parts: "Gebäude, %{max} m hoch, noch ohne Teile"
+  hint:
+    select: "Dach ziehen setzt die Höhe (Umschalt: ganzes Teil anheben) · Wand ziehen schiebt sie (Umschalt: verschieben) · anderswo ziehen dreht · Rechtsziehen verschiebt · Scrollen zoomt · Alt: ohne Einrasten"
+    draw: "Auf einem Dach oder dem Boden ziehen, um das neue Teil zu zeichnen"
+    split_first: "Auf das Dach eines Teils klicken, wo der Schnitt beginnt"
+    split_second: "Klicken, wo der Schnitt endet"
+    split_height: "Auf die Wand eines Teils in der Schnitthöhe klicken"
+  status:
+    click_a_building: "Ein Gebäude oder Gebäudeteil anklicken, um es in 3D zu modellieren"
+    not_a_building: "Das ist kein Gebäude — ein Gebäude oder Gebäudeteil anklicken"
+    gone: "Das modellierte Gebäude existiert nicht mehr"
+    neighbour: "Ein Nachbargebäude — doppelklicken, um stattdessen dieses zu modellieren"
+    split_click_roof: "Auf das Dach eines Teils klicken, um den Schnitt zu beginnen"
+    split_height_click_wall: "Auf die Wand eines Teils in der Schnitthöhe klicken"
+    split_misses: "Der Schnitt muss das Teil von einer Seite zur anderen kreuzen"
+    split_too_many: "Dieser Schnitt ergäbe mehr als zwei Stücke — an einer schmaleren Stelle schneiden"
+    split_height_outside: "Eine Höhe zwischen Unterkante und Dach des Teils wählen"
+    height_set: "Das Teil reicht jetzt von %{min} bis %{max} m"
+    part_added: "Teil hinzugefügt — sein Dach ziehen, um die Höhe zu setzen"
+  history:
+    height: "Höhe eines Gebäudeteils gesetzt"
+    wall: "Wand eines Gebäudeteils verschoben"
+    split: "Gebäudeteil geteilt"
+    split_height: "Gebäudeteil gestapelt"
+    new_part: "Gebäudeteil hinzugefügt"
