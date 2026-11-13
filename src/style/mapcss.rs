@@ -6,10 +6,11 @@
 //!   is an alias for `area`), each with zero or more tag tests
 //!   `[key]`, `[key=value]`, `[key!=value]`. Comma-separated lists of
 //!   selectors share a declaration block.
-//! - Declarations: `color`, `width`, `symbol-size` (plus `width` as an
-//!   alias for `symbol-size` on nodes), and `fill-color`/`fill-opacity`
-//!   (closed ways only). Other properties are ignored with a single
-//!   warning.
+//! - Declarations: stroke (`color`, `width`, and the stroke properties
+//!   below), `fill-color`/`fill-opacity` (closed ways only), node markers
+//!   (`symbol-size`, with `width` as its alias on pure-node rules, and
+//!   `symbol-shape`), the label properties below and the `canvas` ones.
+//!   Other properties are ignored with a single warning.
 //! - Colors: `#rgb`, `#rrggbb`, `rgb(r,g,b)`, `rgba(r,g,b,a)` or one of a
 //!   small named set. The alpha of `rgba(..)` becomes `opacity` (for
 //!   `color`) or `fill-opacity` (for `fill-color`).
@@ -328,7 +329,18 @@ impl TextStyle {
             Declaration::TextOffset(v) => self.offset = Some(*v),
             Declaration::IconImage(i) => self.icon_image = i.clone(),
             Declaration::IconWidth(v) => self.icon_width = Some(*v),
-            _ => {}
+            Declaration::Color(_)
+            | Declaration::Width(_)
+            | Declaration::SymbolSize(_)
+            | Declaration::FillColor(_)
+            | Declaration::FillOpacity(_)
+            | Declaration::CasingWidth(_)
+            | Declaration::CasingColor(_)
+            | Declaration::ZIndex(_)
+            | Declaration::Opacity(_)
+            | Declaration::Dashes(_)
+            | Declaration::SymbolShape(_)
+            | Declaration::ShowImagery(_) => {}
         }
     }
 }
@@ -476,6 +488,51 @@ enum Declaration {
     ShowImagery(bool),
 }
 
+/// The consumer that owns a [`Declaration`]; see [`Declaration::target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclTarget {
+    /// Way stroke, casing and ordering. `color` and `width` are also read by
+    /// node rules (`node_visual`).
+    Stroke,
+    /// Area fill. `fill-color` is also the canvas background.
+    Fill,
+    /// Label and icon properties, resolved into [`TextStyle`].
+    Text,
+    /// Node marker.
+    Node,
+    /// `canvas` rules only.
+    Canvas,
+}
+
+impl Declaration {
+    /// Exhaustive on purpose: a new variant must be assigned an owner here,
+    /// and each consumer's own match must then handle or ignore it.
+    fn target(&self) -> DeclTarget {
+        match self {
+            Declaration::Color(_)
+            | Declaration::Width(_)
+            | Declaration::CasingWidth(_)
+            | Declaration::CasingColor(_)
+            | Declaration::ZIndex(_)
+            | Declaration::Opacity(_)
+            | Declaration::Dashes(_) => DeclTarget::Stroke,
+            Declaration::FillColor(_) | Declaration::FillOpacity(_) => DeclTarget::Fill,
+            Declaration::Text(_)
+            | Declaration::FontSize(_)
+            | Declaration::TextColor(_)
+            | Declaration::TextHaloColor(_)
+            | Declaration::TextHaloOpacity(_)
+            | Declaration::TextHaloRadius(_)
+            | Declaration::TextPosition(_)
+            | Declaration::TextOffset(_)
+            | Declaration::IconImage(_)
+            | Declaration::IconWidth(_) => DeclTarget::Text,
+            Declaration::SymbolSize(_) | Declaration::SymbolShape(_) => DeclTarget::Node,
+            Declaration::ShowImagery(_) => DeclTarget::Canvas,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Rule {
     selectors: Vec<Selector>,
@@ -550,21 +607,9 @@ fn label_rule_indices(rules: &[Rule]) -> Vec<u32> {
         .iter()
         .enumerate()
         .filter(|(_, r)| {
-            r.declarations.iter().any(|d| {
-                matches!(
-                    d,
-                    Declaration::Text(_)
-                        | Declaration::FontSize(_)
-                        | Declaration::TextColor(_)
-                        | Declaration::TextHaloColor(_)
-                        | Declaration::TextHaloOpacity(_)
-                        | Declaration::TextHaloRadius(_)
-                        | Declaration::TextPosition(_)
-                        | Declaration::TextOffset(_)
-                        | Declaration::IconImage(_)
-                        | Declaration::IconWidth(_)
-                )
-            })
+            r.declarations
+                .iter()
+                .any(|d| d.target() == DeclTarget::Text)
         })
         .map(|(i, _)| i as u32)
         .collect()
@@ -709,7 +754,25 @@ impl Stylesheet {
                     {
                         v.size = *w;
                     }
-                    _ => {}
+                    Declaration::Width(_)
+                    | Declaration::FillColor(_)
+                    | Declaration::FillOpacity(_)
+                    | Declaration::CasingWidth(_)
+                    | Declaration::CasingColor(_)
+                    | Declaration::ZIndex(_)
+                    | Declaration::Opacity(_)
+                    | Declaration::Dashes(_)
+                    | Declaration::ShowImagery(_)
+                    | Declaration::Text(_)
+                    | Declaration::FontSize(_)
+                    | Declaration::TextColor(_)
+                    | Declaration::TextHaloColor(_)
+                    | Declaration::TextHaloOpacity(_)
+                    | Declaration::TextHaloRadius(_)
+                    | Declaration::TextPosition(_)
+                    | Declaration::TextOffset(_)
+                    | Declaration::IconImage(_)
+                    | Declaration::IconWidth(_) => {}
                 }
             }
         }
@@ -884,8 +947,21 @@ impl Stylesheet {
                     Declaration::ZIndex(z) => s.z_index = *z,
                     Declaration::Opacity(o) => s.opacity = *o,
                     Declaration::Dashes(d) => s.dashes = *d,
-                    // `symbol-size` on a way rule is meaningless — ignore.
-                    _ => {}
+                    // Node markers, labels and canvas settings do not
+                    // style a way's stroke or fill.
+                    Declaration::SymbolSize(_)
+                    | Declaration::SymbolShape(_)
+                    | Declaration::ShowImagery(_)
+                    | Declaration::Text(_)
+                    | Declaration::FontSize(_)
+                    | Declaration::TextColor(_)
+                    | Declaration::TextHaloColor(_)
+                    | Declaration::TextHaloOpacity(_)
+                    | Declaration::TextHaloRadius(_)
+                    | Declaration::TextPosition(_)
+                    | Declaration::TextOffset(_)
+                    | Declaration::IconImage(_)
+                    | Declaration::IconWidth(_) => {}
                 }
             }
         }
@@ -912,7 +988,26 @@ fn resolve_canvas(rules: &[Rule]) -> CanvasStyle {
             match d {
                 Declaration::FillColor(c) => out.background = Some(*c),
                 Declaration::ShowImagery(b) => out.show_imagery = *b,
-                _ => {}
+                Declaration::Color(_)
+                | Declaration::Width(_)
+                | Declaration::SymbolSize(_)
+                | Declaration::FillOpacity(_)
+                | Declaration::CasingWidth(_)
+                | Declaration::CasingColor(_)
+                | Declaration::ZIndex(_)
+                | Declaration::Opacity(_)
+                | Declaration::Dashes(_)
+                | Declaration::SymbolShape(_)
+                | Declaration::Text(_)
+                | Declaration::FontSize(_)
+                | Declaration::TextColor(_)
+                | Declaration::TextHaloColor(_)
+                | Declaration::TextHaloOpacity(_)
+                | Declaration::TextHaloRadius(_)
+                | Declaration::TextPosition(_)
+                | Declaration::TextOffset(_)
+                | Declaration::IconImage(_)
+                | Declaration::IconWidth(_) => {}
             }
         }
     }
@@ -1596,6 +1691,52 @@ mod tests {
 
     /// A zoom at which no zoom-range selector in these tests matters.
     const Z: f64 = 16.0;
+
+    /// One value of every `Declaration` variant. The exhaustive match in
+    /// `Declaration::target` forces new variants to be classified; this list
+    /// must be extended alongside it.
+    fn every_declaration() -> Vec<Declaration> {
+        vec![
+            Declaration::Color(1),
+            Declaration::Width(2.0),
+            Declaration::SymbolSize(3.0),
+            Declaration::FillColor(4),
+            Declaration::FillOpacity(0.5),
+            Declaration::CasingWidth(1.0),
+            Declaration::CasingColor(5),
+            Declaration::ZIndex(1.0),
+            Declaration::Opacity(0.5),
+            Declaration::Dashes(Some((2.0, 3.0))),
+            Declaration::Text(Some("name".into())),
+            Declaration::FontSize(12.0),
+            Declaration::TextColor(6),
+            Declaration::TextHaloColor(7),
+            Declaration::TextHaloOpacity(0.5),
+            Declaration::TextHaloRadius(2.0),
+            Declaration::TextPosition(TextPosition::Above),
+            Declaration::TextOffset(4.0),
+            Declaration::IconImage(Some("preset".into())),
+            Declaration::IconWidth(16.0),
+            Declaration::SymbolShape(NodeShape::Square),
+            Declaration::ShowImagery(false),
+        ]
+    }
+
+    #[test]
+    fn declaration_target_agrees_with_consumers() {
+        for d in every_declaration() {
+            let rule = Rule {
+                selectors: Vec::new(),
+                declarations: vec![d.clone()],
+            };
+            let is_label = !label_rule_indices(std::slice::from_ref(&rule)).is_empty();
+            assert_eq!(is_label, d.target() == DeclTarget::Text, "{d:?}");
+
+            let mut text = TextStyle::default();
+            text.apply(&d);
+            assert_eq!(!text.is_empty(), d.target() == DeclTarget::Text, "{d:?}");
+        }
+    }
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

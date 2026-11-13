@@ -500,6 +500,65 @@ mod tests {
     use gpui::{px, size};
 
     #[test]
+    fn mercator_round_trips_over_a_grid() {
+        let lats = [
+            -85.0, -80.0, -60.0, -33.9, -1e-6, 0.0, 1e-6, 0.5, 35.0, 51.5, 70.0, 85.0,
+        ];
+        let lons = [
+            -180.0,
+            -179.999999,
+            -179.5,
+            -120.0,
+            -0.000001,
+            0.0,
+            0.5,
+            90.0,
+            179.5,
+            179.999999,
+            180.0,
+        ];
+        for &lat in &lats {
+            for &lon in &lons {
+                let (x, y) = lat_lon_to_mercator(lat, lon);
+                let (lat2, lon2) = mercator_to_lat_lon(x, y);
+                assert!(
+                    (lat - lat2).abs() < 1e-7 && (lon - lon2).abs() < 1e-7,
+                    "({lat}, {lon}) -> ({lat2}, {lon2})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mercator_clamps_beyond_the_poles() {
+        let (_, y_max) = lat_lon_to_mercator(85.051128779807, 0.0);
+        let (_, y_over) = lat_lon_to_mercator(89.9, 0.0);
+        assert_eq!(y_max, y_over);
+        let (lat, _) = mercator_to_lat_lon(0.0, y_over);
+        assert!((lat - 85.051128779807).abs() < 1e-6);
+    }
+
+    #[test]
+    fn projector_agrees_with_mercator_to_screen() {
+        let t = CoordinateTransform::new(40.7128, -74.0060, 12.0, size(px(800.0), px(600.0)));
+        let p = t.projector();
+        let (cx, cy) = lat_lon_to_mercator(40.7128, -74.0060);
+        for (dx, dy) in [
+            (0.0, 0.0),
+            (1.0, -1.0),
+            (-1234.5, 987.25),
+            (20_000.0, 15_000.0),
+            (-1.0e6, 1.0e6),
+        ] {
+            let (mx, my) = (cx + dx, cy + dy);
+            let a = t.mercator_to_screen(mx, my);
+            let (bx, by) = p.to_screen(mx, my);
+            assert!((a.x.as_f32() - bx).abs() < 1e-3, "x at ({dx}, {dy})");
+            assert!((a.y.as_f32() - by).abs() < 1e-3, "y at ({dx}, {dy})");
+        }
+    }
+
+    #[test]
     fn zoom_can_go_past_20_up_to_max() {
         let mut t = CoordinateTransform::new(40.0, -74.0, 19.0, size(px(800.0), px(600.0)));
         t.zoom_to(22.0);
