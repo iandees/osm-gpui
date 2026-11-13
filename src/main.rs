@@ -54,7 +54,9 @@ use crate::menu::{
     open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
-use crate::undo::{NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction};
+use crate::undo::{
+    CreatedWay, NewNode, NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction,
+};
 
 use gpui_component::ActiveTheme;
 use osm_gpui::auth;
@@ -295,6 +297,47 @@ fn detach_end_node(
     };
     if let Some(idx) = idx {
         editable.remove_node_from_way(way_id, idx);
+    }
+}
+
+/// Redo of a node spliced into a way: put `node_id` back at `index`.
+fn splice_node_into_way(
+    editable: &mut dyn osm_gpui::layers::EditableLayer,
+    way_id: i64,
+    index: usize,
+    node_id: i64,
+) {
+    let mut node_ids = editable.way_node_ids(way_id).unwrap_or_default();
+    if index <= node_ids.len() {
+        node_ids.insert(index, node_id);
+        editable.set_way_nodes(way_id, node_ids);
+    }
+}
+
+/// Redo of Add mode folding `node_id` into the way being drawn: recreate the
+/// way as `[prev_node_id, node_id]` if the click created it, else attach the
+/// node to the matching end of the existing way.
+fn attach_to_drawn_way(
+    editable: &mut dyn osm_gpui::layers::EditableLayer,
+    way_id: i64,
+    prev_node_id: i64,
+    node_id: i64,
+    way_created: bool,
+    at_start: bool,
+) {
+    if way_created {
+        editable.restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
+            tags: Vec::new(),
+            way_nodes: vec![prev_node_id, node_id],
+            node_lat_lon: None,
+            version: 0,
+        });
+    } else if at_start {
+        splice_node_into_way(editable, way_id, 0, node_id);
+    } else {
+        editable.extend_way(way_id, node_id);
     }
 }
 
@@ -2090,6 +2133,8 @@ impl MapViewer {
                 layer,
                 way_id,
                 node_id,
+                node_lat_lon,
+                prev_node_id,
                 way_created,
                 node_created,
                 at_start,
@@ -2100,7 +2145,19 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                if !forward {
+                if forward {
+                    if *node_created {
+                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
+                    }
+                    attach_to_drawn_way(
+                        editable,
+                        *way_id,
+                        *prev_node_id,
+                        *node_id,
+                        *way_created,
+                        *at_start,
+                    );
+                } else {
                     // Detach `node_id` from the way: if this click created
                     // the way, the whole way goes away (no need to also
                     // remove the node from a way that's being deleted);
@@ -2119,93 +2176,34 @@ impl MapViewer {
                         editable.remove_node(*node_id);
                     }
                 }
-                // Redo (forward) is intentionally a no-op, matching
-                // `CreateBuilding`'s documented scope boundary: undo deletes
-                // the node this click created (and the way too, if this
-                // click created it), so a straightforward "recreate" redo
-                // would need to hand back the exact same placeholder ids —
-                // but `way_id`'s id would come from a fresh `add_way` call,
-                // not the one recorded here, breaking any later undo entry
-                // that still references the original `way_id` (e.g. a
-                // subsequent click extending the same way). Redo beyond the
-                // immediate action is out of scope for this plan (see the
-                // spec's "Out of scope" section).
             }
-            UndoableAction::CreateBuilding {
-                layer,
-                way_id,
-                node_ids,
-            } => {
+            UndoableAction::CreateBuilding { layer, created }
+            | UndoableAction::CreateArc { layer, created }
+            | UndoableAction::ExtrudeWay { layer, created } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
                     return;
                 };
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                if !forward {
-                    editable.remove_way(*way_id);
-                    for id in node_ids {
-                        editable.remove_node(*id);
+                if forward {
+                    for node in &created.new_nodes {
+                        editable.create_node(node.lat, node.lon, Some(node.id));
+                    }
+                    editable.restore_feature(created.way.clone());
+                } else {
+                    editable.remove_way(created.way.id);
+                    for node in &created.new_nodes {
+                        editable.remove_node(node.id);
                     }
                 }
-                // Redo (forward) is out of scope for Building mode's atomic
-                // commit path in this plan: Building mode always creates a
-                // *new* placeholder id on each commit, so a straightforward
-                // redo-by-recreation isn't id-stable across a redo after
-                // other edits. Matches this plan's scope (see spec's "Out
-                // of scope": undo/redo depth beyond the immediate action).
-            }
-            UndoableAction::CreateArc {
-                layer,
-                way_id,
-                node_ids,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if !forward {
-                    editable.remove_way(*way_id);
-                    for id in node_ids {
-                        editable.remove_node(*id);
-                    }
-                }
-                // Redo (forward) is intentionally a no-op, same as
-                // `CreateBuilding`: a redo-by-recreation would allocate fresh
-                // placeholder ids rather than reproducing these.
-            }
-            UndoableAction::ExtrudeWay {
-                layer,
-                way_id,
-                new_node_ids,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if !forward {
-                    editable.remove_way(*way_id);
-                    for id in new_node_ids {
-                        editable.remove_node(*id);
-                    }
-                }
-                // Redo (forward) is intentionally a no-op, same as
-                // `ExtendWay`/`CreateBuilding`: undo deletes the way and its
-                // new nodes, but a redo-by-recreation would allocate fresh
-                // placeholder ids rather than reproducing `way_id`/
-                // `new_node_ids`, breaking any later undo entry that still
-                // references them. Out of scope for this plan.
             }
             UndoableAction::InsertNodeIntoWay {
                 layer,
                 way_id,
                 index,
                 node_id,
-                ..
+                node_lat_lon,
             } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
                     return;
@@ -2213,15 +2211,13 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                if !forward {
+                if forward {
+                    editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
+                    splice_node_into_way(editable, *way_id, *index, *node_id);
+                } else {
                     editable.remove_node_from_way(*way_id, *index);
                     editable.remove_node(*node_id);
                 }
-                // Redo (forward) is intentionally a no-op, same reasoning as
-                // `ExtendWay`/`CreateBuilding`/`ExtrudeWay`: recreating the
-                // node via a fresh `add_node` call wouldn't reproduce the
-                // original `node_id`, breaking any later undo entry that
-                // still references it. Out of scope for this plan.
             }
             UndoableAction::SnapExtendWay {
                 layer,
@@ -2230,6 +2226,8 @@ impl MapViewer {
                 snap_way_id,
                 snap_index,
                 node_id,
+                node_lat_lon,
+                prev_node_id,
                 at_start,
             } => {
                 let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
@@ -2238,7 +2236,18 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
-                if !forward {
+                if forward {
+                    editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
+                    splice_node_into_way(editable, *snap_way_id, *snap_index, *node_id);
+                    attach_to_drawn_way(
+                        editable,
+                        *way_id,
+                        *prev_node_id,
+                        *node_id,
+                        *way_created,
+                        *at_start,
+                    );
+                } else {
                     // Detach from the drawn way first (deleting it if this
                     // click created it), without deleting the node — it's
                     // still referenced by `snap_way_id` until the next step.
@@ -2252,8 +2261,6 @@ impl MapViewer {
                     editable.remove_node_from_way(*snap_way_id, *snap_index);
                     editable.remove_node(*node_id);
                 }
-                // Redo (forward) is intentionally a no-op, same reasoning as
-                // `ExtendWay`/`InsertNodeIntoWay` above.
             }
             UndoableAction::ReverseWays { layer, way_ids } => {
                 // Reversing is its own inverse, so both directions are the
@@ -4778,6 +4785,7 @@ impl MapViewer {
                     way_id,
                     index,
                     node_id,
+                    node_lat_lon: (lat, lon),
                 });
             }
             Plan::Delete { node } => {
@@ -4977,6 +4985,7 @@ impl MapViewer {
                 way_id,
                 index: idx + 1,
                 node_id: id,
+                node_lat_lon: p.geo,
             });
             node_ids[*i] = Some(id);
         }
@@ -4987,16 +4996,17 @@ impl MapViewer {
             .map(|(id, &(lat, lon))| id.unwrap_or_else(|| editable.add_node(lat, lon)))
             .collect();
         let way_id = editable.add_way(all_ids.clone(), Vec::new());
-        let created: Vec<i64> = all_ids
-            .into_iter()
-            .filter(|id| !borrowed.contains(id))
+        let new_nodes: Vec<NewNode> = all_ids
+            .iter()
+            .zip(&points)
+            .filter(|(id, _)| !borrowed.contains(id))
+            .map(|(&id, &(lat, lon))| NewNode { id, lat, lon })
             .collect();
         // The whole arc, splices included, is one undo step: undoing removes
         // the arc first, then the splices.
         actions.push(UndoableAction::CreateArc {
             layer: layer_id,
-            way_id,
-            node_ids: created,
+            created: CreatedWay::new(way_id, all_ids, Vec::new(), new_nodes),
         });
         self.undo_stack.push(UndoableAction::Batch {
             label: tr!("history.created_arc").to_string(),
@@ -5107,15 +5117,17 @@ impl MapViewer {
         };
 
         let [n0, n1, n2, n3] = corners.map(|(lat, lon)| editable.add_node(lat, lon));
-        let way_id = editable.add_way(
-            vec![n0, n1, n2, n3, n0],
-            vec![("building".to_string(), "yes".to_string())],
-        );
+        let tags = vec![("building".to_string(), "yes".to_string())];
+        let way_id = editable.add_way(vec![n0, n1, n2, n3, n0], tags.clone());
 
+        let new_nodes = [n0, n1, n2, n3]
+            .into_iter()
+            .zip(corners)
+            .map(|(id, (lat, lon))| NewNode { id, lat, lon })
+            .collect();
         self.undo_stack.push(UndoableAction::CreateBuilding {
             layer: layer_id,
-            way_id,
-            node_ids: [n0, n1, n2, n3],
+            created: CreatedWay::new(way_id, vec![n0, n1, n2, n3, n0], tags, new_nodes),
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,
@@ -5160,15 +5172,28 @@ impl MapViewer {
         };
         let new_a = editable.add_node(far_a.0, far_a.1);
         let new_b = editable.add_node(far_b.0, far_b.1);
-        let way_id = editable.add_way(
-            vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a],
-            Vec::new(),
-        );
+        let way_nodes = vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a];
+        let way_id = editable.add_way(way_nodes.clone(), Vec::new());
 
         self.undo_stack.push(UndoableAction::ExtrudeWay {
             layer: drag.layer,
-            way_id,
-            new_node_ids: [new_a, new_b],
+            created: CreatedWay::new(
+                way_id,
+                way_nodes,
+                Vec::new(),
+                vec![
+                    NewNode {
+                        id: new_a,
+                        lat: far_a.0,
+                        lon: far_a.1,
+                    },
+                    NewNode {
+                        id: new_b,
+                        lat: far_b.0,
+                        lon: far_b.1,
+                    },
+                ],
+            ),
         });
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,
@@ -5407,6 +5432,7 @@ impl MapViewer {
             way_id: drag.way_id,
             index: insert_index,
             node_id: new_id,
+            node_lat_lon: (lat, lon),
         });
     }
 
@@ -5603,6 +5629,7 @@ impl MapViewer {
                             way_id,
                             index: idx + 1,
                             node_id: new_id,
+                            node_lat_lon: (snap_lat, snap_lon),
                         });
                         new_id
                     }
@@ -5703,6 +5730,7 @@ impl MapViewer {
         let Some(editable) = layer.as_editable_mut() else {
             return progress_way_id.unwrap_or(0);
         };
+        let node_lat_lon = editable.node_lat_lon(node_id).unwrap_or_default();
 
         let (way_id, way_created) = match progress_way_id {
             Some(way_id) if at_start => {
@@ -5730,6 +5758,8 @@ impl MapViewer {
                     snap_way_id,
                     snap_index,
                     node_id,
+                    node_lat_lon,
+                    prev_node_id: last_node_id,
                     at_start,
                 });
             }
@@ -5738,6 +5768,8 @@ impl MapViewer {
                     layer: layer_id,
                     way_id,
                     node_id,
+                    node_lat_lon,
+                    prev_node_id: last_node_id,
                     way_created,
                     node_created,
                     at_start,
