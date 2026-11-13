@@ -10,6 +10,8 @@ mod autosave_op_tests;
 #[cfg(test)]
 mod changeset_op_tests;
 #[cfg(test)]
+mod keywords_tests;
+#[cfg(test)]
 mod upload_op_tests;
 
 pub use note_ops::{NoteCheck, NoteOp};

@@ -161,27 +161,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and pull request gui
 
 **Scripted taginfo answers.** Scripted runs never touch the network, so tag suggestions from taginfo are off in them. Set `OSM_GPUI_TAGINFO_FIXTURE` to a JSON file (`{"<text in the request URL>": [<taginfo data entries>]}`, see `docs/screenshots/fixtures/taginfo-answers.json`) to answer taginfo lookups from it; `docs/screenshots/tag-autocomplete-related.osmscript` uses this.
 
-**Scripted screenshots.** `--script <file>` runs a line-oriented `.osmscript` file (viewport, click, drag, scroll, key, load_osm, wait_idle, capture, and so on) against the live app and writes PNGs, which is useful for checking UI changes without driving the app by hand. Examples are in `docs/screenshots/`; `docs/screenshots/smoke.osmscript` exercises every operation and the scripts under `tests/ui/` run as tests.
+**Scripted screenshots.** `--script <file>` runs a line-oriented `.osmscript` file (viewport, click, drag, scroll, key, load_osm, wait_idle, capture, and so on) against the live app and writes PNGs, which is useful for checking UI changes without driving the app by hand. Examples are in `docs/screenshots/`; `docs/screenshots/smoke.osmscript` is a short smoke test, and the scripts under `tests/ui/` are run by the `#[ignore]`d tests in `tests/ui_scripts.rs` (they need the Keychain). Every checked-in script is parsed by `cargo test`.
 
 ```bash
 cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
-**Pointer, modifier and snapping ops.** Where an op takes a position it is `X,Y` (window pixels), `map:X,Y` (pixels in the map area) or `geo:LAT,LON` (put on screen by the current viewport). Modifiers are `alt=true`, `ctrl=true`, `shift=true`, `cmd=true`.
+Every op, with its arguments, is listed in [docs/osmscript.md](docs/osmscript.md). The most common ones:
 
-| Op | Meaning |
-|---|---|
-| `hover POS [mods]` | Move the pointer with no button held (updates hover and the snap highlight). |
-| `click POS [button=left\|right] [count=N] [mods]` | Press and release in the current edit mode. |
-| `drag POS POS button=left [mods]` | Hover, press, move, release, as a real mouse would. Without `button=left` it pans the map. |
-| `drag_begin POS [mods]` | Arrive at POS, then press the left button. |
-| `drag_move POS [mods]` | Move with the button held; a `capture` or assert may follow. |
-| `drag_end [POS] [mods]` | Release (at POS, or where the pointer is). |
-| `mod_down KEY...`, `mod_up KEY...` | Press or release `alt`, `ctrl`, `shift`, `cmd` or `all` on their own; held keys apply to every later pointer op. A key press refreshes the snap highlight without a mouse move. |
-| `assert_snap none\|node ID\|way ID segment N` | What the snap highlight targets now. |
-| `assert_way_nodes WAY ID...` | The way's nodes, in order. |
-| `assert_node_shared NODE [WAY...]` | Exactly these ways use the node. |
-| `assert_status_contains TEXT` | The status bar contains the text. |
+```
+viewport 47.6 -122.3 17      # centre the map (LAT LON ZOOM)
+click geo:47.6,-122.3        # a position is X,Y | map:X,Y | geo:LAT,LON
+drag geo:47.6,-122.3 geo:47.6,-122.2 button=left   # without button=left it pans
+key cmd+z
+capture out/shot.png
+```
 
 Dragging a node needs it to be the only thing moved: a press on an unselected vertex of a hovered way grabs just that node, but a press on one of several selected nodes moves them all (and never snaps). Undo selects what it touched, so press `escape` after `key cmd+z` before dragging again. `docs/screenshots/snap-behaviour.osmscript` is a regression suite for snapping built from these ops.
 
