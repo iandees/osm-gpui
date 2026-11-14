@@ -30,7 +30,7 @@ use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::layers::labels::{label_text, Key, TextLook, LABEL_MIN_ZOOM};
+use crate::layers::labels::{label_text, Key, LabelClass, LabelPriority, TextLook, LABEL_MIN_ZOOM};
 
 /// Smallest font an area label is shrunk to before it is dropped.
 pub const MIN_AREA_FONT_PX: f32 = 9.0;
@@ -53,44 +53,9 @@ const GEOM_CACHE_CAP: usize = 6000;
 pub struct AreaLabel {
     pub text: SharedString,
     pub look: TextLook,
-    /// Tier (see [`area_priority`]); the size bonus is added per placement.
-    pub priority: i32,
-}
-
-/// Importance of an area's label. All tiers sit below named nodes (400) and
-/// above house numbers (100); within a tier bigger areas win (see
-/// [`size_bonus`]), and tiers are 20+ apart so the 40-point hysteresis bonus
-/// may reorder neighbours but the size bonus (<= 30) keeps classes apart.
-pub fn area_priority(tags: &HashMap<String, String>) -> i32 {
-    if tags.contains_key("place") {
-        return 340;
-    }
-    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v.as_str()));
-    if is("natural", &["water", "bay", "strait"])
-        || is("waterway", &["riverbank", "dock"])
-        || is("landuse", &["reservoir", "basin"])
-    {
-        return 320;
-    }
-    if is("leisure", &["park", "nature_reserve", "garden", "common"])
-        || is("natural", &["wood", "scrub", "heath", "wetland"])
-        || is(
-            "landuse",
-            &["forest", "grass", "meadow", "recreation_ground", "cemetery"],
-        )
-    {
-        return 300;
-    }
-    if tags.contains_key("building") {
-        return 250;
-    }
-    280
-}
-
-/// A bonus for big areas, `0..=30`, from the larger side of the polygon's
-/// screen bounding box.
-pub fn size_bonus(bbox_px: f32) -> i32 {
-    ((bbox_px / 20.0) as i32).clamp(0, 30)
+    /// Tier only; the size bonus is added per placement
+    /// ([`LabelPriority::with_size_px`]).
+    pub priority: LabelPriority,
 }
 
 /// Build an area's label from the MapCSS properties that apply to it.
@@ -109,7 +74,7 @@ pub fn resolve_area_label(
     Some(AreaLabel {
         text: text.into(),
         look: TextLook::resolve(style, TextLook::AREA),
-        priority: area_priority(tags),
+        priority: LabelPriority::of(LabelClass::Area, tags),
     })
 }
 
@@ -654,7 +619,7 @@ mod tests {
         let z18 = sheet.way_text_style(&bld, true, 18.2);
         let l = resolve_area_label(&z18, &bld, 18.2).unwrap();
         assert_eq!(
-            (l.text.as_ref(), l.look.font_px, l.priority),
+            (l.text.as_ref(), l.look.font_px, l.priority.tier),
             ("Hall", 11.0, 250)
         );
         // An unclosed way never matches an `area` rule.
@@ -662,7 +627,7 @@ mod tests {
         let lake = tags(&[("natural", "water"), ("name", "Mirror Lake")]);
         let st = sheet.way_text_style(&lake, true, 16.0);
         let l = resolve_area_label(&st, &lake, 16.0).unwrap();
-        assert_eq!((l.look.color, l.priority), (0x7cc4ff, 320));
+        assert_eq!((l.look.color, l.priority.tier), (0x7cc4ff, 320));
         // No name tag, no label.
         let anon = tags(&[("natural", "water")]);
         assert!(resolve_area_label(&st, &anon, 16.0).is_none());
@@ -676,9 +641,12 @@ mod tests {
 
     #[test]
     fn priorities_sit_between_named_nodes_and_house_numbers() {
-        use crate::layers::labels::node_priority;
-        let named = node_priority(&tags(&[("man_made", "x")]), false, true);
-        let num = node_priority(&tags(&[("addr:housenumber", "1")]), false, false);
+        let node = |t: &[(&str, &str)], has_icon, named| {
+            LabelPriority::of(LabelClass::Node { has_icon, named }, &tags(t)).tier
+        };
+        let area = |t: &HashMap<String, String>| LabelPriority::of(LabelClass::Area, t);
+        let named = node(&[("man_made", "x")], false, true);
+        let num = node(&[("addr:housenumber", "1")], false, false);
         for t in [
             tags(&[("building", "yes")]),
             tags(&[("leisure", "park")]),
@@ -686,12 +654,12 @@ mod tests {
             tags(&[("landuse", "retail")]),
             tags(&[("place", "square")]),
         ] {
-            let p = area_priority(&t) + size_bonus(10_000.0);
+            let p = area(&t).with_size_px(10_000.0).score();
             assert!(p < named && p > num + HYST, "{t:?} {p}");
         }
         assert!(
-            area_priority(&tags(&[("natural", "water")]))
-                > area_priority(&tags(&[("building", "yes")])) + 30
+            area(&tags(&[("natural", "water")])).tier
+                > area(&tags(&[("building", "yes")])).tier + 30
         );
     }
     const HYST: i32 = 40;
