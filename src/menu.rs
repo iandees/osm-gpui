@@ -11,6 +11,7 @@ use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
+use osm_gpui::ui::settings_window::SettingsPage;
 
 use crate::gps_traces_ui::DownloadGpsTraces;
 use crate::history_actions::ShowObjectHistory;
@@ -41,13 +42,16 @@ impl gpui::Global for SettingsWindowSlot {}
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SettingsOpen {
     /// Open a window, on `page` when one was asked for.
-    New { page: Option<usize> },
+    New { page: Option<SettingsPage> },
     /// There is one already: bring it to the front.
     Focus,
 }
 
 /// Settings is a single window: open it, or focus the one that exists.
-pub(crate) fn settings_open_decision(already_open: bool, page: Option<usize>) -> SettingsOpen {
+pub(crate) fn settings_open_decision(
+    already_open: bool,
+    page: Option<SettingsPage>,
+) -> SettingsOpen {
     if already_open {
         SettingsOpen::Focus
     } else {
@@ -174,7 +178,7 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
 
 /// Open the Settings window on `page` (the first when `None`), or focus it if
 /// it is already open.
-pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
+pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
     let existing = cx
         .try_global::<SettingsWindowSlot>()
         .and_then(|slot| slot.0)
@@ -1181,11 +1185,16 @@ mod tests {
             SettingsOpen::New { page: None }
         );
         assert_eq!(
-            settings_open_decision(false, Some(3)),
-            SettingsOpen::New { page: Some(3) }
+            settings_open_decision(false, Some(SettingsPage::Imagery)),
+            SettingsOpen::New {
+                page: Some(SettingsPage::Imagery)
+            }
         );
         assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
-        assert_eq!(settings_open_decision(true, Some(3)), SettingsOpen::Focus);
+        assert_eq!(
+            settings_open_decision(true, Some(SettingsPage::Imagery)),
+            SettingsOpen::Focus
+        );
     }
 
     /// No menu is over the limit unless it is a leaf without submenus.

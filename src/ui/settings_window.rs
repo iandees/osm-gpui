@@ -158,15 +158,58 @@ fn rejection_message(rejection: &keybindings::Rejection) -> SharedString {
     }
 }
 
-/// Index of the Imagery page, where the street-imagery token lives.
-pub const IMAGERY_PAGE: usize = 3;
+/// A page of the Settings window. [`SettingsPage::ALL`] is the one list that
+/// orders the pages: `setting_pages` builds them by walking it, and
+/// [`SettingsPage::index`] reads positions from it, so a page's index cannot
+/// drift from where it is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsPage {
+    Account,
+    Appearance,
+    Editing,
+    /// Custom imagery sources, the street-imagery tokens and the tile cache.
+    Imagery,
+    Shortcuts,
+}
+
+impl SettingsPage {
+    pub const ALL: [SettingsPage; 5] = [
+        Self::Account,
+        Self::Appearance,
+        Self::Editing,
+        Self::Imagery,
+        Self::Shortcuts,
+    ];
+
+    /// Position of this page in the window's page list.
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|p| *p == self)
+            .expect("every page is in ALL")
+    }
+
+    fn title_key(self) -> &'static str {
+        match self {
+            Self::Account => "settings.account.title",
+            Self::Appearance => "settings.appearance.title",
+            Self::Editing => "settings.editing.title",
+            Self::Imagery => "settings.imagery.title",
+            Self::Shortcuts => "settings.shortcuts.title",
+        }
+    }
+
+    fn title(self) -> SharedString {
+        crate::i18n::tr_dynamic(self.title_key())
+    }
+}
 
 pub struct SettingsWindow {
     /// Used for sign-in and for fetching a custom map style; the window is
     /// opened from a global action, so it takes the installed default client.
     http: Arc<dyn crate::http::HttpClient>,
     /// The page the window opened on, when one was requested.
-    start_page: Option<usize>,
+    start_page: Option<SettingsPage>,
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     editing_index: Option<usize>,
@@ -200,7 +243,11 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     /// A window opened on page `start_page` (the first when `None`).
-    pub fn new(start_page: Option<usize>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        start_page: Option<SettingsPage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let app_settings = settings_store::snapshot();
         let custom_api_url_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -762,13 +809,16 @@ impl SettingsWindow {
 
     fn setting_pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
         let view = cx.entity();
-        vec![
-            self.account_page(view.clone()),
-            self.appearance_page(view.clone()),
-            self.editing_page(view.clone()),
-            self.imagery_page(view.clone()),
-            self.shortcuts_page(view),
-        ]
+        SettingsPage::ALL
+            .into_iter()
+            .map(|page| match page {
+                SettingsPage::Account => self.account_page(view.clone()),
+                SettingsPage::Appearance => self.appearance_page(view.clone()),
+                SettingsPage::Editing => self.editing_page(view.clone()),
+                SettingsPage::Imagery => self.imagery_page(view.clone()),
+                SettingsPage::Shortcuts => self.shortcuts_page(view.clone()),
+            })
+            .collect()
     }
 
     /// The Language dropdown: "System default" plus every compiled-in
@@ -950,7 +1000,7 @@ impl SettingsWindow {
         )
         .description(tr!("settings.appearance.text_size_description"));
 
-        SettingPage::new(tr!("settings.appearance.title"))
+        SettingPage::new(SettingsPage::Appearance.title())
             .icon(Icon::new(IconName::Palette))
             .groups(vec![
                 SettingGroup::new()
@@ -1011,7 +1061,7 @@ impl SettingsWindow {
             ),
         )
         .description(tr!("settings.editing.autosave_description"));
-        SettingPage::new(tr!("settings.editing.title"))
+        SettingPage::new(SettingsPage::Editing.title())
             .icon(Icon::new(IconName::Settings2))
             .groups(vec![
                 SettingGroup::new()
@@ -1085,7 +1135,7 @@ impl SettingsWindow {
         .description(tr!("settings.account.account_description"))
         .layout(Axis::Vertical);
 
-        SettingPage::new(tr!("settings.account.title"))
+        SettingPage::new(SettingsPage::Account.title())
             .icon(Icon::new(IconName::User))
             .default_open(true)
             .groups(vec![
@@ -1182,7 +1232,7 @@ impl SettingsWindow {
                 })
         }));
 
-        SettingPage::new(tr!("settings.imagery.title"))
+        SettingPage::new(SettingsPage::Imagery.title())
             .icon(Icon::new(IconName::Map))
             .groups(vec![
                 SettingGroup::new()
@@ -1409,7 +1459,7 @@ impl SettingsWindow {
             },
         )));
 
-        SettingPage::new(tr!("settings.shortcuts.title")).groups(groups)
+        SettingPage::new(SettingsPage::Shortcuts.title()).groups(groups)
     }
 }
 
@@ -1932,9 +1982,9 @@ impl Render for SettingsWindow {
             .text_size(crate::ui::style::current_text_scale().body)
             .child({
                 let mut settings = Settings::new("app-settings").pages(self.setting_pages(cx));
-                if let Some(page_ix) = self.start_page {
+                if let Some(page) = self.start_page {
                     settings = settings.default_selected_index(SelectIndex {
-                        page_ix,
+                        page_ix: page.index(),
                         group_ix: None,
                     });
                 }
@@ -1946,6 +1996,7 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
+    use super::SettingsPage;
     use super::{
         acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
         parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
@@ -2069,6 +2120,31 @@ mod tests {
             None
         });
         assert_eq!(asked.as_deref(), Some("https://www.openstreetmap.org"));
+    }
+
+    #[test]
+    fn page_indices_are_positions_in_the_page_list() {
+        for (position, page) in SettingsPage::ALL.into_iter().enumerate() {
+            assert_eq!(page.index(), position, "{page:?}");
+        }
+    }
+
+    #[test]
+    fn every_page_has_its_own_title() {
+        let titles: Vec<_> = SettingsPage::ALL.into_iter().map(|p| p.title()).collect();
+        for (page, title) in SettingsPage::ALL.into_iter().zip(&titles) {
+            assert!(!title.starts_with("en."), "{page:?}: {title}");
+        }
+        for (i, a) in titles.iter().enumerate() {
+            assert!(!titles[i + 1..].contains(a), "duplicate title {a}");
+        }
+    }
+
+    #[test]
+    fn the_imagery_page_is_named_by_title() {
+        let page = SettingsPage::Imagery;
+        assert_eq!(page.title(), crate::tr!("settings.imagery.title"));
+        assert_eq!(SettingsPage::ALL[page.index()], page);
     }
 
     #[test]
