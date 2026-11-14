@@ -3,8 +3,10 @@
 # button at the top of the Fields section.
 #
 # Same fixture and coordinates as side-panel-polish.osmscript (window 1200x800,
-# default 280px panel): way 8301 at (340, 400), way 8202 at (520, 200); the
-# click on the Relations row selects relation 9101.
+# default 280px panel): way 8301 at (340, 400), way 8202 at (520, 200). The
+# way's preset Fields push the Relations row off screen, so Fields (header
+# y=210) and Tags (y=243, once Fields has collapsed) are collapsed first; the
+# row is then at y=306 and clicking it selects relation 9101.
 
 window 1200 800
 load_osm docs/screenshots/fixtures/side-panel-clarity.osm
@@ -40,7 +42,11 @@ capture out/selection-header-4-multi.png
 click 520,200
 wait_idle 2s
 capture out/selection-header-5a-member-way.png
-click 1000,604
+click 1000,210
+wait_idle 1s
+click 1000,243
+wait_idle 1s
+click 1000,306
 wait_idle 2s
 assert_selected relation 9101
 capture out/selection-header-5-relation.png

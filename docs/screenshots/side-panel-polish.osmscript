@@ -5,8 +5,12 @@
 # Same fixture and coordinates as side-panel-clarity.osmscript (window
 # 1200x800, default 280px panel): node 8104 at (560, 200), way 8202 at
 # (520, 200), way 8301 (heavily tagged) at (340, 400), cafe node 8120 at
-# (674, 683). The click on the Relations row selects relation 9101; its y
-# depends on the panel layout.
+# (674, 683). The click on the Relations row selects relation 9101. The way's
+# preset Fields push that row off screen, so the script collapses Fields
+# (header y=210) and Tags (y=243, once Fields has collapsed) first; the row is
+# then at y=306 whatever the preset, and the relation's Members list starts at
+# y=332 (47.5 per member). The sections are expanded again before the final
+# long-selection capture.
 
 window 1200 800
 load_osm docs/screenshots/fixtures/side-panel-clarity.osm
@@ -36,17 +40,21 @@ wait_idle 2s
 assert_selected way 8202
 capture out/side-panel-polish-05-member-way.png
 
-click 1000,646
+click 1000,210
+wait_idle 1s
+click 1000,243
+wait_idle 1s
+click 1000,306
 wait_idle 2s
 assert_selected relation 9101
 capture out/side-panel-polish-06-relation-members.png
 
 # Hovering a member row reveals its reorder/remove buttons (a few candidate
-# rows, since the Members section's y depends on the Tags above it).
-hover 1000,540
+# rows).
+hover 1000,332
 wait_idle 1s
 capture out/side-panel-polish-06b-member-hover.png
-hover 1000,600
+hover 1000,379
 wait_idle 1s
 capture out/side-panel-polish-06c-member-hover.png
 
@@ -86,6 +94,10 @@ capture out/side-panel-polish-07-history.png
 # The long selection again, now with History entries: still pinned.
 click 340,400
 wait_idle 2s
+click 1000,243
+wait_idle 1s
+click 1000,210
+wait_idle 1s
 assert_selected way 8301
 capture out/side-panel-polish-08-long-selection-with-history.png
 
