@@ -1,7 +1,6 @@
 //! iD tagging schema field support: the vendored field definitions behind the
 //! presets in `crate::presets`, and the rules that decide which of them a
-//! feature shows. Read-only, vendored the same way presets are — see
-//! `docs/superpowers/specs/2026-07-07-preset-fields-editor-design.md`.
+//! feature shows. Vendored the same way presets are.
 //!
 //! The schema describes fields with a few indirections, all resolved once
 //! when the index loads (never per frame):
@@ -420,7 +419,6 @@ impl FieldIndex {
         self.fields.is_empty()
     }
 
-    /// Every field, in vendored order.
     pub fn iter(&self) -> impl Iterator<Item = &Field> {
         self.order.iter().filter_map(|id| self.fields.get(id))
     }
@@ -951,8 +949,6 @@ mod tests {
         assert_eq!(website.field_type, FieldType::Url);
         assert_eq!(website.widget(), Widget::Text);
     }
-
-    // ---- The real bundled schema ----------------------------------------
 
     /// The fields shown and offered for a feature, as the side panel would.
     struct Shown {

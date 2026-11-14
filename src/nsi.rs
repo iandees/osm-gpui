@@ -112,7 +112,7 @@ fn normalize(s: &str) -> String {
 
 /// Parse the upstream `dist/nsi.json` body into a flat list of entries.
 /// Tolerant of missing/unexpected fields: skips any item missing
-/// `displayName` or `tags`. Ignores `locationSet` (no geo-filtering in v1).
+/// `displayName` or `tags`. Ignores `locationSet` (no geo-filtering).
 /// A body that is not JSON, or has no `nsi` object, is an error rather than
 /// an empty index.
 pub fn parse(body: &str) -> Result<Vec<NsiEntry>, NsiError> {
