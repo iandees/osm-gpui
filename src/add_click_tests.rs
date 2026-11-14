@@ -373,7 +373,8 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
                 3,
                 "amenity",
                 "bench",
-            );
+            )
+            .unwrap();
         let base = state(view, layer);
         let base_pending = base.pending;
         view.handle_add_click(far(view), false);

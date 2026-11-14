@@ -391,7 +391,7 @@ impl Session<'_, '_> {
         osm_gpui::osm_upload::build_osm_change_xml(1, &[("Net", self.diff())])
     }
     pub(crate) fn set_tag(&mut self, kind: FeatureKind, id: i64, k: &str, v: &str) {
-        self.editable_mut().set_tag(kind, id, k, v);
+        self.editable_mut().set_tag(kind, id, k, v).unwrap();
     }
     /// The one way that exists now but did not before (ids below zero).
     pub(crate) fn new_ways(&self) -> Vec<i64> {

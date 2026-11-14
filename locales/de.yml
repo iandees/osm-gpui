@@ -618,6 +618,7 @@ shortcut:
 action:
   no_data: "Zuerst OSM-Daten öffnen oder herunterladen"
   not_editable: "Die aktive Ebene ist nicht bearbeitbar"
+  edit_refused: "Die Änderung konnte nicht angewendet werden: %{detail}"
   square:
     label: "Rechtwinklig machen"
     hint: "Einen geschlossenen Weg (oder Weg mit 3+ Knoten) zum Rechtwinkligmachen wählen"

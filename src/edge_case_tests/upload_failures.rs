@@ -1007,7 +1007,7 @@ fn nudge_all(s: &mut Session, count: i64) {
             (id, lat + 0.01, lon + 0.01)
         })
         .collect();
-    s.editable_mut().commit_node_moves(&moves);
+    s.editable_mut().commit_node_moves(&moves).unwrap();
 }
 
 #[gpui::test]

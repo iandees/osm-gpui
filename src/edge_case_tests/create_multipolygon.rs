@@ -470,7 +470,8 @@ fn new_ways_go_up_before_the_relation_that_names_them(cx: &mut TestAppContext) {
                     way_nodes: nodes,
                     node_lat_lon: None,
                     version: 0,
-                });
+                })
+                .unwrap();
             ids.push(way_id);
         }
         s.select(&pick(&ids));

@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped};
-use crate::layers::{EditableLayer, LayerId};
+use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::limits::{self, Limits};
 use crate::osm::{MemberType, OsmMember};
 use crate::osm_upload::xml_escape;
@@ -337,9 +337,6 @@ impl FeatureClipboard {
         for node in &self.nodes {
             let (lat, lon) = self.pasted_position(node, position);
             let id = editable.add_node(lat, lon);
-            for (key, value) in &node.tags {
-                editable.set_tag(FeatureKind::Node, id, key, value);
-            }
             new_nodes.insert(node.id, id);
             pasted.nodes.push(DeletedFeatureSnapshot {
                 kind: FeatureKind::Node,
@@ -349,6 +346,13 @@ impl FeatureClipboard {
                 node_lat_lon: Some((lat, lon)),
                 version: 0,
             });
+            for (key, value) in &node.tags {
+                if editable.set_tag(FeatureKind::Node, id, key, value).is_err() {
+                    // Cannot happen to a node just created; undo what was done.
+                    pasted.undo(editable);
+                    return Err(PasteError::NoData);
+                }
+            }
         }
 
         let mut new_ways: HashMap<i64, i64> = HashMap::new();
@@ -405,7 +409,7 @@ impl FeatureClipboard {
                     role: member.role.clone(),
                 });
             }
-            let Some(id) = editable.create_relation(relation.tags.clone(), members) else {
+            let Ok(id) = editable.create_relation(relation.tags.clone(), members) else {
                 // Cannot happen once the layer has data; undo what was done.
                 pasted.undo(editable);
                 return Err(PasteError::NoData);
@@ -604,29 +608,36 @@ impl PastedFeatures {
     /// Remove everything the paste created. Relations go first, then ways,
     /// then nodes, the reverse of creation (a node cannot be deleted while a
     /// way uses it, nor a relation while another has it as a member).
-    pub fn undo(&self, editable: &mut dyn EditableLayer) {
+    /// Returns what the layer refused; the rest is still applied.
+    pub fn undo(&self, editable: &mut dyn EditableLayer) -> Vec<EditError> {
+        let mut refused = Vec::new();
         for snapshot in self.relations.iter().rev() {
-            editable.delete_relation(snapshot.relation.id);
+            refused.extend(editable.delete_relation(snapshot.relation.id).err());
         }
         for snapshot in self.ways.iter().rev() {
-            editable.delete_feature(FeatureKind::Way, snapshot.id);
+            refused.extend(editable.delete_feature(FeatureKind::Way, snapshot.id).err());
         }
         for snapshot in self.nodes.iter().rev() {
-            editable.delete_feature(FeatureKind::Node, snapshot.id);
+            refused.extend(
+                editable
+                    .delete_feature(FeatureKind::Node, snapshot.id)
+                    .err(),
+            );
         }
+        refused
     }
 
-    /// Create the same objects again, under the same ids.
-    pub fn redo(&self, editable: &mut dyn EditableLayer) {
-        for snapshot in &self.nodes {
-            editable.restore_feature(snapshot.clone());
-        }
-        for snapshot in &self.ways {
-            editable.restore_feature(snapshot.clone());
+    /// Create the same objects again, under the same ids. Returns what the
+    /// layer refused; the rest is still applied.
+    pub fn redo(&self, editable: &mut dyn EditableLayer) -> Vec<EditError> {
+        let mut refused = Vec::new();
+        for snapshot in self.nodes.iter().chain(&self.ways) {
+            refused.extend(editable.restore_feature(snapshot.clone()).err());
         }
         for snapshot in &self.relations {
-            editable.restore_relation(snapshot.clone());
+            refused.extend(editable.restore_relation(snapshot.clone()).err());
         }
+        refused
     }
 }
 
@@ -1240,9 +1251,11 @@ mod tests {
         let mut layer = layer(A);
         let clip = copy(&layer, &select(FeatureKind::Way, &[10]));
         // Edit the source: retag, move a node, then delete the way.
-        layer.set_tag(FeatureKind::Way, 10, "highway", "motorway");
-        layer.commit_node_moves(&[(1, 10.0, 10.0)]);
-        layer.delete_feature(FeatureKind::Way, 10);
+        layer
+            .set_tag(FeatureKind::Way, 10, "highway", "motorway")
+            .unwrap();
+        layer.commit_node_moves(&[(1, 10.0, 10.0)]).unwrap();
+        layer.delete_feature(FeatureKind::Way, 10).unwrap();
         let pasted = paste(&clip, &mut layer, A, PastePosition::Source);
         let way = &pasted.ways[0];
         assert!(way

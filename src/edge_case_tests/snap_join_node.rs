@@ -447,7 +447,7 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
         );
 
         // Make the drawn way a building too: now the same click snaps.
-        s.editable_mut().remove_tag(W, drawn, "highway");
+        s.editable_mut().remove_tag(W, drawn, "highway").unwrap();
         s.set_tag(W, drawn, "building", "yes");
         let elsewhere = point(on_building.x + gpui::px(40.0), on_building.y);
         s.view.handle_add_click(elsewhere, false);
