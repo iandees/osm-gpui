@@ -250,11 +250,12 @@ fn undo_while_drawing_leaves_the_selection_alone(cx: &mut TestAppContext) {
         .update(cx, |view, window, cx| {
             tag_node_one(view);
             select(view, Way, &[101]);
-            view.add_progress = Some(AddProgress {
+            view.enter_mode(osm_gpui::edit_mode::EditMode::Add);
+            view.set_add_progress(Some(AddProgress {
                 way_id: None,
                 last_node_id: 1,
                 at_start: false,
-            });
+            }));
             view.on_undo(&Undo, window, cx);
             assert_eq!(selected_ids(view, Way), vec![101]);
             assert!(selected_ids(view, Node).is_empty());

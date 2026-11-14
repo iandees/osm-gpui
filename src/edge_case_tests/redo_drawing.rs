@@ -44,7 +44,7 @@ fn off(s: &Session, dx: f32, dy: f32) -> Point<Pixels> {
 }
 
 fn add_mode(s: &mut Session) {
-    s.view.mode = EditMode::Add;
+    s.view.enter_mode(EditMode::Add);
 }
 
 /// Run `edit`, then check one undo, redo, undo, redo each reproduce the data
@@ -69,7 +69,7 @@ fn round_trip(s: &mut Session, edit: impl FnOnce(&mut Session)) -> Snap {
 
 #[gpui::test]
 fn building_redo_recreates_the_ring_with_its_ids_and_tags(cx: &mut TestAppContext) {
-    with_session(cx, empty(), |s| {
+    with_session_in(cx, empty(), EditMode::Building, |s| {
         let edited = round_trip(s, |s| {
             for p in [off(s, -60.0, 0.0), off(s, 60.0, 0.0), off(s, 60.0, 50.0)] {
                 s.view.handle_building_click(p);
@@ -87,7 +87,7 @@ fn building_redo_recreates_the_ring_with_its_ids_and_tags(cx: &mut TestAppContex
 
 #[gpui::test]
 fn arc_redo_recreates_the_way_and_its_nodes(cx: &mut TestAppContext) {
-    with_session(cx, empty(), |s| {
+    with_session_in(cx, empty(), EditMode::Arc, |s| {
         round_trip(s, |s| {
             let (a, b, c) = (off(s, -100.0, 0.0), off(s, 100.0, 0.0), off(s, 0.0, -60.0));
             for p in [a, b, c] {
@@ -100,7 +100,7 @@ fn arc_redo_recreates_the_way_and_its_nodes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn arc_starting_on_a_way_redoes_the_splice_too(cx: &mut TestAppContext) {
-    with_session(cx, data(), |s| {
+    with_session_in(cx, data(), EditMode::Arc, |s| {
         let before = s.way_nodes(10).unwrap();
         let edited = round_trip(s, |s| {
             let (a, b, c) = (
@@ -251,11 +251,11 @@ fn continuing_a_way_from_its_start_or_its_end_redoes_on_the_right_side(cx: &mut 
     for at_start in [true, false] {
         with_session(cx, data(), move |s| {
             add_mode(s);
-            s.view.add_progress = Some(AddProgress {
+            s.view.set_add_progress(Some(AddProgress {
                 way_id: Some(10),
                 last_node_id: if at_start { 1 } else { 2 },
                 at_start,
-            });
+            }));
             let edited = round_trip(s, |s| {
                 let p = off(s, 0.0, -100.0);
                 s.view.handle_add_click(p, false);

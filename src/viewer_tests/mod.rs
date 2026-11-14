@@ -97,7 +97,7 @@ fn setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
             );
             view.layer_manager.add_layer(Box::new(layer));
             view.active_layer = Some(layer_id);
-            view.mode = EditMode::Add;
+            view.enter_mode(EditMode::Add);
         })
         .unwrap();
     window
@@ -196,7 +196,7 @@ fn setup_network_with(
             let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
             view.layer_manager.add_layer(Box::new(layer));
             view.active_layer = Some(layer_id);
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
         })
         .unwrap();
     window

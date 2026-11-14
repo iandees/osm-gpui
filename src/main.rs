@@ -981,31 +981,17 @@ struct MapViewer {
     focus_handle: gpui::FocusHandle,
     /// Global undo/redo history of committed data mutations.
     undo_stack: UndoStack,
-    /// The current map-interaction mode (Select/Add/Building/Extrude).
-    mode: EditMode,
-    /// Id of the OSM layer that Add/Building/Extrude write into, or `None`
-    /// if no layer is designated (those modes are disabled then).
+    /// The current edit mode and the gesture state only that mode has.
+    mode_state: modes::ModeState,
+    /// Id of the OSM layer that the drawing modes write into, or `None` if
+    /// no layer is designated (those modes are disabled then).
     active_layer: Option<LayerId>,
-    /// In-progress Add-mode way-building state, or `None` between
-    /// continuations (see `AddProgress`).
-    add_progress: Option<AddProgress>,
     /// What the pointer would snap onto right now (Add mode hover, or a
     /// single node being dragged), drawn as a highlight. See `SnapTarget`.
     snap_preview: Option<SnapTarget>,
-    /// In-progress Building-mode rectangle state, or `None` between
-    /// continuations (see `BuildingProgress`).
-    building_progress: Option<BuildingProgress>,
-    /// In-progress Arc-mode state, or `None` between arcs (see `ArcProgress`).
-    arc_progress: Option<ArcProgress>,
     /// The modifier keys as of the last mouse move, click or modifier change;
     /// Improve Way mode reads it to preview and pick its operation.
     last_modifiers: gpui::Modifiers,
-    /// The squared way Building mode is aligned to, if any (see
-    /// `BuildingReference`). When set, a building takes two corners instead
-    /// of three clicks.
-    building_reference: Option<BuildingReference>,
-    /// The pending left press in oriented Building mode.
-    building_press: Option<BuildingPress>,
     /// Last known mouse position within the map area, updated on every
     /// mouse-move; used to drive the live Building-mode preview (which
     /// needs a cursor position outside of a drag) during `render()`.
@@ -1018,9 +1004,6 @@ struct MapViewer {
     /// and the node becomes the selection once the drag passes the threshold
     /// (a release without moving is a plain click and selects it that way).
     vertex_grab: Option<osm_gpui::selection::FeatureRef>,
-    /// Extrude mode's in-progress drag, or `None` when not dragging (see
-    /// `ExtrudeDrag`).
-    extrude_drag: Option<ExtrudeDrag>,
     /// The interactive Rotate in progress, if any (see `RotateSession`).
     rotate_session: Option<RotateSession>,
     /// Window position of the last right-button press on the map, kept until
@@ -1300,19 +1283,13 @@ impl MapViewer {
             fields_promoted_more_fields: std::collections::HashSet::new(),
             focus_handle,
             undo_stack: UndoStack::default(),
-            mode: EditMode::Select,
+            mode_state: modes::ModeState::fresh(EditMode::Select),
             active_layer: None,
-            add_progress: None,
             snap_preview: None,
-            building_progress: None,
-            arc_progress: None,
             last_modifiers: gpui::Modifiers::none(),
-            building_reference: None,
-            building_press: None,
             last_mouse_pos: None,
             hovered: None,
             vertex_grab: None,
-            extrude_drag: None,
             rotate_session: None,
             right_press: None,
             menu_swallow_press: false,
@@ -1610,11 +1587,11 @@ impl MapViewer {
             // Mode progress is relative to the active layer.
             self.reset_mode_progress();
         }
-        if self.building_reference.is_some_and(|r| r.layer_id == id) {
-            self.building_reference = None;
+        if self.building_reference().is_some_and(|r| r.layer_id == id) {
+            self.set_building_reference(None);
         }
-        if self.extrude_drag.as_ref().is_some_and(|d| d.layer == id) {
-            self.extrude_drag = None;
+        if self.extrude_drag().is_some_and(|d| d.layer == id) {
+            self.set_extrude_drag(None);
         }
         if self.rotate_session.as_ref().is_some_and(|r| r.layer == id) {
             self.rotate_session = None;
@@ -1722,30 +1699,26 @@ impl MapViewer {
         self.finish_offset_adjust(true, window, cx);
         // Entering Building mode with one squared way selected borrows its
         // orientation; staying in Building mode keeps the existing one.
-        self.building_reference = match mode {
-            EditMode::Building if self.mode == EditMode::Building => self.building_reference,
+        let reference = match mode {
+            EditMode::Building if self.mode() == EditMode::Building => {
+                self.building_reference().copied()
+            }
             EditMode::Building => self.squared_selection_reference(),
             _ => None,
         };
-        self.mode = mode;
+        self.enter_mode(mode);
+        self.set_building_reference(reference);
         self.hovered = None;
         self.clear_vertex_preview();
-        self.reset_mode_progress();
         self.cancel_rotate();
         cx.notify();
     }
 
-    /// Discard every mode's half-finished gesture without committing it.
-    /// Every path that leaves a mode or invalidates the layer the gesture
-    /// refers to calls this, so a mode's state can't survive its mode.
-    /// `building_reference` is not progress: it outlives a Building session's
-    /// gestures and is managed by whoever changes the mode.
+    /// Discard the current mode's half-finished gesture without committing
+    /// it. Paths that invalidate the layer the gesture refers to call this.
+    /// A Building session's reference way is not progress and stays.
     pub(crate) fn reset_mode_progress(&mut self) {
-        self.add_progress = None;
-        self.building_progress = None;
-        self.building_press = None;
-        self.arc_progress = None;
-        self.extrude_drag = None;
+        self.mode_state.reset_progress();
     }
 
     /// If the selection is exactly one closed, squared way, the reference a
@@ -1818,23 +1791,23 @@ impl MapViewer {
         // Oriented Building mode owns the left button entirely (no
         // box-select, and no move-drag of the selected reference way): the
         // press places the first corner, the release decides click vs drag.
-        if self.mode == EditMode::Building && self.building_reference.is_some() {
-            let placed_first_corner = self.building_progress.is_none();
+        if self.mode() == EditMode::Building && self.building_reference().is_some() {
+            let placed_first_corner = self.building_progress().is_none();
             if placed_first_corner {
                 let corner = self.viewport.screen_to_geo(position);
-                self.building_progress = Some(BuildingProgress {
+                self.set_building_progress(Some(BuildingProgress {
                     corner_a: corner,
                     corner_b: None,
-                });
+                }));
             }
-            self.building_press = Some(BuildingPress {
+            self.set_building_press(Some(BuildingPress {
                 down: position,
                 placed_first_corner,
-            });
+            }));
             self.interaction = Interaction::Idle;
             return;
         }
-        if self.mode == EditMode::Extrude {
+        if self.mode() == EditMode::Extrude {
             if let Some(layer_id) = self.active_layer {
                 if let Some(layer) = self.layer_manager.find_layer(layer_id) {
                     if let Some(osm_layer) = layer.as_osm() {
@@ -1861,7 +1834,7 @@ impl MapViewer {
                                 .and_then(|e| e.way_node_ids(way_id))
                                 .and_then(|ids| segment_index_in_way(&ids, idx, node_a, node_b));
                             if let Some(segment) = segment {
-                                self.extrude_drag = Some(ExtrudeDrag {
+                                self.set_extrude_drag(Some(ExtrudeDrag {
                                     layer: layer_id,
                                     way_id,
                                     node_a,
@@ -1869,7 +1842,7 @@ impl MapViewer {
                                     segment,
                                     style: ExtrudeStyle::from_modifiers(modifiers),
                                     down: position,
-                                });
+                                }));
                             }
                         }
                     }
@@ -1898,7 +1871,7 @@ impl MapViewer {
         // previewed way's, or of a selected way) grabs just that node, as in
         // iD and JOSM: select-and-move in one gesture. Shift keeps the
         // toggle-on-click meaning, and the other modes are untouched.
-        if hit_move_targets.is_none() && self.mode == EditMode::Select && !modifiers.shift {
+        if hit_move_targets.is_none() && self.mode() == EditMode::Select && !modifiers.shift {
             if let Some((feature, targets)) = self.unselected_node_grab(position) {
                 self.vertex_grab = Some(feature);
                 hit_move_targets = Some(targets);
@@ -2865,16 +2838,14 @@ impl MapViewer {
     /// way's first node if `from.at_start`), as if the user had just placed
     /// that end node while drawing.
     fn continue_way_in_add_mode(&mut self, from: osm_gpui::topology::Continuation) {
-        self.mode = EditMode::Add;
+        self.enter_mode(EditMode::Add);
         self.hovered = None;
         self.clear_vertex_preview();
-        self.reset_mode_progress();
-        self.building_reference = None;
-        self.add_progress = Some(AddProgress {
+        self.set_add_progress(Some(AddProgress {
             way_id: Some(from.way_id),
             last_node_id: from.from_node,
             at_start: from.at_start,
-        });
+        }));
     }
 
     /// Replace the selection, resetting the Fields section's per-feature
@@ -3270,10 +3241,7 @@ impl MapViewer {
         let UndoableAction::PasteFeatures { pasted } = action else {
             return;
         };
-        if self.add_progress.is_some()
-            || self.building_progress.is_some()
-            || self.arc_progress.is_some()
-        {
+        if self.mode_state.is_drawing() {
             return;
         }
         let wanted = if forward {
@@ -3326,9 +3294,7 @@ impl MapViewer {
     /// alone (apart from that pruning), so the drawing session isn't disturbed.
     /// Never moves the viewport.
     fn select_after_history_step(&mut self, action: &UndoableAction) {
-        let drawing = self.add_progress.is_some()
-            || self.building_progress.is_some()
-            || self.arc_progress.is_some();
+        let drawing = self.mode_state.is_drawing();
         let next: Vec<osm_gpui::selection::FeatureRef> = if drawing {
             self.selected.clone()
         } else {
@@ -3754,12 +3720,12 @@ impl MapViewer {
     ) -> bool {
         let target = if let Some(dragged) = dragged {
             self.drag_snap_target(pos, modifiers, dragged)
-        } else if self.mode == EditMode::Add
+        } else if self.mode() == EditMode::Add
             && !osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
         {
             self.active_layer.and_then(|layer_id| {
                 let sources = self.add_snap_sources(layer_id);
-                self.find_snap_target(layer_id, pos, None, &sources, self.add_progress.is_some())
+                self.find_snap_target(layer_id, pos, None, &sources, self.add_progress().is_some())
             })
         } else {
             None
@@ -3773,7 +3739,7 @@ impl MapViewer {
     /// being drawn, if it has any. A way with none yet (the usual case; tags
     /// come after drawing) snaps to anything, see `osm_gpui::snap`.
     fn add_snap_sources(&self, layer_id: LayerId) -> Vec<Tags> {
-        let Some(way_id) = self.add_progress.as_ref().and_then(|p| p.way_id) else {
+        let Some(way_id) = self.add_progress().and_then(|p| p.way_id) else {
             return Vec::new();
         };
         self.layer_manager
@@ -3806,7 +3772,7 @@ impl MapViewer {
             }
             _ => None,
         };
-        if dragged.is_some() || (self.mode == EditMode::Add && no_button) {
+        if dragged.is_some() || (self.mode() == EditMode::Add && no_button) {
             self.update_snap_preview(pos, modifiers, dragged);
         } else {
             self.snap_preview = None;
@@ -3819,7 +3785,7 @@ impl MapViewer {
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
         self.last_modifiers = modifiers;
-        if self.mode == EditMode::Improve {
+        if self.mode() == EditMode::Improve {
             // The preview depends on the held keys.
             cx.notify();
         }
@@ -3849,7 +3815,7 @@ impl MapViewer {
         }
         // What a click here would select — only meaningful in Select mode
         // with no button down and no pan pending.
-        let hover_enabled = self.mode == EditMode::Select
+        let hover_enabled = self.mode() == EditMode::Select
             && event.pressed_button.is_none()
             && !self.space_held
             && self.offset_adjust.is_none();
@@ -3964,13 +3930,13 @@ impl MapViewer {
             return;
         }
 
-        if let Some(press) = self.building_press.take() {
+        if let Some(press) = self.take_building_press() {
             self.finish_oriented_building_press(press, up_pos);
             cx.notify();
             return;
         }
 
-        if let Some(drag) = self.extrude_drag.take() {
+        if let Some(drag) = self.take_extrude_drag() {
             let moved = (up_pos - drag.down).magnitude() >= 4.0;
             if moved {
                 match drag.style {
@@ -4176,7 +4142,7 @@ impl MapViewer {
                 // way id doesn't change), so the before/after diff alone
                 // misses that the way's geometry grew a node — always
                 // notify for Add mode regardless of the selection diff.
-                if before != self.selected || self.mode == EditMode::Add {
+                if before != self.selected || self.mode() == EditMode::Add {
                     cx.notify();
                 }
             }
@@ -4200,7 +4166,7 @@ impl MapViewer {
         if self.imagery_click(screen_pt) {
             return;
         }
-        match self.mode {
+        match self.mode() {
             EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
             EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
             EditMode::Building => self.handle_building_click(screen_pt),
@@ -4222,28 +4188,28 @@ impl MapViewer {
         };
         let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
 
-        match self.building_progress.take() {
+        match self.take_building_progress() {
             None => {
-                self.building_progress = Some(BuildingProgress {
+                self.set_building_progress(Some(BuildingProgress {
                     corner_a: (lat, lon),
                     corner_b: None,
-                });
+                }));
             }
             Some(BuildingProgress {
                 corner_a,
                 corner_b: None,
             }) => {
-                self.building_progress = Some(BuildingProgress {
+                self.set_building_progress(Some(BuildingProgress {
                     corner_a,
                     corner_b: Some((lat, lon)),
-                });
+                }));
             }
             Some(BuildingProgress {
                 corner_a,
                 corner_b: Some(corner_b),
             }) => {
                 self.commit_building(layer_id, corner_a, corner_b, (lat, lon));
-                self.building_progress = None;
+                self.set_building_progress(None);
             }
         }
     }
@@ -4257,18 +4223,18 @@ impl MapViewer {
         };
         let point = self.arc_point_at(layer_id, screen_pt, no_snap);
 
-        match self.arc_progress.take() {
+        match self.take_arc_progress() {
             None => {
-                self.arc_progress = Some(ArcProgress {
+                self.set_arc_progress(Some(ArcProgress {
                     start: point,
                     end: None,
-                });
+                }));
             }
             Some(ArcProgress { start, end: None }) => {
-                self.arc_progress = Some(ArcProgress {
+                self.set_arc_progress(Some(ArcProgress {
                     start,
                     end: Some(point),
-                });
+                }));
             }
             Some(ArcProgress {
                 start,
@@ -4279,10 +4245,10 @@ impl MapViewer {
                 if self.arc_from_geo(start.geo, end.geo, point.geo).is_some() {
                     self.commit_arc(layer_id, start, end, point.geo);
                 } else {
-                    self.arc_progress = Some(ArcProgress {
+                    self.set_arc_progress(Some(ArcProgress {
                         start,
                         end: Some(end),
-                    });
+                    }));
                 }
             }
         }
@@ -4664,9 +4630,9 @@ impl MapViewer {
         up_pos: gpui::Point<gpui::Pixels>,
     ) {
         let (Some(reference), Some(layer_id), Some(progress)) = (
-            self.building_reference,
+            self.building_reference().copied(),
             self.active_layer,
-            self.building_progress,
+            self.building_progress().copied(),
         ) else {
             return;
         };
@@ -4681,7 +4647,7 @@ impl MapViewer {
             reference.orientation,
         ) {
             self.commit_building_corners(layer_id, corners);
-            self.building_progress = None;
+            self.set_building_progress(None);
         }
     }
 
@@ -5147,7 +5113,7 @@ impl MapViewer {
         let (mut lat, mut lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Every click after the first grows the way being drawn by a node.
-        let drawing_way = self.add_progress.as_ref().and_then(|p| p.way_id);
+        let drawing_way = self.add_progress().and_then(|p| p.way_id);
         if let Some(way_id) = drawing_way {
             if self.refuse_way_growth(layer_id, way_id, 1) {
                 return;
@@ -5156,7 +5122,7 @@ impl MapViewer {
 
         // Clicking an existing node/way finishes the in-progress way by
         // connecting to it. Skipped entirely when Ctrl is held.
-        if !ctrl_held && self.add_progress.is_some() {
+        if !ctrl_held && self.add_progress().is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             let sources = self.add_snap_sources(layer_id);
             let node_allowed = |id: i64| {
@@ -5188,7 +5154,7 @@ impl MapViewer {
                 });
             if let Some(node_id) = hit_node {
                 let way_id = self.add_extend_or_start_way(layer_id, node_id, false, None);
-                self.add_progress = None;
+                self.set_add_progress(None);
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
@@ -5242,11 +5208,11 @@ impl MapViewer {
 
         // Note: `find_layer_mut` is re-called in each arm below (rather than
         // binding `layer` once above the match) so its mutable borrow ends
-        // before the arm needs `&mut self` again for `self.add_progress`/
+        // before the arm needs `&mut self` again for `self.set_add_progress`/
         // `self.add_extend_or_start_way`/`self.undo_stack` — binding it once
         // outside the match would keep the borrow alive across those calls
         // and fail to compile.
-        match self.add_progress.take() {
+        match self.take_add_progress() {
             None => {
                 // First click of a fresh continuation: a lone node (or, if
                 // snapped, a node spliced into the snapped-onto way), no way
@@ -5290,11 +5256,11 @@ impl MapViewer {
                         new_id
                     }
                 };
-                self.add_progress = Some(AddProgress {
+                self.set_add_progress(Some(AddProgress {
                     way_id: None,
                     last_node_id: new_id,
                     at_start: false,
-                });
+                }));
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Node,
@@ -5325,13 +5291,13 @@ impl MapViewer {
                     None => (editable.add_node(lat, lon), None),
                 };
                 let at_start = progress.at_start;
-                self.add_progress = Some(progress);
+                self.set_add_progress(Some(progress));
                 let way_id = self.add_extend_or_start_way(layer_id, new_id, true, snap);
-                self.add_progress = Some(AddProgress {
+                self.set_add_progress(Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
                     at_start,
-                });
+                }));
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
@@ -5363,11 +5329,10 @@ impl MapViewer {
         node_created: bool,
         snap: Option<(i64, usize)>,
     ) -> i64 {
-        let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
-        let at_start = self.add_progress.as_ref().is_some_and(|p| p.at_start);
+        let progress_way_id = self.add_progress().and_then(|p| p.way_id);
+        let at_start = self.add_progress().is_some_and(|p| p.at_start);
         let last_node_id = self
-            .add_progress
-            .as_ref()
+            .add_progress()
             .map(|p| p.last_node_id)
             .unwrap_or(node_id);
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
@@ -5558,7 +5523,7 @@ impl MapViewer {
     ) {
         use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
-        if self.mode != EditMode::Select {
+        if self.mode() != EditMode::Select {
             return;
         }
         let map_pos = self.window_to_map(position);
@@ -7455,7 +7420,7 @@ impl Render for MapViewer {
                             if self.notes_armed() {
                                 EditMode::Add
                             } else {
-                                self.mode
+                                self.mode()
                             },
                             self.viewport.is_dragging,
                             self.space_held,
@@ -7662,7 +7627,7 @@ impl Render for MapViewer {
                                             cx,
                                         );
 
-                                        if let Some(reference) = this.building_reference {
+                                        if let Some(reference) = this.building_reference().copied() {
                                             // Mark the way the building is aligned to.
                                             this.layer_manager.render_highlight(
                                                 &osm_gpui::selection::FeatureRef {
@@ -7677,7 +7642,7 @@ impl Render for MapViewer {
                                             );
                                         }
 
-                                        if let Some(progress) = this.building_progress {
+                                        if let Some(progress) = this.building_progress().copied() {
                                             let origin_x = bounds.origin.x;
                                             let origin_y = bounds.origin.y;
                                             let a_screen = viewport_clone.geo_to_screen(
@@ -7685,7 +7650,7 @@ impl Render for MapViewer {
                                                 progress.corner_a.1,
                                             );
                                             match progress.corner_b {
-                                                None if this.building_reference.is_some() => {
+                                                None if this.building_reference().is_some() => {
                                                     // Oriented: the cursor is the opposite
                                                     // corner, so preview the whole rectangle.
                                                     let half = px(4.0);
@@ -7701,7 +7666,8 @@ impl Render for MapViewer {
                                                         rgb(0x3b82f6),
                                                     ));
                                                     let corners = this
-                                                        .building_reference
+                                                        .building_reference()
+                                                        .copied()
                                                         .zip(this.last_mouse_pos)
                                                         .and_then(|(reference, mouse)| {
                                                             osm_gpui::building::rectangle_from_opposite_corners(
@@ -7804,7 +7770,7 @@ impl Render for MapViewer {
                                             }
                                         }
 
-                                        if let Some(progress) = this.arc_progress {
+                                        if let Some(progress) = this.arc_progress().copied() {
                                             // Screen position of a geo point, in window space.
                                             let to_window = |g: (f64, f64)| {
                                                 let p = viewport_clone.geo_to_screen(g.0, g.1);
@@ -7873,7 +7839,7 @@ impl Render for MapViewer {
 
                                         // Improve Way preview: the target way as it
                                         // would look after a click at the cursor.
-                                        if this.mode == EditMode::Improve {
+                                        if this.mode() == EditMode::Improve {
                                             if let Some(ip) = this
                                                 .last_mouse_pos
                                                 .and_then(|c| this.improve_plan_at(c))
@@ -7918,8 +7884,7 @@ impl Render for MapViewer {
                                         // Reshape/Move preview: the way's whole
                                         // outline as it would be after the drop.
                                         if let Some(drag) = this
-                                            .extrude_drag
-                                            .as_ref()
+                                            .extrude_drag()
                                             .filter(|d| d.style != ExtrudeStyle::NewWay)
                                         {
                                             if let Some(mouse_pos) = this.last_mouse_pos {
@@ -7947,8 +7912,7 @@ impl Render for MapViewer {
                                         }
 
                                         if let Some(drag) = this
-                                            .extrude_drag
-                                            .as_ref()
+                                            .extrude_drag()
                                             .filter(|d| d.style == ExtrudeStyle::NewWay)
                                         {
                                             if let Some(mouse_pos) = this.last_mouse_pos {
@@ -8017,7 +7981,7 @@ impl Render for MapViewer {
                                             );
                                         }
 
-                                        if let Some(progress) = &this.add_progress {
+                                        if let Some(progress) = this.add_progress() {
                                             if let Some(mouse_pos) = this.last_mouse_pos {
                                                 if let Some(layer_id) = this.active_layer {
                                                     if let Some(layer) =

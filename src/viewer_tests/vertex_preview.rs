@@ -67,7 +67,7 @@ fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
 fn select_setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
     let window = setup(cx);
     window
-        .update(cx, |view, _w, _cx| view.mode = EditMode::Select)
+        .update(cx, |view, _w, _cx| view.enter_mode(EditMode::Select))
         .unwrap();
     window
 }
@@ -128,13 +128,13 @@ fn no_preview_outside_select_mode_while_space_is_held_or_when_zoomed_out(cx: &mu
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), Some(10));
             // Switching to Add mode drops it and keeps it away.
-            view.mode = EditMode::Add;
+            view.enter_mode(EditMode::Add);
             view.clear_vertex_preview();
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), None);
             assert_eq!(view.hovered, None);
             // Select mode below the preview zoom.
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
             view.viewport.set_zoom(17.0);
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), None);
@@ -246,7 +246,7 @@ fn add_mode_press_on_a_vertex_does_not_grab_it(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |view, _w, cx| {
-            assert_eq!(view.mode, EditMode::Add);
+            assert_eq!(view.mode(), EditMode::Add);
             let n1 = node_screen(view, 1);
             pointer_to(view, n1, false, cx);
             assert_eq!(preview_way_of(view), None);

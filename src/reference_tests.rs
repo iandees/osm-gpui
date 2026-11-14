@@ -66,7 +66,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
         let data_id = add_osm_layer(view, "data", empty_data());
         view.active_layer = Some(data_id);
         view.add_reference_dataset("walk".into(), track(), cx);
-        view.mode = EditMode::Add;
+        view.enter_mode(EditMode::Add);
         // 4 px below the line, between its two vertices.
         view.handle_add_click(point(px(430.0), px(304.0)), false);
         let node = view.selected[0];
@@ -79,7 +79,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
         assert!((lat - LAT).abs() < 1e-7, "{lat}");
         assert_eq!(view.active_layer_pending(), Some(1));
         // Ctrl bypasses snapping.
-        view.add_progress = None;
+        view.set_add_progress(None);
         view.handle_add_click(point(px(430.0), px(304.0)), true);
         let node = view.selected[0];
         let (lat, _) = view

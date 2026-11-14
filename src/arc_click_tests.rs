@@ -15,13 +15,13 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
         let bulge = c + point(px(0.0), px(-60.0));
 
         view.handle_arc_click(start, false);
-        assert!(view.arc_progress.is_some_and(|p| p.end.is_none()));
+        assert!(view.arc_progress().is_some_and(|p| p.end.is_none()));
         view.handle_arc_click(end, false);
-        assert!(view.arc_progress.is_some_and(|p| p.end.is_some()));
+        assert!(view.arc_progress().is_some_and(|p| p.end.is_some()));
         assert_eq!(osm_counts(view, layer), (0, 0), "nothing is created early");
 
         view.handle_arc_click(bulge, false);
-        assert!(view.arc_progress.is_none());
+        assert!(view.arc_progress().is_none());
         let (nodes, ways) = osm_counts(view, layer);
         assert_eq!(ways, 1);
         assert!(nodes >= 3, "an arc has interior nodes, got {nodes}");
@@ -79,7 +79,7 @@ fn a_collinear_third_click_is_ignored(cx: &mut TestAppContext) {
         view.handle_arc_click(c + point(px(100.0), px(0.0)), false);
         // On the chord itself: no circle, so the arc stays pending.
         view.handle_arc_click(c, false);
-        assert!(view.arc_progress.is_some_and(|p| p.end.is_some()));
+        assert!(view.arc_progress().is_some_and(|p| p.end.is_some()));
         assert_eq!(osm_counts(view, layer), (0, 0));
     });
 }

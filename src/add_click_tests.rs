@@ -117,7 +117,7 @@ fn one_click_then_undo(
     let base = state(view, layer);
     assert_eq!(base.pending, 0, "baseline has nothing pending");
     assert!(!is_modified(view, layer), "baseline is not modified");
-    view.add_progress = None;
+    view.set_add_progress(None);
     view.handle_add_click(pt, ctrl);
     let after = state(view, layer);
     let delta = Outcome {
@@ -257,7 +257,7 @@ fn osm_way_snap_wins_over_a_nearby_reference_line(cx: &mut TestAppContext) {
             view.reference_snap_at(pt).is_some(),
             "reference line is in reach"
         );
-        view.add_progress = None;
+        view.set_add_progress(None);
         view.handle_add_click(pt, false);
         // The new node is on the OSM way (lat == LAT), not on the
         // reference line 3 px below it.
@@ -286,7 +286,7 @@ fn the_new_node_lands_on_the_snap_target(cx: &mut TestAppContext) {
             (A_V1, screen(view, A_V1) + point(px(3.0), px(3.0))),
             (MARKER, screen(view, MARKER) + point(px(-2.0), px(2.0))),
         ] {
-            view.add_progress = None;
+            view.set_add_progress(None);
             view.handle_add_click(pt, false);
             let id = view.selected[0].id;
             let (lat, lon) = node_lat_lon(view, layer, id).unwrap();
@@ -304,7 +304,7 @@ fn a_hidden_reference_layer_does_not_snap_the_click(cx: &mut TestAppContext) {
         let pt = screen(view, A_V1) + point(px(4.0), px(4.0));
         let got = one_click_then_undo(view, w, cx, layer, pt, false);
         assert_eq!(got, NODE_ONLY);
-        view.add_progress = None;
+        view.set_add_progress(None);
         view.handle_add_click(pt, false);
         let (lat, lon) = node_lat_lon(view, layer, view.selected[0].id).unwrap();
         assert!((lat - A_V1.0).abs() > 1e-7 || (lon - A_V1.1).abs() > 1e-7);
@@ -326,9 +326,9 @@ fn two_clicks_and_enter_make_a_two_node_way_in_two_steps(cx: &mut TestAppContext
         assert_eq!((after2.nodes, after2.ways, after2.pending), (5, 2, 3));
         assert_eq!(after2.steps, 2);
         // Enter finishes the way: no edit, no extra step.
-        view.add_progress = None;
+        view.set_add_progress(None);
         assert_eq!(state(view, layer), after2);
-        assert!(view.add_progress.is_none());
+        assert!(view.add_progress().is_none());
 
         view.on_undo(&Undo, w, cx);
         assert_eq!((state(view, layer).nodes, state(view, layer).ways), (4, 1));
@@ -347,7 +347,7 @@ fn escape_after_the_first_click_keeps_the_node_and_adds_no_step(cx: &mut TestApp
     with_refs(cx, all_refs, |view, w, cx, layer| {
         view.handle_add_click(screen(view, A_V1), false);
         let after = state(view, layer);
-        view.add_progress = None;
+        view.set_add_progress(None);
         assert_eq!(state(view, layer), after);
         view.on_undo(&Undo, w, cx);
         assert_eq!(state(view, layer).pending, 0);
@@ -385,7 +385,7 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
         // no node.
         assert_eq!(second.nodes, first.nodes);
         assert_eq!(second.ways, first.ways + 1);
-        assert!(view.add_progress.is_none());
+        assert!(view.add_progress().is_none());
         let way = view.selected[0].id;
         let nodes = view
             .layer_manager

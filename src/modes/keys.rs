@@ -83,7 +83,7 @@ impl MapViewer {
             modifiers,
             self.offset_field_focused(window, cx),
             self.rotate_session.is_some(),
-            self.mode,
+            self.mode(),
             &osm_gpui::settings_store::snapshot(),
         );
         match meaning {
@@ -115,7 +115,7 @@ impl MapViewer {
                 cx.notify();
             }
             MapKey::FinishDrawing => {
-                if self.add_progress.take().is_some() {
+                if self.take_add_progress().is_some() {
                     cx.notify();
                 }
             }
@@ -135,27 +135,26 @@ impl MapViewer {
             return;
         }
         let cancelled_drag = self.cancel_move_drag(cx);
-        match self.mode {
+        match self.mode() {
             EditMode::Add => {
-                if self.add_progress.take().is_none() {
-                    self.mode = EditMode::Select;
+                if self.take_add_progress().is_none() {
+                    self.enter_mode(EditMode::Select);
                 }
             }
             EditMode::Building => {
-                self.building_press = None;
-                if self.building_progress.take().is_none() {
-                    self.mode = EditMode::Select;
-                    self.building_reference = None;
+                self.set_building_press(None);
+                if self.take_building_progress().is_none() {
+                    self.enter_mode(EditMode::Select);
                 }
             }
             EditMode::Extrude => {
-                if self.extrude_drag.take().is_none() {
-                    self.mode = EditMode::Select;
+                if self.take_extrude_drag().is_none() {
+                    self.enter_mode(EditMode::Select);
                 }
             }
             EditMode::Arc => {
-                if self.arc_progress.take().is_none() {
-                    self.mode = EditMode::Select;
+                if self.take_arc_progress().is_none() {
+                    self.enter_mode(EditMode::Select);
                 }
             }
             // First Esc lets go of the way (to pick another), the second
@@ -164,7 +163,7 @@ impl MapViewer {
                 if self.improve_target().is_some() {
                     self.set_selection(Vec::new());
                 } else {
-                    self.mode = EditMode::Select;
+                    self.enter_mode(EditMode::Select);
                 }
             }
             EditMode::Select => {

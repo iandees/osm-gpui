@@ -75,20 +75,20 @@ pub(crate) fn pending_edits_label(count: usize) -> Option<SharedString> {
 
 impl MapViewer {
     fn mode_progress(&self) -> ModeProgress {
-        match self.mode {
+        match self.mode() {
             EditMode::Add => {
-                if self.add_progress.is_some() {
+                if self.add_progress().is_some() {
                     ModeProgress::Started
                 } else {
                     ModeProgress::Idle
                 }
             }
-            EditMode::Building => match self.building_progress {
+            EditMode::Building => match self.building_progress() {
                 None => ModeProgress::Idle,
                 Some(progress) if progress.corner_b.is_none() => ModeProgress::Started,
                 Some(_) => ModeProgress::EdgePlaced,
             },
-            EditMode::Arc => match self.arc_progress {
+            EditMode::Arc => match self.arc_progress() {
                 None => ModeProgress::Idle,
                 Some(progress) if progress.end.is_none() => ModeProgress::Started,
                 Some(_) => ModeProgress::EdgePlaced,
@@ -185,7 +185,7 @@ impl MapViewer {
             div().text_color(foreground).child(message)
         } else if self.offset_adjust.is_some() {
             div().child(tr!("status.hint.adjust_offset"))
-        } else if self.mode == EditMode::Select
+        } else if self.mode() == EditMode::Select
             && !self.selected.is_empty()
             && self
                 .selected
@@ -194,14 +194,14 @@ impl MapViewer {
         {
             // Relations don't move or delete; say what does work instead.
             div().child(tr!("status.hint.select_relation"))
-        } else if self.mode == EditMode::Select && self.selected_way_is_relation_member() {
+        } else if self.mode() == EditMode::Select && self.selected_way_is_relation_member() {
             div().child(tr!("status.hint.select_member_way"))
         } else {
             div().child(mode_hint(
-                self.mode,
+                self.mode(),
                 self.mode_progress(),
                 !self.selected.is_empty(),
-                self.building_reference.is_some(),
+                self.building_reference().is_some(),
             ))
         };
 

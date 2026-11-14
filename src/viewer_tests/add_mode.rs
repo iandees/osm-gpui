@@ -25,9 +25,9 @@ fn first_click_in_add_mode_snaps_onto_existing_way(cx: &mut TestAppContext) {
 
             // Add mode's own progress continues from the snapped node,
             // not from an implicit continuation of way 10.
-            assert!(view.add_progress.is_some());
-            assert_eq!(view.add_progress.as_ref().unwrap().way_id, None);
-            assert_eq!(view.add_progress.as_ref().unwrap().last_node_id, new_id);
+            assert!(view.add_progress().is_some());
+            assert_eq!(view.add_progress().unwrap().way_id, None);
+            assert_eq!(view.add_progress().unwrap().last_node_id, new_id);
 
             // Undo removes the splice and deletes the node.
             let action = view.undo_stack.undo().expect("expected an undo entry");
@@ -48,7 +48,7 @@ fn second_click_snaps_and_folds_with_compound_undo(cx: &mut TestAppContext) {
 
             // First click: a free node A, far from way 10.
             view.handle_add_click(point(px(50.0), px(50.0)), false);
-            let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+            let node_a = view.add_progress().unwrap().last_node_id;
             assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
 
             // Second click: on way 10's line — snaps a new node B into
@@ -65,7 +65,7 @@ fn second_click_snaps_and_folds_with_compound_undo(cx: &mut TestAppContext) {
             assert_eq!((nodes10[0], nodes10[2]), (1, 2));
             let node_b = nodes10[1];
 
-            let drawn_way_id = view.add_progress.as_ref().unwrap().way_id.unwrap();
+            let drawn_way_id = view.add_progress().unwrap().way_id.unwrap();
             assert_eq!(
                 way_nodes(view, layer_id, drawn_way_id),
                 vec![node_a, node_b]
@@ -103,7 +103,7 @@ fn second_click_on_an_undrawn_vertex_connects_to_it(cx: &mut TestAppContext) {
             assert!(hits.iter().flatten().all(|h| h.feature.id != 1));
 
             view.handle_add_click(point(px(50.0), px(50.0)), false);
-            let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+            let node_a = view.add_progress().unwrap().last_node_id;
             view.handle_add_click(on_node_1, false);
 
             // Way 10 gained no node; the new way runs from A to node 1.
@@ -125,14 +125,14 @@ fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
             // First click: a free node A, far from way 10 (Ctrl
             // irrelevant here — nothing nearby to snap to).
             view.handle_add_click(point(px(50.0), px(50.0)), false);
-            let node_a = view.add_progress.as_ref().unwrap().last_node_id;
+            let node_a = view.add_progress().unwrap().last_node_id;
 
             // Second click, Ctrl held, exactly on top of existing node 1:
             // without Ctrl this would connect to node 1 (see the "click
             // hits an existing node" path); with Ctrl it must create a
             // brand-new independent node instead.
             view.handle_add_click(n1_screen, true);
-            let node_b = view.add_progress.as_ref().unwrap().last_node_id;
+            let node_b = view.add_progress().unwrap().last_node_id;
             assert_ne!(node_b, 1, "Ctrl should not have connected to node 1");
             assert_eq!(
                 way_nodes(view, layer_id, 10),
@@ -144,14 +144,14 @@ fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
             // would snap into way 10 (as in the sibling tests above);
             // with Ctrl it must stay a free node.
             view.handle_add_click(point(px(400.0), px(300.0)), true);
-            let node_c = view.add_progress.as_ref().unwrap().last_node_id;
+            let node_c = view.add_progress().unwrap().last_node_id;
             assert_eq!(
                 way_nodes(view, layer_id, 10),
                 vec![1, 2],
                 "Ctrl should not have snapped onto way 10"
             );
 
-            let drawn_way_id = view.add_progress.as_ref().unwrap().way_id.unwrap();
+            let drawn_way_id = view.add_progress().unwrap().way_id.unwrap();
             assert_eq!(
                 way_nodes(view, layer_id, drawn_way_id),
                 vec![node_a, node_b, node_c]
@@ -175,7 +175,7 @@ fn click_with_no_way_nearby_falls_back_to_free_node(cx: &mut TestAppContext) {
                 vec![1, 2],
                 "way 10 untouched"
             );
-            let new_id = view.add_progress.as_ref().unwrap().last_node_id;
+            let new_id = view.add_progress().unwrap().last_node_id;
             let layer = view.layer_manager.find_layer(layer_id).unwrap();
             assert!(layer.as_editable().unwrap().node_lat_lon(new_id).is_some());
         })
@@ -196,8 +196,8 @@ fn extend_from_a_way_end_appends_with_one_undo_step_per_click(cx: &mut TestAppCo
             let layer_id = view.active_layer.unwrap();
             select(view, Way, &[100]);
             view.run_selection_action("extend", cx);
-            assert_eq!(view.mode, EditMode::Add);
-            let progress = view.add_progress.as_ref().unwrap();
+            assert_eq!(view.mode(), EditMode::Add);
+            let progress = view.add_progress().unwrap();
             assert_eq!((progress.way_id, progress.last_node_id), (Some(100), 3));
             assert!(view.undo_stack.actions.is_empty());
             assert_eq!(pending(view), (0, 0, 0));
@@ -232,8 +232,8 @@ fn extend_from_a_start_node_prepends_and_undoes_from_the_front(cx: &mut TestAppC
             let layer_id = view.active_layer.unwrap();
             select(view, Node, &[1]);
             view.run_selection_action("extend", cx);
-            assert_eq!(view.mode, EditMode::Add);
-            assert!(view.add_progress.as_ref().unwrap().at_start);
+            assert_eq!(view.mode(), EditMode::Add);
+            assert!(view.add_progress().unwrap().at_start);
 
             view.handle_add_click(empty_spot(view, 0.0), false);
             let first = way_nodes(view, layer_id, 100);
@@ -246,7 +246,7 @@ fn extend_from_a_start_node_prepends_and_undoes_from_the_front(cx: &mut TestAppC
             assert_eq!(pending(view), (2, 1, 0));
 
             // Enter (or Esc) ends the continuation; the way is kept.
-            view.add_progress = None;
+            view.set_add_progress(None);
 
             undo_step(view);
             assert_eq!(way_nodes(view, layer_id, 100), first);
@@ -265,8 +265,8 @@ fn refused_extend_stays_in_select_mode(cx: &mut TestAppContext) {
         .update(cx, |view, _window, cx| {
             select(view, Node, &[2]);
             view.run_selection_action("extend", cx);
-            assert_eq!(view.mode, EditMode::Select);
-            assert!(view.add_progress.is_none());
+            assert_eq!(view.mode(), EditMode::Select);
+            assert!(view.add_progress().is_none());
             assert_eq!(
                 view.status_message.as_ref().map(|(m, _)| m.as_str()),
                 Some("Select an open way, or the end node of one, to continue drawing it")
