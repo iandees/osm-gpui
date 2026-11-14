@@ -1472,11 +1472,7 @@ mod tests {
 
     #[test]
     fn the_changeset_id_is_reported_after_create_and_before_the_diff_is_sent() {
-        let client = FakeClient::new(vec![
-            ok(200, "42"),
-            ok(200, "<diffResult/>"),
-            ok(200, ""),
-        ]);
+        let client = FakeClient::new(vec![ok(200, "42"), ok(200, "<diffResult/>"), ok(200, "")]);
         let mut seen: Vec<(u64, Vec<String>)> = Vec::new();
         run_upload(
             &client,

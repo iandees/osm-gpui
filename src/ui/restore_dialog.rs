@@ -143,7 +143,10 @@ pub fn in_flight_summary(flight: &InFlight) -> Option<String> {
         if !summary.is_empty() {
             summary.push(' ');
         }
-        summary.push_str(&tr_count!("dialog.restore.in_flight.omitted", flight.omitted));
+        summary.push_str(&tr_count!(
+            "dialog.restore.in_flight.omitted",
+            flight.omitted
+        ));
     }
     Some(summary)
 }

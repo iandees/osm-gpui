@@ -457,7 +457,9 @@ pub fn read_upload_marker(dir: &Path) -> Option<UploadMarker> {
 /// file that cannot be read stands for one marker with nothing known.
 pub fn read_upload_markers(dir: &Path) -> Vec<UploadMarker> {
     let mut markers: Vec<UploadMarker> = match std::fs::read(dir.join(CARRIED_MARKERS_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| vec![UploadMarker::default()]),
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| vec![UploadMarker::default()])
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(_) => vec![UploadMarker::default()],
     };
@@ -1948,8 +1950,7 @@ mod tests {
         }
         let mine = UploadMarker::for_request("https://y.test", &request(Some((1, 2))), 7)
             .with_changeset(11);
-        let read: Previous =
-            serde_json::from_slice(&serde_json::to_vec(&mine).unwrap()).unwrap();
+        let read: Previous = serde_json::from_slice(&serde_json::to_vec(&mine).unwrap()).unwrap();
         assert_eq!(
             (read.format, read.api_base.as_str(), read.comment.as_str()),
             (MARKER_FORMAT, "https://y.test", "Fix the bus stops")
@@ -2082,7 +2083,9 @@ mod tests {
         let session = Session::start(&root).unwrap();
         let a = UploadMarker::for_request("https://x.test", &request(None), 1);
         let b = UploadMarker::for_request("https://x.test", &request(None), 2);
-        session.write_upload_markers(&[a.clone(), b.clone()]).unwrap();
+        session
+            .write_upload_markers(&[a.clone(), b.clone()])
+            .unwrap();
         assert_eq!(session.upload_markers(), vec![a.clone(), b.clone()]);
         let c = UploadMarker::for_request("https://x.test", &request(None), 3);
         session.write_upload_marker(&c).unwrap();
@@ -2091,7 +2094,9 @@ mod tests {
         session.clear_upload_marker();
         assert!(session.upload_markers().is_empty());
         // One marker alone leaves no carried file behind.
-        session.write_upload_markers(std::slice::from_ref(&a)).unwrap();
+        session
+            .write_upload_markers(std::slice::from_ref(&a))
+            .unwrap();
         assert!(!session.dir().join(CARRIED_MARKERS_FILE).exists());
         // Torn carried file: still a marker with nothing known.
         std::fs::write(session.dir().join(CARRIED_MARKERS_FILE), b"[ nope").unwrap();

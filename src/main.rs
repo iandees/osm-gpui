@@ -6471,7 +6471,10 @@ impl MapViewer {
             "upload" => {
                 let handle = TransferHandle::new(
                     TransferKind::Upload,
-                    TransferPhase::UploadingChanges { count: 12 },
+                    TransferPhase::UploadingChanges {
+                        count: 12,
+                        changeset_id: 1,
+                    },
                 );
                 let summaries = vec![osm_gpui::ui::upload_dialog::LayerSummary {
                     layer_name: "OSM data".to_string(),
