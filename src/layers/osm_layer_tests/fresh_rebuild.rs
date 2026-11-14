@@ -264,7 +264,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
 }
 
 /// The layer's derived tables equal those of a layer rebuilt from its data.
-fn assert_fresh(l: &OsmLayer, step: &str) {
+pub(super) fn assert_fresh(l: &OsmLayer, step: &str) {
     let data = l.osm_data.clone().expect("data");
     let mut fresh = OsmLayer::new_with_data(LayerId(99), "fresh", data);
     fresh.set_stylesheet(l.stylesheet.clone());

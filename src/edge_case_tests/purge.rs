@@ -259,6 +259,33 @@ fn purge_with_nothing_loaded_to_purge_is_a_no_op(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn purged_relations_keep_their_order_through_undo_and_redo(cx: &mut TestAppContext) {
+    let data = Build::new()
+        .nodes(&[1, 2])
+        .way(10, &[1, 2], &road())
+        .relation(900, &[("type", "route")], &[wm(10, "")])
+        .relation(901, &[("type", "route")], &[wm(10, "")])
+        .relation(902, &[("type", "route")], &[wm(10, "")])
+        .done();
+    with_session(cx, data, |s| {
+        let before = s.snap();
+        let order = vec![900, 901, 902];
+        s.select(&[(R, 902), (R, 900)]);
+        assert!(s.act("purge"), "{}", s.status());
+        assert_eq!(s.editable().relation_ids(), vec![901]);
+        s.undo();
+        assert_eq!(s.editable().relation_ids(), order);
+        assert_eq!(s.snap(), before);
+        s.redo();
+        assert_eq!(s.editable().relation_ids(), vec![901]);
+        s.undo();
+        assert_eq!(s.editable().relation_ids(), order);
+        assert_eq!(s.snap(), before);
+        assert_eq!(s.counts(), (0, 0, 0));
+    });
+}
+
+#[gpui::test]
 fn node_and_relation_member_limits_do_not_apply(cx: &mut TestAppContext) {
     // A way over the 2,000-node limit and a relation over the member limit
     // can be purged: they are not edited, only forgotten.
