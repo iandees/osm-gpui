@@ -31,6 +31,8 @@ mod edit;
 mod fill;
 mod highlight;
 mod hit_test;
+#[cfg(test)]
+mod label_order_tests;
 mod label_pass;
 mod markers;
 mod multipolygon;
