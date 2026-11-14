@@ -210,7 +210,15 @@ fn compute_next_way_id(data: &OsmData) -> i64 {
 }
 
 impl OsmLayer {
+    /// An empty layer using the built-in default stylesheet. For tests,
+    /// examples and benches; the app builds layers with `new_styled` and the
+    /// currently selected style.
     pub fn new(id: LayerId) -> Self {
+        Self::new_styled(id, crate::style::custom::built_in())
+    }
+
+    /// An empty layer that resolves its styles from `stylesheet`.
+    pub fn new_styled(id: LayerId, stylesheet: Arc<Stylesheet>) -> Self {
         Self {
             id,
             name: "OSM Data".to_string(),
@@ -222,7 +230,7 @@ impl OsmLayer {
                 revision: 0,
                 next_new_id: -1,
                 next_placeholder_way_id: -1,
-                stylesheet: crate::style::custom::active_stylesheet(),
+                stylesheet,
             },
             derived: Derived {
                 way_ids: Vec::new(),
@@ -258,9 +266,20 @@ impl OsmLayer {
         }
     }
 
+    /// A layer over `osm_data` using the built-in default stylesheet. For
+    /// tests, examples and benches; the app uses `new_with_data_styled`.
     pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
+        Self::new_with_data_styled(id, name, osm_data, crate::style::custom::built_in())
+    }
+
+    /// A layer over `osm_data` that resolves its styles from `stylesheet`.
+    pub fn new_with_data_styled<N: Into<String>>(
+        id: LayerId,
+        name: N,
+        osm_data: Arc<OsmData>,
+        stylesheet: Arc<Stylesheet>,
+    ) -> Self {
         let fs_load = crate::frame_stats::start();
-        let stylesheet = crate::style::custom::active_stylesheet();
         let fs_phase = crate::frame_stats::start();
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         crate::frame_stats::lap("load.node_cache", fs_phase);
@@ -336,8 +355,19 @@ impl OsmLayer {
         osm_data: Arc<OsmData>,
         edits: &FileEdits,
     ) -> Self {
+        Self::new_with_edits_styled(id, name, osm_data, edits, crate::style::custom::built_in())
+    }
+
+    /// `new_with_edits` that resolves its styles from `stylesheet`.
+    pub fn new_with_edits_styled<N: Into<String>>(
+        id: LayerId,
+        name: N,
+        osm_data: Arc<OsmData>,
+        edits: &FileEdits,
+        stylesheet: Arc<Stylesheet>,
+    ) -> Self {
         let baseline = baseline_for_loaded_file(&osm_data, edits);
-        let mut layer = Self::new_with_data(id, name, osm_data.clone());
+        let mut layer = Self::new_with_data_styled(id, name, osm_data.clone(), stylesheet);
         layer.store.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
         layer.store.revision += 1;
         layer.store.original_data = Some(Arc::new(baseline));

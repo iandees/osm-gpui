@@ -193,6 +193,25 @@ fn layer_styled(css: &str) -> OsmLayer {
 }
 
 #[test]
+fn a_layer_styles_itself_from_the_sheet_it_was_given_not_the_global_one() {
+    const PLAIN: &str = "way { width: 3; }";
+    const CASED: &str = "way { width: 3; casing-width: 2; casing-color: red; }";
+    let sheet = |css: &str| Arc::new(crate::style::Stylesheet::parse(css).unwrap());
+    let data = layer().store.osm_data.clone().unwrap();
+
+    crate::style::custom::set_active(Some(sheet(CASED)));
+    let plain = OsmLayer::new_with_data_styled(LayerId(1), "t", data.clone(), sheet(PLAIN));
+    let empty_plain = OsmLayer::new_styled(LayerId(2), sheet(PLAIN));
+    crate::style::custom::set_active(Some(sheet(PLAIN)));
+    let cased = OsmLayer::new_with_data_styled(LayerId(3), "t", data.clone(), sheet(CASED));
+    crate::style::custom::set_active(None);
+
+    assert_eq!(scene_paths(&plain, 15.0), 1);
+    assert_eq!(scene_paths(&cased, 15.0), 2);
+    assert!(!empty_plain.has_data());
+}
+
+#[test]
 fn a_styled_casing_adds_a_path_below_the_default_casing_zoom() {
     // Zoom 15: no default casing, so one stroke path.
     assert_eq!(scene_paths(&layer_styled("way { width: 3; }"), 15.0), 1);

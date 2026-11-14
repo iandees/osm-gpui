@@ -5070,7 +5070,13 @@ impl MapViewer {
         let candidate = self.layer_manager.unique_name(&file_name);
         let data_arc = Arc::new(data.clone());
         let layer_id = self.layer_manager.alloc_id();
-        let layer = OsmLayer::new_with_edits(layer_id, candidate, data_arc, edits);
+        let layer = OsmLayer::new_with_edits_styled(
+            layer_id,
+            candidate,
+            data_arc,
+            edits,
+            osm_gpui::style::custom::active_stylesheet(),
+        );
         self.layer_manager.add_layer(Box::new(layer));
         if self.active_layer.is_none() {
             self.active_layer = Some(layer_id);
@@ -6706,7 +6712,12 @@ impl MapViewer {
             None => {
                 let name = self.layer_manager.unique_name(DOWNLOAD_LAYER_NAME);
                 let layer_id = self.layer_manager.alloc_id();
-                let layer = OsmLayer::new_with_data(layer_id, name, Arc::new(data));
+                let layer = OsmLayer::new_with_data_styled(
+                    layer_id,
+                    name,
+                    Arc::new(data),
+                    osm_gpui::style::custom::active_stylesheet(),
+                );
                 self.layer_manager.add_layer(Box::new(layer));
                 self.note_download_origin(layer_id);
                 self.active_layer = Some(layer_id);
