@@ -550,6 +550,20 @@ pub(crate) struct TokenSecret {
     refresh_token: Option<String>,
 }
 
+impl TokenSecret {
+    /// A single named secret (see `secrets`) carried in the access-token slot.
+    pub(crate) fn from_value(value: &str) -> Self {
+        TokenSecret {
+            access_token: value.to_string(),
+            refresh_token: None,
+        }
+    }
+
+    pub(crate) fn into_value(self) -> String {
+        self.access_token
+    }
+}
+
 fn keyring_entry(oauth_base_url: &str) -> Option<keyring::Entry> {
     // Never touch the real platform keyring from unit tests: on macOS,
     // accessing it from a freshly-built (unsigned) test binary can trigger a
@@ -615,7 +629,7 @@ pub(crate) trait SecretBackend {
 }
 
 /// The platform keyring (inert under `cfg(test)`: see `keyring_entry`).
-struct SystemKeyring;
+pub(crate) struct SystemKeyring;
 
 impl SecretBackend for SystemKeyring {
     fn read(&self, oauth_base_url: &str) -> Result<TokenSecret, SecretReadError> {

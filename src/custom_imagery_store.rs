@@ -81,11 +81,9 @@ pub fn load() -> Vec<CustomImageryEntry> {
 /// Save to the default path. A failure is logged and reported through
 /// `persist::report_save_failure`; a write the persistence policy skips is not one.
 pub fn save(entries: &[CustomImageryEntry]) {
-    persist::save_reporting(
-        "custom_imagery_store",
-        default_path().as_deref(),
-        |p| save_to(p, entries),
-    );
+    persist::save_reporting("custom_imagery_store", default_path().as_deref(), |p| {
+        save_to(p, entries)
+    });
 }
 
 #[cfg(test)]

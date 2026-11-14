@@ -7510,6 +7510,9 @@ fn main() {
         // Light, dark or the OS appearance, now that the saved choice is known.
         osm_gpui::appearance::apply(cx);
         auth::init_store(auth::load());
+        // Move provider secrets that older builds kept in settings.json into
+        // secret storage. Writes only; no keychain read at launch.
+        osm_gpui::secrets::migrate_from_settings();
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
         osm_gpui::capabilities::ensure_fetched(

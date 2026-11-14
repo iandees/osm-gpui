@@ -57,6 +57,7 @@ pub mod relations;
 pub mod rotate;
 pub mod script;
 pub mod search;
+pub mod secrets;
 pub mod selection;
 pub mod settings_store;
 pub mod snap;

@@ -482,6 +482,54 @@ mod tests {
     }
 
     #[test]
+    fn a_transport_error_quoting_the_tokenised_url_does_not_leak_the_token() {
+        let t = TileCoord { z: 14, x: 3, y: 5 };
+        let token = "MLY|1234567|secretvalue";
+        let url = mapillary_tile_url(t, token);
+        let c = FakeClient::new(vec![transport_err(&format!(
+            "{url}: Connection Failed: connect error"
+        ))]);
+        let err = fetch_tile_with(&c, Provider::Mapillary, t, Some(token)).unwrap_err();
+        let shown = format!("{err} / {err:?}");
+        assert!(matches!(err, ImageryError::Network(_)));
+        assert!(!shown.contains("secretvalue"), "{shown}");
+        assert!(!shown.contains("1234567"), "{shown}");
+        assert!(shown.contains("Connection Failed"), "{shown}");
+    }
+
+    #[test]
+    fn a_detail_lookup_error_does_not_leak_the_token() {
+        let photo = StreetPhoto {
+            provider: Provider::Mapillary,
+            id: "99".into(),
+            lat: 0.0,
+            lon: 0.0,
+            heading: None,
+            captured: None,
+            creator: None,
+            license: None,
+            thumb_url: None,
+            large_url: None,
+        };
+        let c = FakeClient::new(vec![transport_err(
+            "GET https://graph.mapillary.com/99?fields=id&access_token=MLY%7C1%7Cs3cret (timeout)",
+        )]);
+        let err = fetch_detail_with(&c, &photo, Some("MLY|1|s3cret")).unwrap_err();
+        assert!(!err.to_string().contains("s3cret"), "{err}");
+        assert!(err.to_string().contains("(timeout)"), "{err}");
+    }
+
+    #[test]
+    fn redaction_handles_several_parameters_and_the_end_of_the_text() {
+        use crate::street_imagery::redact_access_tokens;
+        assert_eq!(
+            redact_access_tokens("a?access_token=X&b=1 and ?access_token=Y"),
+            "a?access_token=[redacted]&b=1 and ?access_token=[redacted]"
+        );
+        assert_eq!(redact_access_tokens("nothing here"), "nothing here");
+    }
+
+    #[test]
     fn statuses_map_to_errors() {
         let t = TileCoord { z: 14, x: 3, y: 5 };
         let c = FakeClient::new(vec![status_err(401, "")]);

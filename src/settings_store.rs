@@ -160,12 +160,14 @@ pub struct AppSettings {
     pub window_bounds: Option<WindowRect>,
     /// How downloaded GPS traces draw (colours, width, age filter).
     pub gps_trace_style: crate::trace_style::TraceStyle,
-    /// Mapillary access token (a client token from the Mapillary developer
-    /// dashboard), needed to show Mapillary street imagery. Empty when unset.
+    /// Legacy: older builds kept the Mapillary access token here. It is read
+    /// only so `crate::secrets::migrate_from_settings` can move it into secret
+    /// storage; it is blank afterwards and never written while empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub mapillary_token: String,
-    /// Fotoshi API key. Optional: it raises the size of the photo searches
-    /// that draw the Fotoshi layer, and is required to look up the photos of
-    /// a selected OSM feature. Empty when unset.
+    /// Legacy: older builds kept the Fotoshi API key here (see
+    /// `mapillary_token`).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub fotoshi_api_key: String,
     /// Whether selecting a feature asks Fotoshi for photos of it. Off by
     /// default: the lookup sends the feature's OSM id to Fotoshi, which tells
@@ -371,18 +373,8 @@ pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     update(persist, |s| s.suggest_from_taginfo = on);
 }
 
-/// Surrounding whitespace is dropped.
-pub fn set_fotoshi_api_key(key: &str, persist: bool) {
-    update(persist, |s| s.fotoshi_api_key = key.trim().to_string());
-}
-
 pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
     update(persist, |s| s.fotoshi_lookup_selected = on);
-}
-
-/// Surrounding whitespace is dropped.
-pub fn set_mapillary_token(token: &str, persist: bool) {
-    update(persist, |s| s.mapillary_token = token.trim().to_string());
 }
 
 /// Values outside the allowed range are ignored (`false`).

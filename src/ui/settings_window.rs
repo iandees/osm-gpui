@@ -309,10 +309,14 @@ impl SettingsWindow {
         let edit_mapillary_token = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("MLY|…")
-                .default_value(app_settings.mapillary_token.clone())
+                .default_value(
+                    crate::secrets::get(crate::secrets::MAPILLARY_TOKEN).unwrap_or_default(),
+                )
         });
         let edit_fotoshi_key = cx.new(|cx| {
-            InputState::new(window, cx).default_value(app_settings.fotoshi_api_key.clone())
+            InputState::new(window, cx).default_value(
+                crate::secrets::get(crate::secrets::FOTOSHI_API_KEY).unwrap_or_default(),
+            )
         });
         let map_style_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
@@ -559,8 +563,7 @@ impl SettingsWindow {
     /// Store the Fotoshi API key typed into its field.
     fn save_fotoshi_key(&mut self, cx: &mut Context<Self>) {
         let raw = self.edit_fotoshi_key.read(cx).value().to_string();
-        settings_store::set_fotoshi_api_key(&raw, true);
-        self.app_settings = settings_store::snapshot();
+        crate::secrets::set(crate::secrets::FOTOSHI_API_KEY, &raw);
         cx.notify();
     }
 
@@ -573,8 +576,7 @@ impl SettingsWindow {
     /// Store the Mapillary access token typed into its field.
     fn save_mapillary_token(&mut self, cx: &mut Context<Self>) {
         let raw = self.edit_mapillary_token.read(cx).value().to_string();
-        settings_store::set_mapillary_token(&raw, true);
-        self.app_settings = settings_store::snapshot();
+        crate::secrets::set(crate::secrets::MAPILLARY_TOKEN, &raw);
         cx.notify();
     }
 

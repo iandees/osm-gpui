@@ -499,7 +499,10 @@ mod tests {
         let mut failures = SaveFailures::default();
         assert!(failures.is_new("a", "disk full"));
         assert!(!failures.is_new("a", "disk full"));
-        assert!(failures.is_new("b", "disk full"), "another store is separate");
+        assert!(
+            failures.is_new("b", "disk full"),
+            "another store is separate"
+        );
         assert!(failures.is_new("a", "read-only file system"));
         failures.last_reported.remove("a");
         assert!(failures.is_new("a", "read-only file system"));
