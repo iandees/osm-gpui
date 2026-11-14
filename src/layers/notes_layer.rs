@@ -6,11 +6,9 @@
 //! `as_editable`/`is_modified`/`autosave_snapshot`); its pins are found by
 //! `MapLayer::hit_test_point` here and by nothing else.
 
-#[cfg(test)]
-use gpui::size;
-use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
+use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
-use crate::layers::paint::PaintFrame;
+use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::notes::{Note, NoteStore};
 use crate::viewport::Viewport;
@@ -66,33 +64,6 @@ fn pin_outline(x: f32, y: f32, scale: f32) -> Vec<(f32, f32)> {
         deg += 15.0;
     }
     pts
-}
-
-fn circle_outline(x: f32, y: f32, r: f32) -> Vec<(f32, f32)> {
-    (0..16)
-        .map(|i| {
-            let a = (i as f32) * std::f32::consts::TAU / 16.0;
-            (x + r * a.cos(), y + r * a.sin())
-        })
-        .collect()
-}
-
-fn paint_polygon(window: &mut Window, pts: &[(f32, f32)], color: u32, stroke: Option<f32>) {
-    let mut builder = match stroke {
-        Some(w) => PathBuilder::stroke(px(w)),
-        None => PathBuilder::fill(),
-    };
-    for (i, (px_, py_)) in pts.iter().enumerate() {
-        if i == 0 {
-            builder.move_to(point(px(*px_), px(*py_)));
-        } else {
-            builder.line_to(point(px(*px_), px(*py_)));
-        }
-    }
-    builder.close();
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, rgba(color));
-    }
 }
 
 /// The id of the note whose pin is under `pos` (map-local pixels), the
@@ -201,6 +172,7 @@ impl MapLayer for NotesLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{point, px, size};
     use crate::notes::{CommentAction, NoteComment, NoteStatus};
 
     fn note(id: i64, lat: f64, lon: f64, status: NoteStatus) -> Note {

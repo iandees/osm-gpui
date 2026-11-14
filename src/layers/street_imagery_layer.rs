@@ -5,9 +5,9 @@
 //! upload diff, export or autosave snapshot. Its dots are found by
 //! `MapLayer::hit_test_point` here and by nothing else.
 
-use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
+use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
-use crate::layers::paint::PaintFrame;
+use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 use crate::viewport::Viewport;
@@ -60,15 +60,6 @@ impl StreetImageryLayer {
     }
 }
 
-fn circle_outline(x: f32, y: f32, r: f32) -> Vec<(f32, f32)> {
-    (0..16)
-        .map(|i| {
-            let a = (i as f32) * std::f32::consts::TAU / 16.0;
-            (x + r * a.cos(), y + r * a.sin())
-        })
-        .collect()
-}
-
 /// The wedge from the dot out towards `heading` (degrees clockwise from
 /// north; screen y grows downwards).
 fn wedge_outline(x: f32, y: f32, heading: f32, scale: f32) -> Vec<(f32, f32)> {
@@ -80,24 +71,6 @@ fn wedge_outline(x: f32, y: f32, heading: f32, scale: f32) -> Vec<(f32, f32)> {
         pts.push((x + len * a.sin(), y - len * a.cos()));
     }
     pts
-}
-
-fn paint_polygon(window: &mut Window, pts: &[(f32, f32)], color: u32, stroke: Option<f32>) {
-    let mut builder = match stroke {
-        Some(w) => PathBuilder::stroke(px(w)),
-        None => PathBuilder::fill(),
-    };
-    for (i, (x, y)) in pts.iter().enumerate() {
-        if i == 0 {
-            builder.move_to(point(px(*x), px(*y)));
-        } else {
-            builder.line_to(point(px(*x), px(*y)));
-        }
-    }
-    builder.close();
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, rgba(color));
-    }
 }
 
 /// The photo whose dot is under `pos` (map-local pixels), nearest first, with
@@ -202,7 +175,7 @@ impl MapLayer for StreetImageryLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::size;
+    use gpui::{point, px, size};
 
     fn photo(id: &str, lat: f64, lon: f64) -> StreetPhoto {
         StreetPhoto {

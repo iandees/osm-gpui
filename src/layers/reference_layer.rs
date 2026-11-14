@@ -12,7 +12,7 @@
 
 use gpui::*;
 
-use crate::layers::paint::PaintFrame;
+use crate::layers::paint::{PaintFrame, PathBatch};
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
@@ -191,10 +191,10 @@ impl ReferenceLayer {
         // Only GPS traces have more than one class.
         let classed = style.line.len() > 1;
 
-        let mut casing = Batch::new();
-        let mut lines: Vec<Batch> = style.line.iter().map(|_| Batch::new()).collect();
-        let mut halo = Batch::new();
-        let mut fill = Batch::new();
+        let mut casing = PathBatch::new();
+        let mut lines: Vec<PathBatch> = style.line.iter().map(|_| PathBatch::new()).collect();
+        let mut halo = PathBatch::new();
+        let mut fill = PathBatch::new();
 
         let mut polyline = Polyline::default();
         let mut pts: Vec<way_stroke::Pt> = Vec::new();
@@ -255,18 +255,12 @@ impl ReferenceLayer {
                 polyline.set(pts[from..=to].iter().copied());
                 polyline.emit_layers(&mut [
                     style.casing_hw.map(|hw| Layer {
-                        sink: PathSink {
-                            path: &mut casing.path,
-                            bounds: &mut casing.bounds,
-                        },
+                        sink: casing.sink(),
                         hw,
                         shape,
                     }),
                     Some(Layer {
-                        sink: PathSink {
-                            path: &mut line.path,
-                            bounds: &mut line.bounds,
-                        },
+                        sink: line.sink(),
                         hw: style.line_hw,
                         shape,
                     }),
@@ -294,25 +288,9 @@ impl ReferenceLayer {
             }
             let c = frame.to_window((x, y));
             if let Some(radius) = style.halo_radius {
-                polygon(
-                    &mut PathSink {
-                        path: &mut halo.path,
-                        bounds: &mut halo.bounds,
-                    },
-                    c,
-                    radius,
-                    style.marker_sides,
-                );
+                polygon(&mut halo.sink(), c, radius, style.marker_sides);
             }
-            polygon(
-                &mut PathSink {
-                    path: &mut fill.path,
-                    bounds: &mut fill.bounds,
-                },
-                c,
-                style.marker_radius,
-                style.marker_sides,
-            );
+            polygon(&mut fill.sink(), c, style.marker_radius, style.marker_sides);
         }
 
         let mut paths = Vec::new();
@@ -338,40 +316,6 @@ fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32, sides: usize
     };
     for i in 0..sides {
         sink.tri(c, at(i), at(i + 1));
-    }
-}
-
-/// Raw triangles painted in one colour, with the bounds accumulated as they
-/// are pushed.
-struct Batch {
-    path: Option<Path<Pixels>>,
-    bounds: (f32, f32, f32, f32),
-}
-
-impl Batch {
-    fn new() -> Self {
-        Batch {
-            path: None,
-            bounds: (
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-            ),
-        }
-    }
-
-    fn finish(self) -> Option<Path<Pixels>> {
-        let mut path = self.path?;
-        if path.vertices.is_empty() {
-            return None;
-        }
-        let (min_x, max_x, min_y, max_y) = self.bounds;
-        path.bounds = Bounds {
-            origin: point(px(min_x), px(min_y)),
-            size: size(px(max_x - min_x), px(max_y - min_y)),
-        };
-        Some(path)
     }
 }
 
