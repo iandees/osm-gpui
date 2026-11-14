@@ -428,7 +428,37 @@ fn ensure_fresh_token_using(
     if !token.is_expired() {
         return Ok(token);
     }
+    // Lock order: this per-server refresh lock, then `KEYRING_READ_LOCK`, then the
+    // token store's save lock and mutex. The later locks are only ever held for work
+    // that never waits for a refresh lock, so no cycle is possible. The keychain
+    // read in the re-check below is therefore safe under the refresh lock, and has
+    // already happened (and raised its prompt) in the lookup above.
+    let refresh_lock = refresh_lock_for(oauth_base_url);
+    let _refreshing = refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
+    // A caller ahead of us may have refreshed while we waited, consuming the refresh
+    // token we saw (servers that rotate them reject a reuse): look again.
+    let token = try_current_token_using(backend, oauth_base_url, &mut || {})?
+        .ok_or(AuthError::NotLoggedIn)?;
+    if !token.is_expired() {
+        return Ok(token);
+    }
     refresh_from(client, oauth_base_url, token)
+}
+
+/// One lock per OAuth server so refreshes of the same login are single-flight while
+/// different servers never wait on each other.
+static REFRESH_LOCKS: std::sync::Mutex<
+    Option<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+> = std::sync::Mutex::new(None);
+
+fn refresh_lock_for(oauth_base_url: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    REFRESH_LOCKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .entry(oauth_base_url.to_string())
+        .or_default()
+        .clone()
 }
 
 /// POST a token-endpoint request (authorization_code or refresh_token grant) and parse
@@ -1673,6 +1703,129 @@ mod tests {
             },
         );
         assert!(!keyring_read_pending(url));
+    }
+
+    /// A token endpoint with rotating refresh tokens: each refresh token works once.
+    struct RotatingEndpoint {
+        current_refresh: Mutex<String>,
+        issued: AtomicUsize,
+        fail_next: std::sync::atomic::AtomicBool,
+        requests: AtomicUsize,
+    }
+
+    impl RotatingEndpoint {
+        fn new(initial_refresh: &str) -> Self {
+            RotatingEndpoint {
+                current_refresh: Mutex::new(initial_refresh.to_string()),
+                issued: AtomicUsize::new(0),
+                fail_next: std::sync::atomic::AtomicBool::new(false),
+                requests: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl HttpClient for RotatingEndpoint {
+        fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            // Long enough that a second, unserialised caller reaches the endpoint too.
+            std::thread::sleep(Duration::from_millis(100));
+            if self.fail_next.swap(false, Ordering::SeqCst) {
+                return crate::http::fake::transport_err("connection reset");
+            }
+            let Some(crate::http::Body::Form(form)) = req.body else {
+                return crate::http::fake::status_err(400, "no form");
+            };
+            let presented = form
+                .iter()
+                .find(|(k, _)| k == "refresh_token")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            let mut current = self.current_refresh.lock().unwrap();
+            if presented != *current {
+                return crate::http::fake::status_err(400, "invalid_grant");
+            }
+            let n = self.issued.fetch_add(1, Ordering::SeqCst) + 1;
+            *current = format!("refresh-{n}");
+            crate::http::fake::ok(
+                200,
+                format!(
+                    r#"{{"access_token":"access-{n}","refresh_token":"refresh-{n}","expires_in":3600}}"#
+                ),
+            )
+        }
+    }
+
+    fn expiring_login(url: &str, refresh: &str) {
+        init_store(TokenStore::default());
+        set_token(
+            url,
+            StoredToken {
+                access_token: "stale".into(),
+                display_name: "alice".into(),
+                user_id: 1,
+                refresh_token: Some(refresh.into()),
+                expires_at: Some(now_unix() - 10),
+            },
+        );
+    }
+
+    #[test]
+    fn concurrent_callers_share_one_refresh() {
+        let url = "https://refresh-single-flight.example";
+        expiring_login(url, "refresh-0");
+        let endpoint = RotatingEndpoint::new("refresh-0");
+        let backend = FakeBackend::with_secret();
+        let barrier = std::sync::Barrier::new(2);
+        let results: Vec<Result<StoredToken, AuthError>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        ensure_fresh_token_using(&endpoint, &backend, url, &mut || {})
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        for r in &results {
+            assert_eq!(r.as_ref().unwrap().access_token, "access-1");
+        }
+        assert_eq!(endpoint.requests.load(Ordering::SeqCst), 1);
+        let stored = stored_login(url).unwrap();
+        assert_eq!(stored.access_token, "access-1");
+        assert_eq!(stored.refresh_token.as_deref(), Some("refresh-1"));
+    }
+
+    #[test]
+    fn a_failed_refresh_does_not_poison_later_attempts() {
+        let url = "https://refresh-recovers.example";
+        expiring_login(url, "refresh-0");
+        let endpoint = RotatingEndpoint::new("refresh-0");
+        endpoint.fail_next.store(true, Ordering::SeqCst);
+        let backend = FakeBackend::with_secret();
+
+        let err = ensure_fresh_token_using(&endpoint, &backend, url, &mut || {}).unwrap_err();
+        assert!(matches!(err, AuthError::Network(_)));
+        assert_eq!(
+            stored_login(url).unwrap().refresh_token.as_deref(),
+            Some("refresh-0"),
+            "the old login is untouched by a failed refresh"
+        );
+
+        let token = ensure_fresh_token_using(&endpoint, &backend, url, &mut || {}).unwrap();
+        assert_eq!(token.access_token, "access-1");
+    }
+
+    #[test]
+    fn refresh_locks_are_per_server() {
+        let a = refresh_lock_for("https://lock-a.example");
+        let b = refresh_lock_for("https://lock-b.example");
+        let _held = a.lock().unwrap();
+        assert!(b.try_lock().is_ok());
+        assert!(std::sync::Arc::ptr_eq(
+            &a,
+            &refresh_lock_for("https://lock-a.example")
+        ));
     }
 
     #[test]
