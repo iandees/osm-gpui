@@ -3,6 +3,7 @@
 use super::{empty_tags, setup, setup_network, way_fixture, CENTER_LAT, CENTER_LON};
 use crate::{MapViewer, ToggleDownloadedArea, DOWNLOAD_LAYER_NAME};
 use gpui::{point, px, TestAppContext};
+use osm_gpui::ids::NodeId;
 use osm_gpui::osm::{OsmData, OsmNode};
 
 /// The way fixture's data plus one extra node (id 50), as a second
@@ -10,9 +11,9 @@ use osm_gpui::osm::{OsmData, OsmNode};
 fn overlapping_download() -> OsmData {
     let mut data = way_fixture(CENTER_LAT, CENTER_LON);
     data.nodes.insert(
-        50,
+        NodeId(50),
         OsmNode {
-            id: 50,
+            id: NodeId(50),
             lat: CENTER_LAT + 0.001,
             lon: CENTER_LON,
             version: 1,
@@ -33,7 +34,7 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .commit_node_moves(&[(NodeId(1), CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
                 .unwrap();
 
             view.apply_download(overlapping_download());
@@ -41,9 +42,12 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
             assert_eq!(view.layer_manager.layers().len(), 1, "no second layer");
             let layer = view.layer_manager.find_layer(layer_id).unwrap();
             let editable = layer.as_editable().unwrap();
-            assert!(editable.node_lat_lon(50).is_some(), "new node merged in");
+            assert!(
+                editable.node_lat_lon(NodeId(50)).is_some(),
+                "new node merged in"
+            );
             assert_eq!(
-                editable.node_lat_lon(1),
+                editable.node_lat_lon(NodeId(1)),
                 Some((CENTER_LAT + 0.0005, CENTER_LON - 0.001)),
                 "local move kept"
             );
@@ -87,7 +91,7 @@ fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .commit_node_moves(&[(NodeId(1), CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
                 .unwrap();
             view.handle_add_click(point(px(50.0), px(50.0)), false);
             let pending = view

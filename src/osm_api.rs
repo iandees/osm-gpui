@@ -1,5 +1,6 @@
 use crate::capabilities;
 use crate::coordinates::GeoBounds;
+use crate::ids::{NodeId, RelationId, WayId};
 use std::time::Instant;
 
 use crate::http::{
@@ -202,12 +203,12 @@ impl ServerElement {
             return None;
         };
         match kind {
-            FeatureKind::Node => data.nodes.get(&id).map(|n| n.version),
-            FeatureKind::Way => data.ways.get(&id).map(|w| w.version),
+            FeatureKind::Node => data.nodes.get(&NodeId(id)).map(|n| n.version),
+            FeatureKind::Way => data.ways.get(&WayId(id)).map(|w| w.version),
             FeatureKind::Relation => data
                 .relations
                 .iter()
-                .find(|r| r.id == id)
+                .find(|r| r.id == RelationId(id))
                 .map(|r| r.version),
         }
     }
@@ -439,7 +440,7 @@ mod tests {
         let client = FakeClient::new(vec![ok(200, MINIMAL_OSM_XML)]);
         let bounds = GeoBounds::new(40.70, 40.75, -74.02, -73.98);
         let data = fetch_bbox_with(&client, bounds, "https://api.openstreetmap.org", None).unwrap();
-        assert!(data.nodes.contains_key(&1));
+        assert!(data.nodes.contains_key(&NodeId(1)));
     }
 
     #[test]
@@ -524,7 +525,7 @@ mod tests {
             &handle,
         )
         .unwrap();
-        assert!(data.nodes.contains_key(&1));
+        assert!(data.nodes.contains_key(&NodeId(1)));
         let snap = handle.snapshot();
         assert_eq!(snap.phase, TransferPhase::Reading);
         assert_eq!(snap.bytes, MINIMAL_OSM_XML.len() as u64);

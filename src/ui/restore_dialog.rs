@@ -368,6 +368,7 @@ impl Render for RestoreDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeId, RelationId, WayId};
 
     #[test]
     fn ages_read_naturally() {
@@ -411,9 +412,9 @@ mod tests {
             objects: 1,
             changeset_id: Some(4242),
             in_flight: InFlight {
-                created_nodes: vec![-1, -2, -3],
-                modified_ways: vec![7],
-                deleted_relations: vec![9],
+                created_nodes: vec![NodeId(-1), NodeId(-2), NodeId(-3)],
+                modified_ways: vec![WayId(7)],
+                deleted_relations: vec![RelationId(9)],
                 ..Default::default()
             },
         };
@@ -444,8 +445,8 @@ mod tests {
     fn the_summary_names_what_was_in_flight_and_what_was_not_listed() {
         assert_eq!(in_flight_summary(&InFlight::default()), None);
         let flight = InFlight {
-            created_nodes: vec![-1],
-            deleted_nodes: vec![4, 5],
+            created_nodes: vec![NodeId(-1)],
+            deleted_nodes: vec![NodeId(4), NodeId(5)],
             omitted: 30,
             ..Default::default()
         };

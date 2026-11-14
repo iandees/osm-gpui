@@ -5,6 +5,7 @@
 //! point so the tolerance is easy to reason about.
 
 use super::*;
+use osm_gpui::ids::NodeId;
 use osm_gpui::osm::OsmNode;
 
 const M_LAT: f64 = 1.0 / 111_195.0;
@@ -26,9 +27,9 @@ fn nd(b: Build, id: i64, x: f64, y: f64, tags: &[(&str, &str)]) -> Build {
 
 fn at_lat_lon(mut b: Build, id: i64, lat: f64, lon: f64, tags: &[(&str, &str)]) -> Build {
     b.d().nodes.insert(
-        id,
+        NodeId(id),
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version: 3,

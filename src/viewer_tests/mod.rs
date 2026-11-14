@@ -34,6 +34,7 @@ use crate::undo::UndoableAction;
 use crate::{selection_actions, EditMode, MapViewer};
 use gpui::prelude::*;
 use gpui::TestAppContext;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::LayerId;
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
 use std::collections::HashMap;
@@ -49,30 +50,30 @@ fn empty_tags() -> HashMap<String, String> {
 /// version 1, unlike `test_support::Build`'s version 3.
 fn way_fixture(center_lat: f64, center_lon: f64) -> OsmData {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon - 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
     let mut nodes = HashMap::new();
-    nodes.insert(1, n1);
-    nodes.insert(2, n2);
+    nodes.insert(NodeId(1), n1);
+    nodes.insert(NodeId(2), n2);
     let mut ways = HashMap::new();
-    ways.insert(10, way);
+    ways.insert(WayId(10), way);
     OsmData {
         nodes,
         ways,
@@ -148,7 +149,7 @@ fn setup_network_with(
 fn route_over(ways: &'static [(i64, &'static str)]) -> impl FnOnce(&mut osm_gpui::osm::OsmData) {
     move |data| {
         data.relations = vec![osm_gpui::osm::OsmRelation {
-            id: 900,
+            id: RelationId(900),
             version: 4,
             tags: [("type", "route"), ("name", "Test Route")]
                 .iter()

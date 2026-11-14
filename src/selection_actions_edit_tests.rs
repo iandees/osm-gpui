@@ -69,7 +69,8 @@ fn a_refused_step_undoes_what_was_applied_and_reports_it() {
         .unwrap();
     let result = record_edit(id, editable, |rec| {
         // Two steps of an action are applied...
-        rec.set_way_nodes(10, vec![1, 3]).map_err(refused)?;
+        rec.set_way_nodes(WayId(10), vec![NodeId(1), NodeId(3)])
+            .map_err(refused)?;
         rec.delete_feature(FeatureKind::Node, 2).map_err(refused)?;
         // ...and the third is refused: node 3 is still in way 10.
         rec.delete_feature(FeatureKind::Node, 3).map_err(refused)
@@ -89,11 +90,12 @@ fn a_successful_edit_hands_back_what_it_recorded() {
         .as_editable_mut()
         .unwrap();
     let (new_id, ops) = record_edit(id, editable, |rec| {
-        rec.commit_node_moves(&[(1, 5.0, 6.0)]).map_err(refused)?;
+        rec.commit_node_moves(&[(NodeId(1), 5.0, 6.0)])
+            .map_err(refused)?;
         Ok(rec.add_node(1.0, 2.0))
     })
     .unwrap();
-    assert!(new_id < 0);
+    assert!(new_id < NodeId(0));
     assert!(matches!(
         ops[..],
         [EditOp::MoveNodes { .. }, EditOp::PutFeature { .. }]
@@ -112,11 +114,12 @@ fn a_failed_edit_leaves_tags_and_positions_as_they_were() {
     let result = record_edit(id, editable, |rec| {
         rec.set_tag(FeatureKind::Way, 10, "highway", "path")
             .map_err(refused)?;
-        rec.commit_node_moves(&[(1, 5.0, 6.0), (2, 7.0, 8.0)])
+        rec.commit_node_moves(&[(NodeId(1), 5.0, 6.0), (NodeId(2), 7.0, 8.0)])
             .map_err(refused)?;
-        rec.reverse_way(10).map_err(refused)?;
+        rec.reverse_way(WayId(10)).map_err(refused)?;
         // No such way.
-        rec.set_way_nodes(99, vec![1, 2]).map_err(refused)
+        rec.set_way_nodes(WayId(99), vec![NodeId(1), NodeId(2)])
+            .map_err(refused)
     });
     assert!(result.is_err());
     assert_eq!(snapshot(&layers, id).0, before.0);

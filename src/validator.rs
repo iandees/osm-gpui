@@ -51,6 +51,7 @@ use std::collections::{HashMap, HashSet};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::LayerDiff;
 use crate::layers::LayerId;
 use crate::multipolygon;
@@ -182,9 +183,9 @@ pub struct Finding {
 /// The objects a pending upload would create or modify.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
-    pub nodes: HashSet<i64>,
-    pub ways: HashSet<i64>,
-    pub relations: HashSet<i64>,
+    pub nodes: HashSet<NodeId>,
+    pub ways: HashSet<WayId>,
+    pub relations: HashSet<RelationId>,
 }
 
 impl Changes {
@@ -241,24 +242,24 @@ pub fn validate(data: &OsmData, changes: &Changes) -> Vec<Finding> {
                 out.push(finding(
                     Check::UntaggedNode,
                     tr!("validator.msg.untagged_node").to_string(),
-                    vec![(FeatureKind::Node, id)],
+                    vec![(FeatureKind::Node, id.get())],
                 ));
             }
-            check_tags(FeatureKind::Node, id, &node.tags, &mut out);
+            check_tags(FeatureKind::Node, id.get(), &node.tags, &mut out);
         }
     }
     for &id in &ways {
         if let Some(way) = data.ways.get(&id) {
             check_way(way, &cx, &mut out);
-            check_tags(FeatureKind::Way, id, &way.tags, &mut out);
+            check_tags(FeatureKind::Way, id.get(), &way.tags, &mut out);
         }
     }
-    let relation_by_id: HashMap<i64, &OsmRelation> =
+    let relation_by_id: HashMap<RelationId, &OsmRelation> =
         data.relations.iter().map(|r| (r.id, r)).collect();
     for &id in &relations {
         if let Some(relation) = relation_by_id.get(&id) {
             check_relation(relation, &mut out);
-            check_tags(FeatureKind::Relation, id, &relation.tags, &mut out);
+            check_tags(FeatureKind::Relation, id.get(), &relation.tags, &mut out);
         }
     }
     for relation in &data.relations {
@@ -274,8 +275,8 @@ pub fn validate(data: &OsmData, changes: &Changes) -> Vec<Finding> {
     out
 }
 
-fn sorted(ids: &HashSet<i64>) -> Vec<i64> {
-    let mut v: Vec<i64> = ids.iter().copied().collect();
+fn sorted<T: Ord + Copy + std::hash::Hash>(ids: &HashSet<T>) -> Vec<T> {
+    let mut v: Vec<T> = ids.iter().copied().collect();
     v.sort_unstable();
     v
 }
@@ -311,22 +312,22 @@ fn compare_findings(a: &Finding, b: &Finding) -> Ordering {
 struct Context<'a> {
     changes: &'a Changes,
     /// Changed nodes that are part of some way.
-    node_in_way: HashSet<i64>,
+    node_in_way: HashSet<NodeId>,
     /// Changed nodes that are a relation member.
-    node_member: HashSet<i64>,
+    node_member: HashSet<NodeId>,
     /// Changed ways that are a relation member.
-    way_member: HashSet<i64>,
+    way_member: HashSet<WayId>,
     /// Changed ways that are a member of a multipolygon or boundary.
-    way_in_area_relation: HashSet<i64>,
+    way_in_area_relation: HashSet<WayId>,
     /// Ways to check for crossings and rings: changed ways plus ways that
     /// contain a changed node.
-    affected_ways: HashSet<i64>,
+    affected_ways: HashSet<WayId>,
 }
 
 impl<'a> Context<'a> {
     fn new(data: &'a OsmData, changes: &'a Changes) -> Self {
         let mut node_in_way = HashSet::new();
-        let mut affected_ways: HashSet<i64> = changes
+        let mut affected_ways: HashSet<WayId> = changes
             .ways
             .iter()
             .copied()
@@ -353,13 +354,13 @@ impl<'a> Context<'a> {
             let area = multipolygon::is_area_relation(&relation.tags);
             for m in &relation.members {
                 match m.member_type {
-                    MemberType::Node if changes.nodes.contains(&m.reference) => {
-                        node_member.insert(m.reference);
+                    MemberType::Node if changes.nodes.contains(&NodeId(m.reference)) => {
+                        node_member.insert(NodeId(m.reference));
                     }
-                    MemberType::Way if changes.ways.contains(&m.reference) => {
-                        way_member.insert(m.reference);
+                    MemberType::Way if changes.ways.contains(&WayId(m.reference)) => {
+                        way_member.insert(WayId(m.reference));
                         if area {
-                            way_in_area_relation.insert(m.reference);
+                            way_in_area_relation.insert(WayId(m.reference));
                         }
                     }
                     _ => {}
@@ -376,7 +377,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn node_in_relation(&self, id: i64) -> bool {
+    fn node_in_relation(&self, id: NodeId) -> bool {
         self.node_member.contains(&id)
     }
 
@@ -386,13 +387,14 @@ impl<'a> Context<'a> {
         relation.tags.get("type").map(String::as_str) == Some("multipolygon")
             && (self.changes.relations.contains(&relation.id)
                 || relation.members.iter().any(|m| {
-                    m.member_type == MemberType::Way && self.affected_ways.contains(&m.reference)
+                    m.member_type == MemberType::Way
+                        && self.affected_ways.contains(&WayId(m.reference))
                 }))
     }
 }
 
 fn check_way(way: &OsmWay, cx: &Context, out: &mut Vec<Finding>) {
-    let feature = vec![(FeatureKind::Way, way.id)];
+    let feature = vec![(FeatureKind::Way, way.id.get())];
     if way.tags.is_empty() && !cx.way_member.contains(&way.id) {
         out.push(finding(
             Check::UntaggedWay,
@@ -502,7 +504,7 @@ fn area_tag(tags: &HashMap<String, String>) -> Option<String> {
 }
 
 fn check_relation(relation: &OsmRelation, out: &mut Vec<Finding>) {
-    let feature = vec![(FeatureKind::Relation, relation.id)];
+    let feature = vec![(FeatureKind::Relation, relation.id.get())];
     if relation.members.is_empty() {
         out.push(finding(
             Check::RelationEmpty,
@@ -528,7 +530,7 @@ fn check_multipolygon(data: &OsmData, relation: &OsmRelation, out: &mut Vec<Find
     if ways.is_empty() {
         return; // an empty relation is reported on its own
     }
-    let feature = vec![(FeatureKind::Relation, relation.id)];
+    let feature = vec![(FeatureKind::Relation, relation.id.get())];
     if ways
         .iter()
         .any(|m| !matches!(m.role.as_str(), "outer" | "inner"))
@@ -552,12 +554,15 @@ fn check_multipolygon(data: &OsmData, relation: &OsmRelation, out: &mut Vec<Find
     let members: Vec<multipolygon::WayMember> = ways
         .iter()
         .map(|m| multipolygon::WayMember {
-            way_id: m.reference,
+            way_id: WayId(m.reference),
             role: &m.role,
-            nodes: data.ways.get(&m.reference).map(|w| w.nodes.as_slice()),
+            nodes: data
+                .ways
+                .get(&WayId(m.reference))
+                .map(|w| w.nodes.as_slice()),
         })
         .collect();
-    let coord = |id: i64| data.nodes.get(&id).map(|n| (n.lon, n.lat));
+    let coord = |id: NodeId| data.nodes.get(&id).map(|n| (n.lon, n.lat));
     if multipolygon::assemble(&members, &coord) == Err(multipolygon::Problem::Unclosed) {
         out.push(finding(
             Check::MultipolygonOpenRing,
@@ -684,8 +689,8 @@ fn position_key(lat: f64, lon: f64) -> (i64, i64) {
 /// Groups of distinct nodes at one position where at least one is changed.
 /// A hash of the changed nodes' positions is matched against every node once,
 /// so the cost is linear in the size of the data.
-fn check_duplicate_nodes(data: &OsmData, changed: &[i64], out: &mut Vec<Finding>) {
-    let mut at: HashMap<(i64, i64), Vec<i64>> = HashMap::with_capacity(changed.len());
+fn check_duplicate_nodes(data: &OsmData, changed: &[NodeId], out: &mut Vec<Finding>) {
+    let mut at: HashMap<(i64, i64), Vec<NodeId>> = HashMap::with_capacity(changed.len());
     for id in changed {
         if let Some(n) = data.nodes.get(id) {
             at.entry(position_key(n.lat, n.lon)).or_default().push(*id);
@@ -694,7 +699,7 @@ fn check_duplicate_nodes(data: &OsmData, changed: &[i64], out: &mut Vec<Finding>
     if at.is_empty() {
         return;
     }
-    let changed_set: HashSet<i64> = changed.iter().copied().collect();
+    let changed_set: HashSet<NodeId> = changed.iter().copied().collect();
     for n in data.nodes.values() {
         if changed_set.contains(&n.id) {
             continue;
@@ -713,7 +718,7 @@ fn check_duplicate_nodes(data: &OsmData, changed: &[i64], out: &mut Vec<Finding>
             tr!("validator.msg.duplicate_nodes", count = group.len()).to_string(),
             group
                 .into_iter()
-                .map(|id| (FeatureKind::Node, id))
+                .map(|id| (FeatureKind::Node, id.get()))
                 .collect(),
         ));
     }
@@ -806,14 +811,14 @@ fn crossable(tags: &HashMap<String, String>) -> Option<Crossable> {
 }
 
 struct WayGeom {
-    id: i64,
+    id: WayId,
     kind: Crossable,
     layer: i32,
     /// On a bridge, in a tunnel or covered: crossing is expected.
     separated: bool,
     /// A road through a ford may cross a waterway.
     ford: bool,
-    nodes: Vec<i64>,
+    nodes: Vec<NodeId>,
     pts: Vec<(f64, f64)>,
     /// `[min_x, min_y, max_x, max_y]` in (lon, lat).
     bbox: [f64; 4],
@@ -929,7 +934,7 @@ fn check_crossings(data: &OsmData, cx: &Context, out: &mut Vec<Finding>) {
         .collect();
     let tree = RTree::bulk_load(entries);
 
-    let mut reported: HashSet<(i64, i64)> = HashSet::new();
+    let mut reported: HashSet<(WayId, WayId)> = HashSet::new();
     for (i, g) in geoms.iter().enumerate() {
         if !cx.affected_ways.contains(&g.id) || g.separated {
             continue;
@@ -969,7 +974,10 @@ fn check_crossings(data: &OsmData, cx: &Context, out: &mut Vec<Finding>) {
                     b = second.kind.name()
                 )
                 .to_string(),
-                vec![(FeatureKind::Way, first.id), (FeatureKind::Way, second.id)],
+                vec![
+                    (FeatureKind::Way, first.id.get()),
+                    (FeatureKind::Way, second.id.get()),
+                ],
             ));
         }
     }
@@ -1052,9 +1060,13 @@ pub fn feature_label(data: &OsmData, kind: FeatureKind, id: i64) -> String {
         FeatureKind::Relation => tr!("validator.feature.relation"),
     };
     let tags = match kind {
-        FeatureKind::Node => data.nodes.get(&id).map(|n| &n.tags),
-        FeatureKind::Way => data.ways.get(&id).map(|w| &w.tags),
-        FeatureKind::Relation => data.relations.iter().find(|r| r.id == id).map(|r| &r.tags),
+        FeatureKind::Node => data.nodes.get(&NodeId(id)).map(|n| &n.tags),
+        FeatureKind::Way => data.ways.get(&WayId(id)).map(|w| &w.tags),
+        FeatureKind::Relation => data
+            .relations
+            .iter()
+            .find(|r| r.id.get() == id)
+            .map(|r| &r.tags),
     };
     let name = tags
         .and_then(|t| t.get("name"))

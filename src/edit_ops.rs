@@ -5,6 +5,7 @@
 //! of its own: every op carries what both directions need (ids, versions and
 //! list positions included) and `invert` is a mechanical swap.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::OsmMember;
 use crate::selection::{
@@ -12,7 +13,7 @@ use crate::selection::{
 };
 
 /// One node's move: id, (lat, lon) before and (lat, lon) after.
-pub type NodeMove = (i64, (f64, f64), (f64, f64));
+pub type NodeMove = (NodeId, (f64, f64), (f64, f64));
 
 /// One reversible primitive on a layer's data.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,19 +49,19 @@ pub enum EditOp {
     },
     /// A way's whole node list is replaced.
     SetWayNodes {
-        id: i64,
-        before: Vec<i64>,
-        after: Vec<i64>,
+        id: WayId,
+        before: Vec<NodeId>,
+        after: Vec<NodeId>,
     },
     /// A relation's whole member list is replaced.
     SetRelationMembers {
-        id: i64,
+        id: RelationId,
         before: Vec<OsmMember>,
         after: Vec<OsmMember>,
     },
     /// A way's node order is reversed.
     ReverseWay {
-        id: i64,
+        id: WayId,
     },
     /// Objects drop out of the layer's downloaded data without being deleted;
     /// `purged` is exactly what the layer held, positions included.
@@ -140,7 +141,7 @@ impl EditOp {
                 layer.delete_relation(snapshot.relation.id).map(drop)
             }
             EditOp::MoveNodes { moves } => {
-                let moves: Vec<(i64, f64, f64)> = moves
+                let moves: Vec<(NodeId, f64, f64)> = moves
                     .iter()
                     .map(|&(id, _, (lat, lon))| (id, lat, lon))
                     .collect();
@@ -162,9 +163,10 @@ impl EditOp {
             }
             EditOp::ReverseWay { id } => layer.reverse_way(*id),
             EditOp::Purge { purged } => {
-                let nodes: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
-                let ways: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
-                let relations: Vec<i64> = purged.relations.iter().map(|(r, ..)| r.id).collect();
+                let nodes: Vec<NodeId> = purged.nodes.iter().map(|n| n.id).collect();
+                let ways: Vec<WayId> = purged.ways.iter().map(|w| w.id).collect();
+                let relations: Vec<RelationId> =
+                    purged.relations.iter().map(|(r, ..)| r.id).collect();
                 layer.purge_features(&nodes, &ways, &relations);
                 Ok(())
             }
@@ -183,17 +185,17 @@ impl EditOp {
                 vec![at(snapshot.kind, snapshot.id)]
             }
             EditOp::PutRelation { snapshot } | EditOp::RemoveRelation { snapshot } => {
-                vec![at(FeatureKind::Relation, snapshot.relation.id)]
+                vec![at(FeatureKind::Relation, snapshot.relation.id.get())]
             }
             EditOp::MoveNodes { moves } => moves
                 .iter()
-                .map(|&(id, ..)| at(FeatureKind::Node, id))
+                .map(|&(id, ..)| at(FeatureKind::Node, id.get()))
                 .collect(),
             EditOp::SetTag { kind, id, .. } => vec![at(*kind, *id)],
             EditOp::SetWayNodes { id, .. } | EditOp::ReverseWay { id } => {
-                vec![at(FeatureKind::Way, *id)]
+                vec![at(FeatureKind::Way, id.get())]
             }
-            EditOp::SetRelationMembers { id, .. } => vec![at(FeatureKind::Relation, *id)],
+            EditOp::SetRelationMembers { id, .. } => vec![at(FeatureKind::Relation, id.get())],
             EditOp::Purge { purged } | EditOp::Unpurge { purged } => purged.features(layer_id),
         }
     }
@@ -300,16 +302,16 @@ impl<'a> Recording<'a> {
             .map(|(_, v)| v)
     }
 
-    fn way_nodes(&self, way_id: i64) -> Result<Vec<i64>, EditError> {
+    fn way_nodes(&self, way_id: WayId) -> Result<Vec<NodeId>, EditError> {
         self.layer
             .way_node_ids(way_id)
             .ok_or(EditError::UnknownWay(way_id))
     }
 
-    fn new_node_snapshot(id: i64, lat: f64, lon: f64) -> DeletedFeatureSnapshot {
+    fn new_node_snapshot(id: NodeId, lat: f64, lon: f64) -> DeletedFeatureSnapshot {
         DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
-            id,
+            id: id.get(),
             tags: Vec::new(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((lat, lon)),
@@ -317,7 +319,7 @@ impl<'a> Recording<'a> {
         }
     }
 
-    pub fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) -> Result<(), EditError> {
+    pub fn commit_node_moves(&mut self, moves: &[(NodeId, f64, f64)]) -> Result<(), EditError> {
         let recorded: Vec<NodeMove> = moves
             .iter()
             .filter_map(|&(id, lat, lon)| Some((id, self.layer.node_lat_lon(id)?, (lat, lon))))
@@ -361,7 +363,12 @@ impl<'a> Recording<'a> {
         Ok(())
     }
 
-    pub fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Result<i64, EditError> {
+    pub fn create_node(
+        &mut self,
+        lat: f64,
+        lon: f64,
+        id: Option<NodeId>,
+    ) -> Result<NodeId, EditError> {
         let id = self.layer.create_node(lat, lon, id)?;
         self.ops.push(EditOp::PutFeature {
             snapshot: Self::new_node_snapshot(id, lat, lon),
@@ -369,7 +376,7 @@ impl<'a> Recording<'a> {
         Ok(id)
     }
 
-    pub fn add_node(&mut self, lat: f64, lon: f64) -> i64 {
+    pub fn add_node(&mut self, lat: f64, lon: f64) -> NodeId {
         let id = self.layer.add_node(lat, lon);
         self.ops.push(EditOp::PutFeature {
             snapshot: Self::new_node_snapshot(id, lat, lon),
@@ -395,12 +402,12 @@ impl<'a> Recording<'a> {
         Ok(())
     }
 
-    pub fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64 {
+    pub fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Vec<(String, String)>) -> WayId {
         let id = self.layer.add_way(node_ids.clone(), tags.clone());
         self.ops.push(EditOp::PutFeature {
             snapshot: DeletedFeatureSnapshot {
                 kind: FeatureKind::Way,
-                id,
+                id: id.get(),
                 tags,
                 way_nodes: node_ids,
                 node_lat_lon: None,
@@ -410,7 +417,7 @@ impl<'a> Recording<'a> {
         id
     }
 
-    pub fn extend_way(&mut self, way_id: i64, node_id: i64) -> Result<(), EditError> {
+    pub fn extend_way(&mut self, way_id: WayId, node_id: NodeId) -> Result<(), EditError> {
         let before = self.way_nodes(way_id)?;
         self.layer.extend_way(way_id, node_id)?;
         let mut after = before.clone();
@@ -425,11 +432,11 @@ impl<'a> Recording<'a> {
 
     pub fn insert_node_into_way(
         &mut self,
-        way_id: i64,
+        way_id: WayId,
         index: usize,
         lat: f64,
         lon: f64,
-    ) -> Result<i64, EditError> {
+    ) -> Result<NodeId, EditError> {
         let before = self.way_nodes(way_id)?;
         let id = self.layer.insert_node_into_way(way_id, index, lat, lon)?;
         let mut after = before.clone();
@@ -445,15 +452,17 @@ impl<'a> Recording<'a> {
         Ok(id)
     }
 
-    pub fn remove_node(&mut self, node_id: i64) -> Result<(), EditError> {
-        self.delete_feature(FeatureKind::Node, node_id).map(drop)
+    pub fn remove_node(&mut self, node_id: NodeId) -> Result<(), EditError> {
+        self.delete_feature(FeatureKind::Node, node_id.get())
+            .map(drop)
     }
 
-    pub fn remove_way(&mut self, way_id: i64) -> Result<(), EditError> {
-        self.delete_feature(FeatureKind::Way, way_id).map(drop)
+    pub fn remove_way(&mut self, way_id: WayId) -> Result<(), EditError> {
+        self.delete_feature(FeatureKind::Way, way_id.get())
+            .map(drop)
     }
 
-    pub fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError> {
+    pub fn remove_node_from_way(&mut self, way_id: WayId, index: usize) -> Result<(), EditError> {
         let before = self.way_nodes(way_id)?;
         self.layer.remove_node_from_way(way_id, index)?;
         let mut after = before.clone();
@@ -470,9 +479,9 @@ impl<'a> Recording<'a> {
     /// recorded when none of them was there.
     pub fn purge_features(
         &mut self,
-        nodes: &[i64],
-        ways: &[i64],
-        relations: &[i64],
+        nodes: &[NodeId],
+        ways: &[WayId],
+        relations: &[RelationId],
     ) -> PurgedFeatures {
         let purged = self.layer.purge_features(nodes, ways, relations);
         if !purged.is_empty() {
@@ -483,13 +492,13 @@ impl<'a> Recording<'a> {
         purged
     }
 
-    pub fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError> {
+    pub fn reverse_way(&mut self, way_id: WayId) -> Result<(), EditError> {
         self.layer.reverse_way(way_id)?;
         self.ops.push(EditOp::ReverseWay { id: way_id });
         Ok(())
     }
 
-    pub fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> Result<(), EditError> {
+    pub fn set_way_nodes(&mut self, way_id: WayId, node_ids: Vec<NodeId>) -> Result<(), EditError> {
         let before = self.way_nodes(way_id)?;
         self.layer.set_way_nodes(way_id, node_ids.clone())?;
         self.ops.push(EditOp::SetWayNodes {
@@ -502,7 +511,7 @@ impl<'a> Recording<'a> {
 
     pub fn set_relation_members(
         &mut self,
-        relation_id: i64,
+        relation_id: RelationId,
         members: Vec<OsmMember>,
     ) -> Result<Vec<OsmMember>, EditError> {
         let previous = self
@@ -520,7 +529,7 @@ impl<'a> Recording<'a> {
         &mut self,
         tags: Vec<(String, String)>,
         members: Vec<OsmMember>,
-    ) -> Result<i64, EditError> {
+    ) -> Result<RelationId, EditError> {
         let id = self.layer.create_relation(tags, members)?;
         if let (Some(relation), Some(index)) = (
             self.layer.relation(id),
@@ -535,7 +544,7 @@ impl<'a> Recording<'a> {
 
     pub fn delete_relation(
         &mut self,
-        relation_id: i64,
+        relation_id: RelationId,
     ) -> Result<DeletedRelationSnapshot, EditError> {
         let snapshot = self.layer.delete_relation(relation_id)?;
         self.ops.push(EditOp::RemoveRelation {

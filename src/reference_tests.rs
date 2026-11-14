@@ -75,7 +75,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
             .layer_manager
             .find_layer(data_id)
             .and_then(|l| l.as_editable())
-            .and_then(|e| e.node_lat_lon(node.id))
+            .and_then(|e| e.node_lat_lon(NodeId(node.id)))
             .unwrap();
         assert!((lat - LAT).abs() < 1e-7, "{lat}");
         assert_eq!(view.active_layer_pending(), Some(1));
@@ -87,7 +87,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
             .layer_manager
             .find_layer(data_id)
             .and_then(|l| l.as_editable())
-            .and_then(|e| e.node_lat_lon(node.id))
+            .and_then(|e| e.node_lat_lon(NodeId(node.id)))
             .unwrap();
         assert!((lat - LAT).abs() > 1e-6, "{lat}");
     });

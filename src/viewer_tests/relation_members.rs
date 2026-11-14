@@ -7,6 +7,7 @@ use super::{
 use crate::{side_panel, MemberRef, TagEditContext};
 use gpui::TestAppContext;
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::RelationId;
 
 #[gpui::test]
 fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppContext) {
@@ -20,7 +21,7 @@ fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppCo
             // so its ref stands in.
             select(view, Way, &[102]);
             let membership = |role: &str, index| side_panel::Membership {
-                relation_id: 900,
+                relation_id: RelationId(900),
                 name: "7B".to_string(),
                 role: role.to_string(),
                 index,
@@ -102,7 +103,7 @@ fn role_move_and_remove_edits_are_one_undo_step_each_and_redoable(cx: &mut TestA
             let layer_id = view.active_layer.unwrap();
             let at = |index| MemberRef {
                 layer_id,
-                relation_id: 900,
+                relation_id: RelationId(900),
                 index,
             };
             let original = relation_members(view, 900);
@@ -232,7 +233,7 @@ fn add_to_relation_appends_the_new_members_as_one_undo_step(cx: &mut TestAppCont
             // window lacks.)
             view.dialogs.pending_relation_picker = false;
 
-            view.add_selection_to_relation(900);
+            view.add_selection_to_relation(RelationId(900));
             assert_eq!(view.undo_stack.actions.len(), 1);
             let added = relation_members(view, 900);
             assert_eq!(
@@ -258,7 +259,7 @@ fn add_to_relation_appends_the_new_members_as_one_undo_step(cx: &mut TestAppCont
             assert_eq!(relation_members(view, 900), added);
 
             // Everything is a member now: nothing to do, no undo step.
-            view.add_selection_to_relation(900);
+            view.add_selection_to_relation(RelationId(900));
             assert_eq!(view.undo_stack.actions.len(), 1);
             assert_eq!(
                 view.status_message.as_ref().map(|(m, _)| m.as_str()),
@@ -287,7 +288,7 @@ fn add_to_relation_needs_features_and_a_relation_to_add_them_to(cx: &mut TestApp
     window
         .update(cx, |view, _window, cx| {
             // A selected relation alone has nothing to add.
-            view.select_relation(view.active_layer.unwrap(), 900);
+            view.select_relation(view.active_layer.unwrap(), RelationId(900));
             view.run_selection_action("add_to_relation", cx);
             assert!(!view.dialogs.pending_relation_picker);
         })
@@ -304,7 +305,7 @@ fn removing_a_restrictions_from_via_or_to_member_is_refused(cx: &mut TestAppCont
             role: role.to_string(),
         };
         data.relations = vec![OsmRelation {
-            id: 900,
+            id: RelationId(900),
             version: 1,
             tags: [("type".to_string(), "restriction".to_string())].into(),
             members: vec![
@@ -321,7 +322,7 @@ fn removing_a_restrictions_from_via_or_to_member_is_refused(cx: &mut TestAppCont
             for (index, role) in [(0, "from"), (1, "via"), (2, "to")] {
                 view.remove_relation_member(MemberRef {
                     layer_id,
-                    relation_id: 900,
+                    relation_id: RelationId(900),
                     index,
                 });
                 assert!(view.undo_stack.actions.is_empty());
@@ -332,7 +333,7 @@ fn removing_a_restrictions_from_via_or_to_member_is_refused(cx: &mut TestAppCont
             // The other member may go.
             view.remove_relation_member(MemberRef {
                 layer_id,
-                relation_id: 900,
+                relation_id: RelationId(900),
                 index: 3,
             });
             assert_eq!(view.undo_stack.actions.len(), 1);

@@ -38,7 +38,7 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable()
             .unwrap();
-        let ids = editable.way_node_ids(sel.id).unwrap();
+        let ids = editable.way_node_ids(WayId(sel.id)).unwrap();
         assert_eq!(ids.len(), nodes);
         assert_ne!(ids.first(), ids.last());
 
@@ -106,12 +106,12 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable()
             .unwrap();
-        let host = editable.way_node_ids(10).unwrap();
+        let host = editable.way_node_ids(WayId(10)).unwrap();
         assert_eq!(host.len(), 4, "both endpoints are spliced into the way");
         let [sel] = view.selected.as_slice() else {
             panic!("the new way should be selected");
         };
-        let arc = editable.way_node_ids(sel.id).unwrap();
+        let arc = editable.way_node_ids(WayId(sel.id)).unwrap();
         assert!(host.contains(arc.first().unwrap()));
         assert!(host.contains(arc.last().unwrap()));
         // The spliced nodes lie exactly on the way.
@@ -128,7 +128,7 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
                 .unwrap()
                 .as_editable()
                 .unwrap()
-                .way_node_ids(10)
+                .way_node_ids(WayId(10))
                 .unwrap()
                 .len()
         };
@@ -161,14 +161,18 @@ fn endpoints_snap_onto_existing_vertices_and_reuse_them(cx: &mut TestAppContext)
             .unwrap()
             .as_editable()
             .unwrap();
-        assert_eq!(editable.way_node_ids(10).unwrap(), vec![1, 2], "no splices");
+        assert_eq!(
+            editable.way_node_ids(WayId(10)).unwrap(),
+            vec![NodeId(1), NodeId(2)],
+            "no splices"
+        );
         let [sel] = view.selected.as_slice() else {
             panic!("the new way should be selected");
         };
-        let arc = editable.way_node_ids(sel.id).unwrap();
+        let arc = editable.way_node_ids(WayId(sel.id)).unwrap();
         assert_eq!(
             (arc[0], arc[arc.len() - 1]),
-            (1, 2),
+            (NodeId(1), NodeId(2)),
             "existing nodes reused"
         );
 
@@ -179,7 +183,7 @@ fn endpoints_snap_onto_existing_vertices_and_reuse_them(cx: &mut TestAppContext)
             .unwrap()
             .as_editable()
             .unwrap()
-            .node_lat_lon(1)
+            .node_lat_lon(NodeId(1))
             .is_some());
         assert_eq!(
             osm_counts(view, layer),

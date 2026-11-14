@@ -29,6 +29,7 @@ pub mod gpx;
 pub mod http;
 pub mod i18n;
 pub mod idle_tracker;
+pub mod ids;
 pub mod imagery;
 pub mod imagery_offset;
 pub mod improve_way;

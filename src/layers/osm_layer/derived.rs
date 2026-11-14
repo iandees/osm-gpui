@@ -50,7 +50,10 @@ impl WayBbox {
     }
 }
 
-pub(super) fn way_rtree_entry(b: WayBbox, way_id: i64) -> GeomWithData<Rectangle<[f64; 2]>, i64> {
+pub(super) fn way_rtree_entry(
+    b: WayBbox,
+    way_id: WayId,
+) -> GeomWithData<Rectangle<[f64; 2]>, WayId> {
     GeomWithData::new(
         Rectangle::from_corners([b.min_x, b.min_y], [b.max_x, b.max_y]),
         way_id,
@@ -67,10 +70,10 @@ pub(super) fn way_rtree_entry(b: WayBbox, way_id: i64) -> GeomWithData<Rectangle
 pub(super) struct NodeCache {
     /// node id -> index into `flat`/`styles`. Used by the way-vertex build
     /// pass and by incremental cache updates (`index_node_set`).
-    pub(super) index_by_id: HashMap<i64, usize>,
+    pub(super) index_by_id: HashMap<NodeId, usize>,
     /// Flat list of all nodes as `(id, mercator_x, mercator_y)` for cache-
     /// friendly iteration in the node paint loop.
-    pub(super) flat: Vec<(i64, f64, f64)>,
+    pub(super) flat: Vec<(NodeId, f64, f64)>,
     /// Resolved style per node, aligned with `flat` by index.
     pub(super) styles: Vec<NodeStyle>,
 }
@@ -186,19 +189,19 @@ pub(super) fn project_way_vertices(
 /// Derefs to the vertex slice for everything that does not care.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct WayGeom {
-    pub(super) verts: Vec<(i64, f64, f64)>,
+    pub(super) verts: Vec<(NodeId, f64, f64)>,
     pub(super) sig: Vec<f32>,
 }
 
 impl std::ops::Deref for WayGeom {
-    type Target = [(i64, f64, f64)];
+    type Target = [(NodeId, f64, f64)];
     fn deref(&self) -> &Self::Target {
         &self.verts
     }
 }
 
 impl WayGeom {
-    pub(super) fn new(verts: Vec<(i64, f64, f64)>) -> Self {
+    pub(super) fn new(verts: Vec<(NodeId, f64, f64)>) -> Self {
         let sig = vertex_significance(&verts);
         Self { verts, sig }
     }
@@ -208,7 +211,7 @@ impl WayGeom {
 /// [`WayGeom`]): the end points get infinity; each other vertex gets the
 /// distance (meters) from the chord of the range that was split at it.
 /// Iterative (no recursion) so a long coastline cannot overflow the stack.
-pub(super) fn vertex_significance(verts: &[(i64, f64, f64)]) -> Vec<f32> {
+pub(super) fn vertex_significance(verts: &[(NodeId, f64, f64)]) -> Vec<f32> {
     let n = verts.len();
     let mut sig = vec![0.0f32; n];
     if n == 0 {
@@ -260,7 +263,7 @@ pub(super) fn vertex_significance(verts: &[(i64, f64, f64)]) -> Vec<f32> {
 /// way ids, bounding boxes, pre-projected `(node_id, x, y)` vertex lists,
 /// resolved styles, and fill triangulations, all indexed identically.
 pub(super) type WayTables = (
-    Vec<i64>,
+    Vec<WayId>,
     Vec<Option<WayBbox>>,
     Vec<WayGeom>,
     Vec<WayStyle>,
@@ -275,7 +278,10 @@ pub(super) type WayTables = (
 /// *projected* vertex list, not the raw node refs — if a member node failed
 /// to resolve, `verts` may be shorter and no longer ring-shaped, and the
 /// node-id equality check catches that safely.
-pub(super) fn compute_fill_tris(verts: &[(i64, f64, f64)], style: &WayStyle) -> Option<Vec<u32>> {
+pub(super) fn compute_fill_tris(
+    verts: &[(NodeId, f64, f64)],
+    style: &WayStyle,
+) -> Option<Vec<u32>> {
     style.fill?;
     if verts.len() < 4 || verts.first()?.0 != verts.last()?.0 {
         return None;
@@ -301,7 +307,7 @@ pub(super) fn compute_way_tables(
     data: &OsmData,
     node_cache: &NodeCache,
     stylesheet: &Stylesheet,
-    members: &HashSet<i64>,
+    members: &HashSet<WayId>,
 ) -> WayTables {
     let mut ids = Vec::with_capacity(data.ways.len());
     let mut bboxes = Vec::with_capacity(data.ways.len());
@@ -331,29 +337,32 @@ pub(super) fn apply_style_refresh(
     id: i64,
     data: &OsmData,
     node_cache: &mut NodeCache,
-    way_id_to_index: &HashMap<i64, usize>,
+    way_id_to_index: &HashMap<WayId, usize>,
     way_vertices: &[WayGeom],
     way_styles: &mut [WayStyle],
     way_fill_tris: &mut [Option<Vec<u32>>],
     stylesheet: &Stylesheet,
-    members: &HashSet<i64>,
+    members: &HashSet<WayId>,
 ) {
     match kind {
         FeatureKind::Node => {
-            let Some(node) = data.nodes.get(&id) else {
+            let Some(node) = data.nodes.get(&NodeId(id)) else {
                 return;
             };
-            if let Some(&idx) = node_cache.index_by_id.get(&id) {
+            if let Some(&idx) = node_cache.index_by_id.get(&NodeId(id)) {
                 node_cache.styles[idx] = stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
             }
         }
         FeatureKind::Way => {
-            let Some(way) = data.ways.get(&id) else {
+            let Some(way) = data.ways.get(&WayId(id)) else {
                 return;
             };
-            if let Some(&idx) = way_id_to_index.get(&id) {
-                let style =
-                    stylesheet.way_style_cached(&way.tags, way.is_closed(), members.contains(&id));
+            if let Some(&idx) = way_id_to_index.get(&WayId(id)) {
+                let style = stylesheet.way_style_cached(
+                    &way.tags,
+                    way.is_closed(),
+                    members.contains(&WayId(id)),
+                );
                 way_fill_tris[idx] = compute_fill_tris(&way_vertices[idx], &style);
                 way_styles[idx] = style;
             }
@@ -379,8 +388,8 @@ pub(super) fn sorted_ways(data: &OsmData) -> Vec<&OsmWay> {
 /// node id -> indices (into `ways`) of every way that references it, so an
 /// edit can find exactly which ways need their cached vertex/bbox tables
 /// recomputed after a node move, instead of rescanning every way.
-pub(super) fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, HashSet<usize>> {
-    let mut map: HashMap<i64, HashSet<usize>> = HashMap::new();
+pub(super) fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<NodeId, HashSet<usize>> {
+    let mut map: HashMap<NodeId, HashSet<usize>> = HashMap::new();
     for (idx, way) in ways.iter().enumerate() {
         for nid in &way.nodes {
             map.entry(*nid).or_default().insert(idx);
@@ -392,7 +401,7 @@ pub(super) fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, HashSet<usize
 /// OSM way id -> index into `way_vertices`/`way_bboxes`/`way_styles`. Lets
 /// hot paths (indexed hit-testing, incremental move updates) go straight to
 /// the cached arrays instead of a linear `Vec::iter().find()` scan.
-pub(super) fn build_way_id_index(ways: &[&OsmWay]) -> HashMap<i64, usize> {
+pub(super) fn build_way_id_index(ways: &[&OsmWay]) -> HashMap<WayId, usize> {
     ways.iter()
         .enumerate()
         .map(|(idx, w)| (w.id, idx))
@@ -400,7 +409,7 @@ pub(super) fn build_way_id_index(ways: &[&OsmWay]) -> HashMap<i64, usize> {
 }
 
 /// Bulk-build a point index over every node's mercator position.
-pub(super) fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], i64>> {
+pub(super) fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f64; 2], NodeId>> {
     let items: Vec<_> = node_cache
         .flat
         .iter()
@@ -414,7 +423,7 @@ pub(super) fn build_node_index(node_cache: &NodeCache) -> RTree<GeomWithData<[f6
 pub(super) fn build_way_index(
     way_bboxes: &[Option<WayBbox>],
     ways: &[&OsmWay],
-) -> RTree<GeomWithData<Rectangle<[f64; 2]>, i64>> {
+) -> RTree<GeomWithData<Rectangle<[f64; 2]>, WayId>> {
     let items: Vec<_> = way_bboxes
         .iter()
         .zip(ways.iter())
@@ -521,7 +530,7 @@ impl OsmLayer {
 
     /// Drop a node from the position caches and indices, including its
     /// `node_to_ways` entry.
-    pub(super) fn index_node_removed(&mut self, id: i64) {
+    pub(super) fn index_node_removed(&mut self, id: NodeId) {
         if let Some(idx) = self.derived.node_cache.index_by_id.remove(&id) {
             let (_, mx, my) = self.derived.node_cache.flat[idx];
             self.derived
@@ -596,7 +605,7 @@ impl OsmLayer {
 
     /// Remove the way at `way_idx` from every index-aligned cache and the
     /// indices, shifting the indices of the ways after it.
-    pub(super) fn index_way_removed(&mut self, way_idx: usize, way_id: i64) {
+    pub(super) fn index_way_removed(&mut self, way_idx: usize, way_id: WayId) {
         if let Some(old) = self.derived.way_bboxes.get(way_idx).copied().flatten() {
             self.derived.way_index.remove(&way_rtree_entry(old, way_id));
         }
@@ -623,8 +632,13 @@ impl OsmLayer {
 
     /// Update `node_to_ways` for the way at `way_idx` after its node list
     /// went from `old` to `new`.
-    pub(super) fn index_way_nodes_changed(&mut self, way_idx: usize, old: &[i64], new: &[i64]) {
-        let kept: HashSet<i64> = new.iter().copied().collect();
+    pub(super) fn index_way_nodes_changed(
+        &mut self,
+        way_idx: usize,
+        old: &[NodeId],
+        new: &[NodeId],
+    ) {
+        let kept: HashSet<NodeId> = new.iter().copied().collect();
         for dropped in old.iter().filter(|n| !kept.contains(n)) {
             if let Some(ways) = self.derived.node_to_ways.get_mut(dropped) {
                 ways.remove(&way_idx);

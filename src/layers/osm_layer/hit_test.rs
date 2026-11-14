@@ -7,12 +7,12 @@ pub(super) const WAY_HIT_TOL: f32 = 6.0;
 
 impl OsmLayer {
     /// The way whose vertices are currently previewed, if any.
-    pub fn vertex_preview_way(&self) -> Option<i64> {
+    pub fn vertex_preview_way(&self) -> Option<WayId> {
         self.view.preview_way
     }
 
     /// Whether node `node_id` is a vertex of way `way_id`.
-    pub(super) fn node_in_way(&self, node_id: i64, way_id: i64) -> bool {
+    pub(super) fn node_in_way(&self, node_id: NodeId, way_id: WayId) -> bool {
         self.derived
             .way_id_to_index
             .get(&way_id)
@@ -29,7 +29,7 @@ impl OsmLayer {
         &self,
         viewport: &Viewport,
         pt: Point<Pixels>,
-        way_id: i64,
+        way_id: WayId,
     ) -> Option<f32> {
         let verts = &self.derived.way_vertices[*self.derived.way_id_to_index.get(&way_id)?];
         let mut best: Option<f32> = None;
@@ -51,7 +51,7 @@ impl OsmLayer {
     /// Whether node `id` is an untagged node that belongs to no way, so it
     /// is drawn like a tagged one. The way lookup only runs for untagged
     /// nodes at zooms where a standalone node would be drawn at all.
-    pub(super) fn is_standalone(&self, tagged: bool, id: i64, zoom: f64) -> bool {
+    pub(super) fn is_standalone(&self, tagged: bool, id: NodeId, zoom: f64) -> bool {
         !tagged
             && zoom >= node_markers::TAGGED_MIN_ZOOM
             && self
@@ -69,7 +69,7 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-    ) -> Option<i64> {
+    ) -> Option<NodeId> {
         self.snap_to_node_where(viewport, screen_pt, tol_px, |_| true)
     }
 
@@ -80,8 +80,8 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-        accept: impl Fn(i64) -> bool,
-    ) -> Option<i64> {
+        accept: impl Fn(NodeId) -> bool,
+    ) -> Option<NodeId> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 2.0);
         let Mercator { x: ex1, y: ey1 } =
@@ -90,7 +90,7 @@ impl OsmLayer {
             viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
-        let mut best: Option<(f32, i64)> = None;
+        let mut best: Option<(f32, NodeId)> = None;
         for item in self.derived.node_index.locate_in_envelope(envelope) {
             let id = item.data;
             if !accept(id) {
@@ -122,7 +122,7 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-    ) -> Option<(i64, i64, i64, usize)> {
+    ) -> Option<(WayId, NodeId, NodeId, usize)> {
         self.hit_test_segment_preferring(viewport, screen_pt, tol_px, None)
     }
 
@@ -134,8 +134,8 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-        prefer_way: Option<i64>,
-    ) -> Option<(i64, i64, i64, usize)> {
+        prefer_way: Option<WayId>,
+    ) -> Option<(WayId, NodeId, NodeId, usize)> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let Mercator { x: ex1, y: ey1 } =
@@ -146,7 +146,7 @@ impl OsmLayer {
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
         // (preferred, distance, way, a, b, index): preferred ways sort first.
-        let mut best: Option<(bool, f32, i64, i64, i64, usize)> = None;
+        let mut best: Option<(bool, f32, WayId, NodeId, NodeId, usize)> = None;
         for item in self
             .derived
             .way_index
@@ -188,7 +188,7 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-    ) -> Option<(i64, i64, i64, usize, f64, f64)> {
+    ) -> Option<(WayId, NodeId, NodeId, usize, f64, f64)> {
         self.snap_to_way_where(viewport, screen_pt, tol_px, |_| true)
     }
 
@@ -199,8 +199,8 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-        accept: impl Fn(i64) -> bool,
-    ) -> Option<(i64, i64, i64, usize, f64, f64)> {
+        accept: impl Fn(WayId) -> bool,
+    ) -> Option<(WayId, NodeId, NodeId, usize, f64, f64)> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let Mercator { x: ex1, y: ey1 } =
@@ -210,7 +210,7 @@ impl OsmLayer {
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
-        let mut best: Option<(f32, i64, i64, i64, usize, Point<Pixels>)> = None;
+        let mut best: Option<(f32, WayId, NodeId, NodeId, usize, Point<Pixels>)> = None;
         for item in self
             .derived
             .way_index
@@ -285,7 +285,7 @@ impl OsmLayer {
                         feature: FeatureRef {
                             layer_id: self.id,
                             kind: FeatureKind::Relation,
-                            id: relation_id,
+                            id: relation_id.get(),
                         },
                         kind: FeatureKind::Relation,
                         dist_px: dist,
@@ -335,7 +335,7 @@ impl OsmLayer {
                     feature: FeatureRef {
                         layer_id: self.id,
                         kind: FeatureKind::Node,
-                        id,
+                        id: id.get(),
                     },
                     kind: FeatureKind::Node,
                     dist_px: dist,
@@ -387,7 +387,7 @@ impl OsmLayer {
                     feature: FeatureRef {
                         layer_id: self.id,
                         kind: FeatureKind::Way,
-                        id: way_id,
+                        id: way_id.get(),
                     },
                     kind: FeatureKind::Way,
                     dist_px: best,
@@ -437,7 +437,7 @@ impl OsmLayer {
                     feature: FeatureRef {
                         layer_id: self.id,
                         kind: FeatureKind::Way,
-                        id: way_id,
+                        id: way_id.get(),
                     },
                     kind: FeatureKind::Way,
                     dist_px: crate::selection::polygon_area(&screen_verts),
@@ -459,7 +459,7 @@ impl OsmLayer {
             if !entry.tagged || mx < b.min_x || mx > b.max_x || my < b.min_y || my > b.max_y {
                 continue;
             }
-            let xy = |v: &(i64, f64, f64)| (v.1, v.2);
+            let xy = |v: &(NodeId, f64, f64)| (v.1, v.2);
             let inside = entry.polygons.iter().any(|p| {
                 let pb = &p.bbox;
                 mx >= pb.min_x
@@ -475,7 +475,7 @@ impl OsmLayer {
                     feature: FeatureRef {
                         layer_id: self.id,
                         kind: FeatureKind::Relation,
-                        id: relation_id,
+                        id: relation_id.get(),
                     },
                     kind: FeatureKind::Relation,
                     dist_px: (entry.area / (m_per_px * m_per_px)) as f32 * 0.999,
@@ -518,7 +518,7 @@ impl OsmLayer {
                 out.push(FeatureRef {
                     layer_id: self.id,
                     kind: FeatureKind::Node,
-                    id,
+                    id: id.get(),
                 });
             }
         }
@@ -526,7 +526,7 @@ impl OsmLayer {
             out.push(FeatureRef {
                 layer_id: self.id,
                 kind: FeatureKind::Way,
-                id: item.data,
+                id: item.data.get(),
             });
         }
         out

@@ -105,7 +105,12 @@ impl OsmLayer {
         let mut base = (*original).clone();
         Self::remap_osm_data(&mut data, result);
 
-        let new_id = |remap: &HashMap<i64, (i64, i32)>, id: i64| remap.get(&id).map(|&(n, _)| n);
+        fn new_id<T: Copy + Eq + std::hash::Hash>(
+            remap: &HashMap<T, (T, i32)>,
+            id: T,
+        ) -> Option<T> {
+            remap.get(&id).map(|&(n, _)| n)
+        }
         for n in &chunk.created_nodes {
             if let Some(id) = new_id(&result.node_id_remap, n.id) {
                 if let Some(node) = data.nodes.get(&id) {
@@ -172,8 +177,8 @@ impl OsmLayer {
     pub(super) fn remap_osm_data(data: &mut OsmData, result: &UploadResult) {
         // Remap node ids (covers true creates, where old id != new id, and
         // version-only updates for modified nodes, where old id == new id).
-        let mut node_id_map: HashMap<i64, i64> = HashMap::new();
-        let mut updates: Vec<(i64, i64, i32)> = Vec::new();
+        let mut node_id_map: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut updates: Vec<(NodeId, NodeId, i32)> = Vec::new();
         for (&old_id, &(new_id, new_version)) in &result.node_id_remap {
             if data.nodes.contains_key(&old_id) {
                 node_id_map.insert(old_id, new_id);
@@ -202,7 +207,7 @@ impl OsmLayer {
         // remove-then-reinsert under the new id rather than mutating
         // `way.id` in place through `values_mut()`, which would leave the
         // entry keyed under the stale id.
-        let way_updates: Vec<(i64, i64, i32)> = data
+        let way_updates: Vec<(WayId, WayId, i32)> = data
             .ways
             .keys()
             .filter_map(|&old_id| {
@@ -212,7 +217,7 @@ impl OsmLayer {
                     .map(|&(new_id, new_version)| (old_id, new_id, new_version))
             })
             .collect();
-        let mut way_id_map: HashMap<i64, i64> = HashMap::new();
+        let mut way_id_map: HashMap<WayId, WayId> = HashMap::new();
         for (old_id, new_id, new_version) in way_updates {
             if let Some(mut way) = data.ways.remove(&old_id) {
                 way.id = new_id;
@@ -225,7 +230,7 @@ impl OsmLayer {
         // Relations: member refs to created nodes/ways/relations switch from
         // their placeholder ids to the real ones, and a relation the server
         // accepted gets its new id (when created) and version.
-        let relation_id_map: HashMap<i64, i64> = data
+        let relation_id_map: HashMap<RelationId, RelationId> = data
             .relations
             .iter()
             .filter_map(|r| {
@@ -237,12 +242,18 @@ impl OsmLayer {
             .collect();
         for relation in &mut data.relations {
             for member in &mut relation.members {
-                let map = match member.member_type {
-                    crate::osm::MemberType::Node => &node_id_map,
-                    crate::osm::MemberType::Way => &way_id_map,
-                    crate::osm::MemberType::Relation => &relation_id_map,
+                let new_id = match member.member_type {
+                    crate::osm::MemberType::Node => node_id_map
+                        .get(&NodeId(member.reference))
+                        .map(|id| id.get()),
+                    crate::osm::MemberType::Way => {
+                        way_id_map.get(&WayId(member.reference)).map(|id| id.get())
+                    }
+                    crate::osm::MemberType::Relation => relation_id_map
+                        .get(&RelationId(member.reference))
+                        .map(|id| id.get()),
                 };
-                if let Some(&new_id) = map.get(&member.reference) {
+                if let Some(new_id) = new_id {
                     member.reference = new_id;
                 }
             }

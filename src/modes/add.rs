@@ -8,14 +8,15 @@ use super::preview::{blue, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
 use crate::{snap_node_ok, snap_way_ok, MapViewer, Tags};
 use osm_gpui::edit_ops::{EditOp, Recording};
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::LayerId;
 
 /// The last-placed node, and which way (if any) it belongs to. `None` in
 /// `AddState` means "no node placed yet in this continuation": the next click
 /// starts fresh.
 pub(crate) struct AddProgress {
-    pub(crate) way_id: Option<i64>,
-    pub(crate) last_node_id: i64,
+    pub(crate) way_id: Option<WayId>,
+    pub(crate) last_node_id: NodeId,
     /// Continuing an existing way from its first node (Extend Way on a way's
     /// start): new nodes are prepended to `way_id` instead of appended.
     pub(crate) at_start: bool,
@@ -127,7 +128,7 @@ impl MapViewer {
         if !ctrl_held && self.add_progress().is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             let sources = self.add_snap_sources(layer_id);
-            let node_allowed = |id: i64| {
+            let node_allowed = |id: NodeId| {
                 self.layer_manager
                     .find_layer(layer_id)
                     .and_then(|l| l.as_editable())
@@ -137,7 +138,7 @@ impl MapViewer {
                 .filter(|hit| {
                     hit.layer_id == layer_id && hit.kind == osm_gpui::selection::FeatureKind::Node
                 })
-                .map(|hit| hit.id)
+                .map(|hit| NodeId(hit.id))
                 .filter(|&id| node_allowed(id))
                 // Vertices that are not drawn (untagged ones, unless
                 // selected) are not hit targets, but still snap targets.
@@ -160,7 +161,7 @@ impl MapViewer {
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
-                    id: way_id,
+                    id: way_id.get(),
                 }];
                 self.fields_panel.fields_text_inputs.clear();
                 self.fields_panel.fields_text_subscribed.clear();
@@ -240,12 +241,12 @@ impl MapViewer {
                             return;
                         };
                         let feature =
-                            |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+                            |kind, id: i64| osm_gpui::selection::FeatureRef { layer_id, kind, id };
                         self.undo_stack.push(
                             UndoableAction::edit(layer_id, EditLabel::InsertedNode, rec.into_ops())
                                 .selecting(vec![
-                                    feature(osm_gpui::selection::FeatureKind::Way, way_id),
-                                    feature(osm_gpui::selection::FeatureKind::Node, new_id),
+                                    feature(osm_gpui::selection::FeatureKind::Way, way_id.get()),
+                                    feature(osm_gpui::selection::FeatureKind::Node, new_id.get()),
                                 ]),
                         );
                         new_id
@@ -268,7 +269,7 @@ impl MapViewer {
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Node,
-                    id: new_id,
+                    id: new_id.get(),
                 }];
             }
             Some(progress) => {
@@ -306,7 +307,7 @@ impl MapViewer {
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
-                    id: way_id,
+                    id: way_id.get(),
                 }];
             }
         }
@@ -326,10 +327,10 @@ impl MapViewer {
     pub(crate) fn add_extend_or_start_way(
         &mut self,
         layer_id: LayerId,
-        node_id: i64,
+        node_id: NodeId,
         node_ops: Vec<EditOp>,
-        snap: Option<i64>,
-    ) -> i64 {
+        snap: Option<WayId>,
+    ) -> WayId {
         let progress_way_id = self.add_progress().and_then(|p| p.way_id);
         let at_start = self.add_progress().is_some_and(|p| p.at_start);
         let last_node_id = self
@@ -337,10 +338,10 @@ impl MapViewer {
             .map(|p| p.last_node_id)
             .unwrap_or(node_id);
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
-            return progress_way_id.unwrap_or(0);
+            return progress_way_id.unwrap_or(WayId(0));
         };
         let Some(editable) = layer.as_editable_mut() else {
-            return progress_way_id.unwrap_or(0);
+            return progress_way_id.unwrap_or(WayId(0));
         };
         let mut rec = Recording::resume(layer_id, editable, node_ops);
 
@@ -359,24 +360,24 @@ impl MapViewer {
                 eprintln!("adding to the way was refused: {e}");
                 // Take back the node this click made, so none is left over.
                 roll_back_recording(rec);
-                return progress_way_id.unwrap_or(0);
+                return progress_way_id.unwrap_or(WayId(0));
             }
         };
 
-        let feature = |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+        let feature = |kind, id: i64| osm_gpui::selection::FeatureRef { layer_id, kind, id };
         use osm_gpui::selection::FeatureKind::{Node, Way};
         let (label, select) = match snap {
             Some(snap_way) => (
                 EditLabel::SnappedNode,
                 vec![
-                    feature(Way, way_id),
-                    feature(Way, snap_way),
-                    feature(Node, node_id),
+                    feature(Way, way_id.get()),
+                    feature(Way, snap_way.get()),
+                    feature(Node, node_id.get()),
                 ],
             ),
             None => (
                 EditLabel::ExtendedWay,
-                vec![feature(Way, way_id), feature(Node, node_id)],
+                vec![feature(Way, way_id.get()), feature(Node, node_id.get())],
             ),
         };
         self.undo_stack
@@ -398,7 +399,7 @@ impl MapViewer {
                 e.feature_tags(&osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
-                    id: way_id,
+                    id: way_id.get(),
                 })
             })
             .map(|t| vec![t])

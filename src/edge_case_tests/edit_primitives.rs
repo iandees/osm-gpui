@@ -3,6 +3,7 @@
 //! collide with ids in the data.
 
 use super::*;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::{EditError, EditableLayer};
 
 fn layer_with(data: OsmData) -> OsmLayer {
@@ -11,21 +12,21 @@ fn layer_with(data: OsmData) -> OsmLayer {
 
 type Observed = (
     OsmData,
-    Vec<(i64, Vec<i64>)>,
-    Vec<(i64, Option<(f64, f64)>)>,
+    Vec<(NodeId, Vec<WayId>)>,
+    Vec<(NodeId, Option<(f64, f64)>)>,
 );
 
 /// Everything about the layer a caller can observe. After an edit this must
 /// equal what a layer freshly loaded from the same data shows.
 fn observable(layer: &OsmLayer) -> Observed {
     let data = (*layer.get_osm_data().unwrap()).clone();
-    let mut users: Vec<(i64, Vec<i64>)> = data
+    let mut users: Vec<(NodeId, Vec<WayId>)> = data
         .nodes
         .keys()
         .map(|&id| (id, layer.ways_using_node(id)))
         .collect();
     users.sort();
-    let mut positions: Vec<(i64, Option<(f64, f64)>)> = data
+    let mut positions: Vec<(NodeId, Option<(f64, f64)>)> = data
         .nodes
         .keys()
         .map(|&id| (id, layer.node_lat_lon(id)))
@@ -55,7 +56,7 @@ fn add_node_and_create_node_without_an_id_are_the_same_operation() {
     let from_add = a.add_node(40.5, -74.5);
     let from_create = b.create_node(40.5, -74.5, None).unwrap();
     assert_eq!(from_add, from_create);
-    assert!(from_add < 0);
+    assert!(from_add < NodeId(0));
     assert_eq!(observable(&a), observable(&b));
     assert!(a.is_modified() && b.is_modified());
     assert_same_as_fresh(&a);
@@ -67,9 +68,12 @@ fn create_node_on_a_layer_without_data_creates_it() {
     let id = layer.create_node(40.0, -74.0, None).unwrap();
     assert_eq!(layer.node_lat_lon(id), Some((40.0, -74.0)));
     let mut redo = OsmLayer::new(LayerId(2));
-    assert_eq!(redo.create_node(40.0, -74.0, Some(-50)), Ok(-50));
     assert_eq!(
-        redo.create_node(41.0, -74.0, Some(-50)),
+        redo.create_node(40.0, -74.0, Some(NodeId(-50))),
+        Ok(NodeId(-50))
+    );
+    assert_eq!(
+        redo.create_node(41.0, -74.0, Some(NodeId(-50))),
         Err(EditError::IdInUse(FeatureKind::Node, -50))
     );
 }
@@ -79,7 +83,7 @@ fn remove_node_and_delete_feature_leave_the_same_layer() {
     let data = Build::new().nodes(&[1, 2, 3]).way(10, &[1, 2], &[]).done();
     let mut removed = layer_with(data.clone());
     let mut deleted = layer_with(data);
-    removed.remove_node(3).unwrap();
+    removed.remove_node(NodeId(3)).unwrap();
     deleted.delete_feature(FeatureKind::Node, 3).unwrap();
     assert_eq!(observable(&removed), observable(&deleted));
     assert_same_as_fresh(&removed);
@@ -90,12 +94,18 @@ fn a_node_still_in_a_way_is_refused_by_both_removals_and_nothing_changes() {
     let mut layer = layer_with(network());
     let before = observable(&layer);
     let revision = layer.edit_revision();
-    assert_eq!(layer.remove_node(2), Err(EditError::NodeInWay(2)));
+    assert_eq!(
+        layer.remove_node(NodeId(2)),
+        Err(EditError::NodeInWay(NodeId(2)))
+    );
     assert_eq!(
         layer.delete_feature(FeatureKind::Node, 2).unwrap_err(),
-        EditError::NodeInWay(2)
+        EditError::NodeInWay(NodeId(2))
     );
-    assert_eq!(layer.remove_node(99), Err(EditError::UnknownNode(99)));
+    assert_eq!(
+        layer.remove_node(NodeId(99)),
+        Err(EditError::UnknownNode(NodeId(99)))
+    );
     assert_eq!(observable(&layer), before);
     assert_eq!(layer.edit_revision(), revision);
     assert!(!layer.is_modified());
@@ -118,25 +128,31 @@ fn undoing_a_creation_removes_the_way_before_its_nodes() {
 fn remove_way_and_delete_feature_leave_the_same_layer() {
     let mut removed = layer_with(network());
     let mut deleted = layer_with(network());
-    removed.remove_way(10).unwrap();
+    removed.remove_way(WayId(10)).unwrap();
     let snapshot = deleted.delete_feature(FeatureKind::Way, 10).unwrap();
-    assert_eq!(snapshot.way_nodes, vec![1, 2, 3]);
+    assert_eq!(snapshot.way_nodes, vec![NodeId(1), NodeId(2), NodeId(3)]);
     assert_eq!(observable(&removed), observable(&deleted));
     assert_same_as_fresh(&removed);
-    assert_eq!(removed.remove_way(10), Err(EditError::UnknownWay(10)));
+    assert_eq!(
+        removed.remove_way(WayId(10)),
+        Err(EditError::UnknownWay(WayId(10)))
+    );
 }
 
 #[test]
 fn add_way_and_restore_feature_build_the_same_way() {
     let mut added = layer_with(network());
-    let id = added.add_way(vec![1, 4], vec![("name".into(), "x".into())]);
+    let id = added.add_way(
+        vec![NodeId(1), NodeId(4)],
+        vec![("name".into(), "x".into())],
+    );
     let mut restored = layer_with(network());
     restored
         .restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
             kind: FeatureKind::Way,
-            id,
+            id: id.get(),
             tags: vec![("name".into(), "x".into())],
-            way_nodes: vec![1, 4],
+            way_nodes: vec![NodeId(1), NodeId(4)],
             node_lat_lon: None,
             version: 0,
         })
@@ -168,10 +184,10 @@ fn delete_feature_refuses_a_relation_and_restore_feature_a_taken_id() {
         EditError::InRelation {
             kind: FeatureKind::Way,
             id: 10,
-            relation: 500
+            relation: RelationId(500)
         }
     );
-    layer.set_relation_members(500, vec![]).unwrap();
+    layer.set_relation_members(RelationId(500), vec![]).unwrap();
     let snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
     layer.restore_feature(snapshot.clone()).unwrap();
     assert_eq!(
@@ -186,13 +202,13 @@ fn insert_node_into_way_with_a_bad_way_or_index_creates_nothing() {
     let before = observable(&layer);
     let revision = layer.edit_revision();
     assert_eq!(
-        layer.insert_node_into_way(99, 0, 40.0, -74.0),
-        Err(EditError::UnknownWay(99))
+        layer.insert_node_into_way(WayId(99), 0, 40.0, -74.0),
+        Err(EditError::UnknownWay(WayId(99)))
     );
     assert_eq!(
-        layer.insert_node_into_way(10, 4, 40.0, -74.0),
+        layer.insert_node_into_way(WayId(10), 4, 40.0, -74.0),
         Err(EditError::IndexOutOfRange {
-            way_id: 10,
+            way_id: WayId(10),
             index: 4,
             len: 3
         })
@@ -202,8 +218,13 @@ fn insert_node_into_way_with_a_bad_way_or_index_creates_nothing() {
     assert!(!layer.is_modified());
 
     // The end of the list is a valid position.
-    let id = layer.insert_node_into_way(10, 3, 40.0, -74.0).unwrap();
-    assert_eq!(layer.way_node_ids(10), Some(vec![1, 2, 3, id]));
+    let id = layer
+        .insert_node_into_way(WayId(10), 3, 40.0, -74.0)
+        .unwrap();
+    assert_eq!(
+        layer.way_node_ids(WayId(10)),
+        Some(vec![NodeId(1), NodeId(2), NodeId(3), id])
+    );
     assert_same_as_fresh(&layer);
 }
 
@@ -211,16 +232,22 @@ fn insert_node_into_way_with_a_bad_way_or_index_creates_nothing() {
 fn the_way_edits_refuse_an_unknown_way_or_index_without_changing_anything() {
     let mut layer = layer_with(network());
     let before = observable(&layer);
-    assert_eq!(layer.extend_way(99, 1), Err(EditError::UnknownWay(99)));
-    assert_eq!(layer.reverse_way(99), Err(EditError::UnknownWay(99)));
     assert_eq!(
-        layer.set_way_nodes(99, vec![]),
-        Err(EditError::UnknownWay(99))
+        layer.extend_way(WayId(99), NodeId(1)),
+        Err(EditError::UnknownWay(WayId(99)))
     );
     assert_eq!(
-        layer.remove_node_from_way(10, 3),
+        layer.reverse_way(WayId(99)),
+        Err(EditError::UnknownWay(WayId(99)))
+    );
+    assert_eq!(
+        layer.set_way_nodes(WayId(99), vec![]),
+        Err(EditError::UnknownWay(WayId(99)))
+    );
+    assert_eq!(
+        layer.remove_node_from_way(WayId(10), 3),
         Err(EditError::IndexOutOfRange {
-            way_id: 10,
+            way_id: WayId(10),
             index: 3,
             len: 3
         })
@@ -235,13 +262,13 @@ fn commit_node_moves_that_matches_nothing_changes_nothing() {
     let before = observable(&layer);
     let revision = layer.edit_revision();
     assert_eq!(
-        layer.commit_node_moves(&[(99, 41.0, -75.0)]),
-        Err(EditError::UnknownNode(99))
+        layer.commit_node_moves(&[(NodeId(99), 41.0, -75.0)]),
+        Err(EditError::UnknownNode(NodeId(99)))
     );
     // A move with one bad id moves none of them.
     assert_eq!(
-        layer.commit_node_moves(&[(1, 41.0, -75.0), (99, 41.0, -75.0)]),
-        Err(EditError::UnknownNode(99))
+        layer.commit_node_moves(&[(NodeId(1), 41.0, -75.0), (NodeId(99), 41.0, -75.0)]),
+        Err(EditError::UnknownNode(NodeId(99)))
     );
     assert_eq!(observable(&layer), before);
     assert_eq!(layer.edit_revision(), revision);
@@ -249,9 +276,11 @@ fn commit_node_moves_that_matches_nothing_changes_nothing() {
 
     assert_eq!(layer.commit_node_moves(&[]), Ok(()));
     assert!(!layer.is_modified());
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .unwrap();
     assert!(layer.is_modified());
-    assert_eq!(layer.node_lat_lon(1), Some((41.0, -75.0)));
+    assert_eq!(layer.node_lat_lon(NodeId(1)), Some((41.0, -75.0)));
     assert_same_as_fresh(&layer);
 }
 
@@ -260,11 +289,11 @@ fn tag_edits_on_an_unknown_object_are_refused() {
     let mut layer = layer_with(network());
     assert_eq!(
         layer.set_tag(FeatureKind::Way, 99, "a", "b"),
-        Err(EditError::UnknownWay(99))
+        Err(EditError::UnknownWay(WayId(99)))
     );
     assert_eq!(
         layer.remove_tag(FeatureKind::Relation, 99, "a"),
-        Err(EditError::UnknownRelation(99))
+        Err(EditError::UnknownRelation(RelationId(99)))
     );
     assert!(!layer.is_modified());
 }
@@ -280,16 +309,16 @@ fn relation_edits_report_why_they_were_refused() {
             .done(),
     );
     assert_eq!(
-        layer.delete_relation(500).unwrap_err(),
-        EditError::RelationInUse(500)
+        layer.delete_relation(RelationId(500)).unwrap_err(),
+        EditError::RelationInUse(RelationId(500))
     );
     assert_eq!(
-        layer.delete_relation(404).unwrap_err(),
-        EditError::UnknownRelation(404)
+        layer.delete_relation(RelationId(404)).unwrap_err(),
+        EditError::UnknownRelation(RelationId(404))
     );
     assert_eq!(
-        layer.set_relation_members(404, vec![]),
-        Err(EditError::UnknownRelation(404))
+        layer.set_relation_members(RelationId(404), vec![]),
+        Err(EditError::UnknownRelation(RelationId(404)))
     );
     assert!(!layer.is_modified());
 }
@@ -328,8 +357,8 @@ fn ids_for_new_objects_start_below_the_loaded_ones() {
     let mut layer = layer_with(local_ids());
     assert_fresh_ids_are_unused(&mut layer);
     let data = layer.get_osm_data().unwrap();
-    assert!(data.nodes.keys().filter(|&&id| id > -5).count() == 0);
-    assert!(data.ways.keys().all(|&id| id <= -7));
+    assert!(data.nodes.keys().filter(|&&id| id > NodeId(-5)).count() == 0);
+    assert!(data.ways.keys().all(|&id| id <= WayId(-7)));
 }
 
 #[test]
@@ -338,11 +367,11 @@ fn ids_are_derived_again_when_data_is_loaded_into_an_existing_layer() {
     // counters follow the new data, not the old.
     let mut layer = layer_with(network());
     layer.add_node(40.0, -74.0);
-    layer.add_way(vec![1, 2], vec![]);
+    layer.add_way(vec![NodeId(1), NodeId(2)], vec![]);
     layer.set_osm_data(Arc::new(local_ids()));
     assert_fresh_ids_are_unused(&mut layer);
     let data = layer.get_osm_data().unwrap();
-    assert!(data.ways.contains_key(&-7) && data.ways.contains_key(&-8));
+    assert!(data.ways.contains_key(&WayId(-7)) && data.ways.contains_key(&WayId(-8)));
 }
 
 #[test]

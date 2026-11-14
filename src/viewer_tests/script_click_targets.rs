@@ -3,6 +3,7 @@
 use crate::{clipboard_actions, selection_actions, MapViewer};
 use gpui::{point, px, size};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::viewport::Viewport;
@@ -111,13 +112,16 @@ fn relation_editor_script_targets_and_fixture() {
     assert_eq!(hit_at(340.0, 400.0), Some((Way, 8301)));
 
     let editable: &dyn osm_gpui::layers::EditableLayer = &layer;
-    assert_eq!(editable.relations_containing_way(8202), vec![9101]);
-    let route = editable.relation(9101).unwrap();
+    assert_eq!(
+        editable.relations_containing_way(WayId(8202)),
+        vec![RelationId(9101)]
+    );
+    let route = editable.relation(RelationId(9101)).unwrap();
     assert_eq!(route.members.len(), 5);
     // Way 8999 is a member but not loaded.
-    assert!(editable.way_node_ids(8999).is_none());
+    assert!(editable.way_node_ids(WayId(8999)).is_none());
     let find = |id| editable.relation(id);
-    let master = editable.relation(9103).unwrap();
+    let master = editable.relation(RelationId(9103)).unwrap();
     let flat = osm_gpui::relations::flatten_members(&master, &find);
     assert_eq!(flat.len(), 5);
 }
@@ -183,8 +187,8 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
             .as_editable()
             .unwrap();
         let ids = match kind {
-            Node => editable.relations_containing_node(id),
-            Way => editable.relations_containing_way(id),
+            Node => editable.relations_containing_node(NodeId(id)),
+            Way => editable.relations_containing_way(WayId(id)),
             osm_gpui::selection::FeatureKind::Relation => Vec::new(),
         };
         ids.into_iter()
@@ -211,7 +215,7 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
         .unwrap()
         .as_editable()
         .unwrap()
-        .relation(9101)
+        .relation(RelationId(9101))
         .unwrap();
     let refs: Vec<i64> = route.members.iter().map(|m| m.reference).collect();
     assert_eq!(refs, [8104, 8201, 8202, -1, 8203]);

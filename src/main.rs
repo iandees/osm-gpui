@@ -84,6 +84,7 @@ use osm_gpui::coordinates::{GeoBounds, LatLon};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::idle_tracker::IdleTracker;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
@@ -288,11 +289,11 @@ struct SetMode {
 #[derive(Clone, Debug, PartialEq)]
 enum SnapTarget {
     /// An existing node, reused / merged into.
-    Node { id: i64, lat: f64, lon: f64 },
+    Node { id: NodeId, lat: f64, lon: f64 },
     /// A way segment: the node becomes a new vertex at `index + 1`, at
     /// `(lat, lon)`, the nearest point of the segment.
     Way {
-        way_id: i64,
+        way_id: WayId,
         a: (f64, f64),
         b: (f64, f64),
         index: usize,
@@ -309,13 +310,13 @@ type Tags = Vec<(String, String)>;
 fn snap_target_tags(
     editable: &dyn osm_gpui::layers::EditableLayer,
     layer_id: LayerId,
-    way_id: i64,
+    way_id: WayId,
 ) -> Tags {
     let tags = editable
         .feature_tags(&osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Way,
-            id: way_id,
+            id: way_id.get(),
         })
         .unwrap_or_default();
     if osm_gpui::snap::classify(&tags).is_some() {
@@ -335,13 +336,13 @@ fn snap_target_tags(
 fn snap_node_sources(
     editable: &dyn osm_gpui::layers::EditableLayer,
     layer_id: LayerId,
-    node: i64,
+    node: NodeId,
 ) -> Vec<Tags> {
     let mut sources = vec![editable
         .feature_tags(&osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Node,
-            id: node,
+            id: node.get(),
         })
         .unwrap_or_default()];
     for way in editable.ways_using_node(node) {
@@ -357,8 +358,8 @@ fn snap_way_ok(
     editable: &dyn osm_gpui::layers::EditableLayer,
     layer_id: LayerId,
     sources: &[Tags],
-    node: Option<i64>,
-    way_id: i64,
+    node: Option<NodeId>,
+    way_id: WayId,
 ) -> bool {
     if let Some(node) = node {
         if editable
@@ -378,8 +379,8 @@ fn snap_node_ok(
     editable: &dyn osm_gpui::layers::EditableLayer,
     layer_id: LayerId,
     sources: &[Tags],
-    node: Option<i64>,
-    target: i64,
+    node: Option<NodeId>,
+    target: NodeId,
 ) -> bool {
     if node == Some(target) {
         return false;
@@ -410,7 +411,7 @@ fn window_to_map_origin(
 struct RotateSession {
     layer: LayerId,
     /// The nodes being turned with their positions when the session began.
-    originals: Vec<(i64, osm_gpui::geometry::LatLon)>,
+    originals: Vec<(NodeId, osm_gpui::geometry::LatLon)>,
     center: osm_gpui::geometry::LatLon,
     /// The pointer's angle around the centre when the session began; set by
     /// the first pointer move if the pointer position was not known yet.
@@ -662,16 +663,26 @@ pub(crate) fn uploaded_taint(
 ) -> Vec<osm_gpui::selection::FeatureRef> {
     use osm_gpui::selection::FeatureKind::{Node, Relation, Way};
     let mut ids: Vec<(osm_gpui::selection::FeatureKind, i64)> = Vec::new();
-    ids.extend(chunk.created_nodes.iter().map(|n| (Node, n.id)));
-    ids.extend(chunk.created_ways.iter().map(|w| (Way, w.id)));
-    ids.extend(chunk.created_relations.iter().map(|r| (Relation, r.id)));
-    ids.extend(chunk.deleted_node_ids.iter().map(|&(id, _)| (Node, id)));
-    ids.extend(chunk.deleted_way_ids.iter().map(|&(id, _)| (Way, id)));
+    ids.extend(chunk.created_nodes.iter().map(|n| (Node, n.id.get())));
+    ids.extend(chunk.created_ways.iter().map(|w| (Way, w.id.get())));
+    ids.extend(
+        chunk
+            .created_relations
+            .iter()
+            .map(|r| (Relation, r.id.get())),
+    );
+    ids.extend(
+        chunk
+            .deleted_node_ids
+            .iter()
+            .map(|&(id, _)| (Node, id.get())),
+    );
+    ids.extend(chunk.deleted_way_ids.iter().map(|&(id, _)| (Way, id.get())));
     ids.extend(
         chunk
             .deleted_relation_ids
             .iter()
-            .map(|&(id, _)| (Relation, id)),
+            .map(|&(id, _)| (Relation, id.get())),
     );
     layers
         .iter()
@@ -837,7 +848,7 @@ struct PendingTagEditOpen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MemberRef {
     layer_id: LayerId,
-    relation_id: i64,
+    relation_id: RelationId,
     index: usize,
 }
 
@@ -1432,8 +1443,8 @@ impl MapViewer {
             .layer_manager
             .find_layer(hit.layer_id)?
             .as_editable()?
-            .node_lat_lon(hit.id)?;
-        Some((hit, vec![(hit.layer_id, vec![(hit.id, lat, lon)])]))
+            .node_lat_lon(NodeId(hit.id))?;
+        Some((hit, vec![(hit.layer_id, vec![(NodeId(hit.id), lat, lon)])]))
     }
 
     /// Resolve the current selection into, per owning layer, the set of node
@@ -1444,7 +1455,7 @@ impl MapViewer {
         use osm_gpui::selection::FeatureKind;
         use std::collections::{HashMap, HashSet};
 
-        let mut ids_by_layer: HashMap<LayerId, HashSet<i64>> = HashMap::new();
+        let mut ids_by_layer: HashMap<LayerId, HashSet<NodeId>> = HashMap::new();
         for feat in &self.selected {
             let Some(layer) = self.layer_manager.find_layer(feat.layer_id) else {
                 continue;
@@ -1455,10 +1466,10 @@ impl MapViewer {
             let entry = ids_by_layer.entry(feat.layer_id).or_default();
             match feat.kind {
                 FeatureKind::Node => {
-                    entry.insert(feat.id);
+                    entry.insert(NodeId(feat.id));
                 }
                 FeatureKind::Way => {
-                    if let Some(node_ids) = editable.way_node_ids(feat.id) {
+                    if let Some(node_ids) = editable.way_node_ids(WayId(feat.id)) {
                         entry.extend(node_ids);
                     }
                 }
@@ -1472,7 +1483,7 @@ impl MapViewer {
             .filter_map(|(layer_id, ids)| {
                 let layer = self.layer_manager.find_layer(layer_id)?;
                 let editable = layer.as_editable()?;
-                let originals: Vec<(i64, f64, f64)> = ids
+                let originals: Vec<(NodeId, f64, f64)> = ids
                     .into_iter()
                     .filter_map(|id| editable.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
                     .collect();
@@ -1825,7 +1836,7 @@ impl MapViewer {
     pub(crate) fn relation_of(
         &self,
         layer_id: LayerId,
-        relation_id: i64,
+        relation_id: RelationId,
     ) -> Option<osm_gpui::osm::OsmRelation> {
         self.layer_manager
             .find_layer(layer_id)?
@@ -1838,7 +1849,7 @@ impl MapViewer {
     fn change_relation_members(
         &mut self,
         layer_id: LayerId,
-        relation_id: i64,
+        relation_id: RelationId,
         after: Vec<osm_gpui::osm::OsmMember>,
     ) {
         if self.refuse_edit_during_upload() {
@@ -1876,7 +1887,7 @@ impl MapViewer {
 
     /// Put the way members of a relation into connected order as one undo
     /// step, or say in the status bar that there is nothing to change.
-    pub(crate) fn sort_relation_members(&mut self, layer_id: LayerId, relation_id: i64) {
+    pub(crate) fn sort_relation_members(&mut self, layer_id: LayerId, relation_id: RelationId) {
         let Some(relation) = self.relation_of(layer_id, relation_id) else {
             return;
         };
@@ -2148,7 +2159,7 @@ impl MapViewer {
         };
         let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
         let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
-        let moves: Vec<(i64, f64, f64)> = session
+        let moves: Vec<(NodeId, f64, f64)> = session
             .originals
             .iter()
             .zip(&after)
@@ -2355,7 +2366,7 @@ impl MapViewer {
 
     /// Append the selected nodes and ways to relation `relation_id` as one
     /// undo step (the picker's choice).
-    fn add_selection_to_relation(&mut self, relation_id: i64) {
+    fn add_selection_to_relation(&mut self, relation_id: RelationId) {
         if self.refuse_edit_during_upload() {
             return;
         }
@@ -2388,8 +2399,8 @@ impl MapViewer {
         self.pointer.hovered = None;
         self.clear_vertex_preview();
         self.set_add_progress(Some(AddProgress {
-            way_id: Some(from.way_id),
-            last_node_id: from.from_node,
+            way_id: Some(WayId(from.way_id)),
+            last_node_id: NodeId(from.from_node),
             at_start: from.at_start,
         }));
     }
@@ -2410,11 +2421,11 @@ impl MapViewer {
 
     /// Select relation `id` of `layer_id` on its own (relations can't be
     /// clicked on the map; this is the side panel's way in).
-    pub(crate) fn select_relation(&mut self, layer_id: LayerId, id: i64) {
+    pub(crate) fn select_relation(&mut self, layer_id: LayerId, id: RelationId) {
         self.set_selection(vec![osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Relation,
-            id,
+            id: id.get(),
         }]);
     }
 
@@ -2602,12 +2613,12 @@ impl MapViewer {
             };
             match feature.kind {
                 FeatureKind::Node => {
-                    if let Some(pos) = editable.node_lat_lon(feature.id) {
+                    if let Some(pos) = editable.node_lat_lon(NodeId(feature.id)) {
                         extend(pos);
                     }
                 }
                 FeatureKind::Way => {
-                    for node_id in editable.way_node_ids(feature.id).unwrap_or_default() {
+                    for node_id in editable.way_node_ids(WayId(feature.id)).unwrap_or_default() {
                         if let Some(pos) = editable.node_lat_lon(node_id) {
                             extend(pos);
                         }
@@ -2615,16 +2626,16 @@ impl MapViewer {
                 }
                 // The box around the members that are loaded.
                 FeatureKind::Relation => {
-                    let Some(relation) = editable.relation(feature.id) else {
+                    let Some(relation) = editable.relation(RelationId(feature.id)) else {
                         continue;
                     };
-                    let node = |id: i64| {
+                    let node = |id: NodeId| {
                         editable
                             .node_lat_lon(id)
                             .map(|(lat, lon)| LatLon::new(lat, lon))
                     };
-                    let way_nodes = |id: i64| editable.way_node_ids(id);
-                    let find = |id: i64| editable.relation(id);
+                    let way_nodes = |id: WayId| editable.way_node_ids(id);
+                    let find = |id: RelationId| editable.relation(id);
                     let lookup = osm_gpui::relations::MemberLookup {
                         node: &node,
                         way_nodes: &way_nodes,
@@ -2814,9 +2825,9 @@ impl MapViewer {
             return false;
         };
         match feature.kind {
-            FeatureKind::Node => editable.node_lat_lon(feature.id).is_some(),
-            FeatureKind::Way => editable.way_node_ids(feature.id).is_some(),
-            FeatureKind::Relation => editable.relation(feature.id).is_some(),
+            FeatureKind::Node => editable.node_lat_lon(NodeId(feature.id)).is_some(),
+            FeatureKind::Way => editable.way_node_ids(WayId(feature.id)).is_some(),
+            FeatureKind::Relation => editable.relation(RelationId(feature.id)).is_some(),
         }
     }
 
@@ -3157,7 +3168,7 @@ impl MapViewer {
         &self,
         layer_id: LayerId,
         screen_pt: gpui::Point<gpui::Pixels>,
-        node: Option<i64>,
+        node: Option<NodeId>,
         sources: &[Tags],
         with_nodes: bool,
     ) -> Option<SnapTarget> {
@@ -3203,7 +3214,7 @@ impl MapViewer {
 
     /// The single node a move-drag is carrying, with its layer, if it is
     /// just one node (a way or a multi-selection drag never snaps).
-    fn single_dragged_node(targets: &NodeMoveTargets) -> Option<(LayerId, i64)> {
+    fn single_dragged_node(targets: &NodeMoveTargets) -> Option<(LayerId, NodeId)> {
         match targets.as_slice() {
             [(layer, nodes)] => match nodes.as_slice() {
                 [(id, _, _)] => Some((*layer, *id)),
@@ -3219,7 +3230,7 @@ impl MapViewer {
         &self,
         pos: gpui::Point<gpui::Pixels>,
         modifiers: gpui::Modifiers,
-        dragged: (LayerId, i64),
+        dragged: (LayerId, NodeId),
     ) -> Option<SnapTarget> {
         let (layer_id, node) = dragged;
         if osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
@@ -3243,7 +3254,7 @@ impl MapViewer {
         &mut self,
         pos: gpui::Point<gpui::Pixels>,
         modifiers: gpui::Modifiers,
-        dragged: Option<(LayerId, i64)>,
+        dragged: Option<(LayerId, NodeId)>,
     ) -> bool {
         let target = if let Some(dragged) = dragged {
             self.drag_snap_target(pos, modifiers, dragged)
@@ -3379,7 +3390,7 @@ impl MapViewer {
                 for (layer_id, originals) in &targets {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
-                            let ids: std::collections::HashSet<i64> =
+                            let ids: std::collections::HashSet<NodeId> =
                                 originals.iter().map(|&(id, _, _)| id).collect();
                             editable.set_drag_preview(&ids, delta);
                         }
@@ -3506,7 +3517,7 @@ impl MapViewer {
 
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
-                    let mut moves: Vec<(i64, f64, f64)> = Vec::with_capacity(originals.len());
+                    let mut moves: Vec<(NodeId, f64, f64)> = Vec::with_capacity(originals.len());
                     let mut undo_entries: Vec<NodeMoveUndoEntry> =
                         Vec::with_capacity(originals.len());
                     for &(id, lat, lon) in originals {
@@ -3552,7 +3563,7 @@ impl MapViewer {
                     };
                     match selection_actions::apply_merge(
                         &mut self.layer_manager,
-                        &[pick(node), pick(target)],
+                        &[pick(node.get()), pick(target.get())],
                         self.active_layer,
                     ) {
                         Ok(outcome) => {
@@ -3680,7 +3691,7 @@ impl MapViewer {
     /// would pass the server's way-node maximum. If so, say so in the status
     /// bar and return true (the caller abandons the edit). A way already over
     /// the limit stays editable otherwise: only growing it is refused.
-    fn refuse_way_growth(&mut self, layer_id: LayerId, way_id: i64, by: usize) -> bool {
+    fn refuse_way_growth(&mut self, layer_id: LayerId, way_id: WayId, by: usize) -> bool {
         let len = self
             .layer_manager
             .find_layer(layer_id)
@@ -4707,9 +4718,11 @@ impl MapViewer {
         use osm_gpui::selection::{FeatureKind, FeatureRef};
 
         let target = match *violation {
-            LimitViolation::WayTooLong { layer, id, .. } => Some((layer, FeatureKind::Way, id)),
+            LimitViolation::WayTooLong { layer, id, .. } => {
+                Some((layer, FeatureKind::Way, id.get()))
+            }
             LimitViolation::RelationTooLarge { layer, id, .. } => {
-                Some((layer, FeatureKind::Relation, id))
+                Some((layer, FeatureKind::Relation, id.get()))
             }
         };
         if let Some((layer, kind, id)) = target {
@@ -5380,21 +5393,21 @@ impl MapViewer {
         use osm_gpui::selection::{FeatureKind, FeatureRef};
         let mut out = vec![FeatureRef { layer_id, kind, id }];
         if kind == FeatureKind::Way {
-            let mut nodes: Vec<i64> = self
+            let mut nodes: Vec<NodeId> = self
                 .layer_manager
                 .find_layer(layer_id)
                 .and_then(|l| l.as_editable())
-                .and_then(|e| e.way_node_ids(id))
+                .and_then(|e| e.way_node_ids(WayId(id)))
                 .unwrap_or_default();
             if let osm_gpui::osm_api::ServerElement::Present(data) = server {
-                if let Some(way) = data.ways.get(&id) {
+                if let Some(way) = data.ways.get(&WayId(id)) {
                     nodes.extend(way.nodes.iter().copied());
                 }
             }
             out.extend(nodes.into_iter().map(|n| FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id: n,
+                id: n.get(),
             }));
         }
         out

@@ -6,6 +6,7 @@
 //! that the main pass then looks objects up in.
 
 use super::{Expr, Pat, Query, ValueTest};
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmData, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
 use std::borrow::Cow;
@@ -53,9 +54,9 @@ impl<'a> Obj<'a> {
 
     fn id(&self) -> i64 {
         match self {
-            Obj::Node(n) => n.id,
-            Obj::Way(w) => w.id,
-            Obj::Relation(r) => r.id,
+            Obj::Node(n) => n.id.get(),
+            Obj::Way(w) => w.id.get(),
+            Obj::Relation(r) => r.id.get(),
         }
     }
 
@@ -78,25 +79,25 @@ impl<'a> Obj<'a> {
 
 #[derive(Default)]
 struct IdSets {
-    nodes: HashSet<i64>,
-    ways: HashSet<i64>,
-    relations: HashSet<i64>,
+    nodes: HashSet<NodeId>,
+    ways: HashSet<WayId>,
+    relations: HashSet<RelationId>,
 }
 
 impl IdSets {
     fn insert(&mut self, kind: FeatureKind, id: i64) {
         match kind {
-            FeatureKind::Node => self.nodes.insert(id),
-            FeatureKind::Way => self.ways.insert(id),
-            FeatureKind::Relation => self.relations.insert(id),
+            FeatureKind::Node => self.nodes.insert(NodeId(id)),
+            FeatureKind::Way => self.ways.insert(WayId(id)),
+            FeatureKind::Relation => self.relations.insert(RelationId(id)),
         };
     }
 
     fn contains(&self, kind: FeatureKind, id: i64) -> bool {
         match kind {
-            FeatureKind::Node => self.nodes.contains(&id),
-            FeatureKind::Way => self.ways.contains(&id),
-            FeatureKind::Relation => self.relations.contains(&id),
+            FeatureKind::Node => self.nodes.contains(&NodeId(id)),
+            FeatureKind::Way => self.ways.contains(&WayId(id)),
+            FeatureKind::Relation => self.relations.contains(&RelationId(id)),
         }
     }
 }
@@ -104,7 +105,7 @@ impl IdSets {
 struct Env<'a> {
     data: &'a OsmData,
     ctx: &'a SearchContext<'a>,
-    original_relations: HashMap<i64, &'a OsmRelation>,
+    original_relations: HashMap<RelationId, &'a OsmRelation>,
     /// Result of each `child` / `parent` sub-query, by index.
     structural: Vec<IdSets>,
 }
@@ -144,19 +145,19 @@ pub fn search(query: &Query, data: &OsmData, ctx: &SearchContext<'_>) -> Vec<(Fe
         env.eval(&query.expr, obj)
     };
 
-    let mut node_ids: Vec<i64> = data
+    let mut node_ids: Vec<NodeId> = data
         .nodes
         .values()
         .filter(|n| keep(Obj::Node(n)))
         .map(|n| n.id)
         .collect();
-    let mut way_ids: Vec<i64> = data
+    let mut way_ids: Vec<WayId> = data
         .ways
         .values()
         .filter(|w| keep(Obj::Way(w)))
         .map(|w| w.id)
         .collect();
-    let mut relation_ids: Vec<i64> = data
+    let mut relation_ids: Vec<RelationId> = data
         .relations
         .iter()
         .filter(|r| keep(Obj::Relation(r)))
@@ -167,12 +168,12 @@ pub fn search(query: &Query, data: &OsmData, ctx: &SearchContext<'_>) -> Vec<(Fe
     relation_ids.sort_unstable();
 
     let mut out = Vec::with_capacity(node_ids.len() + way_ids.len() + relation_ids.len());
-    out.extend(node_ids.into_iter().map(|id| (FeatureKind::Node, id)));
-    out.extend(way_ids.into_iter().map(|id| (FeatureKind::Way, id)));
+    out.extend(node_ids.into_iter().map(|id| (FeatureKind::Node, id.get())));
+    out.extend(way_ids.into_iter().map(|id| (FeatureKind::Way, id.get())));
     out.extend(
         relation_ids
             .into_iter()
-            .map(|id| (FeatureKind::Relation, id)),
+            .map(|id| (FeatureKind::Relation, id.get())),
     );
     out
 }
@@ -299,9 +300,13 @@ impl<'a> Env<'a> {
 
     fn has_member(&self, m: &crate::osm::OsmMember) -> bool {
         match m.member_type {
-            MemberType::Node => self.data.nodes.contains_key(&m.reference),
-            MemberType::Way => self.data.ways.contains_key(&m.reference),
-            MemberType::Relation => self.data.relations.iter().any(|r| r.id == m.reference),
+            MemberType::Node => self.data.nodes.contains_key(&NodeId(m.reference)),
+            MemberType::Way => self.data.ways.contains_key(&WayId(m.reference)),
+            MemberType::Relation => self
+                .data
+                .relations
+                .iter()
+                .any(|r| r.id.get() == m.reference),
         }
     }
 
@@ -359,12 +364,12 @@ impl<'a> Env<'a> {
                         MemberType::Node => self
                             .data
                             .nodes
-                            .get(&m.reference)
+                            .get(&NodeId(m.reference))
                             .is_some_and(|n| self.in_view(view, Obj::Node(n), false)),
                         MemberType::Way => self
                             .data
                             .ways
-                            .get(&m.reference)
+                            .get(&WayId(m.reference))
                             .is_some_and(|w| self.in_view(view, Obj::Way(w), false)),
                         MemberType::Relation => false,
                     })

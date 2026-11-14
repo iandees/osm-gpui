@@ -4,6 +4,7 @@
 use gpui::{px, CursorStyle, Pixels, Point, Window};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::interaction;
 use osm_gpui::layers::LayerId;
 
@@ -40,9 +41,9 @@ impl ExtrudeStyle {
 /// build the preview/final rectangle.
 pub(crate) struct ExtrudeDrag {
     pub(crate) layer: LayerId,
-    pub(crate) way_id: i64,
-    pub(crate) node_a: i64,
-    pub(crate) node_b: i64,
+    pub(crate) way_id: WayId,
+    pub(crate) node_a: NodeId,
+    pub(crate) node_b: NodeId,
     /// Index of the segment (`node_a`) in the way's node list.
     pub(crate) segment: usize,
     pub(crate) style: ExtrudeStyle,
@@ -67,7 +68,12 @@ pub(crate) struct ExtrudeState {
 
 /// The index `i` such that `node_ids[i] == a && node_ids[i + 1] == b`,
 /// preferring `hint` (the hit-test's index) when it is consistent.
-pub(crate) fn segment_index_in_way(node_ids: &[i64], hint: usize, a: i64, b: i64) -> Option<usize> {
+pub(crate) fn segment_index_in_way(
+    node_ids: &[NodeId],
+    hint: usize,
+    a: NodeId,
+    b: NodeId,
+) -> Option<usize> {
     let matches = |i: usize| node_ids.get(i) == Some(&a) && node_ids.get(i + 1) == Some(&b);
     if matches(hint) {
         return Some(hint);
@@ -92,7 +98,7 @@ pub(super) fn press(view: &mut MapViewer, position: Point<Pixels>, modifiers: gp
         .selected
         .iter()
         .find(|f| f.layer_id == layer_id && f.kind == osm_gpui::selection::FeatureKind::Way)
-        .map(|f| f.id);
+        .map(|f| WayId(f.id));
     let Some((way_id, node_a, node_b, idx)) =
         osm_layer.hit_test_segment_preferring(&view.viewport, position, 6.0, selected_way)
     else {
@@ -235,7 +241,7 @@ impl MapViewer {
         let way = osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,
             kind: osm_gpui::selection::FeatureKind::Way,
-            id: way_id,
+            id: way_id.get(),
         };
         self.undo_stack.push(
             UndoableAction::edit(drag.layer, EditLabel::ExtrudedWay, rec.into_ops())
@@ -263,7 +269,7 @@ impl MapViewer {
 
         let editable = self.layer_manager.find_layer(drag.layer)?.as_editable()?;
         let ids = editable.way_node_ids(drag.way_id)?;
-        let screen_of = |id: i64| -> Option<(f64, f64)> {
+        let screen_of = |id: NodeId| -> Option<(f64, f64)> {
             let (lat, lon) = editable.node_lat_lon(id)?;
             let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
             Some((p.x.to_f64(), p.y.to_f64()))
@@ -281,11 +287,11 @@ impl MapViewer {
                     .feature_tags(&FeatureRef {
                         layer_id: drag.layer,
                         kind: FeatureKind::Node,
-                        id,
+                        id: id.get(),
                     })
                     .is_none_or(|t| t.is_empty());
             nodes.push(SegmentNode {
-                id,
+                id: id.get(),
                 pos: screen_of(id)?,
                 movable,
             });
@@ -347,8 +353,11 @@ impl MapViewer {
                 .to_pair()
         };
         let new_geo: Vec<(f64, f64)> = plan.new_nodes.iter().map(|&p| to_geo(p)).collect();
-        let moved_geo: Vec<(i64, (f64, f64))> =
-            plan.moved.iter().map(|&(id, p)| (id, to_geo(p))).collect();
+        let moved_geo: Vec<(NodeId, (f64, f64))> = plan
+            .moved
+            .iter()
+            .map(|&(id, p)| (NodeId(id), to_geo(p)))
+            .collect();
 
         let Some(editable) = self
             .layer_manager
@@ -368,11 +377,11 @@ impl MapViewer {
             };
             new_ids.push(id);
         }
-        let after: Vec<i64> = plan
+        let after: Vec<NodeId> = plan
             .nodes
             .iter()
             .map(|n| match *n {
-                PlanNode::Existing(id) => id,
+                PlanNode::Existing(id) => NodeId(id),
                 PlanNode::New(i) => new_ids[i],
             })
             .collect();
@@ -381,7 +390,7 @@ impl MapViewer {
             return;
         }
         if !moved_geo.is_empty() {
-            let moves: Vec<(i64, f64, f64)> = moved_geo
+            let moves: Vec<(NodeId, f64, f64)> = moved_geo
                 .iter()
                 .filter(|&&(id, _)| rec.layer().node_lat_lon(id).is_some())
                 .map(|&(id, (lat, lon))| (id, lat, lon))
@@ -402,7 +411,7 @@ impl MapViewer {
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,
             kind: osm_gpui::selection::FeatureKind::Way,
-            id: drag.way_id,
+            id: drag.way_id.get(),
         }];
         self.fields_panel.fields_text_inputs.clear();
         self.fields_panel.fields_text_subscribed.clear();
@@ -475,8 +484,8 @@ impl MapViewer {
         self.undo_stack.push(
             UndoableAction::edit(drag.layer, EditLabel::InsertedNode, rec.into_ops()).selecting(
                 vec![
-                    feature(osm_gpui::selection::FeatureKind::Way, drag.way_id),
-                    feature(osm_gpui::selection::FeatureKind::Node, new_id),
+                    feature(osm_gpui::selection::FeatureKind::Way, drag.way_id.get()),
+                    feature(osm_gpui::selection::FeatureKind::Node, new_id.get()),
                 ],
             ),
         );

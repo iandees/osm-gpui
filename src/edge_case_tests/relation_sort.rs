@@ -3,6 +3,7 @@
 //! upload.
 
 use super::*;
+use osm_gpui::ids::RelationId;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -43,7 +44,7 @@ fn network(members: &[(MemberType, i64, &str)]) -> OsmData {
 fn sort(s: &mut Session) -> bool {
     let before = s.view.undo_stack.revision;
     let layer = s.layer;
-    s.view.sort_relation_members(layer, 900);
+    s.view.sort_relation_members(layer, RelationId(900));
     s.view.undo_stack.revision != before
 }
 

@@ -1,6 +1,7 @@
 //! The low-level node and way edit primitives and feature geometry classification.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::layers::{EditableLayer, MapLayer};
@@ -17,14 +18,14 @@ fn add_node_assigns_decrementing_placeholder_ids_and_is_hit_testable() {
 
     let id1 = layer.add_node(40.0, -74.0);
     let id2 = layer.add_node(40.0, -74.0);
-    assert_eq!(id1, -1, "first placeholder id should be -1");
-    assert_eq!(id2, -2, "ids should decrement");
+    assert_eq!(id1, NodeId(-1), "first placeholder id should be -1");
+    assert_eq!(id2, NodeId(-2), "ids should decrement");
     assert!(layer.is_modified());
 
     let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
     assert!(hits
         .iter()
-        .any(|h| h.feature.id == id1 && h.kind == FeatureKind::Node));
+        .any(|h| h.feature.id == id1.get() && h.kind == FeatureKind::Node));
 }
 
 #[test]
@@ -59,17 +60,17 @@ fn add_way_creates_closed_building_way_and_is_hit_testable() {
         vec![n1, n2, n1],
         vec![("building".to_string(), "yes".to_string())],
     );
-    assert_eq!(way_id, -1, "first placeholder way id should be -1");
+    assert_eq!(way_id, WayId(-1), "first placeholder way id should be -1");
 
     let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
     assert!(hits
         .iter()
-        .any(|h| h.feature.id == way_id && h.kind == FeatureKind::Way));
+        .any(|h| h.feature.id == way_id.get() && h.kind == FeatureKind::Way));
     let tags = layer
         .feature_tags(&crate::selection::FeatureRef {
             layer_id: layer.id(),
             kind: FeatureKind::Way,
-            id: way_id,
+            id: way_id.get(),
         })
         .expect("way should have tags");
     assert!(tags.contains(&("building".to_string(), "yes".to_string())));
@@ -129,7 +130,7 @@ fn reverse_way_flips_node_order_and_is_its_own_inverse() {
     assert!(layer.reverse_way(way_id).is_ok());
     assert_eq!(layer.way_node_ids(way_id), Some(vec![n1, n2, n3]));
 
-    assert!(layer.reverse_way(999).is_err());
+    assert!(layer.reverse_way(WayId(999)).is_err());
 }
 
 #[test]
@@ -151,8 +152,8 @@ fn set_way_nodes_rewrites_the_list_and_tracks_node_usage() {
 
     // A node no way uses any more can be deleted again.
     assert!(layer.set_way_nodes(w2, vec![n3, n1]).is_ok());
-    assert!(layer.delete_feature(FeatureKind::Node, copy).is_ok());
-    assert!(layer.set_way_nodes(999, vec![]).is_err());
+    assert!(layer.delete_feature(FeatureKind::Node, copy.get()).is_ok());
+    assert!(layer.set_way_nodes(WayId(999), vec![]).is_err());
 }
 
 #[test]
@@ -160,23 +161,23 @@ fn relations_containing_way_reads_member_refs() {
     let node = |id| OsmNode {
         id,
         lat: 40.0,
-        lon: -74.0 + id as f64 * 0.001,
+        lon: -74.0 + id.get() as f64 * 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = |id, nodes: Vec<i64>| OsmWay {
         id,
-        nodes,
+        nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         version: 1,
         tags: empty_tags(),
     };
     let mut data = (*data_with(
-        vec![node(1), node(2), node(3)],
-        vec![way(10, vec![1, 2]), way(11, vec![2, 3])],
+        vec![node(NodeId(1)), node(NodeId(2)), node(NodeId(3))],
+        vec![way(WayId(10), vec![1, 2]), way(WayId(11), vec![2, 3])],
     ))
     .clone();
     data.relations.push(crate::osm::OsmRelation {
-        id: 500,
+        id: RelationId(500),
         members: vec![
             crate::osm::OsmMember {
                 member_type: crate::osm::MemberType::Way,
@@ -194,11 +195,17 @@ fn relations_containing_way_reads_member_refs() {
         tags: HashMap::new(),
     });
     let layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data));
-    assert_eq!(layer.relations_containing_way(11), vec![500]);
-    assert!(layer.relations_containing_way(10).is_empty());
+    assert_eq!(
+        layer.relations_containing_way(WayId(11)),
+        vec![RelationId(500)]
+    );
+    assert!(layer.relations_containing_way(WayId(10)).is_empty());
     // Node membership is by node ref, not way ref.
-    assert_eq!(layer.relations_containing_node(10), vec![500]);
-    assert!(layer.relations_containing_node(11).is_empty());
+    assert_eq!(
+        layer.relations_containing_node(NodeId(10)),
+        vec![RelationId(500)]
+    );
+    assert!(layer.relations_containing_node(NodeId(11)).is_empty());
 }
 
 #[test]
@@ -228,7 +235,7 @@ fn insert_node_into_way_splices_at_index_and_remove_node_from_way_undoes_it() {
 #[test]
 fn feature_geometry_classifies_unreferenced_node_as_point() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -251,7 +258,7 @@ fn feature_geometry_classifies_unreferenced_node_as_point() {
 #[test]
 fn feature_geometry_returns_none_for_wrong_layer() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -271,14 +278,14 @@ fn feature_geometry_returns_none_for_wrong_layer() {
 #[test]
 fn feature_geometry_classifies_closed_area_way() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.0,
         version: 1,
@@ -287,8 +294,8 @@ fn feature_geometry_classifies_closed_area_way() {
     let mut tags = HashMap::new();
     tags.insert("building".to_string(), "yes".to_string());
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 2, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(2), NodeId(1)],
         version: 1,
         tags,
     };

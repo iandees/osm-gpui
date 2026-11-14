@@ -7,6 +7,7 @@ use super::*;
 use crate::{AddProgress, ExtrudeDrag, ExtrudeStyle};
 use gpui::{point, Pixels, Point, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 
 const LAT: f64 = 40.0;
 const LON: f64 = -74.0;
@@ -18,9 +19,9 @@ fn data() -> OsmData {
     let mut d = b.done();
     for (id, lon) in [(1, LON - 0.001), (2, LON + 0.001)] {
         d.nodes.insert(
-            id,
+            NodeId(id),
             OsmNode {
-                id,
+                id: NodeId(id),
                 lat: LAT,
                 lon,
                 version: 1,
@@ -128,9 +129,9 @@ fn extrude_new_way_redo_recreates_the_nodes_and_way(cx: &mut TestAppContext) {
         round_trip(s, |s| {
             let drag = ExtrudeDrag {
                 layer: s.layer,
-                way_id: 10,
-                node_a: 1,
-                node_b: 2,
+                way_id: WayId(10),
+                node_a: NodeId(1),
+                node_b: NodeId(2),
                 segment: 0,
                 style: ExtrudeStyle::NewWay,
                 down: off(s, 0.0, 0.0),
@@ -157,9 +158,9 @@ fn extrude_reshape_redo_reproduces_new_nodes_and_the_way_edit(cx: &mut TestAppCo
         round_trip(s, |s| {
             let drag = ExtrudeDrag {
                 layer: s.layer,
-                way_id: 10,
-                node_a: 1,
-                node_b: 2,
+                way_id: WayId(10),
+                node_a: NodeId(1),
+                node_b: NodeId(2),
                 segment: 0,
                 style: ExtrudeStyle::Reshape,
                 down: off(s, 0.0, 0.0),
@@ -177,9 +178,9 @@ fn inserting_a_node_on_a_segment_redoes_at_the_same_id_and_index(cx: &mut TestAp
         let edited = round_trip(s, |s| {
             let drag = ExtrudeDrag {
                 layer: s.layer,
-                way_id: 10,
-                node_a: 1,
-                node_b: 2,
+                way_id: WayId(10),
+                node_a: NodeId(1),
+                node_b: NodeId(2),
                 segment: 0,
                 style: ExtrudeStyle::Reshape,
                 down: off(s, 0.0, 0.0),
@@ -253,8 +254,8 @@ fn continuing_a_way_from_its_start_or_its_end_redoes_on_the_right_side(cx: &mut 
         with_session(cx, data(), move |s| {
             add_mode(s);
             s.view.set_add_progress(Some(AddProgress {
-                way_id: Some(10),
-                last_node_id: if at_start { 1 } else { 2 },
+                way_id: Some(WayId(10)),
+                last_node_id: if at_start { NodeId(1) } else { NodeId(2) },
                 at_start,
             }));
             let edited = round_trip(s, |s| {
@@ -327,9 +328,9 @@ fn drawing_steps_select_the_way_the_user_made(cx: &mut TestAppContext) {
     with_session(cx, data(), |s| {
         let drag = ExtrudeDrag {
             layer: s.layer,
-            way_id: 10,
-            node_a: 1,
-            node_b: 2,
+            way_id: WayId(10),
+            node_a: NodeId(1),
+            node_b: NodeId(2),
             segment: 0,
             style: ExtrudeStyle::NewWay,
             down: off(s, 0.0, 0.0),

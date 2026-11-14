@@ -1,6 +1,7 @@
 //! Which nodes are drawn and clickable at each zoom.
 
 use super::{node_point, view_at, way_with_poi_layer};
+use crate::ids::{NodeId, WayId};
 use crate::layers::node_markers::NodeForm;
 use crate::layers::EditableLayer;
 use crate::layers::{node_markers, LayerId};
@@ -69,7 +70,7 @@ fn add_mode_snaps_to_an_undrawn_vertex() {
         // Not a hit target, but a snap target.
         let hits = layer.hit_test(&vp, near);
         assert!(hits.iter().all(|h| h.kind == FeatureKind::Way), "z{z}");
-        assert_eq!(layer.snap_to_node(&vp, near, 8.0), Some(30), "z{z}");
+        assert_eq!(layer.snap_to_node(&vp, near, 8.0), Some(NodeId(30)), "z{z}");
     }
     // Far from any node: nothing to snap to.
     let vp = view_at(19.0);
@@ -167,20 +168,29 @@ fn box_select_and_hit_test_agree_on_which_nodes_are_shown() {
 fn marker_form_follows_the_view_in_the_layer() {
     let layer = way_with_poi_layer(5);
     let pins = layer.pins();
-    let vertex = layer.derived.node_cache.index_by_id[&3];
-    let poi = layer.derived.node_cache.index_by_id[&1000];
-    assert_eq!(layer.node_form_at(&pins, vertex, 3, 17.0), NodeForm::Hidden);
-    assert_eq!(layer.node_form_at(&pins, vertex, 3, 18.5), NodeForm::Hidden);
+    let vertex = layer.derived.node_cache.index_by_id[&NodeId(3)];
+    let poi = layer.derived.node_cache.index_by_id[&NodeId(1000)];
     assert_eq!(
-        layer.node_form_at(&pins, poi, 1000, 17.0),
+        layer.node_form_at(&pins, vertex, NodeId(3), 17.0),
+        NodeForm::Hidden
+    );
+    assert_eq!(
+        layer.node_form_at(&pins, vertex, NodeId(3), 18.5),
+        NodeForm::Hidden
+    );
+    assert_eq!(
+        layer.node_form_at(&pins, poi, NodeId(1000), 17.0),
         NodeForm::Simple(node_markers::SIMPLE_SIZE)
     );
-    let stray = layer.derived.node_cache.index_by_id[&2000];
+    let stray = layer.derived.node_cache.index_by_id[&NodeId(2000)];
     assert_eq!(
-        layer.node_form_at(&pins, stray, 2000, 17.0),
+        layer.node_form_at(&pins, stray, NodeId(2000), 17.0),
         NodeForm::Simple(node_markers::SIMPLE_SIZE)
     );
-    assert_eq!(layer.node_form_at(&pins, stray, 2000, 18.5), NodeForm::Full);
+    assert_eq!(
+        layer.node_form_at(&pins, stray, NodeId(2000), 18.5),
+        NodeForm::Full
+    );
 }
 
 #[test]
@@ -192,22 +202,22 @@ fn a_stylesheet_with_square_and_cross_markers_shows_every_node_from_z16() {
         .unwrap();
     layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
     let pins = layer.pins();
-    let vertex = layer.derived.node_cache.index_by_id[&3];
-    let poi = layer.derived.node_cache.index_by_id[&1000];
-    let stray = layer.derived.node_cache.index_by_id[&2000];
+    let vertex = layer.derived.node_cache.index_by_id[&NodeId(3)];
+    let poi = layer.derived.node_cache.index_by_id[&NodeId(1000)];
+    let stray = layer.derived.node_cache.index_by_id[&NodeId(2000)];
     let form = |idx, id, z| layer.node_form_at(&pins, idx, id, z);
     // Vertices are hidden when zoomed out, then a small square.
-    assert_eq!(form(vertex, 3, 15.0), NodeForm::Hidden);
-    let NodeForm::Styled(v) = form(vertex, 3, 16.0) else {
+    assert_eq!(form(vertex, NodeId(3), 15.0), NodeForm::Hidden);
+    let NodeForm::Styled(v) = form(vertex, NodeId(3), 16.0) else {
         panic!("vertex should be styled");
     };
     assert_eq!(v.shape, crate::style::mapcss::NodeShape::Square);
     // Tagged and free-standing nodes are crosses.
-    let NodeForm::Styled(p) = form(poi, 1000, 16.0) else {
+    let NodeForm::Styled(p) = form(poi, NodeId(1000), 16.0) else {
         panic!("poi should be styled");
     };
     assert_eq!(p.shape, crate::style::mapcss::NodeShape::Cross);
-    let NodeForm::Styled(f) = form(stray, 2000, 19.0) else {
+    let NodeForm::Styled(f) = form(stray, NodeId(2000), 19.0) else {
         panic!("free node should be styled");
     };
     assert_eq!(f.shape, crate::style::mapcss::NodeShape::Cross);
@@ -222,7 +232,7 @@ fn relation_membership_restyles_ways_when_a_relation_changes() {
         .find(|s| s.id == "wireframe")
         .unwrap();
     layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
-    let idx = layer.derived.way_id_to_index[&100];
+    let idx = layer.derived.way_id_to_index[&WayId(100)];
     assert_eq!(layer.render.way_styles[idx].casing_width, 0.0);
     let members = vec![crate::osm::OsmMember {
         member_type: crate::osm::MemberType::Way,

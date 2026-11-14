@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ids::NodeId;
 use crate::layers::area_labels::Fingerprint;
 use crate::layers::labels::{
     CollisionGrid, FadeSet, LabelPriority, Rect, TextLook, GRID_CELL, NO_OWNER,
@@ -746,7 +747,7 @@ pub struct Candidate<'a> {
     pub way_id: i64,
     pub text: String,
     /// `(node id, mercator x, mercator y)`.
-    pub verts: &'a [(i64, f64, f64)],
+    pub verts: &'a [(NodeId, f64, f64)],
     pub style: LabelStyle,
     /// Importance among line labels (higher is placed first).
     pub priority: LabelPriority,
@@ -837,7 +838,7 @@ impl Default for LineLabelCache {
 
 /// Order-sensitive: the cached layout is relative to the first vertex and
 /// follows the way's direction, so a reversed way needs a new layout.
-fn geometry_sig(verts: &[(i64, f64, f64)]) -> Fingerprint {
+fn geometry_sig(verts: &[(NodeId, f64, f64)]) -> Fingerprint {
     let mut f = Fingerprint::default();
     f.ring(verts.iter().map(|&(_, x, y)| (x, y)));
     f
@@ -1209,10 +1210,10 @@ pub fn emit_frame(
 mod tests {
     use super::*;
 
-    fn way(pts: &[(f64, f64)]) -> Vec<(i64, f64, f64)> {
+    fn way(pts: &[(f64, f64)]) -> Vec<(NodeId, f64, f64)> {
         pts.iter()
             .enumerate()
-            .map(|(i, &(x, y))| (i as i64, x, y))
+            .map(|(i, &(x, y))| (NodeId(i as i64), x, y))
             .collect()
     }
 
@@ -1523,7 +1524,7 @@ mod tests {
             .is_empty());
     }
 
-    fn cand<'a>(way_id: i64, text: &'a str, verts: &'a [(i64, f64, f64)]) -> Candidate<'a> {
+    fn cand<'a>(way_id: i64, text: &'a str, verts: &'a [(NodeId, f64, f64)]) -> Candidate<'a> {
         Candidate {
             way_id,
             text: text.to_string(),
@@ -1538,8 +1539,12 @@ mod tests {
         (x as f32 * 1.5 + 100.0, -(y as f32) * 1.5 + 100.0)
     }
 
-    fn east_way() -> Vec<(i64, f64, f64)> {
-        vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)]
+    fn east_way() -> Vec<(NodeId, f64, f64)> {
+        vec![
+            (NodeId(1), 0.0, 0.0),
+            (NodeId(2), 100.0, 0.0),
+            (NodeId(3), 200.0, 0.0),
+        ]
     }
 
     #[test]
@@ -1644,7 +1649,10 @@ mod tests {
     fn per_label_colours_become_separate_batches() {
         let mut cache = LineLabelCache::default();
         let v1 = east_way();
-        let v2: Vec<(i64, f64, f64)> = v1.iter().map(|&(i, x, y)| (i + 10, x, y - 100.0)).collect();
+        let v2: Vec<(NodeId, f64, f64)> = v1
+            .iter()
+            .map(|&(i, x, y)| (NodeId(i.get() + 10), x, y - 100.0))
+            .collect();
         let mut red = cand(2, "Oak St", &v2);
         red.style.look.color = 0xff0000;
         let cands = [cand(1, "Elm St", &v1), red];
@@ -1875,7 +1883,11 @@ mod tests {
     fn frame_skips_colliding_labels_and_reuses_layouts() {
         let mut cache = LineLabelCache::default();
         // Two identical overlapping ways at z17.
-        let verts: Vec<(i64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)];
+        let verts: Vec<(NodeId, f64, f64)> = vec![
+            (NodeId(1), 0.0, 0.0),
+            (NodeId(2), 100.0, 0.0),
+            (NodeId(3), 200.0, 0.0),
+        ];
         let cands = [cand(1, "Elm St", &verts), cand(2, "Elm St", &verts)];
         let mut out = FrameOut::default();
         cache.frame(

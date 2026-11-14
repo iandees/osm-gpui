@@ -10,6 +10,7 @@ use crate::changeset_tags::ChangesetTags;
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, Method, RetryPolicy,
 };
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::LayerDiff;
 use crate::osm::{OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
@@ -259,9 +260,9 @@ pub struct UploadFailure {
 /// server-assigned id. Deleted elements need no remap and are not represented.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UploadResult {
-    pub node_id_remap: HashMap<i64, (i64, i32)>,
-    pub way_id_remap: HashMap<i64, (i64, i32)>,
-    pub relation_id_remap: HashMap<i64, (i64, i32)>,
+    pub node_id_remap: HashMap<NodeId, (NodeId, i32)>,
+    pub way_id_remap: HashMap<WayId, (WayId, i32)>,
+    pub relation_id_remap: HashMap<RelationId, (RelationId, i32)>,
 }
 
 /// Send a single changeset-lifecycle request under `policy`.
@@ -586,7 +587,7 @@ fn order_created_relations(mut relations: Vec<&OsmRelation>) -> Vec<&OsmRelation
     use std::collections::HashSet;
 
     relations.sort_by_key(|r| r.id);
-    let ids: HashSet<i64> = relations.iter().map(|r| r.id).collect();
+    let ids: HashSet<i64> = relations.iter().map(|r| r.id.get()).collect();
     let mut placed: HashSet<i64> = HashSet::new();
     let mut ordered: Vec<&OsmRelation> = Vec::with_capacity(relations.len());
     let mut remaining = relations;
@@ -594,7 +595,7 @@ fn order_created_relations(mut relations: Vec<&OsmRelation>) -> Vec<&OsmRelation
         let (ready, blocked): (Vec<_>, Vec<_>) = remaining.into_iter().partition(|r| {
             r.members.iter().all(|m| {
                 m.member_type != MemberType::Relation
-                    || m.reference == r.id
+                    || m.reference == r.id.get()
                     || !ids.contains(&m.reference)
                     || placed.contains(&m.reference)
             })
@@ -603,7 +604,7 @@ fn order_created_relations(mut relations: Vec<&OsmRelation>) -> Vec<&OsmRelation
             ordered.extend(blocked);
             return ordered;
         }
-        placed.extend(ready.iter().map(|r| r.id));
+        placed.extend(ready.iter().map(|r| r.id.get()));
         ordered.extend(ready);
         if blocked.is_empty() {
             return ordered;
@@ -682,21 +683,21 @@ fn relation_xml(r: &OsmRelation, changeset_id: u64) -> String {
     s
 }
 
-fn delete_node_xml(id: i64, version: i32, changeset_id: u64) -> String {
+fn delete_node_xml(id: NodeId, version: i32, changeset_id: u64) -> String {
     format!(
         r#"<node id="{}" version="{}" changeset="{}"/>"#,
         id, version, changeset_id
     )
 }
 
-fn delete_relation_xml(id: i64, version: i32, changeset_id: u64) -> String {
+fn delete_relation_xml(id: RelationId, version: i32, changeset_id: u64) -> String {
     format!(
         r#"<relation id="{}" version="{}" changeset="{}"/>"#,
         id, version, changeset_id
     )
 }
 
-fn delete_way_xml(id: i64, version: i32, changeset_id: u64) -> String {
+fn delete_way_xml(id: WayId, version: i32, changeset_id: u64) -> String {
     format!(
         r#"<way id="{}" version="{}" changeset="{}"/>"#,
         id, version, changeset_id
@@ -775,14 +776,19 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
                 };
 
                 if let Some((new_id, new_version)) = mapped {
-                    let remap = if is_node {
-                        &mut result.node_id_remap
+                    if is_node {
+                        result
+                            .node_id_remap
+                            .insert(NodeId(old_id), (NodeId(new_id), new_version));
                     } else if is_way {
-                        &mut result.way_id_remap
+                        result
+                            .way_id_remap
+                            .insert(WayId(old_id), (WayId(new_id), new_version));
                     } else {
-                        &mut result.relation_id_remap
-                    };
-                    remap.insert(old_id, (new_id, new_version));
+                        result
+                            .relation_id_remap
+                            .insert(RelationId(old_id), (RelationId(new_id), new_version));
+                    }
                 }
             }
             Ok(Event::Eof) => break,
@@ -900,15 +906,15 @@ mod tests {
     fn create_node_and_way_xml_shape() {
         let mut diff = LayerDiff::default();
         diff.created_nodes.push(OsmNode {
-            id: -1,
+            id: NodeId(-1),
             lat: 40.5,
             lon: -74.5,
             version: 0,
             tags: tags(&[("amenity", "cafe")]),
         });
         diff.created_ways.push(OsmWay {
-            id: -2,
-            nodes: vec![-1, 5],
+            id: WayId(-2),
+            nodes: vec![NodeId(-1), NodeId(5)],
             version: 0,
             tags: tags(&[("highway", "residential")]),
         });
@@ -941,7 +947,7 @@ mod tests {
     fn modify_node_xml_shape() {
         let mut diff = LayerDiff::default();
         diff.modified_nodes.push(OsmNode {
-            id: 100,
+            id: NodeId(100),
             lat: 1.0,
             lon: 2.0,
             version: 3,
@@ -961,8 +967,8 @@ mod tests {
     #[test]
     fn delete_node_and_way_xml_shape() {
         let mut diff = LayerDiff::default();
-        diff.deleted_node_ids.push((55, 4));
-        diff.deleted_way_ids.push((66, 2));
+        diff.deleted_node_ids.push((NodeId(55), 4));
+        diff.deleted_way_ids.push((WayId(66), 2));
         let xml = build_osm_change_xml(9, &[("L", diff)]);
         assert!(xml.contains("<delete>"), "{}", xml);
         assert!(
@@ -984,7 +990,7 @@ mod tests {
         use crate::osm::{MemberType, OsmMember};
         let mut diff = LayerDiff::default();
         diff.modified_relations.push(OsmRelation {
-            id: 500,
+            id: RelationId(500),
             version: 7,
             tags: tags(&[("name", "A & B"), ("type", "route")]),
             members: vec![
@@ -1006,27 +1012,27 @@ mod tests {
             ],
         });
         diff.created_ways.push(OsmWay {
-            id: -3,
-            nodes: vec![12, 13],
+            id: WayId(-3),
+            nodes: vec![NodeId(12), NodeId(13)],
             version: 0,
             tags: HashMap::new(),
         });
         diff.modified_ways.push(OsmWay {
-            id: 40,
-            nodes: vec![1, 2],
+            id: WayId(40),
+            nodes: vec![NodeId(1), NodeId(2)],
             version: 2,
             tags: HashMap::new(),
         });
         diff.modified_nodes.push(OsmNode {
-            id: 12,
+            id: NodeId(12),
             lat: 0.0,
             lon: 0.0,
             version: 1,
             tags: HashMap::new(),
         });
         // Deleted: a way and a node it used, plus nothing else.
-        diff.deleted_way_ids.push((77, 1));
-        diff.deleted_node_ids.push((78, 1));
+        diff.deleted_way_ids.push((WayId(77), 1));
+        diff.deleted_node_ids.push((NodeId(78), 1));
 
         let xml = build_osm_change_xml(9, &[("L", diff)]);
 
@@ -1059,7 +1065,7 @@ mod tests {
 
     fn rel(id: i64, members: &[(crate::osm::MemberType, i64)]) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             version: 0,
             tags: tags(&[("type", "route")]),
             members: members
@@ -1083,22 +1089,22 @@ mod tests {
             .push(rel(-10, &[(Way, -2), (Relation, -11), (Way, 40)]));
         diff.created_relations.push(rel(-11, &[(Node, -1)]));
         diff.created_ways.push(OsmWay {
-            id: -2,
-            nodes: vec![-1, 5],
+            id: WayId(-2),
+            nodes: vec![NodeId(-1), NodeId(5)],
             version: 0,
             tags: HashMap::new(),
         });
         diff.created_nodes.push(OsmNode {
-            id: -1,
+            id: NodeId(-1),
             lat: 1.0,
             lon: 2.0,
             version: 0,
             tags: HashMap::new(),
         });
         diff.modified_relations.push(rel(500, &[(Way, 40)]));
-        diff.deleted_relation_ids.push((600, 3));
-        diff.deleted_way_ids.push((77, 1));
-        diff.deleted_node_ids.push((78, 1));
+        diff.deleted_relation_ids.push((RelationId(600), 3));
+        diff.deleted_way_ids.push((WayId(77), 1));
+        diff.deleted_node_ids.push((NodeId(78), 1));
 
         let xml = build_osm_change_xml(9, &[("L", diff)]);
         let at = |needle: &str| {
@@ -1134,7 +1140,7 @@ mod tests {
         let c = rel(-22, &[]);
         let ordered: Vec<i64> = order_created_relations(vec![&a, &b, &c])
             .iter()
-            .map(|r| r.id)
+            .map(|r| r.id.get())
             .collect();
         // The independent relation goes first; the cycle follows in id order.
         assert_eq!(ordered, vec![-22, -21, -20]);
@@ -1148,16 +1154,22 @@ mod tests {
   <relation old_id="600"/>
 </diffResult>"#;
         let result = parse_diff_result(xml).unwrap();
-        assert_eq!(result.relation_id_remap.get(&-10), Some(&(77, 1)));
-        assert_eq!(result.relation_id_remap.get(&-11), Some(&(76, 1)));
-        assert_eq!(result.relation_id_remap.get(&600), None);
+        assert_eq!(
+            result.relation_id_remap.get(&RelationId(-10)),
+            Some(&(RelationId(77), 1))
+        );
+        assert_eq!(
+            result.relation_id_remap.get(&RelationId(-11)),
+            Some(&(RelationId(76), 1))
+        );
+        assert_eq!(result.relation_id_remap.get(&RelationId(600)), None);
     }
 
     #[test]
     fn tag_values_are_xml_escaped() {
         let mut diff = LayerDiff::default();
         diff.modified_nodes.push(OsmNode {
-            id: 1,
+            id: NodeId(1),
             lat: 0.0,
             lon: 0.0,
             version: 1,
@@ -1190,14 +1202,14 @@ mod tests {
     fn multiple_layers_combine_into_one_change_document() {
         let mut diff_a = LayerDiff::default();
         diff_a.created_nodes.push(OsmNode {
-            id: -1,
+            id: NodeId(-1),
             lat: 0.0,
             lon: 0.0,
             version: 0,
             tags: HashMap::new(),
         });
         let mut diff_b = LayerDiff::default();
-        diff_b.deleted_node_ids.push((3, 1));
+        diff_b.deleted_node_ids.push((NodeId(3), 1));
 
         let xml = build_osm_change_xml(1, &[("A", diff_a), ("B", diff_b)]);
         assert!(xml.contains(r#"<node id="-1""#), "{}", xml);
@@ -1222,21 +1234,30 @@ mod tests {
 </diffResult>"#;
 
         let result = parse_diff_result(xml).expect("should parse");
-        assert_eq!(result.node_id_remap.get(&-1), Some(&(12345, 1)));
-        assert_eq!(result.node_id_remap.get(&45), Some(&(45, 3)));
         assert_eq!(
-            result.node_id_remap.get(&99),
+            result.node_id_remap.get(&NodeId(-1)),
+            Some(&(NodeId(12345), 1))
+        );
+        assert_eq!(
+            result.node_id_remap.get(&NodeId(45)),
+            Some(&(NodeId(45), 3))
+        );
+        assert_eq!(
+            result.node_id_remap.get(&NodeId(99)),
             None,
             "deleted node has no remap entry"
         );
-        assert_eq!(result.way_id_remap.get(&-2), Some(&(678, 1)));
+        assert_eq!(result.way_id_remap.get(&WayId(-2)), Some(&(WayId(678), 1)));
         assert_eq!(
-            result.way_id_remap.get(&10),
+            result.way_id_remap.get(&WayId(10)),
             None,
             "deleted way has no remap entry"
         );
-        assert_eq!(result.relation_id_remap.get(&500), Some(&(500, 8)));
-        assert_eq!(result.relation_id_remap.get(&501), None);
+        assert_eq!(
+            result.relation_id_remap.get(&RelationId(500)),
+            Some(&(RelationId(500), 8))
+        );
+        assert_eq!(result.relation_id_remap.get(&RelationId(501)), None);
     }
 
     #[test]
@@ -1279,7 +1300,7 @@ mod tests {
     fn parse_diff_result_accepts_a_well_formed_result() {
         let xml = r#"<diffResult><node old_id="-1" new_id="9" new_version="1"/><node old_id="4"/></diffResult>"#;
         let result = parse_diff_result(xml).unwrap();
-        assert_eq!(result.node_id_remap.get(&-1), Some(&(9, 1)));
+        assert_eq!(result.node_id_remap.get(&NodeId(-1)), Some(&(NodeId(9), 1)));
         assert_eq!(result.node_id_remap.len(), 1);
     }
 
@@ -1480,13 +1501,14 @@ mod tests {
 
     use crate::http::fake::{ok, status_err, FakeClient};
     use crate::http::{HttpError, HttpResponse};
+    use crate::ids::{NodeId, RelationId, WayId};
 
     const BASE: &str = "https://osm.test";
 
     fn one_modified_node_diff() -> Vec<(&'static str, LayerDiff)> {
         let mut diff = LayerDiff::default();
         diff.modified_nodes.push(OsmNode {
-            id: 12345,
+            id: NodeId(12345),
             lat: 1.0,
             lon: 2.0,
             version: 3,
@@ -1732,7 +1754,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(id, 42);
-        assert_eq!(result.node_id_remap.get(&12345), Some(&(12345, 4)));
+        assert_eq!(
+            result.node_id_remap.get(&NodeId(12345)),
+            Some(&(NodeId(12345), 4))
+        );
         assert_eq!(client.request_count(), 3);
         assert_eq!(
             phases,

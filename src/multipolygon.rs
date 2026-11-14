@@ -30,6 +30,7 @@
 //! Not checked: whether two rings cross each other. Such data renders as
 //! drawn, with the holes still subtracted by the even-odd-like triangulation.
 
+use crate::ids::{NodeId, WayId};
 use std::collections::{HashMap, HashSet};
 
 /// Whether `tags` describe a relation that is drawn as an area: a
@@ -44,31 +45,31 @@ pub fn is_area_relation(tags: &HashMap<String, String>) -> bool {
 /// One way member of a relation, as the assembler needs it.
 #[derive(Debug, Clone, Copy)]
 pub struct WayMember<'a> {
-    pub way_id: i64,
+    pub way_id: WayId,
     pub role: &'a str,
     /// The way's node ids in order, or `None` when the way isn't loaded.
-    pub nodes: Option<&'a [i64]>,
+    pub nodes: Option<&'a [NodeId]>,
 }
 
 /// Why a relation couldn't be assembled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Problem {
     /// A member way is not in the data (not downloaded).
-    MissingWay(i64),
+    MissingWay(WayId),
     /// The same way is listed twice.
-    DuplicateMember(i64),
+    DuplicateMember(WayId),
     /// A member way has fewer than two nodes (or a closed one fewer than
     /// four).
-    DegenerateWay(i64),
+    DegenerateWay(WayId),
     /// A node has no known position (not downloaded or invalid).
-    MissingNode(i64),
+    MissingNode(NodeId),
     /// Three or more open ways end at this node, so joining them would be a
     /// guess.
-    Branching(i64),
+    Branching(NodeId),
     /// Ways chain up but never close into a ring.
     Unclosed,
     /// A ring visits the same node twice (other than closing).
-    SelfTouching(i64),
+    SelfTouching(NodeId),
     /// A ring encloses no area.
     ZeroArea,
     /// No outer ring.
@@ -81,8 +82,8 @@ pub enum Problem {
 /// (first id equals last id).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Polygon {
-    pub outer: Vec<i64>,
-    pub inners: Vec<Vec<i64>>,
+    pub outer: Vec<NodeId>,
+    pub inners: Vec<Vec<NodeId>>,
     /// Outer area minus the holes', in the units of the coordinate lookup
     /// squared.
     pub area: f64,
@@ -110,7 +111,7 @@ enum Class {
 }
 
 struct Ring {
-    nodes: Vec<i64>,
+    nodes: Vec<NodeId>,
     /// Positions without the closing duplicate.
     pts: Vec<(f64, f64)>,
     area: f64,
@@ -160,8 +161,8 @@ pub fn point_in_ring<T>(x: f64, y: f64, ring: &[T], xy: impl Fn(&T) -> (f64, f64
 }
 
 /// Join `ways` (class plus node list) end to end into closed rings.
-fn join_ways(ways: &[(i64, Class, &[i64])]) -> Result<Vec<(Class, Vec<i64>)>, Problem> {
-    let mut rings: Vec<(Class, Vec<i64>)> = Vec::new();
+fn join_ways(ways: &[(WayId, Class, &[NodeId])]) -> Result<Vec<(Class, Vec<NodeId>)>, Problem> {
+    let mut rings: Vec<(Class, Vec<NodeId>)> = Vec::new();
     let mut open: Vec<usize> = Vec::new();
     for (i, &(way_id, class, nodes)) in ways.iter().enumerate() {
         if nodes.len() < 2 {
@@ -178,7 +179,7 @@ fn join_ways(ways: &[(i64, Class, &[i64])]) -> Result<Vec<(Class, Vec<i64>)>, Pr
     }
 
     // Where open ways end. A node shared by more than two ends is a branch.
-    let mut by_end: HashMap<i64, Vec<usize>> = HashMap::new();
+    let mut by_end: HashMap<NodeId, Vec<usize>> = HashMap::new();
     for &i in &open {
         let nodes = ways[i].2;
         by_end.entry(nodes[0]).or_default().push(i);
@@ -228,7 +229,7 @@ fn join_ways(ways: &[(i64, Class, &[i64])]) -> Result<Vec<(Class, Vec<i64>)>, Pr
 /// Whether `outer` contains `inner`: boxes first, then one representative
 /// point of `inner` that isn't a node of `outer` (an inner ring commonly
 /// touches its outer at a shared node, which makes the test ambiguous).
-fn contains(outer: &Ring, outer_nodes: &HashSet<i64>, inner: &Ring) -> bool {
+fn contains(outer: &Ring, outer_nodes: &HashSet<NodeId>, inner: &Ring) -> bool {
     let (a, b) = (&outer.bbox, &inner.bbox);
     if b[0] < a[0] || b[1] < a[1] || b[2] > a[2] || b[3] > a[3] {
         return false;
@@ -251,11 +252,11 @@ fn contains(outer: &Ring, outer_nodes: &HashSet<i64>, inner: &Ring) -> bool {
 /// computed in it). See the module docs for the rules.
 pub fn assemble(
     members: &[WayMember],
-    coord: &dyn Fn(i64) -> Option<(f64, f64)>,
+    coord: &dyn Fn(NodeId) -> Option<(f64, f64)>,
 ) -> Result<Multipolygon, Problem> {
-    let mut seen: HashSet<i64> = HashSet::new();
-    let mut non_inner: Vec<(i64, Class, &[i64])> = Vec::new();
-    let mut inner: Vec<(i64, Class, &[i64])> = Vec::new();
+    let mut seen: HashSet<WayId> = HashSet::new();
+    let mut non_inner: Vec<(WayId, Class, &[NodeId])> = Vec::new();
+    let mut inner: Vec<(WayId, Class, &[NodeId])> = Vec::new();
     for m in members {
         let class = match m.role {
             "outer" => Class::Outer,
@@ -282,7 +283,7 @@ pub fn assemble(
         for (class, nodes) in join_ways(group)? {
             let class = if is_inner_group { Class::Inner } else { class };
             let body = &nodes[..nodes.len() - 1];
-            let mut distinct: HashSet<i64> = HashSet::with_capacity(body.len());
+            let mut distinct: HashSet<NodeId> = HashSet::with_capacity(body.len());
             if let Some(&dup) = body.iter().find(|&&n| !distinct.insert(n)) {
                 return Err(Problem::SelfTouching(dup));
             }
@@ -316,7 +317,7 @@ pub fn assemble(
         }
     }
 
-    let node_sets: Vec<HashSet<i64>> = if rings.len() > 1 {
+    let node_sets: Vec<HashSet<NodeId>> = if rings.len() > 1 {
         rings
             .iter()
             .map(|r| r.nodes.iter().copied().collect())
@@ -379,7 +380,7 @@ pub fn assemble(
     Ok(Multipolygon { polygons })
 }
 
-fn close(nodes: &[i64]) -> Vec<i64> {
+fn close(nodes: &[NodeId]) -> Vec<NodeId> {
     let mut v = nodes.to_vec();
     v.push(nodes[0]);
     v
@@ -416,25 +417,26 @@ mod tests {
     use super::*;
 
     /// Node id -> position for tests: ids encode a grid, `id = y * 100 + x`.
-    fn grid(id: i64) -> Option<(f64, f64)> {
+    fn grid(id: NodeId) -> Option<(f64, f64)> {
+        let id = id.get();
         if id < 0 {
             return None;
         }
         Some(((id % 100) as f64, (id / 100) as f64))
     }
 
-    fn n(x: i64, y: i64) -> i64 {
-        y * 100 + x
+    fn n(x: i64, y: i64) -> NodeId {
+        NodeId(y * 100 + x)
     }
 
     /// Closed square ring from (x0,y0) to (x1,y1), as node ids.
-    fn square(x0: i64, y0: i64, x1: i64, y1: i64) -> Vec<i64> {
+    fn square(x0: i64, y0: i64, x1: i64, y1: i64) -> Vec<NodeId> {
         vec![n(x0, y0), n(x1, y0), n(x1, y1), n(x0, y1), n(x0, y0)]
     }
 
-    fn member<'a>(way_id: i64, role: &'a str, nodes: &'a [i64]) -> WayMember<'a> {
+    fn member<'a>(way_id: i64, role: &'a str, nodes: &'a [NodeId]) -> WayMember<'a> {
         WayMember {
-            way_id,
+            way_id: WayId(way_id),
             role,
             nodes: Some(nodes),
         }
@@ -598,22 +600,22 @@ mod tests {
     fn a_missing_way_invalidates_the_relation() {
         let w = square(0, 0, 10, 10);
         let gone = WayMember {
-            way_id: 2,
+            way_id: WayId(2),
             role: "inner",
             nodes: None,
         };
         assert_eq!(
             run(&[member(1, "outer", &w), gone]),
-            Err(Problem::MissingWay(2))
+            Err(Problem::MissingWay(WayId(2)))
         );
     }
 
     #[test]
     fn a_missing_node_invalidates_the_relation() {
-        let w = vec![n(0, 0), n(10, 0), -5, n(0, 10), n(0, 0)];
+        let w = vec![n(0, 0), n(10, 0), NodeId(-5), n(0, 10), n(0, 0)];
         assert_eq!(
             run(&[member(1, "outer", &w)]),
-            Err(Problem::MissingNode(-5))
+            Err(Problem::MissingNode(NodeId(-5)))
         );
     }
 
@@ -638,7 +640,7 @@ mod tests {
         let w = square(0, 0, 10, 10);
         assert_eq!(
             run(&[member(1, "outer", &w), member(1, "outer", &w)]),
-            Err(Problem::DuplicateMember(1))
+            Err(Problem::DuplicateMember(WayId(1)))
         );
     }
 
@@ -695,20 +697,20 @@ mod tests {
     #[test]
     fn degenerate_ways_never_panic() {
         let one = vec![n(0, 0)];
-        let empty: Vec<i64> = vec![];
+        let empty: Vec<NodeId> = vec![];
         let tiny = vec![n(0, 0), n(1, 1), n(0, 0)];
         let flat = vec![n(0, 0), n(5, 0), n(10, 0), n(0, 0)];
         assert_eq!(
             run(&[member(1, "outer", &one)]),
-            Err(Problem::DegenerateWay(1))
+            Err(Problem::DegenerateWay(WayId(1)))
         );
         assert_eq!(
             run(&[member(1, "outer", &empty)]),
-            Err(Problem::DegenerateWay(1))
+            Err(Problem::DegenerateWay(WayId(1)))
         );
         assert_eq!(
             run(&[member(1, "outer", &tiny)]),
-            Err(Problem::DegenerateWay(1))
+            Err(Problem::DegenerateWay(WayId(1)))
         );
         assert_eq!(run(&[member(1, "outer", &flat)]), Err(Problem::ZeroArea));
     }
@@ -723,7 +725,8 @@ mod tests {
     #[test]
     fn a_large_ring_assembles_quickly_and_triangulates_with_a_hole() {
         // A 4000-vertex circle split into 40 ways, plus a 2000-vertex hole.
-        let coord = |id: i64| -> Option<(f64, f64)> {
+        let coord = |id: NodeId| -> Option<(f64, f64)> {
+            let id = id.get();
             let (r, k, total) = if id >= 100_000 {
                 (400.0, (id - 100_000) as f64, 2000.0)
             } else {
@@ -732,20 +735,20 @@ mod tests {
             let a = k / total * std::f64::consts::TAU;
             Some((r * a.cos(), r * a.sin()))
         };
-        let ring: Vec<i64> = (0..4000).collect();
-        let ways: Vec<Vec<i64>> = (0..40)
+        let ring: Vec<NodeId> = (0..4000).map(NodeId).collect();
+        let ways: Vec<Vec<NodeId>> = (0..40)
             .map(|i| {
                 let lo = i * 100;
                 let hi = ((i + 1) * 100).min(3999);
-                let mut w: Vec<i64> = ring[lo..=hi].to_vec();
+                let mut w: Vec<NodeId> = ring[lo..=hi].to_vec();
                 if i == 39 {
-                    w.push(0);
+                    w.push(NodeId(0));
                 }
                 w
             })
             .collect();
-        let mut hole: Vec<i64> = (100_000..102_000).collect();
-        hole.push(100_000);
+        let mut hole: Vec<NodeId> = (100_000..102_000).map(NodeId).collect();
+        hole.push(NodeId(100_000));
         let mut members: Vec<WayMember> = ways
             .iter()
             .enumerate()

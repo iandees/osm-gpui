@@ -14,6 +14,7 @@ use osm_gpui::viewport::Viewport;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 pub(crate) use osm_gpui::selection::FeatureKind::{Node as N, Relation as R, Way as W};
 
 /// Builds a server-side data set (everything has a positive id and version 3
@@ -47,9 +48,9 @@ impl Build {
     pub(crate) fn node(mut self, id: i64, tags: &[(&str, &str)]) -> Self {
         let a = id.unsigned_abs() as f64;
         self.d().nodes.insert(
-            id,
+            NodeId(id),
             OsmNode {
-                id,
+                id: NodeId(id),
                 lat: 40.0 + (a % 7.0) * 0.0004,
                 lon: -74.0 + a * 0.0003,
                 version: 3,
@@ -61,9 +62,9 @@ impl Build {
     /// A node at an exact position.
     pub(crate) fn node_at(mut self, id: i64, lat: f64, lon: f64) -> Self {
         self.d().nodes.insert(
-            id,
+            NodeId(id),
             OsmNode {
-                id,
+                id: NodeId(id),
                 lat,
                 lon,
                 version: 3,
@@ -80,10 +81,10 @@ impl Build {
     }
     pub(crate) fn way(mut self, id: i64, nodes: &[i64], tags: &[(&str, &str)]) -> Self {
         self.d().ways.insert(
-            id,
+            WayId(id),
             OsmWay {
-                id,
-                nodes: nodes.to_vec(),
+                id: WayId(id),
+                nodes: NodeId::from_raw_vec(nodes),
                 version: 3,
                 tags: tag_map(tags),
             },
@@ -97,7 +98,7 @@ impl Build {
         members: &[(MemberType, i64, &str)],
     ) -> Self {
         self.d().relations.push(OsmRelation {
-            id,
+            id: RelationId(id),
             version: 2,
             tags: tag_map(tags),
             members: members
@@ -299,7 +300,11 @@ pub(crate) fn sorted_tags(
 
 /// The ids of the ways in `layer` that use node `node`.
 pub(crate) fn ways_using_node(view: &MapViewer, layer: LayerId, node: i64) -> Vec<i64> {
-    editable_layer(view, layer).ways_using_node(node)
+    editable_layer(view, layer)
+        .ways_using_node(NodeId(node))
+        .into_iter()
+        .map(|w| w.get())
+        .collect()
 }
 
 /// The `(reference, role)` pairs of relation `relation` in `layer`, in order.
@@ -309,7 +314,7 @@ pub(crate) fn relation_member_list(
     relation: i64,
 ) -> Vec<(i64, String)> {
     editable_layer(view, layer)
-        .relation(relation)
+        .relation(RelationId(relation))
         .unwrap()
         .members
         .iter()
@@ -359,12 +364,14 @@ pub(crate) fn redo_step(view: &mut MapViewer) {
 
 /// The node ids of way `way` in `layer`.
 pub(crate) fn way_node_ids(view: &MapViewer, layer: LayerId, way: i64) -> Option<Vec<i64>> {
-    editable_layer(view, layer).way_node_ids(way)
+    editable_layer(view, layer)
+        .way_node_ids(WayId(way))
+        .map(|nodes| NodeId::to_raw_vec(&nodes))
 }
 
 /// The position of node `id` in `layer`.
 pub(crate) fn node_lat_lon(view: &MapViewer, layer: LayerId, id: i64) -> Option<(f64, f64)> {
-    editable_layer(view, layer).node_lat_lon(id)
+    editable_layer(view, layer).node_lat_lon(NodeId(id))
 }
 
 /// (node count, way count) of the OSM layer `layer`.
@@ -428,12 +435,19 @@ impl Session<'_, '_> {
         for f in e.all_features() {
             match f.kind {
                 FeatureKind::Node => {
-                    s.nodes
-                        .insert(f.id, (e.node_lat_lon(f.id).unwrap(), tags(f.kind, f.id)));
+                    s.nodes.insert(
+                        f.id,
+                        (e.node_lat_lon(NodeId(f.id)).unwrap(), tags(f.kind, f.id)),
+                    );
                 }
                 FeatureKind::Way => {
-                    s.ways
-                        .insert(f.id, (e.way_node_ids(f.id).unwrap(), tags(f.kind, f.id)));
+                    s.ways.insert(
+                        f.id,
+                        (
+                            NodeId::to_raw_vec(&e.way_node_ids(WayId(f.id)).unwrap()),
+                            tags(f.kind, f.id),
+                        ),
+                    );
                 }
                 FeatureKind::Relation => {}
             }
@@ -442,7 +456,7 @@ impl Session<'_, '_> {
             let mut t: Vec<(String, String)> = r.tags.into_iter().collect();
             t.sort();
             s.relations.insert(
-                r.id,
+                r.id.get(),
                 (
                     t,
                     r.members
@@ -455,23 +469,25 @@ impl Session<'_, '_> {
         s
     }
     pub(crate) fn way_nodes(&self, id: i64) -> Option<Vec<i64>> {
-        self.editable().way_node_ids(id)
+        self.editable()
+            .way_node_ids(WayId(id))
+            .map(|nodes| NodeId::to_raw_vec(&nodes))
     }
     pub(crate) fn tags(&self, kind: FeatureKind, id: i64) -> Vec<(String, String)> {
         sorted_tags(self.view, self.layer, kind, id).unwrap_or_default()
     }
     pub(crate) fn has_way(&self, id: i64) -> bool {
-        self.editable().way_node_ids(id).is_some()
+        self.editable().way_node_ids(WayId(id)).is_some()
     }
     pub(crate) fn has_node(&self, id: i64) -> bool {
-        self.editable().node_lat_lon(id).is_some()
+        self.editable().node_lat_lon(NodeId(id)).is_some()
     }
     pub(crate) fn members(&self, relation: i64) -> Vec<(i64, String)> {
         relation_member_list(self.view, self.layer, relation)
     }
     pub(crate) fn typed_members(&self, relation: i64) -> Vec<(MemberType, i64, String)> {
         self.editable()
-            .relation(relation)
+            .relation(RelationId(relation))
             .unwrap()
             .members
             .iter()

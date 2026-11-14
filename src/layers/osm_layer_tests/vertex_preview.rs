@@ -2,6 +2,7 @@
 
 use super::{data_with, empty_tags, node_point, view_at, way_with_poi_layer};
 use crate::coordinates::LatLon;
+use crate::ids::{NodeId, WayId};
 use crate::layers::node_markers::NodeForm;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
@@ -47,10 +48,13 @@ fn preview_vertices_are_drawn_and_targets_from_the_preview_zoom_only() {
         let mut layer = way_with_poi_layer(60);
         let vp = view_at(z);
         assert!(preview_100(&mut layer, &vp), "z{z}");
-        assert_eq!(layer.vertex_preview_way(), Some(100));
+        assert_eq!(layer.vertex_preview_way(), Some(WayId(100)));
         let pins = layer.pins();
-        let idx = layer.derived.node_cache.index_by_id[&30];
-        assert_eq!(layer.node_form_at(&pins, idx, 30, z), NodeForm::Preview);
+        let idx = layer.derived.node_cache.index_by_id[&NodeId(30)];
+        assert_eq!(
+            layer.node_form_at(&pins, idx, NodeId(30), z),
+            NodeForm::Preview
+        );
         let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
         assert_eq!(hits.len(), 1, "z{z}");
         assert_eq!(hits[0].feature, node_ref(30), "z{z}");
@@ -91,7 +95,7 @@ fn only_the_preview_ways_vertices_are_previewed() {
     let mut nodes = Vec::new();
     let mut add = |id: i64, lat: f64, lon: f64| {
         nodes.push(OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version: 1,
@@ -108,8 +112,8 @@ fn only_the_preview_ways_vertices_are_previewed() {
         add(i, 40.002, -74.0 + (i - 10) as f64 * 0.0001);
     }
     let way = |id: i64, nodes: Vec<i64>| OsmWay {
-        id,
-        nodes,
+        id: WayId(id),
+        nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         version: 1,
         tags: empty_tags(),
     };
@@ -135,9 +139,9 @@ fn only_the_preview_ways_vertices_are_previewed() {
                     .derived
                     .node_cache
                     .index_by_id
-                    .get(id)
+                    .get(&NodeId(*id))
                     .is_some_and(|&idx| {
-                        layer.node_form_at(&pins, idx, *id, 19.0) == NodeForm::Preview
+                        layer.node_form_at(&pins, idx, NodeId(*id), 19.0) == NodeForm::Preview
                     })
             })
             .collect()
@@ -164,7 +168,7 @@ fn preview_hysteresis_and_switching() {
     // Hovering nothing, 10px off the line (past its 6px tolerance but
     // inside tolerance + vertex radius): still previewed.
     assert!(!layer.update_vertex_preview(&vp, off(10.0), None, true));
-    assert_eq!(layer.vertex_preview_way(), Some(100));
+    assert_eq!(layer.vertex_preview_way(), Some(WayId(100)));
     // Well away: dropped.
     assert!(layer.update_vertex_preview(&vp, off(16.0), None, true));
     assert_eq!(layer.vertex_preview_way(), None);
@@ -172,7 +176,7 @@ fn preview_hysteresis_and_switching() {
     // not one of its vertices drops it; another way replaces it.
     preview_100(&mut layer, &vp);
     layer.update_vertex_preview(&vp, at, Some(&node_ref(30)), true);
-    assert_eq!(layer.vertex_preview_way(), Some(100));
+    assert_eq!(layer.vertex_preview_way(), Some(WayId(100)));
     layer.update_vertex_preview(&vp, at, Some(&node_ref(1000)), true);
     assert_eq!(layer.vertex_preview_way(), None);
     preview_100(&mut layer, &vp);

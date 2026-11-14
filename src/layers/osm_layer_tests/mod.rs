@@ -20,6 +20,7 @@ mod vertex_preview;
 mod way_lod;
 
 use crate::coordinates::{LatLon, Mercator};
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -68,7 +69,7 @@ fn tagged() -> HashMap<String, String> {
 fn way_with_poi_layer(n: i64) -> OsmLayer {
     let mut nodes: Vec<OsmNode> = (1..=n)
         .map(|i| OsmNode {
-            id: i,
+            id: NodeId(i),
             lat: 40.0,
             lon: -74.0 + i as f64 * 0.0001,
             version: 1,
@@ -76,22 +77,22 @@ fn way_with_poi_layer(n: i64) -> OsmLayer {
         })
         .collect();
     nodes.push(OsmNode {
-        id: 1000,
+        id: NodeId(1000),
         lat: 40.0003,
         lon: -74.0 + (n / 2) as f64 * 0.0001,
         version: 1,
         tags: tagged(),
     });
     nodes.push(OsmNode {
-        id: 2000,
+        id: NodeId(2000),
         lat: 40.0003,
         lon: -74.0 + (n / 2 + 10) as f64 * 0.0001,
         version: 1,
         tags: empty_tags(),
     });
     let way = OsmWay {
-        id: 100,
-        nodes: (1..=n).collect(),
+        id: WayId(100),
+        nodes: (1..=n).map(NodeId).collect(),
         version: 1,
         tags: HashMap::new(),
     };
@@ -107,7 +108,7 @@ fn view_at(zoom: f64) -> Viewport {
 }
 
 fn node_point(layer: &OsmLayer, vp: &Viewport, id: i64) -> gpui::Point<gpui::Pixels> {
-    let idx = layer.derived.node_cache.index_by_id[&id];
+    let idx = layer.derived.node_cache.index_by_id[&NodeId(id)];
     let (_, mx, my) = layer.derived.node_cache.flat[idx];
     vp.mercator_to_screen(Mercator::new(mx, my))
 }

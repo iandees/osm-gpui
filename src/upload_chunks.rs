@@ -52,6 +52,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::changeset_tags::ChangesetTags;
 use crate::http::HttpClient;
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::LayerDiff;
 use crate::osm::{MemberType, OsmNode, OsmRelation, OsmWay};
 use crate::osm_upload::{run_upload, UploadConflict, UploadError, UploadFailure, UploadResult};
@@ -97,9 +98,9 @@ enum Item {
     ModifyNode(OsmNode),
     ModifyWay(OsmWay),
     ModifyRelation(OsmRelation),
-    DeleteRelation(i64, i32),
-    DeleteWay(i64, i32),
-    DeleteNode(i64, i32),
+    DeleteRelation(RelationId, i32),
+    DeleteWay(WayId, i32),
+    DeleteNode(NodeId, i32),
 }
 
 impl Item {
@@ -147,7 +148,7 @@ fn merge(diffs: &[&LayerDiff]) -> LayerDiff {
 /// edge "relation -> member relation" is exactly dependencies first.
 fn relation_groups(mut relations: Vec<&OsmRelation>) -> Vec<Vec<&OsmRelation>> {
     relations.sort_by_key(|r| r.id);
-    let index: HashMap<i64, usize> = relations
+    let index: HashMap<RelationId, usize> = relations
         .iter()
         .enumerate()
         .map(|(i, r)| (r.id, i))
@@ -159,7 +160,7 @@ fn relation_groups(mut relations: Vec<&OsmRelation>) -> Vec<Vec<&OsmRelation>> {
             r.members
                 .iter()
                 .filter(|m| m.member_type == MemberType::Relation)
-                .filter_map(|m| index.get(&m.reference).copied())
+                .filter_map(|m| index.get(&RelationId(m.reference)).copied())
                 .filter(|&j| j != i)
                 .collect()
         })
@@ -235,12 +236,12 @@ fn sequence(diffs: &[&LayerDiff]) -> Vec<Atom> {
     let mut atoms: Vec<Atom> = Vec::new();
 
     // Creates. Each new node goes just before the first new way that uses it.
-    let created_nodes: HashMap<i64, &OsmNode> = diffs
+    let created_nodes: HashMap<NodeId, &OsmNode> = diffs
         .iter()
         .flat_map(|d| &d.created_nodes)
         .map(|n| (n.id, n))
         .collect();
-    let mut emitted: HashSet<i64> = HashSet::new();
+    let mut emitted: HashSet<NodeId> = HashSet::new();
     for way in diffs.iter().flat_map(|d| &d.created_ways) {
         for nd in &way.nodes {
             if let Some(node) = created_nodes.get(nd) {
@@ -368,20 +369,19 @@ pub fn plan_chunks(diffs: &[&LayerDiff], max: usize) -> Result<Vec<LayerDiff>, P
 /// The ids the server has assigned so far, for rewriting later chunks.
 #[derive(Debug, Default)]
 pub struct IdMap {
-    nodes: HashMap<i64, i64>,
-    ways: HashMap<i64, i64>,
-    relations: HashMap<i64, i64>,
+    nodes: HashMap<NodeId, NodeId>,
+    ways: HashMap<WayId, WayId>,
+    relations: HashMap<RelationId, RelationId>,
 }
 
 impl IdMap {
     /// Remember the server ids a chunk's `diffResult` assigned to its created
     /// objects. Modified objects keep their id and need no entry.
     pub fn absorb(&mut self, result: &UploadResult) {
-        for (map, remap) in [
-            (&mut self.nodes, &result.node_id_remap),
-            (&mut self.ways, &result.way_id_remap),
-            (&mut self.relations, &result.relation_id_remap),
-        ] {
+        fn learn<T: Copy + Eq + std::hash::Hash + std::fmt::Display>(
+            map: &mut HashMap<T, T>,
+            remap: &HashMap<T, (T, i32)>,
+        ) {
             for (&old, &(new, _)) in remap {
                 if old != new {
                     let previous = map.insert(old, new);
@@ -389,6 +389,9 @@ impl IdMap {
                 }
             }
         }
+        learn(&mut self.nodes, &result.node_id_remap);
+        learn(&mut self.ways, &result.way_id_remap);
+        learn(&mut self.relations, &result.relation_id_remap);
     }
 
     /// Replace placeholder references in `chunk` (way node lists and relation
@@ -411,12 +414,17 @@ impl IdMap {
             .chain(chunk.modified_relations.iter_mut())
         {
             for member in &mut relation.members {
-                let map = match member.member_type {
-                    MemberType::Node => &self.nodes,
-                    MemberType::Way => &self.ways,
-                    MemberType::Relation => &self.relations,
+                let new_id = match member.member_type {
+                    MemberType::Node => {
+                        self.nodes.get(&NodeId(member.reference)).map(|id| id.get())
+                    }
+                    MemberType::Way => self.ways.get(&WayId(member.reference)).map(|id| id.get()),
+                    MemberType::Relation => self
+                        .relations
+                        .get(&RelationId(member.reference))
+                        .map(|id| id.get()),
                 };
-                if let Some(&id) = map.get(&member.reference) {
+                if let Some(id) = new_id {
                     member.reference = id;
                 }
             }
@@ -844,7 +852,7 @@ mod tests {
 
     fn node(id: i64) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat: 1.0,
             lon: 2.0,
             version: if id > 0 { 1 } else { 0 },
@@ -854,8 +862,8 @@ mod tests {
 
     fn way(id: i64, nodes: &[i64]) -> OsmWay {
         OsmWay {
-            id,
-            nodes: nodes.to_vec(),
+            id: WayId(id),
+            nodes: NodeId::from_raw_vec(nodes),
             version: if id > 0 { 1 } else { 0 },
             tags: HashMap::new(),
         }
@@ -871,7 +879,7 @@ mod tests {
 
     fn relation(id: i64, members: Vec<OsmMember>) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             members,
             version: if id > 0 { 1 } else { 0 },
             tags: HashMap::new(),
@@ -914,8 +922,8 @@ mod tests {
             created_nodes: (1..=6).map(|i| node(-i)).collect(),
             created_ways: vec![way(-1, &[-1, -2, -3]), way(-2, &[-4, -5, -6])],
             modified_nodes: vec![node(10), node(11)],
-            deleted_way_ids: vec![(20, 1)],
-            deleted_node_ids: vec![(30, 1)],
+            deleted_way_ids: vec![(WayId(20), 1)],
+            deleted_node_ids: vec![(NodeId(30), 1)],
             ..Default::default()
         }
     }
@@ -965,9 +973,9 @@ mod tests {
             modified_nodes: vec![node(1)],
             modified_ways: vec![way(2, &[1, 1])],
             modified_relations: vec![relation(3, vec![])],
-            deleted_relation_ids: vec![(4, 1)],
-            deleted_way_ids: vec![(5, 1)],
-            deleted_node_ids: vec![(6, 1)],
+            deleted_relation_ids: vec![(RelationId(4), 1)],
+            deleted_way_ids: vec![(WayId(5), 1)],
+            deleted_node_ids: vec![(NodeId(6), 1)],
             ..Default::default()
         };
         let chunks = plan_chunks(&[&d], 2).unwrap();
@@ -980,12 +988,12 @@ mod tests {
     fn layers_are_merged_into_the_same_sequence() {
         let a = LayerDiff {
             created_nodes: vec![node(-1)],
-            deleted_node_ids: vec![(5, 1)],
+            deleted_node_ids: vec![(NodeId(5), 1)],
             ..Default::default()
         };
         let b = LayerDiff {
             created_nodes: vec![node(-2)],
-            deleted_node_ids: vec![(6, 1)],
+            deleted_node_ids: vec![(NodeId(6), 1)],
             ..Default::default()
         };
         let chunks = plan_chunks(&[&a, &b], 3).unwrap();
@@ -1084,8 +1092,8 @@ mod tests {
                 member(MemberType::Way, 100),
             ],
         )];
-        d.deleted_way_ids = vec![(300, 1)];
-        d.deleted_node_ids = vec![(7, 1)];
+        d.deleted_way_ids = vec![(WayId(300), 1)];
+        d.deleted_node_ids = vec![(NodeId(7), 1)];
         let total = element_count(&d);
         for max in [3, 4, 7, 10] {
             let chunks = plan_chunks(&[&d], max).unwrap();
@@ -1096,13 +1104,13 @@ mod tests {
             let known = |set: &HashSet<i64>, id: i64| id > 0 || set.contains(&id);
             for c in &chunks {
                 assert!(element_count(c) <= max);
-                nodes.extend(c.created_nodes.iter().map(|n| n.id));
+                nodes.extend(c.created_nodes.iter().map(|n| n.id.get()));
                 for w in &c.created_ways {
-                    assert!(w.nodes.iter().all(|&n| known(&nodes, n)), "max {max}");
-                    ways.insert(w.id);
+                    assert!(w.nodes.iter().all(|&n| known(&nodes, n.get())), "max {max}");
+                    ways.insert(w.id.get());
                 }
                 for r in &c.created_relations {
-                    rels.insert(r.id);
+                    rels.insert(r.id.get());
                 }
                 for r in c.created_relations.iter().chain(&c.modified_relations) {
                     for m in &r.members {
@@ -1116,7 +1124,7 @@ mod tests {
                     }
                 }
                 for w in &c.modified_ways {
-                    assert!(w.nodes.iter().all(|&n| known(&nodes, n)));
+                    assert!(w.nodes.iter().all(|&n| known(&nodes, n.get())));
                 }
             }
             // Deletes are all in the last chunks, after every create/modify.
@@ -1149,10 +1157,11 @@ mod tests {
     fn rewritten_ids() -> IdMap {
         let mut ids = IdMap::default();
         let mut r = UploadResult::default();
-        r.node_id_remap.insert(-1, (9001, 1));
-        r.node_id_remap.insert(50, (50, 4)); // a modify: no entry needed
-        r.way_id_remap.insert(-1, (8001, 1));
-        r.relation_id_remap.insert(-1, (7001, 1));
+        r.node_id_remap.insert(NodeId(-1), (NodeId(9001), 1));
+        r.node_id_remap.insert(NodeId(50), (NodeId(50), 4)); // a modify: no entry needed
+        r.way_id_remap.insert(WayId(-1), (WayId(8001), 1));
+        r.relation_id_remap
+            .insert(RelationId(-1), (RelationId(7001), 1));
         ids.absorb(&r);
         ids
     }
@@ -1175,8 +1184,11 @@ mod tests {
             ..Default::default()
         };
         ids.rewrite(&mut chunk);
-        assert_eq!(chunk.created_ways[0].nodes, vec![9001, 12, -9]);
-        assert_eq!(chunk.modified_ways[0].nodes, vec![9001, 50]);
+        assert_eq!(
+            chunk.created_ways[0].nodes,
+            vec![NodeId(9001), NodeId(12), NodeId(-9)]
+        );
+        assert_eq!(chunk.modified_ways[0].nodes, vec![NodeId(9001), NodeId(50)]);
         let refs: Vec<i64> = chunk.created_relations[0]
             .members
             .iter()
@@ -1275,7 +1287,7 @@ mod tests {
         assert_eq!(lines.iter().filter(|u| u.ends_with("/close")).count(), 2);
         let merged = merge_results(&out.completed);
         assert_eq!(merged.node_id_remap.len(), 3);
-        assert_eq!(merged.way_id_remap.get(&-1), Some(&(6001, 1)));
+        assert_eq!(merged.way_id_remap.get(&WayId(-1)), Some(&(WayId(6001), 1)));
     }
 
     #[test]
@@ -1547,7 +1559,7 @@ mod tests {
             }
         }
         assert_eq!(lasts, vec![false, true]);
-        assert_eq!(ways, vec![vec![5001, 5002, -3]]);
+        assert_eq!(ways, vec![vec![NodeId(5001), NodeId(5002), NodeId(-3)]]);
         assert_eq!(driver.partial(), Some((2, 2)));
         assert_eq!(driver.last_changeset(), 102);
     }

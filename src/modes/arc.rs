@@ -4,6 +4,7 @@
 use gpui::{px, CursorStyle, Pixels, Point, Window};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
+use osm_gpui::ids::{NodeId, WayId};
 
 use super::preview::{blue, fill_square, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
@@ -24,10 +25,10 @@ pub(crate) struct ArcProgress {
 #[derive(Clone, Copy)]
 pub(crate) enum ArcSnap {
     /// An existing node, which the arc then uses as that endpoint.
-    Node(i64),
+    Node(NodeId),
     /// A way's segment (`way_id`, index of the segment's first node): the
     /// endpoint is a new node spliced into the way.
-    Way(i64, usize),
+    Way(WayId, usize),
 }
 
 /// A clicked Arc-mode point: its geo position (snapped onto a node or way
@@ -296,8 +297,8 @@ impl MapViewer {
 
         // Nodes the arc doesn't own: reused ones, and ones spliced into other
         // ways (undone by their own ops).
-        let mut node_ids: Vec<Option<i64>> = vec![None; points.len()];
-        let feature = |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+        let mut node_ids: Vec<Option<NodeId>> = vec![None; points.len()];
+        let feature = |kind, id: i64| osm_gpui::selection::FeatureRef { layer_id, kind, id };
         let mut selects = Vec::new();
         for (i, p) in [(0, start), (points.len() - 1, end)] {
             if let Some(ArcSnap::Node(id)) = p.snap {
@@ -311,17 +312,17 @@ impl MapViewer {
                 roll_back_recording(rec);
                 return;
             };
-            selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id));
-            selects.push(feature(osm_gpui::selection::FeatureKind::Node, id));
+            selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id.get()));
+            selects.push(feature(osm_gpui::selection::FeatureKind::Node, id.get()));
             node_ids[*i] = Some(id);
         }
-        let all_ids: Vec<i64> = node_ids
+        let all_ids: Vec<NodeId> = node_ids
             .iter()
             .zip(&points)
             .map(|(id, &(lat, lon))| id.unwrap_or_else(|| rec.add_node(lat, lon)))
             .collect();
         let way_id = rec.add_way(all_ids, Vec::new());
-        selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id));
+        selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id.get()));
         // The whole arc, splices included, is one undo step: undoing removes
         // the arc first, then the splices.
         self.undo_stack.push(
@@ -331,7 +332,7 @@ impl MapViewer {
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Way,
-            id: way_id,
+            id: way_id.get(),
         }];
         self.fields_panel.fields_text_inputs.clear();
         self.fields_panel.fields_text_subscribed.clear();

@@ -3,6 +3,7 @@
 use super::super::{lat_lon_to_mercator, OsmLayer, RESTRICTION_OFFSET_PX};
 use crate::coordinates::LatLon;
 use crate::coordinates::Mercator;
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
@@ -13,7 +14,7 @@ use std::sync::Arc;
 
 fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat,
         lon,
         version: 1,
@@ -23,8 +24,8 @@ fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
 
 fn way(id: i64, nodes: &[i64]) -> OsmWay {
     OsmWay {
-        id,
-        nodes: nodes.to_vec(),
+        id: WayId(id),
+        nodes: NodeId::from_raw_vec(nodes),
         version: 1,
         tags: HashMap::from([("highway".to_string(), "residential".to_string())]),
     }
@@ -32,7 +33,7 @@ fn way(id: i64, nodes: &[i64]) -> OsmWay {
 
 fn rel(id: i64, tags: &[(&str, &str)], members: &[(MemberType, i64, &str)]) -> OsmRelation {
     OsmRelation {
-        id,
+        id: RelationId(id),
         version: 1,
         tags: tags
             .iter()
@@ -115,11 +116,11 @@ fn layer() -> OsmLayer {
 #[test]
 fn a_way_in_several_routes_gets_the_lowest_relation_id() {
     let layer = layer();
-    assert_eq!(layer.route_overlay_colour(1), Some(0x9B30D9));
+    assert_eq!(layer.route_overlay_colour(WayId(1)), Some(0x9B30D9));
     // Routes 10 (bus) and 11 (red): 10 wins.
-    assert_eq!(layer.route_overlay_colour(2), Some(0x9B30D9));
+    assert_eq!(layer.route_overlay_colour(WayId(2)), Some(0x9B30D9));
     // Not a member of anything, or not loaded.
-    assert_eq!(layer.route_overlay_colour(98), None);
+    assert_eq!(layer.route_overlay_colour(WayId(98)), None);
 }
 
 #[test]
@@ -128,12 +129,12 @@ fn route_edits_follow_the_relation() {
     layer
         .set_tag(FeatureKind::Relation, 10, "type", "route_master")
         .unwrap();
-    assert_eq!(layer.route_overlay_colour(1), None);
-    assert_eq!(layer.route_overlay_colour(2), Some(0xFF0000));
+    assert_eq!(layer.route_overlay_colour(WayId(1)), None);
+    assert_eq!(layer.route_overlay_colour(WayId(2)), Some(0xFF0000));
     layer
         .set_tag(FeatureKind::Relation, 10, "type", "route")
         .unwrap();
-    assert_eq!(layer.route_overlay_colour(1), Some(0x9B30D9));
+    assert_eq!(layer.route_overlay_colour(WayId(1)), Some(0x9B30D9));
 }
 
 #[test]
@@ -141,7 +142,10 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
     let layer = layer();
     let markers = layer.restriction_markers();
     // 21's via node isn't loaded: no marker.
-    assert_eq!(markers.iter().map(|m| m.0).collect::<Vec<_>>(), [20, 22]);
+    assert_eq!(
+        markers.iter().map(|m| m.0).collect::<Vec<_>>(),
+        [RelationId(20), RelationId(22)]
+    );
     let (_, x, y, only) = markers[0];
     assert!(!only);
     let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0, -73.999));
@@ -151,7 +155,9 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
 #[test]
 fn moving_or_deleting_the_via_node_updates_the_marker() {
     let mut layer = layer();
-    layer.commit_node_moves(&[(2, 40.0005, -73.998)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(2), 40.0005, -73.998)])
+        .unwrap();
     let (_, x, y, _) = layer.restriction_markers()[0];
     let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0005, -73.998));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
@@ -162,11 +168,11 @@ fn moving_or_deleting_the_via_node_updates_the_marker() {
         layer.delete_feature(FeatureKind::Node, 4),
         Err(EditError::InRelation {
             id: 4,
-            relation: 22,
+            relation: RelationId(22),
             ..
         })
     ));
-    let purged = layer.purge_features(&[4], &[], &[]);
+    let purged = layer.purge_features(&[NodeId(4)], &[], &[]);
     assert_eq!(layer.restriction_markers().len(), 1);
     layer.restore_purged(purged);
     assert_eq!(layer.restriction_markers().len(), 2);

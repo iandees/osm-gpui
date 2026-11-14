@@ -2068,7 +2068,11 @@ mod tests {
         };
         let area = |z: f64| area_labels::resolve_area_label(&area_style, &t, z).is_some();
         assert_eq!(first_zoom(&mut |z| area(z)), 16.0);
-        let way = [(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)];
+        let way = [
+            (crate::ids::NodeId(1), 0.0, 0.0),
+            (crate::ids::NodeId(2), 100.0, 0.0),
+            (crate::ids::NodeId(3), 200.0, 0.0),
+        ];
         let cand = line_labels::Candidate {
             way_id: 1,
             text: "Elm Street".into(),

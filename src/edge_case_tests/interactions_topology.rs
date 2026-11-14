@@ -3,6 +3,7 @@
 //! relation lists twice.
 
 use super::*;
+use osm_gpui::ids::WayId;
 
 fn undo_redo(s: &mut Session, before: &Snap) {
     let after = s.snap();
@@ -235,7 +236,7 @@ fn deleting_a_way_listed_twice_then_undo_restores_both_slots_in_place(cx: &mut T
         );
         s.assert_no_dangling();
         let d = s.diff();
-        assert_eq!(d.deleted_way_ids, vec![(10, 3)]);
+        assert_eq!(d.deleted_way_ids, vec![(WayId(10), 3)]);
         assert_eq!(d.modified_relations.len(), 1);
         let xml = s.xml();
         assert!(at(&xml, "<modify>") < at(&xml, "<delete>"));

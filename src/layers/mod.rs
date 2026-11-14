@@ -1,6 +1,7 @@
 use gpui::*;
 use std::collections::HashSet;
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::viewport::Viewport;
 
 use osm_layer::OsmLayer;
@@ -235,36 +236,36 @@ pub enum HighlightKind {
 pub enum EditError {
     /// The layer holds no data.
     NoData,
-    UnknownNode(i64),
-    UnknownWay(i64),
-    UnknownRelation(i64),
+    UnknownNode(NodeId),
+    UnknownWay(WayId),
+    UnknownRelation(RelationId),
     /// A node cannot be removed while a way still lists it.
-    NodeInWay(i64),
+    NodeInWay(NodeId),
     /// A relation cannot be deleted while another has it as a member.
-    RelationInUse(i64),
+    RelationInUse(RelationId),
     /// A node or way cannot be deleted while a relation still lists it.
     InRelation {
         kind: crate::selection::FeatureKind,
         id: i64,
-        relation: i64,
+        relation: RelationId,
     },
     /// A way cannot lose nodes down to fewer than two.
     WayTooShort {
-        way_id: i64,
+        way_id: WayId,
         len: usize,
     },
     /// An object with this id exists already.
     IdInUse(crate::selection::FeatureKind, i64),
     /// A position past the end of a way's node list.
     IndexOutOfRange {
-        way_id: i64,
+        way_id: WayId,
         index: usize,
         len: usize,
     },
     /// The operation covers nodes and ways only.
     NotNodeOrWay(crate::selection::FeatureKind),
     /// A node snapshot without coordinates.
-    MissingCoordinates(i64),
+    MissingCoordinates(NodeId),
 }
 
 impl EditError {
@@ -272,9 +273,9 @@ impl EditError {
     pub fn unknown(kind: crate::selection::FeatureKind, id: i64) -> Self {
         use crate::selection::FeatureKind;
         match kind {
-            FeatureKind::Node => EditError::UnknownNode(id),
-            FeatureKind::Way => EditError::UnknownWay(id),
-            FeatureKind::Relation => EditError::UnknownRelation(id),
+            FeatureKind::Node => EditError::UnknownNode(NodeId(id)),
+            FeatureKind::Way => EditError::UnknownWay(WayId(id)),
+            FeatureKind::Relation => EditError::UnknownRelation(RelationId(id)),
         }
     }
 }
@@ -463,16 +464,16 @@ pub trait EditableLayer {
 
     /// Set a transient screen-space offset to apply when rendering the given
     /// node ids, for live drag feedback. Does not touch the underlying data.
-    fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>);
+    fn set_drag_preview(&mut self, node_ids: &HashSet<NodeId>, delta: Point<Pixels>);
 
     /// Clear any transient drag preview.
     fn clear_drag_preview(&mut self);
 
     /// Current (lat, lon) of a node this layer owns, if any.
-    fn node_lat_lon(&self, node_id: i64) -> Option<(f64, f64)>;
+    fn node_lat_lon(&self, node_id: NodeId) -> Option<(f64, f64)>;
 
     /// The member node ids of a way this layer owns, if any.
-    fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>>;
+    fn way_node_ids(&self, way_id: WayId) -> Option<Vec<NodeId>>;
 
     // -- Edit primitives. Each changes the data and every derived cache
     // together and marks the layer modified. A refusal returns `Err` having
@@ -480,7 +481,7 @@ pub trait EditableLayer {
 
     /// Move nodes: `(node_id, new_lat, new_lon)`. Moves none if any id is
     /// unknown. Caches are patched for the moved nodes and their ways only.
-    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) -> Result<(), EditError>;
+    fn commit_node_moves(&mut self, moves: &[(NodeId, f64, f64)]) -> Result<(), EditError>;
 
     /// Set (insert or overwrite) a tag on a node, way or relation.
     fn set_tag(
@@ -502,10 +503,10 @@ pub trait EditableLayer {
     /// Create a tag-less node at `(lat, lon)` and return its id: a fresh
     /// negative one when `id` is `None`, else exactly `id` (redo), which must
     /// be unused.
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Result<i64, EditError>;
+    fn create_node(&mut self, lat: f64, lon: f64, id: Option<NodeId>) -> Result<NodeId, EditError>;
 
     /// `create_node` with a fresh id, which cannot fail.
-    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
+    fn add_node(&mut self, lat: f64, lon: f64) -> NodeId;
 
     /// Delete a node or way, returning what `restore_feature` needs. A node
     /// still in a way, and a node or way still listed by a relation, is
@@ -525,57 +526,57 @@ pub trait EditableLayer {
     ) -> Result<(), EditError>;
 
     /// Add a way over existing nodes with a fresh negative id and return it.
-    fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64;
+    fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Vec<(String, String)>) -> WayId;
 
     /// Append a node id to a way.
-    fn extend_way(&mut self, way_id: i64, node_id: i64) -> Result<(), EditError>;
+    fn extend_way(&mut self, way_id: WayId, node_id: NodeId) -> Result<(), EditError>;
 
     /// Create a node and splice it into a way at `index` (`0..=len`), returning
     /// its id. Creates nothing if the way or index is bad.
     fn insert_node_into_way(
         &mut self,
-        way_id: i64,
+        way_id: WayId,
         index: usize,
         lat: f64,
         lon: f64,
-    ) -> Result<i64, EditError>;
+    ) -> Result<NodeId, EditError>;
 
     /// Remove a node that no way or relation uses (undo of a create).
-    fn remove_node(&mut self, node_id: i64) -> Result<(), EditError>;
+    fn remove_node(&mut self, node_id: NodeId) -> Result<(), EditError>;
 
     /// Remove a way no relation lists; its nodes stay.
-    fn remove_way(&mut self, way_id: i64) -> Result<(), EditError>;
+    fn remove_way(&mut self, way_id: WayId) -> Result<(), EditError>;
 
     /// Take the node at `index` out of a way's node list; the node stays.
     /// Refused if the way would be left with fewer than two nodes.
-    fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError>;
+    fn remove_node_from_way(&mut self, way_id: WayId, index: usize) -> Result<(), EditError>;
 
     /// Reverse a way's node order (its own inverse).
-    fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError>;
+    fn reverse_way(&mut self, way_id: WayId) -> Result<(), EditError>;
 
     /// Replace a way's node list. The nodes should already exist. A list
     /// shorter than two nodes is refused when it shortens the way.
-    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> Result<(), EditError>;
+    fn set_way_nodes(&mut self, way_id: WayId, node_ids: Vec<NodeId>) -> Result<(), EditError>;
     /// The ids of the ways whose node list includes `node_id`.
-    fn ways_using_node(&self, node_id: i64) -> Vec<i64>;
+    fn ways_using_node(&self, node_id: NodeId) -> Vec<WayId>;
 
     /// The ids of the relations that have `way_id` as a member.
-    fn relations_containing_way(&self, way_id: i64) -> Vec<i64>;
+    fn relations_containing_way(&self, way_id: WayId) -> Vec<RelationId>;
 
     /// The ids of the relations that have `node_id` as a member.
-    fn relations_containing_node(&self, node_id: i64) -> Vec<i64>;
+    fn relations_containing_node(&self, node_id: NodeId) -> Vec<RelationId>;
 
     /// A copy of the relation with this id (tags and members), if the layer
     /// has it.
-    fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation>;
+    fn relation(&self, relation_id: RelationId) -> Option<crate::osm::OsmRelation>;
 
     /// The ids of every relation the layer has, in the order it stores them.
-    fn relation_ids(&self) -> Vec<i64>;
+    fn relation_ids(&self) -> Vec<RelationId>;
 
     /// Replace a relation's whole member list and return the previous one.
     fn set_relation_members(
         &mut self,
-        relation_id: i64,
+        relation_id: RelationId,
         members: Vec<crate::osm::OsmMember>,
     ) -> Result<Vec<crate::osm::OsmMember>, EditError>;
 
@@ -583,7 +584,7 @@ pub trait EditableLayer {
     fn relations(&self) -> Vec<crate::osm::OsmRelation>;
 
     /// The ids of the relations that have `relation_id` as a member.
-    fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64>;
+    fn relations_containing_relation(&self, relation_id: RelationId) -> Vec<RelationId>;
 
     /// Create a relation with a fresh negative id (from the same pool new
     /// nodes and ways draw from) and return it. Member refs are not checked.
@@ -591,13 +592,13 @@ pub trait EditableLayer {
         &mut self,
         tags: Vec<(String, String)>,
         members: Vec<crate::osm::OsmMember>,
-    ) -> Result<i64, EditError>;
+    ) -> Result<RelationId, EditError>;
 
     /// Delete a relation, returning a snapshot for `restore_relation`.
     /// Refused while another relation has it as a member.
     fn delete_relation(
         &mut self,
-        relation_id: i64,
+        relation_id: RelationId,
     ) -> Result<crate::selection::DeletedRelationSnapshot, EditError>;
 
     /// Put a deleted (or, for redo, created) relation back with its original
@@ -618,9 +619,9 @@ pub trait EditableLayer {
     /// Relations that name them keep the members, now not downloaded.
     fn purge_features(
         &mut self,
-        nodes: &[i64],
-        ways: &[i64],
-        relations: &[i64],
+        nodes: &[NodeId],
+        ways: &[WayId],
+        relations: &[RelationId],
     ) -> crate::selection::PurgedFeatures;
 
     /// Undo of `purge_features`: put the objects back in data and baseline.
@@ -1246,14 +1247,14 @@ mod tests {
         let center_lat = 40.0;
         let center_lon = -74.0;
         let node = OsmNode {
-            id: 1,
+            id: NodeId(1),
             lat: center_lat,
             lon: center_lon,
             version: 1,
             tags: HashMap::new(),
         };
         let mut nodes = HashMap::new();
-        nodes.insert(1, node);
+        nodes.insert(NodeId(1), node);
         let data = Arc::new(OsmData {
             nodes,
             ways: HashMap::new(),
@@ -1295,14 +1296,14 @@ mod tests {
         let center_lat = 40.0;
         let center_lon = -74.0;
         let node = OsmNode {
-            id: 1,
+            id: NodeId(1),
             lat: center_lat,
             lon: center_lon,
             version: 1,
             tags: HashMap::new(),
         };
         let mut nodes = HashMap::new();
-        nodes.insert(1, node);
+        nodes.insert(NodeId(1), node);
         let data = Arc::new(OsmData {
             nodes,
             ways: HashMap::new(),
@@ -1596,9 +1597,9 @@ mod tests {
         };
         for n in 1..=3 {
             data.nodes.insert(
-                n,
+                NodeId(n),
                 crate::osm::OsmNode {
-                    id: n,
+                    id: NodeId(n),
                     lat: 0.0,
                     lon: 0.0,
                     version: 1,

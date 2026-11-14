@@ -7,6 +7,7 @@ use super::{
 use crate::{validation_panel, MapViewer};
 use gpui::prelude::*;
 use gpui::TestAppContext;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::tile_layer::TileLayer;
 use osm_gpui::settings_store;
@@ -22,7 +23,13 @@ fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(100, long_way_nodes(2104))
+                .set_way_nodes(
+                    WayId(100),
+                    long_way_nodes(2104)
+                        .into_iter()
+                        .map(NodeId)
+                        .collect::<Vec<_>>(),
+                )
                 .unwrap();
             view.open_upload_dialog_as(Some("me"), window, cx);
             assert!(view.dialogs.upload_dialog.is_none() && view.dialogs.sign_in_dialog.is_none());
@@ -54,7 +61,10 @@ fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext
 #[gpui::test]
 fn an_unmodified_oversized_way_does_not_block_other_changes(cx: &mut TestAppContext) {
     let window = setup_network_with(cx, |data| {
-        data.ways.get_mut(&100).unwrap().nodes = long_way_nodes(2500);
+        data.ways.get_mut(&WayId(100)).unwrap().nodes = long_way_nodes(2500)
+            .into_iter()
+            .map(NodeId)
+            .collect::<Vec<_>>();
     });
     window
         .update(cx, |view, _window, _cx| {
@@ -440,7 +450,7 @@ fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(cx: &mut 
         layer
             .set_tag(
                 osm_gpui::selection::FeatureKind::Node,
-                node,
+                node.get(),
                 "amenity",
                 "cafe",
             )

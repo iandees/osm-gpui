@@ -11,6 +11,7 @@ use crate::{
 use gpui::{point, px, Context, KeyBinding, TestAppContext, Window};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::coordinates::Mercator;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::settings_store;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -232,7 +233,7 @@ fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAp
                 .unwrap();
             let at = |way: i64| -> Vec<(f64, f64)> {
                 editable
-                    .way_node_ids(way)
+                    .way_node_ids(WayId(way))
                     .unwrap()
                     .iter()
                     .map(|n| editable.node_lat_lon(*n).unwrap())
@@ -242,9 +243,9 @@ fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAp
             // Duplicating does not touch what Copy put on the clipboard.
             assert_eq!(view.clipboards.features.clone(), copied);
             // Drag the duplicate away: the original stays where it was.
-            let first = editable.way_node_ids(dup.id).unwrap()[0];
-            assert!(first < 0 && editable.node_lat_lon(8).is_some());
-            assert_ne!(first, 8);
+            let first = editable.way_node_ids(WayId(dup.id)).unwrap()[0];
+            assert!(first < NodeId(0) && editable.node_lat_lon(NodeId(8)).is_some());
+            assert_ne!(first, NodeId(8));
             let _ = Node;
         })
         .unwrap();

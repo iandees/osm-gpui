@@ -1,6 +1,7 @@
 //! What the pending diff contains and the order the upload document puts it in.
 
 use super::*;
+use osm_gpui::ids::{NodeId, RelationId};
 use osm_gpui::osm_upload::build_osm_change_xml;
 
 fn road() -> [(&'static str, &'static str); 1] {
@@ -9,7 +10,7 @@ fn road() -> [(&'static str, &'static str); 1] {
 
 fn new_rel(id: i64, members: &[(MemberType, i64)]) -> OsmRelation {
     OsmRelation {
-        id,
+        id: RelationId(id),
         version: 1,
         tags: HashMap::new(),
         members: members
@@ -100,7 +101,7 @@ fn moving_a_node_and_deleting_its_way_uploads_both(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .commit_node_moves(&[(2, 40.5, -74.5)])
+            .commit_node_moves(&[(NodeId(2), 40.5, -74.5)])
             .unwrap();
         s.select(&[(W, 10)]);
         assert!(s.act("delete"));
@@ -136,9 +137,9 @@ fn created_then_deleted_in_one_session_uploads_nothing(cx: &mut TestAppContext) 
             (a, e.add_way(vec![a, b], vec![]))
         };
         assert_eq!(s.counts(), (3, 0, 0));
-        s.select(&[(W, w)]);
+        s.select(&[(W, w.get())]);
         assert!(s.act("delete"));
-        s.select(&[(N, n)]);
+        s.select(&[(N, n.get())]);
         let _ = s.act("delete");
         let d = s.diff();
         assert!(d.created_ways.is_empty());

@@ -19,6 +19,7 @@
 //!   its own.
 //! * A way listed twice (an out-and-back route) is two separate entries.
 
+use crate::ids::{NodeId, WayId};
 use crate::osm::{MemberType, OsmMember};
 
 /// The result of sorting: the new member list and how many separate chains
@@ -42,22 +43,22 @@ struct Entry {
     slot: usize,
     dir: Dir,
     kind: String,
-    first: i64,
-    last: i64,
+    first: NodeId,
+    last: NodeId,
     /// All nodes, when the way is closed (a roundabout or ring).
-    ring: Option<Vec<i64>>,
+    ring: Option<Vec<NodeId>>,
 }
 
 impl Entry {
     /// The nodes this entry can be entered / left at when walked in `forward`
     /// direction (`true`: first to last).
-    fn entry(&self, forward: bool) -> Vec<i64> {
+    fn entry(&self, forward: bool) -> Vec<NodeId> {
         match &self.ring {
             Some(r) => r.clone(),
             None => vec![if forward { self.first } else { self.last }],
         }
     }
-    fn exit(&self, forward: bool) -> Vec<i64> {
+    fn exit(&self, forward: bool) -> Vec<NodeId> {
         self.entry(!forward)
     }
     fn allows(&self, forward: bool) -> bool {
@@ -77,13 +78,16 @@ fn kind_of(role: &str) -> String {
     }
 }
 
-fn touches(a: &[i64], b: &[i64]) -> bool {
+fn touches(a: &[NodeId], b: &[NodeId]) -> bool {
     a.iter().any(|n| b.contains(n))
 }
 
 /// Sort the members of a relation. `way_nodes` returns the node ids of a way
 /// member, or `None` if it is not downloaded.
-pub fn sort_members(members: &[OsmMember], way_nodes: &dyn Fn(i64) -> Option<Vec<i64>>) -> Sorted {
+pub fn sort_members(
+    members: &[OsmMember],
+    way_nodes: &dyn Fn(WayId) -> Option<Vec<NodeId>>,
+) -> Sorted {
     let mut entries: Vec<Entry> = Vec::new();
     for (slot, m) in members.iter().enumerate() {
         if m.member_type != MemberType::Way {
@@ -92,7 +96,7 @@ pub fn sort_members(members: &[OsmMember], way_nodes: &dyn Fn(i64) -> Option<Vec
         if m.role.starts_with("stop") || m.role.starts_with("platform") {
             continue;
         }
-        let Some(nodes) = way_nodes(m.reference) else {
+        let Some(nodes) = way_nodes(WayId(m.reference)) else {
             continue;
         };
         if nodes.len() < 2 {
@@ -237,8 +241,11 @@ mod tests {
         m.iter().map(|m| m.reference).collect()
     }
     fn sort(members: &[OsmMember], ways: &[(i64, &[i64])]) -> Sorted {
-        let map: HashMap<i64, Vec<i64>> = ways.iter().map(|&(i, n)| (i, n.to_vec())).collect();
-        sort_members(members, &|id| map.get(&id).cloned())
+        let map: HashMap<i64, Vec<NodeId>> = ways
+            .iter()
+            .map(|&(i, n)| (i, n.iter().copied().map(NodeId).collect()))
+            .collect();
+        sort_members(members, &|id| map.get(&id.get()).cloned())
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! iD tagging schema preset support: vendored preset/area-key data,
 //! geometry classification, and geometry-aware tag matching.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::OsmData;
 use crate::preset_translations::{active, PresetTranslations};
 use crate::selection::FeatureKind;
@@ -670,8 +671,11 @@ pub fn classify_geometry(
 ) -> Option<Geometry> {
     match kind {
         FeatureKind::Node => {
-            data.nodes.get(&id)?;
-            let referenced = data.ways.values().any(|way| way.nodes.contains(&id));
+            data.nodes.get(&NodeId(id))?;
+            let referenced = data
+                .ways
+                .values()
+                .any(|way| way.nodes.contains(&NodeId(id)));
             Some(if referenced {
                 Geometry::Vertex
             } else {
@@ -679,13 +683,13 @@ pub fn classify_geometry(
             })
         }
         FeatureKind::Way => {
-            let way = data.ways.get(&id)?;
+            let way = data.ways.get(&WayId(id))?;
             Some(way_geometry(&way.tags, way.is_closed(), area_keys))
         }
         FeatureKind::Relation => data
             .relations
             .iter()
-            .any(|r| r.id == id)
+            .any(|r| r.id == RelationId(id))
             .then_some(Geometry::Relation),
     }
 }
@@ -722,7 +726,7 @@ mod tests {
 
     fn node(id: i64, tags: HashMap<String, String>) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat: 0.0,
             lon: 0.0,
             version: 1,
@@ -732,8 +736,8 @@ mod tests {
 
     fn way(id: i64, nodes: Vec<i64>, tags: HashMap<String, String>) -> OsmWay {
         OsmWay {
-            id,
-            nodes,
+            id: WayId(id),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version: 1,
             tags,
         }

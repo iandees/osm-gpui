@@ -9,6 +9,7 @@ use crate::{selection_actions, EditMode, MapViewer};
 use gpui::prelude::*;
 use gpui::{point, px, size, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::viewport::Viewport;
 use std::sync::Arc;
@@ -74,7 +75,7 @@ fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContex
                 .unwrap()
                 .as_editable()
                 .unwrap()
-                .relation(900)
+                .relation(RelationId(900))
                 .unwrap()
                 .members;
             let mut after = before.clone();
@@ -88,9 +89,10 @@ fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContex
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .set_relation_members(900, after.clone())
+                .set_relation_members(RelationId(900), after.clone())
                 .unwrap();
-            let action = UndoableAction::set_relation_members(layer_id, 900, before, after);
+            let action =
+                UndoableAction::set_relation_members(layer_id, RelationId(900), before, after);
             assert_eq!(action.description(), "Changed the members of a relation");
             view.undo_stack.push(action);
             assert_eq!(relation_members(view, 900).len(), 3);
@@ -133,7 +135,7 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
                     ],
                 )
                 .unwrap();
-            assert!(new_id < 0);
+            assert!(new_id < RelationId(0));
             let snapshot = DeletedRelationSnapshot {
                 relation: editable(view).relation(new_id).unwrap(),
                 index: editable(view).relations().len() - 1,
@@ -142,9 +144,12 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             assert_eq!(create.description(), "Created a relation");
             view.undo_stack.push(create);
             assert_eq!(pending(view), (1, 0, 0));
-            assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
+            assert_eq!(
+                editable(view).relations_containing_relation(RelationId(900)),
+                [new_id]
+            );
             // 900 is a member now, so it can't be deleted.
-            assert!(editable(view).delete_relation(900).is_err());
+            assert!(editable(view).delete_relation(RelationId(900)).is_err());
 
             undo_step(view);
             assert!(editable(view).relation(new_id).is_none());
@@ -158,9 +163,9 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             editable(view).delete_relation(other).unwrap();
 
             // Delete both; the created one has to go first.
-            let original_900 = editable(view).relation(900).unwrap();
+            let original_900 = editable(view).relation(RelationId(900)).unwrap();
             let created = editable(view).delete_relation(new_id).unwrap();
-            let removed = editable(view).delete_relation(900).unwrap();
+            let removed = editable(view).delete_relation(RelationId(900)).unwrap();
             assert_eq!(removed.relation, original_900);
             let delete = UndoableAction::Batch {
                 label: "Deleted relations".to_string(),
@@ -184,11 +189,14 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             );
 
             undo_step(view);
-            assert_eq!(editable(view).relation(900).unwrap(), original_900);
+            assert_eq!(
+                editable(view).relation(RelationId(900)).unwrap(),
+                original_900
+            );
             assert_eq!(editable(view).relation(new_id).unwrap().members.len(), 2);
             assert_eq!(pending(view), (1, 0, 0));
             redo_step(view);
-            assert!(editable(view).relation(900).is_none());
+            assert!(editable(view).relation(RelationId(900)).is_none());
             assert!(editable(view).relation(new_id).is_none());
             assert_eq!(pending(view), (0, 0, 1));
         })
@@ -222,7 +230,7 @@ fn new_relation_collects_the_selection_and_is_one_undo_step(cx: &mut TestAppCont
             assert_eq!(view.selected[0].kind, Relation);
             let new_id = view.selected[0].id;
             assert!(new_id < 0);
-            let relation = editable(view).relation(new_id).unwrap();
+            let relation = editable(view).relation(RelationId(new_id)).unwrap();
             assert!(relation.tags.is_empty());
             let members: Vec<_> = relation
                 .members
@@ -238,10 +246,13 @@ fn new_relation_collects_the_selection_and_is_one_undo_step(cx: &mut TestAppCont
             );
 
             undo_step(view);
-            assert!(editable(view).relation(new_id).is_none());
+            assert!(editable(view).relation(RelationId(new_id)).is_none());
             assert_eq!(pending(view), (0, 0, 0));
             redo_step(view);
-            assert_eq!(editable(view).relation(new_id).unwrap(), relation);
+            assert_eq!(
+                editable(view).relation(RelationId(new_id)).unwrap(),
+                relation
+            );
             assert_eq!(pending(view), (1, 0, 0));
         })
         .unwrap();
@@ -259,7 +270,7 @@ fn new_relation_needs_a_selection_and_accepts_relations(cx: &mut TestAppContext)
             assert!(status_text(view).is_some_and(|m| m.starts_with("Select nodes, ways")));
 
             // A selected relation can be a member of the new one.
-            view.select_relation(view.active_layer.unwrap(), 900);
+            view.select_relation(view.active_layer.unwrap(), RelationId(900));
             select(view, Way, &[100]);
             view.selected.push(osm_gpui::selection::FeatureRef {
                 layer_id: view.active_layer.unwrap(),
@@ -268,10 +279,13 @@ fn new_relation_needs_a_selection_and_accepts_relations(cx: &mut TestAppContext)
             });
             view.run_selection_action("new_relation", cx);
             let new_id = view.selected[0].id;
-            let relation = editable(view).relation(new_id).unwrap();
+            let relation = editable(view).relation(RelationId(new_id)).unwrap();
             assert_eq!(relation.members.len(), 2);
             assert_eq!(relation.members[1].reference, 900);
-            assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
+            assert_eq!(
+                editable(view).relations_containing_relation(RelationId(900)),
+                [RelationId(new_id)]
+            );
         })
         .unwrap();
 }
@@ -282,14 +296,14 @@ fn deleting_a_selected_relation_keeps_its_members_and_undoes(cx: &mut TestAppCon
     window
         .update(cx, |view, _window, cx| {
             let layer_id = view.active_layer.unwrap();
-            let original = editable(view).relation(900).unwrap();
-            view.select_relation(layer_id, 900);
+            let original = editable(view).relation(RelationId(900)).unwrap();
+            view.select_relation(layer_id, RelationId(900));
             view.delete_selected_features(cx);
 
-            assert!(editable(view).relation(900).is_none());
+            assert!(editable(view).relation(RelationId(900)).is_none());
             // Its member way and node survive.
-            assert!(editable(view).way_node_ids(102).is_some());
-            assert!(editable(view).node_lat_lon(7).is_some());
+            assert!(editable(view).way_node_ids(WayId(102)).is_some());
+            assert!(editable(view).node_lat_lon(NodeId(7)).is_some());
             assert!(view.selected.is_empty());
             assert_eq!(view.undo_stack.actions.len(), 1);
             assert_eq!(
@@ -300,10 +314,10 @@ fn deleting_a_selected_relation_keeps_its_members_and_undoes(cx: &mut TestAppCon
             assert_eq!(pending(view), (0, 0, 1));
 
             undo_step(view);
-            assert_eq!(editable(view).relation(900).unwrap(), original);
+            assert_eq!(editable(view).relation(RelationId(900)).unwrap(), original);
             assert_eq!(pending(view), (0, 0, 0));
             redo_step(view);
-            assert!(editable(view).relation(900).is_none());
+            assert!(editable(view).relation(RelationId(900)).is_none());
             assert_eq!(pending(view), (0, 0, 1));
         })
         .unwrap();
@@ -420,29 +434,29 @@ fn deleting_a_relation_that_is_a_member_is_refused_until_its_parent_goes(cx: &mu
                 .unwrap();
 
             // Alone, 900 can't go: the parent would be left dangling.
-            view.select_relation(layer_id, 900);
+            view.select_relation(layer_id, RelationId(900));
             view.delete_selected_features(cx);
-            assert!(editable(view).relation(900).is_some());
+            assert!(editable(view).relation(RelationId(900)).is_some());
             assert!(view.undo_stack.actions.is_empty());
             assert!(status_text(view)
                 .is_some_and(|m| m.starts_with("Can't delete relation 900")
                     && m.contains(&parent.to_string())));
 
             // Selected together with its parent, both go as one step.
-            view.select_relation(layer_id, 900);
+            view.select_relation(layer_id, RelationId(900));
             view.selected.push(osm_gpui::selection::FeatureRef {
                 layer_id,
                 kind: osm_gpui::selection::FeatureKind::Relation,
-                id: parent,
+                id: parent.get(),
             });
             view.delete_selected_features(cx);
-            assert!(editable(view).relation(900).is_none());
+            assert!(editable(view).relation(RelationId(900)).is_none());
             assert!(editable(view).relation(parent).is_none());
             assert_eq!(view.undo_stack.actions.len(), 1);
             assert_eq!(status_text(view), Some("Deleted 2 relations"));
 
             undo_step(view);
-            assert!(editable(view).relation(900).is_some());
+            assert!(editable(view).relation(RelationId(900)).is_some());
             assert!(editable(view).relation(parent).is_some());
         })
         .unwrap();

@@ -47,12 +47,12 @@ impl OsmLayer {
     pub(super) fn node_label_for(
         &self,
         cache: &mut labels::LabelCache,
-        id: i64,
+        id: NodeId,
         zoom: f64,
     ) -> Option<Arc<labels::NodeLabel>> {
         let labels::LabelCache { nodes, icons, .. } = cache;
         nodes
-            .entry(id)
+            .entry(id.get())
             .or_insert_with(|| {
                 let tags = &self.store.osm_data.as_ref()?.nodes.get(&id)?.tags;
                 let st = self.store.stylesheet.node_text_style(tags, zoom);
@@ -89,7 +89,7 @@ impl OsmLayer {
         cache.areas.label(key, || {
             let data = self.store.osm_data.as_ref()?;
             if key.0 == labels::KIND_REL {
-                let e = self.derived.mp.entries.get(&key.1)?;
+                let e = self.derived.mp.entries.get(&RelationId(key.1))?;
                 if !e.tagged {
                     // Old-style: the outer way carries the tags and its own
                     // label.
@@ -98,7 +98,7 @@ impl OsmLayer {
                 let st = self.store.stylesheet.way_text_style(&e.tags, true, zoom);
                 area_labels::resolve_area_label(&st, &e.tags, zoom)
             } else {
-                let way = data.ways.get(&key.1)?;
+                let way = data.ways.get(&WayId(key.1))?;
                 if !way.is_closed() {
                     return None;
                 }
@@ -117,11 +117,11 @@ impl OsmLayer {
         key: labels::Key,
     ) -> Option<Arc<area_labels::AreaGeom>> {
         use area_labels::{AreaGeom, Fingerprint};
-        let xy = |v: &[(i64, f64, f64)]| -> Vec<(f64, f64)> {
+        let xy = |v: &[(NodeId, f64, f64)]| -> Vec<(f64, f64)> {
             v.iter().map(|&(_, x, y)| (x, y)).collect()
         };
         if key.0 == labels::KIND_REL {
-            let e = self.derived.mp.entries.get(&key.1)?;
+            let e = self.derived.mp.entries.get(&RelationId(key.1))?;
             let mut fp = Fingerprint::default();
             for p in &e.polygons {
                 for k in 0..p.ring_count() {
@@ -137,7 +137,7 @@ impl OsmLayer {
                 )
             })
         } else {
-            let idx = *self.derived.way_id_to_index.get(&key.1)?;
+            let idx = *self.derived.way_id_to_index.get(&WayId(key.1))?;
             let verts = &self.derived.way_vertices[idx];
             if verts.len() < 4 || verts.first()?.0 != verts.last()?.0 {
                 return None;
@@ -206,7 +206,7 @@ impl OsmLayer {
         let env = AABB::from_corners([vmin_x, vmin_y], [vmax_x, vmax_y]);
         for g in self.derived.way_index.locate_in_envelope_intersecting(env) {
             let id = g.data;
-            let key = (labels::KIND_WAY, id);
+            let key = (labels::KIND_WAY, id.get());
             let Some(&idx) = self.derived.way_id_to_index.get(&id) else {
                 continue;
             };
@@ -222,7 +222,7 @@ impl OsmLayer {
             }
         }
         for (&id, e) in &self.derived.mp.entries {
-            let key = (labels::KIND_REL, id);
+            let key = (labels::KIND_REL, id.get());
             let b = &e.bbox;
             if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
                 continue;
@@ -249,9 +249,10 @@ impl OsmLayer {
                     self.derived
                         .mp
                         .way_to_rels
-                        .get(&f.0 .1)
+                        .get(&WayId(f.0 .1))
                         .is_some_and(|rels| {
-                            rels.iter().any(|r| rel_text.get(r) == Some(&&f.1.text))
+                            rels.iter()
+                                .any(|r| rel_text.get(&r.get()) == Some(&&f.1.text))
                         })
                 })
                 .map(|f| f.0)
@@ -357,12 +358,12 @@ impl OsmLayer {
             match self.node_label_for(cache, id, zoom) {
                 Some(l) => {
                     let item = labels::Item {
-                        key: (labels::KIND_NODE, id),
+                        key: (labels::KIND_NODE, id.get()),
                         center: c,
                         marker_r: r,
                         icon_r: l.icon.as_ref().map(|i| i.backing() / 2.0),
                         text: None,
-                        priority: l.priority.with_forced(selected.contains(&id)),
+                        priority: l.priority.with_forced(selected.contains(&id.get())),
                     };
                     cands.push((idx, item, l));
                 }
@@ -452,8 +453,8 @@ impl OsmLayer {
                         )),
                         _ => None,
                     };
-                    by_id.insert(id, placed.len());
-                    placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
+                    by_id.insert(id.get(), placed.len());
+                    placed.push(labels::PlacedLabel::new(id.get(), mx, my, icon, text));
                 }
             }
         }
@@ -574,7 +575,7 @@ impl OsmLayer {
         let halo = placement.halo;
         for l in &placement.labels {
             let drag = if l.kind == labels::KIND_NODE {
-                self.drag_preview_offset(l.id)
+                self.drag_preview_offset(NodeId(l.id))
             } else {
                 Point::default()
             };
@@ -609,16 +610,16 @@ impl OsmLayer {
             {
                 continue;
             }
-            let Some(&idx) = self.derived.node_cache.index_by_id.get(&f.id) else {
+            let Some(&idx) = self.derived.node_cache.index_by_id.get(&NodeId(f.id)) else {
                 continue;
             };
-            let Some(label) = self.node_label_for(&mut cache, f.id, zoom) else {
+            let Some(label) = self.node_label_for(&mut cache, NodeId(f.id), zoom) else {
                 continue;
             };
             let Some(text) = &label.text else { continue };
             let (_, mx, my) = self.derived.node_cache.flat[idx];
-            let sp =
-                viewport.mercator_to_screen(Mercator::new(mx, my)) + self.drag_preview_offset(f.id);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my))
+                + self.drag_preview_offset(NodeId(f.id));
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
@@ -725,7 +726,7 @@ impl OsmLayer {
             };
             let half_width = ws.width / 2.0 + casing;
             cands.push(Candidate {
-                way_id,
+                way_id: way_id.get(),
                 text,
                 verts: &self.derived.way_vertices[i],
                 style: LabelStyle::resolve(&st, half_width),

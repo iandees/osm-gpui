@@ -4,6 +4,7 @@ use super::{feature, setup};
 use crate::{menu, EditMode, MapViewer};
 use gpui::{point, px, Context, MouseMoveEvent, MouseUpEvent, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::NodeId;
 use osm_gpui::interaction::Interaction;
 
 /// Window position of a map-local point (inverse of `window_to_map`).
@@ -52,6 +53,7 @@ fn preview_way_of(view: &MapViewer) -> Option<i64> {
         .find_layer(id)?
         .as_osm()?
         .vertex_preview_way()
+        .map(|w| w.get())
 }
 
 fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
@@ -59,7 +61,7 @@ fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
         .layer_manager
         .find_layer(view.active_layer.unwrap())
         .and_then(|l| l.as_editable())
-        .and_then(|e| e.node_lat_lon(id))
+        .and_then(|e| e.node_lat_lon(NodeId(id)))
         .unwrap();
     view.viewport.geo_to_screen(LatLon::new(lat, lon))
 }

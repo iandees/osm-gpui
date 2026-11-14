@@ -8,6 +8,7 @@ use crate::{parse_cli_args_from, MapViewer};
 use gpui::{px, size, TestAppContext};
 use osm_gpui::autosave::{Session, Snapshot};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::layers::MapLayer;
@@ -31,19 +32,19 @@ fn tmp_root(tag: &str) -> PathBuf {
 
 fn fixture() -> OsmData {
     let node = |id: i64, lon: f64| OsmNode {
-        id,
+        id: NodeId(id),
         lat: 40.0,
         lon,
         version: 2,
         tags: HashMap::new(),
     };
     OsmData {
-        nodes: HashMap::from([(1, node(1, -74.001)), (2, node(2, -73.999))]),
+        nodes: HashMap::from([(NodeId(1), node(1, -74.001)), (NodeId(2), node(2, -73.999))]),
         ways: HashMap::from([(
-            10,
+            WayId(10),
             OsmWay {
-                id: 10,
-                nodes: vec![1, 2],
+                id: WayId(10),
+                nodes: vec![NodeId(1), NodeId(2)],
                 version: 3,
                 tags: HashMap::new(),
             },
@@ -189,7 +190,7 @@ fn an_upload_that_leaves_nothing_pending_removes_the_autosave(cx: &mut TestAppCo
                 .unwrap();
             layer.apply_upload_result(&osm_gpui::osm_upload::UploadResult {
                 node_id_remap: HashMap::new(),
-                way_id_remap: HashMap::from([(10, (10, 4))]),
+                way_id_remap: HashMap::from([(WayId(10), (WayId(10), 4))]),
                 relation_id_remap: HashMap::new(),
             });
             view.autosave_now(cx);

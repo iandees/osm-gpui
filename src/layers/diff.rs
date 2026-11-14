@@ -6,6 +6,7 @@
 //! dependency on the undo stack or on how the edit was made, so any way of
 //! creating or deleting an element is covered.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmRelation, OsmWay};
 use std::collections::HashMap;
 
@@ -30,8 +31,8 @@ pub const UNKNOWN_BASELINE_TAG: &str = "osm-gpui:unknown-baseline";
 /// - everything else is identical in both.
 pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData {
     let mut baseline = current.clone();
-    baseline.nodes.retain(|id, _| *id >= 0);
-    baseline.ways.retain(|id, _| *id >= 0);
+    baseline.nodes.retain(|id, _| !id.is_new());
+    baseline.ways.retain(|id, _| !id.is_new());
 
     let marker = || (UNKNOWN_BASELINE_TAG.to_string(), "yes".to_string());
     for id in &edits.modified_nodes {
@@ -44,7 +45,7 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
             way.tags.extend([marker()]);
         }
     }
-    baseline.relations.retain(|r| r.id >= 0);
+    baseline.relations.retain(|r| !r.id.is_new());
     for relation in &mut baseline.relations {
         if edits.modified_relations.contains(&relation.id) {
             relation.tags.extend([marker()]);
@@ -52,17 +53,17 @@ pub fn baseline_for_loaded_file(current: &OsmData, edits: &FileEdits) -> OsmData
     }
     for (id, node) in &edits.deleted_nodes {
         // A deleted element that was never uploaded has nothing to delete.
-        if *id >= 0 {
+        if !id.is_new() {
             baseline.nodes.insert(*id, node.clone());
         }
     }
     for (id, way) in &edits.deleted_ways {
-        if *id >= 0 {
+        if !id.is_new() {
             baseline.ways.insert(*id, way.clone());
         }
     }
     for (id, relation) in &edits.deleted_relations {
-        if *id >= 0 {
+        if !id.is_new() {
             baseline.relations.push(relation.clone());
         }
     }
@@ -79,17 +80,17 @@ pub struct LayerDiff {
     pub modified_nodes: Vec<OsmNode>,
     /// (id, version-as-of-original) for nodes present in the original
     /// snapshot but no longer present in the current data.
-    pub deleted_node_ids: Vec<(i64, i32)>,
+    pub deleted_node_ids: Vec<(NodeId, i32)>,
     pub created_ways: Vec<OsmWay>,
     pub modified_ways: Vec<OsmWay>,
     /// Same shape as `deleted_node_ids`, for ways.
-    pub deleted_way_ids: Vec<(i64, i32)>,
+    pub deleted_way_ids: Vec<(WayId, i32)>,
     /// Relations whose members or tags differ from the baseline.
     pub modified_relations: Vec<OsmRelation>,
     /// Relations absent from the baseline (negative local ids).
     pub created_relations: Vec<OsmRelation>,
     /// Same shape as `deleted_node_ids`, for relations.
-    pub deleted_relation_ids: Vec<(i64, i32)>,
+    pub deleted_relation_ids: Vec<(RelationId, i32)>,
 }
 
 impl LayerDiff {
@@ -123,7 +124,7 @@ impl LayerDiff {
 /// Classify relations (matched by id) against the baseline. Member order is
 /// part of a relation, so reordering counts as a modification.
 fn diff_relations(original: &OsmData, current: &OsmData, diff: &mut LayerDiff) {
-    let originals: HashMap<i64, &OsmRelation> =
+    let originals: HashMap<RelationId, &OsmRelation> =
         original.relations.iter().map(|r| (r.id, r)).collect();
     for relation in &current.relations {
         match originals.get(&relation.id) {
@@ -135,7 +136,8 @@ fn diff_relations(original: &OsmData, current: &OsmData, diff: &mut LayerDiff) {
             }
         }
     }
-    let currents: std::collections::HashSet<i64> = current.relations.iter().map(|r| r.id).collect();
+    let currents: std::collections::HashSet<RelationId> =
+        current.relations.iter().map(|r| r.id).collect();
     for orig in &original.relations {
         if !currents.contains(&orig.id) {
             diff.deleted_relation_ids.push((orig.id, orig.version));
@@ -214,7 +216,7 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64, version: i32) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version,
@@ -224,8 +226,8 @@ mod tests {
 
     fn way(id: i64, nodes: Vec<i64>, version: i32) -> OsmWay {
         OsmWay {
-            id,
-            nodes,
+            id: WayId(id),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
             tags: empty_tags(),
         }
@@ -245,27 +247,31 @@ mod tests {
             vec![way(10, vec![1, 2], 3)],
         );
         let mut edits = FileEdits::default();
-        edits.modified_nodes.insert(2);
-        edits.modified_ways.insert(10);
-        edits.deleted_nodes.insert(3, node(3, 3.0, 3.0, 4));
-        edits.deleted_nodes.insert(-2, node(-2, 8.0, 8.0, 1));
+        edits.modified_nodes.insert(NodeId(2));
+        edits.modified_ways.insert(WayId(10));
+        edits.deleted_nodes.insert(NodeId(3), node(3, 3.0, 3.0, 4));
+        edits
+            .deleted_nodes
+            .insert(NodeId(-2), node(-2, 8.0, 8.0, 1));
 
         let baseline = baseline_for_loaded_file(&current, &edits);
         let diff = diff_osm_data(&baseline, &current);
 
         let ids = |nodes: &[OsmNode]| {
-            let mut ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+            let mut ids: Vec<i64> = nodes.iter().map(|n| n.id.get()).collect();
             ids.sort_unstable();
             ids
         };
         assert_eq!(ids(&diff.created_nodes), vec![-1]);
         assert_eq!(ids(&diff.modified_nodes), vec![2]);
-        assert_eq!(diff.deleted_node_ids, vec![(3, 4)]);
+        assert_eq!(diff.deleted_node_ids, vec![(NodeId(3), 4)]);
         assert_eq!(diff.modified_ways.len(), 1);
         // The base version of a modified element is the one the file gave.
-        assert_eq!(baseline.nodes[&2].version, 7);
+        assert_eq!(baseline.nodes[&NodeId(2)].version, 7);
         // The marker lives only in the baseline.
-        assert!(!current.nodes[&2].tags.contains_key(UNKNOWN_BASELINE_TAG));
+        assert!(!current.nodes[&NodeId(2)]
+            .tags
+            .contains_key(UNKNOWN_BASELINE_TAG));
     }
 
     #[test]
@@ -286,17 +292,17 @@ mod tests {
     fn detects_created_node_and_way() {
         let original = data(vec![node(1, 1.0, 1.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.insert(2, node(2, 2.0, 2.0, 1));
-        current.ways.insert(10, way(10, vec![1, 2], 1));
+        current.nodes.insert(NodeId(2), node(2, 2.0, 2.0, 1));
+        current.ways.insert(WayId(10), way(10, vec![1, 2], 1));
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(
             diff.created_nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
-            vec![2]
+            vec![NodeId(2)]
         );
         assert_eq!(
             diff.created_ways.iter().map(|w| w.id).collect::<Vec<_>>(),
-            vec![10]
+            vec![WayId(10)]
         );
         assert!(diff.modified_nodes.is_empty());
         assert!(diff.deleted_node_ids.is_empty());
@@ -306,11 +312,11 @@ mod tests {
     fn detects_created_node_with_negative_local_id() {
         let original = data(vec![node(1, 1.0, 1.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.insert(-1, node(-1, 3.0, 3.0, 1));
+        current.nodes.insert(NodeId(-1), node(-1, 3.0, 3.0, 1));
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.created_nodes.len(), 1);
-        assert_eq!(diff.created_nodes[0].id, -1);
+        assert_eq!(diff.created_nodes[0].id, NodeId(-1));
     }
 
     #[test]
@@ -320,12 +326,12 @@ mod tests {
             vec![way(10, vec![1, 2], 2)],
         );
         let mut current = original.clone();
-        current.nodes.remove(&2);
+        current.nodes.remove(&NodeId(2));
         current.ways.clear();
 
         let diff = diff_osm_data(&original, &current);
-        assert_eq!(diff.deleted_node_ids, vec![(2, 5)]);
-        assert_eq!(diff.deleted_way_ids, vec![(10, 2)]);
+        assert_eq!(diff.deleted_node_ids, vec![(NodeId(2), 5)]);
+        assert_eq!(diff.deleted_way_ids, vec![(WayId(10), 2)]);
         assert!(diff.created_nodes.is_empty());
         assert!(diff.modified_nodes.is_empty());
     }
@@ -334,7 +340,7 @@ mod tests {
     fn detects_modified_node_position_and_tags() {
         let original = data(vec![node(1, 1.0, 1.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 1.5;
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 1.5;
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_nodes.len(), 1);
@@ -343,7 +349,7 @@ mod tests {
         let mut current2 = original.clone();
         current2
             .nodes
-            .get_mut(&1)
+            .get_mut(&NodeId(1))
             .unwrap()
             .tags
             .insert("amenity".to_string(), "cafe".to_string());
@@ -358,11 +364,19 @@ mod tests {
             vec![way(10, vec![1, 2], 1)],
         );
         let mut current = original.clone();
-        current.ways.get_mut(&10).unwrap().nodes.push(1); // append a node ref -> geometry changed
+        current
+            .ways
+            .get_mut(&WayId(10))
+            .unwrap()
+            .nodes
+            .push(NodeId(1)); // append a node ref -> geometry changed
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_ways.len(), 1);
-        assert_eq!(diff.modified_ways[0].nodes, vec![1, 2, 1]);
+        assert_eq!(
+            diff.modified_ways[0].nodes,
+            vec![NodeId(1), NodeId(2), NodeId(1)]
+        );
     }
 
     #[test]
@@ -373,11 +387,11 @@ mod tests {
         );
         let mut current = original.clone();
         // Only node 2 changes; node 1 and the way are untouched.
-        current.nodes.get_mut(&2).unwrap().lon = 9.0;
+        current.nodes.get_mut(&NodeId(2)).unwrap().lon = 9.0;
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_nodes.len(), 1);
-        assert_eq!(diff.modified_nodes[0].id, 2);
+        assert_eq!(diff.modified_nodes[0].id, NodeId(2));
         assert!(diff.modified_ways.is_empty());
     }
 
@@ -391,7 +405,7 @@ mod tests {
 
     fn relation(id: i64, members: Vec<crate::osm::OsmMember>) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             members,
             version: 4,
             tags: empty_tags(),
@@ -427,7 +441,7 @@ mod tests {
                     .iter()
                     .map(|r| r.id)
                     .collect::<Vec<_>>(),
-                vec![5]
+                vec![RelationId(5)]
             );
             assert_eq!(diff.counts(), (0, 1, 0));
             assert!(!diff.is_empty());
@@ -439,7 +453,7 @@ mod tests {
             .tags
             .insert("type".into(), "route".into());
         let diff = diff_osm_data(&original, &current);
-        assert_eq!(diff.modified_relations[0].id, 6);
+        assert_eq!(diff.modified_relations[0].id, RelationId(6));
     }
 
     #[test]
@@ -463,17 +477,17 @@ mod tests {
             .push(relation(-2, vec![member(Way, 12, "")]));
 
         let diff = diff_osm_data(&original, &current);
-        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id).collect();
+        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id.get()).collect();
         created.sort_unstable();
         assert_eq!(created, vec![-2, -1]);
-        assert_eq!(diff.deleted_relation_ids, vec![(5, 4)]);
+        assert_eq!(diff.deleted_relation_ids, vec![(RelationId(5), 4)]);
         assert!(diff.modified_relations.is_empty());
         assert_eq!(diff.counts(), (2, 0, 1));
         assert!(!diff.is_empty());
 
         // Each alone makes the diff non-empty.
         let only_deleted = LayerDiff {
-            deleted_relation_ids: vec![(1, 1)],
+            deleted_relation_ids: vec![(RelationId(1), 1)],
             ..Default::default()
         };
         assert!(!only_deleted.is_empty());
@@ -488,9 +502,9 @@ mod tests {
     fn counts_sums_created_modified_deleted() {
         let original = data(vec![node(1, 1.0, 1.0, 1), node(2, 2.0, 2.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.remove(&2);
-        current.nodes.insert(3, node(3, 3.0, 3.0, 1));
-        current.nodes.get_mut(&1).unwrap().lat = 9.0;
+        current.nodes.remove(&NodeId(2));
+        current.nodes.insert(NodeId(3), node(3, 3.0, 3.0, 1));
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 9.0;
 
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.counts(), (1, 1, 1));

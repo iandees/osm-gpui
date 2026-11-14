@@ -18,7 +18,7 @@ use crate::{tr, tr_count};
 
 pub enum DialogEvent {
     /// The id of the chosen relation.
-    Submitted(i64),
+    Submitted(crate::ids::RelationId),
     Cancelled,
 }
 
@@ -49,7 +49,7 @@ impl RelationPickerDialog {
     }
 
     /// The ids of the choices matching what is typed, in list order.
-    fn matching_ids(&self, cx: &Context<Self>) -> Vec<i64> {
+    fn matching_ids(&self, cx: &Context<Self>) -> Vec<crate::ids::RelationId> {
         let text = self.query.read(cx).value().to_string();
         matching_choices(&self.choices, &text)
             .into_iter()

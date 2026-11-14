@@ -4,6 +4,7 @@ use super::{editable, select, setup_network, tag_node_one};
 use crate::undo::UndoableAction;
 use crate::{key_bindings_from_settings, AddProgress, MapViewer, Redo, Undo};
 use gpui::{point, px, size, TestAppContext};
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 
 fn selected_ids(view: &MapViewer, kind: osm_gpui::selection::FeatureKind) -> Vec<i64> {
     let mut ids: Vec<i64> = view
@@ -33,12 +34,12 @@ fn undo_and_redo_select_the_affected_features_for_every_feature_kind(cx: &mut Te
             view.delete_selected_features(cx);
             assert!(view.selected.is_empty());
             view.on_undo(&Undo, window, cx);
-            assert!(editable(view).way_node_ids(102).is_some());
+            assert!(editable(view).way_node_ids(WayId(102)).is_some());
             assert_eq!(selected_ids(view, Way), vec![102]);
             view.on_redo(&Redo, window, cx);
             // The way is gone, so it can't stay selected (the relation
             // that lost it as a member is also part of the step).
-            assert!(editable(view).way_node_ids(102).is_none());
+            assert!(editable(view).way_node_ids(WayId(102)).is_none());
             assert!(selected_ids(view, Way).is_empty());
             view.on_undo(&Undo, window, cx);
 
@@ -46,17 +47,17 @@ fn undo_and_redo_select_the_affected_features_for_every_feature_kind(cx: &mut Te
             view.delete_selected_features(cx);
             assert!(view.selected.is_empty());
             view.on_undo(&Undo, window, cx);
-            assert!(editable(view).node_lat_lon(7).is_some());
+            assert!(editable(view).node_lat_lon(NodeId(7)).is_some());
             assert_eq!(selected_ids(view, Node), vec![7]);
             view.on_redo(&Redo, window, cx);
-            assert!(editable(view).node_lat_lon(7).is_none());
+            assert!(editable(view).node_lat_lon(NodeId(7)).is_none());
             assert!(selected_ids(view, Node).is_empty());
             view.on_undo(&Undo, window, cx);
 
-            view.select_relation(layer_id, 900);
+            view.select_relation(layer_id, RelationId(900));
             view.delete_selected_features(cx);
             view.on_undo(&Undo, window, cx);
-            assert!(editable(view).relation(900).is_some());
+            assert!(editable(view).relation(RelationId(900)).is_some());
             assert_eq!(selected_ids(view, Relation), vec![900]);
             view.on_redo(&Redo, window, cx);
             assert!(view.selected.is_empty());
@@ -71,10 +72,10 @@ fn undo_and_redo_select_the_affected_features_for_every_feature_kind(cx: &mut Te
             assert_eq!(view.selected[0].kind, Relation);
             let created = view_relation_id(view);
             view.on_undo(&Undo, window, cx);
-            assert!(editable(view).relation(created).is_none());
+            assert!(editable(view).relation(RelationId(created)).is_none());
             assert!(view.selected.is_empty());
             view.on_redo(&Redo, window, cx);
-            assert!(editable(view).relation(created).is_some());
+            assert!(editable(view).relation(RelationId(created)).is_some());
             assert_eq!(selected_ids(view, Relation), vec![created]);
         })
         .unwrap();
@@ -122,12 +123,12 @@ fn undo_selects_tagged_and_moved_features_and_prunes_stale_ids(cx: &mut TestAppC
             assert!(selected_ids(view, Way).is_empty());
 
             let layer_id = view.active_layer.unwrap();
-            let (lat, lon) = editable(view).node_lat_lon(1).unwrap();
+            let (lat, lon) = editable(view).node_lat_lon(NodeId(1)).unwrap();
             editable(view)
-                .commit_node_moves(&[(1, lat + 0.001, lon)])
+                .commit_node_moves(&[(NodeId(1), lat + 0.001, lon)])
                 .unwrap();
             view.undo_stack.push(UndoableAction::move_nodes(
-                vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
+                vec![(layer_id, vec![(NodeId(1), (lat, lon), (lat + 0.001, lon))])],
                 None,
             ));
             // A selection holding a feature that doesn't exist is pruned
@@ -154,7 +155,7 @@ fn undo_of_a_dragged_way_keeps_the_way_selected(cx: &mut TestAppContext) {
         .update(cx, |view, window, cx| {
             let layer_id = view.active_layer.unwrap();
             select(view, Way, &[101]);
-            let nodes = editable(view).way_node_ids(101).unwrap();
+            let nodes = editable(view).way_node_ids(WayId(101)).unwrap();
             let (lat, lon) = editable(view).node_lat_lon(nodes[0]).unwrap();
             editable(view)
                 .commit_node_moves(&[(nodes[0], lat + 0.001, lon)])
@@ -210,7 +211,7 @@ fn cmd_z_after_delete_selects_the_restored_way(cx: &mut TestAppContext) {
     });
     window
         .update(vcx, |view, _, _| {
-            assert!(editable(view).way_node_ids(102).is_some());
+            assert!(editable(view).way_node_ids(WayId(102)).is_some());
             // The way (and the orphan node restored with it): way 102 is a
             // member of relation 900, which the step also touched, but
             // relations are never mixed in.
@@ -225,7 +226,7 @@ fn cmd_z_after_delete_selects_the_restored_way(cx: &mut TestAppContext) {
     vcx.dispatch_action(Redo);
     window
         .update(vcx, |view, _, _| {
-            assert!(editable(view).way_node_ids(102).is_none());
+            assert!(editable(view).way_node_ids(WayId(102)).is_none());
             // Only the relation that lost the way is left to select.
             assert!(selected_ids(view, Way).is_empty());
         })
@@ -253,7 +254,7 @@ fn undo_while_drawing_leaves_the_selection_alone(cx: &mut TestAppContext) {
             view.enter_mode(osm_gpui::edit_mode::EditMode::Add);
             view.set_add_progress(Some(AddProgress {
                 way_id: None,
-                last_node_id: 1,
+                last_node_id: NodeId(1),
                 at_start: false,
             }));
             view.on_undo(&Undo, window, cx);
@@ -265,9 +266,10 @@ fn undo_while_drawing_leaves_the_selection_alone(cx: &mut TestAppContext) {
 
 /// The id of the relation `new_relation` created (the only negative one).
 fn view_relation_id(view: &mut MapViewer) -> i64 {
-    editable(view)
+    (editable(view)
         .relation_ids()
         .into_iter()
-        .find(|id| *id < 0)
-        .expect("a created relation")
+        .find(|id| *id < RelationId(0))
+        .expect("a created relation"))
+    .get()
 }

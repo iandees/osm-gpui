@@ -3,6 +3,7 @@
 //! baseline together, so the upload diff never mentions them.
 
 use super::*;
+use osm_gpui::ids::RelationId;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -133,10 +134,10 @@ fn objects_with_pending_edits_are_refused(cx: &mut TestAppContext) {
 
         s.select(&[(W, 11)]);
         assert!(!s.act("purge"), "modified way refused");
-        s.select(&[(N, new)]);
+        s.select(&[(N, new.get())]);
         assert!(!s.act("purge"), "locally created node refused");
         assert_eq!(s.counts(), diff, "pending edits untouched");
-        assert!(s.has_way(11) && s.has_node(new));
+        assert!(s.has_way(11) && s.has_node(new.get()));
     });
 }
 
@@ -150,11 +151,11 @@ fn a_relation_with_an_edited_member_list_is_refused(cx: &mut TestAppContext) {
     with_session(cx, data, |s| {
         s.select(&[(R, 900)]);
         s.editable_mut()
-            .set_relation_members(900, Vec::new())
+            .set_relation_members(RelationId(900), Vec::new())
             .unwrap();
         assert!(!s.act("purge"));
         assert!(s.status().contains("900"), "{}", s.status());
-        assert!(s.editable().relation(900).is_some());
+        assert!(s.editable().relation(RelationId(900)).is_some());
     });
 }
 
@@ -176,7 +177,7 @@ fn relation_members_that_are_purged_stay_as_members_not_downloaded(cx: &mut Test
         s.select(&[(W, 10), (R, 900)]);
         assert!(s.act("purge"), "{}", s.status());
         assert!(!s.has_way(10));
-        assert!(s.editable().relation(900).is_none());
+        assert!(s.editable().relation(RelationId(900)).is_none());
         // Way 11 still holds node 2; relation 901 still names 900.
         assert!(s.has_way(11) && s.has_node(2));
         assert_eq!(
@@ -272,14 +273,20 @@ fn purged_relations_keep_their_order_through_undo_and_redo(cx: &mut TestAppConte
         let order = vec![900, 901, 902];
         s.select(&[(R, 902), (R, 900)]);
         assert!(s.act("purge"), "{}", s.status());
-        assert_eq!(s.editable().relation_ids(), vec![901]);
+        assert_eq!(s.editable().relation_ids(), vec![RelationId(901)]);
         s.undo();
-        assert_eq!(s.editable().relation_ids(), order);
+        assert_eq!(
+            s.editable().relation_ids(),
+            RelationId::from_raw_vec(&order)
+        );
         assert_eq!(s.snap(), before);
         s.redo();
-        assert_eq!(s.editable().relation_ids(), vec![901]);
+        assert_eq!(s.editable().relation_ids(), vec![RelationId(901)]);
         s.undo();
-        assert_eq!(s.editable().relation_ids(), order);
+        assert_eq!(
+            s.editable().relation_ids(),
+            RelationId::from_raw_vec(&order)
+        );
         assert_eq!(s.snap(), before);
         assert_eq!(s.counts(), (0, 0, 0));
     });

@@ -19,6 +19,7 @@
 //! Nothing is ever removed: an object absent from the download is just
 //! outside the downloaded area.
 
+use crate::ids::RelationId;
 use crate::osm::{OsmData, OsmRelation};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -111,7 +112,7 @@ fn merge_relations(
     incoming: &[OsmRelation],
     stats: &mut MergeStats,
 ) {
-    let index = |relations: &[OsmRelation]| -> HashMap<i64, usize> {
+    let index = |relations: &[OsmRelation]| -> HashMap<RelationId, usize> {
         relations
             .iter()
             .enumerate()
@@ -183,12 +184,13 @@ pub fn merge_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeId, RelationId, WayId};
     use crate::layers::diff::diff_osm_data;
     use crate::osm::{OsmNode, OsmWay};
 
     fn node(id: i64, lat: f64, version: i32) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon: 0.0,
             version,
@@ -198,8 +200,8 @@ mod tests {
 
     fn way(id: i64, nodes: Vec<i64>, version: i32) -> OsmWay {
         OsmWay {
-            id,
-            nodes,
+            id: WayId(id),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
             tags: HashMap::new(),
         }
@@ -283,7 +285,7 @@ mod tests {
             }
         );
         assert_eq!(current.nodes.len(), 3);
-        assert!(current.ways.contains_key(&10));
+        assert!(current.ways.contains_key(&WayId(10)));
         // Nothing to upload: the new objects are server state, not edits.
         assert!(diff_osm_data(&original, &current).is_empty());
     }
@@ -310,8 +312,8 @@ mod tests {
         let stats = merge_download(&mut original, &mut current, incoming);
 
         assert_eq!(stats.updated, 1);
-        assert_eq!(current.nodes[&1].lat, 1.5);
-        assert_eq!(current.nodes[&1].version, 2);
+        assert_eq!(current.nodes[&NodeId(1)].lat, 1.5);
+        assert_eq!(current.nodes[&NodeId(1)].version, 2);
         assert!(diff_osm_data(&original, &current).is_empty());
     }
 
@@ -319,17 +321,17 @@ mod tests {
     fn a_local_modification_survives_and_stays_the_only_pending_edit() {
         let mut original = data(vec![node(1, 1.0, 1), node(2, 2.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 9.0; // local move
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 9.0; // local move
         let incoming = data(vec![node(1, 1.5, 2), node(2, 2.0, 1)], vec![]);
 
         let stats = merge_download(&mut original, &mut current, incoming);
 
         assert_eq!(stats.kept_local, 1);
         assert_eq!(stats.updated, 0);
-        assert_eq!(current.nodes[&1].lat, 9.0);
+        assert_eq!(current.nodes[&NodeId(1)].lat, 9.0);
         // The base version is unchanged, so an upload against the server's
         // newer copy is rejected as a conflict instead of clobbering it.
-        assert_eq!(original.nodes[&1].version, 1);
+        assert_eq!(original.nodes[&NodeId(1)].version, 1);
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.counts(), (0, 1, 0));
     }
@@ -338,13 +340,13 @@ mod tests {
     fn a_local_deletion_is_not_resurrected() {
         let mut original = data(vec![node(1, 1.0, 1)], vec![]);
         let mut current = original.clone();
-        current.nodes.remove(&1);
+        current.nodes.remove(&NodeId(1));
         let incoming = data(vec![node(1, 1.0, 1)], vec![]);
 
         let stats = merge_download(&mut original, &mut current, incoming);
 
         assert_eq!(stats.kept_local, 1);
-        assert!(!current.nodes.contains_key(&1));
+        assert!(!current.nodes.contains_key(&NodeId(1)));
         assert_eq!(diff_osm_data(&original, &current).counts(), (0, 0, 1));
     }
 
@@ -357,7 +359,7 @@ mod tests {
         let stats = merge_download(&mut original, &mut current, incoming);
 
         assert_eq!(stats.added, 1);
-        assert!(current.nodes.contains_key(&-1));
+        assert!(current.nodes.contains_key(&NodeId(-1)));
         assert_eq!(diff_osm_data(&original, &current).counts(), (1, 0, 0));
     }
 
@@ -370,17 +372,17 @@ mod tests {
             tags: HashMap::new(),
         };
         let mut original = data(vec![], vec![]);
-        original.relations.push(relation(1, 1));
+        original.relations.push(relation(RelationId(1), 1));
         let mut current = original.clone();
         let mut incoming = data(vec![], vec![]);
-        incoming.relations = vec![relation(1, 2), relation(2, 1)];
+        incoming.relations = vec![relation(RelationId(1), 2), relation(RelationId(2), 1)];
 
         merge_download(&mut original, &mut current, incoming);
 
         let versions: Vec<(i64, i32)> = current
             .relations
             .iter()
-            .map(|r| (r.id, r.version))
+            .map(|r| (r.id.get(), r.version))
             .collect();
         assert_eq!(versions, vec![(1, 2), (2, 1)]);
         assert_eq!(original.relations, current.relations);
@@ -402,15 +404,15 @@ mod tests {
         };
         let mut original = data(vec![], vec![]);
         original.relations = vec![
-            relation(1, 1, vec![member(10)]),
-            relation(2, 1, vec![member(20)]),
+            relation(RelationId(1), 1, vec![member(10)]),
+            relation(RelationId(2), 1, vec![member(20)]),
         ];
         let mut current = original.clone();
         current.relations[0].members.push(member(11)); // local membership edit
         let mut incoming = data(vec![], vec![]);
         incoming.relations = vec![
-            relation(1, 2, vec![member(10), member(12)]),
-            relation(2, 2, vec![member(20), member(21)]),
+            relation(RelationId(1), 2, vec![member(10), member(12)]),
+            relation(RelationId(2), 2, vec![member(20), member(21)]),
         ];
 
         let stats = merge_download(&mut original, &mut current, incoming);
@@ -427,7 +429,7 @@ mod tests {
                 .iter()
                 .map(|r| r.id)
                 .collect::<Vec<_>>(),
-            vec![1]
+            vec![RelationId(1)]
         );
     }
 

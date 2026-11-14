@@ -16,6 +16,7 @@
 //!   that would leave an empty relation or a broken turn restriction.
 
 use crate::coordinates::{GeoBounds, LatLon};
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmMember, OsmRelation};
 use crate::tr;
 use std::collections::{HashMap, HashSet};
@@ -58,8 +59,8 @@ pub fn roles_of(relation: &OsmRelation, member_type: MemberType, id: i64) -> Vec
         .collect()
 }
 
-fn is_way_member(member: &OsmMember, way_id: i64) -> bool {
-    member.member_type == MemberType::Way && member.reference == way_id
+fn is_way_member(member: &OsmMember, way_id: WayId) -> bool {
+    member.member_type == MemberType::Way && member.reference == way_id.get()
 }
 
 /// The nodes and ways a relation stands for on the map, in member order
@@ -68,7 +69,7 @@ fn is_way_member(member: &OsmMember, way_id: i64) -> bool {
 /// members are not followed). `find` looks a relation up by id.
 pub fn flatten_members(
     relation: &OsmRelation,
-    find: &dyn Fn(i64) -> Option<OsmRelation>,
+    find: &dyn Fn(RelationId) -> Option<OsmRelation>,
 ) -> Vec<(MemberType, i64)> {
     fn push(
         out: &mut Vec<(MemberType, i64)>,
@@ -86,10 +87,10 @@ pub fn flatten_members(
         match member.member_type {
             MemberType::Node | MemberType::Way => push(&mut out, &mut seen, member),
             MemberType::Relation => {
-                if member.reference == relation.id {
+                if member.reference == relation.id.get() {
                     continue;
                 }
-                if let Some(nested) = find(member.reference) {
+                if let Some(nested) = find(RelationId(member.reference)) {
                     for inner in &nested.members {
                         if inner.member_type != MemberType::Relation {
                             push(&mut out, &mut seen, inner);
@@ -105,10 +106,10 @@ pub fn flatten_members(
 /// How to resolve members to geometry; `None` from a lookup means the
 /// element isn't loaded.
 pub struct MemberLookup<'a> {
-    pub node: &'a dyn Fn(i64) -> Option<LatLon>,
+    pub node: &'a dyn Fn(NodeId) -> Option<LatLon>,
     /// A way's node ids.
-    pub way_nodes: &'a dyn Fn(i64) -> Option<Vec<i64>>,
-    pub relation: &'a dyn Fn(i64) -> Option<OsmRelation>,
+    pub way_nodes: &'a dyn Fn(WayId) -> Option<Vec<NodeId>>,
+    pub relation: &'a dyn Fn(RelationId) -> Option<OsmRelation>,
 }
 
 /// The bounding box of the members of `relation` that are loaded (nested
@@ -119,12 +120,12 @@ pub fn members_bounds(relation: &OsmRelation, lookup: &MemberLookup) -> Option<G
     for (member_type, id) in flatten_members(relation, lookup.relation) {
         match member_type {
             MemberType::Node => {
-                if let Some(pos) = (lookup.node)(id) {
+                if let Some(pos) = (lookup.node)(NodeId(id)) {
                     extend(pos);
                 }
             }
             MemberType::Way => {
-                for node_id in (lookup.way_nodes)(id).unwrap_or_default() {
+                for node_id in (lookup.way_nodes)(WayId(id)).unwrap_or_default() {
                     if let Some(pos) = (lookup.node)(node_id) {
                         extend(pos);
                     }
@@ -140,13 +141,13 @@ pub fn members_bounds(relation: &OsmRelation, lookup: &MemberLookup) -> Option<G
 #[derive(Debug, Clone, Copy)]
 pub struct SplitStep<'a> {
     /// The original way, which keeps its id and the `keep` nodes.
-    pub way_id: i64,
+    pub way_id: WayId,
     /// The id of the new way holding the `new` nodes.
-    pub new_id: i64,
+    pub new_id: WayId,
     /// The original way's node list before the split.
-    pub before: &'a [i64],
-    pub keep: &'a [i64],
-    pub new: &'a [i64],
+    pub before: &'a [NodeId],
+    pub keep: &'a [NodeId],
+    pub new: &'a [NodeId],
 }
 
 /// Why a way can't be split without breaking a relation.
@@ -154,7 +155,10 @@ pub struct SplitStep<'a> {
 pub enum SplitError {
     /// In a turn restriction the way is a `from`/`to` member and must follow
     /// whichever half touches the `via` member, but that can't be told.
-    ViaUnknown { relation_id: i64, way_id: i64 },
+    ViaUnknown {
+        relation_id: RelationId,
+        way_id: WayId,
+    },
 }
 
 impl SplitError {
@@ -179,18 +183,18 @@ impl SplitError {
 /// on the way. `None` unless there is exactly one such node.
 fn via_node(
     relation: &OsmRelation,
-    before: &[i64],
-    way_nodes: &dyn Fn(i64) -> Option<Vec<i64>>,
-) -> Option<i64> {
+    before: &[NodeId],
+    way_nodes: &dyn Fn(WayId) -> Option<Vec<NodeId>>,
+) -> Option<NodeId> {
     let via = || relation.members.iter().filter(|m| m.role == "via");
-    let mut candidates: Vec<i64> = via()
-        .filter(|m| m.member_type == MemberType::Node && before.contains(&m.reference))
-        .map(|m| m.reference)
+    let mut candidates: Vec<NodeId> = via()
+        .filter(|m| m.member_type == MemberType::Node && before.contains(&NodeId(m.reference)))
+        .map(|m| NodeId(m.reference))
         .collect();
     let has_via_node = via().any(|m| m.member_type == MemberType::Node);
     if !has_via_node {
         for member in via().filter(|m| m.member_type == MemberType::Way) {
-            let Some(nodes) = way_nodes(member.reference) else {
+            let Some(nodes) = way_nodes(WayId(member.reference)) else {
                 continue;
             };
             let ends = [nodes.first().copied(), nodes.last().copied()];
@@ -214,17 +218,17 @@ fn new_goes_after(
     members: &[OsmMember],
     index: usize,
     step: &SplitStep,
-    way_nodes: &dyn Fn(i64) -> Option<Vec<i64>>,
+    way_nodes: &dyn Fn(WayId) -> Option<Vec<NodeId>>,
 ) -> Option<bool> {
     let is_other_way =
-        |m: &&OsmMember| m.member_type == MemberType::Way && m.reference != step.way_id;
+        |m: &&OsmMember| m.member_type == MemberType::Way && m.reference != step.way_id.get();
     let previous = members[..index].iter().rev().find(is_other_way);
     let next = members[index + 1..].iter().find(is_other_way);
 
     // Which half (true = the original's `keep`) a neighbour touches.
     let touches = |neighbour: Option<&OsmMember>| -> Option<bool> {
-        let nodes = way_nodes(neighbour?.reference)?;
-        let shares = |half: &[i64]| half.iter().any(|n| nodes.contains(n));
+        let nodes = way_nodes(WayId(neighbour?.reference))?;
+        let shares = |half: &[NodeId]| half.iter().any(|n| nodes.contains(n));
         match (shares(step.keep), shares(step.new)) {
             (true, false) => Some(true),
             (false, true) => Some(false),
@@ -256,7 +260,7 @@ fn new_goes_after(
 pub fn split_members(
     relation: &OsmRelation,
     step: &SplitStep,
-    way_nodes: &dyn Fn(i64) -> Option<Vec<i64>>,
+    way_nodes: &dyn Fn(WayId) -> Option<Vec<NodeId>>,
 ) -> Result<Option<Vec<OsmMember>>, SplitError> {
     let positions: Vec<usize> = (0..relation.members.len())
         .filter(|&i| is_way_member(&relation.members[i], step.way_id))
@@ -277,14 +281,14 @@ pub fn split_members(
             let via = via_node(relation, step.before, way_nodes).ok_or_else(unknown)?;
             match (step.keep.contains(&via), step.new.contains(&via)) {
                 (true, false) => {}
-                (false, true) => members[i].reference = step.new_id,
+                (false, true) => members[i].reference = step.new_id.get(),
                 _ => return Err(unknown()),
             }
             continue;
         }
         let after = new_goes_after(&relation.members, i, step, way_nodes).unwrap_or(true);
         let sibling = OsmMember {
-            reference: step.new_id,
+            reference: step.new_id.get(),
             ..relation.members[i].clone()
         };
         members.insert(if after { i + 1 } else { i }, sibling);
@@ -297,11 +301,11 @@ pub fn split_members(
 /// members (same type, ref and role) next to each other drops the second.
 pub fn merge_node_members(
     members: &[OsmMember],
-    removed: &[i64],
-    keep: i64,
+    removed: &[NodeId],
+    keep: NodeId,
 ) -> Option<Vec<OsmMember>> {
     let is_removed =
-        |m: &OsmMember| m.member_type == MemberType::Node && removed.contains(&m.reference);
+        |m: &OsmMember| m.member_type == MemberType::Node && removed.contains(&NodeId(m.reference));
     if !members.iter().any(is_removed) {
         return None;
     }
@@ -312,7 +316,7 @@ pub fn merge_node_members(
         let replaced = is_removed(member);
         let member = if replaced {
             OsmMember {
-                reference: keep,
+                reference: keep.get(),
                 ..member.clone()
             }
         } else {
@@ -332,17 +336,29 @@ pub fn merge_node_members(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinError {
     /// A way to be removed is part of a turn restriction.
-    Restriction { relation_id: i64, way_id: i64 },
+    Restriction {
+        relation_id: RelationId,
+        way_id: WayId,
+    },
     /// A way to be removed has a different role than the surviving way, which
     /// is already a member of the same relation.
-    RoleMismatch { relation_id: i64, way_id: i64 },
+    RoleMismatch {
+        relation_id: RelationId,
+        way_id: WayId,
+    },
     /// A way to be removed is not next to the surviving way in a relation
     /// where both are members, so folding it in would change the order.
-    NotAdjacent { relation_id: i64, way_id: i64 },
+    NotAdjacent {
+        relation_id: RelationId,
+        way_id: WayId,
+    },
     /// A way to be removed is a ring member of a multipolygon that the
     /// surviving way is not part of: renaming it would add the survivor's
     /// geometry to that multipolygon.
-    SurvivorNotInArea { relation_id: i64, way_id: i64 },
+    SurvivorNotInArea {
+        relation_id: RelationId,
+        way_id: WayId,
+    },
 }
 
 impl JoinError {
@@ -399,8 +415,8 @@ impl JoinError {
 /// relation is a turn restriction, the join is refused.
 pub fn join_members(
     relation: &OsmRelation,
-    keep: i64,
-    removed: &[i64],
+    keep: WayId,
+    removed: &[WayId],
 ) -> Result<Option<Vec<OsmMember>>, JoinError> {
     let mut members = relation.members.clone();
     let mut changed = false;
@@ -422,7 +438,7 @@ pub fn join_members(
                         way_id,
                     });
                 }
-                members[at].reference = keep;
+                members[at].reference = keep.get();
             } else if survivor_roles.contains(&role) {
                 let next_to_survivor = (at > 0 && is_way_member(&members[at - 1], keep))
                     || members.get(at + 1).is_some_and(|m| is_way_member(m, keep));
@@ -444,7 +460,7 @@ pub fn join_members(
     Ok(changed.then_some(members))
 }
 
-fn roles_of_members(members: &[OsmMember], way_id: i64) -> Vec<String> {
+fn roles_of_members(members: &[OsmMember], way_id: WayId) -> Vec<String> {
     members
         .iter()
         .filter(|m| is_way_member(m, way_id))
@@ -456,10 +472,10 @@ fn roles_of_members(members: &[OsmMember], way_id: i64) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteError {
     /// It is all that is left of the relation.
-    WouldEmpty { relation_id: i64 },
+    WouldEmpty { relation_id: RelationId },
     /// It is the turn restriction's only member with this role.
     RestrictionRole {
-        relation_id: i64,
+        relation_id: RelationId,
         role: &'static str,
     },
 }
@@ -620,7 +636,7 @@ pub fn add_members(members: &[OsmMember], new: &[(MemberType, i64)]) -> Option<V
 /// A relation as the "Add to Relation" picker lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationChoice {
-    pub id: i64,
+    pub id: RelationId,
     /// `display_name` of the relation.
     pub name: String,
     pub member_count: usize,
@@ -732,7 +748,7 @@ mod tests {
 
     fn relation(kind: &str, members: Vec<OsmMember>) -> OsmRelation {
         OsmRelation {
-            id: 900,
+            id: RelationId(900),
             version: 1,
             tags: HashMap::from([("type".to_string(), kind.to_string())]),
             members,
@@ -747,9 +763,13 @@ mod tests {
     }
 
     /// Way geometry for the lookups: ways by id.
-    fn lookup(ways: &[(i64, &[i64])]) -> impl Fn(i64) -> Option<Vec<i64>> {
+    fn lookup(ways: &[(i64, &[i64])]) -> impl Fn(WayId) -> Option<Vec<NodeId>> {
         let ways: Vec<(i64, Vec<i64>)> = ways.iter().map(|(i, n)| (*i, n.to_vec())).collect();
-        move |id| ways.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone())
+        move |id| {
+            ways.iter()
+                .find(|(i, _)| *i == id.get())
+                .map(|(_, n)| NodeId::from_raw_vec(n))
+        }
     }
 
     const NEW: i64 = -7;
@@ -757,11 +777,11 @@ mod tests {
     /// Way 20 = [1,2,3,4,5] split at 3 into keep [1,2,3] and new [3,4,5].
     fn step() -> SplitStep<'static> {
         SplitStep {
-            way_id: 20,
-            new_id: NEW,
-            before: &[1, 2, 3, 4, 5],
-            keep: &[1, 2, 3],
-            new: &[3, 4, 5],
+            way_id: WayId(20),
+            new_id: WayId(NEW),
+            before: &[NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)],
+            keep: &[NodeId(1), NodeId(2), NodeId(3)],
+            new: &[NodeId(3), NodeId(4), NodeId(5)],
         }
     }
 
@@ -886,11 +906,11 @@ mod tests {
     fn split_of_a_multipolygon_ring_keeps_both_halves_with_the_role() {
         // A closed way [1,2,3,4,1] split at 2 and 4 into two open arcs.
         let step = SplitStep {
-            way_id: 20,
-            new_id: NEW,
-            before: &[1, 2, 3, 4, 1],
-            keep: &[4, 1, 2],
-            new: &[2, 3, 4],
+            way_id: WayId(20),
+            new_id: WayId(NEW),
+            before: &[NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
+            keep: &[NodeId(4), NodeId(1), NodeId(2)],
+            new: &[NodeId(2), NodeId(3), NodeId(4)],
         };
         let r = relation("multipolygon", vec![way(20, "outer"), way(21, "inner")]);
         let m = split_members(&r, &step, &lookup(&[(21, &[7, 8, 9, 7])]))
@@ -941,12 +961,12 @@ mod tests {
 
     #[test]
     fn restriction_with_an_unknown_via_refuses_the_split() {
-        let refused = |r: OsmRelation, ways: &dyn Fn(i64) -> Option<Vec<i64>>| {
+        let refused = |r: OsmRelation, ways: &dyn Fn(WayId) -> Option<Vec<NodeId>>| {
             split_members(&r, &step(), ways)
         };
         let err = SplitError::ViaUnknown {
-            relation_id: 900,
-            way_id: 20,
+            relation_id: RelationId(900),
+            way_id: WayId(20),
         };
         // No via at all.
         let r = restriction(vec![way(20, "from"), way(40, "to")]);
@@ -966,8 +986,8 @@ mod tests {
     #[test]
     fn split_error_message_names_the_way_and_relation() {
         let msg = SplitError::ViaUnknown {
-            relation_id: 900,
-            way_id: 20,
+            relation_id: RelationId(900),
+            way_id: WayId(20),
         }
         .message();
         assert!(msg.contains("20") && msg.contains("900"), "{msg}");
@@ -988,12 +1008,12 @@ mod tests {
     #[test]
     fn merge_replaces_removed_nodes_and_keeps_the_role() {
         let members = vec![way(1, ""), node(5, "stop"), node(6, "stop_entry_only")];
-        let m = merge_node_members(&members, &[5, 6], 4).unwrap();
+        let m = merge_node_members(&members, &[NodeId(5), NodeId(6)], NodeId(4)).unwrap();
         assert_eq!(refs(&m), vec![(1, ""), (4, "stop"), (4, "stop_entry_only")]);
-        assert!(merge_node_members(&members, &[99], 4).is_none());
+        assert!(merge_node_members(&members, &[NodeId(99)], NodeId(4)).is_none());
         // A way with the same id as a removed node is not touched.
         let members = vec![way(5, "")];
-        assert!(merge_node_members(&members, &[5], 4).is_none());
+        assert!(merge_node_members(&members, &[NodeId(5)], NodeId(4)).is_none());
     }
 
     #[test]
@@ -1004,41 +1024,45 @@ mod tests {
             way(1, ""),
             node(5, "stop"),
         ];
-        let m = merge_node_members(&members, &[5], 4).unwrap();
+        let m = merge_node_members(&members, &[NodeId(5)], NodeId(4)).unwrap();
         // 4,5 collapse; the later 5 is not adjacent to a 4 and stays.
         assert_eq!(refs(&m), vec![(4, "stop"), (1, ""), (4, "stop")]);
         // Different role: kept.
         let members = vec![node(4, "stop"), node(5, "platform")];
-        let m = merge_node_members(&members, &[5], 4).unwrap();
+        let m = merge_node_members(&members, &[NodeId(5)], NodeId(4)).unwrap();
         assert_eq!(m.len(), 2);
         // Several removed nodes collapsing into a run keep one.
         let members = vec![node(5, ""), node(6, ""), node(4, "")];
-        let m = merge_node_members(&members, &[5, 6], 4).unwrap();
+        let m = merge_node_members(&members, &[NodeId(5), NodeId(6)], NodeId(4)).unwrap();
         assert_eq!(refs(&m), vec![(4, "")]);
         // Duplicates that were already there are left alone.
         let members = vec![node(8, ""), node(8, ""), node(5, "")];
-        let m = merge_node_members(&members, &[5], 4).unwrap();
+        let m = merge_node_members(&members, &[NodeId(5)], NodeId(4)).unwrap();
         assert_eq!(m.len(), 3);
     }
 
     #[test]
     fn join_drops_a_removed_way_when_the_survivor_has_the_same_role() {
         let r = relation("route", vec![way(1, "fwd"), way(2, "fwd"), way(3, "fwd")]);
-        let m = join_members(&r, 1, &[2]).unwrap().unwrap();
+        let m = join_members(&r, WayId(1), &[WayId(2)]).unwrap().unwrap();
         assert_eq!(refs(&m), vec![(1, "fwd"), (3, "fwd")]);
         // Several removed ways at once.
-        let m = join_members(&r, 1, &[2, 3]).unwrap().unwrap();
+        let m = join_members(&r, WayId(1), &[WayId(2), WayId(3)])
+            .unwrap()
+            .unwrap();
         assert_eq!(refs(&m), vec![(1, "fwd")]);
     }
 
     #[test]
     fn join_points_the_membership_at_the_survivor_when_it_is_not_a_member() {
         let r = relation("route", vec![way(7, ""), way(2, "fwd"), way(8, "")]);
-        let m = join_members(&r, 1, &[2]).unwrap().unwrap();
+        let m = join_members(&r, WayId(1), &[WayId(2)]).unwrap().unwrap();
         assert_eq!(refs(&m), vec![(7, ""), (1, "fwd"), (8, "")]);
         // Two removed ways with the same role fold into one membership.
         let r = relation("route", vec![way(2, "fwd"), way(3, "fwd")]);
-        let m = join_members(&r, 1, &[2, 3]).unwrap().unwrap();
+        let m = join_members(&r, WayId(1), &[WayId(2), WayId(3)])
+            .unwrap()
+            .unwrap();
         assert_eq!(refs(&m), vec![(1, "fwd")]);
     }
 
@@ -1046,23 +1070,26 @@ mod tests {
     fn join_refuses_different_roles_and_restrictions() {
         let r = relation("route", vec![way(1, "forward"), way(2, "backward")]);
         let err = JoinError::RoleMismatch {
-            relation_id: 900,
-            way_id: 2,
+            relation_id: RelationId(900),
+            way_id: WayId(2),
         };
-        assert_eq!(join_members(&r, 1, &[2]), Err(err.clone()));
+        assert_eq!(join_members(&r, WayId(1), &[WayId(2)]), Err(err.clone()));
         assert!(err.message().contains("role"), "{}", err.message());
         // Removed ways with different roles can't both become the survivor.
         let r = relation("route", vec![way(2, "a"), way(3, "b")]);
         assert!(matches!(
-            join_members(&r, 1, &[2, 3]),
-            Err(JoinError::RoleMismatch { way_id: 3, .. })
+            join_members(&r, WayId(1), &[WayId(2), WayId(3)]),
+            Err(JoinError::RoleMismatch {
+                way_id: WayId(3),
+                ..
+            })
         ));
         let r = restriction(vec![way(1, "from"), way(2, "from")]);
         assert_eq!(
-            join_members(&r, 1, &[2]),
+            join_members(&r, WayId(1), &[WayId(2)]),
             Err(JoinError::Restriction {
-                relation_id: 900,
-                way_id: 2
+                relation_id: RelationId(900),
+                way_id: WayId(2)
             })
         );
     }
@@ -1070,10 +1097,10 @@ mod tests {
     #[test]
     fn join_leaves_unrelated_relations_alone() {
         let r = relation("route", vec![way(1, ""), way(5, "")]);
-        assert_eq!(join_members(&r, 1, &[2]), Ok(None));
+        assert_eq!(join_members(&r, WayId(1), &[WayId(2)]), Ok(None));
         // The survivor alone being a member is no change either.
         let r = restriction(vec![way(1, "from")]);
-        assert_eq!(join_members(&r, 1, &[2]), Ok(None));
+        assert_eq!(join_members(&r, WayId(1), &[WayId(2)]), Ok(None));
     }
 
     #[test]
@@ -1092,7 +1119,9 @@ mod tests {
         let r = relation("route", vec![way(1, ""), way(1, "x")]);
         assert_eq!(
             delete_member(&r, MemberType::Way, 1),
-            Err(DeleteError::WouldEmpty { relation_id: 900 })
+            Err(DeleteError::WouldEmpty {
+                relation_id: RelationId(900)
+            })
         );
     }
 
@@ -1107,7 +1136,7 @@ mod tests {
             assert_eq!(
                 delete_member(&r, kind, id),
                 Err(DeleteError::RestrictionRole {
-                    relation_id: 900,
+                    relation_id: RelationId(900),
                     role
                 })
             );
@@ -1136,10 +1165,13 @@ mod tests {
 
     #[test]
     fn delete_error_messages_name_the_feature_and_relation() {
-        let msg = DeleteError::WouldEmpty { relation_id: 900 }.message("way", 5);
+        let msg = DeleteError::WouldEmpty {
+            relation_id: RelationId(900),
+        }
+        .message("way", 5);
         assert!(msg.contains("way 5") && msg.contains("900"), "{msg}");
         let msg = DeleteError::RestrictionRole {
-            relation_id: 900,
+            relation_id: RelationId(900),
             role: "via",
         }
         .message("node", 5);
@@ -1196,7 +1228,9 @@ mod tests {
         let r = relation("route", vec![way(1, "a")]);
         assert_eq!(
             remove_member_at(&r, 0),
-            Err(DeleteError::WouldEmpty { relation_id: 900 })
+            Err(DeleteError::WouldEmpty {
+                relation_id: RelationId(900)
+            })
         );
         let r = relation(
             "restriction",
@@ -1205,7 +1239,7 @@ mod tests {
         assert_eq!(
             remove_member_at(&r, 1),
             Err(DeleteError::RestrictionRole {
-                relation_id: 900,
+                relation_id: RelationId(900),
                 role: "via"
             })
         );
@@ -1213,7 +1247,10 @@ mod tests {
         assert!(remove_member_at(&r, 3).unwrap().is_some());
         let msg = remove_member_at(&r, 0).unwrap_err().remove_message();
         assert!(msg.contains("from") && msg.contains("900"), "{msg}");
-        let msg = DeleteError::WouldEmpty { relation_id: 7 }.remove_message();
+        let msg = DeleteError::WouldEmpty {
+            relation_id: RelationId(7),
+        }
+        .remove_message();
         assert!(msg.contains('7'), "{msg}");
     }
 
@@ -1267,7 +1304,7 @@ mod tests {
         let ids = |query: &str| -> Vec<i64> {
             matching_choices(&choices, query)
                 .iter()
-                .map(|c| c.id)
+                .map(|c| c.id.get())
                 .collect()
         };
         assert_eq!(ids(""), vec![7, 20, 30]);
@@ -1312,7 +1349,7 @@ mod tests {
 
     fn rel(id: i64, members: Vec<OsmMember>) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             ..relation("route", members)
         }
     }
@@ -1338,7 +1375,7 @@ mod tests {
                 member(MemberType::Relation, 3, ""),
             ],
         );
-        let find = |id: i64| (id == 2).then(|| child.clone());
+        let find = |id: RelationId| (id == RelationId(2)).then(|| child.clone());
         assert_eq!(
             flatten_members(&top, &find),
             vec![
@@ -1362,14 +1399,14 @@ mod tests {
             ],
         );
         let nested = rel(2, vec![node(3, "")]);
-        let node_pos = |id: i64| match id {
+        let node_pos = |id: NodeId| match id.get() {
             1 => Some(LatLon::new(10.0, 20.0)),
             2 => Some(LatLon::new(12.0, 18.0)),
             3 => Some(LatLon::new(5.0, 30.0)),
             _ => None,
         };
-        let way_nodes = |id: i64| (id == 20).then(|| vec![2, 777]);
-        let find = |id: i64| (id == 2).then(|| nested.clone());
+        let way_nodes = |id: WayId| (id == WayId(20)).then(|| vec![NodeId(2), NodeId(777)]);
+        let find = |id: RelationId| (id == RelationId(2)).then(|| nested.clone());
         let lookup = MemberLookup {
             node: &node_pos,
             way_nodes: &way_nodes,
