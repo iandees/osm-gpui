@@ -82,15 +82,24 @@ enum CustomApiUrl {
     /// An `http(s)://` URL, trimmed, without trailing slashes.
     Valid(String),
     Empty,
-    /// Not `http://` or `https://` (case-sensitive, as the API client is).
+    /// Not `http://` or `https://` (case-sensitive, as the API client is), or
+    /// a scheme with no host after it.
     NotHttp,
 }
 
 fn parse_custom_api_url(raw: &str) -> CustomApiUrl {
     let url = raw.trim();
     if url.is_empty() {
-        CustomApiUrl::Empty
-    } else if !url.starts_with("http://") && !url.starts_with("https://") {
+        return CustomApiUrl::Empty;
+    }
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return CustomApiUrl::NotHttp;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
         CustomApiUrl::NotHttp
     } else {
         CustomApiUrl::Valid(url.trim_end_matches('/').to_string())
@@ -110,7 +119,12 @@ enum CacheBudget {
 }
 
 fn parse_cache_budget(raw: &str) -> CacheBudget {
-    match raw.trim().parse::<u64>() {
+    let digits = raw.trim();
+    // `u64::from_str` would also take a leading plus sign.
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return CacheBudget::NotANumber;
+    }
+    match digits.parse::<u64>() {
         Ok(mb) if mb >= MIN_CACHE_BUDGET_MB => CacheBudget::Megabytes(mb),
         Ok(_) => CacheBudget::TooSmall,
         Err(_) => CacheBudget::NotANumber,
@@ -2259,6 +2273,36 @@ mod tests {
     }
 
     #[test]
+    fn custom_api_url_rejects_a_scheme_with_no_host() {
+        for raw in [
+            "https://",
+            "http://",
+            "https:///",
+            "  http://// ",
+            "https:///api",
+            "https://?x=1",
+            "https://#frag",
+        ] {
+            assert_eq!(parse_custom_api_url(raw), CustomApiUrl::NotHttp, "{raw}");
+        }
+    }
+
+    #[test]
+    fn custom_api_url_keeps_ports_paths_and_queries() {
+        for raw in [
+            "http://h",
+            "https://h:8080",
+            "https://h/a/b",
+            "https://h?x=1",
+        ] {
+            assert!(
+                matches!(parse_custom_api_url(raw), CustomApiUrl::Valid(_)),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn cache_budget_accepts_whole_megabytes_from_the_minimum() {
         assert_eq!(MIN_CACHE_BUDGET_MB, 10);
         assert_eq!(parse_cache_budget("10"), CacheBudget::Megabytes(10));
@@ -2268,7 +2312,6 @@ mod tests {
             CacheBudget::Megabytes(u64::MAX)
         );
         assert_eq!(parse_cache_budget("  250\n"), CacheBudget::Megabytes(250));
-        assert_eq!(parse_cache_budget("+50"), CacheBudget::Megabytes(50));
     }
 
     #[test]
@@ -2289,6 +2332,9 @@ mod tests {
             "500 MB",
             "500MB",
             "5 00",
+            "+50",
+            "+",
+            "٥٠",
             "18446744073709551616",
         ] {
             assert_eq!(parse_cache_budget(raw), CacheBudget::NotANumber, "{raw:?}");
