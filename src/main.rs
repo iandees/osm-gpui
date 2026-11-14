@@ -71,9 +71,10 @@ use crate::menu::{
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
-    roll_back, write_tag_entries, CreatedWay, NewNode, NodeMoveUndoEntries, NodeMoveUndoEntry,
+    roll_back_recording, write_tag_entries, EditLabel, NodeMoveUndoEntries, NodeMoveUndoEntry,
     UndoStack, UndoableAction,
 };
+use osm_gpui::edit_ops::{EditOp, Recording};
 
 use gpui_component::ActiveTheme;
 use osm_gpui::auth;
@@ -2031,12 +2032,12 @@ impl MapViewer {
         let Ok(before) = editable.set_relation_members(relation_id, after.clone()) else {
             return;
         };
-        self.undo_stack.push(UndoableAction::SetRelationMembers {
-            layer: layer_id,
+        self.undo_stack.push(UndoableAction::set_relation_members(
+            layer_id,
             relation_id,
             before,
             after,
-        });
+        ));
     }
 
     /// Move member `member.index` of a relation by `delta` places.
@@ -4034,17 +4035,20 @@ impl MapViewer {
                 .then(bi.cmp(&ai))
                 .then_with(|| along(b).total_cmp(&along(a)))
         });
-        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|layer| layer.as_editable_mut())
+        else {
             return;
         };
-        let Some(editable) = layer.as_editable_mut() else {
-            return;
-        };
+        let mut rec = Recording::new(layer_id, editable);
 
         // Nodes the arc doesn't own: reused ones, and ones spliced into other
-        // ways (undone by their own entries).
+        // ways (undone by their own ops).
         let mut node_ids: Vec<Option<i64>> = vec![None; points.len()];
-        let mut actions = Vec::new();
+        let feature = |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+        let mut selects = Vec::new();
         for (i, p) in [(0, start), (points.len() - 1, end)] {
             if let Some(ArcSnap::Node(id)) = p.snap {
                 node_ids[i] = Some(id);
@@ -4052,43 +4056,28 @@ impl MapViewer {
         }
         for (i, p) in &splices {
             let (way_id, idx) = way_snap(p).unwrap();
-            let Ok(id) = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1) else {
+            let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1) else {
                 // Put back the splices already made, so nothing is half done.
-                roll_back(&mut self.layer_manager, &actions);
+                roll_back_recording(rec);
                 return;
             };
-            actions.push(UndoableAction::InsertNodeIntoWay {
-                layer: layer_id,
-                way_id,
-                index: idx + 1,
-                node_id: id,
-                node_lat_lon: p.geo,
-            });
+            selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id));
+            selects.push(feature(osm_gpui::selection::FeatureKind::Node, id));
             node_ids[*i] = Some(id);
         }
-        let borrowed: Vec<i64> = node_ids.iter().flatten().copied().collect();
         let all_ids: Vec<i64> = node_ids
             .iter()
             .zip(&points)
-            .map(|(id, &(lat, lon))| id.unwrap_or_else(|| editable.add_node(lat, lon)))
+            .map(|(id, &(lat, lon))| id.unwrap_or_else(|| rec.add_node(lat, lon)))
             .collect();
-        let way_id = editable.add_way(all_ids.clone(), Vec::new());
-        let new_nodes: Vec<NewNode> = all_ids
-            .iter()
-            .zip(&points)
-            .filter(|(id, _)| !borrowed.contains(id))
-            .map(|(&id, &(lat, lon))| NewNode { id, lat, lon })
-            .collect();
+        let way_id = rec.add_way(all_ids, Vec::new());
+        selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id));
         // The whole arc, splices included, is one undo step: undoing removes
         // the arc first, then the splices.
-        actions.push(UndoableAction::CreateArc {
-            layer: layer_id,
-            created: CreatedWay::new(way_id, all_ids, Vec::new(), new_nodes),
-        });
-        self.undo_stack.push(UndoableAction::Batch {
-            label: tr!("history.created_arc").to_string(),
-            actions,
-        });
+        self.undo_stack.push(
+            UndoableAction::edit(layer_id, EditLabel::CreatedArc, rec.into_ops())
+                .selecting(selects),
+        );
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Way,
@@ -4155,31 +4144,29 @@ impl MapViewer {
         if self.refuse_edit_during_upload() {
             return;
         }
-        let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|layer| layer.as_editable_mut())
+        else {
             return;
         };
-        let Some(editable) = layer.as_editable_mut() else {
-            return;
-        };
+        let mut rec = Recording::new(layer_id, editable);
 
-        let [n0, n1, n2, n3] = corners.map(|(lat, lon)| editable.add_node(lat, lon));
+        let [n0, n1, n2, n3] = corners.map(|(lat, lon)| rec.add_node(lat, lon));
         let tags = vec![("building".to_string(), "yes".to_string())];
-        let way_id = editable.add_way(vec![n0, n1, n2, n3, n0], tags.clone());
+        let way_id = rec.add_way(vec![n0, n1, n2, n3, n0], tags);
 
-        let new_nodes = [n0, n1, n2, n3]
-            .into_iter()
-            .zip(corners)
-            .map(|(id, (lat, lon))| NewNode { id, lat, lon })
-            .collect();
-        self.undo_stack.push(UndoableAction::CreateBuilding {
-            layer: layer_id,
-            created: CreatedWay::new(way_id, vec![n0, n1, n2, n3, n0], tags, new_nodes),
-        });
-        self.selected = vec![osm_gpui::selection::FeatureRef {
+        let way = osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
-        }];
+        };
+        self.undo_stack.push(
+            UndoableAction::edit(layer_id, EditLabel::CreatedBuilding, rec.into_ops())
+                .selecting(vec![way]),
+        );
+        self.selected = vec![way];
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
         self.fields_open_combo = None;
@@ -4216,36 +4203,22 @@ impl MapViewer {
         let Some(editable) = layer.as_editable_mut() else {
             return;
         };
-        let new_a = editable.add_node(far_a.0, far_a.1);
-        let new_b = editable.add_node(far_b.0, far_b.1);
+        let mut rec = Recording::new(drag.layer, editable);
+        let new_a = rec.add_node(far_a.0, far_a.1);
+        let new_b = rec.add_node(far_b.0, far_b.1);
         let way_nodes = vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a];
-        let way_id = editable.add_way(way_nodes.clone(), Vec::new());
+        let way_id = rec.add_way(way_nodes, Vec::new());
 
-        self.undo_stack.push(UndoableAction::ExtrudeWay {
-            layer: drag.layer,
-            created: CreatedWay::new(
-                way_id,
-                way_nodes,
-                Vec::new(),
-                vec![
-                    NewNode {
-                        id: new_a,
-                        lat: far_a.0,
-                        lon: far_a.1,
-                    },
-                    NewNode {
-                        id: new_b,
-                        lat: far_b.0,
-                        lon: far_b.1,
-                    },
-                ],
-            ),
-        });
-        self.selected = vec![osm_gpui::selection::FeatureRef {
+        let way = osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
-        }];
+        };
+        self.undo_stack.push(
+            UndoableAction::edit(drag.layer, EditLabel::ExtrudedWay, rec.into_ops())
+                .selecting(vec![way]),
+        );
+        self.selected = vec![way];
         self.fields_text_inputs.clear();
         self.fields_text_subscribed.clear();
         self.fields_open_combo = None;
@@ -4359,19 +4332,13 @@ impl MapViewer {
         let Some(before) = editable.way_node_ids(drag.way_id) else {
             return;
         };
-        let mut actions = Vec::new();
+        let mut rec = Recording::new(drag.layer, editable);
         let mut new_ids = Vec::with_capacity(new_geo.len());
         for &(lat, lon) in &new_geo {
-            let Ok(id) = editable.create_node(lat, lon, None) else {
+            let Ok(id) = rec.create_node(lat, lon, None) else {
                 return;
             };
             new_ids.push(id);
-            actions.push(UndoableAction::CreateNode {
-                layer: drag.layer,
-                id,
-                lat,
-                lon,
-            });
         }
         let after: Vec<i64> = plan
             .nodes
@@ -4381,43 +4348,29 @@ impl MapViewer {
                 PlanNode::New(i) => new_ids[i],
             })
             .collect();
-        if after != before {
-            if editable.set_way_nodes(drag.way_id, after.clone()).is_err() {
-                roll_back(&mut self.layer_manager, &actions);
-                return;
-            }
-            actions.push(UndoableAction::SetWayNodes {
-                layer: drag.layer,
-                way_id: drag.way_id,
-                before,
-                after,
-            });
-        }
-        if !moved_geo.is_empty() {
-            let mut entries: Vec<NodeMoveUndoEntry> = Vec::new();
-            let mut moves = Vec::new();
-            for &(id, (lat, lon)) in &moved_geo {
-                if let Some(old) = editable.node_lat_lon(id) {
-                    entries.push((id, old, (lat, lon)));
-                    moves.push((id, lat, lon));
-                }
-            }
-            if editable.commit_node_moves(&moves).is_err() {
-                roll_back(&mut self.layer_manager, &actions);
-                return;
-            }
-            actions.push(UndoableAction::MoveNodes {
-                select: None,
-                per_layer: vec![(drag.layer, entries)],
-            });
-        }
-        if actions.is_empty() {
+        if after != before && rec.set_way_nodes(drag.way_id, after).is_err() {
+            roll_back_recording(rec);
             return;
         }
-        self.undo_stack.push(UndoableAction::Batch {
-            label: osm_gpui::tr!("history.extruded_segment").to_string(),
-            actions,
-        });
+        if !moved_geo.is_empty() {
+            let moves: Vec<(i64, f64, f64)> = moved_geo
+                .iter()
+                .filter(|&&(id, _)| rec.layer().node_lat_lon(id).is_some())
+                .map(|&(id, (lat, lon))| (id, lat, lon))
+                .collect();
+            if rec.commit_node_moves(&moves).is_err() {
+                roll_back_recording(rec);
+                return;
+            }
+        }
+        if rec.is_empty() {
+            return;
+        }
+        self.undo_stack.push(UndoableAction::edit(
+            drag.layer,
+            EditLabel::Text(osm_gpui::tr!("history.extruded_segment").to_string()),
+            rec.into_ops(),
+        ));
         self.selected = vec![osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,
             kind: osm_gpui::selection::FeatureKind::Way,
@@ -4478,16 +4431,23 @@ impl MapViewer {
         };
         let insert_index = idx_a + 1;
 
-        let Ok(new_id) = editable.insert_node_into_way(drag.way_id, insert_index, lat, lon) else {
+        let mut rec = Recording::new(drag.layer, editable);
+        let Ok(new_id) = rec.insert_node_into_way(drag.way_id, insert_index, lat, lon) else {
             return;
         };
-        self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
-            layer: drag.layer,
-            way_id: drag.way_id,
-            index: insert_index,
-            node_id: new_id,
-            node_lat_lon: (lat, lon),
-        });
+        let feature = |kind, id| osm_gpui::selection::FeatureRef {
+            layer_id: drag.layer,
+            kind,
+            id,
+        };
+        self.undo_stack.push(
+            UndoableAction::edit(drag.layer, EditLabel::InsertedNode, rec.into_ops()).selecting(
+                vec![
+                    feature(osm_gpui::selection::FeatureKind::Way, drag.way_id),
+                    feature(osm_gpui::selection::FeatureKind::Node, new_id),
+                ],
+            ),
+        );
     }
 
     /// Edit-time server limit: whether growing way `way_id` by `by` nodes
@@ -4568,7 +4528,7 @@ impl MapViewer {
                         })
                 });
             if let Some(node_id) = hit_node {
-                let way_id = self.add_extend_or_start_way(layer_id, node_id, false, None);
+                let way_id = self.add_extend_or_start_way(layer_id, node_id, Vec::new(), None);
                 self.set_add_progress(None);
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
@@ -4640,34 +4600,32 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
+                let mut rec = Recording::new(layer_id, editable);
                 let new_id = match snap_hit {
                     Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
                         let Ok(new_id) =
-                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
+                            rec.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
                         else {
                             return;
                         };
-                        self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
-                            layer: layer_id,
-                            way_id,
-                            index: idx + 1,
-                            node_id: new_id,
-                            node_lat_lon: (snap_lat, snap_lon),
-                        });
+                        let feature =
+                            |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+                        self.undo_stack.push(
+                            UndoableAction::edit(layer_id, EditLabel::InsertedNode, rec.into_ops())
+                                .selecting(vec![
+                                    feature(osm_gpui::selection::FeatureKind::Way, way_id),
+                                    feature(osm_gpui::selection::FeatureKind::Node, new_id),
+                                ]),
+                        );
                         new_id
                     }
                     None => {
-                        // Reuses the pre-existing `CreateNode` undo action
-                        // (same one the retired Cmd+Click gesture used to
-                        // use) — this is the same underlying mutation, just
-                        // triggered by Add mode instead.
-                        let new_id = editable.add_node(lat, lon);
-                        self.undo_stack.push(UndoableAction::CreateNode {
-                            layer: layer_id,
-                            id: new_id,
-                            lat,
-                            lon,
-                        });
+                        let new_id = rec.add_node(lat, lon);
+                        self.undo_stack.push(UndoableAction::edit(
+                            layer_id,
+                            EditLabel::CreatedNode,
+                            rec.into_ops(),
+                        ));
                         new_id
                     }
                 };
@@ -4694,20 +4652,21 @@ impl MapViewer {
                 let Some(editable) = layer.as_editable_mut() else {
                     return;
                 };
+                let mut rec = Recording::new(layer_id, editable);
                 let (new_id, snap) = match snap_hit {
                     Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
-                        let Ok(id) =
-                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
+                        let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
                         else {
                             return;
                         };
-                        (id, Some((way_id, idx + 1)))
+                        (id, Some(way_id))
                     }
-                    None => (editable.add_node(lat, lon), None),
+                    None => (rec.add_node(lat, lon), None),
                 };
                 let at_start = progress.at_start;
+                let node_ops = rec.into_ops();
                 self.set_add_progress(Some(progress));
-                let way_id = self.add_extend_or_start_way(layer_id, new_id, true, snap);
+                let way_id = self.add_extend_or_start_way(layer_id, new_id, node_ops, snap);
                 self.set_add_progress(Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
@@ -4728,21 +4687,17 @@ impl MapViewer {
 
     /// Shared by the "continue clicking" and "connect to existing feature"
     /// paths: start a new 2-node way if none exists yet, or extend the
-    /// existing one, pushing the matching undo entry. Returns the way id
-    /// (new or existing). `node_created` must reflect whether `node_id` was
-    /// just created by this click (vs. an existing node the user clicked to
-    /// connect) — it's recorded on the undo entry so undo never deletes a
-    /// node it didn't create. `snap`, when `Some((snap_way_id,
-    /// snap_index))`, means `node_id` was just spliced into `snap_way_id` at
-    /// `snap_index` by the caller (via `snap_to_way`/`insert_node_into_way`)
-    /// — this click is a compound mutation, so it pushes `SnapExtendWay`
-    /// instead of `ExtendWay` to undo both steps together.
+    /// existing one, pushing one undo step for the whole click. Returns the
+    /// way id (new or existing). `node_ops` are the ops that made `node_id`
+    /// for this click (empty for an existing node the user clicked to
+    /// connect, which undo must therefore leave alone); `snap` is the way the
+    /// node was spliced into, if any.
     fn add_extend_or_start_way(
         &mut self,
         layer_id: LayerId,
         node_id: i64,
-        node_created: bool,
-        snap: Option<(i64, usize)>,
+        node_ops: Vec<EditOp>,
+        snap: Option<i64>,
     ) -> i64 {
         let progress_way_id = self.add_progress().and_then(|p| p.way_id);
         let at_start = self.add_progress().is_some_and(|p| p.at_start);
@@ -4756,80 +4711,45 @@ impl MapViewer {
         let Some(editable) = layer.as_editable_mut() else {
             return progress_way_id.unwrap_or(0);
         };
-        let node_lat_lon = editable.node_lat_lon(node_id).unwrap_or_default();
+        let mut rec = Recording::resume(layer_id, editable, node_ops);
 
         let attached = match progress_way_id {
             Some(way_id) if at_start => {
-                let mut nodes = editable.way_node_ids(way_id).unwrap_or_default();
+                let mut nodes = rec.layer().way_node_ids(way_id).unwrap_or_default();
                 nodes.insert(0, node_id);
-                editable
-                    .set_way_nodes(way_id, nodes)
-                    .map(|()| (way_id, false))
+                rec.set_way_nodes(way_id, nodes).map(|()| way_id)
             }
-            Some(way_id) => editable
-                .extend_way(way_id, node_id)
-                .map(|()| (way_id, false)),
-            None => Ok((
-                editable.add_way(vec![last_node_id, node_id], Vec::new()),
-                true,
-            )),
+            Some(way_id) => rec.extend_way(way_id, node_id).map(|()| way_id),
+            None => Ok(rec.add_way(vec![last_node_id, node_id], Vec::new())),
         };
-        let (way_id, way_created) = match attached {
-            Ok(done) => done,
+        let way_id = match attached {
+            Ok(way_id) => way_id,
             Err(e) => {
                 eprintln!("adding to the way was refused: {e}");
                 // Take back the node this click made, so none is left over.
-                let made = match snap {
-                    Some((way_id, index)) => Some(UndoableAction::InsertNodeIntoWay {
-                        layer: layer_id,
-                        way_id,
-                        index,
-                        node_id,
-                        node_lat_lon,
-                    }),
-                    None if node_created => Some(UndoableAction::CreateNode {
-                        layer: layer_id,
-                        id: node_id,
-                        lat: node_lat_lon.0,
-                        lon: node_lat_lon.1,
-                    }),
-                    None => None,
-                };
-                roll_back(
-                    &mut self.layer_manager,
-                    &made.into_iter().collect::<Vec<_>>(),
-                );
+                roll_back_recording(rec);
                 return progress_way_id.unwrap_or(0);
             }
         };
 
-        match snap {
-            Some((snap_way_id, snap_index)) => {
-                self.undo_stack.push(UndoableAction::SnapExtendWay {
-                    layer: layer_id,
-                    way_id,
-                    way_created,
-                    snap_way_id,
-                    snap_index,
-                    node_id,
-                    node_lat_lon,
-                    prev_node_id: last_node_id,
-                    at_start,
-                });
-            }
-            None => {
-                self.undo_stack.push(UndoableAction::ExtendWay {
-                    layer: layer_id,
-                    way_id,
-                    node_id,
-                    node_lat_lon,
-                    prev_node_id: last_node_id,
-                    way_created,
-                    node_created,
-                    at_start,
-                });
-            }
-        }
+        let feature = |kind, id| osm_gpui::selection::FeatureRef { layer_id, kind, id };
+        use osm_gpui::selection::FeatureKind::{Node, Way};
+        let (label, select) = match snap {
+            Some(snap_way) => (
+                EditLabel::SnappedNode,
+                vec![
+                    feature(Way, way_id),
+                    feature(Way, snap_way),
+                    feature(Node, node_id),
+                ],
+            ),
+            None => (
+                EditLabel::ExtendedWay,
+                vec![feature(Way, way_id), feature(Node, node_id)],
+            ),
+        };
+        self.undo_stack
+            .push(UndoableAction::edit(layer_id, label, rec.into_ops()).selecting(select));
         way_id
     }
 
