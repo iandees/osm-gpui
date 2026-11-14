@@ -186,13 +186,13 @@ impl OsmLayer {
     /// nodes of selected ways (as node ids and way indices).
     pub(super) fn pins(&self) -> Pins {
         let mut pins = Pins::default();
-        for f in &self.highlight {
+        for f in &self.view.highlight {
             match f.kind {
                 FeatureKind::Node => {
                     pins.nodes.insert(f.id);
                 }
                 FeatureKind::Way => {
-                    if let Some(&i) = self.way_id_to_index.get(&f.id) {
+                    if let Some(&i) = self.derived.way_id_to_index.get(&f.id) {
                         pins.ways.insert(i);
                     }
                 }
@@ -200,8 +200,9 @@ impl OsmLayer {
             }
         }
         pins.preview = self
+            .view
             .preview_way
-            .and_then(|w| self.way_id_to_index.get(&w).copied());
+            .and_then(|w| self.derived.way_id_to_index.get(&w).copied());
         pins
     }
 
@@ -209,14 +210,15 @@ impl OsmLayer {
     /// one answer behind drawing, hover, click and box select.
     pub(super) fn node_form_at(&self, pins: &Pins, idx: usize, id: i64, zoom: f64) -> NodeForm {
         let in_way = |pred: &dyn Fn(&usize) -> bool| {
-            self.node_to_ways
+            self.derived
+                .node_to_ways
                 .get(&id)
                 .is_some_and(|ws| ws.iter().any(pred))
         };
         let pinned = pins.nodes.contains(&id)
             || (!pins.ways.is_empty() && in_way(&|w| pins.ways.contains(w)));
         let previewed = pins.preview.is_some_and(|p| in_way(&|w| *w == p));
-        let style = self.node_cache.styles[idx];
+        let style = self.derived.node_cache.styles[idx];
         let tagged = style.tagged;
         let form = node_markers::node_form_previewed(
             tagged,
@@ -243,7 +245,7 @@ impl OsmLayer {
         if zoom < node_markers::STYLED_MIN_ZOOM || !style.has_custom_marker() {
             return None;
         }
-        let ways = self.node_to_ways.get(&id).map_or(0, |w| w.len());
+        let ways = self.derived.node_to_ways.get(&id).map_or(0, |w| w.len());
         let visual = style.visual(ways);
         visual.shape.is_custom().then_some(NodeForm::Styled(visual))
     }

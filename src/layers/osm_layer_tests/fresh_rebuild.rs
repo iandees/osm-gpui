@@ -138,18 +138,19 @@ fn layer() -> OsmLayer {
 /// Every derived table, normalised so that two layers holding the same data
 /// compare equal whatever order their parallel arrays happen to be in.
 fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
-    let data = l.osm_data.as_ref().expect("data");
-    let n = l.way_ids.len();
+    let data = l.store.osm_data.as_ref().expect("data");
+    let n = l.derived.way_ids.len();
     assert_eq!(n, data.ways.len(), "way_ids against the data's ways");
-    assert_eq!(l.way_bboxes.len(), n, "way_bboxes length");
-    assert_eq!(l.way_vertices.len(), n, "way_vertices length");
-    assert_eq!(l.way_styles.len(), n, "way_styles length");
-    assert_eq!(l.way_fill_tris.len(), n, "way_fill_tris length");
-    assert_eq!(l.way_id_to_index.len(), n, "way_id_to_index length");
-    for (id, &i) in &l.way_id_to_index {
-        assert_eq!(l.way_ids[i], *id, "way_id_to_index of way {id}");
+    assert_eq!(l.derived.way_bboxes.len(), n, "way_bboxes length");
+    assert_eq!(l.derived.way_vertices.len(), n, "way_vertices length");
+    assert_eq!(l.render.way_styles.len(), n, "way_styles length");
+    assert_eq!(l.render.way_fill_tris.len(), n, "way_fill_tris length");
+    assert_eq!(l.derived.way_id_to_index.len(), n, "way_id_to_index length");
+    for (id, &i) in &l.derived.way_id_to_index {
+        assert_eq!(l.derived.way_ids[i], *id, "way_id_to_index of way {id}");
     }
     let ways: BTreeMap<i64, _> = l
+        .derived
         .way_ids
         .iter()
         .enumerate()
@@ -157,17 +158,17 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
             (
                 *id,
                 (
-                    l.way_bboxes[i],
-                    &l.way_vertices[i],
-                    l.way_styles[i],
-                    &l.way_fill_tris[i],
+                    l.derived.way_bboxes[i],
+                    &l.derived.way_vertices[i],
+                    l.render.way_styles[i],
+                    &l.render.way_fill_tris[i],
                 ),
             )
         })
         .collect();
     assert_eq!(ways.len(), n, "a way id appears twice in way_ids");
 
-    let cache = &l.node_cache;
+    let cache = &l.derived.node_cache;
     assert_eq!(cache.flat.len(), cache.styles.len(), "node cache arrays");
     assert_eq!(
         cache.flat.len(),
@@ -185,12 +186,14 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         .collect();
 
     let mut node_index: Vec<_> = l
+        .derived
         .node_index
         .iter()
         .map(|g| (g.data, g.geom()[0], g.geom()[1]))
         .collect();
     node_index.sort_by_key(|e| e.0);
     let mut way_index: Vec<_> = l
+        .derived
         .way_index
         .iter()
         .map(|g| (g.data, g.geom().lower(), g.geom().upper()))
@@ -198,15 +201,16 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
     way_index.sort_by_key(|e| e.0);
 
     let node_to_ways: BTreeMap<i64, BTreeSet<i64>> = l
+        .derived
         .node_to_ways
         .iter()
         .filter(|(_, idx)| !idx.is_empty())
-        .map(|(node, idx)| (*node, idx.iter().map(|&i| l.way_ids[i]).collect()))
+        .map(|(node, idx)| (*node, idx.iter().map(|&i| l.derived.way_ids[i]).collect()))
         .collect();
 
-    let member_ways: BTreeSet<i64> = l.member_ways.iter().copied().collect();
+    let member_ways: BTreeSet<i64> = l.render.member_ways.iter().copied().collect();
 
-    let mp = &l.mp;
+    let mp = &l.derived.mp;
     let entries: BTreeMap<i64, _> = mp
         .entries
         .iter()
@@ -238,7 +242,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         ("way_index", format!("{way_index:?}")),
         ("node_to_ways", format!("{node_to_ways:?}")),
         ("member_ways", format!("{member_ways:?}")),
-        ("download_rects", format!("{:?}", l.download_rects)),
+        ("download_rects", format!("{:?}", l.render.download_rects)),
         ("multipolygons", format!("{entries:?}")),
         ("invalid multipolygons", format!("{:?}", mp.invalid)),
         (
@@ -265,17 +269,18 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
 
 /// The layer's derived tables equal those of a layer rebuilt from its data.
 pub(super) fn assert_fresh(l: &OsmLayer, step: &str) {
-    let data = l.osm_data.clone().expect("data");
+    let data = l.store.osm_data.clone().expect("data");
     let mut fresh = OsmLayer::new_with_data(LayerId(99), "fresh", data);
-    fresh.set_stylesheet(l.stylesheet.clone());
+    fresh.set_stylesheet(l.store.stylesheet.clone());
     let (got, want) = (tables(l), tables(&fresh));
     for ((name, got), (_, want)) in got.iter().zip(&want) {
         assert_eq!(got, want, "{step}: {name} differs from a fresh rebuild");
     }
     // The layer's bounding box is only ever extended, so after edits it may
     // be larger than a fresh one, never smaller.
-    if let Some(f) = fresh.layer_bbox {
+    if let Some(f) = fresh.derived.layer_bbox {
         let b = l
+            .derived
             .layer_bbox
             .unwrap_or_else(|| panic!("{step}: layer_bbox is missing"));
         assert!(
@@ -289,7 +294,7 @@ pub(super) fn assert_fresh(l: &OsmLayer, step: &str) {
 #[should_panic(expected = "differs from a fresh rebuild")]
 fn the_comparison_notices_a_stale_table() {
     let mut l = layer();
-    l.way_bboxes[0] = None;
+    l.derived.way_bboxes[0] = None;
     assert_fresh(&l, "a table patched wrongly");
 }
 

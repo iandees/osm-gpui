@@ -10,10 +10,11 @@ impl OsmLayer {
         edit: impl FnOnce(&mut Vec<i64>) -> Result<R, EditError>,
     ) -> Result<R, EditError> {
         let &way_idx = self
+            .derived
             .way_id_to_index
             .get(&way_id)
             .ok_or(EditError::UnknownWay(way_id))?;
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let way = data
             .ways
             .get_mut(&way_id)
@@ -30,7 +31,12 @@ impl OsmLayer {
 
     /// Why `take_node` refused: the node is in a way, or does not exist.
     pub(super) fn why_node_stays(&self, id: i64) -> EditError {
-        if self.node_to_ways.get(&id).is_some_and(|w| !w.is_empty()) {
+        if self
+            .derived
+            .node_to_ways
+            .get(&id)
+            .is_some_and(|w| !w.is_empty())
+        {
             EditError::NodeInWay(id)
         } else {
             EditError::UnknownNode(id)
@@ -45,7 +51,7 @@ impl OsmLayer {
         id: i64,
         edit: impl FnOnce(&mut HashMap<String, String>),
     ) -> Result<(), EditError> {
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let tags = match kind {
             FeatureKind::Node => data.nodes.get_mut(&id).map(|n| &mut n.tags),
             FeatureKind::Way => data.ways.get_mut(&id).map(|w| &mut w.tags),
@@ -57,19 +63,19 @@ impl OsmLayer {
         };
         let tags = tags.ok_or_else(|| EditError::unknown(kind, id))?;
         edit(tags);
-        self.modified = true;
-        self.revision += 1;
+        self.store.modified = true;
+        self.store.revision += 1;
         apply_style_refresh(
             kind,
             id,
             data,
-            &mut self.node_cache,
-            &self.way_id_to_index,
-            &self.way_vertices,
-            &mut self.way_styles,
-            &mut self.way_fill_tris,
-            &self.stylesheet,
-            &self.member_ways,
+            &mut self.derived.node_cache,
+            &self.derived.way_id_to_index,
+            &self.derived.way_vertices,
+            &mut self.render.way_styles,
+            &mut self.render.way_fill_tris,
+            &self.store.stylesheet,
+            &self.render.member_ways,
         );
         if kind == FeatureKind::Relation {
             // The relation's style (or whether it is a multipolygon at all)
@@ -98,12 +104,13 @@ impl OsmLayer {
             tags,
         };
         let arc = self
+            .store
             .osm_data
             .get_or_insert_with(|| Arc::new(OsmData::default()));
         Arc::make_mut(arc).nodes.insert(id, node.clone());
         self.index_node_set(&node);
-        if id <= self.next_new_id {
-            self.next_new_id = id - 1;
+        if id <= self.store.next_new_id {
+            self.store.next_new_id = id - 1;
         }
         self.mark_modified();
     }
@@ -113,13 +120,16 @@ impl OsmLayer {
     /// leave the way pointing at nothing, so the way goes first.
     pub(super) fn take_node(&mut self, id: i64) -> Option<OsmNode> {
         if self
+            .derived
             .node_to_ways
             .get(&id)
             .is_some_and(|ways| !ways.is_empty())
         {
             return None;
         }
-        let node = Arc::make_mut(self.osm_data.as_mut()?).nodes.remove(&id)?;
+        let node = Arc::make_mut(self.store.osm_data.as_mut()?)
+            .nodes
+            .remove(&id)?;
         self.index_node_removed(id);
         self.mark_modified();
         self.mp_refresh_nodes(&[id]);
@@ -129,8 +139,10 @@ impl OsmLayer {
     /// Remove a way from the data and caches; its nodes stay. `None`
     /// (nothing changed) if the way is unknown.
     pub(super) fn take_way(&mut self, id: i64) -> Option<OsmWay> {
-        let way_idx = *self.way_id_to_index.get(&id)?;
-        let way = Arc::make_mut(self.osm_data.as_mut()?).ways.remove(&id)?;
+        let way_idx = *self.derived.way_id_to_index.get(&id)?;
+        let way = Arc::make_mut(self.store.osm_data.as_mut()?)
+            .ways
+            .remove(&id)?;
         self.index_way_removed(way_idx, id);
         self.mark_modified();
         self.mp_refresh_ways(&[id]);
@@ -144,6 +156,7 @@ impl OsmLayer {
         let id = way.id;
         self.index_way_added(&way);
         let arc = self
+            .store
             .osm_data
             .get_or_insert_with(|| Arc::new(OsmData::default()));
         Arc::make_mut(arc).ways.insert(id, way);
@@ -154,7 +167,7 @@ impl OsmLayer {
 
 impl EditableLayer for OsmLayer {
     fn set_highlight(&mut self, features: &[FeatureRef]) {
-        self.highlight = features.to_vec();
+        self.view.highlight = features.to_vec();
     }
 
     fn update_vertex_preview(
@@ -165,45 +178,51 @@ impl EditableLayer for OsmLayer {
         enabled: bool,
     ) -> bool {
         let next = if !enabled
-            || self.osm_data.is_none()
+            || self.store.osm_data.is_none()
             || viewport.zoom_level() < node_markers::PREVIEW_MIN_ZOOM
         {
             None
         } else {
             match hovered {
                 Some(h) if h.layer_id == self.id => match h.kind {
-                    FeatureKind::Way => self.way_id_to_index.contains_key(&h.id).then_some(h.id),
-                    FeatureKind::Node => self.preview_way.filter(|&w| self.node_in_way(h.id, w)),
+                    FeatureKind::Way => self
+                        .derived
+                        .way_id_to_index
+                        .contains_key(&h.id)
+                        .then_some(h.id),
+                    FeatureKind::Node => {
+                        self.view.preview_way.filter(|&w| self.node_in_way(h.id, w))
+                    }
                     FeatureKind::Relation => None,
                 },
                 Some(_) => None,
-                None => self.preview_way.filter(|&w| {
+                None => self.view.preview_way.filter(|&w| {
                     self.way_screen_distance(viewport, pt, w)
                         .is_some_and(|d| d <= WAY_HIT_TOL + node_markers::PREVIEW_HIT_RADIUS)
                 }),
             }
         };
-        let changed = next != self.preview_way;
-        self.preview_way = next;
+        let changed = next != self.view.preview_way;
+        self.view.preview_way = next;
         changed
     }
 
     fn set_drag_preview(&mut self, node_ids: &HashSet<i64>, delta: Point<Pixels>) {
-        self.drag_preview = Some((node_ids.clone(), delta));
+        self.view.drag_preview = Some((node_ids.clone(), delta));
     }
 
     fn clear_drag_preview(&mut self) {
-        self.drag_preview = None;
+        self.view.drag_preview = None;
     }
 
     fn node_lat_lon(&self, node_id: i64) -> Option<(f64, f64)> {
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         let n = data.nodes.get(&node_id)?;
         Some((n.lat, n.lon))
     }
 
     fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>> {
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         let way = data.ways.get(&way_id)?;
         Some(way.nodes.clone())
     }
@@ -213,7 +232,7 @@ impl EditableLayer for OsmLayer {
             return Ok(());
         }
         let fs_phase = crate::frame_stats::start();
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         if let Some(&(id, _, _)) = moves.iter().find(|m| !data.nodes.contains_key(&m.0)) {
             return Err(EditError::UnknownNode(id));
         }
@@ -229,7 +248,7 @@ impl EditableLayer for OsmLayer {
         // Only ways through a moved node can have a stale vertex list or bbox.
         let mut touched_ways: HashSet<usize> = HashSet::new();
         for &id in &moved_ids {
-            if let Some(way_idxs) = self.node_to_ways.get(&id) {
+            if let Some(way_idxs) = self.derived.node_to_ways.get(&id) {
                 touched_ways.extend(way_idxs.iter().copied());
             }
         }
@@ -241,7 +260,7 @@ impl EditableLayer for OsmLayer {
             .collect();
         let touched: Vec<(usize, OsmWay)> = touched_ways
             .iter()
-            .filter_map(|&i| Some((i, data.ways.get(&self.way_ids[i])?.clone())))
+            .filter_map(|&i| Some((i, data.ways.get(&self.derived.way_ids[i])?.clone())))
             .collect();
         self.mark_modified();
         for node in &moved_nodes {
@@ -251,7 +270,10 @@ impl EditableLayer for OsmLayer {
             self.reproject_way(*way_idx, way);
         }
 
-        let touched_way_ids: Vec<i64> = touched_ways.iter().map(|&i| self.way_ids[i]).collect();
+        let touched_way_ids: Vec<i64> = touched_ways
+            .iter()
+            .map(|&i| self.derived.way_ids[i])
+            .collect();
         self.mp_refresh_ways(&touched_way_ids);
         self.mp_refresh_nodes(&moved_ids);
         crate::frame_stats::lap("edit.commit_node_moves_total", fs_phase);
@@ -281,6 +303,7 @@ impl EditableLayer for OsmLayer {
             return Ok(self.add_node(lat, lon));
         };
         if self
+            .store
             .osm_data
             .as_ref()
             .is_some_and(|d| d.nodes.contains_key(&id))
@@ -292,8 +315,8 @@ impl EditableLayer for OsmLayer {
     }
 
     fn add_node(&mut self, lat: f64, lon: f64) -> i64 {
-        let id = self.next_new_id;
-        self.next_new_id -= 1;
+        let id = self.store.next_new_id;
+        self.store.next_new_id -= 1;
         self.insert_node(id, lat, lon, HashMap::new(), 0);
         id
     }
@@ -339,6 +362,7 @@ impl EditableLayer for OsmLayer {
                     .node_lat_lon
                     .ok_or(EditError::MissingCoordinates(id))?;
                 if self
+                    .store
                     .osm_data
                     .as_ref()
                     .is_some_and(|d| d.nodes.contains_key(&id))
@@ -357,7 +381,7 @@ impl EditableLayer for OsmLayer {
                 Ok(())
             }
             FeatureKind::Way => {
-                if self.way_id_to_index.contains_key(&id) {
+                if self.derived.way_id_to_index.contains_key(&id) {
                     return Err(EditError::IdInUse(FeatureKind::Way, id));
                 }
                 self.insert_way(OsmWay {
@@ -373,8 +397,8 @@ impl EditableLayer for OsmLayer {
     }
 
     fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64 {
-        let id = self.next_placeholder_way_id;
-        self.next_placeholder_way_id -= 1;
+        let id = self.store.next_placeholder_way_id;
+        self.store.next_placeholder_way_id -= 1;
         self.insert_way(OsmWay {
             id,
             nodes: node_ids,
@@ -455,11 +479,12 @@ impl EditableLayer for OsmLayer {
 
     fn ways_using_node(&self, node_id: i64) -> Vec<i64> {
         let mut ids: Vec<i64> = self
+            .derived
             .node_to_ways
             .get(&node_id)
             .into_iter()
             .flatten()
-            .filter_map(|&idx| self.way_ids.get(idx).copied())
+            .filter_map(|&idx| self.derived.way_ids.get(idx).copied())
             .collect();
         ids.sort_unstable();
         ids
@@ -473,7 +498,8 @@ impl EditableLayer for OsmLayer {
     }
 
     fn relation(&self, relation_id: i64) -> Option<crate::osm::OsmRelation> {
-        self.osm_data
+        self.store
+            .osm_data
             .as_ref()?
             .relations
             .iter()
@@ -482,7 +508,8 @@ impl EditableLayer for OsmLayer {
     }
 
     fn relation_ids(&self) -> Vec<i64> {
-        self.osm_data
+        self.store
+            .osm_data
             .as_ref()
             .map(|d| d.relations.iter().map(|r| r.id).collect())
             .unwrap_or_default()
@@ -493,7 +520,7 @@ impl EditableLayer for OsmLayer {
         relation_id: i64,
         members: Vec<crate::osm::OsmMember>,
     ) -> Result<Vec<crate::osm::OsmMember>, EditError> {
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let relation = data
             .relations
             .iter_mut()
@@ -507,7 +534,8 @@ impl EditableLayer for OsmLayer {
     }
 
     fn relations(&self) -> Vec<crate::osm::OsmRelation> {
-        self.osm_data
+        self.store
+            .osm_data
             .as_ref()
             .map(|d| d.relations.clone())
             .unwrap_or_default()
@@ -523,6 +551,7 @@ impl EditableLayer for OsmLayer {
         members: Vec<crate::osm::OsmMember>,
     ) -> Result<i64, EditError> {
         let lowest_relation = self
+            .store
             .osm_data
             .as_ref()
             .ok_or(EditError::NoData)?
@@ -532,12 +561,13 @@ impl EditableLayer for OsmLayer {
             .min()
             .unwrap_or(0);
         let id = self
+            .store
             .next_new_id
-            .min(self.next_placeholder_way_id)
+            .min(self.store.next_placeholder_way_id)
             .min(lowest_relation.min(0) - 1);
-        self.next_new_id = id - 1;
-        self.next_placeholder_way_id = id - 1;
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        self.store.next_new_id = id - 1;
+        self.store.next_placeholder_way_id = id - 1;
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         data.relations.push(crate::osm::OsmRelation {
             id,
             members,
@@ -551,7 +581,7 @@ impl EditableLayer for OsmLayer {
     }
 
     fn delete_relation(&mut self, relation_id: i64) -> Result<DeletedRelationSnapshot, EditError> {
-        let data = self.osm_data.as_ref().ok_or(EditError::NoData)?;
+        let data = self.store.osm_data.as_ref().ok_or(EditError::NoData)?;
         if data.relations.iter().any(|r| {
             r.id != relation_id
                 && r.members.iter().any(|m| {
@@ -565,7 +595,7 @@ impl EditableLayer for OsmLayer {
             .iter()
             .position(|r| r.id == relation_id)
             .ok_or(EditError::UnknownRelation(relation_id))?;
-        let data = Arc::make_mut(self.osm_data.as_mut().ok_or(EditError::NoData)?);
+        let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let relation = data.relations.remove(index);
         self.mark_modified();
         self.mp_refresh_relations(&[relation_id]);
@@ -574,7 +604,7 @@ impl EditableLayer for OsmLayer {
     }
 
     fn restore_relation(&mut self, snapshot: DeletedRelationSnapshot) -> Result<(), EditError> {
-        let arc = self.osm_data.as_mut().ok_or(EditError::NoData)?;
+        let arc = self.store.osm_data.as_mut().ok_or(EditError::NoData)?;
         if arc.relations.iter().any(|r| r.id == snapshot.relation.id) {
             return Err(EditError::IdInUse(
                 FeatureKind::Relation,
@@ -585,11 +615,11 @@ impl EditableLayer for OsmLayer {
         let id = snapshot.relation.id;
         let at = snapshot.index.min(data.relations.len());
         data.relations.insert(at, snapshot.relation);
-        if id <= self.next_new_id {
-            self.next_new_id = id - 1;
+        if id <= self.store.next_new_id {
+            self.store.next_new_id = id - 1;
         }
-        if id <= self.next_placeholder_way_id {
-            self.next_placeholder_way_id = id - 1;
+        if id <= self.store.next_placeholder_way_id {
+            self.store.next_placeholder_way_id = id - 1;
         }
         self.mark_modified();
         self.mp_refresh_relations(&[id]);
@@ -598,8 +628,9 @@ impl EditableLayer for OsmLayer {
     }
 
     fn has_pending_edit(&self, kind: FeatureKind, id: i64) -> bool {
-        let (Some(current), Some(original)) = (&self.osm_data, &self.original_data) else {
-            return self.osm_data.is_some();
+        let (Some(current), Some(original)) = (&self.store.osm_data, &self.store.original_data)
+        else {
+            return self.store.osm_data.is_some();
         };
         match kind {
             FeatureKind::Node => match (current.nodes.get(&id), original.nodes.get(&id)) {
@@ -625,8 +656,10 @@ impl EditableLayer for OsmLayer {
 
     fn purge_features(&mut self, nodes: &[i64], ways: &[i64], relations: &[i64]) -> PurgedFeatures {
         let mut purged = PurgedFeatures::default();
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
+        let (Some(current), Some(original)) = (
+            self.store.osm_data.clone(),
+            self.store.original_data.clone(),
+        ) else {
             return purged;
         };
         let mut data = (*current).clone();
@@ -664,15 +697,17 @@ impl EditableLayer for OsmLayer {
         }
         let data = Arc::new(data);
         self.rebuild_caches(&data);
-        self.osm_data = Some(data);
-        self.original_data = Some(Arc::new(base));
-        self.revision += 1;
+        self.store.osm_data = Some(data);
+        self.store.original_data = Some(Arc::new(base));
+        self.store.revision += 1;
         purged
     }
 
     fn restore_purged(&mut self, purged: PurgedFeatures) {
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
+        let (Some(current), Some(original)) = (
+            self.store.osm_data.clone(),
+            self.store.original_data.clone(),
+        ) else {
             return;
         };
         let mut data = (*current).clone();
@@ -699,9 +734,9 @@ impl EditableLayer for OsmLayer {
         }
         let data = Arc::new(data);
         self.rebuild_caches(&data);
-        self.osm_data = Some(data);
-        self.original_data = Some(Arc::new(base));
-        self.revision += 1;
+        self.store.osm_data = Some(data);
+        self.store.original_data = Some(Arc::new(base));
+        self.store.revision += 1;
     }
 
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
@@ -727,23 +762,33 @@ impl EditableLayer for OsmLayer {
             relations: Vec::new(),
             bounds: Vec::new(),
         };
-        let mut current = self.osm_data.as_deref().cloned().unwrap_or_else(empty);
-        let mut original = self.original_data.as_deref().cloned().unwrap_or_else(empty);
+        let mut current = self
+            .store
+            .osm_data
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(empty);
+        let mut original = self
+            .store
+            .original_data
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(empty);
 
         let stats = merge::merge_download(&mut original, &mut current, incoming);
 
-        let modified = self.modified;
+        let modified = self.store.modified;
         self.set_osm_data(Arc::new(current));
         // `set_osm_data` treats its argument as a fresh server baseline;
         // restore the real one so pending edits stay pending.
-        self.original_data = Some(Arc::new(original));
-        self.modified = modified;
-        self.revision += 1;
+        self.store.original_data = Some(Arc::new(original));
+        self.store.modified = modified;
+        self.store.revision += 1;
         stats
     }
 
     fn has_feature(&self, kind: FeatureKind, id: i64) -> bool {
-        let Some(data) = self.osm_data.as_ref() else {
+        let Some(data) = self.store.osm_data.as_ref() else {
             return false;
         };
         match kind {
@@ -754,7 +799,7 @@ impl EditableLayer for OsmLayer {
     }
 
     fn is_locally_deleted(&self, kind: FeatureKind, id: i64) -> bool {
-        let Some(original) = self.original_data.as_ref() else {
+        let Some(original) = self.store.original_data.as_ref() else {
             return false;
         };
         let known = match kind {
@@ -766,7 +811,7 @@ impl EditableLayer for OsmLayer {
     }
 
     fn feature_version(&self, kind: FeatureKind, id: i64) -> Option<i32> {
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         match kind {
             FeatureKind::Node => data.nodes.get(&id).map(|n| n.version),
             FeatureKind::Way => data.ways.get(&id).map(|w| w.version),
@@ -779,8 +824,10 @@ impl EditableLayer for OsmLayer {
     }
 
     fn set_base_version(&mut self, kind: FeatureKind, id: i64, version: i32) -> bool {
-        let (Some(current), Some(original)) = (self.osm_data.as_mut(), self.original_data.as_mut())
-        else {
+        let (Some(current), Some(original)) = (
+            self.store.osm_data.as_mut(),
+            self.store.original_data.as_mut(),
+        ) else {
             return false;
         };
         let changed = resolve::set_base_version(
@@ -791,7 +838,7 @@ impl EditableLayer for OsmLayer {
             version,
         );
         if changed {
-            self.revision += 1;
+            self.store.revision += 1;
         }
         changed
     }
@@ -814,7 +861,7 @@ impl EditableLayer for OsmLayer {
     }
 
     fn all_features(&self) -> Vec<FeatureRef> {
-        let Some(data) = self.osm_data.as_ref() else {
+        let Some(data) = self.store.osm_data.as_ref() else {
             return Vec::new();
         };
         let mut node_ids: Vec<i64> = data.nodes.keys().copied().collect();
@@ -841,11 +888,11 @@ impl EditableLayer for OsmLayer {
         only_selected: bool,
         view: Option<crate::search::GeoBounds>,
     ) -> Vec<FeatureRef> {
-        let Some(data) = self.osm_data.as_deref() else {
+        let Some(data) = self.store.osm_data.as_deref() else {
             return Vec::new();
         };
         let ctx = crate::search::SearchContext {
-            original: self.original_data.as_deref(),
+            original: self.store.original_data.as_deref(),
             selected: Some(selected),
             view,
             only_selected,
@@ -864,7 +911,7 @@ impl EditableLayer for OsmLayer {
         if feature.layer_id != self.id {
             return None;
         }
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         let tags = match feature.kind {
             FeatureKind::Node => {
                 let n = data.nodes.get(&feature.id)?;
@@ -892,13 +939,14 @@ impl EditableLayer for OsmLayer {
         if feature.layer_id != self.id {
             return None;
         }
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         if feature.kind == FeatureKind::Node {
             // Same answer as `classify_geometry`, from the node-to-ways
             // index instead of a scan of every way: a relation lists many
             // nodes and this runs for each of them every frame.
             data.nodes.get(&feature.id)?;
             let used = self
+                .derived
                 .node_to_ways
                 .get(&feature.id)
                 .is_some_and(|ways| !ways.is_empty());
@@ -917,7 +965,12 @@ impl EditableLayer for OsmLayer {
         area_keys: &crate::presets::AreaKeys,
     ) -> Vec<crate::presets::Geometry> {
         if feature.layer_id == self.id && feature.kind == FeatureKind::Way {
-            if let Some(way) = self.osm_data.as_ref().and_then(|d| d.ways.get(&feature.id)) {
+            if let Some(way) = self
+                .store
+                .osm_data
+                .as_ref()
+                .and_then(|d| d.ways.get(&feature.id))
+            {
                 return crate::presets::way_candidate_geometries(
                     &way.tags,
                     way.is_closed(),
@@ -934,6 +987,7 @@ impl EditableLayer for OsmLayer {
         feature.layer_id == self.id
             && feature.kind == FeatureKind::Way
             && self
+                .store
                 .osm_data
                 .as_ref()
                 .and_then(|d| d.ways.get(&feature.id))

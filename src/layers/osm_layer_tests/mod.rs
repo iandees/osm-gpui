@@ -106,7 +106,7 @@ fn view_at(zoom: f64) -> Viewport {
 }
 
 fn node_point(layer: &OsmLayer, vp: &Viewport, id: i64) -> gpui::Point<gpui::Pixels> {
-    let idx = layer.node_cache.index_by_id[&id];
-    let (_, mx, my) = layer.node_cache.flat[idx];
+    let idx = layer.derived.node_cache.index_by_id[&id];
+    let (_, mx, my) = layer.derived.node_cache.flat[idx];
     vp.mercator_to_screen(mx, my)
 }

@@ -5,10 +5,8 @@ pub(super) const CASING_WIDTH: f32 = 1.0;
 
 /// Below this zoom the casing is skipped: ways are dense enough that it
 /// only adds clutter, and it doubles the way pass's vertex count exactly
-/// when the most ways are on screen (measured with `examples/perf_bench`:
-/// 2.8 ms -> 5.2 ms of CPU per frame for 8k ways all visible at z14). It is
-/// drawn from zoom 16, where editing starts (`COARSE_BELOW_ZOOM`): on a
-/// 290k-node extract at z15.5 it was about 40 percent of the vertices.
+/// when the most ways are on screen. It is drawn from zoom 16, where editing
+/// starts (`COARSE_BELOW_ZOOM`).
 pub(super) const CASING_MIN_ZOOM: f64 = 16.0;
 
 /// Below this zoom direction arrows aren't drawn.
@@ -114,7 +112,7 @@ pub(super) fn decimate_into(pts: &[Point<Pixels>], min_px: f32, out: &mut Vec<(u
 
 /// Push one solid triangle into `path`, creating the path on first use and
 /// widening `bounds_min_max`. Same raw-vertex batching approach as
-/// `push_segment_quad` — no Lyon tessellation.
+/// raw vertices, no Lyon tessellation.
 pub(super) fn push_triangle(
     path: &mut Option<Path<Pixels>>,
     bounds_min_max: &mut (f32, f32, f32, f32),
@@ -469,9 +467,10 @@ impl OsmLayer {
         // signature into this per-zoom-bucket table (rebuilt only when the
         // bucket changes). `None` for a stylesheet with no zoom selectors.
         let zoom_table = self
+            .store
             .stylesheet
             .is_zoom_dependent()
-            .then(|| self.stylesheet.zoom_styles(zoom));
+            .then(|| self.store.stylesheet.zoom_styles(zoom));
         let at_zoom = |s: WayStyle| -> WayStyle {
             match zoom_table.as_ref().and_then(|t| t.get(s.sig as usize)) {
                 Some(z) => WayStyle {
@@ -483,8 +482,8 @@ impl OsmLayer {
         };
         // While nodes are being dragged the cached bounding boxes are stale,
         // so draw every way in full.
-        let dragging = self.drag_preview.is_some();
-        let hints = self.vertex_hints.snapshot();
+        let dragging = self.view.drag_preview.is_some();
+        let hints = self.render.vertex_hints.snapshot();
         // The simplification tolerance in Web Mercator meters (nothing is
         // dropped while dragging, for the same reason).
         let tolerance_m = if dragging {
@@ -510,7 +509,7 @@ impl OsmLayer {
             f32::from(origin_y + bounds.size.height),
         );
         let fs_phase = crate::frame_stats::start();
-        for entry in self.mp.entries.values() {
+        for entry in self.derived.mp.entries.values() {
             let fill_style = at_zoom(entry.style);
             let Some(fill) = fill_style.fill else {
                 continue;
@@ -552,13 +551,13 @@ impl OsmLayer {
         crate::frame_stats::lap("osm.mp_fill_build", fs_phase);
 
         let fs_phase = crate::frame_stats::start();
-        for (i, tris) in self.way_fill_tris.iter().enumerate() {
+        for (i, tris) in self.render.way_fill_tris.iter().enumerate() {
             let Some(tris) = tris else { continue };
-            let fill_style = at_zoom(self.way_styles[i]);
+            let fill_style = at_zoom(self.render.way_styles[i]);
             let Some(fill) = fill_style.fill else {
                 continue;
             };
-            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
+            let bbox = match self.derived.way_bboxes.get(i).and_then(|b| b.as_ref()) {
                 Some(b) => b,
                 None => continue,
             };
@@ -573,7 +572,7 @@ impl OsmLayer {
                 continue;
             }
 
-            let verts = &self.way_vertices[i];
+            let verts = &self.derived.way_vertices[i];
             let ring_len = verts.len() - 1; // closing duplicate excluded
             fill_pts.clear();
             for &(node_id, mx, my) in &verts[..ring_len] {
@@ -619,10 +618,8 @@ impl OsmLayer {
         // Each segment is emitted as two raw triangles (an oriented quad)
         // pushed directly into the group's `Path`, bypassing
         // `PathBuilder::stroke`'s Lyon tessellation pass entirely — that
-        // tessellator dominated frame time (~1.3-1.8ms for ~3800 visible
-        // ways, measured under a synthetic 8k-node/4k-way dataset), since it
-        // reruns from scratch every repaint (e.g. every mouse-move while
-        // panning). Joins and end caps are built by hand in `way_stroke`
+        // tessellator dominated frame time, since it reruns from scratch
+        // every repaint (e.g. every mouse-move while panning). Joins and end caps are built by hand in `way_stroke`
         // (mitered where possible, which costs no extra vertices) for
         // strokes wide enough to show them, at the editing zooms only.
         //
@@ -639,7 +636,7 @@ impl OsmLayer {
         // Route overlays: a translucent line under each route member way,
         // one path per colour. Looked up per visible way from the cache
         // (`MpCache::route_ways`), never by scanning relations.
-        let has_routes = !self.mp.route_ways.is_empty();
+        let has_routes = !self.derived.mp.route_ways.is_empty();
         let mut overlay_index: HashMap<(i32, u32), usize> = HashMap::new();
         let mut overlays: Vec<Batch> = Vec::new();
         let overlay_alpha = (crate::relation_overlay::ROUTE_ALPHA * 255.0).round() as u32;
@@ -666,11 +663,11 @@ impl OsmLayer {
         let mut ways_collapsed = 0usize;
 
         let fs_phase = crate::frame_stats::start();
-        for (i, verts) in self.way_vertices.iter().enumerate() {
+        for (i, verts) in self.derived.way_vertices.iter().enumerate() {
             if verts.len() < 2 {
                 continue;
             }
-            let bbox = match self.way_bboxes.get(i).and_then(|b| b.as_ref()) {
+            let bbox = match self.derived.way_bboxes.get(i).and_then(|b| b.as_ref()) {
                 Some(b) => b,
                 None => continue,
             };
@@ -697,7 +694,7 @@ impl OsmLayer {
             // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
             // not here — no stylesheet lookup or tags HashMap access in this
             // per-frame loop.
-            let style = at_zoom(self.way_styles[i]);
+            let style = at_zoom(self.render.way_styles[i]);
             if !dragging && !lod.strokes(style.width) {
                 ways_skipped += 1;
                 continue;
@@ -741,16 +738,19 @@ impl OsmLayer {
             let default_casing = draw_casing && styled_casing_idx.is_none();
 
             let overlay_idx = if has_routes {
-                self.mp.route_colour_of_way(self.way_ids[i]).map(|colour| {
-                    batch_index(
-                        &mut overlay_index,
-                        &mut overlays,
-                        BatchKind::Overlay,
-                        0,
-                        (colour << 8) | overlay_alpha,
-                        &hints,
-                    )
-                })
+                self.derived
+                    .mp
+                    .route_colour_of_way(self.derived.way_ids[i])
+                    .map(|colour| {
+                        batch_index(
+                            &mut overlay_index,
+                            &mut overlays,
+                            BatchKind::Overlay,
+                            0,
+                            (colour << 8) | overlay_alpha,
+                            &hints,
+                        )
+                    })
             } else {
                 None
             };
@@ -875,7 +875,7 @@ impl OsmLayer {
                     dashes.is_none().then_some(stroke_layer),
                 ]);
             } else {
-                // Plain rectangles, as before joins existed.
+                // Plain rectangles; no joins at this width.
                 for &(a, b) in &segs {
                     let pa = (f32::from(scratch_pts[a].x), f32::from(scratch_pts[a].y));
                     let pb = (f32::from(scratch_pts[b].x), f32::from(scratch_pts[b].y));
@@ -986,7 +986,7 @@ impl OsmLayer {
                     .collect()
             },
         };
-        self.vertex_hints.replace(next_hints);
+        self.render.vertex_hints.replace(next_hints);
         crate::frame_stats::count("count.way_path_vertices", scene.vertex_count());
         crate::frame_stats::count("count.way_paths", scene.path_count());
         scene

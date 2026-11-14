@@ -364,30 +364,32 @@ impl OsmLayer {
     /// members replaced. Does nothing for a stylesheet with no
     /// `way:in-relation` rules.
     pub(super) fn refresh_member_ways(&mut self) {
-        if !self.stylesheet.uses_relation_membership() {
+        if !self.store.stylesheet.uses_relation_membership() {
             return;
         }
-        let Some(data) = self.osm_data.clone() else {
+        let Some(data) = self.store.osm_data.clone() else {
             return;
         };
-        let now = relation_member_ways(&data, &self.stylesheet);
+        let now = relation_member_ways(&data, &self.store.stylesheet);
         let changed: Vec<i64> = now
-            .symmetric_difference(&self.member_ways)
+            .symmetric_difference(&self.render.member_ways)
             .copied()
             .collect();
-        self.member_ways = now;
+        self.render.member_ways = now;
         for id in changed {
-            let (Some(&idx), Some(way)) = (self.way_id_to_index.get(&id), data.ways.get(&id))
+            let (Some(&idx), Some(way)) =
+                (self.derived.way_id_to_index.get(&id), data.ways.get(&id))
             else {
                 continue;
             };
-            let style = self.stylesheet.way_style_cached(
+            let style = self.store.stylesheet.way_style_cached(
                 &way.tags,
                 way.is_closed(),
-                self.member_ways.contains(&id),
+                self.render.member_ways.contains(&id),
             );
-            self.way_fill_tris[idx] = compute_fill_tris(&self.way_vertices[idx], &style);
-            self.way_styles[idx] = style;
+            self.render.way_fill_tris[idx] =
+                compute_fill_tris(&self.derived.way_vertices[idx], &style);
+            self.render.way_styles[idx] = style;
         }
     }
 
@@ -395,12 +397,16 @@ impl OsmLayer {
     /// gone or no longer multipolygons). Every edit that can change a
     /// relation's rings ends in one of the `mp_refresh_*` calls.
     pub(super) fn mp_refresh_relations(&mut self, relation_ids: &[i64]) {
-        let Some(data) = self.osm_data.clone() else {
+        let Some(data) = self.store.osm_data.clone() else {
             return;
         };
         let fs_phase = crate::frame_stats::start();
-        self.mp
-            .refresh(relation_ids, &data, &self.node_cache, &self.stylesheet);
+        self.derived.mp.refresh(
+            relation_ids,
+            &data,
+            &self.derived.node_cache,
+            &self.store.stylesheet,
+        );
         if !relation_ids.is_empty() {
             crate::frame_stats::lap("cache.mp_refresh", fs_phase);
         }
@@ -411,7 +417,7 @@ impl OsmLayer {
     pub(super) fn mp_refresh_ways(&mut self, way_ids: &[i64]) {
         let mut relations: Vec<i64> = way_ids
             .iter()
-            .filter_map(|w| self.mp.way_to_rels.get(w))
+            .filter_map(|w| self.derived.mp.way_to_rels.get(w))
             .flatten()
             .copied()
             .collect();
@@ -423,13 +429,14 @@ impl OsmLayer {
     /// The route overlay colour of a way, as the renderer sees it.
     #[cfg(test)]
     pub(crate) fn route_overlay_colour(&self, way_id: i64) -> Option<u32> {
-        self.mp.route_colour_of_way(way_id)
+        self.derived.mp.route_colour_of_way(way_id)
     }
 
     /// The drawn restriction markers: `(relation id, mercator x, y, only)`.
     #[cfg(test)]
     pub(crate) fn restriction_markers(&self) -> Vec<(i64, f64, f64, bool)> {
-        self.mp
+        self.derived
+            .mp
             .restrictions
             .iter()
             .map(|(&id, r)| (id, r.x, r.y, r.only))
@@ -438,12 +445,12 @@ impl OsmLayer {
 
     /// Refresh the turn restrictions whose `via` node is one of these.
     pub(super) fn mp_refresh_nodes(&mut self, node_ids: &[i64]) {
-        if self.mp.node_to_rels.is_empty() {
+        if self.derived.mp.node_to_rels.is_empty() {
             return;
         }
         let mut relations: Vec<i64> = node_ids
             .iter()
-            .filter_map(|n| self.mp.node_to_rels.get(n))
+            .filter_map(|n| self.derived.mp.node_to_rels.get(n))
             .flatten()
             .copied()
             .collect();
@@ -455,7 +462,7 @@ impl OsmLayer {
     /// How many times the multipolygon cache has been rebuilt or patched.
     #[cfg(test)]
     pub(crate) fn multipolygon_version(&self) -> u64 {
-        self.mp.version
+        self.derived.mp.version
     }
 
     /// The cached mercator position of `node_id` in the relation's polygons,
@@ -466,7 +473,7 @@ impl OsmLayer {
         relation_id: i64,
         node_id: i64,
     ) -> Option<((f64, f64), usize)> {
-        let entry = self.mp.entries.get(&relation_id)?;
+        let entry = self.derived.mp.entries.get(&relation_id)?;
         let tris = entry.polygons.iter().map(|p| p.tris.len() / 3).sum();
         let pos = entry
             .polygons
@@ -480,12 +487,12 @@ impl OsmLayer {
     /// What became of this relation in the multipolygon cache.
     #[cfg(test)]
     pub(crate) fn multipolygon_state(&self, relation_id: i64) -> MpState {
-        if let Some(entry) = self.mp.entries.get(&relation_id) {
+        if let Some(entry) = self.derived.mp.entries.get(&relation_id) {
             MpState::Valid {
                 polygons: entry.polygons.len(),
                 holes: entry.polygons.iter().map(|p| p.ring_count() - 1).sum(),
             }
-        } else if let Some(&problem) = self.mp.invalid.get(&relation_id) {
+        } else if let Some(&problem) = self.derived.mp.invalid.get(&relation_id) {
             MpState::Invalid(problem)
         } else {
             MpState::NotArea
@@ -497,7 +504,8 @@ impl OsmLayer {
         member_type: crate::osm::MemberType,
         id: i64,
     ) -> Vec<i64> {
-        self.osm_data
+        self.store
+            .osm_data
             .as_ref()
             .map(|d| {
                 d.relations

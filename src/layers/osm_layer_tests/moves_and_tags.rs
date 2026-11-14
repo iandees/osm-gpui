@@ -410,8 +410,8 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
     let data = data_with(vec![n1, n2, n3], vec![way_a, way_b]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let old_bbox_a = layer.way_bboxes[0];
-    let old_bbox_b = layer.way_bboxes[1];
+    let old_bbox_a = layer.derived.way_bboxes[0];
+    let old_bbox_b = layer.derived.way_bboxes[1];
 
     let new_lat = 41.0;
     let new_lon = -75.0;
@@ -421,18 +421,21 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
 
     // Both ways' cached bboxes must reflect the new position.
     assert_ne!(
-        layer.way_bboxes[0], old_bbox_a,
+        layer.derived.way_bboxes[0], old_bbox_a,
         "way A's bbox should have changed"
     );
     assert_ne!(
-        layer.way_bboxes[1], old_bbox_b,
+        layer.derived.way_bboxes[1], old_bbox_b,
         "way B's bbox should have changed"
     );
 
     // Both ways' cached vertex lists must carry node 1's new mercator
     // position.
     let (new_mx, new_my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
-    for verts in [&layer.way_vertices[0], &layer.way_vertices[1]] {
+    for verts in [
+        &layer.derived.way_vertices[0],
+        &layer.derived.way_vertices[1],
+    ] {
         let &(_, mx, my) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
         assert!((mx - new_mx).abs() < 1e-6);
         assert!((my - new_my).abs() < 1e-6);
@@ -520,8 +523,8 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     let data = data_with(vec![n1, n2, n3, n4], vec![way_a, way_b]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let old_bbox_a = layer.way_bboxes[0];
-    let old_bbox_b = layer.way_bboxes[1];
+    let old_bbox_a = layer.derived.way_bboxes[0];
+    let old_bbox_b = layer.derived.way_bboxes[1];
 
     // Drag+commit both shared nodes (1 and 2), as a whole-way move would.
     layer
@@ -530,11 +533,11 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
 
     assert!(layer.is_modified());
     assert_ne!(
-        layer.way_bboxes[0], old_bbox_a,
+        layer.derived.way_bboxes[0], old_bbox_a,
         "way A's bbox should update"
     );
     assert_ne!(
-        layer.way_bboxes[1], old_bbox_b,
+        layer.derived.way_bboxes[1], old_bbox_b,
         "way B's bbox should update"
     );
 
@@ -542,19 +545,19 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     // reference it, with no duplicates and none dropped, despite each
     // way listing its ring-closing node twice.
     assert_eq!(
-        layer.node_to_ways.get(&1).cloned(),
+        layer.derived.node_to_ways.get(&1).cloned(),
         Some([0usize, 1usize].into_iter().collect())
     );
     assert_eq!(
-        layer.node_to_ways.get(&2).cloned(),
+        layer.derived.node_to_ways.get(&2).cloned(),
         Some([0usize, 1usize].into_iter().collect())
     );
     assert_eq!(
-        layer.node_to_ways.get(&3).cloned(),
+        layer.derived.node_to_ways.get(&3).cloned(),
         Some([0usize].into_iter().collect())
     );
     assert_eq!(
-        layer.node_to_ways.get(&4).cloned(),
+        layer.derived.node_to_ways.get(&4).cloned(),
         Some([1usize].into_iter().collect())
     );
 }
@@ -631,8 +634,8 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
     let data = data_with(vec![n1, n2, n3], vec![way]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let way_vertices_before = layer.way_vertices.clone();
-    let way_bboxes_before = layer.way_bboxes.clone();
+    let way_vertices_before = layer.derived.way_vertices.clone();
+    let way_bboxes_before = layer.derived.way_bboxes.clone();
 
     let new_lat = 42.0;
     let new_lon = -76.0;
@@ -640,17 +643,17 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
 
     assert!(layer.is_modified());
     assert_eq!(
-        layer.way_vertices, way_vertices_before,
+        layer.derived.way_vertices, way_vertices_before,
         "unrelated way vertices must be untouched"
     );
     assert_eq!(
-        layer.way_bboxes, way_bboxes_before,
+        layer.derived.way_bboxes, way_bboxes_before,
         "unrelated way bboxes must be untouched"
     );
 
     let (mx, my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
-    let idx = *layer.node_cache.index_by_id.get(&3).unwrap();
-    let (_, cached_mx, cached_my) = layer.node_cache.flat[idx];
+    let idx = *layer.derived.node_cache.index_by_id.get(&3).unwrap();
+    let (_, cached_mx, cached_my) = layer.derived.node_cache.flat[idx];
     assert!((cached_mx - mx).abs() < 1e-6);
     assert!((cached_my - my).abs() < 1e-6);
 }
@@ -680,11 +683,11 @@ fn set_tag_refreshes_cached_way_style() {
     let data = data_with(vec![n1, n2], vec![way]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let default_style = layer.way_styles[0];
+    let default_style = layer.render.way_styles[0];
     layer
         .set_tag(FeatureKind::Way, 10, "highway", "residential")
         .unwrap();
-    let updated_style = layer.way_styles[0];
+    let updated_style = layer.render.way_styles[0];
 
     assert_ne!(
         default_style, updated_style,
@@ -704,12 +707,12 @@ fn set_tag_refreshes_cached_node_style() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let idx = *layer.node_cache.index_by_id.get(&1).unwrap();
-    let default_style = layer.node_cache.styles[idx];
+    let idx = *layer.derived.node_cache.index_by_id.get(&1).unwrap();
+    let default_style = layer.derived.node_cache.styles[idx];
     layer
         .set_tag(FeatureKind::Node, 1, "amenity", "cafe")
         .unwrap();
-    let updated_style = layer.node_cache.styles[idx];
+    let updated_style = layer.derived.node_cache.styles[idx];
 
     assert_ne!(
         default_style, updated_style,

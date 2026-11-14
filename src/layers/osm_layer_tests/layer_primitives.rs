@@ -163,7 +163,7 @@ fn purge_removes_objects_from_data_and_baseline_without_marking_them_deleted() {
     assert_eq!(l.relation_ids(), vec![50, 52]);
     assert_eq!(l.node_lat_lon(4), None);
     assert!(
-        l.node_index.iter().all(|g| g.data != 4),
+        l.derived.node_index.iter().all(|g| g.data != 4),
         "a purged node is not in the spatial index"
     );
 }
@@ -211,7 +211,7 @@ fn restore_purged_puts_everything_back_in_place_and_in_the_baseline() {
     assert!(l.diff_for_upload().is_empty(), "back in the baseline too");
     assert!(!l.has_pending_edit(Node, 4));
     assert!(
-        l.node_index.iter().any(|g| g.data == 4),
+        l.derived.node_index.iter().any(|g| g.data == 4),
         "and in the spatial index"
     );
 }
@@ -238,8 +238,8 @@ fn layer_with_relations(ids: &[i64]) -> OsmLayer {
 /// baseline, relation order included, exactly as they were.
 fn assert_purge_round_trips(all: &[i64], purge: &[i64]) {
     let mut l = layer_with_relations(all);
-    let data = l.osm_data.as_deref().cloned().unwrap();
-    let base = l.original_data.as_deref().cloned().unwrap();
+    let data = l.store.osm_data.as_deref().cloned().unwrap();
+    let base = l.store.original_data.as_deref().cloned().unwrap();
     let purged = l.purge_features(&[], &[], purge);
     assert_eq!(purged.relations.len(), purge.len());
     let left: Vec<i64> = all.iter().copied().filter(|i| !purge.contains(i)).collect();
@@ -247,6 +247,7 @@ fn assert_purge_round_trips(all: &[i64], purge: &[i64]) {
     l.restore_purged(purged);
     assert_eq!(l.relation_ids(), all, "working order after {purge:?}");
     let base_ids: Vec<i64> = l
+        .store
         .original_data
         .as_ref()
         .unwrap()
@@ -255,9 +256,13 @@ fn assert_purge_round_trips(all: &[i64], purge: &[i64]) {
         .map(|r| r.id)
         .collect();
     assert_eq!(base_ids, all, "baseline order after {purge:?}");
-    assert_eq!(l.osm_data.as_deref(), Some(&data), "data after {purge:?}");
     assert_eq!(
-        l.original_data.as_deref(),
+        l.store.osm_data.as_deref(),
+        Some(&data),
+        "data after {purge:?}"
+    );
+    assert_eq!(
+        l.store.original_data.as_deref(),
         Some(&base),
         "baseline after {purge:?}"
     );

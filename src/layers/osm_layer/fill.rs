@@ -16,7 +16,7 @@ impl OsmLayer {
         let mut path: Option<Path<Pixels>> = None;
         let mut min_max = (0.0, 0.0, 0.0, 0.0);
         let mut pts = Vec::new();
-        for entry in self.mp.entries.values() {
+        for entry in self.derived.mp.entries.values() {
             let b = &entry.bbox;
             if entry.style.fill.is_none()
                 || b.max_x < vmin_x

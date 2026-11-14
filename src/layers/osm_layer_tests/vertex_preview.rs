@@ -48,7 +48,7 @@ fn preview_vertices_are_drawn_and_targets_from_the_preview_zoom_only() {
         assert!(preview_100(&mut layer, &vp), "z{z}");
         assert_eq!(layer.vertex_preview_way(), Some(100));
         let pins = layer.pins();
-        let idx = layer.node_cache.index_by_id[&30];
+        let idx = layer.derived.node_cache.index_by_id[&30];
         assert_eq!(layer.node_form_at(&pins, idx, 30, z), NodeForm::Preview);
         let hits = layer.hit_test(&vp, node_point(&layer, &vp, 30));
         assert_eq!(hits.len(), 1, "z{z}");
@@ -126,9 +126,14 @@ fn only_the_preview_ways_vertices_are_previewed() {
         let pins = layer.pins();
         (1..=15)
             .filter(|id| {
-                layer.node_cache.index_by_id.get(id).is_some_and(|&idx| {
-                    layer.node_form_at(&pins, idx, *id, 19.0) == NodeForm::Preview
-                })
+                layer
+                    .derived
+                    .node_cache
+                    .index_by_id
+                    .get(id)
+                    .is_some_and(|&idx| {
+                        layer.node_form_at(&pins, idx, *id, 19.0) == NodeForm::Preview
+                    })
             })
             .collect()
     };

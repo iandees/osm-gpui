@@ -40,7 +40,7 @@ fn empty_tags() -> HashMap<String, String> {
 /// A single 2-node way `10 = [1, 2]`, both nodes at `center_lat`, lon
 /// `center_lon - 0.001` / `+ 0.001` — a flat horizontal line through the
 /// viewport's center at zoom 18 (matches the convention used by
-/// `OsmLayer`'s own tests in `src/layers/osm_layer.rs`).
+/// `OsmLayer`'s own tests in `src/layers/osm_layer/`).
 fn way_fixture(center_lat: f64, center_lon: f64) -> OsmData {
     let n1 = OsmNode {
         id: 1,

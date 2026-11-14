@@ -6,16 +6,20 @@ pub(super) const WAY_HIT_TOL: f32 = 6.0;
 impl OsmLayer {
     /// The way whose vertices are currently previewed, if any.
     pub fn vertex_preview_way(&self) -> Option<i64> {
-        self.preview_way
+        self.view.preview_way
     }
 
     /// Whether node `node_id` is a vertex of way `way_id`.
     pub(super) fn node_in_way(&self, node_id: i64, way_id: i64) -> bool {
-        self.way_id_to_index.get(&way_id).is_some_and(|idx| {
-            self.node_to_ways
-                .get(&node_id)
-                .is_some_and(|ws| ws.contains(idx))
-        })
+        self.derived
+            .way_id_to_index
+            .get(&way_id)
+            .is_some_and(|idx| {
+                self.derived
+                    .node_to_ways
+                    .get(&node_id)
+                    .is_some_and(|ws| ws.contains(idx))
+            })
     }
 
     /// Distance in pixels from `pt` to the polyline of way `way_id`.
@@ -25,7 +29,7 @@ impl OsmLayer {
         pt: Point<Pixels>,
         way_id: i64,
     ) -> Option<f32> {
-        let verts = &self.way_vertices[*self.way_id_to_index.get(&way_id)?];
+        let verts = &self.derived.way_vertices[*self.derived.way_id_to_index.get(&way_id)?];
         let mut best: Option<f32> = None;
         let mut prev: Option<Point<Pixels>> = None;
         for &(_, mx, my) in verts.iter() {
@@ -49,6 +53,7 @@ impl OsmLayer {
         !tagged
             && zoom >= node_markers::TAGGED_MIN_ZOOM
             && self
+                .derived
                 .node_to_ways
                 .get(&id)
                 .is_none_or(|ways| ways.is_empty())
@@ -75,22 +80,22 @@ impl OsmLayer {
         tol_px: f32,
         accept: impl Fn(i64) -> bool,
     ) -> Option<i64> {
-        self.osm_data.as_ref()?;
+        self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 2.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
         let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
         let mut best: Option<(f32, i64)> = None;
-        for item in self.node_index.locate_in_envelope(envelope) {
+        for item in self.derived.node_index.locate_in_envelope(envelope) {
             let id = item.data;
             if !accept(id) {
                 continue;
             }
-            let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
+            let Some(&idx) = self.derived.node_cache.index_by_id.get(&id) else {
                 continue;
             };
-            let (_, mx, my) = self.node_cache.flat[idx];
+            let (_, mx, my) = self.derived.node_cache.flat[idx];
             let sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) {
                 continue;
@@ -127,7 +132,7 @@ impl OsmLayer {
         tol_px: f32,
         prefer_way: Option<i64>,
     ) -> Option<(i64, i64, i64, usize)> {
-        self.osm_data.as_ref()?;
+        self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
         let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
@@ -136,13 +141,17 @@ impl OsmLayer {
 
         // (preferred, distance, way, a, b, index): preferred ways sort first.
         let mut best: Option<(bool, f32, i64, i64, i64, usize)> = None;
-        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+        for item in self
+            .derived
+            .way_index
+            .locate_in_envelope_intersecting(envelope)
+        {
             let way_id = item.data;
-            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            let Some(&way_idx) = self.derived.way_id_to_index.get(&way_id) else {
                 continue;
             };
             let preferred = prefer_way == Some(way_id);
-            let verts = &self.way_vertices[way_idx];
+            let verts = &self.derived.way_vertices[way_idx];
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
                 let (id_b, bx, by) = verts[i + 1];
@@ -186,7 +195,7 @@ impl OsmLayer {
         tol_px: f32,
         accept: impl Fn(i64) -> bool,
     ) -> Option<(i64, i64, i64, usize, f64, f64)> {
-        self.osm_data.as_ref()?;
+        self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
         let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
@@ -194,15 +203,19 @@ impl OsmLayer {
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
         let mut best: Option<(f32, i64, i64, i64, usize, Point<Pixels>)> = None;
-        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+        for item in self
+            .derived
+            .way_index
+            .locate_in_envelope_intersecting(envelope)
+        {
             let way_id = item.data;
             if !accept(way_id) {
                 continue;
             }
-            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            let Some(&way_idx) = self.derived.way_id_to_index.get(&way_id) else {
                 continue;
             };
-            let verts = &self.way_vertices[way_idx];
+            let verts = &self.derived.way_vertices[way_idx];
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
                 let (id_b, bx, by) = verts[i + 1];
@@ -241,7 +254,7 @@ impl OsmLayer {
         // approach in `hit_test_rect`.
         const ENVELOPE_PAD_FACTOR: f32 = 4.0;
 
-        if self.osm_data.is_none() {
+        if self.store.osm_data.is_none() {
             return Vec::new();
         }
 
@@ -250,7 +263,7 @@ impl OsmLayer {
         // on it, so it can't steal a click aimed at the node.
         if viewport.zoom_level() >= VERTEX_MIN_ZOOM {
             let mut marker_hits: Vec<HitCandidate> = Vec::new();
-            for (&relation_id, r) in &self.mp.restrictions {
+            for (&relation_id, r) in &self.derived.mp.restrictions {
                 let sp = viewport.mercator_to_screen(r.x, r.y);
                 if !is_point_valid(sp) {
                     continue;
@@ -291,9 +304,9 @@ impl OsmLayer {
         let mut node_hits: Vec<HitCandidate> = Vec::new();
         let zoom = viewport.zoom_level();
         let pins = self.pins();
-        for item in self.node_index.locate_in_envelope(envelope) {
+        for item in self.derived.node_index.locate_in_envelope(envelope) {
             let id = item.data;
-            let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
+            let Some(&idx) = self.derived.node_cache.index_by_id.get(&id) else {
                 continue;
             };
             // A node whose marker is not shown is not a target: the click
@@ -303,7 +316,7 @@ impl OsmLayer {
             if !form.is_shown() {
                 continue;
             }
-            let (_, mx, my) = self.node_cache.flat[idx];
+            let (_, mx, my) = self.derived.node_cache.flat[idx];
             let sp = viewport.mercator_to_screen(mx, my);
             if !is_point_valid(sp) {
                 continue;
@@ -336,12 +349,16 @@ impl OsmLayer {
         // click, since pad >= WAY_TOL. Refinement walks the cached
         // (already-projected-to-mercator) vertex list for exactly that way.
         let mut way_hits: Vec<HitCandidate> = Vec::new();
-        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+        for item in self
+            .derived
+            .way_index
+            .locate_in_envelope_intersecting(envelope)
+        {
             let way_id = item.data;
-            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            let Some(&way_idx) = self.derived.way_id_to_index.get(&way_id) else {
                 continue;
             };
-            let verts = &self.way_vertices[way_idx];
+            let verts = &self.derived.way_vertices[way_idx];
             if verts.len() < 2 {
                 continue;
             }
@@ -380,7 +397,7 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
     ) -> Vec<HitCandidate> {
-        if self.osm_data.is_none() {
+        if self.store.osm_data.is_none() {
             return Vec::new();
         }
 
@@ -388,12 +405,16 @@ impl OsmLayer {
         let envelope = AABB::from_corners([mx, my], [mx, my]);
 
         let mut hits: Vec<HitCandidate> = Vec::new();
-        for item in self.way_index.locate_in_envelope_intersecting(envelope) {
+        for item in self
+            .derived
+            .way_index
+            .locate_in_envelope_intersecting(envelope)
+        {
             let way_id = item.data;
-            let Some(&way_idx) = self.way_id_to_index.get(&way_id) else {
+            let Some(&way_idx) = self.derived.way_id_to_index.get(&way_id) else {
                 continue;
             };
-            let verts = &self.way_vertices[way_idx];
+            let verts = &self.derived.way_vertices[way_idx];
             // Closed-ring convention: first and last node ref are the same
             // (mirrors `OsmWay::is_closed`).
             if verts.len() < 4 || verts.first().map(|v| v.0) != verts.last().map(|v| v.0) {
@@ -428,7 +449,7 @@ impl OsmLayer {
         let (x0, _) = viewport.screen_to_mercator(point(px(0.0), px(0.0)));
         let (x1, _) = viewport.screen_to_mercator(point(px(1.0), px(0.0)));
         let m_per_px = (x1 - x0).abs();
-        for (&relation_id, entry) in &self.mp.entries {
+        for (&relation_id, entry) in &self.derived.mp.entries {
             let b = &entry.bbox;
             if !entry.tagged || mx < b.min_x || mx > b.max_x || my < b.min_y || my > b.max_y {
                 continue;
@@ -480,9 +501,10 @@ impl OsmLayer {
         // ways it encloses and the tagged nodes, not the hidden vertices.
         let zoom = viewport.zoom_level();
         let pins = self.pins();
-        for item in self.node_index.locate_in_envelope(envelope) {
+        for item in self.derived.node_index.locate_in_envelope(envelope) {
             let id = item.data;
             let shown = self
+                .derived
                 .node_cache
                 .index_by_id
                 .get(&id)
@@ -495,7 +517,7 @@ impl OsmLayer {
                 });
             }
         }
-        for item in self.way_index.locate_in_envelope(envelope) {
+        for item in self.derived.way_index.locate_in_envelope(envelope) {
             out.push(FeatureRef {
                 layer_id: self.id,
                 kind: FeatureKind::Way,

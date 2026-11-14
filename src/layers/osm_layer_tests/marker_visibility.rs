@@ -167,15 +167,15 @@ fn box_select_and_hit_test_agree_on_which_nodes_are_shown() {
 fn marker_form_follows_the_view_in_the_layer() {
     let layer = way_with_poi_layer(5);
     let pins = layer.pins();
-    let vertex = layer.node_cache.index_by_id[&3];
-    let poi = layer.node_cache.index_by_id[&1000];
+    let vertex = layer.derived.node_cache.index_by_id[&3];
+    let poi = layer.derived.node_cache.index_by_id[&1000];
     assert_eq!(layer.node_form_at(&pins, vertex, 3, 17.0), NodeForm::Hidden);
     assert_eq!(layer.node_form_at(&pins, vertex, 3, 18.5), NodeForm::Hidden);
     assert_eq!(
         layer.node_form_at(&pins, poi, 1000, 17.0),
         NodeForm::Simple(node_markers::SIMPLE_SIZE)
     );
-    let stray = layer.node_cache.index_by_id[&2000];
+    let stray = layer.derived.node_cache.index_by_id[&2000];
     assert_eq!(
         layer.node_form_at(&pins, stray, 2000, 17.0),
         NodeForm::Simple(node_markers::SIMPLE_SIZE)
@@ -192,9 +192,9 @@ fn a_stylesheet_with_square_and_cross_markers_shows_every_node_from_z16() {
         .unwrap();
     layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
     let pins = layer.pins();
-    let vertex = layer.node_cache.index_by_id[&3];
-    let poi = layer.node_cache.index_by_id[&1000];
-    let stray = layer.node_cache.index_by_id[&2000];
+    let vertex = layer.derived.node_cache.index_by_id[&3];
+    let poi = layer.derived.node_cache.index_by_id[&1000];
+    let stray = layer.derived.node_cache.index_by_id[&2000];
     let form = |idx, id, z| layer.node_form_at(&pins, idx, id, z);
     // Vertices are hidden when zoomed out, then a small square.
     assert_eq!(form(vertex, 3, 15.0), NodeForm::Hidden);
@@ -222,22 +222,22 @@ fn relation_membership_restyles_ways_when_a_relation_changes() {
         .find(|s| s.id == "wireframe")
         .unwrap();
     layer.set_stylesheet(Arc::new(Stylesheet::parse(wire.source).unwrap()));
-    let idx = layer.way_id_to_index[&100];
-    assert_eq!(layer.way_styles[idx].casing_width, 0.0);
+    let idx = layer.derived.way_id_to_index[&100];
+    assert_eq!(layer.render.way_styles[idx].casing_width, 0.0);
     let members = vec![crate::osm::OsmMember {
         member_type: crate::osm::MemberType::Way,
         reference: 100,
         role: String::new(),
     }];
     let rel = layer.create_relation(vec![], members.clone()).unwrap();
-    assert!(layer.way_styles[idx].casing_width > 0.0);
+    assert!(layer.render.way_styles[idx].casing_width > 0.0);
     let snapshot = layer.delete_relation(rel).unwrap();
-    assert_eq!(layer.way_styles[idx].casing_width, 0.0);
+    assert_eq!(layer.render.way_styles[idx].casing_width, 0.0);
     assert!(layer.restore_relation(snapshot).is_ok());
-    assert!(layer.way_styles[idx].casing_width > 0.0);
+    assert!(layer.render.way_styles[idx].casing_width > 0.0);
     let rel2 = layer.relations()[0].id;
     layer.set_relation_members(rel2, vec![]).unwrap();
-    assert_eq!(layer.way_styles[idx].casing_width, 0.0);
+    assert_eq!(layer.render.way_styles[idx].casing_width, 0.0);
 }
 
 #[test]

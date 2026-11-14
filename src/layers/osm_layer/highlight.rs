@@ -5,7 +5,7 @@ impl OsmLayer {
     /// this frame: the drag preview's delta if the node is part of it, zero
     /// otherwise.
     pub(super) fn drag_preview_offset(&self, node_id: i64) -> Point<Pixels> {
-        match &self.drag_preview {
+        match &self.view.drag_preview {
             Some((ids, delta)) if ids.contains(&node_id) => *delta,
             _ => Point::default(),
         }
@@ -22,7 +22,7 @@ impl OsmLayer {
         if feature.layer_id != self.id {
             return;
         }
-        let Some(ref osm_data) = self.osm_data else {
+        let Some(ref osm_data) = self.store.osm_data else {
             return;
         };
         let (halo, core) = highlight_colors(kind);
@@ -50,7 +50,7 @@ impl OsmLayer {
                 {
                     return;
                 }
-                let node_style = self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM);
+                let node_style = self.store.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM);
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
                 // it or drawn it small.
@@ -84,8 +84,9 @@ impl OsmLayer {
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
-                                node_styles
-                                    .push(self.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM));
+                                node_styles.push(
+                                    self.store.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM),
+                                );
                             }
                         }
                     }
@@ -112,9 +113,11 @@ impl OsmLayer {
                 }
 
                 // A wide halo stroke under a narrower core stroke.
-                let way_style =
-                    self.stylesheet
-                        .way_style(&way.tags, way.is_closed(), viewport.zoom_level());
+                let way_style = self.store.stylesheet.way_style(
+                    &way.tags,
+                    way.is_closed(),
+                    viewport.zoom_level(),
+                );
                 // Drawn with the way pass's own stroke geometry (mitered
                 // bends, round ends, a joined closing corner) rather than a
                 // tessellated stroke with square ends.
@@ -196,7 +199,7 @@ impl OsmLayer {
                 // not otherwise shown get the small preview dot (the
                 // stroke above covered the ones painted by `render_canvas`).
                 let preview = kind == HighlightKind::Hovered
-                    && self.preview_way == Some(feature.id)
+                    && self.view.preview_way == Some(feature.id)
                     && zoom >= node_markers::PREVIEW_MIN_ZOOM;
                 for (p, style) in pts.iter().zip(node_styles.iter()) {
                     if kind == HighlightKind::Selected
@@ -216,7 +219,7 @@ impl OsmLayer {
                 };
                 // A multipolygon is an area: tint it in the highlight's color
                 // so the whole shape reads as selected, under the members.
-                if let Some(entry) = self.mp.entries.get(&feature.id) {
+                if let Some(entry) = self.derived.mp.entries.get(&feature.id) {
                     self.render_area_tint(viewport, bounds, window, entry, core, kind);
                 }
                 let find = |id: i64| osm_data.relations.iter().find(|r| r.id == id).cloned();

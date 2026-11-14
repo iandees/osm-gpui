@@ -66,6 +66,14 @@ pub struct OsmLayer {
     id: LayerId,
     name: String,
     visible: bool,
+    store: Store,
+    derived: Derived,
+    render: RenderCaches,
+    view: ViewState,
+}
+
+/// Authoritative state: the data, its baseline and the counters edits allocate from.
+struct Store {
     osm_data: Option<Arc<OsmData>>,
     /// The data as it was when this layer was last loaded/downloaded (or
     /// last reconciled with a successful upload) — the stable "before"
@@ -75,6 +83,24 @@ pub struct OsmLayer {
     /// (`commit_node_moves`/`set_tag`/`remove_tag`), which only mutate
     /// `osm_data`.
     original_data: Option<Arc<OsmData>>,
+    /// Whether this layer has had a committed move since it was loaded.
+    modified: bool,
+    /// Bumped by every change to the layer's data or to its baseline (every
+    /// edit, an undo or redo of one, a download merged in, an upload applied):
+    /// the autosave compares it with the value it last saved to tell, without
+    /// looking at the data, whether there is anything new to write.
+    revision: u64,
+    /// Next id for a new node: negative (not yet uploaded) and below every
+    /// node id in the data, so a reloaded file's local ids cannot collide.
+    next_new_id: i64,
+    /// Next id for a new way, derived from the way ids the same way.
+    next_placeholder_way_id: i64,
+    /// Stylesheet used to pick per-feature colors/weights from OSM tags.
+    stylesheet: Arc<Stylesheet>,
+}
+
+/// Tables derived from `Store`, read by both rendering and hit testing; the edit primitives patch them in place.
+struct Derived {
     /// OSM way id for each entry of `way_bboxes`/`way_vertices`/`way_styles`,
     /// aligned by index. `osm_data.ways` is a `HashMap` keyed by id (not
     /// positionally ordered), so this is what lets index-aligned code (e.g.
@@ -90,44 +116,8 @@ pub struct OsmLayer {
     /// id. The node id is carried alongside the position so the render loop
     /// can match vertices against an active `drag_preview` set.
     way_vertices: Vec<WayGeom>,
-    /// Resolved per-way style, aligned with `osm_data.ways`/`way_vertices` by
-    /// index. Resolved once (here) instead of every frame in the render
-    /// loop.
-    way_styles: Vec<WayStyle>,
-    /// Cached earcut triangle indices per way (into `way_vertices[i]` minus
-    /// the closing duplicate), `Some` only for closed ways whose resolved
-    /// style has a fill. Aligned with `way_vertices`/`way_styles` by index.
-    /// See `compute_fill_tris`.
-    way_fill_tris: Vec<Option<Vec<u32>>>,
-    /// Ids of the ways that are a member of any relation; filled only when
-    /// the stylesheet has `way:in-relation` rules (see
-    /// [`relation_member_ways`]) and kept current by relation edits.
-    member_ways: HashSet<i64>,
-    /// Assembled and triangulated multipolygon relations; see [`MpCache`].
-    mp: MpCache,
-    /// Union AABB (mercator) of every node in this layer. Used as a cheap
-    /// early-out in `render_canvas` so off-screen datasets do zero
-    /// per-vertex work. `None` when there's no data.
-    layer_bbox: Option<WayBbox>,
-    /// Street-name labels along ways (prototype); see `line_labels`.
-    line_labels: std::sync::Mutex<crate::layers::line_labels::LineLabelCache>,
-    /// The street-name labels chosen at the last settle.
-    line_placed: std::sync::Mutex<crate::layers::line_labels::LineState>,
-    /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
-    /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
-    /// can change: construction, `set_osm_data` (which `merge_download` ends
-    /// in) and `clear_osm_data`.
-    download_rects: Vec<crate::download_bounds::MercRect>,
     /// Precomputed mercator positions (+ resolved style) for every node.
     node_cache: NodeCache,
-    /// Stylesheet used to pick per-feature colors/weights from OSM tags.
-    stylesheet: Arc<Stylesheet>,
-    /// Feature to highlight (set each frame by MapViewer).
-    highlight: Vec<FeatureRef>,
-    /// The way under the pointer in Select mode, whose vertices are shown
-    /// (small and light) and can be hovered, clicked and dragged. Set by
-    /// `update_vertex_preview`; costs nothing while `None`.
-    preview_way: Option<i64>,
     /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
     /// data changes. Used by box-select (`hit_test_rect`) and indexed
     /// point-click hit-testing (`hit_test`).
@@ -146,27 +136,57 @@ pub struct OsmLayer {
     /// reference it. Built once at load time; lets `commit_node_moves`
     /// recompute only the affected ways' caches instead of every way.
     node_to_ways: HashMap<i64, HashSet<usize>>,
-    /// Transient screen-space offset applied to the given node ids while
-    /// rendering, for live drag feedback. Never touches `osm_data`.
-    drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
+    /// Union AABB (mercator) of every node in this layer. Used as a cheap
+    /// early-out in `render_canvas` so off-screen datasets do zero
+    /// per-vertex work. `None` when there's no data.
+    layer_bbox: Option<WayBbox>,
+    /// Assembled and triangulated multipolygon relations; see [`MpCache`].
+    mp: MpCache,
+}
+
+/// Caches only the render path reads.
+struct RenderCaches {
+    /// Resolved per-way style, aligned with `osm_data.ways`/`way_vertices` by
+    /// index. Resolved once (here) instead of every frame in the render
+    /// loop.
+    way_styles: Vec<WayStyle>,
+    /// Cached earcut triangle indices per way (into `way_vertices[i]` minus
+    /// the closing duplicate), `Some` only for closed ways whose resolved
+    /// style has a fill. Aligned with `way_vertices`/`way_styles` by index.
+    /// See `compute_fill_tris`.
+    way_fill_tris: Vec<Option<Vec<u32>>>,
+    /// Ids of the ways that are a member of any relation; filled only when
+    /// the stylesheet has `way:in-relation` rules (see
+    /// [`relation_member_ways`]) and kept current by relation edits.
+    member_ways: HashSet<i64>,
+    /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
+    /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
+    /// can change: construction, `set_osm_data` (which `merge_download` ends
+    /// in) and `clear_osm_data`.
+    download_rects: Vec<crate::download_bounds::MercRect>,
     /// Sizes of last frame's way-pass batches (see `VertexHints`).
     vertex_hints: VertexHints,
-    /// Whether this layer has had a committed move since it was loaded.
-    modified: bool,
-    /// Bumped by every change to the layer's data or to its baseline (every
-    /// edit, an undo or redo of one, a download merged in, an upload applied):
-    /// the autosave compares it with the value it last saved to tell, without
-    /// looking at the data, whether there is anything new to write.
-    revision: u64,
-    /// Next id for a new node: negative (not yet uploaded) and below every
-    /// node id in the data, so a reloaded file's local ids cannot collide.
-    next_new_id: i64,
-    /// Next id for a new way, derived from the way ids the same way.
-    next_placeholder_way_id: i64,
     /// Label candidates, shaped text and the last placement; see
     /// [`labels`]. A mutex because painting takes `&self` and layers are
     /// `Sync`; it is only ever locked on the UI thread.
     label_cache: std::sync::Mutex<labels::LabelCache>,
+    /// Street-name labels along ways; see `line_labels`.
+    line_labels: std::sync::Mutex<crate::layers::line_labels::LineLabelCache>,
+    /// The street-name labels chosen at the last settle.
+    line_placed: std::sync::Mutex<crate::layers::line_labels::LineState>,
+}
+
+/// Transient view state; never touches `Store`.
+struct ViewState {
+    /// Feature to highlight (set each frame by MapViewer).
+    highlight: Vec<FeatureRef>,
+    /// The way under the pointer in Select mode, whose vertices are shown
+    /// (small and light) and can be hovered, clicked and dragged. Set by
+    /// `update_vertex_preview`; costs nothing while `None`.
+    preview_way: Option<i64>,
+    /// Transient screen-space offset applied to the given node ids while
+    /// rendering, for live drag feedback. Never touches `osm_data`.
+    drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
 }
 
 /// Starting point for `next_new_id`: one below the most negative existing
@@ -193,38 +213,46 @@ impl OsmLayer {
             id,
             name: "OSM Data".to_string(),
             visible: true,
-            osm_data: None,
-            original_data: None,
-            way_ids: Vec::new(),
-            way_bboxes: Vec::new(),
-            way_vertices: Vec::new(),
-            way_styles: Vec::new(),
-            way_fill_tris: Vec::new(),
-            member_ways: HashSet::new(),
-            mp: MpCache::default(),
-            layer_bbox: None,
-            line_labels: Default::default(),
-            line_placed: Default::default(),
-            download_rects: Vec::new(),
-            node_cache: NodeCache {
-                index_by_id: HashMap::new(),
-                flat: Vec::new(),
-                styles: Vec::new(),
+            store: Store {
+                osm_data: None,
+                original_data: None,
+                modified: false,
+                revision: 0,
+                next_new_id: -1,
+                next_placeholder_way_id: -1,
+                stylesheet: crate::style::custom::active_stylesheet(),
             },
-            stylesheet: crate::style::custom::active_stylesheet(),
-            highlight: Vec::new(),
-            preview_way: None,
-            node_index: RTree::new(),
-            way_index: RTree::new(),
-            way_id_to_index: HashMap::new(),
-            node_to_ways: HashMap::new(),
-            drag_preview: None,
-            vertex_hints: VertexHints::default(),
-            modified: false,
-            revision: 0,
-            next_new_id: -1,
-            next_placeholder_way_id: -1,
-            label_cache: Default::default(),
+            derived: Derived {
+                way_ids: Vec::new(),
+                way_bboxes: Vec::new(),
+                way_vertices: Vec::new(),
+                node_cache: NodeCache {
+                    index_by_id: HashMap::new(),
+                    flat: Vec::new(),
+                    styles: Vec::new(),
+                },
+                node_index: RTree::new(),
+                way_index: RTree::new(),
+                way_id_to_index: HashMap::new(),
+                node_to_ways: HashMap::new(),
+                layer_bbox: None,
+                mp: MpCache::default(),
+            },
+            render: RenderCaches {
+                way_styles: Vec::new(),
+                way_fill_tris: Vec::new(),
+                member_ways: HashSet::new(),
+                download_rects: Vec::new(),
+                vertex_hints: VertexHints::default(),
+                label_cache: Default::default(),
+                line_labels: Default::default(),
+                line_placed: Default::default(),
+            },
+            view: ViewState {
+                highlight: Vec::new(),
+                preview_way: None,
+                drag_preview: None,
+            },
         }
     }
 
@@ -257,34 +285,42 @@ impl OsmLayer {
             id,
             name: name.into(),
             visible: true,
-            osm_data: Some(osm_data.clone()),
-            original_data: Some(osm_data),
-            way_ids,
-            way_bboxes,
-            way_vertices,
-            way_styles,
-            way_fill_tris,
-            member_ways,
-            mp,
-            layer_bbox,
-            line_labels: Default::default(),
-            line_placed: Default::default(),
-            download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
-            node_cache,
-            stylesheet,
-            highlight: Vec::new(),
-            preview_way: None,
-            node_index,
-            way_index,
-            way_id_to_index,
-            node_to_ways,
-            drag_preview: None,
-            vertex_hints: VertexHints::default(),
-            modified: false,
-            revision: 0,
-            next_new_id,
-            next_placeholder_way_id,
-            label_cache: Default::default(),
+            store: Store {
+                osm_data: Some(osm_data.clone()),
+                original_data: Some(osm_data),
+                modified: false,
+                revision: 0,
+                next_new_id,
+                next_placeholder_way_id,
+                stylesheet,
+            },
+            derived: Derived {
+                way_ids,
+                way_bboxes,
+                way_vertices,
+                node_cache,
+                node_index,
+                way_index,
+                way_id_to_index,
+                node_to_ways,
+                layer_bbox,
+                mp,
+            },
+            render: RenderCaches {
+                way_styles,
+                way_fill_tris,
+                member_ways,
+                download_rects: crate::download_bounds::merc_rects(&osm_data_bounds),
+                vertex_hints: VertexHints::default(),
+                label_cache: Default::default(),
+                line_labels: Default::default(),
+                line_placed: Default::default(),
+            },
+            view: ViewState {
+                highlight: Vec::new(),
+                preview_way: None,
+                drag_preview: None,
+            },
         }
     }
 
@@ -300,17 +336,17 @@ impl OsmLayer {
     ) -> Self {
         let baseline = baseline_for_loaded_file(&osm_data, edits);
         let mut layer = Self::new_with_data(id, name, osm_data.clone());
-        layer.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
-        layer.revision += 1;
-        layer.original_data = Some(Arc::new(baseline));
+        layer.store.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
+        layer.store.revision += 1;
+        layer.store.original_data = Some(Arc::new(baseline));
         layer
     }
 
     /// This layer as a JOSM-style `.osm` document, including its pending
     /// edits; see `osm_export`. `None` when the layer holds no data.
     pub fn export_xml(&self) -> Option<String> {
-        let current = self.osm_data.as_deref()?;
-        let original = self.original_data.as_deref().unwrap_or(current);
+        let current = self.store.osm_data.as_deref()?;
+        let original = self.store.original_data.as_deref().unwrap_or(current);
         Some(crate::osm_export::to_osm_xml(original, current))
     }
 
@@ -318,28 +354,28 @@ impl OsmLayer {
     /// server baseline too (`original_data`), so `modified` is cleared.
     pub fn set_osm_data(&mut self, osm_data: Arc<OsmData>) {
         self.rebuild_caches(&osm_data);
-        self.osm_data = Some(osm_data.clone());
-        self.original_data = Some(osm_data);
-        self.modified = false;
-        self.revision += 1;
+        self.store.osm_data = Some(osm_data.clone());
+        self.store.original_data = Some(osm_data);
+        self.store.modified = false;
+        self.store.revision += 1;
     }
 
     /// Record that the layer's data changed by a local edit (or the undo or
     /// redo of one).
     fn mark_modified(&mut self) {
-        self.modified = true;
-        self.revision += 1;
+        self.store.modified = true;
+        self.store.revision += 1;
     }
 
     /// The rectangles (Web Mercator meters) this layer's data was downloaded
     /// for; empty when that is not known. See `render_all_download_bounds`.
     pub fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
-        &self.download_rects
+        &self.render.download_rects
     }
 
     /// Whether the layer has edits not yet written to a file or uploaded.
     pub fn is_modified(&self) -> bool {
-        self.modified
+        self.store.modified
     }
 
     /// Re-derive `is_modified` from the layer's actual difference to its
@@ -347,28 +383,28 @@ impl OsmLayer {
     /// looking at the diff, so after an undo back to the baseline this is
     /// what clears it.
     pub fn refresh_modified(&mut self) {
-        if self.modified {
-            self.modified = !self.diff_for_upload().is_empty();
+        if self.store.modified {
+            self.store.modified = !self.diff_for_upload().is_empty();
         }
     }
 
     /// How many nodes and ways the layer holds; `None` before any data is
     /// loaded.
     pub fn feature_counts(&self) -> Option<(usize, usize)> {
-        let data = self.osm_data.as_ref()?;
+        let data = self.store.osm_data.as_ref()?;
         Some((data.nodes.len(), data.ways.len()))
     }
 
     /// The layer's change counter; see the `revision` field.
     pub fn edit_revision(&self) -> u64 {
-        self.revision
+        self.store.revision
     }
 
     /// Test-only: replace `osm_data` directly, leaving `original_data` and
     /// the derived caches alone.
     #[cfg(test)]
     pub(crate) fn set_osm_data_for_test(&mut self, data: Arc<OsmData>) {
-        self.osm_data = Some(data);
+        self.store.osm_data = Some(data);
         self.mark_modified();
     }
 
@@ -376,41 +412,41 @@ impl OsmLayer {
     /// snapshot never changes, and costs the next edit one copy of the
     /// dataset. Keep snapshots short-lived.
     pub fn get_osm_data(&self) -> Option<Arc<OsmData>> {
-        self.osm_data.clone()
+        self.store.osm_data.clone()
     }
 
     /// Clear the OSM data
     pub fn clear_osm_data(&mut self) {
-        self.osm_data = None;
-        self.original_data = None;
-        self.way_ids.clear();
-        self.way_bboxes.clear();
-        self.way_vertices.clear();
-        self.way_styles.clear();
-        self.way_fill_tris.clear();
-        self.mp = MpCache {
-            version: self.mp.version + 1,
+        self.store.osm_data = None;
+        self.store.original_data = None;
+        self.derived.way_ids.clear();
+        self.derived.way_bboxes.clear();
+        self.derived.way_vertices.clear();
+        self.render.way_styles.clear();
+        self.render.way_fill_tris.clear();
+        self.derived.mp = MpCache {
+            version: self.derived.mp.version + 1,
             ..MpCache::default()
         };
-        self.layer_bbox = None;
-        self.download_rects.clear();
-        self.node_cache.index_by_id.clear();
-        self.node_cache.flat.clear();
-        self.node_cache.styles.clear();
-        self.node_index = RTree::new();
-        self.way_index = RTree::new();
-        self.way_id_to_index.clear();
-        self.node_to_ways.clear();
-        self.drag_preview = None;
-        self.modified = false;
-        self.revision += 1;
-        self.next_new_id = -1;
-        self.next_placeholder_way_id = -1;
+        self.derived.layer_bbox = None;
+        self.render.download_rects.clear();
+        self.derived.node_cache.index_by_id.clear();
+        self.derived.node_cache.flat.clear();
+        self.derived.node_cache.styles.clear();
+        self.derived.node_index = RTree::new();
+        self.derived.way_index = RTree::new();
+        self.derived.way_id_to_index.clear();
+        self.derived.node_to_ways.clear();
+        self.view.drag_preview = None;
+        self.store.modified = false;
+        self.store.revision += 1;
+        self.store.next_new_id = -1;
+        self.store.next_placeholder_way_id = -1;
     }
 
     /// Check if this layer has data
     pub fn has_data(&self) -> bool {
-        self.osm_data.is_some()
+        self.store.osm_data.is_some()
     }
 }
 
@@ -453,14 +489,13 @@ impl MapLayer for OsmLayer {
         _window: &mut Window,
         _cx: &mut App,
     ) -> Vec<AnyElement> {
-        // Node rendering moved to `render_canvas` (paint_quad) to avoid the
-        // per-node GPUI element layout cost. The selection ring is drawn in
-        // `render_highlight` as a canvas outline.
+        // Everything is painted in `render_canvas`, which avoids per-node
+        // element layout.
         Vec::new()
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
-        if self.osm_data.is_none() {
+        if self.store.osm_data.is_none() {
             return;
         }
 
@@ -473,7 +508,7 @@ impl MapLayer for OsmLayer {
 
         // Layer-level early-out: if this layer's entire footprint is
         // off-screen, skip all per-vertex work.
-        if let Some(lb) = &self.layer_bbox {
+        if let Some(lb) = &self.derived.layer_bbox {
             if lb.max_x < vmin_x || lb.min_x > vmax_x || lb.max_y < vmin_y || lb.min_y > vmax_y {
                 return;
             }
@@ -510,14 +545,14 @@ impl MapLayer for OsmLayer {
             f32::INFINITY,
             f32::NEG_INFINITY,
         );
-        for (idx, &(id, mx, my)) in self.node_cache.flat.iter().enumerate() {
+        for (idx, &(id, mx, my)) in self.derived.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
             }
             nodes_in_view += 1;
             // Selected and hovered nodes and selected ways' nodes are painted
             // in full by `render_highlight`, so only the zoom rule applies.
-            let style = self.node_cache.styles[idx];
+            let style = self.derived.node_cache.styles[idx];
             // An untagged vertex of a way is never drawn here (only the
             // highlight pass draws it, when selected): the way lookup runs
             // only for untagged nodes at zooms where a standalone one shows.
@@ -576,13 +611,14 @@ impl MapLayer for OsmLayer {
         // The preview way's vertices (only this one way's, so hovering costs
         // a handful of quads): the ones no other rule shows.
         if let Some(wi) = self
+            .view
             .preview_way
             .filter(|_| zoom >= node_markers::PREVIEW_MIN_ZOOM)
-            .and_then(|w| self.way_id_to_index.get(&w).copied())
+            .and_then(|w| self.derived.way_id_to_index.get(&w).copied())
         {
             let pins = self.pins();
-            for &(id, mx, my) in self.way_vertices[wi].iter() {
-                let Some(&idx) = self.node_cache.index_by_id.get(&id) else {
+            for &(id, mx, my) in self.derived.way_vertices[wi].iter() {
+                let Some(&idx) = self.derived.node_cache.index_by_id.get(&id) else {
                     continue;
                 };
                 if self.node_form_at(&pins, idx, id, zoom) != NodeForm::Preview {
@@ -603,7 +639,7 @@ impl MapLayer for OsmLayer {
         let fs_phase = crate::frame_stats::start();
         // Turn restrictions: a sign-like marker beside the via position.
         if show_vertices {
-            for r in self.mp.restrictions.values() {
+            for r in self.derived.mp.restrictions.values() {
                 if r.x < vmin_x || r.x > vmax_x || r.y < vmin_y || r.y > vmax_y {
                     continue;
                 }
@@ -626,7 +662,7 @@ impl MapLayer for OsmLayer {
     }
 
     fn stats(&self) -> Vec<(String, String)> {
-        if let Some(ref osm_data) = self.osm_data {
+        if let Some(ref osm_data) = self.store.osm_data {
             vec![
                 ("Nodes".to_string(), osm_data.nodes.len().to_string()),
                 ("Ways".to_string(), osm_data.ways.len().to_string()),

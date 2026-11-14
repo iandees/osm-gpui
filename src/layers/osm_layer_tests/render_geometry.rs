@@ -155,7 +155,11 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
     let mut cache = crate::layers::labels::LabelCache::default();
     let key = (crate::layers::labels::KIND_WAY, 10);
     let validate = |layer: &OsmLayer, cache: &mut crate::layers::labels::LabelCache| {
-        cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 18);
+        cache.validate(
+            layer.store.revision,
+            Arc::as_ptr(&layer.store.stylesheet) as usize,
+            18,
+        );
     };
     validate(&layer, &mut cache);
     assert!(
@@ -167,7 +171,11 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
     validate(&layer, &mut cache);
     let l = layer.area_label_for(&mut cache, key, 18.0).unwrap();
     assert_eq!(l.text.as_ref(), "Hall");
-    cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 16);
+    cache.validate(
+        layer.store.revision,
+        Arc::as_ptr(&layer.store.stylesheet) as usize,
+        16,
+    );
     assert!(
         layer.area_label_for(&mut cache, key, 16.5).is_none(),
         "below the rule's zoom (a fresh bucket)"
@@ -259,7 +267,11 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
     layer.set_stylesheet(area_label_sheet());
     let mut cache = crate::layers::labels::LabelCache::default();
-    cache.validate(layer.revision, Arc::as_ptr(&layer.stylesheet) as usize, 17);
+    cache.validate(
+        layer.store.revision,
+        Arc::as_ptr(&layer.store.stylesheet) as usize,
+        17,
+    );
     let key = (crate::layers::labels::KIND_REL, 500);
     let l = layer.area_label_for(&mut cache, key, 17.0).unwrap();
     assert_eq!(l.text.as_ref(), "Ring Park");
@@ -282,7 +294,7 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
 fn closed_way_with_fill_style_gets_triangulated() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", square_ring_data());
     layer.set_stylesheet(fill_stylesheet());
-    let tris = layer.way_fill_tris[0]
+    let tris = layer.render.way_fill_tris[0]
         .as_ref()
         .expect("closed building way must have fill triangles");
     // A quad triangulates into 2 triangles = 6 indices, all within the
@@ -297,7 +309,7 @@ fn open_way_gets_no_fill_triangles() {
     Arc::make_mut(&mut data).ways.get_mut(&10).unwrap().nodes = vec![1, 2, 3, 4];
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
-    assert_eq!(layer.way_fill_tris[0], None);
+    assert_eq!(layer.render.way_fill_tris[0], None);
 }
 
 #[test]
@@ -306,7 +318,7 @@ fn closed_way_without_fill_style_gets_no_triangles() {
     layer.set_stylesheet(Arc::new(
         Stylesheet::parse("way[building] { color: #808080; }").unwrap(),
     ));
-    assert_eq!(layer.way_fill_tris[0], None);
+    assert_eq!(layer.render.way_fill_tris[0], None);
 }
 
 #[test]
@@ -320,16 +332,19 @@ fn set_tag_refreshes_fill_triangles() {
         .clear();
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
-    assert_eq!(layer.way_fill_tris[0], None, "no building tag yet");
+    assert_eq!(layer.render.way_fill_tris[0], None, "no building tag yet");
     layer
         .set_tag(FeatureKind::Way, 10, "building", "yes")
         .unwrap();
     assert!(
-        layer.way_fill_tris[0].is_some(),
+        layer.render.way_fill_tris[0].is_some(),
         "tag edit must recompute fill"
     );
     layer.remove_tag(FeatureKind::Way, 10, "building").unwrap();
-    assert_eq!(layer.way_fill_tris[0], None, "tag removal must clear fill");
+    assert_eq!(
+        layer.render.way_fill_tris[0], None,
+        "tag removal must clear fill"
+    );
 }
 
 #[test]
@@ -356,7 +371,7 @@ fn degenerate_ring_yields_no_fill_without_panic() {
     );
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
-    assert_eq!(layer.way_fill_tris[0], None);
+    assert_eq!(layer.render.way_fill_tris[0], None);
 }
 
 #[test]
@@ -379,11 +394,11 @@ fn delete_way_shifts_fill_cache() {
     }
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
-    assert_eq!(layer.way_fill_tris.len(), 2);
+    assert_eq!(layer.render.way_fill_tris.len(), 2);
     layer.delete_feature(FeatureKind::Way, 10).unwrap();
-    assert_eq!(layer.way_fill_tris.len(), 1);
+    assert_eq!(layer.render.way_fill_tris.len(), 1);
     assert!(
-        layer.way_fill_tris[0].is_some(),
+        layer.render.way_fill_tris[0].is_some(),
         "surviving way 20 (a closed triangle) keeps its fill entry"
     );
 }

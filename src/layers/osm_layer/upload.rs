@@ -6,8 +6,9 @@ impl OsmLayer {
     /// copied (an edit made while the other side still holds them pays one
     /// copy-on-write of the data instead). `None` for a layer with no data.
     pub fn autosave_snapshot(&self) -> Option<(Arc<OsmData>, Arc<OsmData>)> {
-        let current = self.osm_data.clone()?;
+        let current = self.store.osm_data.clone()?;
         let original = self
+            .store
             .original_data
             .clone()
             .unwrap_or_else(|| current.clone());
@@ -23,8 +24,10 @@ impl OsmLayer {
         &mut self,
         change: impl FnOnce(&mut OsmData, &mut OsmData) -> bool,
     ) -> bool {
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
+        let (Some(current), Some(original)) = (
+            self.store.osm_data.clone(),
+            self.store.original_data.clone(),
+        ) else {
             return false;
         };
         let (mut current, mut original) = ((*current).clone(), (*original).clone());
@@ -32,9 +35,9 @@ impl OsmLayer {
             return false;
         }
         self.set_osm_data(Arc::new(current));
-        self.original_data = Some(Arc::new(original));
-        self.modified = !self.diff_for_upload().is_empty();
-        self.revision += 1;
+        self.store.original_data = Some(Arc::new(original));
+        self.store.modified = !self.diff_for_upload().is_empty();
+        self.store.revision += 1;
         true
     }
 
@@ -45,10 +48,10 @@ impl OsmLayer {
     /// `new_with_data` and `set_osm_data` always set one, but is handled
     /// defensively by treating everything current as newly created).
     pub fn diff_for_upload(&self) -> LayerDiff {
-        let Some(current) = &self.osm_data else {
+        let Some(current) = &self.store.osm_data else {
             return LayerDiff::default();
         };
-        match &self.original_data {
+        match &self.store.original_data {
             Some(original) => diff_osm_data(original, current),
             None => {
                 let empty = OsmData {
@@ -78,7 +81,7 @@ impl OsmLayer {
     /// incremental-patch discipline used elsewhere isn't worth the added
     /// complexity/risk for a one-time reconciliation pass.
     pub fn apply_upload_result(&mut self, result: &UploadResult) {
-        let Some(current) = self.osm_data.clone() else {
+        let Some(current) = self.store.osm_data.clone() else {
             return;
         };
         let mut data = (*current).clone();
@@ -96,8 +99,10 @@ impl OsmLayer {
     /// that was sent for `result` (placeholder ids as the layer still holds
     /// them for its own new objects).
     pub fn apply_chunk_result(&mut self, result: &UploadResult, chunk: &LayerDiff) {
-        let (Some(current), Some(original)) = (self.osm_data.clone(), self.original_data.clone())
-        else {
+        let (Some(current), Some(original)) = (
+            self.store.osm_data.clone(),
+            self.store.original_data.clone(),
+        ) else {
             return;
         };
         let mut data = (*current).clone();
@@ -164,8 +169,8 @@ impl OsmLayer {
         self.set_osm_data(Arc::new(data));
         // `set_osm_data` treats its argument as a fresh server baseline;
         // restore the real one so the unsent chunks stay pending.
-        self.original_data = Some(Arc::new(base));
-        self.modified = !self.diff_for_upload().is_empty();
+        self.store.original_data = Some(Arc::new(base));
+        self.store.modified = !self.diff_for_upload().is_empty();
     }
 
     pub(super) fn remap_osm_data(data: &mut OsmData, result: &UploadResult) {
