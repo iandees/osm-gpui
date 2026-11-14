@@ -202,7 +202,7 @@ impl MapViewer {
             return;
         }
         let base_url = settings_store::api_base_url();
-        osm_gpui::capabilities::ensure_fetched(&base_url);
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
         let max_area = osm_gpui::capabilities::max_note_area(&base_url);
 
         let downloaded: Vec<GeoBounds> = self
@@ -241,6 +241,7 @@ impl MapViewer {
         self.set_status(tr!("notes.state.loading"));
         cx.notify();
 
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -248,9 +249,12 @@ impl MapViewer {
                     // Reading notes works anonymously, so it never waits on the
                     // system keychain: a token is used only if it is already in
                     // memory, as with the map download.
-                    let token = auth::fresh_token_if_loaded(&auth::oauth_base_for(&base_url))
-                        .map(|t| t.access_token);
-                    notes::fetch_notes(&base_url, &cells, token.as_deref())
+                    let token = auth::fresh_token_if_loaded(
+                        http.as_ref(),
+                        &auth::oauth_base_for(&base_url),
+                    )
+                    .map(|t| t.access_token);
+                    notes::fetch_notes_with(http.as_ref(), &base_url, &cells, token.as_deref())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| this.finish_note_fetch(epoch, result, cx));
@@ -438,11 +442,18 @@ impl MapViewer {
             return;
         }
         self.set_show_notes(true, cx);
+        self.arm_new_note();
+        cx.notify();
+    }
+
+    /// Leave the current mode (the click that places the note must reach the
+    /// notes handler, not an editing mode) and wait for that click.
+    fn arm_new_note(&mut self) {
         self.mode = EditMode::Select;
-        self.add_progress = None;
+        self.reset_mode_progress();
+        self.building_reference = None;
         self.notes.armed = true;
         self.set_status(tr!("notes.new.armed"));
-        cx.notify();
     }
 
     pub(crate) fn open_new_note_dialog(
@@ -514,15 +525,23 @@ impl MapViewer {
         cx.notify();
 
         let oauth_base = auth::oauth_base_for(&base_url);
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result: Result<Note, String> = cx
                 .background_executor()
                 .spawn(async move {
                     // May wait on the system keychain's access prompt the first
                     // time; this is the background thread, and "Working…" shows.
-                    let token = auth::ensure_fresh_token(&oauth_base).map_err(|e| e.to_string())?;
-                    notes::write_note(&base_url, &token.access_token, write, &text)
-                        .map_err(|e| e.user_message())
+                    let token = auth::ensure_fresh_token(http.as_ref(), &oauth_base)
+                        .map_err(|e| e.to_string())?;
+                    notes::write_note_with(
+                        http.as_ref(),
+                        &base_url,
+                        &token.access_token,
+                        write,
+                        &text,
+                    )
+                    .map_err(|e| e.user_message())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| this.finish_note_write(write, result, cx));
@@ -812,7 +831,8 @@ impl MapViewer {
                 Ok(())
             }
             NoteOp::LoadFile(path) => {
-                let loaded = notes::load_notes_file(std::path::Path::new(path))?;
+                let loaded = notes::load_notes_file(std::path::Path::new(path))
+                    .map_err(|e| e.to_string())?;
                 self.notes.local_only = true;
                 self.notes.fetching = false;
                 self.notes.epoch += 1;
@@ -931,6 +951,37 @@ impl MapViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AddProgress, BuildingProgress};
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn arming_a_note_drops_every_modes_unfinished_gesture(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let window = cx.add_window(MapViewer::new);
+        window
+            .update(cx, |view, _w, _cx| {
+                view.mode = EditMode::Building;
+                view.add_progress = Some(AddProgress {
+                    way_id: None,
+                    last_node_id: -1,
+                    at_start: false,
+                });
+                view.building_progress = Some(BuildingProgress {
+                    corner_a: (0.0, 0.0),
+                    corner_b: None,
+                });
+                view.arm_new_note();
+                assert_eq!(view.mode, EditMode::Select);
+                assert!(view.add_progress.is_none());
+                assert!(view.arc_progress.is_none());
+                assert!(view.building_progress.is_none());
+                assert!(view.building_press.is_none());
+                assert!(view.extrude_drag.is_none());
+                assert!(view.building_reference.is_none());
+                assert!(view.notes.armed);
+            })
+            .unwrap();
+    }
 
     #[test]
     fn expand_grows_every_side_and_stays_on_the_map() {

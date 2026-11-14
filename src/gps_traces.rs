@@ -13,7 +13,7 @@
 
 use crate::coordinates::GeoBounds;
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
 use crate::reference::{RefError, ReferenceData};
 use crate::tr;
@@ -163,63 +163,83 @@ impl PageWalker {
     }
 }
 
-fn http_message(e: HttpError) -> String {
-    match e {
-        HttpError::Status { status, body } => {
-            let body = String::from_utf8_lossy(&body);
-            let detail = body.lines().next().unwrap_or("").trim().to_string();
-            match status {
-                429 | 509 => tr!("error.api.rate_limited").to_string(),
-                _ => tr!("error.api.http", status = status, detail = detail).to_string(),
-            }
+/// Why a trackpoints page could not be fetched or its GPX not read. `Display`
+/// is the sentence shown to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpsTracesError {
+    /// The server answered with an error status.
+    Http { status: u16, body: String },
+    /// The request never completed.
+    Network(String),
+    /// The pages could not be read as GPX.
+    Parse(String),
+}
+
+impl From<HttpError> for GpsTracesError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status, body } => GpsTracesError::Http { status, body },
+            HttpFailure::Transport(msg) => GpsTracesError::Network(msg),
+            HttpFailure::Cancelled => GpsTracesError::Network("cancelled".to_string()),
         }
-        HttpError::Transport(msg) => tr!("error.network", detail = msg).to_string(),
-        HttpError::Cancelled => tr!("error.network", detail = "cancelled").to_string(),
     }
 }
 
+impl std::fmt::Display for GpsTracesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GpsTracesError::Http {
+                status: 429 | 509, ..
+            } => write!(f, "{}", tr!("error.api.rate_limited")),
+            GpsTracesError::Http { status, body } => {
+                let detail = body.lines().next().unwrap_or("").trim().to_string();
+                write!(
+                    f,
+                    "{}",
+                    tr!("error.api.http", status = status, detail = detail)
+                )
+            }
+            GpsTracesError::Network(msg) => write!(f, "{}", tr!("error.network", detail = msg)),
+            GpsTracesError::Parse(detail) => {
+                write!(f, "{}", tr!("gps_traces.error.parse", detail = detail))
+            }
+        }
+    }
+}
+
+impl std::error::Error for GpsTracesError {}
+
 /// `GET` one page. Anonymous unless `token` is given; retried like the map
-/// download. `Err` is a sentence for the user.
+/// download.
 pub fn fetch_page_with(
     client: &dyn HttpClient,
     base_url: &str,
     cell: &GeoBounds,
     page: usize,
     token: Option<&str>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, GpsTracesError> {
     let mut req = HttpRequest::get(trackpoints_url(base_url, cell, page));
     if let Some(token) = token {
         req = req.bearer(token);
     }
-    fetch_with_retries(client, &req, &RetryPolicy::standard())
-        .map(|resp| resp.body)
-        .map_err(http_message)
-}
-
-pub fn fetch_page(
-    base_url: &str,
-    cell: &GeoBounds,
-    page: usize,
-    token: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    fetch_page_with(&UreqClient::new(), base_url, cell, page, token)
+    Ok(fetch_with_retries(client, &req, &RetryPolicy::standard())?.body)
 }
 
 /// The traces in `pages` (non-empty pages, in the order they arrived);
 /// `None` when there are none.
-pub fn parse_pages<P: AsRef<[u8]>>(pages: &[P]) -> Result<Option<ReferenceData>, String> {
+pub fn parse_pages<P: AsRef<[u8]>>(pages: &[P]) -> Result<Option<ReferenceData>, GpsTracesError> {
     let slices: Vec<&[u8]> = pages.iter().map(AsRef::as_ref).collect();
     match crate::gpx::parse_trackpoints(&slices) {
         Ok(data) => Ok(Some(data)),
         Err(RefError::NoGeometry) => Ok(None),
-        Err(e) => Err(tr!("gps_traces.error.parse", detail = e.to_string()).to_string()),
+        Err(e) => Err(GpsTracesError::Parse(e.to_string())),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::fake::{ok, status_err, FakeClient};
+    use crate::http::fake::{ok, status_err, transport_err, FakeClient};
 
     const BASE: &str = "https://api.openstreetmap.org/";
 
@@ -284,7 +304,7 @@ mod tests {
 
     /// Drive a walker the way the window does: fetch, record, keep non-empty
     /// pages.
-    fn walk(client: &FakeClient, cells: &[GeoBounds]) -> Result<Walked, String> {
+    fn walk(client: &FakeClient, cells: &[GeoBounds]) -> Result<Walked, GpsTracesError> {
         let mut walker = PageWalker::new(cells.to_vec());
         let (mut asked, mut pages) = (Vec::new(), Vec::new());
         while let Some((cell, page)) = walker.next_request() {
@@ -374,6 +394,46 @@ mod tests {
         let cell = GeoBounds::new(0.0, 0.1, 0.0, 0.1);
         let client = FakeClient::new(vec![status_err(400, "The bbox is too big")]);
         let err = fetch_page_with(&client, BASE, &cell, 0, None).unwrap_err();
-        assert!(err.contains("400") && err.contains("bbox"), "{err}");
+        assert_eq!(
+            err,
+            GpsTracesError::Http {
+                status: 400,
+                body: "The bbox is too big".into()
+            }
+        );
+        let text = err.to_string();
+        assert!(text.contains("400") && text.contains("bbox"), "{text}");
+    }
+
+    #[test]
+    fn rate_limiting_and_transport_failures_have_their_own_variants() {
+        let cell = GeoBounds::new(0.0, 0.1, 0.0, 0.1);
+        // 429 is retried like the map download, so every attempt is answered.
+        let client = FakeClient::new(vec![
+            status_err(429, "slow down"),
+            status_err(429, "slow down"),
+            status_err(429, "slow down"),
+        ]);
+        let err = fetch_page_with(&client, BASE, &cell, 0, None).unwrap_err();
+        assert!(matches!(err, GpsTracesError::Http { status: 429, .. }));
+        assert_eq!(err.to_string(), tr!("error.api.rate_limited").to_string());
+
+        let client = FakeClient::new(vec![
+            transport_err("reset"),
+            transport_err("reset"),
+            transport_err("reset"),
+        ]);
+        let err = fetch_page_with(&client, BASE, &cell, 0, None).unwrap_err();
+        assert_eq!(err, GpsTracesError::Network("reset".into()));
+        assert_eq!(
+            err.to_string(),
+            tr!("error.network", detail = "reset").to_string()
+        );
+    }
+
+    #[test]
+    fn unreadable_gpx_is_a_parse_error() {
+        let err = parse_pages(&[b"<gpx><trk><trkseg><trkpt lat=\"x".to_vec()]).unwrap_err();
+        assert!(matches!(err, GpsTracesError::Parse(_)), "{err:?}");
     }
 }

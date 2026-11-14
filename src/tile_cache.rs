@@ -1,10 +1,10 @@
 use gpui::{Asset, BackgroundExecutor, ImageCacheError, RenderImage};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
@@ -15,40 +15,247 @@ use crate::idle_tracker::IdleTracker;
 /// at startup).
 const DEFAULT_CACHE_BUDGET_BYTES: u64 = 500 * 1024 * 1024;
 
-/// Live, process-global cache size budget in bytes. Changing it via
-/// `set_budget_mb` never triggers an eviction sweep itself — it only
-/// changes what the *next* `maybe_evict`-triggered sweep evicts down to, so
-/// shrinking the budget doesn't cause an immediate mass deletion.
-static CACHE_BUDGET_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_CACHE_BUDGET_BYTES);
-
-/// Update the live cache budget. Does not evict anything itself — see
-/// `CACHE_BUDGET_BYTES`'s doc comment.
-pub fn set_budget_mb(mb: u64) {
-    CACHE_BUDGET_BYTES.store(mb.saturating_mul(1024 * 1024), Ordering::Relaxed);
-}
-
-fn current_budget_bytes() -> u64 {
-    CACHE_BUDGET_BYTES.load(Ordering::Relaxed)
-}
-
 /// After this many tile writes since the last eviction sweep, re-scan the
 /// cache directory to check whether it's over budget. Avoids doing a full
 /// `read_dir` walk on every single tile write while still keeping the cache
 /// bounded in practice.
 const WRITES_BETWEEN_EVICTION_CHECKS: u64 = 25;
 
-/// Counts tile writes since the last eviction sweep. When it crosses
-/// `WRITES_BETWEEN_EVICTION_CHECKS`, `maybe_evict` performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over its configured
-/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
-static WRITES_SINCE_EVICTION: AtomicU64 = AtomicU64::new(0);
-
-/// Cached result of the last "how many files are in the cache" scan, plus
-/// the `Instant` it was computed at. `cached_file_count` recomputes at most
-/// once per `STATS_TTL` to avoid a full directory listing on every render
-/// frame (the caller in `TileLayer::stats` polls this every frame).
-static STATS_CACHE: OnceLock<Mutex<Option<(Instant, usize)>>> = OnceLock::new();
+/// How long a file count / usage summary scan is reused. The tile layer polls
+/// the count every frame and the settings panel the summary on every repaint.
 const STATS_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Most tile-failure reasons kept for display; the oldest are dropped first.
+/// Reasons are only shown in a failed tile, so losing an old one just shows a
+/// generic "Failed" there.
+const MAX_TILE_ERRORS: usize = 512;
+
+/// The most recent failure reason per tile URL, bounded to `MAX_TILE_ERRORS`.
+#[derive(Default)]
+struct TileErrors {
+    reasons: HashMap<String, String>,
+    /// URLs in the order their reason was first recorded.
+    order: VecDeque<String>,
+}
+
+impl TileErrors {
+    fn insert(&mut self, url: &str, reason: String) {
+        if self.reasons.insert(url.to_string(), reason).is_none() {
+            self.order.push_back(url.to_string());
+        }
+        while self.reasons.len() > MAX_TILE_ERRORS {
+            match self.order.pop_front() {
+                Some(oldest) => {
+                    self.reasons.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn remove(&mut self, url: &str) {
+        if self.reasons.remove(url).is_some() {
+            self.order.retain(|u| u != url);
+        }
+    }
+}
+
+/// Everything the tile cache remembers while the app runs. Tiles load through
+/// gpui's `Asset` trait, whose `load` is a static function with no way to
+/// reach a `TileCache`, so there is one shared store (see `shared_store`) and
+/// `TileCache` is a handle to it.
+struct TileStore {
+    /// Live cache size budget in bytes. Changing it never triggers an
+    /// eviction sweep itself: it only changes what the next sweep evicts down
+    /// to, so shrinking the budget doesn't cause an immediate mass deletion.
+    budget_bytes: AtomicU64,
+    /// Tile writes since the last eviction sweep check.
+    writes_since_eviction: AtomicU64,
+    /// Last "how many files are in the cache" scan and when it ran.
+    file_count: Mutex<Option<(Instant, usize)>>,
+    /// Last per-source usage scan and when it ran.
+    summary: Mutex<Option<(Instant, CacheSummary)>>,
+    /// Tile URLs each source's layer wanted on its most recent render, keyed
+    /// by source key. A queued or in-flight download whose URL is no longer in
+    /// its source's set (the tile scrolled or zoomed off the map) is cancelled.
+    wanted: Mutex<HashMap<String, HashSet<String>>>,
+    /// Tiles whose download was cancelled. gpui caches the (failed) asset
+    /// result forever, so these must be evicted before they are requested again.
+    cancelled: Mutex<HashSet<TileAssetKey>>,
+    /// Last failure reason per tile URL, read when drawing a failed tile.
+    errors: Mutex<TileErrors>,
+    /// Tile loads started and not yet finished (queued for a download slot,
+    /// downloading, or decoding).
+    active_loads: AtomicUsize,
+    /// Tells the app when tile fetches are in flight. Set once, by the first
+    /// `TileCache` constructed.
+    idle: OnceLock<Arc<IdleTracker>>,
+}
+
+impl TileStore {
+    fn new() -> Self {
+        Self {
+            budget_bytes: AtomicU64::new(DEFAULT_CACHE_BUDGET_BYTES),
+            writes_since_eviction: AtomicU64::new(0),
+            file_count: Mutex::new(None),
+            summary: Mutex::new(None),
+            wanted: Mutex::new(HashMap::new()),
+            cancelled: Mutex::new(HashSet::new()),
+            errors: Mutex::new(TileErrors::default()),
+            active_loads: AtomicUsize::new(0),
+            idle: OnceLock::new(),
+        }
+    }
+
+    fn set_budget_mb(&self, mb: u64) {
+        self.budget_bytes
+            .store(mb.saturating_mul(1024 * 1024), Ordering::Relaxed);
+    }
+
+    fn budget_bytes(&self) -> u64 {
+        self.budget_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Called after every tile write. Bumps the running write counter and, once
+    /// every `WRITES_BETWEEN_EVICTION_CHECKS` writes, performs a directory scan
+    /// and evicts oldest-by-mtime files if the cache is over its budget.
+    ///
+    /// We deliberately scan on a write-count cadence rather than tracking a
+    /// live running-size total: a live total would need to be correct across
+    /// process restarts (files already on disk from a previous run) and after
+    /// external deletion, which a periodic authoritative scan handles for free.
+    fn maybe_evict(&self, dir: &Path) {
+        let count = self.writes_since_eviction.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(WRITES_BETWEEN_EVICTION_CHECKS) {
+            evict_if_over_budget(dir, self.budget_bytes());
+        }
+    }
+
+    /// Number of files in the cache directory `dir`, rescanned at most once
+    /// per `STATS_TTL`.
+    fn cached_file_count(&self, dir: &Path) -> usize {
+        let Ok(mut guard) = self.file_count.lock() else {
+            return 0;
+        };
+        if let Some((last, count)) = *guard {
+            if last.elapsed() < STATS_TTL {
+                return count;
+            }
+        }
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        collect_cache_files(dir, &mut files, &mut total);
+        let count = files.len();
+        *guard = Some((Instant::now(), count));
+        count
+    }
+
+    /// `cache_summary_at(dir)`, rescanned at most once per `STATS_TTL`.
+    fn cache_summary(&self, dir: &Path) -> CacheSummary {
+        let Ok(mut guard) = self.summary.lock() else {
+            return cache_summary_at(dir);
+        };
+        if let Some((last, summary)) = guard.as_ref() {
+            if last.elapsed() < STATS_TTL {
+                return summary.clone();
+            }
+        }
+        let summary = cache_summary_at(dir);
+        *guard = Some((Instant::now(), summary.clone()));
+        summary
+    }
+
+    /// Record the tile URLs a layer of `source_key` needs right now (replacing
+    /// its previous set), and return the previously cancelled tiles among them,
+    /// which the caller must evict from gpui's asset cache so they refetch.
+    fn set_wanted(&self, source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
+        let revived: Vec<TileAssetKey> = {
+            let mut cancelled = self.cancelled.lock().unwrap();
+            let revived: Vec<_> = cancelled
+                .iter()
+                .filter(|k| k.source_key == source_key && urls.contains(&k.url))
+                .cloned()
+                .collect();
+            for k in &revived {
+                cancelled.remove(k);
+            }
+            revived
+        };
+        self.wanted
+            .lock()
+            .unwrap()
+            .insert(source_key.to_string(), urls);
+        revived
+    }
+
+    /// Whether a download for `url` is still wanted. Sources that have not
+    /// reported a wanted set (nothing rendered yet) are never cancelled.
+    fn is_wanted(&self, source_key: &str, url: &str) -> bool {
+        self.wanted
+            .lock()
+            .unwrap()
+            .get(source_key)
+            .is_none_or(|set| set.contains(url))
+    }
+
+    fn mark_cancelled(&self, key: TileAssetKey) {
+        self.cancelled.lock().unwrap().insert(key);
+    }
+
+    fn record_error(&self, url: &str, reason: String) {
+        if let Ok(mut errors) = self.errors.lock() {
+            errors.insert(url, reason);
+        }
+    }
+
+    fn clear_error(&self, url: &str) {
+        if let Ok(mut errors) = self.errors.lock() {
+            errors.remove(url);
+        }
+    }
+
+    fn last_error(&self, url: &str) -> Option<String> {
+        self.errors
+            .lock()
+            .ok()
+            .and_then(|e| e.reasons.get(url).cloned())
+    }
+
+    /// Count a tile load as active until the returned guard is dropped.
+    fn begin_load(&self) -> LoadGuard<'_> {
+        self.active_loads.fetch_add(1, Ordering::Relaxed);
+        LoadGuard { store: self }
+    }
+
+    fn active_loads(&self) -> usize {
+        self.active_loads.load(Ordering::Relaxed)
+    }
+}
+
+struct LoadGuard<'a> {
+    store: &'a TileStore,
+}
+
+impl Drop for LoadGuard<'_> {
+    fn drop(&mut self) {
+        self.store.active_loads.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The process-wide tile store. A global because tiles load through gpui's
+/// `Asset` trait: `TileAsset::load` is a static function that gets only the
+/// asset key and the `App`, so it has no other way to reach the `TileCache`.
+static SHARED_STORE: OnceLock<Arc<TileStore>> = OnceLock::new();
+
+fn shared_store() -> &'static Arc<TileStore> {
+    SHARED_STORE.get_or_init(|| Arc::new(TileStore::new()))
+}
+
+/// Update the live cache budget. Does not evict anything itself: the new
+/// budget applies to the next eviction sweep.
+pub fn set_budget_mb(mb: u64) {
+    shared_store().set_budget_mb(mb);
+}
 
 /// Returns the on-disk tile cache directory: a real, user-visible cache
 /// location (via the `dirs` crate) rather than the OS temp dir, which can be
@@ -81,16 +288,7 @@ fn cache_filename(url: &str) -> String {
 pub(crate) fn source_key_for_template(template: &str) -> String {
     let mut normalized = template.to_string();
 
-    // Collapse a `{switch:a,b,c}` span to a single marker, mirroring the
-    // span-detection logic in `tiles::url_from_template` (anchored on the
-    // literal "{switch:" prefix, then the next '}').
-    if let Some(start) = normalized.find("{switch:") {
-        if let Some(rel_end) = normalized[start..].find('}') {
-            let end = start + rel_end;
-            normalized.replace_range(start..=end, "s");
-        }
-    }
-    normalized = normalized.replace("{s}", "s");
+    normalized = crate::tiles::collapse_switch(&normalized, "s").replace("{s}", "s");
 
     normalized = normalized.replace("{zoom}", "z");
     normalized = normalized.replace("{z}", "z");
@@ -144,22 +342,6 @@ fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     crate::persist::write_atomic(file_path, bytes, crate::persist::WriteOpts::default())
 }
 
-/// Called after every tile write. Bumps the running write counter and, once
-/// every `WRITES_BETWEEN_EVICTION_CHECKS` writes, performs a directory scan
-/// and evicts oldest-by-mtime files if the cache is over its configured
-/// budget (see `current_budget_bytes`/`CACHE_BUDGET_BYTES`).
-///
-/// We deliberately scan on a write-count cadence rather than tracking a
-/// live running-size total: a live total would need to be correct across
-/// process restarts (files already on disk from a previous run) and after
-/// external deletion, which a periodic authoritative scan handles for free.
-fn maybe_evict(dir: &Path) {
-    let count = WRITES_SINCE_EVICTION.fetch_add(1, Ordering::Relaxed) + 1;
-    if count.is_multiple_of(WRITES_BETWEEN_EVICTION_CHECKS) {
-        evict_if_over_budget(dir, current_budget_bytes());
-    }
-}
-
 /// Recursively collect every cache file under `dir` — one level of
 /// source-key subdirectories, plus any loose top-level files left over
 /// from before per-source directories existed — appending
@@ -211,114 +393,16 @@ fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
     }
 }
 
-/// Return the number of files currently in the tile cache directory,
-/// recomputing via a directory scan at most once per `STATS_TTL`. This keeps
-/// `TileCache::stats` cheap to call every render frame instead of doing a
-/// full `read_dir` scan on every call.
-fn cached_file_count() -> usize {
-    let cell = STATS_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = match cell.lock() {
-        Ok(g) => g,
-        Err(_) => return 0,
-    };
-
-    if let Some((last, count)) = *guard {
-        if last.elapsed() < STATS_TTL {
-            return count;
-        }
-    }
-
-    let dir = cache_dir();
-    let count = if dir.exists() {
-        let mut files = Vec::new();
-        let mut total = 0u64;
-        collect_cache_files(&dir, &mut files, &mut total);
-        files.len()
-    } else {
-        0
-    };
-    *guard = Some((Instant::now(), count));
-    count
-}
-
-/// Global IdleTracker shared between TileCache and TileAsset::load.
-/// Set once when TileCache is constructed with an IdleTracker.
-static TILE_IDLE_TRACKER: OnceLock<Arc<IdleTracker>> = OnceLock::new();
-
-/// Tile URLs each source's layer wanted on its most recent render, keyed by
-/// source key. A queued or in-flight download whose URL is no longer in its
-/// source's set (the tile scrolled or zoomed off the map) is cancelled.
-static WANTED_TILES: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
-
-/// Tiles whose download was cancelled. gpui caches the (failed) asset result
-/// forever, so these must be evicted before they are requested again.
-static CANCELLED_TILES: OnceLock<Mutex<HashSet<TileAssetKey>>> = OnceLock::new();
-
-fn wanted_tiles() -> &'static Mutex<HashMap<String, HashSet<String>>> {
-    WANTED_TILES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn cancelled_tiles() -> &'static Mutex<HashSet<TileAssetKey>> {
-    CANCELLED_TILES.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
 /// Record the tile URLs a layer of `source_key` needs right now (replacing
 /// its previous set), and return the previously cancelled tiles among them,
 /// which the caller must evict from gpui's asset cache so they refetch.
 pub fn set_wanted_tiles(source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
-    let revived: Vec<TileAssetKey> = {
-        let mut cancelled = cancelled_tiles().lock().unwrap();
-        let revived: Vec<_> = cancelled
-            .iter()
-            .filter(|k| k.source_key == source_key && urls.contains(&k.url))
-            .cloned()
-            .collect();
-        for k in &revived {
-            cancelled.remove(k);
-        }
-        revived
-    };
-    wanted_tiles()
-        .lock()
-        .unwrap()
-        .insert(source_key.to_string(), urls);
-    revived
-}
-
-/// Whether a download for `url` is still wanted. Sources that have not
-/// reported a wanted set (nothing rendered yet) are never cancelled.
-fn is_tile_wanted(source_key: &str, url: &str) -> bool {
-    wanted_tiles()
-        .lock()
-        .unwrap()
-        .get(source_key)
-        .is_none_or(|set| set.contains(url))
-}
-
-/// Per-URL last-error map. Populated by `TileAsset::load` whenever a tile
-/// fails, and cleared when a tile subsequently loads successfully. Read by
-/// `TileLayer` when rendering the failure fallback.
-static TILE_LOAD_ERRORS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-fn tile_errors() -> &'static Mutex<HashMap<String, String>> {
-    TILE_LOAD_ERRORS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn record_error(url: &str, reason: String) {
-    if let Ok(mut map) = tile_errors().lock() {
-        map.insert(url.to_string(), reason);
-    }
-}
-
-fn clear_error(url: &str) {
-    if let Ok(mut map) = tile_errors().lock() {
-        map.remove(url);
-    }
+    shared_store().set_wanted(source_key, urls)
 }
 
 /// Look up the most recent failure reason for a tile URL, if any.
 pub fn last_error(url: &str) -> Option<String> {
-    tile_errors().lock().ok().and_then(|m| m.get(url).cloned())
+    shared_store().last_error(url)
 }
 
 /// Truncate `s` to at most `max` characters, replacing the middle with "..."
@@ -385,7 +469,7 @@ pub struct TileAsset;
 /// Identifies both the concrete tile URL to fetch and the cache
 /// subdirectory (derived from the source's URL template via
 /// `source_key_for_template`) it belongs in.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TileAssetKey {
     pub url: String,
     pub source_key: String,
@@ -405,133 +489,162 @@ impl Asset for TileAsset {
         cx: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         let executor = cx.background_executor().clone();
-        let idle = TILE_IDLE_TRACKER.get().cloned();
-        let TileAssetKey { url, source_key } = key;
+        let store = shared_store().clone();
+        let idle = store.idle.get().cloned();
 
         async move {
-            // Signal that a tile fetch has started (if idle tracker is wired up).
+            let _active = store.begin_load();
             if let Some(ref tracker) = idle {
                 tracker.tile_fetch_started();
             }
-            // Use GPUI's background executor to run the HTTP request synchronously.
-            // We await the spawned future and call tile_fetch_finished exactly once
-            // after it resolves, covering all success and error paths.
-            let result = executor
-                .spawn(async move {
-                    let base_dir = cache_dir();
-                    let file_path = tile_file_path(&base_dir, &source_key, &url);
-                    let source_dir = file_path
-                        .parent()
-                        .expect("tile_file_path always has a parent")
-                        .to_path_buf();
-
-                    // Check if file already exists, load it directly
-                    if file_path.exists() {
-                        match load_image_from_file(&file_path) {
-                            Ok(image) => {
-                                clear_error(&url);
-                                return Ok(Arc::new(image));
-                            }
-                            Err(_) => {
-                                // If cached file is corrupted, delete it and re-download
-                                let _ = fs::remove_file(&file_path);
-                            }
+            // The blocking HTTP request runs on the background executor.
+            let result =
+                executor
+                    .spawn({
+                        let store = store.clone();
+                        async move {
+                            load_tile(&store, &crate::http::UreqClient::new(), &cache_dir(), &key)
                         }
-                    }
-
-                    // Ensure cache directory exists
-                    if let Err(e) = fs::create_dir_all(&source_dir) {
-                        let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
-                        record_error(&url, reason.clone());
-                        return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))));
-                    }
-
-                    // Use a simple synchronous HTTP request that doesn't require Tokio
-                    let keep = {
-                        let (source_key, url) = (source_key.clone(), url.clone());
-                        move || is_tile_wanted(&source_key, &url)
-                    };
-                    let downloaded = if keep() {
-                        download_file_cancellable(&crate::http::UreqClient::new(), &url, &keep)
-                    } else {
-                        Err(TileFetchError::Cancelled)
-                    };
-                    match downloaded {
-                        Err(TileFetchError::Cancelled) => {
-                            cancelled_tiles().lock().unwrap().insert(TileAssetKey {
-                                url: url.clone(),
-                                source_key: source_key.clone(),
-                            });
-                            Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                "cancelled"
-                            ))))
-                        }
-                        Ok(bytes) => {
-                            // Check if the response actually contains image data
-                            if bytes.is_empty() {
-                                let reason = TileFetchError::EmptyBody.to_string();
-                                record_error(&url, reason.clone());
-                                return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                    reason
-                                ))));
-                            }
-
-                            // Check if this looks like an actual image file
-                            // PNG: bytes 1..4 == "PNG", JPEG: bytes 0..3 == FF D8 FF
-                            let is_png = bytes.len() >= 8 && &bytes[1..4] == b"PNG";
-                            let is_jpeg = bytes.len() >= 3
-                                && bytes[0] == 0xFF
-                                && bytes[1] == 0xD8
-                                && bytes[2] == 0xFF;
-                            if !is_png && !is_jpeg {
-                                let reason = TileFetchError::NotImage.to_string();
-                                record_error(&url, reason.clone());
-                                return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                    reason
-                                ))));
-                            }
-
-                            // Write to file atomically (temp file + rename) so a
-                            // concurrent fetch for the same cache path can never
-                            // observe a torn/truncated file.
-                            if let Err(e) = write_atomic(&file_path, &bytes) {
-                                let reason =
-                                    TileFetchError::Io(format!("write: {}", e)).to_string();
-                                record_error(&url, reason.clone());
-                                return Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(
-                                    reason
-                                ))));
-                            }
-                            maybe_evict(&base_dir);
-
-                            // Load the saved file as an image
-                            match load_image_from_file(&file_path) {
-                                Ok(image) => {
-                                    clear_error(&url);
-                                    Ok(Arc::new(image))
-                                }
-                                Err(e) => {
-                                    let reason = format!("Decode: {}", e);
-                                    record_error(&url, reason.clone());
-                                    Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))))
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let reason = e.to_string();
-                            record_error(&url, reason.clone());
-                            Err(ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason))))
-                        }
-                    }
-                })
-                .await;
+                    })
+                    .await;
             // Exactly one finished call for the one started call above,
-            // regardless of which success or error branch the inner future took.
+            // whichever way the load ended.
             if let Some(ref tracker) = idle {
                 tracker.tile_fetch_finished();
             }
             result
         }
+    }
+}
+
+fn cache_error(reason: String) -> ImageCacheError {
+    ImageCacheError::Other(Arc::new(anyhow::anyhow!(reason)))
+}
+
+/// Record `reason` as `url`'s failure (shown inside the tile) and return it as
+/// the asset's error.
+fn fail_tile(store: &TileStore, url: &str, reason: String) -> ImageCacheError {
+    store.record_error(url, reason.clone());
+    cache_error(reason)
+}
+
+/// Load one tile: from the disk cache under `base_dir` if it is there,
+/// otherwise download it through `client`, cache it and decode it. Failures
+/// are recorded in `store` for the tile's fallback to show; a download
+/// abandoned because the tile scrolled off the map is remembered as cancelled.
+fn load_tile(
+    store: &TileStore,
+    client: &dyn crate::http::HttpClient,
+    base_dir: &Path,
+    key: &TileAssetKey,
+) -> Result<Arc<RenderImage>, ImageCacheError> {
+    let TileAssetKey { url, source_key } = key;
+    let file_path = tile_file_path(base_dir, source_key, url);
+
+    if let CacheRead::Hit(image) = read_cached(&file_path) {
+        store.clear_error(url);
+        return Ok(Arc::new(image));
+    }
+
+    // Created even if the download then fails, so a failing source still
+    // shows (empty) in the cache settings.
+    if let Some(source_dir) = file_path.parent() {
+        if let Err(e) = fs::create_dir_all(source_dir) {
+            let reason = TileFetchError::Io(format!("mkdir: {}", e)).to_string();
+            return Err(fail_tile(store, url, reason));
+        }
+    }
+
+    let keep = || store.is_wanted(source_key, url);
+    let bytes = match fetch(client, url, &keep) {
+        Ok(bytes) => bytes,
+        Err(TileFetchError::Cancelled) => {
+            store.mark_cancelled(key.clone());
+            return Err(cache_error("cancelled".to_string()));
+        }
+        Err(e) => return Err(fail_tile(store, url, e.to_string())),
+    };
+
+    // Atomic (temp file + rename) so a concurrent fetch for the same cache
+    // path can never observe a torn/truncated file.
+    if let Err(e) = write_atomic(&file_path, &bytes) {
+        let reason = TileFetchError::Io(format!("write: {}", e)).to_string();
+        return Err(fail_tile(store, url, reason));
+    }
+    store.maybe_evict(base_dir);
+
+    match decode(&bytes) {
+        Ok(image) => {
+            store.clear_error(url);
+            Ok(Arc::new(image))
+        }
+        Err(e) => Err(fail_tile(store, url, format!("Decode: {}", e))),
+    }
+}
+
+/// What looking for a tile in the disk cache found.
+enum CacheRead {
+    Hit(RenderImage),
+    Miss,
+    /// A file was there but would not decode; it has been deleted.
+    Corrupt,
+}
+
+/// The cached tile at `path`, if any. A corrupt file is deleted so the tile is
+/// downloaded again.
+fn read_cached(path: &Path) -> CacheRead {
+    if !path.exists() {
+        return CacheRead::Miss;
+    }
+    match fs::read(path)
+        .map_err(|e| format!("Failed to read image file: {}", e))
+        .and_then(|bytes| decode(&bytes))
+    {
+        Ok(image) => CacheRead::Hit(image),
+        Err(_) => {
+            let _ = fs::remove_file(path);
+            CacheRead::Corrupt
+        }
+    }
+}
+
+/// What a downloaded body looks like, judged by its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SniffedImage {
+    Png,
+    Jpeg,
+    /// Not a format tiles are accepted in (an HTML error page, WebP, ...).
+    Other,
+}
+
+fn sniff_image(bytes: &[u8]) -> SniffedImage {
+    // PNG starts 0x89 "PNG\r\n\x1a\n"; the 0x89 is not checked, as before.
+    if bytes.len() >= 8 && &bytes[1..4] == b"PNG" {
+        SniffedImage::Png
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        SniffedImage::Jpeg
+    } else {
+        SniffedImage::Other
+    }
+}
+
+/// Download `url`, giving up with `Cancelled` once `keep` says the tile is no
+/// longer wanted, and check that the body is a PNG or JPEG.
+fn fetch(
+    client: &dyn crate::http::HttpClient,
+    url: &str,
+    keep: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, TileFetchError> {
+    if !keep() {
+        return Err(TileFetchError::Cancelled);
+    }
+    let bytes = download_file_cancellable(client, url, keep)?;
+    if bytes.is_empty() {
+        return Err(TileFetchError::EmptyBody);
+    }
+    match sniff_image(&bytes) {
+        SniffedImage::Other => Err(TileFetchError::NotImage),
+        SniffedImage::Png | SniffedImage::Jpeg => Ok(bytes),
     }
 }
 
@@ -597,9 +710,7 @@ fn tile_download_semaphore() -> &'static Semaphore {
 /// for display inside a tile.
 const ERROR_SNIPPET_BYTES: usize = 120;
 
-/// Same as `download_file_sync`, but against an injected `HttpClient` so it's
-/// testable without a real network. Kept `pub(crate)` since tests are the only
-/// other caller.
+/// `download_file_cancellable` that is never cancelled.
 #[cfg(test)]
 pub(crate) fn download_file_sync_with(
     client: &dyn crate::http::HttpClient,
@@ -608,16 +719,15 @@ pub(crate) fn download_file_sync_with(
     download_file_cancellable(client, url, &|| true)
 }
 
-/// `download_file_sync_with`, abandoning the download (with
-/// `TileFetchError::Cancelled`) once `keep` returns false. `keep` is checked
-/// after waiting for a download slot and while the body is being read.
+/// Download `url`, abandoning it (with `TileFetchError::Cancelled`) once
+/// `keep` returns false. `keep` is checked after waiting for a download slot
+/// and while the body is being read.
 pub(crate) fn download_file_cancellable(
     client: &dyn crate::http::HttpClient,
     url: &str,
     keep: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, TileFetchError> {
-    // Cap concurrent in-flight tile downloads (see MAX_CONCURRENT_TILE_DOWNLOADS).
-    // Held for the duration of the request (including retries) below.
+    // Held for the whole request, retries included.
     let _permit = tile_download_semaphore().acquire();
     if !keep() {
         return Err(TileFetchError::Cancelled);
@@ -665,51 +775,45 @@ fn sanitize_snippet(body: &[u8]) -> Option<String> {
     }
 }
 
-fn load_image_from_file(file_path: &std::path::Path) -> Result<RenderImage, String> {
-    let bytes = fs::read(file_path).map_err(|e| format!("Failed to read image file: {}", e))?;
-
+/// Decode image bytes into the BGRA frame gpui draws.
+fn decode(bytes: &[u8]) -> Result<RenderImage, String> {
     let img =
-        image::load_from_memory(&bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
+        image::load_from_memory(bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
 
-    // Convert to RGBA8 format first
     let mut rgba = img.to_rgba8();
-
-    // Convert RGBA to BGRA format that GPUI expects
-    // We need to swap the red and blue channels for each pixel
+    // gpui wants BGRA: swap red and blue.
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2); // Swap R and B channels (RGBA -> BGRA)
+        pixel.swap(0, 2);
     }
 
-    // Create a frame for the image
-    let frame = image::Frame::new(rgba);
     let mut frames = smallvec::SmallVec::new();
-    frames.push(frame);
+    frames.push(image::Frame::new(rgba));
     Ok(RenderImage::new(frames))
 }
 
+/// A handle to the shared tile store: what the app holds on to and asks for
+/// statistics. The tiles themselves load through gpui's asset system.
 #[derive(Clone)]
 pub struct TileCache {
-    _idle: Arc<IdleTracker>,
+    store: Arc<TileStore>,
 }
 
 impl TileCache {
     pub fn new(_executor: BackgroundExecutor, idle: Arc<IdleTracker>) -> Self {
-        // Register the tracker globally so TileAsset::load can access it.
-        // If already set (e.g. in tests), we simply use whichever was set first.
-        let _ = TILE_IDLE_TRACKER.set(idle.clone());
-        Self { _idle: idle }
+        let store = shared_store().clone();
+        // The first tracker wins; later caches (in tests) share it.
+        let _ = store.idle.set(idle);
+        Self { store }
     }
 
-    /// Get statistics about the cache. The cached-file count is recomputed
-    /// via a directory scan at most once per second (see `cached_file_count`)
-    /// so calling this every render frame doesn't hit the filesystem on
-    /// every call.
+    /// `(cached files, tile loads in flight)`. The file count is rescanned at
+    /// most once a second so calling this every render frame doesn't hit the
+    /// filesystem every time.
     pub fn stats(&self) -> (usize, usize) {
-        let cached_files = cached_file_count();
-
-        // We can't easily track active downloads with the asset system
-        // but GPUI handles this internally
-        (cached_files, 0)
+        (
+            self.store.cached_file_count(&cache_dir()),
+            self.store.active_loads(),
+        )
     }
 }
 
@@ -744,31 +848,9 @@ pub(crate) fn uncategorized_key() -> &'static str {
     UNCATEGORIZED_KEY
 }
 
-/// Cached result of the last `cache_summary_at` scan, plus the `Instant` it
-/// was computed at. `cache_summary` recomputes at most once per
-/// `CACHE_SUMMARY_TTL` to avoid a full recursive directory scan on every
-/// call — the settings UI calls this on every repaint of the Tile Cache
-/// panel, which happens roughly twice a second while an input field there
-/// is focused (caret-blink-driven `cx.notify()`).
-static CACHE_SUMMARY_CACHE: OnceLock<Mutex<Option<(Instant, CacheSummary)>>> = OnceLock::new();
-const CACHE_SUMMARY_TTL: std::time::Duration = STATS_TTL;
-
+/// Aggregate usage of the real tile cache directory; see `TileStore::cache_summary`.
 pub fn cache_summary() -> CacheSummary {
-    let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = match cell.lock() {
-        Ok(g) => g,
-        Err(_) => return cache_summary_at(&cache_dir()),
-    };
-
-    if let Some((last, summary)) = guard.as_ref() {
-        if last.elapsed() < CACHE_SUMMARY_TTL {
-            return summary.clone();
-        }
-    }
-
-    let summary = cache_summary_at(&cache_dir());
-    *guard = Some((Instant::now(), summary.clone()));
-    summary
+    shared_store().cache_summary(&cache_dir())
 }
 
 fn cache_summary_at(dir: &Path) -> CacheSummary {
@@ -1061,28 +1143,91 @@ mod tests {
 
     #[test]
     fn unwanted_tiles_are_cancelled_and_revived_when_wanted_again() {
+        let store = TileStore::new();
         let src = "test-src-cancel";
-        assert!(is_tile_wanted(src, "u1"));
-        set_wanted_tiles(src, HashSet::from(["u2".to_string()]));
-        assert!(!is_tile_wanted(src, "u1"));
-        assert!(is_tile_wanted(src, "u2"));
+        assert!(store.is_wanted(src, "u1"));
+        store.set_wanted(src, HashSet::from(["u2".to_string()]));
+        assert!(!store.is_wanted(src, "u1"));
+        assert!(store.is_wanted(src, "u2"));
         let key = TileAssetKey {
             url: "u1".into(),
             source_key: src.into(),
         };
-        cancelled_tiles().lock().unwrap().insert(key.clone());
-        let revived = set_wanted_tiles(src, HashSet::from(["u1".to_string()]));
+        store.mark_cancelled(key.clone());
+        let revived = store.set_wanted(src, HashSet::from(["u1".to_string()]));
         assert!(revived.contains(&key));
-        assert!(set_wanted_tiles(src, HashSet::from(["u1".to_string()])).is_empty());
+        assert!(store
+            .set_wanted(src, HashSet::from(["u1".to_string()]))
+            .is_empty());
     }
 
     #[test]
     fn record_and_clear_error() {
+        let store = TileStore::new();
         let url = "https://example.test/record_and_clear/1.png";
-        record_error(url, "HTTP 418".to_string());
-        assert_eq!(last_error(url).as_deref(), Some("HTTP 418"));
-        clear_error(url);
-        assert_eq!(last_error(url), None);
+        store.record_error(url, "HTTP 418".to_string());
+        assert_eq!(store.last_error(url).as_deref(), Some("HTTP 418"));
+        store.clear_error(url);
+        assert_eq!(store.last_error(url), None);
+    }
+
+    #[test]
+    fn error_reasons_are_bounded_and_drop_the_oldest_first() {
+        let store = TileStore::new();
+        for i in 0..MAX_TILE_ERRORS + 10 {
+            store.record_error(&format!("u{i}"), format!("HTTP {i}"));
+        }
+        let errors = store.errors.lock().unwrap();
+        assert_eq!(errors.reasons.len(), MAX_TILE_ERRORS);
+        assert_eq!(errors.order.len(), MAX_TILE_ERRORS);
+        drop(errors);
+        assert_eq!(store.last_error("u0"), None);
+        assert_eq!(store.last_error("u9"), None);
+        assert_eq!(store.last_error("u10").as_deref(), Some("HTTP 10"));
+        let newest = MAX_TILE_ERRORS + 9;
+        assert_eq!(
+            store.last_error(&format!("u{newest}")).as_deref(),
+            Some(format!("HTTP {newest}").as_str())
+        );
+    }
+
+    #[test]
+    fn re_recording_and_clearing_errors_does_not_grow_the_order_queue() {
+        let store = TileStore::new();
+        for round in 0..50 {
+            store.record_error("same", format!("try {round}"));
+            store.record_error("same", format!("again {round}"));
+            store.clear_error("same");
+        }
+        store.record_error("same", "last".into());
+        let errors = store.errors.lock().unwrap();
+        assert_eq!(errors.reasons.len(), 1);
+        assert_eq!(errors.order.len(), 1);
+    }
+
+    #[test]
+    fn active_loads_count_until_the_guard_drops() {
+        let store = TileStore::new();
+        assert_eq!(store.active_loads(), 0);
+        let a = store.begin_load();
+        let b = store.begin_load();
+        assert_eq!(store.active_loads(), 2);
+        drop(a);
+        assert_eq!(store.active_loads(), 1);
+        drop(b);
+        assert_eq!(store.active_loads(), 0);
+    }
+
+    #[test]
+    fn the_handle_reports_the_shared_stores_active_loads() {
+        let handle = TileCache {
+            store: shared_store().clone(),
+        };
+        let before = handle.stats().1;
+        let guard = handle.store.begin_load();
+        assert_eq!(handle.stats().1, before + 1);
+        drop(guard);
+        assert_eq!(handle.stats().1, before);
     }
 
     #[test]
@@ -1229,21 +1374,35 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// `cached_file_count` uses a process-global TTL cache keyed only by
-    /// time, so we can't deterministically assert its return value without
-    /// racing other tests that also touch the real cache dir. Instead we
-    /// verify the TTL mechanics directly against the same static used by
-    /// `cached_file_count`: within the TTL window, a stale cached value is
-    /// returned unchanged; once the recorded instant looks expired, a fresh
-    /// scan is indicated as needed. This avoids any real sleeping.
     #[test]
-    fn stats_cache_ttl_respects_recent_timestamp() {
-        let cell = STATS_CACHE.get_or_init(|| Mutex::new(None));
-        let mut guard = cell.lock().unwrap();
-        *guard = Some((Instant::now(), 42));
-        let (last, count) = guard.unwrap();
-        assert!(last.elapsed() < STATS_TTL);
-        assert_eq!(count, 42);
+    fn file_count_is_reused_within_the_ttl_and_rescanned_after() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-file-count-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.png"), [0u8; 4]).unwrap();
+
+        let store = TileStore::new();
+        assert_eq!(store.cached_file_count(&dir), 1);
+        fs::write(dir.join("b.png"), [0u8; 4]).unwrap();
+        // Pretend the scan is fresh: the stale count is returned.
+        *store.file_count.lock().unwrap() = Some((Instant::now(), 1));
+        assert_eq!(store.cached_file_count(&dir), 1);
+        // Pretend it is old: a rescan sees both files.
+        *store.file_count.lock().unwrap() = Some((Instant::now() - STATS_TTL * 2, 1));
+        assert_eq!(store.cached_file_count(&dir), 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_count_of_a_missing_directory_is_zero() {
+        let dir = std::env::temp_dir().join("osm-gpui-test-file-count-missing-dir");
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(TileStore::new().cached_file_count(&dir), 0);
     }
 
     #[test]
@@ -1531,14 +1690,10 @@ mod tests {
     }
 
     #[test]
-    fn cache_summary_ttl_respects_recent_timestamp() {
-        // Mirrors `stats_cache_ttl_respects_recent_timestamp`: verify the TTL
-        // mechanics directly against the same static used by `cache_summary`,
-        // without any real sleeping. Manipulate the cache cell to simulate a
-        // fresh cached value, then confirm a subsequent `cache_summary()`
-        // call returns that cached data unchanged even though the
-        // underlying directory (which we never even create) would otherwise
-        // yield an empty summary.
+    fn cache_summary_is_reused_within_the_ttl() {
+        // A fresh cached value is returned unchanged even though the
+        // directory (which we never create) would give an empty summary.
+        let store = TileStore::new();
         let cached = CacheSummary {
             total_bytes: 12345,
             total_files: 7,
@@ -1548,17 +1703,18 @@ mod tests {
                 file_count: 7,
             }],
         };
-        let cell = CACHE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-        {
-            let mut guard = cell.lock().unwrap();
-            *guard = Some((Instant::now(), cached.clone()));
-        }
+        *store.summary.lock().unwrap() = Some((Instant::now(), cached));
+        let missing = std::env::temp_dir().join("osm-gpui-test-summary-ttl-missing-dir");
 
-        let result = cache_summary();
+        let result = store.cache_summary(&missing);
         assert_eq!(result.total_bytes, 12345);
         assert_eq!(result.total_files, 7);
-        assert_eq!(result.sources.len(), 1);
         assert_eq!(result.sources[0].key, "fake-source");
+
+        let stale = store.summary.lock().unwrap().take();
+        *store.summary.lock().unwrap() =
+            stale.map(|(_, summary)| (Instant::now() - STATS_TTL * 2, summary));
+        assert_eq!(store.cache_summary(&missing).total_files, 0);
     }
 
     #[test]
@@ -1588,11 +1744,291 @@ mod tests {
 
     #[test]
     fn set_budget_mb_updates_current_budget_without_touching_disk() {
-        set_budget_mb(10);
-        assert_eq!(current_budget_bytes(), 10 * 1024 * 1024);
-        // Restore the default so other tests in this process (CACHE_BUDGET_BYTES
-        // is a process-global static) aren't affected by this one.
-        set_budget_mb(500);
-        assert_eq!(current_budget_bytes(), DEFAULT_CACHE_BUDGET_BYTES);
+        let store = TileStore::new();
+        assert_eq!(store.budget_bytes(), DEFAULT_CACHE_BUDGET_BYTES);
+        store.set_budget_mb(10);
+        assert_eq!(store.budget_bytes(), 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn eviction_runs_on_every_nth_write_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-maybe-evict-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("big.png"), vec![0u8; 100]).unwrap();
+
+        let store = TileStore::new();
+        store.set_budget_mb(0);
+        for _ in 0..WRITES_BETWEEN_EVICTION_CHECKS - 1 {
+            store.maybe_evict(&dir);
+        }
+        assert!(
+            dir.join("big.png").exists(),
+            "no sweep before the Nth write"
+        );
+        store.maybe_evict(&dir);
+        assert!(!dir.join("big.png").exists(), "the Nth write sweeps");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]))
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "osm-gpui-test-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sniff_recognises_png_and_jpeg() {
+        assert_eq!(sniff_image(&tiny_png()), SniffedImage::Png);
+        assert_eq!(sniff_image(&tiny_jpeg()), SniffedImage::Jpeg);
+    }
+
+    #[test]
+    fn sniff_rejects_html_webp_garbage_and_short_input() {
+        assert_eq!(
+            sniff_image(b"<!DOCTYPE html><html>Too many requests</html>"),
+            SniffedImage::Other
+        );
+        // WebP is not accepted as a tile format.
+        assert_eq!(
+            sniff_image(b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            SniffedImage::Other
+        );
+        assert_eq!(sniff_image(&[0u8; 32]), SniffedImage::Other);
+        assert_eq!(sniff_image(b""), SniffedImage::Other);
+        assert_eq!(sniff_image(&[0xFF, 0xD8]), SniffedImage::Other);
+        // A PNG signature needs 8 bytes to count.
+        assert_eq!(sniff_image(b"\x89PNG"), SniffedImage::Other);
+    }
+
+    #[test]
+    fn sanitize_snippet_replaces_control_characters_and_trims() {
+        assert_eq!(
+            sanitize_snippet(b"\n\tover\x00 capacity\r\n").as_deref(),
+            Some("over  capacity")
+        );
+    }
+
+    #[test]
+    fn sanitize_snippet_of_nothing_printable_is_none() {
+        assert_eq!(sanitize_snippet(b""), None);
+        assert_eq!(sanitize_snippet(b" \n\t\x00\x01 "), None);
+    }
+
+    #[test]
+    fn sanitize_snippet_survives_binary_input() {
+        let snippet = sanitize_snippet(&[0x89, b'P', b'N', b'G', 0x00, 0xFF, 0xFE, b'x']).unwrap();
+        assert!(snippet.contains("PNG"));
+        assert!(snippet.ends_with('x'));
+        assert!(!snippet.chars().any(|c| c.is_control()));
+    }
+
+    #[test]
+    fn sanitize_snippet_keeps_only_the_first_bytes() {
+        let long = vec![b'a'; ERROR_SNIPPET_BYTES * 3];
+        assert_eq!(sanitize_snippet(&long).unwrap().len(), ERROR_SNIPPET_BYTES);
+    }
+
+    #[test]
+    fn decode_swaps_red_and_blue() {
+        let image = decode(&tiny_png()).unwrap();
+        let bgra = image.as_bytes(0).unwrap();
+        assert_eq!(&bgra[..4], &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        assert!(decode(b"definitely not an image").is_err());
+    }
+
+    #[test]
+    fn read_cached_hit_miss_and_corrupt() {
+        let dir = temp_dir("read-cached");
+        let good = dir.join("good.png");
+        fs::write(&good, tiny_png()).unwrap();
+        assert!(matches!(read_cached(&good), CacheRead::Hit(_)));
+        assert!(good.exists());
+
+        assert!(matches!(
+            read_cached(&dir.join("missing.png")),
+            CacheRead::Miss
+        ));
+
+        let bad = dir.join("bad.png");
+        fs::write(&bad, b"half a tile").unwrap();
+        assert!(matches!(read_cached(&bad), CacheRead::Corrupt));
+        assert!(
+            !bad.exists(),
+            "a corrupt file is deleted so it is refetched"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const URL: &str = "https://tile.example.test/1/2/3.png";
+
+    fn always() -> bool {
+        true
+    }
+
+    #[test]
+    fn fetch_returns_an_image_body() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        assert_eq!(fetch(&client, URL, &always).unwrap(), tiny_png());
+    }
+
+    #[test]
+    fn fetch_reports_http_errors() {
+        use crate::http::fake::{status_err, FakeClient};
+        let client = FakeClient::new(vec![status_err(404, "no such tile")]);
+        let err = fetch(&client, URL, &always).unwrap_err();
+        assert_eq!(err.to_string(), "HTTP 404: no such tile");
+    }
+
+    #[test]
+    fn fetch_rejects_an_html_error_page_served_with_200() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, b"<html>Rate limited</html>".to_vec())]);
+        assert!(matches!(
+            fetch(&client, URL, &always),
+            Err(TileFetchError::NotImage)
+        ));
+    }
+
+    #[test]
+    fn fetch_rejects_an_empty_body() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, Vec::new())]);
+        assert!(matches!(
+            fetch(&client, URL, &always),
+            Err(TileFetchError::EmptyBody)
+        ));
+    }
+
+    #[test]
+    fn fetch_cancelled_before_the_request_sends_nothing() {
+        use crate::http::fake::{ok, FakeClient};
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        assert!(matches!(
+            fetch(&client, URL, &|| false),
+            Err(TileFetchError::Cancelled)
+        ));
+        assert_eq!(client.request_count(), 0);
+    }
+
+    fn key(source: &str) -> TileAssetKey {
+        TileAssetKey {
+            url: URL.to_string(),
+            source_key: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn load_tile_downloads_caches_then_serves_from_disk() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile");
+        let store = TileStore::new();
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(client.request_count(), 1);
+        let cached = tile_file_path(&dir, "src", URL);
+        assert_eq!(fs::read(&cached).unwrap(), tiny_png());
+
+        // The second load needs no response: the client has none left.
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(client.request_count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_refetches_over_a_corrupt_cache_file() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile-corrupt");
+        let store = TileStore::new();
+        let cached = tile_file_path(&dir, "src", URL);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"garbage").unwrap();
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+
+        assert!(load_tile(&store, &client, &dir, &key("src")).is_ok());
+        assert_eq!(client.request_count(), 1);
+        assert_eq!(fs::read(&cached).unwrap(), tiny_png());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_records_why_a_tile_failed_and_clears_it_on_success() {
+        use crate::http::fake::{ok, status_err, FakeClient};
+        let dir = temp_dir("load-tile-error");
+        let store = TileStore::new();
+        let client = FakeClient::new(vec![
+            status_err(404, "gone"),
+            ok(200, b"<html></html>".to_vec()),
+            ok(200, tiny_png()),
+        ]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(store.last_error(URL).as_deref(), Some("HTTP 404: gone"));
+        assert!(!tile_file_path(&dir, "src", URL).exists());
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(store.last_error(URL).as_deref(), Some("Not an image"));
+        assert!(!tile_file_path(&dir, "src", URL).exists());
+
+        assert!(load_tile(&store, &client, &dir, &key).is_ok());
+        assert_eq!(store.last_error(URL), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_tile_for_an_unwanted_tile_is_cancelled_without_a_request() {
+        use crate::http::fake::{ok, FakeClient};
+        let dir = temp_dir("load-tile-cancel");
+        let store = TileStore::new();
+        store.set_wanted("src", HashSet::from(["some other url".to_string()]));
+        let client = FakeClient::new(vec![ok(200, tiny_png())]);
+        let key = key("src");
+
+        assert!(load_tile(&store, &client, &dir, &key).is_err());
+        assert_eq!(client.request_count(), 0);
+        assert_eq!(store.last_error(URL), None, "a cancel is not a failure");
+        // Wanted again: the cancelled tile is handed back for re-requesting.
+        let revived = store.set_wanted("src", HashSet::from([URL.to_string()]));
+        assert_eq!(revived, vec![key]);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -64,13 +64,13 @@ impl ImageryEntry {
 
 /// Fetch the ELI GeoJSON (using an on-disk cache with a 7-day TTL).
 /// On network failure, falls back to any existing cache file.
-pub fn fetch_and_cache() -> anyhow::Result<String> {
+pub fn fetch_and_cache(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
     let cache_path = cache_file_path();
     if let Some(body) = read_fresh_cache(&cache_path) {
         return Ok(body);
     }
 
-    match download() {
+    match download_with(client) {
         Ok(body) => {
             if let Some(parent) = cache_path.parent() {
                 let _ = fs::create_dir_all(parent);
@@ -124,12 +124,6 @@ fn read_fresh_cache(path: &PathBuf) -> Option<String> {
 /// `GET` the ELI GeoJSON with a small bounded retry on transport errors and
 /// retryable HTTP status codes (see `crate::is_retryable_status`). Other 4xx
 /// responses are returned immediately since retrying won't help.
-fn download() -> anyhow::Result<String> {
-    download_with(&crate::http::UreqClient::new())
-}
-
-/// Same as `download`, but against an injected `HttpClient` so it's testable
-/// without a real network.
 fn download_with(client: &dyn crate::http::HttpClient) -> anyhow::Result<String> {
     let req = crate::http::HttpRequest::get(ELI_URL);
     let resp = crate::http::fetch_with_retries(client, &req, &crate::http::RetryPolicy::standard())

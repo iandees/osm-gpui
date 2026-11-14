@@ -48,6 +48,9 @@ pub enum SettingsEvent {
 pub const IMAGERY_PAGE: usize = 3;
 
 pub struct SettingsWindow {
+    /// Used for sign-in and for fetching a custom map style; the window is
+    /// opened from a global action, so it takes the installed default client.
+    http: Arc<dyn crate::http::HttpClient>,
     /// The page the window opened on, when one was requested.
     start_page: Option<usize>,
     focus_handle: FocusHandle,
@@ -126,6 +129,7 @@ impl SettingsWindow {
         let login_state = Self::current_login_state(&app_settings);
 
         Self {
+            http: crate::http::default_client(),
             start_page,
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
@@ -254,11 +258,12 @@ impl SettingsWindow {
         };
         self.map_style_loading = true;
         cx.notify();
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let loc2 = loc.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::style::custom::load_blocking(&loc2) })
+                .spawn(async move { crate::style::custom::load(&loc2, http.as_ref()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.map_style_loading = false;
@@ -511,10 +516,11 @@ impl SettingsWindow {
         cx.notify();
 
         let api_base_url = Self::acting_base_url(&self.app_settings);
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { auth::login(&api_base_url) })
+                .spawn(async move { auth::login(http.as_ref(), &api_base_url) })
                 .await;
 
             let _ = this.update(cx, |this, cx| {

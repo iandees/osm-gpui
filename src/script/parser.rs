@@ -1,6 +1,7 @@
 //! Line-oriented DSL parser for the screenshot script format.
 
 use super::op::*;
+use crate::edit_mode::EditMode;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -1216,24 +1217,17 @@ fn parse_load_osm(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
 
 fn parse_assert_mode(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     if rest.len() != 1 {
+        let keys: Vec<&str> = EditMode::ALL.iter().map(|m| m.key()).collect();
         return Err(err(
             line_no,
-            "assert_mode: want select|add|building|extrude|arc|improve",
+            format!("assert_mode: want {}", keys.join("|")),
         ));
     }
-    let mode = match rest[0] {
-        "select" => EditMode::Select,
-        "add" => EditMode::Add,
-        "building" => EditMode::Building,
-        "extrude" => EditMode::Extrude,
-        "arc" => EditMode::Arc,
-        "improve" => EditMode::Improve,
-        other => {
-            return Err(err(
-                line_no,
-                format!("assert_mode: unknown mode '{}'", other),
-            ))
-        }
+    let Some(mode) = EditMode::from_key(rest[0]) else {
+        return Err(err(
+            line_no,
+            format!("assert_mode: unknown mode '{}'", rest[0]),
+        ));
     };
     Ok(Op::AssertMode { mode })
 }
@@ -1665,30 +1659,10 @@ mod tests {
 
     #[test]
     fn assert_mode_parses_each_variant() {
-        assert_eq!(
-            parse("assert_mode select").unwrap()[0].op,
-            Op::AssertMode {
-                mode: EditMode::Select
-            }
-        );
-        assert_eq!(
-            parse("assert_mode add").unwrap()[0].op,
-            Op::AssertMode {
-                mode: EditMode::Add
-            }
-        );
-        assert_eq!(
-            parse("assert_mode building").unwrap()[0].op,
-            Op::AssertMode {
-                mode: EditMode::Building
-            }
-        );
-        assert_eq!(
-            parse("assert_mode extrude").unwrap()[0].op,
-            Op::AssertMode {
-                mode: EditMode::Extrude
-            }
-        );
+        for mode in EditMode::ALL {
+            let line = format!("assert_mode {}", mode.key());
+            assert_eq!(parse(&line).unwrap()[0].op, Op::AssertMode { mode });
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::coordinates::GeoBounds;
 use std::time::Instant;
 
 use crate::http::{
-    fetch_with_retries_progress, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries_progress, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
 use crate::osm::{OsmData, OsmParseError, OsmParser};
 use crate::selection::FeatureKind;
@@ -50,6 +50,16 @@ impl std::fmt::Display for OsmApiError {
     }
 }
 
+impl From<HttpError> for OsmApiError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status, body } => OsmApiError::Http { status, body },
+            HttpFailure::Transport(msg) => OsmApiError::Network(msg),
+            HttpFailure::Cancelled => OsmApiError::Cancelled,
+        }
+    }
+}
+
 /// Refuse `bounds` if the server at `base_url` would (its advertised maximum
 /// area, or the public server's 0.25 sq. degrees until that is known).
 pub fn check_area(bounds: &GeoBounds, base_url: &str) -> Result<(), OsmApiError> {
@@ -76,17 +86,7 @@ pub(crate) fn build_url(base_url: &str, bounds: &GeoBounds) -> String {
 /// Synchronous fetch — call from a worker thread, not the UI thread. `token`, if
 /// present, is sent as an OAuth2 bearer token so the request is attributed to a
 /// logged-in user.
-pub fn fetch_bbox(
-    bounds: GeoBounds,
-    base_url: &str,
-    token: Option<&str>,
-) -> Result<OsmData, OsmApiError> {
-    fetch_bbox_with(&UreqClient::new(), bounds, base_url, token)
-}
-
-/// Same as `fetch_bbox`, but against an injected `HttpClient` so it's testable
-/// without a real network. Kept `pub(crate)` since tests are the only other caller.
-pub(crate) fn fetch_bbox_with(
+pub fn fetch_bbox_with(
     client: &dyn HttpClient,
     bounds: GeoBounds,
     base_url: &str,
@@ -117,19 +117,10 @@ fn parse_download(body: &str, requested: &GeoBounds) -> Result<OsmData, OsmApiEr
     Ok(data)
 }
 
-/// `fetch_bbox` that reports its progress through `progress` (phase, bytes
+/// `fetch_bbox_with` that reports its progress through `progress` (phase, bytes
 /// received, `Content-Length` when sent) and stops early, with
 /// `OsmApiError::Cancelled`, once `progress.is_cancelled()`.
-pub fn fetch_bbox_tracked(
-    bounds: GeoBounds,
-    base_url: &str,
-    token: Option<&str>,
-    progress: &TransferHandle,
-) -> Result<OsmData, OsmApiError> {
-    fetch_bbox_tracked_with(&UreqClient::new(), bounds, base_url, token, progress)
-}
-
-pub(crate) fn fetch_bbox_tracked_with(
+pub fn fetch_bbox_tracked_with(
     client: &dyn HttpClient,
     bounds: GeoBounds,
     base_url: &str,
@@ -182,14 +173,7 @@ fn fetch_map_body(
             }
         },
     );
-    let resp = result.map_err(|e| match e {
-        HttpError::Status { status, body } => OsmApiError::Http {
-            status,
-            body: String::from_utf8_lossy(&body).into_owned(),
-        },
-        HttpError::Transport(msg) => OsmApiError::Network(msg),
-        HttpError::Cancelled => OsmApiError::Cancelled,
-    })?;
+    let resp = result?;
 
     if let Some(p) = progress {
         // The throttle may have swallowed the last few reports.
@@ -251,17 +235,7 @@ pub(crate) fn element_url(base_url: &str, kind: FeatureKind, id: i64, full: bool
 
 /// `GET /api/0.6/[node|way|relation]/#id` (a way with `/full` when `full`),
 /// for resolving an upload conflict. Synchronous — call from a worker thread.
-pub fn fetch_element(
-    base_url: &str,
-    token: Option<&str>,
-    kind: FeatureKind,
-    id: i64,
-    full: bool,
-) -> Result<ServerElement, OsmApiError> {
-    fetch_element_with(&UreqClient::new(), base_url, token, kind, id, full)
-}
-
-pub(crate) fn fetch_element_with(
+pub fn fetch_element_with(
     client: &dyn HttpClient,
     base_url: &str,
     token: Option<&str>,
@@ -284,6 +258,25 @@ pub(crate) fn fetch_element_with(
 mod tests {
     use super::*;
     use crate::http::fake::{ok, status_err, FakeClient};
+
+    #[test]
+    fn http_failures_map_to_api_errors() {
+        assert!(matches!(
+            OsmApiError::from(HttpError::Status {
+                status: 509,
+                body: b"slow".to_vec()
+            }),
+            OsmApiError::Http { status: 509, body } if body == "slow"
+        ));
+        assert!(matches!(
+            OsmApiError::from(HttpError::Transport("dns".into())),
+            OsmApiError::Network(m) if m == "dns"
+        ));
+        assert!(matches!(
+            OsmApiError::from(HttpError::Cancelled),
+            OsmApiError::Cancelled
+        ));
+    }
 
     #[test]
     fn area_check_rejects_large_bbox() {

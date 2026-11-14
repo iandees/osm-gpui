@@ -76,7 +76,13 @@ pub(crate) fn pending_edits_label(count: usize) -> Option<SharedString> {
 impl MapViewer {
     fn mode_progress(&self) -> ModeProgress {
         match self.mode {
-            EditMode::Add if self.add_progress.is_some() => ModeProgress::Started,
+            EditMode::Add => {
+                if self.add_progress.is_some() {
+                    ModeProgress::Started
+                } else {
+                    ModeProgress::Idle
+                }
+            }
             EditMode::Building => match self.building_progress {
                 None => ModeProgress::Idle,
                 Some(progress) if progress.corner_b.is_none() => ModeProgress::Started,
@@ -87,8 +93,14 @@ impl MapViewer {
                 Some(progress) if progress.end.is_none() => ModeProgress::Started,
                 Some(_) => ModeProgress::EdgePlaced,
             },
-            EditMode::Improve if self.improve_target().is_some() => ModeProgress::Started,
-            _ => ModeProgress::Idle,
+            EditMode::Improve => {
+                if self.improve_target().is_some() {
+                    ModeProgress::Started
+                } else {
+                    ModeProgress::Idle
+                }
+            }
+            EditMode::Select | EditMode::Extrude => ModeProgress::Idle,
         }
     }
 
@@ -311,14 +323,7 @@ mod tests {
 
     #[test]
     fn every_hint_resolves_to_a_message() {
-        for mode in [
-            EditMode::Select,
-            EditMode::Add,
-            EditMode::Building,
-            EditMode::Extrude,
-            EditMode::Arc,
-            EditMode::Improve,
-        ] {
+        for mode in EditMode::ALL {
             for progress in [
                 ModeProgress::Idle,
                 ModeProgress::Started,
