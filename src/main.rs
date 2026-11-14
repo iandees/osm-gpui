@@ -40,6 +40,7 @@ mod imagery_state_tests;
 mod improve_click_tests;
 mod menu;
 mod mode_panel;
+mod modes;
 mod notes_ui;
 #[cfg(test)]
 mod reference_tests;
@@ -1707,10 +1708,7 @@ impl MapViewer {
     }
 
     /// Handle the `SetMode` action: switch modes, discarding any
-    /// in-progress add/building/extrude state without committing it (Tasks
-    /// 6-8 populate these fields; they don't exist until then, so this
-    /// handler is added here as a no-op placeholder for those clears and
-    /// extended in each later task).
+    /// in-progress gesture without committing it.
     fn on_set_mode(&mut self, action: &SetMode, window: &mut Window, cx: &mut Context<Self>) {
         let mode = action.mode;
         // The drawing modes need a layer to write into. The toolbar buttons
@@ -7555,112 +7553,7 @@ impl Render for MapViewer {
                         this.handle_pinch(ev, cx);
                     }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                        let modifiers = ev.keystroke.modifiers;
-                        if this.offset_field_focused(window, cx) {
-                            // Typing in the imagery offset panel's fields.
-                        } else if modifiers.platform || modifiers.control || modifiers.alt {
-                            // Modifier chords belong to the keymap (menu
-                            // shortcuts), never to the bare-key handling below.
-                        } else if ev.keystroke.key == "space" {
-                            // Held Space turns a left-drag into a pan.
-                            if !this.space_held {
-                                this.space_held = true;
-                                cx.notify();
-                            }
-                        } else if this.offset_adjust_key(
-                            &ev.keystroke.key,
-                            modifiers.shift,
-                            window,
-                            cx,
-                        ) {
-                            // Adjusting imagery offset: arrows nudge the
-                            // imagery, Escape cancels, Enter keeps.
-                        } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
-                            // Arrow keys pan; +/- zoom.
-                        } else if ev.keystroke.key == "escape" && this.close_photo_fullscreen() {
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" && this.cancel_rotate() {
-                            // A Rotate in progress is undone.
-                            cx.notify();
-                        } else if ev.keystroke.key == "enter" && this.rotate_session.is_some() {
-                            this.finish_rotate();
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" && this.cancel_armed_note() {
-                            // A New Note waiting for its click is cancelled.
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" {
-                            let cancelled_drag = this.cancel_move_drag(cx);
-                            match this.mode {
-                                // Escape backs out one step at a time: an
-                                // in-progress shape first, then the mode.
-                                EditMode::Add => {
-                                    if this.add_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Building => {
-                                    this.building_press = None;
-                                    if this.building_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                        this.building_reference = None;
-                                    }
-                                }
-                                EditMode::Extrude => {
-                                    if this.extrude_drag.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Arc => {
-                                    if this.arc_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Improve => {
-                                    // First Esc lets go of the way (to pick
-                                    // another), the second leaves the mode.
-                                    if this.improve_target().is_some() {
-                                        this.set_selection(Vec::new());
-                                    } else {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Select => {
-                                    if !cancelled_drag {
-                                        this.set_selection(Vec::new());
-                                    }
-                                }
-                            }
-                            cx.notify();
-                        } else if ev.keystroke.key == "enter" && this.mode == EditMode::Add {
-                            if this.add_progress.take().is_some() {
-                                cx.notify();
-                            }
-                        } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
-                            this.delete_selected_features(cx);
-                        } else {
-                            let settings = osm_gpui::settings_store::snapshot();
-                            let key = ev.keystroke.key.as_str();
-                            // Mode-switch shortcuts are handled here rather
-                            // than as global key bindings so they only fire
-                            // while the map area has focus (see the comment
-                            // by `cx.bind_keys` in `main()`).
-                            let key_mode = EditMode::ALL.into_iter().find(|m| {
-                                key == osm_gpui::keybindings::effective_spec(
-                                    &settings,
-                                    m.shortcut_id(),
-                                )
-                            });
-                            if let Some(mode) = key_mode {
-                                this.on_set_mode(&SetMode { mode }, window, cx);
-                            } else if let Some(action) =
-                                selection_actions::find_by_key(&settings, key)
-                            {
-                                // Like the mode keys above, these only fire
-                                // while the map area has focus, so typing in
-                                // a text input never triggers them.
-                                this.run_selection_action(action.id, cx);
-                            }
-                        }
+                        this.on_map_key_down(ev, window, cx);
                     }))
                     .on_mouse_up(
                         gpui::MouseButton::Left,

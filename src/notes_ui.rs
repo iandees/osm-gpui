@@ -449,7 +449,7 @@ impl MapViewer {
 
     /// Leave the current mode (the click that places the note must reach the
     /// notes handler, not an editing mode) and wait for that click.
-    fn arm_new_note(&mut self) {
+    pub(crate) fn arm_new_note(&mut self) {
         self.mode = EditMode::Select;
         self.reset_mode_progress();
         self.building_reference = None;
