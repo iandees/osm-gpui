@@ -7,6 +7,7 @@
 
 use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
 
+use crate::layers::paint::PaintFrame;
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 use crate::viewport::Viewport;
@@ -153,14 +154,13 @@ impl MapLayer for StreetImageryLayer {
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
-        let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
-        let (ox, oy) = (bounds.origin.x.as_f32(), bounds.origin.y.as_f32());
+        let frame = PaintFrame::new(viewport, bounds);
+        let (w, h) = frame.view_size();
         let color = color_of(self.provider);
         self.store.with(|s| {
             let dense = s.photos.len() > DENSE_PHOTOS;
             for p in &s.photos {
-                let sp = viewport.geo_to_screen(p.lat, p.lon);
-                let (x, y) = (sp.x.as_f32(), sp.y.as_f32());
+                let (x, y) = frame.local_geo(p.lat, p.lon);
                 if !(x.is_finite() && y.is_finite())
                     || x < -20.0
                     || y < -20.0
@@ -169,7 +169,7 @@ impl MapLayer for StreetImageryLayer {
                 {
                     continue;
                 }
-                let (x, y) = (x + ox, y + oy);
+                let (x, y) = frame.to_window((x, y));
                 let selected = s
                     .selected
                     .as_ref()

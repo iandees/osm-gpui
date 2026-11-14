@@ -12,6 +12,7 @@
 
 use gpui::*;
 
+use crate::layers::paint::PaintFrame;
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
@@ -172,7 +173,7 @@ impl ReferenceLayer {
         bounds: Bounds<Pixels>,
         now: i64,
     ) -> RefScene {
-        let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let frame = PaintFrame::new(viewport, bounds);
         let proj = viewport.projector();
         let (ppm, _) = proj.pixels_per_meter();
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
@@ -218,7 +219,7 @@ impl ReferenceLayer {
                 if !(x.is_finite() && y.is_finite()) {
                     continue;
                 }
-                let (x, y) = (x + ox, y + oy);
+                let (x, y) = frame.to_window((x, y));
                 if let Some(&(lx, ly)) = pts.last() {
                     let d2 = (x - lx) * (x - lx) + (y - ly) * (y - ly);
                     if d2 < min_seg2 && i != last {
@@ -291,7 +292,7 @@ impl ReferenceLayer {
             if !(x.is_finite() && y.is_finite()) {
                 continue;
             }
-            let c = (x + ox, y + oy);
+            let c = frame.to_window((x, y));
             if let Some(radius) = style.halo_radius {
                 polygon(
                     &mut PathSink {

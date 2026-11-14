@@ -10,6 +10,7 @@
 use gpui::size;
 use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
 
+use crate::layers::paint::PaintFrame;
 use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::notes::{Note, NoteStore};
 use crate::viewport::Viewport;
@@ -153,12 +154,11 @@ impl MapLayer for NotesLayer {
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {
-        let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
-        let (ox, oy) = (bounds.origin.x.as_f32(), bounds.origin.y.as_f32());
+        let frame = PaintFrame::new(viewport, bounds);
+        let (w, h) = frame.view_size();
         self.store.with(|s| {
             for n in draw_order(&s.notes) {
-                let p = viewport.geo_to_screen(n.lat, n.lon);
-                let (x, y) = (p.x.as_f32(), p.y.as_f32());
+                let (x, y) = frame.local_geo(n.lat, n.lon);
                 if !(x.is_finite() && y.is_finite())
                     || x < -20.0
                     || y < -4.0
@@ -167,7 +167,7 @@ impl MapLayer for NotesLayer {
                 {
                     continue;
                 }
-                let (x, y) = (x + ox, y + oy);
+                let (x, y) = frame.to_window((x, y));
                 let selected = s.selected == Some(n.id);
                 let scale = if selected { 1.2 } else { 1.0 };
                 let outline = pin_outline(x, y, scale);

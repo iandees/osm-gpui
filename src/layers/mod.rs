@@ -15,6 +15,7 @@ pub mod merge;
 pub mod node_markers;
 pub mod notes_layer;
 pub mod osm_layer;
+pub mod paint;
 pub mod reference_layer;
 pub mod resolve;
 pub mod street_imagery_layer;
@@ -781,13 +782,8 @@ impl LayerManager {
         crate::frame_stats::lap("wash.region", fs_wash);
 
         // Mercator y grows northwards, screen y southwards.
-        let to_screen = |mx: f64, my: f64| {
-            let p = viewport.mercator_to_screen(mx, my);
-            (
-                p.x.as_f32() + bounds.origin.x.as_f32(),
-                p.y.as_f32() + bounds.origin.y.as_f32(),
-            )
-        };
+        let frame = paint::PaintFrame::new(viewport, bounds);
+        let to_screen = |mx: f64, my: f64| frame.window_mercator(mx, my);
         let wash = rgba(DOWNLOAD_WASH_RGBA);
         let mut hatch = PathBuilder::stroke(px(DOWNLOAD_HATCH_WIDTH));
         let mut any_hatch = false;
