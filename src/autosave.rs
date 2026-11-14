@@ -95,6 +95,9 @@ const HEARTBEAT_FILE: &str = "heartbeat";
 /// No `.json` extension: `list_manifests` takes every `.json` in a session
 /// directory for a layer manifest.
 const UPLOAD_MARKER_FILE: &str = "upload-in-progress";
+/// The markers of crashed sessions a restore brought along, as a JSON array,
+/// beside the current one. Builds that do not know it leave it alone.
+const CARRIED_MARKERS_FILE: &str = "upload-carried";
 /// Bumped if the marker's meaning changes incompatibly.
 const MARKER_FORMAT: u32 = 1;
 
@@ -187,6 +190,216 @@ pub struct UploadMarker {
     /// Known once the server opened the changeset and the app saw it.
     #[serde(default)]
     pub changeset_id: Option<u64>,
+    /// Which elements that changeset carried.
+    #[serde(default)]
+    pub in_flight: InFlight,
+}
+
+/// The most element ids one marker lists. A changeset holds at most the
+/// server's limit (10,000 on the public server); the cap only matters for a
+/// server that allows far more, and then [`InFlight::omitted`] says so.
+pub const IN_FLIGHT_CAP: usize = 20_000;
+
+/// The identity of the elements in a changeset that was being sent: the ids
+/// as sent (negative placeholders for creates), by kind and action. Ids only,
+/// so a chunk of 10,000 elements stays well under 100 KB.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InFlight {
+    /// The cap that was applied when this was written (0: none recorded).
+    #[serde(default)]
+    pub cap: usize,
+    /// Elements beyond the cap that are not listed. 0 means the lists are
+    /// complete.
+    #[serde(default)]
+    pub omitted: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_nodes: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_nodes: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_nodes: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_ways: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_ways: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_ways: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_relations: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_relations: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted_relations: Vec<i64>,
+}
+
+/// How many elements of each kind and action, for the summary line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InFlightCounts {
+    pub created_nodes: usize,
+    pub modified_nodes: usize,
+    pub deleted_nodes: usize,
+    pub created_ways: usize,
+    pub modified_ways: usize,
+    pub deleted_ways: usize,
+    pub created_relations: usize,
+    pub modified_relations: usize,
+    pub deleted_relations: usize,
+}
+
+impl InFlight {
+    /// The identities in `chunk`, creates first, then modifies, then deletes
+    /// (the order they are sent in), up to [`IN_FLIGHT_CAP`].
+    pub fn from_diff(chunk: &LayerDiff) -> Self {
+        let ids = |v: &[crate::osm::OsmNode]| v.iter().map(|e| e.id).collect::<Vec<_>>();
+        let way_ids = |v: &[crate::osm::OsmWay]| v.iter().map(|e| e.id).collect::<Vec<_>>();
+        let relation_ids =
+            |v: &[crate::osm::OsmRelation]| v.iter().map(|e| e.id).collect::<Vec<_>>();
+        let deleted = |v: &[(i64, i32)]| v.iter().map(|&(id, _)| id).collect::<Vec<_>>();
+        let mut flight = InFlight {
+            cap: IN_FLIGHT_CAP,
+            omitted: 0,
+            created_nodes: ids(&chunk.created_nodes),
+            modified_nodes: ids(&chunk.modified_nodes),
+            deleted_nodes: deleted(&chunk.deleted_node_ids),
+            created_ways: way_ids(&chunk.created_ways),
+            modified_ways: way_ids(&chunk.modified_ways),
+            deleted_ways: deleted(&chunk.deleted_way_ids),
+            created_relations: relation_ids(&chunk.created_relations),
+            modified_relations: relation_ids(&chunk.modified_relations),
+            deleted_relations: deleted(&chunk.deleted_relation_ids),
+        };
+        flight.apply_cap(IN_FLIGHT_CAP);
+        flight
+    }
+
+    fn lists_mut(&mut self) -> [&mut Vec<i64>; 9] {
+        [
+            &mut self.created_nodes,
+            &mut self.modified_nodes,
+            &mut self.deleted_nodes,
+            &mut self.created_ways,
+            &mut self.modified_ways,
+            &mut self.deleted_ways,
+            &mut self.created_relations,
+            &mut self.modified_relations,
+            &mut self.deleted_relations,
+        ]
+    }
+
+    fn apply_cap(&mut self, cap: usize) {
+        let mut room = cap;
+        let mut dropped = 0;
+        for list in self.lists_mut() {
+            if list.len() > room {
+                dropped += list.len() - room;
+                list.truncate(room);
+            }
+            room -= list.len();
+        }
+        self.omitted += dropped;
+    }
+
+    /// Elements listed (not counting the omitted ones).
+    pub fn listed(&self) -> usize {
+        self.counts().total()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listed() == 0 && self.omitted == 0
+    }
+
+    pub fn counts(&self) -> InFlightCounts {
+        InFlightCounts {
+            created_nodes: self.created_nodes.len(),
+            modified_nodes: self.modified_nodes.len(),
+            deleted_nodes: self.deleted_nodes.len(),
+            created_ways: self.created_ways.len(),
+            modified_ways: self.modified_ways.len(),
+            deleted_ways: self.deleted_ways.len(),
+            created_relations: self.created_relations.len(),
+            modified_relations: self.modified_relations.len(),
+            deleted_relations: self.deleted_relations.len(),
+        }
+    }
+}
+
+impl InFlightCounts {
+    pub fn total(&self) -> usize {
+        self.created_nodes
+            + self.modified_nodes
+            + self.deleted_nodes
+            + self.created_ways
+            + self.modified_ways
+            + self.deleted_ways
+            + self.created_relations
+            + self.modified_relations
+            + self.deleted_relations
+    }
+}
+
+/// The restored features that were in flight in `markers` and are still
+/// pending in their layer, ready to select. `layers` pairs each layer with its
+/// pending diff. A created or modified element matches by id and action; a
+/// deleted one no longer exists, so it never matches. Placeholder ids are
+/// those the layer holds: autosave writes them as they are and restore reads
+/// them back unchanged.
+pub fn in_flight_features(
+    markers: &[UploadMarker],
+    layers: &[(crate::layers::LayerId, &LayerDiff)],
+) -> Vec<crate::selection::FeatureRef> {
+    use crate::selection::{FeatureKind, FeatureRef};
+    use std::collections::HashSet;
+
+    let wanted = |pick: fn(&InFlight) -> &Vec<i64>| -> HashSet<i64> {
+        markers
+            .iter()
+            .flat_map(|m| pick(&m.in_flight).iter().copied())
+            .collect()
+    };
+    let created_nodes = wanted(|f| &f.created_nodes);
+    let modified_nodes = wanted(|f| &f.modified_nodes);
+    let created_ways = wanted(|f| &f.created_ways);
+    let modified_ways = wanted(|f| &f.modified_ways);
+    let created_relations = wanted(|f| &f.created_relations);
+    let modified_relations = wanted(|f| &f.modified_relations);
+
+    let mut out = Vec::new();
+    for &(layer_id, diff) in layers {
+        let mut push = |kind: FeatureKind, id: i64| {
+            out.push(FeatureRef { layer_id, kind, id });
+        };
+        for n in &diff.created_nodes {
+            if created_nodes.contains(&n.id) {
+                push(FeatureKind::Node, n.id);
+            }
+        }
+        for n in &diff.modified_nodes {
+            if modified_nodes.contains(&n.id) {
+                push(FeatureKind::Node, n.id);
+            }
+        }
+        for w in &diff.created_ways {
+            if created_ways.contains(&w.id) {
+                push(FeatureKind::Way, w.id);
+            }
+        }
+        for w in &diff.modified_ways {
+            if modified_ways.contains(&w.id) {
+                push(FeatureKind::Way, w.id);
+            }
+        }
+        for r in &diff.created_relations {
+            if created_relations.contains(&r.id) {
+                push(FeatureKind::Relation, r.id);
+            }
+        }
+        for r in &diff.modified_relations {
+            if modified_relations.contains(&r.id) {
+                push(FeatureKind::Relation, r.id);
+            }
+        }
+    }
+    out
 }
 
 impl UploadMarker {
@@ -207,6 +420,7 @@ impl UploadMarker {
             total,
             objects: created + modified + deleted,
             changeset_id: None,
+            in_flight: InFlight::from_diff(&request.chunk),
         }
     }
 
@@ -236,6 +450,22 @@ pub fn read_upload_marker(dir: &Path) -> Option<UploadMarker> {
         Err(_) => return Some(UploadMarker::default()),
     };
     Some(serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+/// Every marker in session directory `dir`, oldest first: the carried ones
+/// (from crashed sessions this run restored) and the current one. A carried
+/// file that cannot be read stands for one marker with nothing known.
+pub fn read_upload_markers(dir: &Path) -> Vec<UploadMarker> {
+    let mut markers: Vec<UploadMarker> = match std::fs::read(dir.join(CARRIED_MARKERS_FILE)) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| vec![UploadMarker::default()])
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => vec![UploadMarker::default()],
+    };
+    markers.extend(read_upload_marker(dir));
+    markers.sort_by_key(|m| m.started_at);
+    markers
 }
 
 /// Everything the writer needs, taken on the UI thread without copying the
@@ -414,22 +644,53 @@ impl Session {
         Ok(WriteOutcome::Written(rendered.manifest.edit_count))
     }
 
-    /// Make `marker` durable (replacing any earlier one). Call it before the
-    /// request it describes is sent.
+    /// Make `marker` durable, replacing every earlier one, carried ones
+    /// included (starting an upload is the user acting on their warning). Call
+    /// it before the request it describes is sent, and again to add the
+    /// changeset id once it is known.
     pub fn write_upload_marker(&self, marker: &UploadMarker) -> std::io::Result<()> {
-        let json = serde_json::to_vec_pretty(marker)
+        let _ = std::fs::remove_file(self.dir.join(CARRIED_MARKERS_FILE));
+        let json = serde_json::to_vec(marker)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         write_durable(&self.dir.join(UPLOAD_MARKER_FILE), &json)
     }
 
-    /// Remove the marker (best effort; a missing one is fine).
+    /// Make all of `markers` durable (replacing what is there): the newest as
+    /// the current marker, so a build that knows only one still reads the
+    /// latest, and the rest as carried ones. Nothing to write is a no-op.
+    pub fn write_upload_markers(&self, markers: &[UploadMarker]) -> std::io::Result<()> {
+        let mut sorted: Vec<&UploadMarker> = markers.iter().collect();
+        sorted.sort_by_key(|m| m.started_at);
+        let Some(newest) = sorted.pop() else {
+            return Ok(());
+        };
+        let carried_path = self.dir.join(CARRIED_MARKERS_FILE);
+        if sorted.is_empty() {
+            let _ = std::fs::remove_file(&carried_path);
+        } else {
+            let json = serde_json::to_vec(&sorted)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            write_durable(&carried_path, &json)?;
+        }
+        let json = serde_json::to_vec(newest)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        write_durable(&self.dir.join(UPLOAD_MARKER_FILE), &json)
+    }
+
+    /// Remove every marker (best effort; a missing one is fine).
     pub fn clear_upload_marker(&self) {
+        let _ = std::fs::remove_file(self.dir.join(CARRIED_MARKERS_FILE));
         let _ = std::fs::remove_file(self.dir.join(UPLOAD_MARKER_FILE));
     }
 
-    /// The marker on disk, if any.
+    /// The current marker on disk, if any.
     pub fn upload_marker(&self) -> Option<UploadMarker> {
         read_upload_marker(&self.dir)
+    }
+
+    /// Every marker on disk, oldest first.
+    pub fn upload_markers(&self) -> Vec<UploadMarker> {
+        read_upload_markers(&self.dir)
     }
 
     /// Delete one layer's autosave (best effort).
@@ -548,9 +809,10 @@ impl RecoverableLayer {
 pub struct CrashedSession {
     pub dir: PathBuf,
     pub layers: Vec<RecoverableLayer>,
-    /// Set when the session died with an upload in flight: the server may
-    /// already hold some of the layers' pending edits.
-    pub upload_marker: Option<UploadMarker>,
+    /// Set when the session died with an upload in flight, or carried the
+    /// warning from sessions that did: the server may already hold some of the
+    /// layers' pending edits. Oldest first.
+    pub upload_markers: Vec<UploadMarker>,
     lock: Option<File>,
 }
 
@@ -721,11 +983,11 @@ pub fn scan_crashed(root: &Path, own: Option<&str>) -> CrashScan {
             }
             continue;
         }
-        let upload_marker = read_upload_marker(&dir);
+        let upload_markers = read_upload_markers(&dir);
         scan.sessions.push(CrashedSession {
             dir,
             layers,
-            upload_marker,
+            upload_markers,
             lock,
         });
     }
@@ -1608,14 +1870,244 @@ mod tests {
         let scan = scan_crashed(&root, None);
         assert_eq!(scan.sessions.len(), 1);
         assert_eq!(scan.sessions[0].layers.len(), 1);
-        assert_eq!(scan.sessions[0].upload_marker.as_ref(), Some(&marker));
+        assert_eq!(scan.sessions[0].upload_markers, vec![marker]);
         let dir = scan.sessions[0].dir.clone();
         drop(scan);
 
         std::fs::remove_file(dir.join(UPLOAD_MARKER_FILE)).unwrap();
         let scan = scan_crashed(&root, None);
         assert_eq!(scan.sessions.len(), 1);
-        assert_eq!(scan.sessions[0].upload_marker, None);
+        assert!(scan.sessions[0].upload_markers.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_marker_lists_the_elements_that_were_in_flight_by_kind_and_action() {
+        let mut chunk = request(None).chunk;
+        chunk.modified_ways.push(crate::osm::OsmWay {
+            id: 31,
+            nodes: vec![1, 2],
+            version: 2,
+            tags: HashMap::new(),
+        });
+        chunk.deleted_relation_ids.push((77, 3));
+        let marker = UploadMarker::for_request(
+            "https://x.test",
+            &crate::upload_chunks::ChunkRequest {
+                chunk,
+                ..request(None)
+            },
+            0,
+        );
+        let flight = &marker.in_flight;
+        assert_eq!(flight.created_nodes, vec![-1, -2]);
+        assert_eq!(flight.deleted_nodes, vec![5]);
+        assert_eq!(flight.modified_ways, vec![31]);
+        assert_eq!(flight.deleted_relations, vec![77]);
+        assert_eq!((flight.cap, flight.omitted), (IN_FLIGHT_CAP, 0));
+        let counts = flight.counts();
+        assert_eq!(counts.total(), marker.objects);
+        assert_eq!(counts.created_nodes, 2);
+        // Compact on disk: empty lists are not written.
+        let json = serde_json::to_string(&marker).unwrap();
+        assert!(!json.contains("created_ways"), "{json}");
+        assert!(json.contains("\"created_nodes\":[-1,-2]"), "{json}");
+    }
+
+    #[test]
+    fn a_chunk_over_the_cap_lists_up_to_the_cap_and_says_how_many_were_left_out() {
+        let mut flight = InFlight {
+            created_nodes: (1..=5).map(|i| -i).collect(),
+            modified_nodes: vec![10, 11, 12],
+            deleted_ways: vec![20, 21],
+            ..Default::default()
+        };
+        flight.apply_cap(6);
+        assert_eq!(flight.created_nodes.len(), 5);
+        assert_eq!(flight.modified_nodes, vec![10]);
+        assert!(flight.deleted_ways.is_empty());
+        assert_eq!(flight.omitted, 4);
+        assert_eq!(flight.listed() + flight.omitted, 10);
+        assert!(!flight.is_empty());
+        assert!(InFlight::default().is_empty());
+    }
+
+    #[test]
+    fn markers_without_the_new_fields_still_read_and_the_new_ones_are_ignorable() {
+        // Written by the build before in-flight lists existed.
+        let old: UploadMarker = serde_json::from_slice(
+            br#"{"format":1,"api_base":"https://x.test","comment":"c","started_at":5,
+                 "part":2,"total":3,"objects":4,"changeset_id":9}"#,
+        )
+        .unwrap();
+        assert_eq!(old.changeset_id, Some(9));
+        assert!(old.in_flight.is_empty());
+        // And the reverse: that build's struct (a subset of the fields) reads
+        // what this build writes.
+        #[derive(Deserialize)]
+        struct Previous {
+            format: u32,
+            api_base: String,
+            comment: String,
+            started_at: u64,
+            part: usize,
+            total: usize,
+            objects: usize,
+            changeset_id: Option<u64>,
+        }
+        let mine = UploadMarker::for_request("https://y.test", &request(Some((1, 2))), 7)
+            .with_changeset(11);
+        let read: Previous = serde_json::from_slice(&serde_json::to_vec(&mine).unwrap()).unwrap();
+        assert_eq!(
+            (read.format, read.api_base.as_str(), read.comment.as_str()),
+            (MARKER_FORMAT, "https://y.test", "Fix the bus stops")
+        );
+        assert_eq!(
+            (read.started_at, read.part, read.total, read.objects),
+            (7, 1, 2, 3)
+        );
+        assert_eq!(read.changeset_id, Some(11));
+    }
+
+    #[test]
+    fn the_features_in_flight_are_those_still_pending_with_the_same_action() {
+        use crate::selection::FeatureRef;
+        let marker = UploadMarker::for_request("https://x.test", &request(None), 0);
+        let mut diff = LayerDiff {
+            created_nodes: vec![node(-2, 0.0, 0.0, 0, &[]), node(-9, 0.0, 0.0, 0, &[])],
+            // Same id as a created one, other action: not what was sent.
+            modified_nodes: vec![node(-1, 0.0, 0.0, 1, &[]), node(5, 0.0, 0.0, 1, &[])],
+            deleted_node_ids: vec![(5, 1)],
+            ..Default::default()
+        };
+        let other = LayerDiff {
+            created_nodes: vec![node(-1, 0.0, 0.0, 0, &[])],
+            ..Default::default()
+        };
+        let found = in_flight_features(
+            std::slice::from_ref(&marker),
+            &[(LayerId(1), &diff), (LayerId(2), &other)],
+        );
+        let node_ref = |layer, id| FeatureRef {
+            layer_id: LayerId(layer),
+            kind: FeatureKind::Node,
+            id,
+        };
+        // -2 is still pending as a create; -1 is a create elsewhere; 5 was a
+        // delete (gone, nothing to select) and is only a modify here.
+        assert_eq!(found, vec![node_ref(1, -2), node_ref(2, -1)]);
+        // Applied since: nothing left to find.
+        diff.created_nodes.clear();
+        assert!(in_flight_features(&[marker], &[(LayerId(1), &diff)]).is_empty());
+    }
+
+    #[test]
+    fn placeholder_ids_survive_autosave_and_restore() {
+        let layer = heavily_edited();
+        let before = layer.diff_for_upload();
+        let created: Vec<i64> = before.created_nodes.iter().map(|n| n.id).collect();
+        assert!(created.iter().all(|&id| id < 0) && !created.is_empty());
+        let root = tmp_root("placeholder-ids");
+        let dead = Session::start(&root).unwrap();
+        dead.write(&snapshot_of(&layer, 1)).unwrap();
+        drop(dead);
+        let rec = find_crashed(&root, None).remove(0).layers.remove(0);
+        let (data, edits) = rec.load().unwrap();
+        let restored = OsmLayer::new_with_edits(LayerId(2), "x", Arc::new(data), &edits);
+        let after = restored.diff_for_upload();
+        let mut restored_ids: Vec<i64> = after.created_nodes.iter().map(|n| n.id).collect();
+        let mut created = created;
+        created.sort();
+        restored_ids.sort();
+        assert_eq!(restored_ids, created);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn markers_of_several_crashed_sessions_are_carried_and_found_again() {
+        let layer = heavily_edited();
+        let root = tmp_root("marker-many");
+        let marker_at = |t: u64, part: usize| {
+            let mut m = UploadMarker::for_request("https://x.test", &request(Some((part, 3))), t);
+            m.comment = format!("upload {t}");
+            m
+        };
+        let mut markers = Vec::new();
+        for (i, t) in [100u64, 300, 200].into_iter().enumerate() {
+            let dead = Session::start(&root).unwrap();
+            dead.write(&snapshot_of(&layer, i as u64 + 1)).unwrap();
+            let m = marker_at(t, i + 1);
+            dead.write_upload_marker(&m).unwrap();
+            markers.push(m);
+            drop(dead);
+        }
+        let scan = scan_crashed(&root, None);
+        assert_eq!(scan.sessions.len(), 3);
+        let all: Vec<UploadMarker> = scan
+            .sessions
+            .iter()
+            .flat_map(|s| s.upload_markers.clone())
+            .collect();
+        assert_eq!(all.len(), 3);
+        for s in scan.sessions {
+            s.discard();
+        }
+
+        // The restoring run writes them all into its own session.
+        let live = Session::start(&root).unwrap();
+        live.write_upload_markers(&all).unwrap();
+        let on_disk = live.upload_markers();
+        let times: Vec<u64> = on_disk.iter().map(|m| m.started_at).collect();
+        assert_eq!(times, vec![100, 200, 300], "oldest first");
+        // A build that knows one marker sees the newest.
+        assert_eq!(live.upload_marker().map(|m| m.started_at), Some(300));
+        // The layer so far is what makes the session worth scanning.
+        live.write(&snapshot_of(&layer, 9)).unwrap();
+        drop(live);
+
+        // A second crash: the next scan reports every one of them.
+        let scan = scan_crashed(&root, None);
+        assert_eq!(scan.sessions.len(), 1);
+        let again: Vec<u64> = scan.sessions[0]
+            .upload_markers
+            .iter()
+            .map(|m| m.started_at)
+            .collect();
+        assert_eq!(again, vec![100, 200, 300]);
+        let comments: Vec<&str> = scan.sessions[0]
+            .upload_markers
+            .iter()
+            .map(|m| m.comment.as_str())
+            .collect();
+        assert_eq!(comments, ["upload 100", "upload 200", "upload 300"]);
+        drop(scan);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_new_upload_or_a_release_drops_the_carried_markers_and_a_torn_file_still_warns() {
+        let root = tmp_root("marker-carried-clear");
+        let session = Session::start(&root).unwrap();
+        let a = UploadMarker::for_request("https://x.test", &request(None), 1);
+        let b = UploadMarker::for_request("https://x.test", &request(None), 2);
+        session
+            .write_upload_markers(&[a.clone(), b.clone()])
+            .unwrap();
+        assert_eq!(session.upload_markers(), vec![a.clone(), b.clone()]);
+        let c = UploadMarker::for_request("https://x.test", &request(None), 3);
+        session.write_upload_marker(&c).unwrap();
+        assert_eq!(session.upload_markers(), vec![c]);
+        session.write_upload_markers(&[a.clone(), b]).unwrap();
+        session.clear_upload_marker();
+        assert!(session.upload_markers().is_empty());
+        // One marker alone leaves no carried file behind.
+        session
+            .write_upload_markers(std::slice::from_ref(&a))
+            .unwrap();
+        assert!(!session.dir().join(CARRIED_MARKERS_FILE).exists());
+        // Torn carried file: still a marker with nothing known.
+        std::fs::write(session.dir().join(CARRIED_MARKERS_FILE), b"[ nope").unwrap();
+        assert_eq!(session.upload_markers().len(), 2);
         let _ = std::fs::remove_dir_all(root);
     }
 

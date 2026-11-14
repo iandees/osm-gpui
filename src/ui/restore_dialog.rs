@@ -14,7 +14,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _,
 };
 
-use crate::autosave::UploadMarker;
+use crate::autosave::{InFlight, UploadMarker};
 use crate::ui::modal;
 use crate::ui::style::muted_text_size;
 use crate::{tr, tr_count};
@@ -78,11 +78,100 @@ impl RestoreItem {
     }
 }
 
+/// "3 new nodes, 1 changed way, 1 deleted relation": what a marker's lists
+/// hold, or `None` for a marker that lists nothing (an older build's).
+pub fn in_flight_summary(flight: &InFlight) -> Option<String> {
+    let c = flight.counts();
+    let mut parts: Vec<String> = Vec::new();
+    for (count, text) in [
+        (
+            c.created_nodes,
+            tr_count!("dialog.restore.in_flight.created_nodes", c.created_nodes),
+        ),
+        (
+            c.created_ways,
+            tr_count!("dialog.restore.in_flight.created_ways", c.created_ways),
+        ),
+        (
+            c.created_relations,
+            tr_count!(
+                "dialog.restore.in_flight.created_relations",
+                c.created_relations
+            ),
+        ),
+        (
+            c.modified_nodes,
+            tr_count!("dialog.restore.in_flight.modified_nodes", c.modified_nodes),
+        ),
+        (
+            c.modified_ways,
+            tr_count!("dialog.restore.in_flight.modified_ways", c.modified_ways),
+        ),
+        (
+            c.modified_relations,
+            tr_count!(
+                "dialog.restore.in_flight.modified_relations",
+                c.modified_relations
+            ),
+        ),
+        (
+            c.deleted_nodes,
+            tr_count!("dialog.restore.in_flight.deleted_nodes", c.deleted_nodes),
+        ),
+        (
+            c.deleted_ways,
+            tr_count!("dialog.restore.in_flight.deleted_ways", c.deleted_ways),
+        ),
+        (
+            c.deleted_relations,
+            tr_count!(
+                "dialog.restore.in_flight.deleted_relations",
+                c.deleted_relations
+            ),
+        ),
+    ] {
+        if count > 0 {
+            parts.push(text.to_string());
+        }
+    }
+    if parts.is_empty() && flight.omitted == 0 {
+        return None;
+    }
+    let separator = tr!("status.merge.separator");
+    let mut summary = parts.join(separator.as_ref());
+    if flight.omitted > 0 {
+        if !summary.is_empty() {
+            summary.push(' ');
+        }
+        summary.push_str(&tr_count!(
+            "dialog.restore.in_flight.omitted",
+            flight.omitted
+        ));
+    }
+    Some(summary)
+}
+
 /// What to tell the user about a session that died while uploading: that
 /// the server may already hold some of these edits, what was being sent, and
 /// where to look. The first line is the warning itself; the rest is detail.
 pub fn interrupted_upload_lines(marker: &UploadMarker, now: u64) -> Vec<String> {
     let mut lines = vec![tr!("dialog.restore.upload_interrupted").to_string()];
+    lines.extend(interrupted_detail_lines(marker, now));
+    lines
+}
+
+/// The warning once, then the detail of each interrupted upload, oldest
+/// first: for the upload dialog when several crashed sessions left one.
+pub fn interrupted_uploads_lines(markers: &[UploadMarker], now: u64) -> Vec<String> {
+    let mut lines = vec![tr!("dialog.restore.upload_interrupted").to_string()];
+    for marker in markers {
+        lines.extend(interrupted_detail_lines(marker, now));
+    }
+    lines
+}
+
+fn interrupted_detail_lines(marker: &UploadMarker, now: u64) -> Vec<String> {
+    let mut lines = Vec::new();
     if marker.objects > 0 || marker.total > 0 {
         let objects = tr_count!("dialog.restore.upload_objects", marker.objects).to_string();
         let server = marker.api_base.as_str();
@@ -106,6 +195,9 @@ pub fn interrupted_upload_lines(marker: &UploadMarker, now: u64) -> Vec<String> 
             )
             .to_string()
         });
+    }
+    if let Some(summary) = in_flight_summary(&marker.in_flight) {
+        lines.push(tr!("dialog.restore.upload_contents", summary = summary).to_string());
     }
     if !marker.comment.is_empty() {
         lines.push(tr!("dialog.restore.upload_comment", comment = marker.comment).to_string());
@@ -318,6 +410,12 @@ mod tests {
             total: 3,
             objects: 1,
             changeset_id: Some(4242),
+            in_flight: InFlight {
+                created_nodes: vec![-1, -2, -3],
+                modified_ways: vec![7],
+                deleted_relations: vec![9],
+                ..Default::default()
+            },
         };
         let lines = interrupted_upload_lines(&marker, 1_000_000);
         assert!(lines[0].contains("upload was in progress"), "{lines:?}");
@@ -330,12 +428,55 @@ mod tests {
             lines[1],
             "It was sending changeset 2 of 3 (1 change) to https://api.openstreetmap.org, 5 minutes ago."
         );
-        assert_eq!(lines[2], "Changeset comment: \"Fix bus stops\"");
         assert_eq!(
-            lines[3],
+            lines[2],
+            "It was sending: 3 new nodes, 1 changed way, 1 deleted relation."
+        );
+        assert_eq!(lines[3], "Changeset comment: \"Fix bus stops\"");
+        assert_eq!(
+            lines[4],
             "Changeset 4242: https://www.openstreetmap.org/changeset/4242"
         );
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
+    }
+
+    #[test]
+    fn the_summary_names_what_was_in_flight_and_what_was_not_listed() {
+        assert_eq!(in_flight_summary(&InFlight::default()), None);
+        let flight = InFlight {
+            created_nodes: vec![-1],
+            deleted_nodes: vec![4, 5],
+            omitted: 30,
+            ..Default::default()
+        };
+        assert_eq!(
+            in_flight_summary(&flight).unwrap(),
+            "1 new node, 2 deleted nodes and 30 more that are not listed"
+        );
+    }
+
+    #[test]
+    fn several_interrupted_uploads_share_one_warning_and_each_keeps_its_link() {
+        let at = |t: u64, id: u64| UploadMarker {
+            api_base: "https://api.openstreetmap.org".into(),
+            started_at: t,
+            part: 1,
+            total: 1,
+            objects: 2,
+            changeset_id: Some(id),
+            ..Default::default()
+        };
+        let lines = interrupted_uploads_lines(&[at(10, 111), at(20, 222)], 100);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains("An upload was in progress"))
+                .count(),
+            1
+        );
+        let joined = lines.join("\n");
+        assert!(joined.contains("changeset/111"), "{joined}");
+        assert!(joined.contains("changeset/222"), "{joined}");
     }
 
     #[test]

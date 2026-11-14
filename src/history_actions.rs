@@ -636,7 +636,10 @@ mod tests {
 
                 view.transfer = Some(TransferHandle::new(
                     TransferKind::Upload,
-                    TransferPhase::UploadingChanges { count: 1 },
+                    TransferPhase::UploadingChanges {
+                        count: 1,
+                        changeset_id: 1,
+                    },
                 ));
                 view.revert_tags_to_version(4, &v4, cx);
                 assert_eq!(way_tags(view, &feat), before);

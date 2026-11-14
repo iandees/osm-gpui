@@ -12,6 +12,7 @@ use gpui_component::{
 };
 use std::collections::HashMap;
 
+use crate::catalogue::Catalogue;
 use crate::nsi::NsiEntry;
 use crate::tr;
 use crate::ui::modal;
@@ -64,15 +65,8 @@ impl NsiPresetDialog {
     /// out of the global index so the dialog doesn't hold onto the Arc's
     /// borrow across renders.
     fn results(&self, cx: &Context<Self>) -> Vec<NsiEntry> {
-        let Some(index) = crate::nsi::current() else {
-            return Vec::new();
-        };
         let text = self.query.read(cx).value().to_string();
-        index
-            .search(&text, MAX_RESULTS)
-            .into_iter()
-            .cloned()
-            .collect()
+        Catalogue::bundled().search_brands(&text, MAX_RESULTS)
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -126,7 +120,7 @@ impl Render for NsiPresetDialog {
             self.selected_index.min(results.len() - 1)
         };
 
-        let list: gpui::AnyElement = if crate::nsi::current().is_none() {
+        let list: gpui::AnyElement = if !Catalogue::bundled().brands_loaded() {
             Label::new(tr!("dialog.nsi.downloading"))
                 .text_color(muted)
                 .into_any_element()

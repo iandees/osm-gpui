@@ -8,7 +8,6 @@ use reference_layer::ReferenceLayer;
 
 pub mod area_labels;
 pub mod diff;
-pub mod grid_layer;
 pub mod labels;
 pub mod line_labels;
 pub mod merge;
@@ -146,7 +145,6 @@ pub enum LayerKind {
     Tile,
     /// OSM data.
     Osm,
-    Grid,
     Notes,
     /// GPX, GeoJSON and downloaded GPS traces.
     Reference,
@@ -319,7 +317,7 @@ impl std::error::Error for EditError {}
 /// highlight, tag read/write, node moves, and create/delete. Reached from a
 /// `&dyn MapLayer`/`&mut dyn MapLayer` via `as_editable`/`as_editable_mut`.
 /// `OsmLayer` is the only implementation; layers with no editable feature
-/// data (tiles, the coordinate grid) simply don't implement this trait
+/// data (tiles) simply don't implement this trait
 /// rather than carrying a pile of no-op overrides.
 pub trait EditableLayer {
     /// Return hit candidates near a screen-space point. Implementations
@@ -745,7 +743,7 @@ impl LayerManager {
     }
 
     /// Find a layer by its exact display name. Only for the "does a singleton
-    /// layer like OSM Carto or the Coordinate Grid exist" checks at creation
+    /// layer like OSM Carto exists" checks at creation
     /// time, when there is no id yet; everything else goes through `LayerId`.
     pub fn layer_named(&self, name: &str) -> Option<&dyn MapLayer> {
         self.layers
@@ -1335,7 +1333,6 @@ mod tests {
     /// One layer of each type, in a fixed order, for tests that pin down what
     /// each type answers. The tile layer needs an executor, hence the context.
     fn one_of_each(cx: &mut gpui::TestAppContext) -> Vec<(&'static str, Box<dyn MapLayer>)> {
-        use crate::layers::grid_layer::GridLayer;
         use crate::layers::notes_layer::NotesLayer;
         use crate::layers::osm_layer::OsmLayer;
         use crate::layers::street_imagery_layer::StreetImageryLayer;
@@ -1349,20 +1346,19 @@ mod tests {
         vec![
             ("tile", Box::new(TileLayer::new(LayerId(1), cache))),
             ("osm", Box::new(OsmLayer::new(LayerId(2)))),
-            ("grid", Box::new(GridLayer::new(LayerId(3)))),
             (
                 "notes",
                 Box::new(NotesLayer::new(
-                    LayerId(4),
+                    LayerId(3),
                     "notes".into(),
                     crate::notes::NoteStore::default(),
                 )),
             ),
-            ("reference", Box::new(gpx_layer(LayerId(5)))),
+            ("reference", Box::new(gpx_layer(LayerId(4)))),
             (
                 "street imagery",
                 Box::new(StreetImageryLayer::new(
-                    LayerId(6),
+                    LayerId(5),
                     "street".into(),
                     crate::street_imagery::Provider::Fotoshi,
                     crate::street_imagery::PhotoStore::default(),
@@ -1378,7 +1374,6 @@ mod tests {
         let expected = [
             ("tile", (false, true, false, false)),
             ("osm", (true, false, false, true)),
-            ("grid", (false, false, false, false)),
             ("notes", (false, false, false, false)),
             ("reference", (false, false, true, false)),
             ("street imagery", (false, false, false, false)),
@@ -1390,7 +1385,6 @@ mod tests {
             let want_layer_kind = match want_kind {
                 "tile" => LayerKind::Tile,
                 "osm" => LayerKind::Osm,
-                "grid" => LayerKind::Grid,
                 "notes" => LayerKind::Notes,
                 "reference" => LayerKind::Reference,
                 "street imagery" => LayerKind::StreetImagery,
@@ -1561,11 +1555,10 @@ mod tests {
             one_of_each(cx).into_iter().collect();
         let mut m = LayerManager::new();
         m.add_layer(by_kind.remove("tile").unwrap());
-        m.add_layer(by_kind.remove("grid").unwrap());
         m.add_layer(by_kind.remove("osm").unwrap());
         m.add_reference_layer(by_kind.remove("reference").unwrap());
         let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();
-        assert_eq!(ids, [1, 3, 5, 2]);
+        assert_eq!(ids, [1, 4, 2]);
     }
 
     #[test]

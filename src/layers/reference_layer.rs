@@ -621,8 +621,10 @@ mod tests {
     #[test]
     fn reference_layers_go_on_top_when_there_is_no_data_layer() {
         let mut m = LayerManager::new();
-        m.add_layer(Box::new(crate::layers::grid_layer::GridLayer::new(
+        m.add_layer(Box::new(crate::layers::notes_layer::NotesLayer::new(
             LayerId(1),
+            "notes".into(),
+            crate::notes::NoteStore::default(),
         )));
         m.add_reference_layer(Box::new(line_layer(2, Format::Gpx)));
         let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();

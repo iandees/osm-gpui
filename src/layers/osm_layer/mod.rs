@@ -4,6 +4,7 @@ use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::labels;
 use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
+use crate::layers::paint::{push_triangle, set_path_bounds, PathBatch, EMPTY_BOUNDS};
 use crate::layers::resolve;
 use crate::layers::way_stroke::{self, Layer, PathSink};
 use crate::layers::{EditError, EditableLayer, HighlightKind, LayerId, LayerKind, MapLayer};
@@ -535,7 +536,7 @@ impl MapLayer for OsmLayer {
         // Layer-level early-out: if this layer's entire footprint is
         // off-screen, skip all per-vertex work.
         if let Some(lb) = &self.derived.layer_bbox {
-            if lb.max_x < vmin_x || lb.min_x > vmax_x || lb.max_y < vmin_y || lb.min_y > vmax_y {
+            if !lb.intersects((vmin_x, vmax_x, vmin_y, vmax_y)) {
                 return;
             }
         }
@@ -565,12 +566,7 @@ impl MapLayer for OsmLayer {
         type MarkerBatch = (Option<Path<Pixels>>, (f32, f32, f32, f32));
         let mut styled: HashMap<u32, MarkerBatch> = HashMap::new();
         let mut simple: Option<Path<Pixels>> = None;
-        let mut simple_bounds = (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        );
+        let mut simple_bounds = EMPTY_BOUNDS;
         for (idx, &(id, mx, my)) in self.derived.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
@@ -601,15 +597,7 @@ impl MapLayer for OsmLayer {
                     push_simple_node_marker(&mut simple, &mut simple_bounds, at, edge)
                 }
                 NodeForm::Styled(visual) => {
-                    let (path, bounds) = styled.entry(visual.color).or_insert((
-                        None,
-                        (
-                            f32::INFINITY,
-                            f32::NEG_INFINITY,
-                            f32::INFINITY,
-                            f32::NEG_INFINITY,
-                        ),
-                    ));
+                    let (path, bounds) = styled.entry(visual.color).or_insert((None, EMPTY_BOUNDS));
                     push_styled_node_marker(path, bounds, at, visual);
                 }
                 _ => paint_node_marker(window, at, style),
@@ -618,19 +606,12 @@ impl MapLayer for OsmLayer {
         // All simple markers go out as one raw-triangle path (like the
         // direction arrows): much cheaper than a quad each.
         if let Some(mut path) = simple {
-            let (min_x, max_x, min_y, max_y) = simple_bounds;
-            path.bounds = Bounds {
-                origin: point(px(min_x), px(min_y)),
-                size: size(px(max_x - min_x), px(max_y - min_y)),
-            };
+            set_path_bounds(&mut path, simple_bounds);
             window.paint_path(path, rgba(node_markers::SIMPLE_RGBA));
         }
-        for (color, (path, (min_x, max_x, min_y, max_y))) in styled {
+        for (color, (path, bounds)) in styled {
             if let Some(mut path) = path {
-                path.bounds = Bounds {
-                    origin: point(px(min_x), px(min_y)),
-                    size: size(px(max_x - min_x), px(max_y - min_y)),
-                };
+                set_path_bounds(&mut path, bounds);
                 window.paint_path(path, rgb(color));
             }
         }

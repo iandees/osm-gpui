@@ -1658,3 +1658,217 @@ fn a_crash_after_part_two_was_accepted_but_before_it_was_applied_is_flagged_on_r
     let _ = std::fs::remove_dir_all(live_root);
     let _ = std::fs::remove_dir_all(dead_root);
 }
+
+/// Copy what a live session has on disk under a new session whose lock is
+/// gone, as a crash leaves it. Returns the new session's directory.
+fn crash_copy(from: &std::path::Path, dead_root: &std::path::Path) -> std::path::PathBuf {
+    let dead = osm_gpui::autosave::Session::start(dead_root).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if name != "session.lock" && name != "heartbeat" {
+            std::fs::copy(&path, dead.dir().join(&name)).unwrap();
+        }
+    }
+    dead.dir().to_path_buf()
+}
+
+#[gpui::test]
+fn a_crash_while_the_request_is_in_flight_leaves_the_changeset_id_and_the_objects_to_find(
+    cx: &mut TestAppContext,
+) {
+    use osm_gpui::autosave::read_upload_marker;
+    use osm_gpui::transfer::TransferPhase;
+    use osm_gpui::ui::upload_dialog::FailureKind;
+    use osm_gpui::upload_chunks::UploadDriver;
+
+    let live_root = temp_root("inflight-live");
+    let dead_root = temp_root("inflight-dead");
+    let data = ways_net();
+    let server = Server::holding(&data);
+    cx.update(gpui_component::init);
+
+    let window = cx.add_window(MapViewer::new);
+    let session_dir = window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(live_root.clone()), cx);
+            let layer = add_osm_layer(view, "Net", data.clone());
+            let editable = view
+                .layer_manager
+                .find_layer_mut(layer)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap();
+            for i in 0..3 {
+                editable.add_node(40.5 + i as f64 * 0.001, -74.5);
+            }
+            view.autosave_now(cx);
+            let diff = view
+                .layer_manager
+                .find_layer(layer)
+                .unwrap()
+                .as_osm()
+                .unwrap()
+                .diff_for_upload();
+            let mut driver = UploadDriver::plan(&[&diff], 10, "Add benches").unwrap();
+            let request = driver.next_request().unwrap();
+            let write = view
+                .upload_marker_prepare(osm_gpui::autosave::UploadMarker::for_request(
+                    BASE, &request, 1_000,
+                ))
+                .expect("autosave is on");
+            write.run();
+            let dir = view.autosave.as_ref().unwrap().session_dir().unwrap();
+            assert_eq!(read_upload_marker(&dir).unwrap().changeset_id, None);
+            let mut on_disk_in_flight = None;
+            let outcome = osm_gpui::upload_chunks::send(
+                request,
+                &server,
+                BASE,
+                &mut || Ok("tok".to_string()),
+                &mut |_, phase| {
+                    write.observe(&phase);
+                    if matches!(phase, TransferPhase::UploadingChanges { .. }) {
+                        // The upload request has not been sent yet.
+                        assert!(server.uploads().is_empty());
+                        on_disk_in_flight = read_upload_marker(&dir);
+                    }
+                },
+            );
+            // The driver never records the outcome: the app died here.
+            drop(outcome);
+            let marker = on_disk_in_flight.expect("the phase was reported");
+            assert!(marker.changeset_id.is_some(), "{marker:?}");
+            assert_eq!(marker.in_flight.created_nodes.len(), 3);
+            dir
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let id = read_upload_marker(&session_dir)
+        .unwrap()
+        .changeset_id
+        .unwrap();
+    let dead_dir = crash_copy(&session_dir, &dead_root);
+
+    let window = cx.add_window(MapViewer::new);
+    window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(dead_root.clone()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.check_for_pending_restore(window, cx);
+            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let text = dialog.read(cx).upload_notices()[0].join("\n");
+            assert!(text.contains(&format!("/changeset/{id}")), "{text}");
+            assert!(text.contains("It was sending: 3 new nodes."), "{text}");
+            dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(!dead_dir.exists());
+            // Placeholder ids are the same after the restore, so all three
+            // are found.
+            assert_eq!(view.in_flight_features().len(), 3);
+            view.open_upload_dialog_with(Some("tester"), false, window, cx);
+            let dialog = view.upload_dialog.clone().expect("the dialog opens");
+            assert_eq!(
+                dialog.read(cx).failure_kind(),
+                Some(FailureKind::OutcomeUnknown)
+            );
+            assert_eq!(dialog.read(cx).in_flight_offer(), 3);
+            assert!(dialog.update(cx, |d, cx| d.press_select_in_flight(cx)));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, _window, _cx| {
+            assert_eq!(view.selected.len(), 3);
+            assert!(view.upload_dialog.is_none());
+        })
+        .unwrap();
+    let _ = std::fs::remove_dir_all(live_root);
+    let _ = std::fs::remove_dir_all(dead_root);
+}
+
+#[gpui::test]
+fn two_crashed_sessions_with_markers_are_both_carried_and_both_warned_about(
+    cx: &mut TestAppContext,
+) {
+    use osm_gpui::autosave::{read_upload_markers, UploadMarker};
+    use osm_gpui::upload_chunks::ChunkRequest;
+
+    let live_root = temp_root("many-live");
+    let dead_root = temp_root("many-dead");
+    let data = ways_net();
+    cx.update(gpui_component::init);
+
+    let window = cx.add_window(MapViewer::new);
+    let session_dir = window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(live_root.clone()), cx);
+            let layer = add_osm_layer(view, "Net", data.clone());
+            view.layer_manager
+                .find_layer_mut(layer)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap()
+                .add_node(40.5, -74.5);
+            view.autosave_now(cx);
+            view.autosave.as_ref().unwrap().session_dir().unwrap()
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    for (when, id) in [(100u64, 111u64), (200, 222)] {
+        let dir = crash_copy(&session_dir, &dead_root);
+        let request = ChunkRequest {
+            part: None,
+            tags: format!("upload {when}").as_str().into(),
+            chunk: LayerDiff::default(),
+        };
+        let marker = UploadMarker::for_request(BASE, &request, when).with_changeset(id);
+        let session_marker = dir.join("upload-in-progress");
+        std::fs::write(session_marker, serde_json::to_vec(&marker).unwrap()).unwrap();
+    }
+
+    let window = cx.add_window(MapViewer::new);
+    window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(dead_root.clone()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.check_for_pending_restore(window, cx);
+            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            assert_eq!(dialog.read(cx).upload_notices().len(), 2);
+            dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            let (status, _) = view.status_message.clone().expect("a reminder is shown");
+            assert!(status.contains("2 uploads were in progress"), "{status}");
+            let dir = view.autosave.as_ref().unwrap().session_dir().unwrap();
+            let times: Vec<u64> = read_upload_markers(&dir)
+                .iter()
+                .map(|m| m.started_at)
+                .collect();
+            assert_eq!(times, vec![100, 200], "both survive in the new session");
+            let warning = view.restored_upload_warning().expect("the warning stands");
+            assert!(warning.contains("changeset/111"), "{warning}");
+            assert!(warning.contains("changeset/222"), "{warning}");
+            view.open_upload_dialog_with(Some("tester"), false, window, cx);
+            assert!(view.upload_dialog.is_some());
+        })
+        .unwrap();
+    let _ = std::fs::remove_dir_all(live_root);
+    let _ = std::fs::remove_dir_all(dead_root);
+}

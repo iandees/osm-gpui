@@ -802,16 +802,15 @@ fn parse_assert_zoom(line_no: usize, rest: &[&str]) -> Result<Op, ParseError> {
     })
 }
 
-/// `assert_layer gpx|geojson|osm|imagery|grid NAME` (the name is the rest of
+/// `assert_layer gpx|geojson|osm|imagery NAME` (the name is the rest of
 /// the line, spaces included).
 fn parse_assert_layer(line_no: usize, line: &str, rest: &[&str]) -> Result<Op, ParseError> {
-    let usage = "assert_layer: want gpx|geojson|osm|imagery|grid NAME";
+    let usage = "assert_layer: want gpx|geojson|osm|imagery NAME";
     let kind = match rest.first().copied() {
         Some("gpx") => LayerKind::Gpx,
         Some("geojson") => LayerKind::GeoJson,
         Some("osm") => LayerKind::Osm,
         Some("imagery") => LayerKind::Imagery,
-        Some("grid") => LayerKind::Grid,
         _ => return Err(err(line_no, usage)),
     };
     let name = text_after(line, "assert_layer", 1);

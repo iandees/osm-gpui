@@ -425,7 +425,10 @@ pub fn run_upload(
             created + modified + deleted
         })
         .sum();
-    on_phase(TransferPhase::UploadingChanges { count });
+    on_phase(TransferPhase::UploadingChanges {
+        count,
+        changeset_id,
+    });
     let uploaded = upload_changes_with(client, base_url, token, changeset_id, &xml);
 
     if uploaded.is_ok() {
@@ -725,26 +728,53 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
                     continue;
                 }
 
-                let mut old_id: Option<i64> = None;
-                let mut new_id: Option<i64> = None;
-                let mut new_version: Option<i32> = None;
-                for attr in e.attributes() {
-                    let attr = attr.map_err(|e| UploadError::Parse(e.to_string()))?;
+                let kind = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let unreadable = |what: &str| {
+                    UploadError::Parse(format!(
+                        "the server's diffResult has an unreadable {what} on a <{kind}>"
+                    ))
+                };
+                let mut old_id: Option<&str> = None;
+                let mut new_id: Option<&str> = None;
+                let mut new_version: Option<&str> = None;
+                let attrs: Vec<_> = e
+                    .attributes()
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| UploadError::Parse(e.to_string()))?;
+                for attr in &attrs {
                     let key = std::str::from_utf8(attr.key.as_ref())
                         .map_err(|e| UploadError::Parse(e.to_string()))?;
                     let value = std::str::from_utf8(&attr.value)
                         .map_err(|e| UploadError::Parse(e.to_string()))?;
                     match key {
-                        "old_id" => old_id = value.parse().ok(),
-                        "new_id" => new_id = value.parse().ok(),
-                        "new_version" => new_version = value.parse().ok(),
+                        "old_id" => old_id = Some(value),
+                        "new_id" => new_id = Some(value),
+                        "new_version" => new_version = Some(value),
                         _ => {}
                     }
                 }
 
-                if let (Some(old_id), Some(new_id), Some(new_version)) =
-                    (old_id, new_id, new_version)
-                {
+                // The server accepted the upload, so an element we cannot map back
+                // would leave a local object without its server id and version, and
+                // the next upload would create it a second time: refuse to guess.
+                let old_id: i64 = old_id
+                    .and_then(|v| v.parse().ok())
+                    .ok_or_else(|| unreadable("old_id"))?;
+                let mapped = match (new_id, new_version) {
+                    (None, None) if old_id > 0 => None,
+                    (None, None) => return Err(unreadable("missing new_id")),
+                    (new_id, new_version) => {
+                        let new_id: i64 = new_id
+                            .and_then(|v| v.parse().ok())
+                            .ok_or_else(|| unreadable("new_id"))?;
+                        let new_version: i32 = new_version
+                            .and_then(|v| v.parse().ok())
+                            .ok_or_else(|| unreadable("new_version"))?;
+                        Some((new_id, new_version))
+                    }
+                };
+
+                if let Some((new_id, new_version)) = mapped {
                     let remap = if is_node {
                         &mut result.node_id_remap
                     } else if is_way {
@@ -1223,6 +1253,63 @@ mod tests {
         assert!(parse_diff_result(xml).is_err());
     }
 
+    #[test]
+    fn parse_diff_result_rejects_a_non_numeric_id() {
+        for xml in [
+            r#"<diffResult><node old_id="-1" new_id="abc" new_version="1"/></diffResult>"#,
+            r#"<diffResult><way old_id="x" new_id="5" new_version="1"/></diffResult>"#,
+            r#"<diffResult><node old_id="-1" new_id="5" new_version="one"/></diffResult>"#,
+        ] {
+            assert!(
+                matches!(parse_diff_result(xml), Err(UploadError::Parse(_))),
+                "{xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_diff_result_rejects_a_create_without_new_id() {
+        let xml = r#"<diffResult><node old_id="-3"/></diffResult>"#;
+        assert!(matches!(parse_diff_result(xml), Err(UploadError::Parse(_))));
+        let xml = r#"<diffResult><way old_id="-3" new_version="1"/></diffResult>"#;
+        assert!(matches!(parse_diff_result(xml), Err(UploadError::Parse(_))));
+    }
+
+    #[test]
+    fn parse_diff_result_accepts_a_well_formed_result() {
+        let xml = r#"<diffResult><node old_id="-1" new_id="9" new_version="1"/><node old_id="4"/></diffResult>"#;
+        let result = parse_diff_result(xml).unwrap();
+        assert_eq!(result.node_id_remap.get(&-1), Some(&(9, 1)));
+        assert_eq!(result.node_id_remap.len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_diff_result_after_a_successful_upload_is_outcome_unknown() {
+        let body = r#"<diffResult><node old_id="-1" new_id="nine" new_version="1"/></diffResult>"#;
+        let client = FakeClient::new(vec![ok(200, "42"), ok(200, body), ok(200, "")]);
+        let failure = run_upload(
+            &client,
+            "https://api.openstreetmap.org",
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(failure.changeset_id, Some(42));
+        assert!(matches!(
+            failure.error,
+            UploadError::OutcomeUnknown {
+                changeset_id: 42,
+                ..
+            }
+        ));
+        assert!(failure
+            .error
+            .to_string()
+            .contains("https://www.openstreetmap.org/changeset/42"));
+    }
+
     fn parsed(status: u16, body: &str) -> UploadConflict {
         UploadConflict::parse(status, body)
     }
@@ -1458,7 +1545,40 @@ mod tests {
                 "Put https://osm.test/api/0.6/changeset/42/close",
             ]
         );
-        assert_eq!(phases, vec![TransferPhase::UploadingChanges { count: 1 }]);
+        assert_eq!(
+            phases,
+            vec![TransferPhase::UploadingChanges {
+                count: 1,
+                changeset_id: 42
+            }]
+        );
+    }
+
+    #[test]
+    fn the_changeset_id_is_reported_after_create_and_before_the_diff_is_sent() {
+        let client = FakeClient::new(vec![ok(200, "42"), ok(200, "<diffResult/>"), ok(200, "")]);
+        let mut seen: Vec<(u64, Vec<String>)> = Vec::new();
+        run_upload(
+            &client,
+            BASE,
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |phase| {
+                if let TransferPhase::UploadingChanges { changeset_id, .. } = phase {
+                    seen.push((changeset_id, request_lines(&client)));
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![(
+                42,
+                vec!["Put https://osm.test/api/0.6/changeset/create".to_string()]
+            )],
+            "only the create had been sent when the id was reported"
+        );
     }
 
     #[test]
@@ -1617,7 +1737,10 @@ mod tests {
         assert_eq!(
             phases,
             vec![
-                TransferPhase::UploadingChanges { count: 1 },
+                TransferPhase::UploadingChanges {
+                    count: 1,
+                    changeset_id: 42
+                },
                 TransferPhase::ClosingChangeset
             ]
         );

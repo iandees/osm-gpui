@@ -373,21 +373,84 @@ fn finish(
     out
 }
 
-/// Key suggestions for the typed text `query`.
-///
-/// `exclude` holds keys that must not be offered (those the feature already
-/// has). `features` lists each selected feature's possible geometries; keys
-/// the presets only use on other geometries (`building` on an open way) are
-/// left out. `data` is one index per visible layer, merged by summing counts.
-pub fn suggest_keys(
-    query: &str,
-    data: &[&DataIndex],
-    schema: &SchemaIndex,
-    taginfo: &[TaginfoItem],
-    exclude: &HashSet<String>,
-    features: &[Vec<Geometry>],
-    limit: usize,
-) -> Vec<Suggestion> {
+/// Everything a suggestion lookup reads. One field per source of candidates,
+/// so a new source is a field here and an entry in the list the merge walks.
+pub struct SuggestInput<'a> {
+    /// The key whose values are wanted (`suggest_values` only).
+    pub key: &'a str,
+    /// The text typed so far.
+    pub query: &'a str,
+    /// `Source::Selection`: the distinct values of `key` among the selected
+    /// features (pass them for a multi-selection); listed first.
+    pub selection: &'a [String],
+    /// `Source::Data`: one index per visible layer, merged by summing counts.
+    pub data: &'a [&'a DataIndex],
+    /// `Source::Schema`: the bundled tagging schema.
+    pub schema: &'a SchemaIndex,
+    /// `Source::Taginfo`: taginfo's answers, always listed below the rest.
+    pub taginfo: &'a [TaginfoItem],
+    /// Keys that must not be offered (those the feature already has).
+    pub exclude: &'a HashSet<String>,
+    /// Each selected feature's possible geometries; keys the presets only
+    /// use on other geometries (`building` on an open way) are left out.
+    pub features: &'a [Vec<Geometry>],
+    pub limit: usize,
+}
+
+fn no_keys() -> &'static HashSet<String> {
+    static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashSet::new)
+}
+
+impl<'a> SuggestInput<'a> {
+    /// An input with no key, selection, data, taginfo, exclusions or
+    /// geometry limits; set the fields a lookup has.
+    pub fn new(query: &'a str, schema: &'a SchemaIndex, limit: usize) -> Self {
+        Self {
+            key: "",
+            query,
+            selection: &[],
+            data: &[],
+            schema,
+            taginfo: &[],
+            exclude: no_keys(),
+            features: &[],
+            limit,
+        }
+    }
+}
+
+/// The local candidates of one source, with their match class.
+type Candidates = Vec<(u8, Suggestion)>;
+
+/// One source's candidates, produced when the merge reaches it.
+type Collect<'f> = &'f dyn Fn() -> Candidates;
+
+fn candidate(class: u8, text: &str, source: Source, count: u64) -> (u8, Suggestion) {
+    (
+        class,
+        Suggestion {
+            text: text.to_string(),
+            label: None,
+            field_id: None,
+            source,
+            count,
+        },
+    )
+}
+
+/// Key suggestions for the typed text `input.query`.
+pub fn suggest_keys(input: SuggestInput) -> Vec<Suggestion> {
+    let SuggestInput {
+        query,
+        data,
+        schema,
+        taginfo,
+        exclude,
+        features,
+        limit,
+        ..
+    } = input;
     let query = query.trim();
     let q = query.to_lowercase();
 
@@ -404,44 +467,39 @@ pub fn suggest_keys(
             *counts.entry(k).or_insert(0) += c as u64;
         }
     }
-    let mut local: Vec<(u8, Suggestion)> = Vec::new();
-    for (k, c) in &counts {
-        if *k == query || exclude.contains(*k) || !schema.key_fits(k, features) {
-            continue;
+    let from_data = || -> Candidates {
+        let mut out = Candidates::new();
+        for (k, c) in &counts {
+            if *k == query || exclude.contains(*k) || !schema.key_fits(k, features) {
+                continue;
+            }
+            if let Some(class) = match_class(&q, k) {
+                out.push(candidate(class, k, Source::Data, *c));
+            }
         }
-        if let Some(class) = match_class(&q, k) {
-            local.push((
-                class,
-                Suggestion {
-                    text: k.to_string(),
-                    label: None,
-                    field_id: None,
-                    source: Source::Data,
-                    count: *c,
-                },
-            ));
+        out
+    };
+    let from_schema = || -> Candidates {
+        let mut out = Candidates::new();
+        for k in schema_keys {
+            if k == query
+                || exclude.contains(k)
+                || counts.contains_key(k.as_str())
+                || !schema.key_fits(k, features)
+            {
+                continue;
+            }
+            if let Some(class) = match_class(&q, k) {
+                out.push(candidate(class, k, Source::Schema, 0));
+            }
         }
-    }
-    for k in schema_keys {
-        if k == query
-            || exclude.contains(k)
-            || counts.contains_key(k.as_str())
-            || !schema.key_fits(k, features)
-        {
-            continue;
-        }
-        if let Some(class) = match_class(&q, k) {
-            local.push((
-                class,
-                Suggestion {
-                    text: k.clone(),
-                    label: None,
-                    field_id: None,
-                    source: Source::Schema,
-                    count: 0,
-                },
-            ));
-        }
+        out
+    };
+    let sources: [(Source, Collect); 2] =
+        [(Source::Data, &from_data), (Source::Schema, &from_schema)];
+    let mut local: Candidates = Vec::new();
+    for (_, collect) in sources {
+        local.extend(collect());
     }
     finish(
         local,
@@ -453,113 +511,114 @@ pub fn suggest_keys(
     )
 }
 
-/// Value suggestions for `key` given the typed text `query`.
-///
-/// `selection_values` are the distinct values of `key` among the selected
-/// features (pass them for a multi-selection); they are listed first.
-pub fn suggest_values(
-    key: &str,
-    query: &str,
-    selection_values: &[String],
-    data: &[&DataIndex],
-    schema: &SchemaIndex,
-    taginfo: &[TaginfoItem],
-    limit: usize,
-) -> Vec<Suggestion> {
+/// Value suggestions for `input.key` given the typed text `input.query`.
+pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
+    let SuggestInput {
+        key,
+        query,
+        selection,
+        data,
+        schema,
+        taginfo,
+        limit,
+        ..
+    } = input;
     let query = query.trim();
     let q = query.to_lowercase();
 
-    let mut local: Vec<(u8, Suggestion)> = Vec::new();
-    let mut taken: HashSet<String> = HashSet::new();
+    // Texts an earlier source offered; a later source skips them.
+    let taken: std::cell::RefCell<HashSet<String>> = Default::default();
 
-    for v in selection_values {
-        if v == query || v.is_empty() {
-            continue;
+    let from_selection = || -> Candidates {
+        let mut out = Candidates::new();
+        for v in selection {
+            if v == query || v.is_empty() {
+                continue;
+            }
+            if let Some(class) = match_class(&q, v) {
+                if taken.borrow_mut().insert(v.clone()) {
+                    out.push(candidate(class, v, Source::Selection, 0));
+                }
+            }
         }
-        if let Some(class) = match_class(&q, v) {
-            if taken.insert(v.clone()) {
-                local.push((
+        out
+    };
+    let from_data = || -> Candidates {
+        // Match first, merge only the matches: a key like `name` can have
+        // hundreds of thousands of distinct values.
+        let mut matched: Vec<(&str, u8, u64)> = Vec::new();
+        for index in data {
+            for (v, c) in index.values_of(key) {
+                if v == query || v.is_empty() || taken.borrow().contains(v) {
+                    continue;
+                }
+                if let Some(class) = match_class(&q, v) {
+                    matched.push((v, class, c as u64));
+                }
+            }
+        }
+        if data.len() > 1 {
+            let mut merged: HashMap<&str, (u8, u64)> = HashMap::new();
+            for (v, class, c) in matched {
+                merged.entry(v).or_insert((class, 0)).1 += c;
+            }
+            matched = merged.into_iter().map(|(v, (cl, c))| (v, cl, c)).collect();
+        }
+        // Only the best `limit` need to become suggestions; selecting them
+        // first keeps a key with a huge number of matching values cheap.
+        if matched.len() > limit {
+            matched.select_nth_unstable_by(limit, |a, b| {
+                a.1.cmp(&b.1)
+                    .then(b.2.cmp(&a.2))
+                    .then(a.0.len().cmp(&b.0.len()))
+                    .then(a.0.cmp(b.0))
+            });
+            matched.truncate(limit);
+        }
+        let mut out = Candidates::new();
+        for (v, class, c) in matched {
+            taken.borrow_mut().insert(v.to_string());
+            out.push(candidate(class, v, Source::Data, c));
+        }
+        out
+    };
+    let from_schema = || -> Candidates {
+        let mut out = Candidates::new();
+        for sv in schema.values_of(key) {
+            if sv.value == query || taken.borrow().contains(&sv.value) {
+                continue;
+            }
+            // The label counts as a (weaker) match too: "Asph" finds asphalt.
+            let class = match_class(&q, &sv.value).or_else(|| {
+                sv.label
+                    .as_deref()
+                    .and_then(|l| match_class(&q, l))
+                    .map(|_| 1)
+            });
+            if let Some(class) = class {
+                taken.borrow_mut().insert(sv.value.clone());
+                out.push((
                     class,
                     Suggestion {
-                        text: v.clone(),
-                        label: None,
-                        field_id: None,
-                        source: Source::Selection,
+                        text: sv.value.clone(),
+                        label: sv.label.clone(),
+                        field_id: sv.field_id.clone(),
+                        source: Source::Schema,
                         count: 0,
                     },
                 ));
             }
         }
-    }
-
-    // Match first, merge only the matches: a key like `name` can have
-    // hundreds of thousands of distinct values.
-    let mut matched: Vec<(&str, u8, u64)> = Vec::new();
-    for index in data {
-        for (v, c) in index.values_of(key) {
-            if v == query || v.is_empty() || taken.contains(v) {
-                continue;
-            }
-            if let Some(class) = match_class(&q, v) {
-                matched.push((v, class, c as u64));
-            }
-        }
-    }
-    if data.len() > 1 {
-        let mut merged: HashMap<&str, (u8, u64)> = HashMap::new();
-        for (v, class, c) in matched {
-            merged.entry(v).or_insert((class, 0)).1 += c;
-        }
-        matched = merged.into_iter().map(|(v, (cl, c))| (v, cl, c)).collect();
-    }
-    // Only the best `limit` need to become suggestions; selecting them
-    // first keeps a key with a huge number of matching values cheap.
-    if matched.len() > limit {
-        matched.select_nth_unstable_by(limit, |a, b| {
-            a.1.cmp(&b.1)
-                .then(b.2.cmp(&a.2))
-                .then(a.0.len().cmp(&b.0.len()))
-                .then(a.0.cmp(b.0))
-        });
-        matched.truncate(limit);
-    }
-    for (v, class, c) in matched {
-        taken.insert(v.to_string());
-        local.push((
-            class,
-            Suggestion {
-                text: v.to_string(),
-                label: None,
-                field_id: None,
-                source: Source::Data,
-                count: c,
-            },
-        ));
-    }
-    for sv in schema.values_of(key) {
-        if sv.value == query || taken.contains(&sv.value) {
-            continue;
-        }
-        // The label counts as a (weaker) match too: "Asph" finds asphalt.
-        let class = match_class(&q, &sv.value).or_else(|| {
-            sv.label
-                .as_deref()
-                .and_then(|l| match_class(&q, l))
-                .map(|_| 1)
-        });
-        if let Some(class) = class {
-            taken.insert(sv.value.clone());
-            local.push((
-                class,
-                Suggestion {
-                    text: sv.value.clone(),
-                    label: sv.label.clone(),
-                    field_id: sv.field_id.clone(),
-                    source: Source::Schema,
-                    count: 0,
-                },
-            ));
-        }
+        out
+    };
+    let sources: [(Source, Collect); 3] = [
+        (Source::Selection, &from_selection),
+        (Source::Data, &from_data),
+        (Source::Schema, &from_schema),
+    ];
+    let mut local: Candidates = Vec::new();
+    for (_, collect) in sources {
+        local.extend(collect());
     }
     finish(local, taginfo, &q, query, |_| true, limit)
 }
@@ -568,6 +627,44 @@ pub fn suggest_values(
 mod tests {
     use super::*;
     use crate::osm::{OsmNode, OsmWay};
+
+    /// The tests state their inputs positionally; these adapters build the
+    /// `SuggestInput` the library takes.
+    fn suggest_keys(
+        query: &str,
+        data: &[&DataIndex],
+        schema: &SchemaIndex,
+        taginfo: &[TaginfoItem],
+        exclude: &HashSet<String>,
+        features: &[Vec<Geometry>],
+        limit: usize,
+    ) -> Vec<Suggestion> {
+        super::suggest_keys(SuggestInput {
+            data,
+            taginfo,
+            exclude,
+            features,
+            ..SuggestInput::new(query, schema, limit)
+        })
+    }
+
+    fn suggest_values(
+        key: &str,
+        query: &str,
+        selection: &[String],
+        data: &[&DataIndex],
+        schema: &SchemaIndex,
+        taginfo: &[TaginfoItem],
+        limit: usize,
+    ) -> Vec<Suggestion> {
+        super::suggest_values(SuggestInput {
+            key,
+            selection,
+            data,
+            taginfo,
+            ..SuggestInput::new(query, schema, limit)
+        })
+    }
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -646,6 +743,45 @@ mod tests {
                 count: *c,
             })
             .collect()
+    }
+
+    #[test]
+    fn merged_value_order_with_all_four_sources_overlapping() {
+        let d = DataIndex::from_osm(&data(
+            &[
+                &[("surface", "asphalt")],
+                &[("surface", "asphalt")],
+                &[("surface", "paved")],
+            ],
+            &[],
+        ));
+        let selection = vec!["mud".to_string()];
+        let web = ti(&[
+            ("mud", 9),
+            ("gravel", 8),
+            ("asphalt", 7),
+            ("paved", 6),
+            ("cobblestone", 5),
+        ]);
+        let schema = schema();
+        let got = super::suggest_values(SuggestInput {
+            key: "surface",
+            selection: &selection,
+            data: &[&d],
+            taginfo: &web,
+            ..SuggestInput::new("", &schema, 20)
+        });
+        let order: Vec<(&str, Source)> = got.iter().map(|s| (s.text.as_str(), s.source)).collect();
+        assert_eq!(
+            order,
+            [
+                ("mud", Source::Selection),
+                ("asphalt", Source::Data),
+                ("paved", Source::Data),
+                ("gravel", Source::Schema),
+                ("cobblestone", Source::Taginfo),
+            ]
+        );
     }
 
     #[test]

@@ -65,9 +65,9 @@ mod viewer_tests;
 mod welcome;
 
 use crate::menu::{
-    add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
-    download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
+    add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
+    no_op_imagery_info, open_custom_imagery_dialog, open_osm_file, open_settings, quit,
+    rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -84,8 +84,7 @@ use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
-    grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
-    LayerManager, MapLayer,
+    osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId, LayerManager, MapLayer,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
@@ -105,7 +104,6 @@ actions!(
         OpenOsmFile,
         Quit,
         AddOsmCarto,
-        AddCoordinateGrid,
         DownloadFromOsm,
         ToggleDebugOverlay,
         ToggleDownloadedArea,
@@ -433,7 +431,6 @@ fn pointer_px(p: gpui::Point<gpui::Pixels>) -> (f64, f64) {
 #[derive(Debug, Clone)]
 enum LayerRequest {
     OsmCarto,
-    CoordinateGrid,
     Imagery {
         name: String,
         url_template: String,
@@ -473,6 +470,27 @@ enum ImageryLoadState {
 /// those; reserve this handle for callbacks that genuinely originate
 /// outside that window's own dispatch (background tasks, other windows).
 pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
+
+/// Messages for saves of the user's state that failed, waiting for the
+/// `MapViewer` to show them on its next frame. Saves run on any thread, so the
+/// hook only queues.
+static SAVE_FAILURE_MESSAGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn queue_save_failure(label: &str, detail: &str) {
+    let what = match label {
+        "settings_store" => tr!("error.save_what.settings"),
+        "custom_imagery_store" => tr!("error.save_what.custom_imagery"),
+        "imagery_offset_store" => tr!("error.save_what.imagery_offsets"),
+        "auth" => tr!("error.save_what.login"),
+        "secrets" => tr!("error.save_what.secrets"),
+        other => SharedString::from(other.to_string()),
+    };
+    let message = tr!("error.save_failed", what = what, detail = detail);
+    SAVE_FAILURE_MESSAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(message.to_string());
+}
 
 /// Whether the app may write the owner's settings file: not during a
 /// `--script` run (the harness keeps changes in memory) and never in a unit
@@ -555,6 +573,12 @@ struct CliArgs {
     /// a crashed run's autosaves there. The only way to turn autosave on in
     /// a scripted run, which otherwise never touches any autosave directory.
     autosave_dir: Option<PathBuf>,
+    /// `--offline`: a scripted run denies every HTTP request that no fixture
+    /// answers. Ignored without `--script`.
+    offline: bool,
+    /// `--http-fixtures FILE`: URL-routing rules for a scripted run
+    /// (see `osm_gpui::http::parse_manifest`).
+    http_fixtures: Option<PathBuf>,
     /// `.osm` files to open as layers at startup (positional arguments).
     files: Vec<PathBuf>,
 }
@@ -594,6 +618,12 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
             "--autosave-dir" => {
                 out.autosave_dir = Some(PathBuf::from(
                     args.next().expect("--autosave-dir needs a directory"),
+                ))
+            }
+            "--offline" => out.offline = true,
+            "--http-fixtures" => {
+                out.http_fixtures = Some(PathBuf::from(
+                    args.next().expect("--http-fixtures needs a file"),
                 ))
             }
             "--script-delay-ms" => {
@@ -1008,7 +1038,7 @@ impl MapViewer {
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let layer_manager = LayerManager::new();
         // No layers here; the window setup adds OSM Carto (see
-        // `add_default_layers`), other imagery and the grid come from the
+        // `add_default_layers`), other imagery comes from the
         // menu, and loaded files add their own OSM layer.
         Self {
             viewport,
@@ -1119,6 +1149,16 @@ impl MapViewer {
         self.show_downloaded_area
     }
 
+    /// The View checkmarks and Upload's enabled state, as this viewer has them.
+    pub(crate) fn menu_toggles(&self) -> menu::MenuToggles {
+        menu::MenuToggles {
+            show_downloaded_area: self.shows_downloaded_area(),
+            show_notes: self.shows_notes(),
+            show_imagery: osm_gpui::street_imagery::Provider::ALL.map(|p| self.shows_imagery(p)),
+            can_upload: self.has_uploadable_changes(),
+        }
+    }
+
     /// Load the Editor Layer Index in the background; the viewer is told when
     /// it finishes.
     fn load_imagery_index(&mut self, cx: &mut Context<Self>) {
@@ -1148,9 +1188,10 @@ impl MapViewer {
             Ok(entries) => {
                 eprintln!("imagery: loaded {} ELI entries", entries.len());
                 if let Some(index) = IMAGERY_INDEX.get() {
-                    if let Ok(mut guard) = index.lock() {
-                        *guard = entries;
-                    }
+                    // Poison is recovered: the index is replaced whole, so a
+                    // panic elsewhere cannot have left it half-written, and
+                    // skipping this would leave the Imagery menu empty.
+                    *index.lock().unwrap_or_else(|e| e.into_inner()) = entries;
                 }
                 ImageryLoadState::Ready
             }
@@ -1178,14 +1219,7 @@ impl MapViewer {
         }
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
-        rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            current_state,
-            self.show_downloaded_area,
-            self.has_uploadable_changes(),
-        );
+        rebuild_menus(&mut *cx, lat, lon, current_state, self.menu_toggles());
         self.last_menu_center = Some((lat, lon));
         self.last_imagery_load_state = Some(current_state);
     }
@@ -1280,7 +1314,7 @@ impl MapViewer {
     /// than going through `LayerRequest`.
     ///
     /// A layer with unsaved edits asks first (`show_delete_layer_dialog`);
-    /// one without (imagery, the grid, a data layer with nothing pending)
+    /// one without (imagery, a data layer with nothing pending)
     /// goes straight away.
     fn on_delete_layer(
         &mut self,
@@ -5193,13 +5227,6 @@ impl MapViewer {
                     self.layer_manager.add_layer(Box::new(tile_layer));
                 }
             }
-            LayerRequest::CoordinateGrid => {
-                if self.layer_manager.layer_named("Coordinate Grid").is_none() {
-                    let layer_id = self.layer_manager.alloc_id();
-                    self.layer_manager
-                        .add_layer(Box::new(GridLayer::new(layer_id)));
-                }
-            }
             LayerRequest::Imagery {
                 name,
                 url_template,
@@ -5288,6 +5315,19 @@ impl MapViewer {
         self.status_message = Some((message.into(), Instant::now()));
     }
 
+    /// Show the newest failed save of settings, logins or other saved state
+    /// (queued by the hook installed in `main`, from any thread).
+    fn show_save_failures(&mut self) {
+        let newest = SAVE_FAILURE_MESSAGES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .next_back();
+        if let Some(message) = newest {
+            self.set_status(message);
+        }
+    }
+
     fn expire_status(&mut self) {
         if let Some((_, set_at)) = &self.status_message {
             if set_at.elapsed() > Duration::from_secs(5) {
@@ -5311,14 +5351,7 @@ impl MapViewer {
         }
         self.show_downloaded_area = show;
         let (lat, lon, state) = self.imagery_menu_context();
-        rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            state,
-            show,
-            self.has_uploadable_changes(),
-        );
+        rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
         cx.notify();
     }
 
@@ -5684,8 +5717,10 @@ impl MapViewer {
         // Layers restored from a run that died mid-upload: the same "may have
         // gone through" stop as after a lost response.
         if let Some(warning) = self.restored_upload_warning() {
+            let in_flight = self.in_flight_features().len();
             dialog.update(cx, |dialog, cx| {
-                dialog.fail_outcome_unknown(warning.into(), cx)
+                dialog.fail_outcome_unknown(warning.into(), cx);
+                dialog.set_in_flight(in_flight, cx);
             });
         }
         // Validated once, before the first changeset is opened.
@@ -5733,6 +5768,7 @@ impl MapViewer {
                         this.close_upload_dialog_keeping_draft(cx);
                         this.show_validation_expanded(cx);
                     }
+                    DialogEvent::SelectInFlight => this.select_in_flight(cx),
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
                     }
@@ -5961,7 +5997,7 @@ impl MapViewer {
                 let outcome = cx
                     .background_executor()
                     .spawn(async move {
-                        if let Some(write) = marker_write {
+                        if let Some(write) = &marker_write {
                             write.run();
                         }
                         osm_gpui::upload_chunks::send(
@@ -5986,7 +6022,15 @@ impl MapViewer {
                                 .map(|token| token.access_token)
                                 .map_err(|e| e.to_string())
                             },
-                            &mut |part, phase| progress.set_upload_phase(part, phase),
+                            &mut |part, phase| {
+                                // The changeset id goes to disk before the
+                                // upload request is sent: a crash while it is
+                                // in flight then still names the changeset.
+                                if let Some(write) = &marker_write {
+                                    write.observe(&phase);
+                                }
+                                progress.set_upload_phase(part, phase)
+                            },
                         )
                     })
                     .await;
@@ -6461,7 +6505,10 @@ impl MapViewer {
             "upload" => {
                 let handle = TransferHandle::new(
                     TransferKind::Upload,
-                    TransferPhase::UploadingChanges { count: 12 },
+                    TransferPhase::UploadingChanges {
+                        count: 12,
+                        changeset_id: 1,
+                    },
                 );
                 let summaries = vec![osm_gpui::ui::upload_dialog::LayerSummary {
                     layer_name: "OSM data".to_string(),
@@ -6730,6 +6777,7 @@ impl Render for MapViewer {
         );
         self.viewport.update_size(map_size);
 
+        self.show_save_failures();
         self.expire_status();
         self.drop_stale_offset_adjust();
 
@@ -7225,6 +7273,7 @@ fn main() {
     } else {
         persist::set_policy(persist::Policy::Normal);
     }
+    persist::set_save_failure_hook(queue_save_failure);
     // Where autosaves go (and are looked for): the app-data directory, except
     // in a scripted run, which has none unless `--autosave-dir` names one.
     let autosave_root = osm_gpui::autosave::resolve_root(
@@ -7236,7 +7285,29 @@ fn main() {
     // store, so nothing here is ever saved to settings.json.
     settings_store::set_run_override(args.api_server.clone());
 
-    osm_gpui::http::install_default_client(Arc::new(osm_gpui::http::UreqClient::new()));
+    let real_client: Arc<dyn osm_gpui::http::HttpClient> =
+        Arc::new(osm_gpui::http::UreqClient::new());
+    let client = if args.script.is_some() {
+        let mut rules = match &args.http_fixtures {
+            Some(path) => osm_gpui::http::load_manifest(path).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }),
+            None => Vec::new(),
+        };
+        // Canned taginfo answers (see docs/osmscript.md) are one more rule.
+        if let Some(path) = std::env::var_os(osm_gpui::taginfo::FIXTURE_ENV) {
+            let fixture = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or(serde_json::Value::Null);
+            rules.push(osm_gpui::taginfo::fixture_rule(fixture));
+        }
+        osm_gpui::http::script_client(args.offline, rules, real_client)
+    } else {
+        real_client
+    };
+    osm_gpui::http::install_default_client(client);
 
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.
@@ -7342,7 +7413,6 @@ fn main() {
         // Register the open file action
         cx.on_action(open_osm_file);
         cx.on_action(add_osm_carto);
-        cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
@@ -7375,7 +7445,11 @@ fn main() {
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.
-        osm_gpui::imagery_offset::init_store(!script_harness::script_mode());
+        osm_gpui::imagery_offset::init_store(if script_harness::script_mode() {
+            Default::default()
+        } else {
+            osm_gpui::imagery_offset::load()
+        });
 
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value
@@ -7394,6 +7468,9 @@ fn main() {
         // Light, dark or the OS appearance, now that the saved choice is known.
         osm_gpui::appearance::apply(cx);
         auth::init_store(auth::load());
+        // Move provider secrets that older builds kept in settings.json into
+        // secret storage. Writes only; no keychain read at launch.
+        osm_gpui::secrets::migrate_from_settings();
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
         osm_gpui::capabilities::ensure_fetched(
@@ -7409,8 +7486,7 @@ fn main() {
             40.7128,
             -74.0060,
             ImageryLoadState::Loading,
-            true,
-            false,
+            menu::MenuToggles::default(),
         );
 
         let startup_http = osm_gpui::http::default_client();

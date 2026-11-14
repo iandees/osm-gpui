@@ -153,17 +153,6 @@ impl TileBlock {
         }
     }
 
-    /// Tiles column by column (all of a column's rows before the next column).
-    fn columns_first(&self) -> Vec<TileCoord> {
-        let mut out = Vec::new();
-        for x in self.x.0..=self.x.1 {
-            for y in self.y.0..=self.y.1 {
-                out.push(TileCoord::new(x, y, self.zoom));
-            }
-        }
-        out
-    }
-
     /// Tiles row by row.
     fn rows_first(&self) -> Vec<TileCoord> {
         let mut out = Vec::new();
@@ -176,27 +165,85 @@ impl TileBlock {
     }
 }
 
+/// A tile to paint, and in which copy of the world. The map centre is clamped
+/// to +-180 degrees but the view extends past it, so the far side of the
+/// antimeridian (and, zoomed far out, further repeats of the world) shows the
+/// tiles of the other edge: `coord` is the tile to fetch, and it is painted
+/// `world_copy` world-widths east of where `coord.mercator_bounds()` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedTile {
+    pub coord: TileCoord,
+    pub world_copy: i32,
+}
+
+impl PlacedTile {
+    /// How far east, in Web Mercator metres, the tile is painted from its
+    /// `coord.mercator_bounds()`.
+    pub fn x_shift_m(&self) -> f64 {
+        f64::from(self.world_copy) * MERCATOR_HALF_WORLD_M * 2.0
+    }
+}
+
+/// Most world-widths past either edge of the grid `tiles_covering_placed`
+/// will list, so a non-finite view cannot ask for an endless list.
+const MAX_WORLD_COPIES: f64 = 4.0;
+
 /// The tiles at `zoom` that must be fetched and painted so that every pixel of
 /// a view covering the Web Mercator box `view` shows imagery, when the imagery
 /// is painted shifted by `(off_x, off_y)` Mercator metres: the tile under a
-/// view pixel is the one at that pixel *minus* the shift. Clamped to the tile
-/// grid; listed column by column.
-pub fn tiles_covering(view: MercRect, (off_x, off_y): (f64, f64), zoom: u32) -> Vec<TileCoord> {
-    let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / grid_size(zoom) as f64;
+/// view pixel is the one at that pixel *minus* the shift. Columns past the
+/// antimeridian wrap to the other edge of the grid (see [`PlacedTile`]), rows
+/// are clamped to the grid; listed column by column.
+pub fn tiles_covering_placed(
+    view: MercRect,
+    (off_x, off_y): (f64, f64),
+    zoom: u32,
+) -> Vec<PlacedTile> {
+    let n = grid_size(zoom);
+    let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / n as f64;
     let col = |mx: f64| (mx + MERCATOR_HALF_WORLD_M) / tile_m;
     // North is up: the largest y is the smallest tile row.
     let row = |my: f64| (MERCATOR_HALF_WORLD_M - my) / tile_m;
-    TileBlock::clamped(
+    let limit = MAX_WORLD_COPIES * n as f64;
+    let column = |v: f64| v.floor().clamp(-limit, limit) as i64;
+    let (x_lo, x_hi) = (
+        column(col(view.min_x - off_x)),
+        column(col(view.max_x - off_x)),
+    );
+    let rows = TileBlock::clamped(
         zoom,
-        (col(view.min_x - off_x), col(view.max_x - off_x)),
+        (0.0, 0.0),
         (row(view.max_y - off_y), row(view.min_y - off_y)),
     )
-    .columns_first()
+    .y;
+    let mut out = Vec::new();
+    for x in x_lo..=x_hi {
+        for y in rows.0..=rows.1 {
+            out.push(PlacedTile {
+                coord: TileCoord::new(x.rem_euclid(i64::from(n)) as u32, y, zoom),
+                world_copy: x.div_euclid(i64::from(n)) as i32,
+            });
+        }
+    }
+    out
+}
+
+/// [`tiles_covering_placed`] without the placement: each tile to fetch once,
+/// in the order it first appears.
+pub fn tiles_covering(view: MercRect, offset: (f64, f64), zoom: u32) -> Vec<TileCoord> {
+    let mut seen = std::collections::HashSet::new();
+    tiles_covering_placed(view, offset, zoom)
+        .into_iter()
+        .map(|t| t.coord)
+        .filter(|c| seen.insert(*c))
+        .collect()
 }
 
 /// The tiles at `zoom` that touch the lat/lon box `b`, clamped to the tile
 /// grid and listed row by row. Latitudes beyond the projection's limit are
-/// clamped to it.
+/// clamped to it. Not wrapped: a `GeoBounds` has `min_lon <= max_lon` within
+/// +-180 (the viewport's own bounds are clamped there), so it cannot describe
+/// a box across the antimeridian.
 pub fn tiles_covering_geo(b: &GeoBounds, zoom: u32) -> Vec<TileCoord> {
     TileBlock::clamped(
         zoom,
@@ -480,11 +527,104 @@ mod tests {
     }
 
     #[test]
-    fn tile_coverage_is_clamped_to_the_grid() {
+    fn tile_coverage_stays_on_the_grid_and_lists_each_tile_once() {
         let everything = MercRect::new(-1.0e9, 1.0e9, -1.0e9, 1.0e9);
         let tiles = tiles_covering(everything, (0.0, 0.0), 2);
         assert_eq!(tiles.len(), 16);
         assert!(tiles.iter().all(|t| t.x < 4 && t.y < 4));
+        let placed = tiles_covering_placed(everything, (0.0, 0.0), 2);
+        assert!(
+            placed.len() <= 16 * 9,
+            "a non-finite or huge view is bounded"
+        );
+    }
+
+    /// A thin view, 2 * `half_width_m` wide, centred on `mx`.
+    fn view_at(mx: f64, half_width_m: f64) -> MercRect {
+        MercRect::new(mx - half_width_m, mx + half_width_m, 0.0, 1.0)
+    }
+
+    #[test]
+    fn a_view_centred_on_the_antimeridian_wraps_at_z2() {
+        let zoom = 2;
+        let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / 4.0;
+        // Centred on +180: half the view is past the east edge.
+        let placed = tiles_covering_placed(
+            view_at(MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
+            (0.0, 0.0),
+            zoom,
+        );
+        let cols: Vec<(u32, i32)> = placed
+            .iter()
+            .filter(|t| t.coord.y == 2)
+            .map(|t| (t.coord.x, t.world_copy))
+            .collect();
+        // Tile column 3 on the real side, column 0 painted one world east.
+        assert_eq!(cols, vec![(3, 0), (0, 1)]);
+        let wrapped = placed.iter().find(|t| t.world_copy == 1).unwrap();
+        let painted_min_x = wrapped.coord.mercator_bounds().min_x + wrapped.x_shift_m();
+        assert!((painted_min_x - MERCATOR_HALF_WORLD_M).abs() < 1e-6);
+        // The same on the western side: centred on -180.
+        let placed = tiles_covering_placed(
+            view_at(-MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
+            (0.0, 0.0),
+            zoom,
+        );
+        let cols: Vec<(u32, i32)> = placed
+            .iter()
+            .filter(|t| t.coord.y == 2)
+            .map(|t| (t.coord.x, t.world_copy))
+            .collect();
+        assert_eq!(cols, vec![(3, -1), (0, 0)]);
+        // The plain list names each tile to fetch once.
+        let plain = tiles_covering(
+            view_at(MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
+            (0.0, 0.0),
+            zoom,
+        );
+        assert_eq!(plain.len(), 4);
+        assert!(plain.contains(&TileCoord::new(3, 2, 2)));
+        assert!(plain.contains(&TileCoord::new(0, 2, 2)));
+    }
+
+    #[test]
+    fn a_view_centred_on_the_antimeridian_wraps_at_z10() {
+        let zoom = 10;
+        let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / 1024.0;
+        let placed = tiles_covering_placed(
+            view_at(MERCATOR_HALF_WORLD_M, 1.5 * tile_m),
+            (0.0, 0.0),
+            zoom,
+        );
+        let mut cols: Vec<(u32, i32)> = placed.iter().map(|t| (t.coord.x, t.world_copy)).collect();
+        cols.dedup();
+        assert_eq!(cols, vec![(1022, 0), (1023, 0), (0, 1), (1, 1)]);
+        for t in &placed {
+            let b = t.coord.mercator_bounds();
+            let (min_x, max_x) = (b.min_x + t.x_shift_m(), b.max_x + t.x_shift_m());
+            assert!(max_x > MERCATOR_HALF_WORLD_M - 1.5 * tile_m - tile_m);
+            assert!(min_x < MERCATOR_HALF_WORLD_M + 1.5 * tile_m);
+        }
+    }
+
+    #[test]
+    fn a_view_wider_than_the_world_repeats_it() {
+        // Zoom 1: the world is two tiles wide; a view three worlds wide shows
+        // every column in several copies.
+        let w = MERCATOR_HALF_WORLD_M * 2.0;
+        let view = MercRect::new(-1.5 * w, 1.5 * w, 0.0, 1.0);
+        let copies: std::collections::BTreeSet<i32> = tiles_covering_placed(view, (0.0, 0.0), 1)
+            .iter()
+            .map(|t| t.world_copy)
+            .collect();
+        assert_eq!(copies.into_iter().collect::<Vec<_>>(), vec![-1, 0, 1, 2]);
+    }
+
+    #[test]
+    fn geo_coverage_stays_clamped_because_a_geo_box_cannot_cross() {
+        let edge = GeoBounds::new(0.0, 1.0, 179.0, 180.0);
+        let tiles = tiles_covering_geo(&edge, 3);
+        assert!(tiles.iter().all(|t| t.x == 7));
     }
 
     #[test]

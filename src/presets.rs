@@ -210,6 +210,9 @@ pub struct PresetIndex {
     /// they take no part in matching, searching or `iter`; [`Self::get`] still
     /// finds them.
     templates: Vec<Preset>,
+    /// Preset id -> position in `presets` followed by `templates`; the first
+    /// of any duplicate ids wins, as a linear scan would.
+    by_id: HashMap<String, usize>,
 }
 
 impl PresetIndex {
@@ -236,7 +239,15 @@ impl PresetIndex {
                 presets.push(preset);
             }
         }
-        Ok(Self { presets, templates })
+        let mut by_id = HashMap::with_capacity(presets.len() + templates.len());
+        for (at, preset) in presets.iter().chain(&templates).enumerate() {
+            by_id.entry(preset.id.clone()).or_insert(at);
+        }
+        Ok(Self {
+            presets,
+            templates,
+            by_id,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -297,10 +308,11 @@ impl PresetIndex {
 
     /// Look up a preset by its exact `id` (e.g. `"amenity/cafe"`).
     pub fn get(&self, id: &str) -> Option<&Preset> {
-        self.presets
-            .iter()
-            .chain(&self.templates)
-            .find(|p| p.id == id)
+        let at = *self.by_id.get(id)?;
+        match self.presets.get(at) {
+            Some(preset) => Some(preset),
+            None => self.templates.get(at - self.presets.len()),
+        }
     }
 
     /// Search presets by name (case-insensitive substring), filtered to
@@ -682,6 +694,31 @@ pub fn classify_geometry(
 mod tests {
     use super::*;
     use crate::osm::{OsmNode, OsmWay};
+
+    #[test]
+    fn get_finds_every_bundled_preset_and_template_by_id() {
+        let index = preset_index();
+        for preset in index.iter().chain(index.templates()) {
+            let found = index.get(&preset.id).expect("every id resolves");
+            assert_eq!(found.id, preset.id);
+        }
+        assert!(index.get("no/such/preset").is_none());
+        assert!(index.get("").is_none());
+    }
+
+    #[test]
+    fn get_prefers_the_first_of_duplicate_ids() {
+        let index = PresetIndex::from_json(
+            r#"[
+              {"id":"a","name":"First","geometry":["point"]},
+              {"id":"a","name":"Second","geometry":["point"]},
+              {"id":"@templates/t","name":"T","geometry":["point"]}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(index.get("a").unwrap().name, "First");
+        assert_eq!(index.get("@templates/t").unwrap().name, "T");
+    }
 
     fn node(id: i64, tags: HashMap<String, String>) -> OsmNode {
         OsmNode {

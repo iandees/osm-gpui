@@ -9,7 +9,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 **Viewing and imagery**
 - Pan and zoom with trackpad scroll and pinch, mouse wheel, drags, and the keyboard.
 - Raster imagery from OpenStreetMap Carto, the [Editor Layer Index](https://github.com/osmlab/editor-layer-index) (filtered to the current view), and custom tile URL templates you add yourself. Attribution is shown on the map, and tiles are cached on disk within a size limit you can set and clear in Settings > Imagery.
-- A lat/lon grid layer, and a layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
+- A layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
 - OSM data is drawn for tracing over imagery: thin cased ways, round node markers, direction arrows, area fills, and hover highlighting.
 
 **Editing modes**
@@ -160,6 +160,8 @@ cargo test
 See [CONTRIBUTING.md](CONTRIBUTING.md) for code conventions and pull request guidance.
 
 **Scripted taginfo answers.** Scripted runs never touch the network, so tag suggestions from taginfo are off in them. Set `OSM_GPUI_TAGINFO_FIXTURE` to a JSON file (`{"<text in the request URL>": [<taginfo data entries>]}`, see `docs/screenshots/fixtures/taginfo-answers.json`) to answer taginfo lookups from it; `docs/screenshots/tag-autocomplete-related.osmscript` uses this.
+
+**Offline scripted runs.** Add `--offline` to a `--script` run to deny every HTTP request (map tiles, imagery index, name suggestions, server capabilities) so the run is deterministic. `--http-fixtures <file.json>` answers chosen URLs from local files instead, for example one blank PNG for every tile of a host; see `docs/screenshots/fixtures/offline/http-fixtures.json` and the intro of `docs/osmscript.md`. Without `--offline` a scripted run uses the network as before.
 
 **Scripted screenshots.** `--script <file>` runs a line-oriented `.osmscript` file (viewport, click, drag, scroll, key, load_osm, wait_idle, capture, and so on) against the live app and writes PNGs, which is useful for checking UI changes without driving the app by hand. Examples are in `docs/screenshots/`; `docs/screenshots/smoke.osmscript` is a short smoke test, and the scripts under `tests/ui/` are run by the `#[ignore]`d tests in `tests/ui_scripts.rs` (they need the Keychain). Every checked-in script is parsed by `cargo test`.
 
