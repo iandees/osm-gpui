@@ -1114,6 +1114,31 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_node_way_and_relation_are_still_deleted_after_a_restore() {
+        let mut layer = OsmLayer::new_with_data(LayerId(1), "Deleted", Arc::new(downloaded()));
+        layer.delete_relation(201).unwrap();
+        layer.delete_feature(FeatureKind::Way, 101).unwrap();
+        layer.delete_feature(FeatureKind::Node, 9).unwrap();
+        let before = layer.diff_for_upload();
+        assert_eq!(before.deleted_relation_ids, vec![(201, 3)]);
+
+        let root = tmp_root("deleted-roundtrip");
+        let restored = restore(&layer, &root);
+        let after = restored.diff_for_upload();
+        assert_eq!(after.deleted_relation_ids, vec![(201, 3)]);
+        assert_eq!(after.deleted_way_ids, vec![(101, 2)]);
+        assert_eq!(after.deleted_node_ids, vec![(9, 5)]);
+        assert_eq!(facts(&after), facts(&before));
+
+        let change = crate::osm_upload::build_osm_change_xml(1, &[("Deleted", after)]);
+        assert!(
+            change.contains("<relation id=\"201\" version=\"3\""),
+            "{change}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn restoring_after_a_partial_upload_leaves_only_the_unsent_edits() {
         // Edits, one accepted chunk applied locally, then the autosave that
         // the app triggers right after: a restore must not offer the

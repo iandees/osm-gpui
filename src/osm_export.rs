@@ -116,7 +116,9 @@ fn write_relation(out: &mut String, relation: &OsmRelation, action: Action) {
             xml_escape(&member.role)
         );
     }
-    write_tags(out, &relation.tags);
+    if action != Action::Delete {
+        write_tags(out, &relation.tags);
+    }
     out.push_str("  </relation>\n");
 }
 
@@ -705,7 +707,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "a deleted relation is written with its tags, unlike a deleted node or way"]
     fn a_deleted_relation_is_written_without_its_tags() {
         let relation = OsmRelation {
             id: 6,
@@ -727,6 +728,79 @@ mod tests {
             "{xml}"
         );
         assert!(!xml.contains("<tag"), "{xml}");
+    }
+
+    #[test]
+    fn a_deleted_relation_keeps_its_members_like_a_deleted_way_keeps_its_nodes() {
+        let relation = |id: i64| OsmRelation {
+            id,
+            version: 3,
+            tags: tags(&[("type", "route")]),
+            members: vec![
+                OsmMember {
+                    member_type: MemberType::Node,
+                    reference: 1,
+                    role: "stop".to_string(),
+                },
+                OsmMember {
+                    member_type: MemberType::Way,
+                    reference: 10,
+                    role: "".to_string(),
+                },
+            ],
+        };
+        let mut original = data(
+            vec![node(1, 1.0, 1.0, 1, &[]), node(2, 2.0, 2.0, 1, &[])],
+            vec![way(10, vec![1, 2], 1, &[])],
+        );
+        original.relations.push(relation(6));
+        let mut current = original.clone();
+        current.relations.clear();
+        let xml = to_osm_xml(&original, &current);
+        assert!(
+            xml.contains(concat!(
+                "  <relation id=\"6\" action=\"delete\" version=\"3\" visible=\"true\">\n",
+                "    <member type=\"node\" ref=\"1\" role=\"stop\"/>\n",
+                "    <member type=\"way\" ref=\"10\" role=\"\"/>\n",
+                "  </relation>\n",
+            )),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn modified_and_unmodified_relations_keep_their_tags_and_members() {
+        let relation = |id: i64, role: &str| OsmRelation {
+            id,
+            version: 2,
+            tags: tags(&[("type", "route")]),
+            members: vec![OsmMember {
+                member_type: MemberType::Node,
+                reference: 1,
+                role: role.to_string(),
+            }],
+        };
+        let mut original = data(vec![node(1, 1.0, 1.0, 1, &[])], vec![]);
+        original.relations.push(relation(5, "a"));
+        original.relations.push(relation(6, "a"));
+        let mut current = original.clone();
+        current.relations[0].members[0].role = "b".to_string();
+        let xml = to_osm_xml(&original, &current);
+        for (header, role) in [
+            (
+                "  <relation id=\"5\" action=\"modify\" version=\"2\" visible=\"true\">\n",
+                "b",
+            ),
+            (
+                "  <relation id=\"6\" version=\"2\" visible=\"true\">\n",
+                "a",
+            ),
+        ] {
+            let body = format!(
+                "{header}    <member type=\"node\" ref=\"1\" role=\"{role}\"/>\n    <tag k=\"type\" v=\"route\"/>\n  </relation>\n"
+            );
+            assert!(xml.contains(&body), "{xml}");
+        }
     }
 
     #[test]
