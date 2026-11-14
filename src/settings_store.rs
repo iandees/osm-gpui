@@ -344,7 +344,7 @@ pub fn update(persist: bool, f: impl FnOnce(&mut AppSettings)) {
     if persist {
         let base = updated.api_base_url();
         if base.starts_with("http://") || base.starts_with("https://") {
-            crate::capabilities::ensure_fetched(&base);
+            crate::capabilities::ensure_fetched(crate::http::default_client(), &base);
         }
     }
     #[cfg(test)]

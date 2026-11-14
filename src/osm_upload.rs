@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::changeset_tags::ChangesetTags;
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, Method, RetryPolicy, UreqClient,
+    fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, Method, RetryPolicy,
 };
 use crate::layers::diff::LayerDiff;
 use crate::osm::{OsmNode, OsmRelation, OsmWay};
@@ -292,23 +292,21 @@ fn call_with_retries(
     let request = HttpRequest::with_text(method, url, body)
         .bearer(token)
         .header("Content-Type", "text/xml; charset=utf-8");
-    match fetch_with_retries(client, &request, policy) {
-        Ok(resp) => resp
-            .into_string()
-            .map_err(|e| UploadError::Network(e.to_string())),
-        Err(HttpError::Status { status, body }) => {
-            let body_text = String::from_utf8_lossy(&body).into_owned();
-            if matches!(status, 409 | 410 | 412) {
-                return Err(UploadError::Conflict(UploadConflict::parse(
-                    status, &body_text,
-                )));
+    fetch_with_retries(client, &request, policy)?
+        .into_string()
+        .map_err(|e| UploadError::Network(e.to_string()))
+}
+
+impl From<HttpError> for UploadError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status, body } if matches!(status, 409 | 410 | 412) => {
+                UploadError::Conflict(UploadConflict::parse(status, &body))
             }
-            Err(UploadError::Http {
-                status,
-                body: body_text,
-            })
+            HttpFailure::Status { status, body } => UploadError::Http { status, body },
+            HttpFailure::Transport(msg) => UploadError::Network(msg),
+            HttpFailure::Cancelled => UploadError::Network(HttpError::Cancelled.to_string()),
         }
-        Err(e) => Err(UploadError::Network(e.to_string())),
     }
 }
 
@@ -316,14 +314,6 @@ fn call_with_retries(
 ///
 /// `tags` is the comment alone (`&str`) or the full tag list from
 /// `changeset_tags::build_changeset_tags`.
-pub fn create_changeset(
-    base_url: &str,
-    token: &str,
-    tags: impl Into<ChangesetTags>,
-) -> Result<u64, UploadError> {
-    create_changeset_with(&UreqClient::new(), base_url, token, tags)
-}
-
 pub fn create_changeset_with(
     client: &dyn HttpClient,
     base_url: &str,
@@ -362,15 +352,6 @@ fn build_changeset_create_xml(tags: &ChangesetTags) -> String {
 }
 
 /// `POST {base_url}/api/0.6/changeset/{id}/upload` with `xml` as the body.
-pub fn upload_changes(
-    base_url: &str,
-    token: &str,
-    changeset_id: u64,
-    xml: &str,
-) -> Result<UploadResult, UploadError> {
-    upload_changes_with(&UreqClient::new(), base_url, token, changeset_id, xml)
-}
-
 pub fn upload_changes_with(
     client: &dyn HttpClient,
     base_url: &str,
@@ -395,10 +376,6 @@ pub fn upload_changes_with(
 }
 
 /// `PUT {base_url}/api/0.6/changeset/{id}/close`.
-pub fn close_changeset(base_url: &str, token: &str, changeset_id: u64) -> Result<(), UploadError> {
-    close_changeset_with(&UreqClient::new(), base_url, token, changeset_id)
-}
-
 pub fn close_changeset_with(
     client: &dyn HttpClient,
     base_url: &str,
@@ -796,6 +773,37 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn http_failures_map_to_upload_errors() {
+        for status in [409, 410, 412] {
+            assert!(
+                matches!(
+                    UploadError::from(HttpError::Status {
+                        status,
+                        body: b"conflict".to_vec()
+                    }),
+                    UploadError::Conflict(_)
+                ),
+                "{status}"
+            );
+        }
+        assert!(matches!(
+            UploadError::from(HttpError::Status {
+                status: 500,
+                body: b"oops".to_vec()
+            }),
+            UploadError::Http { status: 500, body } if body == "oops"
+        ));
+        assert!(matches!(
+            UploadError::from(HttpError::Transport("reset".into())),
+            UploadError::Network(m) if m == "reset"
+        ));
+        assert!(matches!(
+            UploadError::from(HttpError::Cancelled),
+            UploadError::Network(m) if m == "cancelled"
+        ));
+    }
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

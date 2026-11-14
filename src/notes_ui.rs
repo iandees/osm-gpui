@@ -202,7 +202,7 @@ impl MapViewer {
             return;
         }
         let base_url = settings_store::api_base_url();
-        osm_gpui::capabilities::ensure_fetched(&base_url);
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
         let max_area = osm_gpui::capabilities::max_note_area(&base_url);
 
         let downloaded: Vec<GeoBounds> = self
@@ -241,6 +241,7 @@ impl MapViewer {
         self.set_status(tr!("notes.state.loading"));
         cx.notify();
 
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -248,9 +249,12 @@ impl MapViewer {
                     // Reading notes works anonymously, so it never waits on the
                     // system keychain: a token is used only if it is already in
                     // memory, as with the map download.
-                    let token = auth::fresh_token_if_loaded(&auth::oauth_base_for(&base_url))
-                        .map(|t| t.access_token);
-                    notes::fetch_notes(&base_url, &cells, token.as_deref())
+                    let token = auth::fresh_token_if_loaded(
+                        http.as_ref(),
+                        &auth::oauth_base_for(&base_url),
+                    )
+                    .map(|t| t.access_token);
+                    notes::fetch_notes_with(http.as_ref(), &base_url, &cells, token.as_deref())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| this.finish_note_fetch(epoch, result, cx));
@@ -521,15 +525,23 @@ impl MapViewer {
         cx.notify();
 
         let oauth_base = auth::oauth_base_for(&base_url);
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result: Result<Note, String> = cx
                 .background_executor()
                 .spawn(async move {
                     // May wait on the system keychain's access prompt the first
                     // time; this is the background thread, and "Working…" shows.
-                    let token = auth::ensure_fresh_token(&oauth_base).map_err(|e| e.to_string())?;
-                    notes::write_note(&base_url, &token.access_token, write, &text)
-                        .map_err(|e| e.user_message())
+                    let token = auth::ensure_fresh_token(http.as_ref(), &oauth_base)
+                        .map_err(|e| e.to_string())?;
+                    notes::write_note_with(
+                        http.as_ref(),
+                        &base_url,
+                        &token.access_token,
+                        write,
+                        &text,
+                    )
+                    .map_err(|e| e.user_message())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| this.finish_note_write(write, result, cx));
@@ -819,7 +831,8 @@ impl MapViewer {
                 Ok(())
             }
             NoteOp::LoadFile(path) => {
-                let loaded = notes::load_notes_file(std::path::Path::new(path))?;
+                let loaded = notes::load_notes_file(std::path::Path::new(path))
+                    .map_err(|e| e.to_string())?;
                 self.notes.local_only = true;
                 self.notes.fetching = false;
                 self.notes.epoch += 1;
