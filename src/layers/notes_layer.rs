@@ -4,13 +4,13 @@
 //! upload diff, no export and no autosave snapshot, so it cannot reach pending
 //! edits, the upload, autosave, the validator or search (which all work from
 //! `as_editable`/`is_modified`/`autosave_snapshot`); its pins are found by
-//! `hit_test` here and by nothing else.
+//! `MapLayer::hit_test_point` here and by nothing else.
 
 #[cfg(test)]
 use gpui::size;
 use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
 
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::notes::{Note, NoteStore};
 use crate::viewport::Viewport;
 
@@ -96,7 +96,7 @@ fn paint_polygon(window: &mut Window, pts: &[(f32, f32)], color: u32, stroke: Op
 
 /// The id of the note whose pin is under `pos` (map-local pixels), the
 /// topmost one when pins overlap. Closed notes count: they are drawn too.
-pub fn hit_test(store: &NoteStore, viewport: &Viewport, pos: Point<Pixels>) -> Option<i64> {
+fn hit_test(store: &NoteStore, viewport: &Viewport, pos: Point<Pixels>) -> Option<i64> {
     let (mx, my) = (pos.x.as_f32(), pos.y.as_f32());
     store.with(|s| {
         // Drawn open-last, so test that way round.
@@ -137,6 +137,10 @@ impl MapLayer for NotesLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn hit_test_point(&self, viewport: &Viewport, point: Point<Pixels>) -> Option<LayerHit> {
+        hit_test(&self.store, viewport, point).map(LayerHit::Note)
     }
 
     fn render_elements(
@@ -256,6 +260,17 @@ mod tests {
         assert_eq!(hit_test(&store, &vp, at(20.0, -HEAD_OFFSET)), None);
         assert_eq!(hit_test(&store, &vp, at(0.0, 15.0)), None);
         assert_eq!(hit_test(&store, &vp, at(0.0, -40.0)), None);
+    }
+
+    #[test]
+    fn the_trait_method_reports_the_note_under_the_click() {
+        let vp = viewport();
+        let (layer, _) = layer_with(vec![note(4, 10.0, 20.0, NoteStatus::Open)]);
+        let tip = vp.geo_to_screen(10.0, 20.0);
+        let head = point(tip.x, tip.y - px(HEAD_OFFSET));
+        assert_eq!(layer.hit_test_point(&vp, head), Some(LayerHit::Note(4)));
+        let away = point(tip.x + px(60.0), tip.y);
+        assert_eq!(layer.hit_test_point(&vp, away), None);
     }
 
     #[test]

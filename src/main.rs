@@ -3830,14 +3830,38 @@ impl MapViewer {
         ctrl_held: bool,
         cx: &mut Context<Self>,
     ) {
-        // New Note placing its pin, or a click on a note's pin.
-        if self.notes_click(screen_pt) {
-            return;
-        }
-        if self.imagery_click(screen_pt) {
+        if self.place_armed_note(screen_pt) || self.open_layer_hit(screen_pt) {
             return;
         }
         self.mode_click(screen_pt, shift_held, click_count, ctrl_held, cx);
+    }
+
+    /// In Select mode, open what a non-OSM layer has under `screen_pt` (a
+    /// note, a photo); the click is used then. A click on anything else
+    /// closes the open photo and goes on to the mode. OSM features are not
+    /// layer hits: `select::click` resolves those.
+    fn open_layer_hit(&mut self, screen_pt: gpui::Point<gpui::Pixels>) -> bool {
+        use osm_gpui::layers::LayerHit;
+        if self.mode() != EditMode::Select {
+            self.close_photo_panel();
+            return false;
+        }
+        match self.layer_manager.hit_test_point(&self.viewport, screen_pt) {
+            Some((_, LayerHit::Note(id))) => {
+                self.notes.pending_open = Some(id);
+                true
+            }
+            Some((_, LayerHit::Photo { photo, .. })) => {
+                self.imagery.pending_open = Some(photo);
+                true
+            }
+            // Reference features only describe themselves when no OSM
+            // feature is under the click (`select::click`).
+            Some((_, LayerHit::ReferenceFeature(_))) | None => {
+                self.close_photo_panel();
+                false
+            }
+        }
     }
 
     /// The geo position for an Arc-mode click at `screen_pt`: snapped onto the
@@ -5138,8 +5162,14 @@ impl MapViewer {
             .iter()
             .rev()
             .filter(|layer| layer.is_visible())
-            .filter_map(|layer| layer.as_reference())
-            .find_map(|layer| layer.hit(&self.viewport, screen_pt))
+            .find_map(
+                |layer| match layer.hit_test_point(&self.viewport, screen_pt) {
+                    Some(osm_gpui::layers::LayerHit::ReferenceFeature(i)) => {
+                        layer.as_reference()?.data().features.get(i)
+                    }
+                    _ => None,
+                },
+            )
             .map(osm_gpui::reference::describe)
     }
 

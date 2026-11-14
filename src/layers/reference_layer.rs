@@ -13,7 +13,7 @@
 use gpui::*;
 
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
 use crate::trace_style::{ColorBy, TraceStyle};
 use crate::viewport::Viewport;
@@ -140,16 +140,6 @@ impl ReferenceLayer {
 
     pub fn format(&self) -> Format {
         self.data.format
-    }
-
-    /// The feature under `screen_pt` (view-relative pixels), if any.
-    pub fn hit(
-        &self,
-        viewport: &Viewport,
-        screen_pt: Point<Pixels>,
-    ) -> Option<&crate::reference::RefFeature> {
-        let n = self.data.nearest(viewport, screen_pt, HIT_TOLERANCE_PX)?;
-        self.data.features.get(n.feature as usize)
     }
 
     /// The nearest vertex, marker or point on a segment within
@@ -431,6 +421,11 @@ impl MapLayer for ReferenceLayer {
         self.visible = visible;
     }
 
+    fn hit_test_point(&self, viewport: &Viewport, point: Point<Pixels>) -> Option<LayerHit> {
+        let n = self.data.nearest(viewport, point, HIT_TOLERANCE_PX)?;
+        Some(LayerHit::ReferenceFeature(n.feature as usize))
+    }
+
     fn render_elements(
         &self,
         _viewport: &Viewport,
@@ -639,9 +634,13 @@ mod tests {
         let (vp, _) = view(40.0, -74.0, 18.0);
         // The vertex at (40.0, -74.0) is the view centre.
         let centre = point(px(400.0), px(300.0));
-        let f = layer.hit(&vp, centre).unwrap();
-        assert_eq!(f.name.as_deref(), Some("t"));
-        assert!(layer.hit(&vp, point(px(400.0), px(100.0))).is_none());
+        let Some(LayerHit::ReferenceFeature(i)) = layer.hit_test_point(&vp, centre) else {
+            panic!("on the line");
+        };
+        assert_eq!(layer.data().features[i].name.as_deref(), Some("t"));
+        assert!(layer
+            .hit_test_point(&vp, point(px(400.0), px(100.0)))
+            .is_none());
         let (lat, lon) = layer.snap(&vp, point(px(402.0), px(303.0)), 6.0).unwrap();
         assert!((lat - 40.0).abs() < 1e-6 && (lon + 74.0).abs() < 1e-6);
         // Between vertices: lands on the segment, on the line y=40.0.

@@ -2,12 +2,12 @@
 //! with a small wedge showing which way the camera faced.
 //!
 //! Like the Notes layer this is not OSM data: not editable, never modified, no
-//! upload diff, export or autosave snapshot. Its dots are found by `hit_test`
-//! here and by nothing else.
+//! upload diff, export or autosave snapshot. Its dots are found by
+//! `MapLayer::hit_test_point` here and by nothing else.
 
 use gpui::{point, px, rgba, AnyElement, Bounds, PathBuilder, Pixels, Point, Window};
 
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, MapLayer};
 use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 use crate::viewport::Viewport;
 
@@ -99,28 +99,26 @@ fn paint_polygon(window: &mut Window, pts: &[(f32, f32)], color: u32, stroke: Op
     }
 }
 
-/// The photo whose dot is under `pos` (map-local pixels) in any of `stores`,
-/// nearest first.
-pub fn hit_test(
-    stores: &[&PhotoStore],
+/// The photo whose dot is under `pos` (map-local pixels), nearest first, with
+/// its distance from `pos` in pixels.
+fn hit_test(
+    store: &PhotoStore,
     viewport: &Viewport,
     pos: Point<Pixels>,
-) -> Option<StreetPhoto> {
+) -> Option<(f32, StreetPhoto)> {
     let (mx, my) = (pos.x.as_f32(), pos.y.as_f32());
     let mut best: Option<(f32, StreetPhoto)> = None;
-    for store in stores {
-        store.with(|s| {
-            for p in &s.photos {
-                let sp = viewport.geo_to_screen(p.lat, p.lon);
-                let (dx, dy) = (mx - sp.x.as_f32(), my - sp.y.as_f32());
-                let d = (dx * dx + dy * dy).sqrt();
-                if d <= HIT_RADIUS && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
-                    best = Some((d, p.clone()));
-                }
+    store.with(|s| {
+        for p in &s.photos {
+            let sp = viewport.geo_to_screen(p.lat, p.lon);
+            let (dx, dy) = (mx - sp.x.as_f32(), my - sp.y.as_f32());
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= HIT_RADIUS && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best = Some((d, p.clone()));
             }
-        });
-    }
-    best.map(|(_, p)| p)
+        }
+    });
+    best
 }
 
 impl MapLayer for StreetImageryLayer {
@@ -138,6 +136,11 @@ impl MapLayer for StreetImageryLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn hit_test_point(&self, viewport: &Viewport, point: Point<Pixels>) -> Option<LayerHit> {
+        hit_test(&self.store, viewport, point)
+            .map(|(distance_px, photo)| LayerHit::Photo { photo, distance_px })
     }
 
     fn render_elements(
@@ -242,10 +245,17 @@ mod tests {
             vec![photo("a", 10.0, 20.0), photo("b", 10.0, 20.00005)],
         );
         let at = vp.geo_to_screen(10.0, 20.0);
-        let hit = hit_test(&[&store], &vp, at).expect("on a dot");
-        assert_eq!(hit.id, "a");
+        let layer = layer_over(store);
+        let Some(LayerHit::Photo { photo, .. }) = layer.hit_test_point(&vp, at) else {
+            panic!("on a dot");
+        };
+        assert_eq!(photo.id, "a");
         let far = point(at.x + px(200.0), at.y);
-        assert!(hit_test(&[&store], &vp, far).is_none());
+        assert!(layer.hit_test_point(&vp, far).is_none());
+    }
+
+    fn layer_over(store: PhotoStore) -> StreetImageryLayer {
+        StreetImageryLayer::new(LayerId(3), "Fotoshi".into(), Provider::Fotoshi, store)
     }
 
     #[test]
