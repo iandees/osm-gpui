@@ -6,7 +6,7 @@ use crate::coordinates::MAX_MAP_ZOOM;
 use crate::download_bounds::MercRect;
 use crate::imagery::AttributionInfo;
 use crate::imagery_offset::{offset_to_mercator, ImageryOffset};
-use crate::layers::{ImageryLayer, LayerId, MapLayer};
+use crate::layers::{ImageryLayer, LayerId, LayerKind, MapLayer};
 use crate::tile_cache::TileCache;
 use crate::tiles::{tiles_covering, url_from_template, TileCoord};
 use crate::viewport::Viewport;
@@ -325,6 +325,10 @@ impl MapLayer for TileLayer {
 
     fn id(&self) -> LayerId {
         self.id
+    }
+
+    fn kind(&self) -> LayerKind {
+        LayerKind::Tile
     }
 
     fn is_visible(&self) -> bool {

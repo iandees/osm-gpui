@@ -47,15 +47,15 @@ pub(super) fn way_rtree_entry(b: WayBbox, way_id: i64) -> GeomWithData<Rectangle
 }
 
 /// Pre-projected node coordinates (Web Mercator meters) aligned with the
-/// iteration order used by the render loops. Computing this once at
-/// `set_osm_data` time eliminates the per-frame `lat_lon_to_mercator` (tan+ln)
+/// iteration order used by the render loops. Computing this once when the
+/// data is loaded eliminates the per-frame `lat_lon_to_mercator` (tan+ln)
 /// from every node and way vertex. Also caches each node's resolved style
 /// (color/size), resolved once from the stylesheet + tags here instead of
 /// every frame in the render loop.
 #[derive(Debug, Clone)]
 pub(super) struct NodeCache {
     /// node id -> index into `flat`/`styles`. Used by the way-vertex build
-    /// pass and by incremental cache updates (`commit_node_moves`).
+    /// pass and by incremental cache updates (`index_node_set`).
     pub(super) index_by_id: HashMap<i64, usize>,
     /// Flat list of all nodes as `(id, mercator_x, mercator_y)` for cache-
     /// friendly iteration in the node paint loop.
@@ -118,10 +118,9 @@ pub(super) fn compute_layer_bbox(node_cache: &NodeCache) -> Option<WayBbox> {
 /// their node ids, so callers can match against an active `drag_preview`
 /// set) and compute its bbox, both from `node_cache` in a single pass. Node
 /// ids not present in `node_cache` (invalid coords, or a currently-deleted
-/// node) are skipped, same as `compute_way_tables` always did. Shared by
-/// `compute_way_tables` (full rebuild), `commit_node_moves` (per-touched-way
-/// patch), and `restore_way` (single restored way) so the projection math
-/// lives in exactly one place.
+/// node) are skipped. Shared by `compute_way_tables` (full rebuild),
+/// `reproject_way` (per-touched-way patch) and `index_way_added` (one new
+/// way) so the projection math lives in exactly one place.
 pub(super) fn project_way_vertices(
     way: &OsmWay,
     node_cache: &NodeCache,
@@ -170,9 +169,9 @@ pub(super) fn project_way_vertices(
 /// any zoom with one compare per vertex (and project only the survivors).
 ///
 /// Built only by [`WayGeom::new`], which every path that (re)projects a way
-/// goes through (`compute_way_tables`, `commit_node_moves`, `restore_way`,
-/// add/replace way), so the significance is always that of the current
-/// geometry: an edit replaces the whole `WayGeom` of each way it touches.
+/// goes through (`compute_way_tables`, `reproject_way`, `index_way_added`),
+/// so the significance is always that of the current geometry: an edit
+/// replaces the whole `WayGeom` of each way it touches.
 /// Derefs to the vertex slice for everything that does not care.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct WayGeom {
@@ -311,13 +310,10 @@ pub(super) fn compute_way_tables(
     (ids, bboxes, vertices, styles, fill_tris)
 }
 
-/// Recompute and return the resolved style for a single already-mutated
-/// feature's tags, for the caller to store into the appropriate cache slot.
-/// Shared by `set_tag`/`remove_tag`. Free function (not a method) so it can be called while the caller still
-/// holds a live `&mut OsmData` borrowed out of `self.store.osm_data` via
-/// `Arc::make_mut` — a `&mut self` method call wouldn't type-check there.
-/// That split-borrow role is also why it takes each cache slice as its own
-/// parameter rather than a struct.
+/// Re-resolve the cached style (and, for a way, its fill) of one feature
+/// whose tags changed, in place. A free function taking each cache slice as
+/// its own parameter, so it can run while the caller holds borrows of other
+/// fields of the layer.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_style_refresh(
     kind: FeatureKind,
@@ -369,10 +365,9 @@ pub(super) fn sorted_ways(data: &OsmData) -> Vec<&OsmWay> {
     ways
 }
 
-/// node id -> OSM way id, for every way that references it. Built once at
-/// data-load time so `commit_node_moves` can find exactly which ways need
-/// their cached vertex/bbox tables recomputed after a node move, instead of
-/// rescanning every way.
+/// node id -> indices (into `ways`) of every way that references it, so an
+/// edit can find exactly which ways need their cached vertex/bbox tables
+/// recomputed after a node move, instead of rescanning every way.
 pub(super) fn build_node_to_ways(ways: &[&OsmWay]) -> HashMap<i64, HashSet<usize>> {
     let mut map: HashMap<i64, HashSet<usize>> = HashMap::new();
     for (idx, way) in ways.iter().enumerate() {

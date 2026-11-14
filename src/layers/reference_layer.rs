@@ -12,8 +12,9 @@
 
 use gpui::*;
 
+use crate::layers::paint::{PaintFrame, PathBatch};
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, LayerKind, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
 use crate::trace_style::{ColorBy, TraceStyle};
 use crate::viewport::Viewport;
@@ -142,16 +143,6 @@ impl ReferenceLayer {
         self.data.format
     }
 
-    /// The feature under `screen_pt` (view-relative pixels), if any.
-    pub fn hit(
-        &self,
-        viewport: &Viewport,
-        screen_pt: Point<Pixels>,
-    ) -> Option<&crate::reference::RefFeature> {
-        let n = self.data.nearest(viewport, screen_pt, HIT_TOLERANCE_PX)?;
-        self.data.features.get(n.feature as usize)
-    }
-
     /// The nearest vertex, marker or point on a segment within
     /// `tolerance_px` of `screen_pt`, as `(lat, lon)`.
     pub fn snap(
@@ -182,7 +173,7 @@ impl ReferenceLayer {
         bounds: Bounds<Pixels>,
         now: i64,
     ) -> RefScene {
-        let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let frame = PaintFrame::new(viewport, bounds);
         let proj = viewport.projector();
         let (ppm, _) = proj.pixels_per_meter();
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
@@ -200,10 +191,10 @@ impl ReferenceLayer {
         // Only GPS traces have more than one class.
         let classed = style.line.len() > 1;
 
-        let mut casing = Batch::new();
-        let mut lines: Vec<Batch> = style.line.iter().map(|_| Batch::new()).collect();
-        let mut halo = Batch::new();
-        let mut fill = Batch::new();
+        let mut casing = PathBatch::new();
+        let mut lines: Vec<PathBatch> = style.line.iter().map(|_| PathBatch::new()).collect();
+        let mut halo = PathBatch::new();
+        let mut fill = PathBatch::new();
 
         let mut polyline = Polyline::default();
         let mut pts: Vec<way_stroke::Pt> = Vec::new();
@@ -228,7 +219,7 @@ impl ReferenceLayer {
                 if !(x.is_finite() && y.is_finite()) {
                     continue;
                 }
-                let (x, y) = (x + ox, y + oy);
+                let (x, y) = frame.to_window((x, y));
                 if let Some(&(lx, ly)) = pts.last() {
                     let d2 = (x - lx) * (x - lx) + (y - ly) * (y - ly);
                     if d2 < min_seg2 && i != last {
@@ -264,18 +255,12 @@ impl ReferenceLayer {
                 polyline.set(pts[from..=to].iter().copied());
                 polyline.emit_layers(&mut [
                     style.casing_hw.map(|hw| Layer {
-                        sink: PathSink {
-                            path: &mut casing.path,
-                            bounds: &mut casing.bounds,
-                        },
+                        sink: casing.sink(),
                         hw,
                         shape,
                     }),
                     Some(Layer {
-                        sink: PathSink {
-                            path: &mut line.path,
-                            bounds: &mut line.bounds,
-                        },
+                        sink: line.sink(),
                         hw: style.line_hw,
                         shape,
                     }),
@@ -301,27 +286,11 @@ impl ReferenceLayer {
             if !(x.is_finite() && y.is_finite()) {
                 continue;
             }
-            let c = (x + ox, y + oy);
+            let c = frame.to_window((x, y));
             if let Some(radius) = style.halo_radius {
-                polygon(
-                    &mut PathSink {
-                        path: &mut halo.path,
-                        bounds: &mut halo.bounds,
-                    },
-                    c,
-                    radius,
-                    style.marker_sides,
-                );
+                polygon(&mut halo.sink(), c, radius, style.marker_sides);
             }
-            polygon(
-                &mut PathSink {
-                    path: &mut fill.path,
-                    bounds: &mut fill.bounds,
-                },
-                c,
-                style.marker_radius,
-                style.marker_sides,
-            );
+            polygon(&mut fill.sink(), c, style.marker_radius, style.marker_sides);
         }
 
         let mut paths = Vec::new();
@@ -347,40 +316,6 @@ fn polygon(sink: &mut PathSink<'_>, c: way_stroke::Pt, radius: f32, sides: usize
     };
     for i in 0..sides {
         sink.tri(c, at(i), at(i + 1));
-    }
-}
-
-/// Raw triangles painted in one colour, with the bounds accumulated as they
-/// are pushed.
-struct Batch {
-    path: Option<Path<Pixels>>,
-    bounds: (f32, f32, f32, f32),
-}
-
-impl Batch {
-    fn new() -> Self {
-        Batch {
-            path: None,
-            bounds: (
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-            ),
-        }
-    }
-
-    fn finish(self) -> Option<Path<Pixels>> {
-        let mut path = self.path?;
-        if path.vertices.is_empty() {
-            return None;
-        }
-        let (min_x, max_x, min_y, max_y) = self.bounds;
-        path.bounds = Bounds {
-            origin: point(px(min_x), px(min_y)),
-            size: size(px(max_x - min_x), px(max_y - min_y)),
-        };
-        Some(path)
     }
 }
 
@@ -415,6 +350,10 @@ impl MapLayer for ReferenceLayer {
         self.id
     }
 
+    fn kind(&self) -> LayerKind {
+        LayerKind::Reference
+    }
+
     fn as_reference(&self) -> Option<&ReferenceLayer> {
         Some(self)
     }
@@ -429,6 +368,11 @@ impl MapLayer for ReferenceLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+    }
+
+    fn hit_test_point(&self, viewport: &Viewport, point: Point<Pixels>) -> Option<LayerHit> {
+        let n = self.data.nearest(viewport, point, HIT_TOLERANCE_PX)?;
+        Some(LayerHit::ReferenceFeature(n.feature as usize))
     }
 
     fn render_elements(
@@ -639,9 +583,13 @@ mod tests {
         let (vp, _) = view(40.0, -74.0, 18.0);
         // The vertex at (40.0, -74.0) is the view centre.
         let centre = point(px(400.0), px(300.0));
-        let f = layer.hit(&vp, centre).unwrap();
-        assert_eq!(f.name.as_deref(), Some("t"));
-        assert!(layer.hit(&vp, point(px(400.0), px(100.0))).is_none());
+        let Some(LayerHit::ReferenceFeature(i)) = layer.hit_test_point(&vp, centre) else {
+            panic!("on the line");
+        };
+        assert_eq!(layer.data().features[i].name.as_deref(), Some("t"));
+        assert!(layer
+            .hit_test_point(&vp, point(px(400.0), px(100.0)))
+            .is_none());
         let (lat, lon) = layer.snap(&vp, point(px(402.0), px(303.0)), 6.0).unwrap();
         assert!((lat - 40.0).abs() < 1e-6 && (lon + 74.0).abs() < 1e-6);
         // Between vertices: lands on the segment, on the line y=40.0.

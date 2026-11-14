@@ -33,9 +33,8 @@ pub(crate) fn script_mode() -> bool {
     SCRIPT_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-// ---------------------------------------------------------------------------
-// Script command channel (background thread → gpui main thread)
-// ---------------------------------------------------------------------------
+// Script commands travel from the background runner thread to the gpui main
+// thread.
 //
 // The script runner runs on a background thread (so `std::thread::sleep` in
 // `wait_frame` does not block the gpui event loop). It cannot hold `AsyncApp`
@@ -110,9 +109,10 @@ pub(crate) enum ScriptCommand {
     Action {
         name: String,
     },
-    /// Compare `MapViewer.mode` against `want`.
+    /// Compare `MapViewer.mode` against this mode.
     AssertMode(crate::EditMode),
-    /// Compare `MapViewer.selected` against `want`.
+    /// Compare `MapViewer.selected` against this feature (`None`: not exactly
+    /// one selected).
     AssertSelected(Option<(osm_gpui::script::FeatureKind, i64)>),
     /// Set a tag on the selection (the side panel's Add tag path).
     SetTag {
@@ -170,8 +170,9 @@ pub(crate) struct ScriptBus {
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
     /// Result of the most recently processed command that can fail (every
-    /// one but `Capture`, which has its own slot). One slot is enough: `submit` blocks until the
-    /// pending command is consumed, so only one command is ever in flight.
+    /// one but `Capture`, which has its own slot). One slot is enough:
+    /// `submit` blocks until the pending command is consumed, so only one
+    /// command is ever in flight.
     assert_result: Mutex<Option<Result<(), String>>>,
 }
 
@@ -1038,30 +1039,30 @@ impl MapViewer {
             Check::NodeShared { node, ways } => self.script_check_node_shared(*node, ways),
             Check::Layer { kind, name } => {
                 let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
+                    use osm_gpui::layers::LayerKind as Kind;
                     use osm_gpui::reference::Format;
-                    if let Some(r) = layer.as_reference() {
-                        match r.format() {
-                            Format::Gpx | Format::OsmTraces => script::LayerKind::Gpx,
-                            Format::GeoJson => script::LayerKind::GeoJson,
-                        }
-                    } else if layer.as_editable().is_some() {
-                        script::LayerKind::Osm
-                    } else if layer.as_imagery().is_some() {
-                        script::LayerKind::Imagery
-                    } else {
-                        script::LayerKind::Grid
+                    match layer.kind() {
+                        Kind::Reference => match layer.as_reference().map(|r| r.format()) {
+                            Some(Format::GeoJson) => Some(script::LayerKind::GeoJson),
+                            _ => Some(script::LayerKind::Gpx),
+                        },
+                        Kind::Osm => Some(script::LayerKind::Osm),
+                        Kind::Tile => Some(script::LayerKind::Imagery),
+                        Kind::Grid => Some(script::LayerKind::Grid),
+                        // The script language has no word for these.
+                        Kind::Notes | Kind::StreetImagery => None,
                     }
                 };
                 let layers = self.layer_manager.layers();
                 if layers
                     .iter()
-                    .any(|l| l.name() == name && kind_of(l.as_ref()) == *kind)
+                    .any(|l| l.name() == name && kind_of(l.as_ref()) == Some(*kind))
                 {
                     Ok(())
                 } else {
                     let found: Vec<String> = layers
                         .iter()
-                        .map(|l| format!("{:?} {:?}", kind_of(l.as_ref()), l.name()))
+                        .map(|l| format!("{:?} {:?}", l.kind(), l.name()))
                         .collect();
                     Err(format!(
                         "no {kind:?} layer named {name:?}; layers: {}",
@@ -1405,10 +1406,6 @@ impl MapViewer {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// LiveApp: AppHandle impl backed by ScriptBus (background-thread safe)
-// ---------------------------------------------------------------------------
 
 /// Why a scripted run may not upload to `server`, if it may not (the same
 /// rule as `script::runner::upload_guard`, applied where the upload starts).

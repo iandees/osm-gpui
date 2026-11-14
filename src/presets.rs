@@ -1,6 +1,5 @@
 //! iD tagging schema preset support: vendored preset/area-key data,
-//! geometry classification, and geometry-aware tag matching. Mirrors the
-//! shape of `nsi.rs` but with vendored rather than runtime-fetched data.
+//! geometry classification, and geometry-aware tag matching.
 
 use crate::osm::OsmData;
 use crate::preset_translations::{active, PresetTranslations};
@@ -304,11 +303,11 @@ impl PresetIndex {
             .find(|p| p.id == id)
     }
 
-    /// Search presets by name (case-insensitive substring, same normalize
-    /// approach as brand search elsewhere in this codebase), filtered to
+    /// Search presets by name (case-insensitive substring), filtered to
     /// only presets whose `geometry` includes `geometry`. Capped at
-    /// `limit` results, unordered beyond "substring matches first". Uses
-    /// the active UI language's translations (see [`Self::search_in`]).
+    /// `limit` results; an exact name match comes first, the rest follow in
+    /// the schema's order. Uses the active UI language's translations (see
+    /// [`Self::search_in`]).
     pub fn search(&self, query: &str, geometry: Geometry, limit: usize) -> Vec<&Preset> {
         self.search_in(active(), query, geometry, limit)
     }

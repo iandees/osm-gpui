@@ -31,6 +31,7 @@ pub(crate) enum ModeProgress {
     /// Nothing placed yet.
     Idle,
     /// Add: a way is being drawn. Building: the first corner is placed.
+    /// Arc: the start is placed. Improve: a way is chosen.
     Started,
     /// Building: both corners of the first edge are placed. Arc: start and
     /// end are placed.

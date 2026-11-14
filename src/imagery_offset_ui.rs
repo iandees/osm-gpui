@@ -20,7 +20,7 @@ use gpui_component::{
     v_flex, ActiveTheme, Sizable,
 };
 use osm_gpui::imagery_offset::{self, ImageryOffset, Nudge, OffsetSession};
-use osm_gpui::layers::LayerId;
+use osm_gpui::layers::{LayerId, LayerKind};
 use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 use schemars::JsonSchema;
@@ -83,7 +83,7 @@ impl MapViewer {
             .layers()
             .iter()
             .rev()
-            .find(|layer| layer.is_visible() && layer.as_imagery().is_some())
+            .find(|layer| layer.is_visible() && layer.kind() == LayerKind::Tile)
             .map(|layer| layer.id())
     }
 
@@ -251,7 +251,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.as_imagery().is_some())
+            .filter(|l| l.kind() == LayerKind::Tile)
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.begin_offset_adjust(layer, window, cx);
@@ -299,7 +299,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.as_imagery().is_some())
+            .filter(|l| l.kind() == LayerKind::Tile)
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.reset_layer_offset(layer, cx);
@@ -323,8 +323,6 @@ impl MapViewer {
         }
         cx.notify();
     }
-
-    // --- pointer ---------------------------------------------------------
 
     /// Left press (map-local `position`) while adjusting: start moving the
     /// imagery. Returns whether the mode took the press.
@@ -375,8 +373,6 @@ impl MapViewer {
             .is_some_and(|adjust| adjust.drag_last.take().is_some())
     }
 
-    // --- keyboard --------------------------------------------------------
-
     /// Whether one of the panel's metre fields has keyboard focus, so the
     /// map must leave the key to it.
     pub(crate) fn offset_field_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -412,8 +408,6 @@ impl MapViewer {
         cx.notify();
         true
     }
-
-    // --- numeric entry ---------------------------------------------------
 
     fn on_offset_input_event(
         &mut self,
@@ -465,8 +459,6 @@ impl MapViewer {
             self.apply_session();
         }
     }
-
-    // --- panel -----------------------------------------------------------
 
     /// The floating panel at the top of the map while adjusting.
     pub(crate) fn render_imagery_offset_panel(

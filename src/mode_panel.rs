@@ -13,14 +13,12 @@ use crate::{EditMode, MapViewer, SetMode};
 impl MapViewer {
     pub(crate) const MODE_PANEL_WIDTH: f32 = 56.0;
 
-    /// The left toolbar: one button per `EditMode` showing an icon above a
-    /// short text label, highlighting the active one. Modes that write new
-    /// geometry are disabled (dimmed, no `on_click`) when `active_layer` is
-    /// `None` — there's nowhere to write.
+    /// The left toolbar: one button per `EditMode`, highlighting the active
+    /// one. Modes that write new geometry are disabled (dimmed, no `on_click`)
+    /// when `active_layer` is `None` — there's nowhere to write.
     ///
-    /// Each button shows an icon above a short text label; the label
-    /// disambiguates the nearest-fit icons (the icon set has no exact
-    /// cursor/extrude glyphs).
+    /// The text label under each icon disambiguates the nearest-fit icons
+    /// (the icon set has no exact cursor/extrude glyphs).
     pub(crate) fn render_mode_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(px(Self::MODE_PANEL_WIDTH))
@@ -94,8 +92,6 @@ mod tests {
 
     #[test]
     fn mode_icon_maps_correctly() {
-        // Assert the exact mode -> icon mapping so a change to any one
-        // mode's icon is caught here.
         assert!(matches!(EditMode::Select.icon(), IconName::Frame));
         assert!(matches!(EditMode::Add.icon(), IconName::Plus));
         assert!(matches!(EditMode::Building.icon(), IconName::Building2));

@@ -23,7 +23,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use osm_gpui::coordinates::GeoBounds;
-use osm_gpui::layers::street_imagery_layer::{self, StreetImageryLayer};
+use osm_gpui::layers::street_imagery_layer::StreetImageryLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::settings_store;
@@ -36,7 +36,7 @@ use osm_gpui::tr;
 use osm_gpui::ui::sign_in_dialog::SignInPurpose;
 use osm_gpui::ui::style::muted_text_size;
 
-use crate::{EditMode, MapViewer};
+use crate::MapViewer;
 
 gpui::actions!(
     osm_gpui,
@@ -197,7 +197,7 @@ pub(crate) struct ImageryState {
     /// Zoom and pan of the full-size view.
     view: PhotoView,
     /// A dot was clicked; handled on the next frame.
-    pending_open: Option<StreetPhoto>,
+    pub(crate) pending_open: Option<StreetPhoto>,
     /// The Fotoshi lookup for the selected feature, when that is on.
     object: Option<ObjectLookup>,
     /// Bumped to discard the answer of a lookup that is no longer wanted.
@@ -646,37 +646,6 @@ impl MapViewer {
                 .child(body)
                 .into_any_element(),
         )
-    }
-
-    /// A click on the map at `pos` (map-local pixels): opens the photo whose
-    /// dot was clicked. Returns whether the click was used.
-    pub(crate) fn imagery_click(&mut self, pos: gpui::Point<gpui::Pixels>) -> bool {
-        if self.mode() != EditMode::Select {
-            self.close_photo_panel();
-            return false;
-        }
-        let mut stores = Vec::new();
-        for st in &self.imagery.providers {
-            let visible = st
-                .layer
-                .and_then(|id| self.layer_manager.find_layer(id))
-                .is_some_and(|l| l.is_visible());
-            if visible {
-                stores.push(&st.store);
-            }
-        }
-        match street_imagery_layer::hit_test(&stores, &self.viewport, pos) {
-            Some(photo) => {
-                self.imagery.pending_open = Some(photo);
-                true
-            }
-            // Clicking away from the photos deselects the open one; the click
-            // still does whatever it would have done.
-            None => {
-                self.close_photo_panel();
-                false
-            }
-        }
     }
 
     fn open_photo(

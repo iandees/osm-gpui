@@ -78,7 +78,7 @@ pub(crate) enum MpState {
 /// member list or the relation's tags changed, and the undo/redo of each)
 /// calls [`OsmLayer::mp_refresh_relations`] or [`OsmLayer::mp_refresh_ways`]
 /// for just the relations involved. `version` counts those refreshes so a
-/// test (or a future consumer) can tell a rebuild happened.
+/// test can tell a rebuild happened.
 #[derive(Debug, Clone, Default)]
 pub(super) struct MpCache {
     pub(super) entries: BTreeMap<i64, MpEntry>,

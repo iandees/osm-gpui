@@ -19,8 +19,7 @@ impl IdleTracker {
     }
 
     pub fn tile_fetch_finished(&self) {
-        let prev = self.pending_tile_fetches.fetch_sub(1, Ordering::SeqCst);
-        debug_assert!(prev > 0, "tile_fetch_finished underflow");
+        saturating_decrement(&self.pending_tile_fetches, "tile_fetch_finished");
     }
 
     pub fn image_decode_started(&self) {
@@ -28,8 +27,7 @@ impl IdleTracker {
     }
 
     pub fn image_decode_finished(&self) {
-        let prev = self.pending_image_decodes.fetch_sub(1, Ordering::SeqCst);
-        debug_assert!(prev > 0, "image_decode_finished underflow");
+        saturating_decrement(&self.pending_image_decodes, "image_decode_finished");
     }
 
     pub fn is_idle(&self) -> bool {
@@ -38,9 +36,57 @@ impl IdleTracker {
     }
 }
 
+/// Decrement without ever wrapping below zero: a wrapped counter would make
+/// `is_idle` false forever and hang `wait_idle`. Returns false if it was
+/// already zero (the decrement is skipped).
+fn try_decrement(counter: &AtomicUsize) -> bool {
+    let mut current = counter.load(Ordering::SeqCst);
+    loop {
+        if current == 0 {
+            return false;
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn saturating_decrement(counter: &AtomicUsize, what: &str) {
+    if !try_decrement(counter) {
+        debug_assert!(false, "{what} underflow");
+        eprintln!("IdleTracker: {what} called with nothing pending; ignoring");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_decrement_never_goes_below_zero() {
+        let c = AtomicUsize::new(1);
+        assert!(try_decrement(&c));
+        assert!(!try_decrement(&c));
+        assert!(!try_decrement(&c));
+        assert_eq!(c.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn unbalanced_finish_leaves_tracker_idle() {
+        let t = IdleTracker::new();
+        t.tile_fetch_finished();
+        t.image_decode_finished();
+        assert!(t.is_idle());
+        t.tile_fetch_started();
+        assert!(!t.is_idle());
+    }
 
     #[test]
     fn new_tracker_is_idle() {
