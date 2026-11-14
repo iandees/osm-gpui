@@ -819,29 +819,7 @@ pub(crate) fn uploaded_taint(
         .collect()
 }
 
-/// Why a chunked upload stopped before the end.
-enum UploadStop {
-    /// The server refused the diff (409/410/412); the changeset is closed.
-    Refused(osm_upload::UploadConflict),
-    /// The server may have applied the diff (always an
-    /// `UploadError::OutcomeUnknown`); the upload must not be offered again
-    /// without the user checking the server first.
-    OutcomeUnknown(osm_upload::UploadError),
-    /// Any other failure, as a message.
-    Failed(String),
-}
-
-impl UploadStop {
-    fn from_error(error: osm_upload::UploadError) -> Self {
-        match error {
-            osm_upload::UploadError::Conflict(conflict) => UploadStop::Refused(conflict),
-            unknown @ osm_upload::UploadError::OutcomeUnknown { .. } => {
-                UploadStop::OutcomeUnknown(unknown)
-            }
-            other => UploadStop::Failed(other.to_string()),
-        }
-    }
-}
+use osm_gpui::upload_chunks::UploadStop;
 
 struct MapViewer {
     viewport: Viewport,
@@ -6633,10 +6611,10 @@ impl MapViewer {
         let oauth_base = auth::oauth_base_for(&base_url);
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
         let max_elements = osm_gpui::limits::Limits::for_server(&base_url).changeset_elements;
-        let mut queue = {
+        let mut driver = {
             let refs: Vec<&osm_gpui::layers::diff::LayerDiff> = diffs.iter().collect();
-            match osm_gpui::upload_chunks::ChunkQueue::plan(&refs, max_elements) {
-                Ok(queue) => queue,
+            match osm_gpui::upload_chunks::UploadDriver::plan(&refs, max_elements, &tags) {
+                Ok(driver) => driver,
                 Err(e) => {
                     self.transfer = None;
                     if let Some(dialog) = &self.upload_dialog {
@@ -6659,53 +6637,47 @@ impl MapViewer {
         // exactly what the server has not got.
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
-            let total = queue.total();
-            let mut accepted = 0usize;
-            let mut last_changeset = 0u64;
             let stop: Option<UploadStop> = loop {
-                let Some((part, chunk)) = queue.next_chunk() else {
+                let Some(request) = driver.next_request() else {
                     break None;
                 };
-                let (oauth_base, base_url, tags, progress, http) = (
+                let (oauth_base, base_url, progress, http) = (
                     oauth_base.clone(),
                     base_url.clone(),
-                    tags.clone(),
                     progress.clone(),
                     http.clone(),
                 );
-                let sent = cx
+                let outcome = cx
                     .background_executor()
                     .spawn(async move {
-                        // May block on the system keychain's access prompt the
-                        // first time; say so while it does (and only then).
-                        // A refusal stops the upload with the edits and the
-                        // saved login untouched.
-                        let token = auth::ensure_fresh_token_notify(
-                            http.as_ref(),
-                            &oauth_base,
-                            &mut || {
-                                progress.set_upload_phase(None, TransferPhase::WaitingForKeychain)
-                            },
-                        )
-                        .map_err(|e| UploadStop::Failed(e.to_string()))?;
-                        osm_gpui::upload_chunks::upload_chunk(
+                        osm_gpui::upload_chunks::send(
+                            request,
                             http.as_ref(),
                             &base_url,
-                            &token.access_token,
-                            &tags,
-                            part,
-                            chunk,
+                            // May block on the system keychain's access prompt
+                            // the first time; say so while it does (and only
+                            // then). A refusal stops the upload with the edits
+                            // and the saved login untouched.
+                            &mut || {
+                                auth::ensure_fresh_token_notify(
+                                    http.as_ref(),
+                                    &oauth_base,
+                                    &mut || {
+                                        progress.set_upload_phase(
+                                            None,
+                                            TransferPhase::WaitingForKeychain,
+                                        )
+                                    },
+                                )
+                                .map(|token| token.access_token)
+                                .map_err(|e| e.to_string())
+                            },
                             &mut |part, phase| progress.set_upload_phase(part, phase),
                         )
-                        .map_err(|failure| UploadStop::from_error(failure.error))
                     })
                     .await;
-                match sent {
-                    Ok(mut done) => {
-                        done.last = queue.remaining() == 0;
-                        queue.accept(&done.result);
-                        accepted += 1;
-                        last_changeset = done.changeset_id;
+                match driver.record(outcome) {
+                    osm_gpui::upload_chunks::Step::Apply(done) => {
                         let layer_ids = layer_ids.clone();
                         let applied = this.update(cx, |this, cx| {
                             for id in &layer_ids {
@@ -6730,9 +6702,11 @@ impl MapViewer {
                             return;
                         }
                     }
-                    Err(why) => break Some(why),
+                    osm_gpui::upload_chunks::Step::Stop(stopped) => break Some(stopped.reason),
                 }
             };
+            let (total, accepted, last_changeset) =
+                (driver.total(), driver.accepted(), driver.last_changeset());
 
             let _ = this.update(cx, |this, cx| {
                 this.transfer = None;
@@ -6783,10 +6757,9 @@ impl MapViewer {
                                 }
                                 this.set_status(message);
                             }
-                            UploadStop::OutcomeUnknown(error) => {
+                            UploadStop::OutcomeUnknown(message) => {
                                 // The dialog says to check the server first
                                 // and does not offer a plain retry.
-                                let message = error.to_string();
                                 if let Some(dialog) = &this.upload_dialog {
                                     dialog.update(cx, |dialog, cx| {
                                         dialog.fail_outcome_unknown(message.clone().into(), cx)
