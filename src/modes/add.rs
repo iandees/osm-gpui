@@ -114,7 +114,6 @@ impl MapViewer {
         };
         let LatLon { mut lat, mut lon } = self.viewport.screen_to_geo(screen_pt);
 
-        // Every click after the first grows the way being drawn by a node.
         let drawing_way = self.add_progress().and_then(|p| p.way_id);
         if let Some(way_id) = drawing_way {
             if self.refuse_way_growth(layer_id, way_id, 1) {
@@ -122,8 +121,8 @@ impl MapViewer {
             }
         }
 
-        // Clicking an existing node/way finishes the in-progress way by
-        // connecting to it. Skipped entirely when Ctrl is held.
+        // Clicking an existing node finishes the in-progress way by
+        // connecting to it. Skipped when a snapping-off modifier is held.
         if !ctrl_held && self.add_progress().is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             let sources = self.add_snap_sources(layer_id);
@@ -170,10 +169,8 @@ impl MapViewer {
             }
         }
 
-        // Try to snap onto a nearby way's line geometry, unless Ctrl is
-        // held. `snap` carries the snapped-onto way's id and splice index,
-        // if any, threaded through to `add_extend_or_start_way` for the
-        // 2nd+ click case.
+        // Snap onto a nearby way's line geometry, unless a snapping-off
+        // modifier is held.
         let snap_hit = if ctrl_held {
             None
         } else {
@@ -212,19 +209,14 @@ impl MapViewer {
             }
         }
 
-        // Note: `find_layer_mut` is re-called in each arm below (rather than
-        // binding `layer` once above the match) so its mutable borrow ends
-        // before the arm needs `&mut self` again for `self.set_add_progress`/
-        // `self.add_extend_or_start_way`/`self.undo_stack` — binding it once
-        // outside the match would keep the borrow alive across those calls
-        // and fail to compile.
+        // `find_layer_mut` is called in each arm, not once above the match, so
+        // its borrow ends before the arm needs `&mut self` again.
         match self.take_add_progress() {
             None => {
-                // First click of a fresh continuation: a lone node (or, if
-                // snapped, a node spliced into the snapped-onto way), no way
-                // of its own yet — the next click always starts a *new* way
-                // from this node, whether or not this one landed on top of
-                // an existing way.
+                // First click: a lone node (spliced into the snapped-onto way
+                // if snapped), with no way of its own yet. The next click
+                // starts a new way from it, even if it landed on an existing
+                // way.
                 let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
                     return;
                 };
@@ -272,11 +264,9 @@ impl MapViewer {
                 }];
             }
             Some(progress) => {
-                // 2nd+ click: create the node (or snap it onto a way) and
-                // fold it into the way being drawn in one step.
-                // `add_extend_or_start_way` pushes the matching undo entry
-                // that covers both the node creation and the way
-                // mutation(s) (one click = one undo step).
+                // 2nd+ click: create the node (or snap it onto a way) and fold
+                // it into the way being drawn. `add_extend_or_start_way`
+                // pushes one undo entry covering both.
                 let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
                     return;
                 };

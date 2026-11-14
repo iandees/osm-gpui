@@ -4,9 +4,8 @@
 //! `ACTIONS` is the single table that the map's right-click context menu, the
 //! "Tools" menu in the menu bar, and the bare-key shortcuts all read from. To
 //! add an action, add one entry here (and a `keybindings::SHORTCUTS` entry if
-//! it gets a customizable key). Topology-changing actions (join ways, extend
-//! way, disconnect node, ...) slot in the same way: `apply` gets the whole
-//! `LayerManager` and returns a single `UndoableAction` — use
+//! it gets a customizable key). An `ApplyFn` gets the whole `LayerManager` and
+//! returns an `ActionOutcome` carrying a single `UndoableAction`; use
 //! `UndoableAction::Batch` to bundle several steps.
 
 use std::collections::HashMap;
@@ -59,9 +58,6 @@ impl<'a> ActionEnv<'a> {
         join_ways_in(editable, layer_id, self.selection)
     }
 
-    /// Whether the selection is a node that can be separated: one node of
-    /// the active layer (plus optionally one way, to detach just that way)
-    /// used in more than one place.
     /// Where Extend Way would continue from, for the selection: a single
     /// open way, or a single node that ends exactly one open way.
     fn extend_target(&self) -> Option<topology::Continuation> {
@@ -77,6 +73,9 @@ impl<'a> ActionEnv<'a> {
         merge_nodes_in(editable, layer_id, self.selection).len()
     }
 
+    /// Whether the selection is a node that can be separated: one node of
+    /// the active layer (plus optionally one way, to detach just that way)
+    /// used in more than one place.
     fn can_separate_selection(&self) -> bool {
         let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
             return false;
@@ -1055,14 +1054,14 @@ fn simplify_pins(editable: &dyn EditableLayer, layer_id: LayerId, node_ids: &[i6
         .collect()
 }
 
-/// Simplify Way: drop the vertices of each selected way
-/// that sit within the tolerance (default `geometry::SIMPLIFY_TOLERANCE_M`) of the line through their
-/// neighbours (Douglas-Peucker). A vertex stays if it is an end node, shared
-/// with another way, tagged, or a relation member, or if dropping it would
-/// leave a closed way under 4 entries. The dropped nodes were used by nothing
-/// else, so they are deleted. One undo step: the way edits come first, then
-/// the node deletions. The tolerance is the "Simplify Way tolerance" setting,
-/// read on every run.
+/// Simplify Way: drop the vertices of each selected way that sit within the
+/// tolerance (default `geometry::SIMPLIFY_TOLERANCE_M`) of the line through
+/// their neighbours (Douglas-Peucker). A vertex stays if it is an end node,
+/// shared with another way, tagged, or a relation member, or if dropping it
+/// would leave a closed way under 4 entries. The dropped nodes were used by
+/// nothing else, so they are deleted. One undo step: the way edits come first,
+/// then the node deletions. The tolerance is the "Simplify Way tolerance"
+/// setting, read on every run.
 fn apply_simplify(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -1490,16 +1489,15 @@ fn apply_separate(
     separate_node(layers, selection, active, false)
 }
 
-/// Unjoin Node from Way: the selected way gets
-/// a fresh untagged node at the same spot in place of the selected node (at
-/// every place the way uses it), so the other ways keep the original, which
-/// also keeps its tags and relation memberships. It is Disconnect with a way
-/// selected, with two differences: the way must be named, and the node must
-/// be a vertex of it, not an end node of an open way (an end node is where
-/// the way stops, so there is nothing to pull it away from; Disconnect
-/// still handles that case). A node only this way uses is refused as well.
-/// The turn restriction guard is Disconnect's. One undo step: the new node,
-/// then the modified way.
+/// Unjoin Node from Way: the selected way gets a fresh untagged node at the
+/// same spot in place of the selected node (at every place the way uses it),
+/// so the other ways keep the original, which also keeps its tags and
+/// relation memberships. It is Disconnect with a way selected, with two
+/// differences: the way must be named, and the node must be a vertex of it,
+/// not an end node of an open way (an end node is where the way stops, so
+/// there is nothing to pull it away from; Disconnect still handles that
+/// case). A node only this way uses is refused as well. The turn restriction
+/// guard is Disconnect's. One undo step: the new node, then the modified way.
 fn apply_unjoin(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -1683,8 +1681,8 @@ fn apply_copy_tags(
 }
 
 /// Apply the tag clipboard to every selected feature of the active layer:
-/// the copied keys overwrite existing values, other tags stay. One `SetTags`
-/// undo step covering every change.
+/// the copied keys overwrite existing values, other tags stay. One undo step
+/// covers every change.
 fn apply_paste_tags(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -1742,8 +1740,8 @@ fn apply_paste_tags(
 }
 
 /// What Split Way would do for the selection: one or more nodes of the active
-/// layer, plus optionally one way to restrict it to.
-/// Empty unless the selection has that shape and something can be split.
+/// layer, plus optionally one way to restrict it to. Empty unless the
+/// selection has that shape and something can be split.
 fn split_plans(
     editable: &dyn EditableLayer,
     layer_id: LayerId,
@@ -1840,14 +1838,14 @@ fn split_relations(
     Ok((relations, ids_by_plan))
 }
 
-/// Split the ways at the selected node(s): the original
-/// keeps its id and the longest part, every other part is a new way with a
-/// copy of the tags, and neighbouring parts share the split node. A closed
-/// way with one node is only rewritten to start there. Relations that hold the way keep
-/// working: see `relations::split_members` for where the new way goes (and
-/// the turn restriction exception, which can refuse the split). One undo
-/// step: per way, the new way's creation, then the original's new nodes, and
-/// finally the relations' new member lists.
+/// Split the ways at the selected node(s): the original keeps its id and the
+/// longest part, every other part is a new way with a copy of the tags, and
+/// neighbouring parts share the split node. A closed way with one node is only
+/// rewritten to start there. Relations that hold the way keep working: see
+/// `relations::split_members` for where the new way goes (and the turn
+/// restriction exception, which can refuse the split). One undo step: per way,
+/// the new way's creation, then the original's new nodes, and finally the
+/// relations' new member lists.
 fn apply_split(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -2017,15 +2015,14 @@ fn segment_plan(
     }
 }
 
-/// Delete Way Segment: the way is cut
-/// at the segment between the two selected nodes and the segment is thrown
-/// away. An open way becomes the part before and the part after (the original
-/// way keeps the longer one and its id; the other becomes a new way with a
-/// copy of the tags); a segment at an end just shortens the way; a closed
-/// way is opened there. Relations follow `relations::split_members` exactly
-/// as for Split Way (the piece that is thrown away is removed from them
-/// again, and a turn restriction that can't tell which half to follow
-/// refuses). A node of the segment that no remaining piece uses is deleted
+/// Delete Way Segment: the way is cut at the segment between the two selected
+/// nodes and the segment is thrown away. An open way becomes the part before
+/// and the part after (the original way keeps the longer one and its id; the
+/// other becomes a new way with a copy of the tags); a segment at an end just
+/// shortens the way; a closed way is opened there. Relations follow
+/// `relations::split_members` exactly as for Split Way (the piece that is
+/// thrown away is removed from them again, and a turn restriction that can't
+/// tell which half to follow refuses). A node of the segment that no remaining piece uses is deleted
 /// when it is untagged, in no other way and no relation. Refused when the
 /// nodes are not adjacent in exactly one way, when the way runs along the
 /// segment twice, when nothing but the segment would be left (delete the
@@ -2326,6 +2323,7 @@ fn join_node_way_target(
 /// released); the node goes to the nearest point of the segment to it, and the
 /// undo move starts from the node's stored position. Used by Join Node to Way
 /// and by snapping on a drag.
+///
 /// Checks the way-size limit and that the node is not already in the way, and
 /// changes nothing on refusal. Returns the recorded ops (a move, then the way's
 /// new node list); relation memberships are not touched, so a node that is a
@@ -2948,11 +2946,11 @@ fn delete_vertex(
 
 /// Delete every selected feature. A node used by ways is removed from them
 /// (a way left too short is deleted); deleting a way also deletes its
-/// untagged nodes nothing else uses. Refused features are skipped. A deleted node or way is also removed from the
-/// relations it is a member of (see `relations::delete_member`); a feature
-/// whose removal would empty a relation or break a turn restriction is refused
-/// instead, with the reason in the status. The deletions and membership
-/// changes are one undo step.
+/// untagged nodes nothing else uses. Refused features are skipped. A deleted
+/// node or way is also removed from the relations it is a member of (see
+/// `relations::delete_member`); a feature whose removal would empty a relation
+/// or break a turn restriction is refused instead, with the reason in the
+/// status. The deletions and membership changes are one undo step.
 fn apply_delete(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -3126,9 +3124,9 @@ fn with_recording<T>(
     Some(out)
 }
 
-/// Purge: drop the selected objects from the layer's
-/// downloaded data without deleting them. Nothing is uploaded for them; they
-/// are simply no longer loaded.
+/// Purge: drop the selected objects from the layer's downloaded data without
+/// deleting them. Nothing is uploaded for them; they are simply no longer
+/// loaded.
 ///
 /// Conservative rules, checked before anything changes (a single refusal
 /// refuses the whole action, with the reason in the status):
@@ -3472,7 +3470,7 @@ pub(crate) fn create_parallel_ways(
 }
 
 /// A small road network with server (positive) ids, shared by the tests here
-/// and in `main.rs`:
+/// and in `viewer_tests`:
 ///
 /// - way 100 `[1,2,3]` and way 101 `[3,4,5]` chain end to end (101 also has
 ///   `name=Main`);
