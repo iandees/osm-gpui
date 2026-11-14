@@ -15,9 +15,8 @@ fn layers_with(data: osm_gpui::osm::OsmData) -> (LayerManager, LayerId) {
 }
 
 fn snapshot(layers: &LayerManager, id: LayerId) -> (osm_gpui::osm::OsmData, bool) {
-    let layer = layers.find_layer(id).unwrap();
-    let osm = layer.as_any().downcast_ref::<OsmLayer>().unwrap();
-    ((*osm.get_osm_data().unwrap()).clone(), layer.is_modified())
+    let osm = layers.find_layer(id).unwrap().as_osm().unwrap();
+    ((*osm.get_osm_data().unwrap()).clone(), osm.is_modified())
 }
 
 fn node(layer: LayerId, id: i64) -> FeatureRef {

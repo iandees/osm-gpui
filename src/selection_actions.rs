@@ -9,7 +9,6 @@
 //! `LayerManager` and returns a single `UndoableAction` — use
 //! `UndoableAction::Batch` to bundle several steps.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use gpui::SharedString;
@@ -21,25 +20,8 @@ use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
+use crate::clipboard_actions::{ClipboardOp, Clipboards};
 use crate::undo::{roll_back, NodeMoveUndoEntry, TagEntry, UndoableAction};
-
-thread_local! {
-    /// The tags set aside by Copy Tags, for Paste Tags: the app's own tag
-    /// clipboard, kept apart from the system pasteboard. Actions only ever
-    /// run on the UI thread, which is why this can be a thread-local (it also
-    /// keeps parallel tests from sharing one).
-    static TAG_CLIPBOARD: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
-}
-
-/// The tags currently on the tag clipboard, sorted by key.
-pub(crate) fn tag_clipboard() -> Vec<(String, String)> {
-    TAG_CLIPBOARD.with(|c| c.borrow().clone())
-}
-
-fn set_tag_clipboard(mut tags: Vec<(String, String)>) {
-    tags.sort();
-    TAG_CLIPBOARD.with(|c| *c.borrow_mut() = tags);
-}
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -47,6 +29,8 @@ pub(crate) struct ActionEnv<'a> {
     /// The layer geometry actions are allowed to edit.
     pub active_layer: Option<LayerId>,
     pub layers: &'a LayerManager,
+    /// What Copy and Copy Tags set aside; Paste and Paste Tags need it.
+    pub clipboards: &'a Clipboards,
 }
 
 impl<'a> ActionEnv<'a> {
@@ -237,29 +221,83 @@ pub(crate) struct SelectionAction {
     pub fixed_shortcut: Option<&'static str>,
     /// Whether the action needs an active editable layer to do anything.
     pub needs_active_layer: bool,
-    /// Whether the Tools menu lists it (Delete lives in Edit instead).
-    pub in_tools_menu: bool,
+    /// Which menu-bar section lists it (Delete lives in Edit through its own
+    /// menu action instead).
+    pub menu: MenuSlot,
+    /// Whether the context menu sets it apart from the other edits.
+    pub destructive: bool,
+    /// What is wrong with the selection, when the generic hint would not say.
+    pub problem: Option<ProblemFn>,
     pub is_applicable: fn(&ActionEnv) -> bool,
-    pub apply: ApplyFn,
+    pub run: Run,
 }
+
+/// Which section of the menu bar lists an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuSlot {
+    Tools,
+    /// Edit menu: Copy, Paste, Paste at Source Position, Duplicate.
+    EditClipboard,
+    /// Edit menu: Copy Tags, Paste Tags.
+    EditTags,
+    None,
+}
+
+/// How `MapViewer::run_selection_action` carries an action out.
+#[derive(Clone, Copy)]
+pub(crate) enum Run {
+    /// Change the layers right away.
+    Apply(ApplyFn),
+    /// Like `Apply`, and reads or writes the tag clipboard.
+    TagClipboard(TagClipboardFn),
+    /// Needs the pointer position and the system clipboard.
+    Clipboard(ClipboardOp),
+    /// Needs an answer from a dialog first.
+    Dialog(Dialog),
+    /// Runs a session that follows the pointer.
+    Interactive(Interactive),
+}
+
+impl Run {
+    /// Whether running it changes the layers, and so is refused while an
+    /// upload runs. Copy only reads.
+    pub(crate) fn edits(self) -> bool {
+        !matches!(self, Run::Clipboard(ClipboardOp::Copy))
+    }
+}
+
+/// The dialog an action opens, whose answer is applied separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dialog {
+    /// Add to Relation: pick the relation (see `add_to_relation`).
+    RelationPicker,
+    /// Create Parallel Way: enter the offset (see `create_parallel_ways`).
+    ParallelOffset,
+}
+
+/// The interactive session an action starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interactive {
+    /// The selection turns with the pointer until clicked or Enter; see
+    /// `MapViewer::start_rotate`.
+    Rotate,
+}
+
+/// What is wrong with the selection for an action, if anything.
+pub(crate) type ProblemFn = fn(&dyn EditableLayer, LayerId, &[FeatureRef]) -> Option<String>;
+
+/// An `ApplyFn` that also gets the clipboards.
+pub(crate) type TagClipboardFn = fn(
+    &mut LayerManager,
+    &[FeatureRef],
+    Option<LayerId>,
+    &mut Clipboards,
+) -> Result<ActionOutcome, String>;
 
 /// Performs an action on the selection in the active layer (if any). `Err`
 /// carries a short message for the status bar and means nothing changed.
 pub(crate) type ApplyFn =
     fn(&mut LayerManager, &[FeatureRef], Option<LayerId>) -> Result<ActionOutcome, String>;
-
-/// Id of the "Add to Relation…" action, which opens a picker rather than
-/// applying right away.
-pub(crate) const ADD_TO_RELATION: &str = "add_to_relation";
-
-/// Id of the "Create Parallel Way…" action, which asks for the offset in a
-/// dialog first (see `create_parallel_ways`).
-pub(crate) const PARALLEL: &str = "parallel";
-
-/// Id of the "Rotate" action, which starts an interactive session (the
-/// selection turns with the pointer until clicked or Enter) rather than
-/// applying right away; see `MapViewer::start_rotate`.
-pub(crate) const ROTATE: &str = "rotate";
 
 pub(crate) const ACTIONS: &[SelectionAction] = &[
     SelectionAction {
@@ -267,204 +305,239 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         shortcut_id: Some("action_square"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             env.selected_ways()
                 .iter()
                 .any(|w| geometry::can_square(&w.points))
         },
-        apply: apply_square,
+        run: Run::Apply(apply_square),
     },
     SelectionAction {
         id: "circularize",
         shortcut_id: Some("action_circularize"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             env.selected_ways()
                 .iter()
                 .any(|w| geometry::can_circularize(&w.points))
         },
-        apply: apply_circularize,
+        run: Run::Apply(apply_circularize),
     },
     SelectionAction {
         id: "reverse",
         shortcut_id: Some("action_reverse"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 2),
-        apply: apply_reverse,
+        run: Run::Apply(apply_reverse),
     },
     SelectionAction {
         id: "join",
         shortcut_id: Some("action_join"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| topology::can_chain(&env.selected_join_ways()),
-        apply: apply_join,
+        run: Run::Apply(apply_join),
     },
     SelectionAction {
         id: "separate",
         shortcut_id: Some("action_separate"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.can_separate_selection(),
-        apply: apply_separate,
+        run: Run::Apply(apply_separate),
     },
     SelectionAction {
         id: "unjoin",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: Some(unjoin_problem),
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             unjoin_problem(editable, layer_id, env.selection).is_none()
         },
-        apply: apply_unjoin,
+        run: Run::Apply(apply_unjoin),
     },
     SelectionAction {
         id: "delete_segment",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: Some(|editable, layer, selection| segment_plan(editable, layer, selection).err()),
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             segment_plan(editable, layer_id, env.selection).is_ok()
         },
-        apply: apply_delete_segment,
+        run: Run::Apply(apply_delete_segment),
     },
     SelectionAction {
         id: "extend",
         shortcut_id: Some("action_extend"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.extend_target().is_some(),
-        apply: apply_extend,
+        run: Run::Apply(apply_extend),
     },
     SelectionAction {
         id: "split",
         shortcut_id: Some("action_split"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             !split_plans(editable, layer_id, env.selection).is_empty()
         },
-        apply: apply_split,
+        run: Run::Apply(apply_split),
     },
     SelectionAction {
         id: "merge",
         shortcut_id: Some("action_merge"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_node_count() >= 2,
-        apply: apply_merge,
+        run: Run::Apply(apply_merge),
     },
     SelectionAction {
         id: "straighten",
         shortcut_id: Some("action_straighten"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             env.selected_ways()
                 .iter()
                 .any(|w| geometry::can_straighten(&w.points))
         },
-        apply: apply_straighten,
+        run: Run::Apply(apply_straighten),
     },
     SelectionAction {
         id: "simplify",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 3),
-        apply: apply_simplify,
+        run: Run::Apply(apply_simplify),
     },
     SelectionAction {
         id: "extract",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             !extract_plans(editable, layer_id, env.selection).is_empty()
         },
-        apply: apply_extract,
+        run: Run::Apply(apply_extract),
     },
-    // Copy, Paste, Paste at Source Position and Duplicate need the pointer
-    // position and the window's clipboard, so `MapViewer::run_selection_action`
-    // hands them to `clipboard_actions` instead of calling `apply`.
     SelectionAction {
         id: "copy_features",
         shortcut_id: Some("copy_features"),
         fixed_shortcut: None,
         needs_active_layer: false,
-        in_tools_menu: false,
+        menu: MenuSlot::EditClipboard,
+        destructive: false,
+        problem: None,
         is_applicable: crate::clipboard_actions::can_copy,
-        apply: crate::clipboard_actions::apply_elsewhere,
+        run: Run::Clipboard(ClipboardOp::Copy),
     },
     SelectionAction {
         id: "paste_features",
         shortcut_id: Some("paste_features"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: false,
+        menu: MenuSlot::EditClipboard,
+        destructive: false,
+        problem: None,
         is_applicable: crate::clipboard_actions::can_paste,
-        apply: crate::clipboard_actions::apply_elsewhere,
+        run: Run::Clipboard(ClipboardOp::Paste),
     },
     SelectionAction {
         id: "paste_features_source",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: false,
+        menu: MenuSlot::EditClipboard,
+        destructive: false,
+        problem: None,
         is_applicable: crate::clipboard_actions::can_paste,
-        apply: crate::clipboard_actions::apply_elsewhere,
+        run: Run::Clipboard(ClipboardOp::PasteAtSource),
     },
     SelectionAction {
         id: "duplicate_features",
         shortcut_id: Some("duplicate_features"),
         fixed_shortcut: None,
         needs_active_layer: false,
-        in_tools_menu: false,
+        menu: MenuSlot::EditClipboard,
+        destructive: false,
+        problem: None,
         is_applicable: crate::clipboard_actions::can_copy,
-        apply: crate::clipboard_actions::apply_elsewhere,
+        run: Run::Clipboard(ClipboardOp::Duplicate),
     },
     SelectionAction {
         id: "align",
         shortcut_id: Some("action_align"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_node_count() >= 3,
-        apply: apply_align,
+        run: Run::Apply(apply_align),
     },
     SelectionAction {
-        id: ROTATE,
+        id: "rotate",
         shortcut_id: Some("action_rotate"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
@@ -475,80 +548,88 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
                 .collect();
             osm_gpui::rotate::can_rotate(&points)
         },
-        // Interactive: `MapViewer::run_selection_action` starts the session
-        // instead of applying, and the commit pushes the undo step.
-        apply: |_, _, _| Err(tr!("action.rotate.hint").to_string()),
+        run: Run::Interactive(Interactive::Rotate),
     },
     SelectionAction {
         id: "join_node_way",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             join_node_way_target(editable, layer_id, env.selection).is_some()
         },
-        apply: apply_join_node_way,
+        run: Run::Apply(apply_join_node_way),
     },
     SelectionAction {
         id: "distribute",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_node_count() >= 3,
-        apply: apply_distribute,
+        run: Run::Apply(apply_distribute),
     },
     SelectionAction {
-        id: PARALLEL,
+        id: "parallel",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| env.selected_ways().iter().any(|w| w.node_ids.len() >= 2),
-        // Needs the offset first, which takes a dialog: see
-        // `MapViewer::run_selection_action`, which opens it instead of
-        // applying, and `create_parallel_ways` below, which applies the answer.
-        apply: |_, _, _| Err(tr!("action.parallel.hint").to_string()),
+        // The dialog's answer is applied by `create_parallel_ways`.
+        run: Run::Dialog(Dialog::ParallelOffset),
     },
     SelectionAction {
         id: "copy_tags",
         shortcut_id: Some("copy_tags"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: false,
+        menu: MenuSlot::EditTags,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             copy_source(editable, layer_id, env.selection).is_some()
         },
-        apply: apply_copy_tags,
+        run: Run::TagClipboard(apply_copy_tags),
     },
     SelectionAction {
         id: "paste_tags",
         shortcut_id: Some("paste_tags"),
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: false,
+        menu: MenuSlot::EditTags,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             env.active_layer.is_some_and(|layer_id| {
                 env.active_editable().is_some()
-                    && !tag_clipboard().is_empty()
+                    && !env.clipboards.tags.is_empty()
                     && !paste_targets(layer_id, env.selection).is_empty()
             })
         },
-        apply: apply_paste_tags,
+        run: Run::TagClipboard(apply_paste_tags),
     },
     SelectionAction {
-        id: ADD_TO_RELATION,
+        id: "add_to_relation",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
@@ -556,31 +637,33 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
             !member_candidates(editable, layer_id, env.selection).is_empty()
                 && !editable.relation_ids().is_empty()
         },
-        // Needs a relation chosen first, which takes a dialog: see
-        // `MapViewer::run_selection_action`, which opens the picker instead
-        // of applying, and `add_to_relation` below, which applies the choice.
-        apply: |_, _, _| Err(tr!("action.add_to_relation.hint").to_string()),
+        // The chosen relation is applied by `add_to_relation`.
+        run: Run::Dialog(Dialog::RelationPicker),
     },
     SelectionAction {
         id: "new_relation",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
                 return false;
             };
             !relation_member_candidates(editable, layer_id, env.selection).is_empty()
         },
-        apply: apply_new_relation,
+        run: Run::Apply(apply_new_relation),
     },
     SelectionAction {
         id: "create_multipolygon",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: true,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         // A lone open way can never close into a ring.
         is_applicable: |env| {
             let ways = env.selected_ways();
@@ -589,14 +672,16 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
                     .iter()
                     .any(|w| w.node_ids.len() >= 4 && w.node_ids.first() == w.node_ids.last())
         },
-        apply: apply_create_multipolygon,
+        run: Run::Apply(apply_create_multipolygon),
     },
     SelectionAction {
         id: "purge",
         shortcut_id: None,
         fixed_shortcut: None,
         needs_active_layer: false,
-        in_tools_menu: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
         is_applicable: |env| {
             env.selection.iter().any(|f| {
                 env.layers
@@ -604,14 +689,16 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
                     .is_some_and(|l| l.as_editable().is_some())
             })
         },
-        apply: apply_purge,
+        run: Run::Apply(apply_purge),
     },
     SelectionAction {
         id: "delete",
         shortcut_id: None,
         fixed_shortcut: Some("⌫"),
         needs_active_layer: false,
-        in_tools_menu: false,
+        menu: MenuSlot::None,
+        destructive: true,
+        problem: None,
         is_applicable: |env| {
             env.selection.iter().any(|f| {
                 env.layers
@@ -619,9 +706,14 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
                     .is_some_and(|l| l.as_editable().is_some())
             })
         },
-        apply: apply_delete,
+        run: Run::Apply(apply_delete),
     },
 ];
+
+/// The actions the menu bar lists in `slot`, in table order.
+pub(crate) fn in_menu(slot: MenuSlot) -> impl Iterator<Item = &'static SelectionAction> {
+    ACTIONS.iter().filter(move |a| a.menu == slot)
+}
 
 pub(crate) fn find(id: &str) -> Option<&'static SelectionAction> {
     ACTIONS.iter().find(|a| a.id == id)
@@ -652,9 +744,41 @@ impl SelectionAction {
         ACTIONS.iter().filter(|a| (a.is_applicable)(env))
     }
 
+    /// The function of an action that runs as `Run::Apply`, for tests that
+    /// drive it without a viewer.
+    #[cfg(test)]
+    pub(crate) fn apply(&self) -> ApplyFn {
+        match self.run {
+            Run::Apply(apply) => apply,
+            _ => panic!("{} does not run as Run::Apply", self.id),
+        }
+    }
+
+    /// Run an action that changes layers directly (`Apply` or `TagClipboard`),
+    /// for tests that drive actions without a viewer.
+    #[cfg(test)]
+    pub(crate) fn run_direct(
+        &self,
+        layers: &mut LayerManager,
+        selection: &[FeatureRef],
+        active: Option<LayerId>,
+        clipboards: &mut Clipboards,
+    ) -> Result<ActionOutcome, String> {
+        match self.run {
+            Run::Apply(apply) => apply(layers, selection, active),
+            Run::TagClipboard(apply) => apply(layers, selection, active, clipboards),
+            _ => panic!("{} does not run directly", self.id),
+        }
+    }
+
+    /// Catalog key of [`Self::label`].
+    pub(crate) fn label_key(&self) -> String {
+        format!("action.{}.label", self.id)
+    }
+
     /// Localized menu label, e.g. "Square".
     pub(crate) fn label(&self) -> SharedString {
-        tr_dynamic(&format!("action.{}.label", self.id))
+        tr_dynamic(&self.label_key())
     }
 
     /// Localized status-bar message when run with an unsuitable selection.
@@ -667,14 +791,8 @@ impl SelectionAction {
         if self.needs_active_layer && env.active_editable().is_none() {
             return tr!("action.no_data");
         }
-        // These two say what is wrong with the selection, not just what to select.
-        let specific = match (self.id, env.active_layer, env.active_editable()) {
-            ("unjoin", Some(layer), Some(editable)) => {
-                unjoin_problem(editable, layer, env.selection)
-            }
-            ("delete_segment", Some(layer), Some(editable)) => {
-                segment_plan(editable, layer, env.selection).err()
-            }
+        let specific = match (self.problem, env.active_layer, env.active_editable()) {
+            (Some(problem), Some(layer), Some(editable)) => problem(editable, layer, env.selection),
             _ => None,
         };
         specific.map_or_else(|| self.hint(), SharedString::from)
@@ -1625,6 +1743,7 @@ fn apply_copy_tags(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
+    clipboards: &mut Clipboards,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let tags = copy_source(editable, layer_id, selection)
@@ -1634,7 +1753,7 @@ fn apply_copy_tags(
         tags = tr_count!("action.tag_count", tags.len())
     )
     .to_string();
-    set_tag_clipboard(tags);
+    clipboards.set_tags(tags);
     Ok(ActionOutcome {
         undo: None,
         status,
@@ -1651,8 +1770,9 @@ fn apply_paste_tags(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
+    clipboards: &mut Clipboards,
 ) -> Result<ActionOutcome, String> {
-    let clipboard = tag_clipboard();
+    let clipboard = clipboards.tags.clone();
     if clipboard.is_empty() {
         return Err(tr!("action.paste_tags.hint").to_string());
     }
@@ -3668,6 +3788,11 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    static NO_CLIPBOARDS: Clipboards = Clipboards {
+        tags: Vec::new(),
+        features: None,
+    };
+
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::osm::{OsmMember, OsmRelation};
@@ -3725,6 +3850,7 @@ mod tests {
             selection: sel,
             active_layer: Some(f.layer_id),
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         }
     }
 
@@ -3791,7 +3917,7 @@ mod tests {
             way_ref(&f, f.line),
         ];
         let out =
-            (find("new_relation").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+            (find("new_relation").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         let Some(UndoableAction::CreateRelation { layer, snapshot }) = out.undo else {
             panic!("expected CreateRelation");
         };
@@ -3846,7 +3972,7 @@ mod tests {
     fn new_relation_needs_something_to_put_in_it() {
         let mut f = fixture();
         assert!(!applicable_ids(&f, &[]).contains(&"new_relation"));
-        let err = (find("new_relation").unwrap().apply)(&mut f.layers, &[], Some(f.layer_id))
+        let err = (find("new_relation").unwrap().apply())(&mut f.layers, &[], Some(f.layer_id))
             .err()
             .unwrap();
         assert!(err.starts_with("Select nodes, ways"));
@@ -3860,12 +3986,14 @@ mod tests {
             selection: &sel,
             active_layer: Some(LayerId(99)),
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert!(!(find("square").unwrap().is_applicable)(&other));
         let none = ActionEnv {
             selection: &sel,
             active_layer: None,
             layers: &f.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("square").unwrap().why_not(&none),
@@ -3882,7 +4010,7 @@ mod tests {
         let mut f = fixture();
         let before = node_positions(&f);
         let sel = [way_ref(&f, f.rect)];
-        let out = (find("square").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        let out = (find("square").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Squared 1 way");
         assert!(!out.clear_selection);
         let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
@@ -3900,7 +4028,7 @@ mod tests {
             .is_modified());
 
         // Squaring again finds nothing left to do.
-        let again = (find("square").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id));
+        let again = (find("square").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id));
         assert!(again.is_err());
     }
 
@@ -3910,7 +4038,7 @@ mod tests {
         let before = node_positions(&f);
         let sel = [way_ref(&f, f.rect)];
         let out =
-            (find("circularize").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+            (find("circularize").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected MoveNodes");
         };
@@ -3926,7 +4054,8 @@ mod tests {
     fn reverse_flips_the_way_and_reports_it_for_undo() {
         let mut f = fixture();
         let sel = [way_ref(&f, f.rect), way_ref(&f, f.line)];
-        let out = (find("reverse").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        let out =
+            (find("reverse").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Reversed 2 ways");
         let UndoableAction::ReverseWays { way_ids, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected ReverseWays");
@@ -3942,7 +4071,8 @@ mod tests {
     fn reverse_without_direction_tags_is_a_plain_reverse_step() {
         let mut f = fixture();
         let sel = [way_ref(&f, f.rect)];
-        let out = (find("reverse").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        let out =
+            (find("reverse").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert!(matches!(
             out.undo.as_ref().unwrap(),
             UndoableAction::ReverseWays { .. }
@@ -3953,7 +4083,7 @@ mod tests {
     fn delete_is_one_undo_step_and_clears_the_selection() {
         let mut f = fixture();
         let sel = [way_ref(&f, f.rect), way_ref(&f, f.line)];
-        let out = (find("delete").unwrap().apply)(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
+        let out = (find("delete").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert!(out.clear_selection);
         assert_eq!(out.status, "Deleted 2 features");
         assert!(
@@ -4173,12 +4303,10 @@ mod tests {
     struct Net {
         layers: LayerManager,
         layer_id: LayerId,
+        clipboards: Clipboards,
     }
 
     fn net() -> Net {
-        // Each test starts with an empty tag clipboard, even when the test
-        // harness runs several tests on one thread.
-        set_tag_clipboard(Vec::new());
         let layer_id = LayerId(1);
         let layer = OsmLayer::new_with_data(
             layer_id,
@@ -4187,7 +4315,11 @@ mod tests {
         );
         let mut layers = LayerManager::new();
         layers.add_layer(Box::new(layer));
-        Net { layers, layer_id }
+        Net {
+            layers,
+            layer_id,
+            clipboards: Clipboards::default(),
+        }
     }
 
     impl Net {
@@ -4204,7 +4336,14 @@ mod tests {
                 .collect()
         }
         fn run(&mut self, action: &str, sel: &[FeatureRef]) -> Result<ActionOutcome, String> {
-            (find(action).unwrap().apply)(&mut self.layers, sel, Some(self.layer_id))
+            let layer = Some(self.layer_id);
+            match find(action).unwrap().run {
+                Run::Apply(apply) => apply(&mut self.layers, sel, layer),
+                Run::TagClipboard(apply) => {
+                    apply(&mut self.layers, sel, layer, &mut self.clipboards)
+                }
+                _ => panic!("{action} does not apply directly"),
+            }
         }
         fn editable(&self) -> &dyn EditableLayer {
             self.layers
@@ -4225,6 +4364,7 @@ mod tests {
                 selection: sel,
                 active_layer: Some(self.layer_id),
                 layers: &self.layers,
+                clipboards: &self.clipboards,
             };
             SelectionAction::applicable(&e).map(|a| a.id).collect()
         }
@@ -4635,12 +4775,12 @@ mod tests {
     #[test]
     fn copy_remembers_the_tags_of_exactly_one_tagged_feature() {
         let mut n = net();
-        assert_eq!(tag_clipboard(), vec![]);
+        assert_eq!(n.clipboards.tags, vec![]);
         let out = n.run("copy_tags", &n.ways(&[101])).unwrap();
         assert_eq!(out.status, "Copied 2 tags");
         assert!(out.undo.is_none() && out.select.is_none() && !out.clear_selection);
         assert_eq!(
-            tag_clipboard(),
+            n.clipboards.tags,
             pairs(&[("highway", "residential"), ("name", "Main")])
         );
         // Copying changes no data.
@@ -4655,7 +4795,7 @@ mod tests {
         assert!(n.run("copy_tags", &n.ways(&[100, 101])).is_err());
         assert!(n.run("copy_tags", &n.nodes(&[1])).is_err());
         assert!(n.run("copy_tags", &[]).is_err());
-        assert_eq!(tag_clipboard(), pairs(&[("highway", "footway")]));
+        assert_eq!(n.clipboards.tags, pairs(&[("highway", "footway")]));
         assert!(n.applicable(&n.ways(&[101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.nodes(&[1])).contains(&"copy_tags"));
@@ -4929,7 +5069,11 @@ mod tests {
         let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), std::sync::Arc::new(data));
         let mut layers = LayerManager::new();
         layers.add_layer(Box::new(layer));
-        Net { layers, layer_id }
+        Net {
+            layers,
+            layer_id,
+            clipboards: Clipboards::default(),
+        }
     }
 
     impl Net {
@@ -5380,6 +5524,7 @@ mod tests {
             selection: &[],
             active_layer: Some(n.layer_id),
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("join").unwrap().why_not(&none),
@@ -5393,6 +5538,7 @@ mod tests {
             selection: &[],
             active_layer: None,
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("join").unwrap().why_not(&no_layer),
@@ -5450,6 +5596,7 @@ mod tests {
             selection: &n.ways(&[108]),
             active_layer: Some(n.layer_id),
             layers: &n.layers,
+            clipboards: &NO_CLIPBOARDS,
         };
         assert_eq!(
             find("extend").unwrap().why_not(&none),

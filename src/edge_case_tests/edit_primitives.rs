@@ -3,7 +3,7 @@
 //! collide with ids in the data.
 
 use super::*;
-use osm_gpui::layers::{EditError, EditableLayer, MapLayer};
+use osm_gpui::layers::{EditError, EditableLayer};
 
 fn layer_with(data: OsmData) -> OsmLayer {
     OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))

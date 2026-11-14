@@ -4,11 +4,9 @@
 //!
 //! They are entries of `selection_actions::ACTIONS` (so the Edit menu, the
 //! context menu and the keyboard shortcuts treat them like any other action),
-//! but `MapViewer::run_selection_action` calls [`MapViewer::run_clipboard_op`]
-//! for them instead of `apply`, because they need the pointer position and
-//! the system clipboard, which an `ApplyFn` does not get.
-
-use std::cell::RefCell;
+//! but they run as `Run::Clipboard`, through [`MapViewer::run_clipboard_op`],
+//! because they need the pointer position and the system clipboard, which an
+//! `ApplyFn` does not get.
 
 use gpui::Context;
 use osm_gpui::feature_clipboard::{FeatureClipboard, PastePosition};
@@ -17,7 +15,7 @@ use osm_gpui::limits::Limits;
 use osm_gpui::selection::FeatureRef;
 use osm_gpui::{settings_store, tr, tr_count};
 
-use crate::selection_actions::{ActionEnv, ActionOutcome};
+use crate::selection_actions::ActionEnv;
 use crate::undo::UndoableAction;
 use crate::MapViewer;
 
@@ -25,26 +23,28 @@ use crate::MapViewer;
 /// bigger copy stays app-internal, as building the text would stall the UI.
 const MAX_OBJECTS_AS_TEXT: usize = 20_000;
 
-thread_local! {
-    /// What Copy set aside, for Paste: the app's own feature clipboard. Like
-    /// the tag clipboard it is only touched from the UI thread, which is why
-    /// it can be a thread-local (it also keeps parallel tests apart).
-    static FEATURE_CLIPBOARD: RefCell<Option<FeatureClipboard>> = const { RefCell::new(None) };
+/// What Copy and Copy Tags set aside, for Paste and Paste Tags: the app's own
+/// clipboards, kept apart from the system pasteboard. They are viewer state
+/// (`MapViewer::clipboards`) and reach the actions through `ActionEnv`.
+#[derive(Default)]
+pub(crate) struct Clipboards {
+    /// The tags Copy Tags took, sorted by key.
+    pub tags: Vec<(String, String)>,
+    /// The features Copy took.
+    pub features: Option<FeatureClipboard>,
 }
 
-/// Whether Copy has put anything on the feature clipboard.
-pub(crate) fn clipboard_has_features() -> bool {
-    FEATURE_CLIPBOARD.with(|c| c.borrow().as_ref().is_some_and(|clip| !clip.is_empty()))
-}
+impl Clipboards {
+    /// Whether Copy has put anything on the feature clipboard.
+    pub(crate) fn has_features(&self) -> bool {
+        self.features.as_ref().is_some_and(|clip| !clip.is_empty())
+    }
 
-/// A copy of the feature clipboard's content (for tests and inspection).
-#[cfg(test)]
-pub(crate) fn clipboard_content() -> Option<FeatureClipboard> {
-    FEATURE_CLIPBOARD.with(|c| c.borrow().clone())
-}
-
-fn set_clipboard(clip: FeatureClipboard) {
-    FEATURE_CLIPBOARD.with(|c| *c.borrow_mut() = Some(clip));
+    /// Replace the tag clipboard with `tags`, sorted by key.
+    pub(crate) fn set_tags(&mut self, mut tags: Vec<(String, String)>) {
+        tags.sort();
+        self.tags = tags;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,17 +53,6 @@ pub(crate) enum ClipboardOp {
     Paste,
     PasteAtSource,
     Duplicate,
-}
-
-/// The clipboard operation behind the selection action `id`, if it is one.
-pub(crate) fn op_for(id: &str) -> Option<ClipboardOp> {
-    match id {
-        "copy_features" => Some(ClipboardOp::Copy),
-        "paste_features" => Some(ClipboardOp::Paste),
-        "paste_features_source" => Some(ClipboardOp::PasteAtSource),
-        "duplicate_features" => Some(ClipboardOp::Duplicate),
-        _ => None,
-    }
 }
 
 fn is_editable(layers: &LayerManager, id: LayerId) -> bool {
@@ -98,30 +87,14 @@ pub(crate) fn can_copy(env: &ActionEnv) -> bool {
 
 /// Paste needs something copied and a data layer to paste into.
 pub(crate) fn can_paste(env: &ActionEnv) -> bool {
-    clipboard_has_features()
+    env.clipboards.has_features()
         && env
             .active_layer
             .is_some_and(|id| is_editable(env.layers, id))
 }
 
-/// The `apply` of the four actions: never called, as
-/// `MapViewer::run_selection_action` runs them itself (see the module docs).
-pub(crate) fn apply_elsewhere(
-    _: &mut LayerManager,
-    _: &[FeatureRef],
-    _: Option<LayerId>,
-) -> Result<ActionOutcome, String> {
-    Err(tr!("action.copy_features.hint").to_string())
-}
-
 impl MapViewer {
     pub(crate) fn run_clipboard_op(&mut self, op: ClipboardOp, cx: &mut Context<Self>) {
-        // Copying changes nothing, so it works during an upload; the rest
-        // create objects and are refused like every other edit.
-        if op != ClipboardOp::Copy && self.refuse_edit_during_upload() {
-            cx.notify();
-            return;
-        }
         match op {
             ClipboardOp::Copy => self.copy_features(cx),
             ClipboardOp::Paste => {
@@ -159,7 +132,7 @@ impl MapViewer {
             "action.copy_features.done",
             features = tr_count!("action.feature_count", clip.len())
         ));
-        set_clipboard(clip);
+        self.clipboards.features = Some(clip);
     }
 
     /// The selection as a clipboard, taken from its source layer.
@@ -175,7 +148,7 @@ impl MapViewer {
             self.set_status(tr!("action.no_data"));
             return;
         };
-        let Some(clip) = FEATURE_CLIPBOARD.with(|c| c.borrow().clone()) else {
+        let Some(clip) = self.clipboards.features.clone() else {
             self.set_status(tr!("action.paste_features.hint"));
             return;
         };
