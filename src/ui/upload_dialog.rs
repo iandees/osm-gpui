@@ -172,6 +172,10 @@ pub enum DialogEvent {
     /// comment draft) and open the Validation section so the problems can be
     /// fixed on the map.
     ShowInSidePanel,
+    /// User asked to select the restored objects that were in the changeset
+    /// being sent when the app stopped: close the dialog (keeping the draft)
+    /// and select them.
+    SelectInFlight,
     /// User picked a way forward from a refused upload.
     Conflict {
         action: ConflictAction,
@@ -322,6 +326,9 @@ pub struct UploadDialog {
     /// After a stop part way through a multi-changeset upload: how many of
     /// how many changesets the server accepted.
     partial: Option<(usize, usize)>,
+    /// After an interrupted upload was restored: how many of the pending
+    /// objects were in the changeset being sent, so they can be selected.
+    in_flight: usize,
     /// What the validator found in the pending changes, run once when the
     /// dialog opened. Errors block the upload.
     validation: Report,
@@ -372,8 +379,35 @@ impl UploadDialog {
             notice: None,
             changesets: 1,
             partial: None,
+            in_flight: 0,
             validation: Report::default(),
         }
+    }
+
+    /// Offer to select the `count` pending objects that were in the changeset
+    /// an interrupted run was sending (0: nothing to offer).
+    pub fn set_in_flight(&mut self, count: usize, cx: &mut Context<Self>) {
+        self.in_flight = count;
+        cx.notify();
+    }
+
+    /// The selection the "may have gone through" state offers, as a count.
+    pub fn in_flight_offer(&self) -> usize {
+        if self.failure_kind() == Some(FailureKind::OutcomeUnknown) {
+            self.in_flight
+        } else {
+            0
+        }
+    }
+
+    /// Press "Select the N objects that were being uploaded" (what a click
+    /// does). `false` when it is not on offer.
+    pub fn press_select_in_flight(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.in_flight_offer() == 0 {
+            return false;
+        }
+        cx.emit(DialogEvent::SelectInFlight);
+        true
     }
 
     /// Show what the validator found. Errors disable the Upload button;
@@ -1115,6 +1149,16 @@ impl Render for UploadDialog {
                             .text_size(muted_text_size())
                             .text_color(muted),
                     );
+                    if self.in_flight > 0 {
+                        failed = failed.child(
+                            Button::new("upload-select-in-flight")
+                                .label(tr_count!("dialog.upload.select_in_flight", self.in_flight))
+                                .small()
+                                .on_click(cx.listener(|this, _, _w, cx| {
+                                    this.press_select_in_flight(cx);
+                                })),
+                        );
+                    }
                 }
                 if let Some(view) = &failure.conflict {
                     if let Some(hint) = view.hint() {

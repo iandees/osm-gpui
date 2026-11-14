@@ -154,7 +154,10 @@ fn side_panel_edits_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
 
             view.transfer = Some(TransferHandle::new(
                 TransferKind::Upload,
-                TransferPhase::UploadingChanges { count: 1 },
+                TransferPhase::UploadingChanges {
+                    count: 1,
+                    changeset_id: 1,
+                },
             ));
             let before = (
                 pending(view),

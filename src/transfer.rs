@@ -42,8 +42,10 @@ pub enum TransferPhase {
     Reading,
     /// Upload: creating the changeset.
     OpeningChangeset,
-    /// Upload: sending the osmChange document.
-    UploadingChanges { count: usize },
+    /// Upload: sending the osmChange document to the changeset the server
+    /// just opened. Reported before the request leaves, so a caller can make
+    /// the id durable while the answer is still outstanding.
+    UploadingChanges { count: usize, changeset_id: u64 },
     /// Upload: closing the changeset.
     ClosingChangeset,
 }
@@ -135,7 +137,7 @@ impl TransferProgress {
                 TransferPhase::OpeningChangeset => {
                     return tr!("transfer.upload.part_opening", index = index, total = total)
                 }
-                TransferPhase::UploadingChanges { count } => {
+                TransferPhase::UploadingChanges { count, .. } => {
                     return tr_count!(
                         "transfer.upload.part_uploading",
                         count,
@@ -169,7 +171,7 @@ impl TransferProgress {
             },
             TransferPhase::Reading => tr!("transfer.download.reading"),
             TransferPhase::OpeningChangeset => tr!("transfer.upload.opening"),
-            TransferPhase::UploadingChanges { count } => {
+            TransferPhase::UploadingChanges { count, .. } => {
                 tr_count!("transfer.upload.uploading", count)
             }
             TransferPhase::ClosingChangeset => tr!("transfer.upload.closing"),
@@ -432,9 +434,15 @@ mod tests {
         let mut p =
             TransferProgress::new(TransferKind::Upload, TransferPhase::OpeningChangeset, now);
         assert_eq!(p.label(), "Opening changeset…");
-        p.phase = TransferPhase::UploadingChanges { count: 1 };
+        p.phase = TransferPhase::UploadingChanges {
+            count: 1,
+            changeset_id: 7,
+        };
         assert_eq!(p.label(), "Uploading 1 change…");
-        p.phase = TransferPhase::UploadingChanges { count: 12 };
+        p.phase = TransferPhase::UploadingChanges {
+            count: 12,
+            changeset_id: 7,
+        };
         assert_eq!(p.label(), "Uploading 12 changes…");
         p.phase = TransferPhase::ClosingChangeset;
         assert_eq!(p.label(), "Closing changeset…");
@@ -461,9 +469,15 @@ mod tests {
             TransferProgress::new(TransferKind::Upload, TransferPhase::OpeningChangeset, now);
         p.part = Some((2, 3));
         assert_eq!(p.label(), "Changeset 2 of 3: opening…");
-        p.phase = TransferPhase::UploadingChanges { count: 10_000 };
+        p.phase = TransferPhase::UploadingChanges {
+            count: 10_000,
+            changeset_id: 7,
+        };
         assert_eq!(p.label(), "Changeset 2 of 3: uploading 10,000 changes…");
-        p.phase = TransferPhase::UploadingChanges { count: 1 };
+        p.phase = TransferPhase::UploadingChanges {
+            count: 1,
+            changeset_id: 7,
+        };
         assert_eq!(p.label(), "Changeset 2 of 3: uploading 1 change…");
         p.phase = TransferPhase::ClosingChangeset;
         assert_eq!(p.label(), "Changeset 2 of 3: closing…");
@@ -516,7 +530,10 @@ mod tests {
         assert!(!dl(TransferPhase::Reading).is_cancellable());
         for phase in [
             TransferPhase::OpeningChangeset,
-            TransferPhase::UploadingChanges { count: 3 },
+            TransferPhase::UploadingChanges {
+                count: 3,
+                changeset_id: 7,
+            },
             TransferPhase::ClosingChangeset,
         ] {
             assert!(!TransferProgress::new(TransferKind::Upload, phase, now).is_cancellable());

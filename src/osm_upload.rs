@@ -425,7 +425,10 @@ pub fn run_upload(
             created + modified + deleted
         })
         .sum();
-    on_phase(TransferPhase::UploadingChanges { count });
+    on_phase(TransferPhase::UploadingChanges {
+        count,
+        changeset_id,
+    });
     let uploaded = upload_changes_with(client, base_url, token, changeset_id, &xml);
 
     if uploaded.is_ok() {
@@ -1458,7 +1461,40 @@ mod tests {
                 "Put https://osm.test/api/0.6/changeset/42/close",
             ]
         );
-        assert_eq!(phases, vec![TransferPhase::UploadingChanges { count: 1 }]);
+        assert_eq!(
+            phases,
+            vec![TransferPhase::UploadingChanges {
+                count: 1,
+                changeset_id: 42
+            }]
+        );
+    }
+
+    #[test]
+    fn the_changeset_id_is_reported_after_create_and_before_the_diff_is_sent() {
+        let client = FakeClient::new(vec![ok(200, "42"), ok(200, "<diffResult/>"), ok(200, "")]);
+        let mut seen: Vec<(u64, Vec<String>)> = Vec::new();
+        run_upload(
+            &client,
+            BASE,
+            "tok",
+            "fix",
+            &one_modified_node_diff(),
+            &mut |phase| {
+                if let TransferPhase::UploadingChanges { changeset_id, .. } = phase {
+                    seen.push((changeset_id, request_lines(&client)));
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![(
+                42,
+                vec!["Put https://osm.test/api/0.6/changeset/create".to_string()]
+            )],
+            "only the create had been sent when the id was reported"
+        );
     }
 
     #[test]
@@ -1617,7 +1653,10 @@ mod tests {
         assert_eq!(
             phases,
             vec![
-                TransferPhase::UploadingChanges { count: 1 },
+                TransferPhase::UploadingChanges {
+                    count: 1,
+                    changeset_id: 42
+                },
                 TransferPhase::ClosingChangeset
             ]
         );

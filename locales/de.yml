@@ -247,6 +247,10 @@ status:
       other: "%{count} lokale Änderungen behalten"
     separator: ", "
   restored_upload_interrupted: "Beim Beenden der App lief gerade ein Upload. Einige der wiederhergestellten Änderungen sind möglicherweise schon auf dem Server: Prüfe deine letzten Changesets, bevor du erneut hochlädst."
+  restored_uploads_interrupted: "Beim Beenden der App liefen gerade %{count} Uploads. Einige der wiederhergestellten Änderungen sind möglicherweise schon auf dem Server: Prüfe deine letzten Changesets, bevor du erneut hochlädst."
+  selected_in_flight:
+    one: "%{count} Objekt ausgewählt, das beim Beenden der App hochgeladen wurde"
+    other: "%{count} Objekte ausgewählt, die beim Beenden der App hochgeladen wurden"
 
 # Größenlimits des OSM-Servers (Knoten pro Weg, Mitglieder pro Relation,
 # Elemente pro Änderungssatz). Zahlen kommen bereits mit Tausendertrennung an.
@@ -893,6 +897,9 @@ dialog:
       hint_deleted: "Jemand hat das Objekt auf dem Server gelöscht. Zeige es an und entferne deine Änderungen daran oder mache sie an anderer Stelle neu."
       hint_deleted_both: "Du hast es auch gelöscht, daher gibt es dafür nichts mehr hochzuladen. „Meine Änderung verwerfen“ vergisst dein Löschen."
       hint_related: "Korrigiere die beteiligten Objekte („Anzeigen“ findet sie) und versuche es erneut."
+    select_in_flight:
+      one: "Das %{count} Objekt auswählen, das gerade hochgeladen wurde"
+      other: "Die %{count} Objekte auswählen, die gerade hochgeladen wurden"
   notice:
     ok: "OK"
   sign_in:
@@ -938,6 +945,38 @@ dialog:
       other: "%{count} Änderungen"
     upload_comment: "Changeset-Kommentar: \"%{comment}\""
     upload_changeset: "Changeset %{id}: %{url}"
+    upload_contents: "Gesendet wurde: %{summary}."
+    in_flight:
+      created_nodes:
+        one: "%{count} neuer Knoten"
+        other: "%{count} neue Knoten"
+      created_ways:
+        one: "%{count} neuer Weg"
+        other: "%{count} neue Wege"
+      created_relations:
+        one: "%{count} neue Relation"
+        other: "%{count} neue Relationen"
+      modified_nodes:
+        one: "%{count} geänderter Knoten"
+        other: "%{count} geänderte Knoten"
+      modified_ways:
+        one: "%{count} geänderter Weg"
+        other: "%{count} geänderte Wege"
+      modified_relations:
+        one: "%{count} geänderte Relation"
+        other: "%{count} geänderte Relationen"
+      deleted_nodes:
+        one: "%{count} gelöschter Knoten"
+        other: "%{count} gelöschte Knoten"
+      deleted_ways:
+        one: "%{count} gelöschter Weg"
+        other: "%{count} gelöschte Wege"
+      deleted_relations:
+        one: "%{count} gelöschte Relation"
+        other: "%{count} gelöschte Relationen"
+      omitted:
+        one: "und %{count} weiteres, das nicht aufgelistet ist"
+        other: "und %{count} weitere, die nicht aufgelistet sind"
   age:
     just_now: "gerade eben"
     minutes:
