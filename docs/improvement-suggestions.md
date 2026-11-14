@@ -1,6 +1,6 @@
 # osm-gpui Improvement Suggestions
 
-Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06 and brought up to date against the merged PRs on 2026-11-11 (through PR #229). Each remaining item is scoped so an agent can implement it without re-doing the analysis. Done items are collapsed to one line with the PR that shipped them; file references for remaining items point at the current tree (line numbers are omitted because they drift quickly — grep for the named functions).
+Consolidated from a four-dimension code review (architecture, editing UX, rendering/UI, robustness) on 2026-07-06 and brought up to date against the merged PRs on 2026-11-13 (through PR #288). Each remaining item is scoped so an agent can implement it without re-doing the analysis. Done items are collapsed to one line with the PR that shipped them; file references for remaining items point at the current tree (line numbers are omitted because they drift quickly — grep for the named functions).
 
 ---
 
@@ -177,7 +177,7 @@ Note: labels already fade in (point, area and street labels share `labels::fade_
 ✅ Done — parsing unified (#54).
 
 ### 5.3 Split up `main.rs`
-Partially done (#49, #69): `undo.rs`, `menu.rs`, `side_panel.rs`, `script_harness.rs` etc. were split out, but `src/main.rs` has since regrown to ~14,900 lines (including a large in-file test module). Worth another extraction pass (e.g. status/upload/notes/autosave driving code, test module into `src/`-level test files).
+✅ Done — `undo.rs`, `menu.rs`, `side_panel.rs`, `script_harness.rs` etc. were split out (#49, #69); the in-file test modules moved to per-area files under `src/viewer_tests/` (#270); mode code moved to `src/modes/` with one module per edit mode (#262, #288); upload driving moved to a shared `UploadDriver` (#277). `src/main.rs` is down from ~14,900 to 7,684 lines (`wc -l`). It is still the largest file (the `MapViewer` impl); see "Still open from the architecture review" for the field grouping.
 
 ### 5.4 Remove the `unsafe` pointer aliasing in `render`
 ✅ Done — no `addr_of!`/`unsafe` aliasing remains in `main.rs` (#69).
@@ -189,16 +189,16 @@ Partially done (#49, #69): `undo.rs`, `menu.rs`, `side_panel.rs`, `script_harnes
 ✅ Done — the statics were removed in the event-driven refactor (#69).
 
 ### 5.7 Typed layer stats instead of parse-back strings
-Still open. `get_layer_stats` in `src/main.rs` still string-matches `"Cached Files"`/`"Nodes"`/`"Ways"` from `MapLayer::stats()`. Add `fn feature_counts(&self) -> FeatureCounts` to the `MapLayer` trait (`src/layers/mod.rs`).
+✅ Done — `LayerManager::layer_stats` returns a typed `LayerStats` (`cached_files`, `osm_nodes`, `osm_ways`) and `get_layer_stats` in `src/main.rs` destructures it; no string matching remains (#267, with `MapLayer` shrunk to typed accessors).
 
 ### 5.8 `OsmMember.member_type: String` → enum
 ✅ Done — `MemberType` enum parsed in `parse_member` (#54).
 
 ### 5.9 Test the real `LayerManager`, not shadow copies
-✅ Done (partial) — tests now build a real `LayerManager` and call production `move_layer`/`remove_at` (`src/layers/mod.rs` tests). Remaining: bounds math in `on_move_layer` (`src/main.rs`) has no direct test.
+✅ Done (partial) — tests now build a real `LayerManager` and call production `move_layer`/`remove_at` (`src/layers/mod.rs` tests), and the viewer tests build real layers from one shared fixture (#266, #270). Remaining: the bounds check in `on_move_layer` (`src/main.rs`) still has no direct test.
 
 ### 5.10 Surface user-action failures instead of swallowing them
-✅ Done (partial) — upload, keychain, restore and parse failures now route to status/notice dialogs (#98, #140, #151, #161). Remaining: audit the remaining `if let Ok(guard) = x.lock()` sites in `src/main.rs` and settings/token save failures (`src/auth.rs`, `src/settings_store.rs`) for silent drops.
+✅ Done (partial) — upload, keychain, restore and parse failures now route to status/notice dialogs (#98, #140, #151, #161). Since then: refused edit primitives return `EditError` instead of being ignored (#272); an upload with an unknown outcome asks before re-uploading (#265); unreadable settings files are backed up and unknown or missing fields tolerated (#261); script ops fail when nothing handles an action (#276); the settings and token save failures in `src/settings_store.rs` and `src/auth.rs` are logged to stderr rather than dropped. Remaining: those save failures are not shown to the user, and the `if let Ok(guard) = x.lock()` sites (the ELI index in `src/main.rs`, `src/nsi.rs`, `src/tile_cache.rs` error log, `label_pass.rs`, `scene.rs`) still ignore a poisoned lock.
 
 ### 5.11 Extract and test zoom-fit math
 ✅ Done — `fit_bounds_to_viewport` with unit tests in `src/coordinates.rs` (#69). (`fit_to_osm_data` in `main.rs` still computes the bbox inline but delegates the zoom math.)
@@ -206,9 +206,11 @@ Still open. `get_layer_stats` in `src/main.rs` still string-matches `"Cached Fil
 ### 5.12 Misc small fixes
 - User-Agent: ✅ Done — single `USER_AGENT` const built from `CARGO_PKG_VERSION` in `src/version.rs` (#105).
 - `check_area`: ✅ Done — now delegates to `capabilities::allows_download` using the server's limits (#121).
-- `IdleTracker` (`src/idle_tracker.rs`): still open — `tile_fetch_finished`/`image_decode_finished` use `debug_assert!` and a plain `fetch_sub`, so a release-mode underflow would wrap and wedge `is_idle()`. Use a saturating decrement plus a warning.
+- `IdleTracker` (`src/idle_tracker.rs`): ✅ Done — `tile_fetch_finished`/`image_decode_finished` decrement saturating at zero, keep the `debug_assert!`, and warn once on stderr in release when an underflow is prevented.
 - `side_panel_open`: ✅ Done as a fixed-size `[bool; 8]` set; an enum-indexed wrapper would still be tidier (low priority).
-- `OsmParser` (`src/osm.rs`): still a stateless unit struct with `&self` methods; convert to associated functions (low priority).
+- `OsmParser` (`src/osm.rs`): still open — a stateless unit struct with `&self` methods (callers use `OsmParser::new().parse_str(..)`); convert to associated functions (low priority).
+- Date arithmetic: ✅ Done — one `src/civil_date.rs` replaces the three copies of the days/civil conversion in `notes.rs`, `object_history.rs` and `street_imagery.rs`.
+- `OsmLayer` constructors: ✅ Done — `new_styled`, `new_with_data_styled` and `new_with_edits_styled` take the stylesheet; the app passes `style::custom::active_stylesheet()`, and the plain `new`/`new_with_data`/`new_with_edits` use the built-in sheet for tests, examples and benches.
 
 ---
 
@@ -227,14 +229,62 @@ Major capabilities merged that were not in the original list:
 - **Rendering, labels and MapCSS:** Hi-DPI tile requests (#224), MapCSS zoom ranges, casing, `z-index` and stable draw order, dashes, opacity, `rgba()` and parsed label properties (#225), point labels and preset POI icons with collision placement (#227), label paint cost, halo modes, zoom fade (#228), area labels at the pole of inaccessibility (#229), street names along ways with rotated glyphs (#226).
 - **Tooling:** scriptable screenshot/osmscript harness (#3, #64, #75, #147, #214), render-cost measurement and way-drawing speedups (#148, #157, docs/perf), live dev-server upload tests (`docs/live-test`).
 
+Merged between #229 and #288:
+
+- **Releases and packaging:** releases 0.9.0 (#231), 0.10.0 (#244), 0.11.0 (#254); cheaper GitHub Actions with a quick Linux PR check and release only on tags (#241); README trimmed of stale claims (#240).
+- **Map and imagery:** remembered map position and window bounds (#236), zoom to z23 with tiles fetched to each source's own max zoom (#237), custom MapCSS styles from a file or URL and refined Wireframe/iD styles (#238, #239), standard-zoom OSM Carto tiles on high-DPI displays (#247), tile downloads cancelled for tiles that scroll off the map (#248).
+- **Editing modes and tools:** Arc mode (#242) with snapping onto ways (#250), Improve Way mode (#251), Extract Point from a closed way (#255), double-click node insertion in Extrude mode on the segment (#249), preset picker closes on an outside click (#252).
+- **Street imagery and traces:** Mapillary and Fotoshi street imagery layers with a zoomable photo viewer (#258), Panoramax, street imagery from vector tiles and an opt-in Fotoshi lookup for selected features (#259), public GPS traces from OSM (#257).
+- **Upload safety:** an upload-in-progress marker recorded before each changeset is sent, with a warning on restore and in the upload dialog (#284); a confirmation before re-uploading after an unknown outcome (#265).
+- **Fixes:** deleted relations are written without tags (#279), purged relation indices recorded before removal and `set_base_version` no longer bumps the revision on a miss (#280), street-name label layouts keyed on vertex order (#264), stale side-panel Relations and untagged-vertex clicks fixed in six UI scripts (#281).
+
+---
+
+## Architecture review, 2026-11
+
+A structural review of the code base, implemented as the PRs below (all merged unless noted). One line each.
+
+- ✅ **One `EditMode`:** a single shared enum with per-mode facts, one `reset_mode_progress`, and a shortcut-binding coverage test (#262).
+- ✅ **`ModeState`:** edit-mode state held in one enum, with pointer, key and preview handling dispatched through per-mode modules in `src/modes/` (#288).
+- ✅ **One modal list and shared dialog shell:** focus, render, any-dialog-open and the Find guard derive from one list of open modals (#260); every dialog is built on the shared scrim, card and key classifier (#278).
+- ✅ **Settings:** all writes go through one update function, unknown or missing fields are tolerated, unreadable files are backed up, and the Settings window honors `--api-server` (#261); validators, page list and login state extracted and tested (#285).
+- ✅ **Redo for drawing actions:** redo recreates drawn buildings, arcs, extrusions and Add-mode clicks with their original ids (#263).
+- ✅ **`MapLayer` shrunk:** only the universal methods remain, with layer-specific behavior behind typed accessors (#267).
+- ✅ **Selection actions:** dispatched through a typed `Run`, with the clipboards, imagery load state and Settings window flag moved off globals (#269).
+- ✅ **Edit primitives:** one definition each, duplicates merged, and refused edits return `EditError` (#272).
+- ✅ **`osm_layer` split:** the file became a module directory and every incremental edit goes through one `Change` / `apply_change` (#287).
+- ✅ **Tiles:** tile maths has one home, the tile cache's state lives in one `TileStore`, and tile loading is split into tested steps (#271); tiles load through the installed HTTP client and only real tiles count for very wide views (#273).
+- ✅ **HTTP and errors:** one HTTP client injected into the viewer, with typed errors replacing `String` and `anyhow` (#268).
+- ✅ **Shared `UploadDriver`:** chunked uploads run through one driver used by the app and the tests (#277).
+- ✅ **Upload-in-progress marker:** recorded before each changeset is sent, with a warning on restore and in the upload dialog (#284).
+- ✅ **Unknown-outcome uploads:** ask before re-uploading, keep autosaves from other formats, and guard script ops exhaustively (#265).
+- ✅ **Script harness:** the script action op fails when nothing handles the action and every `AppHandle` method must be implemented (#276); every osmscript is parsed in `cargo test`, the ops are documented in `docs/osmscript.md`, and the viewer tests share one fixture (#266).
+- ✅ **Tests out of production files:** the `main.rs` and `osm_layer.rs` test modules moved into per-area files (`src/viewer_tests/`, `src/layers/osm_layer_tests/`) with shared test support (#270).
+- ✅ **Comment passes:** stale comments corrected and narration, banners and history removed across the service, label, style, dialog, network, persistence, data-model, edit-algorithm and layer modules (#274, #282, #283, #286).
+- ✅ **Small cleanups (this branch):** `IdleTracker` saturating decrement, one civil-date module, and the stylesheet passed into `OsmLayer` constructors instead of read from the active-style global.
+
+In progress on other branches (not listed as done or open here): reversible edit operations for undo, unified label interfaces, and layer click hit-testing on the `MapLayer` trait.
+
+### Still open from the architecture review
+
+Each item was checked against the code.
+
+- **Typed coordinates.** Latitude/longitude travel as bare `(f64, f64)` tuples whose order differs between modules (`Viewport::center` and `screen_to_geo` return `(lat, lon)`, while mercator values are `(x, y)` pairs of the same type), and the mercator bounds are tuples too. Introduce `LatLon` and `Mercator` newtypes and a bounds struct.
+- **`MapViewer` field grouping.** `MapViewer` in `src/main.rs` is still one flat struct; group related fields (viewport and interaction, dialogs, autosave, imagery) into sub-structs.
+- **Imagery provider secrets in the keychain.** `mapillary_token` and `fotoshi_api_key` are plain fields of `settings.json` (`src/settings_store.rs`); store them in the keyring like the OAuth token.
+- **Fully offline script runs.** Scripts still use the real HTTP client for anything not seeded by a fixture; add a script-mode `HttpClient` that serves only fixtures and fails loudly otherwise.
+- **Flaky UI scripts when the window is covered.** Scripts can hang at `capture` or `scroll` after an idle wait when another window covers the app; not yet diagnosed.
+- **3D building follow-ups.** The 3D view work lives on the unmerged `building-3d` branch; its follow-ups stay open until it merges.
+- **Compiler-checked dispatch for the last two mode hooks.** `refresh_snap_preview` and `handle_modifiers_changed` in `src/main.rs` still test `self.mode() == EditMode::...` instead of matching on `ModeState`, so a new mode does not get a compile error there.
+
 ---
 
 ## Suggested sequencing
 
-The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upload), the security/robustness tier, and the measured perf wins (3.12, 3.3, 3.4) have all shipped. What remains:
+The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upload), the security/robustness tier, the measured perf wins (3.12, 3.3, 3.4) and the 2026-11 architecture work have all shipped. What remains (the label items overlap work in progress on unified label interfaces, so check open branches first):
 
 1. **Label follow-ups (3.14):** start with the cheap, independent ones: settings toggles (3), `label-priority` and street-name vs icon priority (1), street-name halo unification (6). Then cross-layer collision (4) and area-label wrapping (2). The GPU frame-time measurement (10) and satellite legibility check (11) should precede any further halo-cost work.
 2. **MapCSS leftovers:** node zoom selectors beyond z18 (3.14 item 9), chevron/one-way properties (7).
 3. **Small rendering items:** 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
 4. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
-5. **Code health, safely parallelizable:** 5.3 (re-split `main.rs`), 5.7 typed layer stats, 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 leftovers (`IdleTracker` saturating decrement, `OsmParser` associated functions).
+5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, imagery secrets in the keychain, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).

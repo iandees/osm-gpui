@@ -194,30 +194,6 @@ impl std::fmt::Display for NotesError {
 
 impl std::error::Error for NotesError {}
 
-/// Days since 1970-01-01 of a civil date (proleptic Gregorian).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
 /// Parse the API's `2019-06-15 08:26:04 UTC` into Unix seconds.
 pub fn parse_osm_time(s: &str) -> Option<i64> {
     let s = s.trim().trim_end_matches("UTC").trim();
@@ -237,13 +213,12 @@ pub fn parse_osm_time(s: &str) -> Option<i64> {
     if !(1..=12).contains(&m) || !(1..=31).contains(&day) || h > 23 || mi > 59 || sec > 60 {
         return None;
     }
-    Some(days_from_civil(y, m, day) * 86_400 + h * 3600 + mi * 60 + sec)
+    Some(crate::civil_date::unix_seconds(y, m, day, h, mi, sec))
 }
 
 /// `2019-06-15` for Unix seconds.
 pub fn format_date(ts: i64) -> String {
-    let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
+    crate::civil_date::date_from_unix_seconds(ts)
 }
 
 /// "3 days ago" for anything under a month old, the short date beyond that.
@@ -818,6 +793,23 @@ second line</text>
         assert_eq!(format_date(1_709_287_200), "2024-03-01");
         assert_eq!(format_date(0), "1970-01-01");
         assert_eq!(format_date(951_782_400), "2000-02-29");
+    }
+
+    #[test]
+    fn dates_before_1970_and_around_century_boundaries() {
+        assert_eq!(format_date(-1), "1969-12-31");
+        assert_eq!(format_date(-2_203_891_201), "1900-02-28");
+        assert_eq!(format_date(-2_203_891_200), "1900-03-01");
+        assert_eq!(format_date(946_684_799), "1999-12-31");
+        assert_eq!(format_date(946_684_800), "2000-01-01");
+        assert_eq!(
+            parse_osm_time("1900-03-01 00:00:00 UTC"),
+            Some(-2_203_891_200)
+        );
+        // Lenient edges: a missing seconds field and a leap second pass.
+        assert_eq!(parse_osm_time("1970-01-01 00:01"), Some(60));
+        assert_eq!(parse_osm_time("1970-01-01 00:00:60 UTC"), Some(60));
+        assert_eq!(parse_osm_time("1970-01-01 24:00:00 UTC"), None);
     }
 
     #[test]
