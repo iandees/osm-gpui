@@ -496,7 +496,7 @@ impl OsmLayer {
         cx: &App,
     ) {
         let zoom = viewport.zoom_level();
-        if self.store.osm_data.is_none() || zoom < labels::LABEL_MIN_ZOOM {
+        if self.store.osm_data.is_none() || zoom < labels::ANY_LABEL_MIN_ZOOM {
             return;
         }
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();

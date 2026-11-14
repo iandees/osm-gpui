@@ -44,8 +44,9 @@ pub const MAX_VERTEX_TURN_DEG: f32 = 25.0;
 pub const MAX_TOTAL_TURN_DEG: f32 = 45.0;
 /// The way must be at least this much longer than the label.
 pub const FIT_FACTOR: f32 = 1.2;
-/// Smallest zoom at which line labels are drawn.
-pub const MIN_ZOOM: f64 = 15.0;
+/// Smallest zoom at which line labels are placed: street names come with the
+/// other labels.
+pub const MIN_ZOOM: f64 = crate::layers::labels::LABEL_MIN_ZOOM;
 
 /// Style of one label, resolved from MapCSS (`font-size`, `text-color`,
 /// `text-halo-color`, `text-halo-radius`, `text-offset`).

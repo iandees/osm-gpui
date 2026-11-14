@@ -40,6 +40,13 @@ use std::time::{Duration, Instant};
 pub const LABEL_MIN_ZOOM: f64 = 16.0;
 /// POI icons are drawn from this zoom up.
 pub const ICON_MIN_ZOOM: f64 = 17.0;
+/// Below this zoom no kind of label is drawn, so the label pass does nothing:
+/// the smallest of the kinds' own minimums (point and area text
+/// [`LABEL_MIN_ZOOM`], street names [`crate::layers::line_labels::MIN_ZOOM`],
+/// icons [`ICON_MIN_ZOOM`]).
+pub const ANY_LABEL_MIN_ZOOM: f64 = LABEL_MIN_ZOOM
+    .min(crate::layers::line_labels::MIN_ZOOM)
+    .min(ICON_MIN_ZOOM);
 /// Candidates considered per placement (top by priority).
 pub const MAX_CANDIDATES: usize = 400;
 /// Labels placed per frame at most.
@@ -1898,6 +1905,63 @@ mod tests {
         assert!(wants_frame(Step::DrawAndWait, None, t0), "settling");
         assert!(wants_frame(Step::HideAndWait, None, t0));
         assert!(!wants_frame(Step::Recompute, None, t0));
+    }
+
+    /// The zoom at which each kind of label first appears, found by asking
+    /// the code that gates it on a half-zoom grid.
+    #[test]
+    fn effective_minimum_zoom_per_kind() {
+        use crate::layers::{area_labels, line_labels};
+        let first_zoom = |shown: &mut dyn FnMut(f64) -> bool| {
+            (28..=40)
+                .map(|z| z as f64 / 2.0)
+                .find(|&z| shown(z))
+                .unwrap()
+        };
+        let t = tags(&[("amenity", "cafe"), ("name", "Joe")]);
+        let st = style(
+            "node[amenity] { text: name; icon-image: preset; }",
+            &t,
+            20.0,
+        );
+        let node = |z: f64| {
+            resolve_node_label(&st, &t, &mut IconCache::new(), z)
+                .map(|l| (l.text.is_some(), l.icon.is_some()))
+        };
+        assert_eq!(first_zoom(&mut |z| node(z).is_some_and(|l| l.0)), 16.0);
+        assert_eq!(first_zoom(&mut |z| node(z).is_some_and(|l| l.1)), 17.0);
+        let area_style = TextStyle {
+            text: Some("name".into()),
+            ..TextStyle::default()
+        };
+        let area = |z: f64| area_labels::resolve_area_label(&area_style, &t, z).is_some();
+        assert_eq!(first_zoom(&mut |z| area(z)), 16.0);
+        let way = [(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)];
+        let cand = line_labels::Candidate {
+            way_id: 1,
+            text: "Elm Street".into(),
+            verts: &way,
+            style: line_labels::LabelStyle::default(),
+            priority: 50,
+        };
+        let mut cache = line_labels::LineLabelCache::default();
+        let mut street = |z: f64| {
+            !cache
+                .place(
+                    std::slice::from_ref(&cand),
+                    z,
+                    &BenchKnobs::default(),
+                    |x, y| (x as f32 * 1.5 + 100.0, -(y as f32) * 1.5 + 100.0),
+                    (800.0, 600.0),
+                    &[],
+                    &HashSet::new(),
+                )
+                .0
+                .is_empty()
+        };
+        assert_eq!(first_zoom(&mut street), 16.0);
+        // The label pass skips everything below the earliest of them.
+        assert_eq!(ANY_LABEL_MIN_ZOOM, 16.0);
     }
 
     #[test]
