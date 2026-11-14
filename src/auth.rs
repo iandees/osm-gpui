@@ -915,7 +915,7 @@ fn save(store: &TokenStore) {
         return;
     }
     let Some(p) = default_path() else {
-        eprintln!("auth: no config dir, skipping save");
+        crate::persist::report_save_failure("auth", "no config directory");
         return;
     };
     let persisted = if policy == Policy::ReadOnly {
@@ -943,9 +943,7 @@ fn save(store: &TokenStore) {
     } else {
         build_persisted(store, &SystemKeyring)
     };
-    if let Err(e) = save_to(&p, &persisted) {
-        eprintln!("auth: save {:?} failed: {}", p, e);
-    }
+    crate::persist::save_reporting("auth", Some(&p), |p| save_to(p, &persisted));
 }
 
 /// `on_disk` with its development-server entries replaced by `dev` (so a

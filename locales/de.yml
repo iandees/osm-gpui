@@ -1167,6 +1167,13 @@ error:
     not_logged_in: "Nicht angemeldet"
     expired: "Anmeldung abgelaufen und nicht erneuerbar; bitte erneut anmelden"
     keychain_read: "Die gespeicherte Anmeldung konnte nicht aus dem System-Schlüsselbund gelesen werden (%{detail}). Anmeldung und Änderungen bleiben erhalten; erneut versuchen und den Zugriff erlauben, wenn danach gefragt wird."
+  save_failed: "Speichern fehlgeschlagen (%{what}): %{detail}"
+  save_what:
+    settings: "Einstellungen"
+    custom_imagery: "Eigene Luftbilder"
+    imagery_offsets: "Luftbild-Versätze"
+    login: "Anmeldung"
+    secrets: "API-Schlüssel"
 
 # Die Prüfung: Probleme in den Objekten, die hochgeladen werden sollen.
 validator:

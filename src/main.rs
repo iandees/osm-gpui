@@ -473,6 +473,27 @@ enum ImageryLoadState {
 /// outside that window's own dispatch (background tasks, other windows).
 pub(crate) static MAP_VIEWER_HANDLE: OnceLock<gpui::WeakEntity<MapViewer>> = OnceLock::new();
 
+/// Messages for saves of the user's state that failed, waiting for the
+/// `MapViewer` to show them on its next frame. Saves run on any thread, so the
+/// hook only queues.
+static SAVE_FAILURE_MESSAGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn queue_save_failure(label: &str, detail: &str) {
+    let what = match label {
+        "settings_store" => tr!("error.save_what.settings"),
+        "custom_imagery_store" => tr!("error.save_what.custom_imagery"),
+        "imagery_offset_store" => tr!("error.save_what.imagery_offsets"),
+        "auth" => tr!("error.save_what.login"),
+        "secrets" => tr!("error.save_what.secrets"),
+        other => SharedString::from(other.to_string()),
+    };
+    let message = tr!("error.save_failed", what = what, detail = detail);
+    SAVE_FAILURE_MESSAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(message.to_string());
+}
+
 /// Whether the app may write the owner's settings file: not during a
 /// `--script` run (the harness keeps changes in memory) and never in a unit
 /// test.
@@ -5367,6 +5388,19 @@ impl MapViewer {
         self.status_message = Some((message.into(), Instant::now()));
     }
 
+    /// Show the newest failed save of settings, logins or other saved state
+    /// (queued by the hook installed in `main`, from any thread).
+    fn show_save_failures(&mut self) {
+        let newest = SAVE_FAILURE_MESSAGES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .next_back();
+        if let Some(message) = newest {
+            self.set_status(message);
+        }
+    }
+
     fn expire_status(&mut self) {
         if let Some((_, set_at)) = &self.status_message {
             if set_at.elapsed() > Duration::from_secs(5) {
@@ -6809,6 +6843,7 @@ impl Render for MapViewer {
         );
         self.viewport.update_size(map_size);
 
+        self.show_save_failures();
         self.expire_status();
         self.drop_stale_offset_adjust();
 
@@ -7304,6 +7339,7 @@ fn main() {
     } else {
         persist::set_policy(persist::Policy::Normal);
     }
+    persist::set_save_failure_hook(queue_save_failure);
     // Where autosaves go (and are looked for): the app-data directory, except
     // in a scripted run, which has none unless `--autosave-dir` names one.
     let autosave_root = osm_gpui::autosave::resolve_root(

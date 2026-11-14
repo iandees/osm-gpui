@@ -319,10 +319,9 @@ pub fn remember(imagery_id: &str, offset: ImageryOffset, lat: f64, lon: f64) {
         return;
     }
     STORE.update_and_save("imagery_offset_store", apply, |snapshot| {
-        let Some(path) = default_path() else { return };
-        if let Err(e) = save_to(&path, snapshot) {
-            eprintln!("imagery_offset_store: save {path:?} failed: {e}");
-        }
+        persist::save_reporting("imagery_offset_store", default_path().as_deref(), |p| {
+            save_to(p, snapshot)
+        });
     });
 }
 

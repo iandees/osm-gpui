@@ -354,13 +354,8 @@ fn update_in(
     if !persist {
         return store.update("settings_store", f);
     }
-    store.update_and_save("settings_store", f, |updated| match path {
-        Some(p) => {
-            if let Err(e) = save_to(p, updated) {
-                eprintln!("settings_store: save {:?} failed: {}", p, e);
-            }
-        }
-        None => eprintln!("settings_store: no config dir, skipping save"),
+    store.update_and_save("settings_store", f, |updated| {
+        persist::save_reporting("settings_store", path, |p| save_to(p, updated));
     })
 }
 

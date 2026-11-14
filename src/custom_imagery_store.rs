@@ -78,15 +78,14 @@ pub fn load() -> Vec<CustomImageryEntry> {
     }
 }
 
-/// Save to the default path. Silently succeeds (logging only) when there is no config dir.
+/// Save to the default path. A failure is logged and reported through
+/// `persist::report_save_failure`; a write the persistence policy skips is not one.
 pub fn save(entries: &[CustomImageryEntry]) {
-    let Some(p) = default_path() else {
-        eprintln!("custom_imagery_store: no config dir, skipping save");
-        return;
-    };
-    if let Err(e) = save_to(&p, entries) {
-        eprintln!("custom_imagery_store: save {:?} failed: {}", p, e);
-    }
+    persist::save_reporting(
+        "custom_imagery_store",
+        default_path().as_deref(),
+        |p| save_to(p, entries),
+    );
 }
 
 #[cfg(test)]
