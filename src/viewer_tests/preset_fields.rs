@@ -112,8 +112,8 @@ fn reverse_flips_direction_tags_as_one_undoable_step(cx: &mut TestAppContext) {
             let original = {
                 let layer = view.layer_manager.find_layer_mut(layer_id).unwrap();
                 let editable = layer.as_editable_mut().unwrap();
-                editable.set_tag(Way, 100, "cycleway:left", "lane");
-                editable.set_tag(Way, 100, "incline", "5%");
+                editable.set_tag(Way, 100, "cycleway:left", "lane").unwrap();
+                editable.set_tag(Way, 100, "incline", "5%").unwrap();
                 tags_of(view, Way, 100)
             };
             select(view, Way, &[100]);

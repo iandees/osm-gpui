@@ -37,6 +37,8 @@ fn keep_mine_moves_the_version_and_keeps_edit_and_undo(cx: &mut TestAppContext) 
                 .layer_manager
                 .find_layer(layer_id)
                 .unwrap()
+                .as_osm()
+                .unwrap()
                 .diff_for_upload();
             assert_eq!(diff.modified_nodes.len(), 1);
             assert_eq!(diff.modified_nodes[0].version, 5);
@@ -121,7 +123,7 @@ fn use_theirs_for_a_deleted_object_removes_it_and_its_selection(cx: &mut TestApp
     window
         .update(cx, |view, _window, _cx| {
             let layer_id = view.active_layer.unwrap();
-            editable(view).set_tag(Way, 10, "highway", "path");
+            editable(view).set_tag(Way, 10, "highway", "path").unwrap();
             select(view, Way, &[10]);
             assert_eq!(view.selected.len(), 1);
             let note = view

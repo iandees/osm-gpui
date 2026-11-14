@@ -33,7 +33,7 @@ fn remove_node_drops_it_from_data_and_index() {
     let viewport = viewport_centered_on(40.0, -74.0);
     let id = layer.add_node(40.0, -74.0);
 
-    layer.remove_node(id);
+    layer.remove_node(id).unwrap();
 
     let data = layer.get_osm_data().expect("data should still exist");
     assert!(!data.nodes.contains_key(&id));
@@ -83,7 +83,7 @@ fn remove_way_drops_it_from_data_and_index_but_keeps_its_nodes() {
     let n2 = layer.add_node(40.0, -74.0);
     let way_id = layer.add_way(vec![n1, n2], vec![]);
 
-    layer.remove_way(way_id);
+    layer.remove_way(way_id).unwrap();
 
     let data = layer.get_osm_data().unwrap();
     assert!(!data.ways.contains_key(&way_id));
@@ -107,7 +107,7 @@ fn extend_way_appends_node_and_updates_bbox() {
     let way_id = layer.add_way(vec![n1, n2], vec![]);
     let n3 = layer.add_node(40.001, -74.0);
 
-    layer.extend_way(way_id, n3);
+    layer.extend_way(way_id, n3).unwrap();
 
     let data = layer.get_osm_data().unwrap();
     let way = data.ways.get(&way_id).unwrap();
@@ -122,14 +122,14 @@ fn reverse_way_flips_node_order_and_is_its_own_inverse() {
     let n3 = layer.add_node(40.001, -74.0);
     let way_id = layer.add_way(vec![n1, n2, n3], vec![]);
 
-    assert!(layer.reverse_way(way_id));
+    assert!(layer.reverse_way(way_id).is_ok());
     assert_eq!(layer.way_node_ids(way_id), Some(vec![n3, n2, n1]));
     assert!(layer.is_modified());
 
-    assert!(layer.reverse_way(way_id));
+    assert!(layer.reverse_way(way_id).is_ok());
     assert_eq!(layer.way_node_ids(way_id), Some(vec![n1, n2, n3]));
 
-    assert!(!layer.reverse_way(999));
+    assert!(layer.reverse_way(999).is_err());
 }
 
 #[test]
@@ -144,15 +144,15 @@ fn set_way_nodes_rewrites_the_list_and_tracks_node_usage() {
 
     // Swap w2's use of n2 for a fresh node at the same spot.
     let copy = layer.add_node(40.0, -74.0);
-    assert!(layer.set_way_nodes(w2, vec![copy, n3]));
+    assert!(layer.set_way_nodes(w2, vec![copy, n3]).is_ok());
     assert_eq!(layer.way_node_ids(w2), Some(vec![copy, n3]));
     assert_eq!(layer.ways_using_node(n2), vec![w1]);
     assert_eq!(layer.ways_using_node(copy), vec![w2]);
 
     // A node no way uses any more can be deleted again.
-    assert!(layer.set_way_nodes(w2, vec![n3, n1]));
-    assert!(layer.delete_feature(FeatureKind::Node, copy).is_some());
-    assert!(!layer.set_way_nodes(999, vec![]));
+    assert!(layer.set_way_nodes(w2, vec![n3, n1]).is_ok());
+    assert!(layer.delete_feature(FeatureKind::Node, copy).is_ok());
+    assert!(layer.set_way_nodes(999, vec![]).is_err());
 }
 
 #[test]
@@ -208,12 +208,14 @@ fn insert_node_into_way_splices_at_index_and_remove_node_from_way_undoes_it() {
     let n2 = layer.add_node(40.0, -74.0);
     let way_id = layer.add_way(vec![n1, n2], vec![]);
 
-    let mid = layer.insert_node_into_way(way_id, 1, 40.0, -74.0005);
+    let mid = layer
+        .insert_node_into_way(way_id, 1, 40.0, -74.0005)
+        .unwrap();
     let data = layer.get_osm_data().unwrap();
     let way = data.ways.get(&way_id).unwrap();
     assert_eq!(way.nodes, vec![n1, mid, n2]);
 
-    layer.remove_node_from_way(way_id, 1);
+    layer.remove_node_from_way(way_id, 1).unwrap();
     let data = layer.get_osm_data().unwrap();
     let way = data.ways.get(&way_id).unwrap();
     assert_eq!(way.nodes, vec![n1, n2]);

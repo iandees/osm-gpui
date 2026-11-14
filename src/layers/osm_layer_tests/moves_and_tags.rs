@@ -3,7 +3,7 @@
 use super::{data_with, empty_tags, viewport_centered_on};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
-use crate::layers::{EditableLayer, MapLayer};
+use crate::layers::{EditError, EditableLayer};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::selection::{FeatureKind, FeatureRef};
 use gpui::{point, px, size, Bounds};
@@ -120,7 +120,7 @@ fn commit_node_moves_updates_data_and_marks_modified() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     assert!(!layer.is_modified());
-    layer.commit_node_moves(&[(1, 40.5, -74.5)]);
+    layer.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
 
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
@@ -147,7 +147,7 @@ fn commit_node_moves_empty_is_noop() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.commit_node_moves(&[]);
+    layer.commit_node_moves(&[]).unwrap();
     assert!(!layer.is_modified());
 }
 
@@ -163,7 +163,9 @@ fn set_tag_inserts_and_overwrites_on_node() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.set_tag(FeatureKind::Node, 1, "highway", "residential");
+    layer
+        .set_tag(FeatureKind::Node, 1, "highway", "residential")
+        .unwrap();
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
@@ -171,7 +173,9 @@ fn set_tag_inserts_and_overwrites_on_node() {
         Some(&"residential".to_string())
     );
 
-    layer.set_tag(FeatureKind::Node, 1, "highway", "trunk");
+    layer
+        .set_tag(FeatureKind::Node, 1, "highway", "trunk")
+        .unwrap();
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
         updated.nodes.get(&1).unwrap().tags.get("highway"),
@@ -204,7 +208,9 @@ fn set_tag_on_way() {
     let data = data_with(vec![n1, n2], vec![way]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.set_tag(FeatureKind::Way, 10, "surface", "paved");
+    layer
+        .set_tag(FeatureKind::Way, 10, "surface", "paved")
+        .unwrap();
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
@@ -225,7 +231,10 @@ fn set_tag_missing_feature_id_is_noop() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.set_tag(FeatureKind::Node, 999, "highway", "residential");
+    assert_eq!(
+        layer.set_tag(FeatureKind::Node, 999, "highway", "residential"),
+        Err(EditError::UnknownNode(999))
+    );
     assert!(!layer.is_modified());
 }
 
@@ -243,7 +252,7 @@ fn remove_tag_removes_existing_key() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.remove_tag(FeatureKind::Node, 1, "highway");
+    layer.remove_tag(FeatureKind::Node, 1, "highway").unwrap();
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(updated.nodes.get(&1).unwrap().tags.get("highway"), None);
@@ -261,7 +270,10 @@ fn remove_tag_missing_feature_id_is_noop() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.remove_tag(FeatureKind::Node, 999, "highway");
+    assert_eq!(
+        layer.remove_tag(FeatureKind::Node, 999, "highway"),
+        Err(EditError::UnknownNode(999))
+    );
     assert!(!layer.is_modified());
 }
 
@@ -326,7 +338,7 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
         Some((40.0, -74.0))
     );
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
 
     // The live layer sees the move...
     let updated = layer.get_osm_data().unwrap();
@@ -343,7 +355,7 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
 
     // Also true for tag edits, not just node moves.
     let snapshot2 = layer.get_osm_data().unwrap();
-    layer.set_tag(FeatureKind::Node, 1, "name", "Test");
+    layer.set_tag(FeatureKind::Node, 1, "name", "Test").unwrap();
     assert_eq!(
         snapshot2.nodes.get(&1).and_then(|n| n.tags.get("name")),
         None
@@ -403,7 +415,7 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
 
     let new_lat = 41.0;
     let new_lon = -75.0;
-    layer.commit_node_moves(&[(1, new_lat, new_lon)]);
+    layer.commit_node_moves(&[(1, new_lat, new_lon)]).unwrap();
 
     assert!(layer.is_modified());
 
@@ -512,7 +524,9 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     let old_bbox_b = layer.way_bboxes[1];
 
     // Drag+commit both shared nodes (1 and 2), as a whole-way move would.
-    layer.commit_node_moves(&[(1, 41.0, -75.0), (2, 41.001, -75.001)]);
+    layer
+        .commit_node_moves(&[(1, 41.0, -75.0), (2, 41.001, -75.001)])
+        .unwrap();
 
     assert!(layer.is_modified());
     assert_ne!(
@@ -559,7 +573,7 @@ fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
 
     let new_lat = 50.0;
     let new_lon = -80.0;
-    layer.commit_node_moves(&[(1, new_lat, new_lon)]);
+    layer.commit_node_moves(&[(1, new_lat, new_lon)]).unwrap();
 
     let viewport = viewport_centered_on(new_lat, new_lon);
 
@@ -622,7 +636,7 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
 
     let new_lat = 42.0;
     let new_lon = -76.0;
-    layer.commit_node_moves(&[(3, new_lat, new_lon)]);
+    layer.commit_node_moves(&[(3, new_lat, new_lon)]).unwrap();
 
     assert!(layer.is_modified());
     assert_eq!(
@@ -667,7 +681,9 @@ fn set_tag_refreshes_cached_way_style() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     let default_style = layer.way_styles[0];
-    layer.set_tag(FeatureKind::Way, 10, "highway", "residential");
+    layer
+        .set_tag(FeatureKind::Way, 10, "highway", "residential")
+        .unwrap();
     let updated_style = layer.way_styles[0];
 
     assert_ne!(
@@ -690,7 +706,9 @@ fn set_tag_refreshes_cached_node_style() {
 
     let idx = *layer.node_cache.index_by_id.get(&1).unwrap();
     let default_style = layer.node_cache.styles[idx];
-    layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+    layer
+        .set_tag(FeatureKind::Node, 1, "amenity", "cafe")
+        .unwrap();
     let updated_style = layer.node_cache.styles[idx];
 
     assert_ne!(

@@ -2,7 +2,7 @@
 
 use super::{data_with, empty_tags};
 use crate::layers::osm_layer::OsmLayer;
-use crate::layers::LayerId;
+use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::selection::FeatureKind;
 use crate::style::Stylesheet;
@@ -163,7 +163,7 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
         "no name, no label"
     );
 
-    layer.set_tag(FeatureKind::Way, 10, "name", "Hall");
+    layer.set_tag(FeatureKind::Way, 10, "name", "Hall").unwrap();
     validate(&layer, &mut cache);
     let l = layer.area_label_for(&mut cache, key, 18.0).unwrap();
     assert_eq!(l.text.as_ref(), "Hall");
@@ -180,7 +180,9 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
     assert_eq!(cache.areas.builds, 1, "computed once");
 
     // A tag edit leaves the geometry alone.
-    layer.set_tag(FeatureKind::Way, 10, "name", "Hall 2");
+    layer
+        .set_tag(FeatureKind::Way, 10, "name", "Hall 2")
+        .unwrap();
     validate(&layer, &mut cache);
     assert_eq!(
         layer
@@ -194,7 +196,7 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
     assert_eq!(cache.areas.builds, 1);
 
     // Moving a corner rebuilds it, and the pole moves.
-    layer.commit_node_moves(&[(3, 40.004, -73.997)]);
+    layer.commit_node_moves(&[(3, 40.004, -73.997)]).unwrap();
     validate(&layer, &mut cache);
     let g3 = layer.area_geom_for(&mut cache, key).unwrap();
     assert_eq!(cache.areas.builds, 2, "a vertex edit invalidates");
@@ -319,12 +321,14 @@ fn set_tag_refreshes_fill_triangles() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
     assert_eq!(layer.way_fill_tris[0], None, "no building tag yet");
-    layer.set_tag(FeatureKind::Way, 10, "building", "yes");
+    layer
+        .set_tag(FeatureKind::Way, 10, "building", "yes")
+        .unwrap();
     assert!(
         layer.way_fill_tris[0].is_some(),
         "tag edit must recompute fill"
     );
-    layer.remove_tag(FeatureKind::Way, 10, "building");
+    layer.remove_tag(FeatureKind::Way, 10, "building").unwrap();
     assert_eq!(layer.way_fill_tris[0], None, "tag removal must clear fill");
 }
 
@@ -376,7 +380,7 @@ fn delete_way_shifts_fill_cache() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
     assert_eq!(layer.way_fill_tris.len(), 2);
-    layer.delete_feature(FeatureKind::Way, 10);
+    layer.delete_feature(FeatureKind::Way, 10).unwrap();
     assert_eq!(layer.way_fill_tris.len(), 1);
     assert!(
         layer.way_fill_tris[0].is_some(),

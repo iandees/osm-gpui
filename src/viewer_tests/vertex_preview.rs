@@ -4,7 +4,6 @@ use super::{feature, setup};
 use crate::{menu, EditMode, MapViewer};
 use gpui::{point, px, Context, MouseMoveEvent, MouseUpEvent, TestAppContext};
 use osm_gpui::interaction::Interaction;
-use osm_gpui::layers::osm_layer::OsmLayer;
 
 /// Window position of a map-local point (inverse of `window_to_map`).
 fn win_pt(p: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
@@ -50,8 +49,7 @@ fn preview_way_of(view: &MapViewer) -> Option<i64> {
     let id = view.active_layer?;
     view.layer_manager
         .find_layer(id)?
-        .as_any()
-        .downcast_ref::<OsmLayer>()?
+        .as_osm()?
         .vertex_preview_way()
 }
 

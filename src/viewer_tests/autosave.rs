@@ -57,7 +57,8 @@ fn edited_layer(id: u64, name: &str, key: &str) -> OsmLayer {
     layer
         .as_editable_mut()
         .unwrap()
-        .set_tag(FeatureKind::Way, 10, key, "yes");
+        .set_tag(FeatureKind::Way, 10, key, "yes")
+        .unwrap();
     layer
 }
 
@@ -178,7 +179,12 @@ fn an_upload_that_leaves_nothing_pending_removes_the_autosave(cx: &mut TestAppCo
     // an immediate write, as it does after each applied changeset.
     window
         .update(cx, |view, _window, cx| {
-            let layer = view.layer_manager.find_layer_mut(id).unwrap();
+            let layer = view
+                .layer_manager
+                .find_layer_mut(id)
+                .unwrap()
+                .as_osm_mut()
+                .unwrap();
             layer.apply_upload_result(&osm_gpui::osm_upload::UploadResult {
                 node_id_remap: HashMap::new(),
                 way_id_remap: HashMap::from([(10, (10, 4))]),
@@ -231,9 +237,10 @@ fn a_crashed_run_is_offered_and_restore_brings_the_edits_back(cx: &mut TestAppCo
                 .iter()
                 .find(|l| l.name() == "Downtown")
                 .expect("the layer is back");
+            let restored_osm = restored.as_osm().unwrap();
             // Edits pending, and the layer counts as unsaved.
-            assert!(restored.is_modified());
-            assert_eq!(restored.diff_for_upload().counts(), before);
+            assert!(restored_osm.is_modified());
+            assert_eq!(restored_osm.diff_for_upload().counts(), before);
             assert_eq!(pending(view, restored.id()), before.0 + before.1 + before.2);
             assert_eq!(view.active_layer, Some(restored.id()));
             assert!(view.script_autosave_idle().is_ok());

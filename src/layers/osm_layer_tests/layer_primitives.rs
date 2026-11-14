@@ -4,7 +4,7 @@
 //! `forget_local_delete` and `apply_chunk_result`.
 
 use crate::layers::osm_layer::OsmLayer;
-use crate::layers::{EditableLayer, LayerId, MapLayer};
+use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::osm_api::ServerElement;
 use crate::osm_upload::UploadResult;
@@ -105,21 +105,22 @@ fn has_pending_edit_is_false_for_everything_just_loaded_and_for_unknown_ids() {
 fn has_pending_edit_follows_each_kind_of_edit_and_clears_when_the_edit_is_undone() {
     let mut l = layer();
 
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     assert!(l.has_pending_edit(Node, 1));
     assert!(!l.has_pending_edit(Node, 2), "a neighbour is not edited");
-    l.commit_node_moves(&[(1, 40.000, -74.000)]);
+    l.commit_node_moves(&[(1, 40.000, -74.000)]).unwrap();
     assert!(!l.has_pending_edit(Node, 1), "moved back to the baseline");
 
-    l.set_tag(Way, 10, "name", "Main");
+    l.set_tag(Way, 10, "name", "Main").unwrap();
     assert!(l.has_pending_edit(Way, 10));
-    l.remove_tag(Way, 10, "name");
+    l.remove_tag(Way, 10, "name").unwrap();
     assert!(!l.has_pending_edit(Way, 10));
 
-    l.set_relation_members(50, vec![way_member(10), way_member(11)]);
+    l.set_relation_members(50, vec![way_member(10), way_member(11)])
+        .unwrap();
     assert!(l.has_pending_edit(Relation, 50));
     assert!(!l.has_pending_edit(Relation, 52));
-    l.set_relation_members(50, vec![way_member(10)]);
+    l.set_relation_members(50, vec![way_member(10)]).unwrap();
     assert!(!l.has_pending_edit(Relation, 50));
 
     let created = l.add_node(40.2, -74.2);
@@ -242,7 +243,7 @@ fn restore_purged_after_a_way_was_purged_rebuilds_its_geometry() {
 #[test]
 fn set_base_version_moves_the_base_of_a_pending_edit_and_keeps_the_edit() {
     let mut l = layer();
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     assert!(l.set_base_version(Node, 1, 9));
     let diff = l.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
@@ -263,8 +264,8 @@ fn set_base_version_moves_the_base_of_a_local_delete() {
 #[test]
 fn set_base_version_covers_ways_and_relations() {
     let mut l = layer();
-    l.set_tag(Way, 10, "name", "Main");
-    l.set_relation_members(50, vec![]);
+    l.set_tag(Way, 10, "name", "Main").unwrap();
+    l.set_relation_members(50, vec![]).unwrap();
     assert!(l.set_base_version(Way, 10, 7));
     assert!(l.set_base_version(Relation, 50, 6));
     let diff = l.diff_for_upload();
@@ -276,7 +277,7 @@ fn set_base_version_covers_ways_and_relations() {
 #[test]
 fn set_base_version_of_an_unknown_object_is_false_and_changes_nothing() {
     let mut l = layer();
-    l.set_tag(Way, 10, "name", "Main");
+    l.set_tag(Way, 10, "name", "Main").unwrap();
     let before = counts(&l);
     for kind in [Node, Way, Relation] {
         assert!(!l.set_base_version(kind, 777, 3), "{kind:?}");
@@ -299,7 +300,7 @@ fn server_with_node(id: i64, lat: f64, version: i32) -> ServerElement {
 #[test]
 fn adopting_the_servers_node_drops_the_local_change() {
     let mut l = layer();
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     assert!(l.is_modified());
 
     assert!(l.adopt_server_element(Node, 1, server_with_node(1, 40.123, 6)));
@@ -313,7 +314,7 @@ fn adopting_the_servers_node_drops_the_local_change() {
 #[test]
 fn adopting_a_server_deletion_removes_the_object_from_data_and_baseline() {
     let mut l = layer();
-    l.set_tag(Way, 10, "name", "Main");
+    l.set_tag(Way, 10, "name", "Main").unwrap();
     assert!(l.adopt_server_element(Way, 10, ServerElement::Gone));
     assert!(!l.has_feature(Way, 10));
     assert!(
@@ -333,8 +334,8 @@ fn adopting_a_server_deletion_removes_the_object_from_data_and_baseline() {
 #[test]
 fn adopting_a_server_way_replaces_it_and_its_nodes_but_keeps_other_node_edits() {
     let mut l = layer();
-    l.set_way_nodes(10, vec![1, 2]);
-    l.commit_node_moves(&[(3, 40.9, -74.9)]);
+    l.set_way_nodes(10, vec![1, 2]).unwrap();
+    l.commit_node_moves(&[(3, 40.9, -74.9)]).unwrap();
 
     let mut theirs = OsmData {
         nodes: HashMap::new(),
@@ -373,7 +374,7 @@ fn adopting_a_server_way_replaces_it_and_its_nodes_but_keeps_other_node_edits() 
 #[test]
 fn adopting_a_server_relation_replaces_it_in_data_and_baseline() {
     let mut l = layer();
-    l.set_relation_members(50, vec![]);
+    l.set_relation_members(50, vec![]).unwrap();
     let mut theirs = server_data();
     theirs.relations[0].version = 9;
     theirs.relations[0].members = vec![way_member(10), way_member(11)];
@@ -387,7 +388,7 @@ fn adopting_a_server_relation_replaces_it_in_data_and_baseline() {
 #[test]
 fn adopting_an_element_the_server_data_does_not_hold_is_false_and_changes_nothing() {
     let mut l = layer();
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     let before = counts(&l);
     assert!(!l.adopt_server_element(Node, 1, server_with_node(2, 40.0, 6)));
     assert!(!l.adopt_server_element(Way, 10, server_with_node(1, 40.0, 6)));
@@ -425,7 +426,7 @@ fn forgetting_a_local_delete_covers_ways_and_relations() {
 #[test]
 fn forgetting_a_delete_of_something_not_deleted_here_does_nothing() {
     let mut l = layer();
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     let before = counts(&l);
     assert!(!l.forget_local_delete(Node, 1), "present, only edited");
     assert!(!l.forget_local_delete(Node, 999), "unknown");
@@ -464,8 +465,8 @@ fn answer_for(chunk: &crate::layers::diff::LayerDiff) -> UploadResult {
 /// node and relation, and a created node, way and relation.
 fn edited_layer() -> OsmLayer {
     let mut l = layer();
-    l.commit_node_moves(&[(1, 40.5, -74.5)]);
-    l.set_tag(Way, 10, "name", "Main");
+    l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
+    l.set_tag(Way, 10, "name", "Main").unwrap();
     l.delete_feature(Node, 4).unwrap();
     l.delete_relation(51).unwrap();
     let n = l.add_node(40.2, -74.2);

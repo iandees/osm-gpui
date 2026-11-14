@@ -338,12 +338,13 @@ fn moving_a_node_updates_the_simplification() {
     let before = scene_vertices(&l, 17.0);
     // Node 3 starts on the line and is simplified away. Pull it 55 m off
     // the line: it becomes significant, so the way draws more segments.
-    l.commit_node_moves(&[(3, LAT + 0.0005, LON + 0.001)]);
+    l.commit_node_moves(&[(3, LAT + 0.0005, LON + 0.001)])
+        .unwrap();
     assert_same_as_fresh(&l);
     let bent = scene_vertices(&l, 17.0);
     assert!(bent > before, "{bent} > {before}");
     // And back (what undo does): it is simplified away again.
-    l.commit_node_moves(&[(3, LAT, LON + 0.001)]);
+    l.commit_node_moves(&[(3, LAT, LON + 0.001)]).unwrap();
     assert_same_as_fresh(&l);
     assert_eq!(scene_vertices(&l, 17.0), before);
 }
@@ -358,7 +359,7 @@ fn adding_and_removing_ways_updates_the_scene() {
     let id = l.add_way(vec![a, b, c], Vec::new());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 17.0) > before);
-    l.remove_way(id);
+    l.remove_way(id).unwrap();
     assert_same_as_fresh(&l);
     assert_eq!(scene_vertices(&l, 17.0), before);
 }
@@ -368,10 +369,10 @@ fn changing_a_ways_nodes_updates_the_scene() {
     let mut l = layer();
     // Zoom 19 keeps the 0.2 m kink (node 2), so dropping it shows.
     let before = scene_vertices(&l, 19.0);
-    assert!(l.set_way_nodes(10, vec![1, 5]));
+    assert!(l.set_way_nodes(10, vec![1, 5]).is_ok());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 19.0) < before);
-    l.remove_node_from_way(10, 0);
+    l.remove_node_from_way(10, 0).unwrap();
     assert_same_as_fresh(&l);
 }
 

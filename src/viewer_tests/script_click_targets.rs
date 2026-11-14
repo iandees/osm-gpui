@@ -203,6 +203,8 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
     let counts = layers
         .find_layer(LayerId(1))
         .unwrap()
+        .as_osm()
+        .unwrap()
         .diff_for_upload()
         .counts();
     assert_eq!(counts, (1, 2, 0));

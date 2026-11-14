@@ -87,7 +87,8 @@ fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContex
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .set_relation_members(900, after.clone());
+                .set_relation_members(900, after.clone())
+                .unwrap();
             let action = UndoableAction::SetRelationMembers {
                 layer: layer_id,
                 relation_id: 900,
@@ -150,7 +151,7 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             assert_eq!(pending(view), (1, 0, 0));
             assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
             // 900 is a member now, so it can't be deleted.
-            assert!(editable(view).delete_relation(900).is_none());
+            assert!(editable(view).delete_relation(900).is_err());
 
             undo_step(view);
             assert!(editable(view).relation(new_id).is_none());

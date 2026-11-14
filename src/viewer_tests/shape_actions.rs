@@ -271,7 +271,8 @@ fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .commit_node_moves(&[(2, off_line.0, off_line.1)]);
+                .commit_node_moves(&[(2, off_line.0, off_line.1)])
+                .unwrap();
             select(view, Way, &[100]);
             view.run_selection_action("straighten", cx);
             assert_eq!(view.undo_stack.actions.len(), 1);
@@ -372,6 +373,8 @@ fn inapplicable_action_explains_itself_and_changes_nothing(cx: &mut TestAppConte
             assert!(!view
                 .layer_manager
                 .find_layer(layer_id)
+                .unwrap()
+                .as_osm()
                 .unwrap()
                 .is_modified());
         })
@@ -518,7 +521,8 @@ fn extrude_refuses_to_grow_a_full_way(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(108, nodes);
+                .set_way_nodes(108, nodes)
+                .unwrap();
             let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Reshape, 60.0);
             view.commit_extrude_reshape(&drag, up);
             assert_eq!(way_nodes(view, layer_id, 108).len(), 2000);

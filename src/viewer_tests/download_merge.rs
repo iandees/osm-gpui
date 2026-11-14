@@ -33,7 +33,8 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .unwrap();
 
             view.apply_download(overlapping_download());
 
@@ -47,8 +48,9 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
                 "local move kept"
             );
             // Still exactly one pending edit: the move.
-            assert_eq!(layer.diff_for_upload().counts(), (0, 1, 0));
-            assert!(layer.is_modified());
+            let osm = layer.as_osm().unwrap();
+            assert_eq!(osm.diff_for_upload().counts(), (0, 1, 0));
+            assert!(osm.is_modified());
             let (message, _) = view.status_message.clone().unwrap();
             assert_eq!(message, "Downloaded OSM data: 1 new, 1 local edit kept");
         })
@@ -69,7 +71,7 @@ fn download_with_no_active_layer_creates_one(cx: &mut TestAppContext) {
             assert_eq!(layers.len(), 1);
             assert_eq!(layers[0].name(), DOWNLOAD_LAYER_NAME);
             assert_eq!(view.active_layer, Some(layers[0].id()));
-            assert!(!layers[0].is_modified());
+            assert!(!layers[0].as_osm().unwrap().is_modified());
         })
         .unwrap();
 }
@@ -85,11 +87,14 @@ fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+                .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .unwrap();
             view.handle_add_click(point(px(50.0), px(50.0)), false);
             let pending = view
                 .layer_manager
                 .find_layer(layer_id)
+                .unwrap()
+                .as_osm()
                 .unwrap()
                 .diff_for_upload()
                 .counts();
@@ -104,7 +109,12 @@ fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
                 .unwrap();
             view.add_osm_dataset("reopened".to_string(), data, &edits, cx);
 
-            let reopened = view.layer_manager.layer_named("reopened").unwrap();
+            let reopened = view
+                .layer_manager
+                .layer_named("reopened")
+                .unwrap()
+                .as_osm()
+                .unwrap();
             assert_eq!(reopened.diff_for_upload().counts(), pending);
             assert!(reopened.is_modified());
         })

@@ -239,6 +239,8 @@ fn pending(view: &MapViewer) -> (usize, usize, usize) {
     view.layer_manager
         .find_layer(layer_id)
         .unwrap()
+        .as_osm()
+        .unwrap()
         .diff_for_upload()
         .counts()
 }
@@ -334,7 +336,9 @@ fn validation_view(
 /// stack), as it would be when the server then refuses the upload.
 fn tag_node_one(view: &mut MapViewer) {
     let layer_id = view.active_layer.unwrap();
-    editable(view).set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe");
+    editable(view)
+        .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe")
+        .unwrap();
     view.undo_stack.push(UndoableAction::SetTags {
         entries: vec![(
             osm_gpui::selection::FeatureRef {

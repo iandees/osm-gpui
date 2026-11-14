@@ -3,8 +3,8 @@
 use super::{data_with, empty_tags};
 use crate::http::fake::{ok, status_err, FakeClient};
 use crate::layers::osm_layer::OsmLayer;
+use crate::layers::EditableLayer;
 use crate::layers::LayerId;
-use crate::layers::MapLayer;
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::FeatureKind;
 use crate::upload_chunks::run_chunked_upload;
@@ -271,8 +271,8 @@ fn modified_and_deleted_objects_are_applied_per_chunk_too() {
             vec![],
         ),
     );
-    layer.set_tag(FeatureKind::Node, 1, "a", "b");
-    layer.set_tag(FeatureKind::Node, 2, "a", "b");
+    layer.set_tag(FeatureKind::Node, 1, "a", "b").unwrap();
+    layer.set_tag(FeatureKind::Node, 2, "a", "b").unwrap();
     layer.delete_feature(FeatureKind::Node, 3).unwrap();
     let client = FakeClient::new(vec![
         ok(200, "1"),

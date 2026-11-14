@@ -123,7 +123,9 @@ fn undo_selects_tagged_and_moved_features_and_prunes_stale_ids(cx: &mut TestAppC
 
             let layer_id = view.active_layer.unwrap();
             let (lat, lon) = editable(view).node_lat_lon(1).unwrap();
-            editable(view).commit_node_moves(&[(1, lat + 0.001, lon)]);
+            editable(view)
+                .commit_node_moves(&[(1, lat + 0.001, lon)])
+                .unwrap();
             view.undo_stack.push(UndoableAction::MoveNodes {
                 select: None,
                 per_layer: vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
@@ -154,7 +156,9 @@ fn undo_of_a_dragged_way_keeps_the_way_selected(cx: &mut TestAppContext) {
             select(view, Way, &[101]);
             let nodes = editable(view).way_node_ids(101).unwrap();
             let (lat, lon) = editable(view).node_lat_lon(nodes[0]).unwrap();
-            editable(view).commit_node_moves(&[(nodes[0], lat + 0.001, lon)]);
+            editable(view)
+                .commit_node_moves(&[(nodes[0], lat + 0.001, lon)])
+                .unwrap();
             view.undo_stack.push(UndoableAction::MoveNodes {
                 select: Some(view.selected.clone()),
                 per_layer: vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],

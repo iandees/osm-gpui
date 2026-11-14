@@ -3,8 +3,8 @@
 use super::{data_with, empty_tags};
 use crate::http::fake::{ok, status_err, FakeClient};
 use crate::layers::osm_layer::OsmLayer;
+use crate::layers::EditableLayer;
 use crate::layers::LayerId;
-use crate::layers::{EditableLayer, MapLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::osm_api::{fetch_element_with, ServerElement};
 use crate::osm_upload::{run_upload, ConflictKind, UploadConflict, UploadError};
@@ -34,7 +34,9 @@ fn edited_layer() -> OsmLayer {
     };
     let data = data_with(vec![node(1, 40.0, 1), node(2, 40.001, 1)], vec![way]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
-    layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+    layer
+        .set_tag(FeatureKind::Node, 1, "amenity", "cafe")
+        .unwrap();
     layer
 }
 
@@ -126,7 +128,9 @@ fn keep_mine_makes_the_retry_overwrite_the_servers_version() {
 fn use_theirs_replaces_the_object_and_the_retry_leaves_it_out() {
     let mut layer = edited_layer();
     // A second, unrelated edit that must survive.
-    layer.set_tag(FeatureKind::Way, 10, "highway", "path");
+    layer
+        .set_tag(FeatureKind::Way, 10, "highway", "path")
+        .unwrap();
     let client = FakeClient::new(refused_session());
     let conflict = upload(&layer, &client).unwrap_err();
     let (kind, id) = conflict.object.unwrap();
@@ -183,7 +187,9 @@ fn use_theirs_on_an_object_deleted_on_the_server_removes_it_locally() {
     let mut layer = edited_layer();
     // The way uses node 1, so edit the way instead: delete-on-server
     // for way 10 after a local tag edit.
-    layer.set_tag(FeatureKind::Way, 10, "highway", "path");
+    layer
+        .set_tag(FeatureKind::Way, 10, "highway", "path")
+        .unwrap();
     let client = FakeClient::new(vec![
         ok(200, "42"),
         status_err(410, "The way with the id 10 has already been deleted"),

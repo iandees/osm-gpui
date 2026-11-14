@@ -3,7 +3,7 @@
 //! the same data holds.
 
 use crate::layers::osm_layer::OsmLayer;
-use crate::layers::LayerId;
+use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -322,7 +322,7 @@ fn commit_node_moves_matches_a_fresh_rebuild() {
         (8, 40.0013, -73.9990),
         (1, 39.9996, -74.0004),
     ];
-    l.commit_node_moves(&there);
+    l.commit_node_moves(&there).unwrap();
     assert_fresh(&l, "after moving five nodes");
     let back = [
         (3, 40.0, -73.998),
@@ -331,37 +331,46 @@ fn commit_node_moves_matches_a_fresh_rebuild() {
         (8, 40.001, -73.999),
         (1, 40.0, -74.0),
     ];
-    l.commit_node_moves(&back);
+    l.commit_node_moves(&back).unwrap();
     assert_fresh(&l, "after moving them back");
 }
 
 #[test]
 fn set_tag_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.set_tag(FeatureKind::Way, 100, "highway", "primary");
+    l.set_tag(FeatureKind::Way, 100, "highway", "primary")
+        .unwrap();
     assert_fresh(&l, "retyping the road");
-    l.set_tag(FeatureKind::Way, 102, "landuse", "forest");
+    l.set_tag(FeatureKind::Way, 102, "landuse", "forest")
+        .unwrap();
     assert_fresh(&l, "tagging the building ring as a wood too");
-    l.set_tag(FeatureKind::Way, 103, "building", "yes");
+    l.set_tag(FeatureKind::Way, 103, "building", "yes").unwrap();
     assert_fresh(&l, "tagging the multipolygon's outer way");
-    l.set_tag(FeatureKind::Node, 7, "amenity", "cafe");
+    l.set_tag(FeatureKind::Node, 7, "amenity", "cafe").unwrap();
     assert_fresh(&l, "retagging the point");
-    l.set_tag(FeatureKind::Node, 8, "name", "x");
+    l.set_tag(FeatureKind::Node, 8, "name", "x").unwrap();
     assert_fresh(&l, "tagging a loose node");
-    l.set_tag(FeatureKind::Node, 3, "highway", "traffic_signals");
+    l.set_tag(FeatureKind::Node, 3, "highway", "traffic_signals")
+        .unwrap();
     assert_fresh(&l, "tagging the junction");
-    l.set_tag(FeatureKind::Relation, 200, "natural", "wood");
+    l.set_tag(FeatureKind::Relation, 200, "natural", "wood")
+        .unwrap();
     assert_fresh(&l, "retagging the multipolygon");
-    l.set_tag(FeatureKind::Relation, 201, "route", "bicycle");
+    l.set_tag(FeatureKind::Relation, 201, "route", "bicycle")
+        .unwrap();
     assert_fresh(&l, "retagging the route");
     l.set_tag(
         FeatureKind::Relation,
         202,
         "restriction",
         "only_straight_on",
-    );
+    )
+    .unwrap();
     assert_fresh(&l, "retagging the restriction");
-    l.set_tag(FeatureKind::Way, 999, "a", "b");
+    assert_eq!(
+        l.set_tag(FeatureKind::Way, 999, "a", "b"),
+        Err(EditError::UnknownWay(999))
+    );
     assert_fresh(&l, "tagging a way that is not there");
 }
 
@@ -378,7 +387,7 @@ fn remove_tag_matches_a_fresh_rebuild() {
         (FeatureKind::Relation, 202, "restriction"),
         (FeatureKind::Node, 3, "no_such_key"),
     ] {
-        l.remove_tag(kind, id, key);
+        l.remove_tag(kind, id, key).unwrap();
         assert_fresh(&l, &format!("removing {key} from {kind:?} {id}"));
     }
 }
@@ -387,9 +396,9 @@ fn remove_tag_matches_a_fresh_rebuild() {
 fn tag_edits_match_a_fresh_rebuild_on_every_kind_of_target() {
     let mut l = start();
     for (kind, id) in all_kinds_of_tag_edit_target() {
-        l.set_tag(kind, id, "note", "n");
+        l.set_tag(kind, id, "note", "n").unwrap();
         assert_fresh(&l, &format!("noting {kind:?} {id}"));
-        l.remove_tag(kind, id, "note");
+        l.remove_tag(kind, id, "note").unwrap();
         assert_fresh(&l, &format!("un-noting {kind:?} {id}"));
     }
 }
@@ -402,7 +411,10 @@ fn create_node_matches_a_fresh_rebuild() {
     let b = l.create_node(40.003, -73.997, Some(-500)).unwrap();
     assert_eq!(b, -500);
     assert_fresh(&l, "after a node with a forced id");
-    assert_eq!(l.create_node(40.0, -74.0, Some(a)), None);
+    assert_eq!(
+        l.create_node(40.0, -74.0, Some(a)),
+        Err(EditError::IdInUse(FeatureKind::Node, a))
+    );
     assert_fresh(&l, "after refusing an id that is taken");
 }
 
@@ -440,63 +452,63 @@ fn add_way_matches_a_fresh_rebuild() {
 #[test]
 fn extend_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.extend_way(106, 8);
+    l.extend_way(106, 8).unwrap();
     assert_fresh(&l, "extending a path onto a loose node");
-    l.extend_way(100, 9);
+    l.extend_way(100, 9).unwrap();
     assert_fresh(&l, "extending a route member road");
-    l.extend_way(105, 3);
+    l.extend_way(105, 3).unwrap();
     assert_fresh(&l, "extending onto the three-way junction");
-    l.extend_way(999, 3);
+    assert_eq!(l.extend_way(999, 3), Err(EditError::UnknownWay(999)));
     assert_fresh(&l, "extending a way that is not there");
 }
 
 #[test]
 fn insert_node_into_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.insert_node_into_way(100, 1, 40.0003, -73.9985);
+    l.insert_node_into_way(100, 1, 40.0003, -73.9985).unwrap();
     assert_fresh(&l, "into the middle of a road");
-    l.insert_node_into_way(102, 2, 40.0025, -73.9965);
+    l.insert_node_into_way(102, 2, 40.0025, -73.9965).unwrap();
     assert_fresh(&l, "into a closed ring");
-    l.insert_node_into_way(103, 1, 40.0101, -73.9990);
+    l.insert_node_into_way(103, 1, 40.0101, -73.9990).unwrap();
     assert_fresh(&l, "into a multipolygon member");
-    l.insert_node_into_way(101, 3, 40.003, -73.998);
+    l.insert_node_into_way(101, 3, 40.003, -73.998).unwrap();
     assert_fresh(&l, "at the end of a road");
 }
 
 #[test]
 fn remove_node_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_node(8);
+    l.remove_node(8).unwrap();
     assert_fresh(&l, "removing a loose node");
-    l.remove_node(9);
+    l.remove_node(9).unwrap();
     assert_fresh(&l, "removing another");
-    l.remove_node(7);
+    l.remove_node(7).unwrap();
     assert_fresh(&l, "removing the tagged point");
 }
 
 #[test]
 fn remove_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_way(105);
+    l.remove_way(105).unwrap();
     assert_fresh(&l, "removing a leaf footway");
-    l.remove_way(100);
+    l.remove_way(100).unwrap();
     assert_fresh(&l, "removing the route and restriction member road");
-    l.remove_way(103);
+    l.remove_way(103).unwrap();
     assert_fresh(&l, "removing the multipolygon's outer way");
-    l.remove_way(102);
+    l.remove_way(102).unwrap();
     assert_fresh(&l, "removing the building");
 }
 
 #[test]
 fn remove_node_from_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_node_from_way(100, 3);
+    l.remove_node_from_way(100, 3).unwrap();
     assert_fresh(&l, "dropping a road's end node");
-    l.remove_node_from_way(102, 1);
+    l.remove_node_from_way(102, 1).unwrap();
     assert_fresh(&l, "dropping a ring vertex");
-    l.remove_node_from_way(101, 0);
+    l.remove_node_from_way(101, 0).unwrap();
     assert_fresh(&l, "dropping a road's start node, a junction");
-    l.remove_node_from_way(103, 1);
+    l.remove_node_from_way(103, 1).unwrap();
     assert_fresh(&l, "dropping a multipolygon outer vertex");
 }
 
@@ -504,27 +516,30 @@ fn remove_node_from_way_matches_a_fresh_rebuild() {
 fn reverse_way_matches_a_fresh_rebuild() {
     let mut l = start();
     for id in [100, 102, 103, 104] {
-        assert!(l.reverse_way(id));
+        assert!(l.reverse_way(id).is_ok());
         assert_fresh(&l, &format!("reversing way {id}"));
     }
-    assert!(!l.reverse_way(999));
+    assert_eq!(l.reverse_way(999), Err(EditError::UnknownWay(999)));
     assert_fresh(&l, "reversing a way that is not there");
 }
 
 #[test]
 fn set_way_nodes_matches_a_fresh_rebuild() {
     let mut l = start();
-    assert!(l.set_way_nodes(100, vec![1, 2, 3]));
+    assert!(l.set_way_nodes(100, vec![1, 2, 3]).is_ok());
     assert_fresh(&l, "shortening a road");
-    assert!(l.set_way_nodes(102, vec![6, 13, 12, 11, 6]));
+    assert!(l.set_way_nodes(102, vec![6, 13, 12, 11, 6]).is_ok());
     assert_fresh(&l, "re-winding a ring");
-    assert!(l.set_way_nodes(103, vec![21, 22, 23, 20, 21]));
+    assert!(l.set_way_nodes(103, vec![21, 22, 23, 20, 21]).is_ok());
     assert_fresh(&l, "rotating a multipolygon's outer ring");
-    assert!(l.set_way_nodes(101, vec![3, 5, 13, 6]));
+    assert!(l.set_way_nodes(101, vec![3, 5, 13, 6]).is_ok());
     assert_fresh(&l, "re-routing a road through a ring node");
-    assert!(l.set_way_nodes(106, vec![8, 9]));
+    assert!(l.set_way_nodes(106, vec![8, 9]).is_ok());
     assert_fresh(&l, "moving a path onto loose nodes");
-    assert!(!l.set_way_nodes(999, vec![1, 2]));
+    assert_eq!(
+        l.set_way_nodes(999, vec![1, 2]),
+        Err(EditError::UnknownWay(999))
+    );
     assert_fresh(&l, "setting the nodes of a way that is not there");
 }
 
@@ -544,7 +559,10 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
     let road = l.delete_feature(FeatureKind::Way, 100).unwrap();
     assert_fresh(&l, "deleting the route and restriction member road");
 
-    assert!(l.delete_feature(FeatureKind::Node, 3).is_none());
+    assert_eq!(
+        l.delete_feature(FeatureKind::Node, 3).unwrap_err(),
+        EditError::NodeInWay(3)
+    );
     assert_fresh(&l, "refusing a node that a way still uses");
 
     for (what, snapshot) in [
@@ -555,7 +573,7 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
         ("the footway", footway),
         ("the loose node", loose),
     ] {
-        l.restore_feature(snapshot);
+        l.restore_feature(snapshot).unwrap();
         assert_fresh(&l, &format!("restoring {what}"));
     }
 }
@@ -563,7 +581,8 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
 #[test]
 fn set_relation_members_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.set_relation_members(200, vec![member(MemberType::Way, 103, "outer")]);
+    l.set_relation_members(200, vec![member(MemberType::Way, 103, "outer")])
+        .unwrap();
     assert_fresh(&l, "dropping the hole");
     l.set_relation_members(
         200,
@@ -572,7 +591,8 @@ fn set_relation_members_matches_a_fresh_rebuild() {
             member(MemberType::Way, 104, "inner"),
             member(MemberType::Way, 102, "inner"),
         ],
-    );
+    )
+    .unwrap();
     assert_fresh(&l, "adding a second hole outside the outer ring");
     l.set_relation_members(
         201,
@@ -580,7 +600,8 @@ fn set_relation_members_matches_a_fresh_rebuild() {
             member(MemberType::Way, 101, ""),
             member(MemberType::Way, 105, ""),
         ],
-    );
+    )
+    .unwrap();
     assert_fresh(&l, "re-routing the route");
     l.set_relation_members(
         202,
@@ -589,9 +610,13 @@ fn set_relation_members_matches_a_fresh_rebuild() {
             member(MemberType::Node, 5, "via"),
             member(MemberType::Way, 101, "to"),
         ],
-    );
+    )
+    .unwrap();
     assert_fresh(&l, "moving the restriction's via node");
-    assert_eq!(l.set_relation_members(999, vec![]), None);
+    assert_eq!(
+        l.set_relation_members(999, vec![]),
+        Err(EditError::UnknownRelation(999))
+    );
     assert_fresh(&l, "setting the members of a relation that is not there");
 }
 
@@ -642,7 +667,7 @@ fn delete_and_restore_relation_match_a_fresh_rebuild() {
     }
     for snapshot in snapshots.into_iter().rev() {
         let id = snapshot.relation.id;
-        assert!(l.restore_relation(snapshot));
+        assert!(l.restore_relation(snapshot).is_ok());
         assert_fresh(&l, &format!("restoring relation {id}"));
     }
 }
@@ -664,8 +689,8 @@ fn purge_and_restore_purged_match_a_fresh_rebuild() {
 #[test]
 fn merge_download_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.commit_node_moves(&[(3, 40.0004, -73.9975)]);
-    l.set_tag(FeatureKind::Way, 102, "name", "mine");
+    l.commit_node_moves(&[(3, 40.0004, -73.9975)]).unwrap();
+    l.set_tag(FeatureKind::Way, 102, "name", "mine").unwrap();
 
     let mut incoming = data();
     incoming.nodes.get_mut(&7).unwrap().version = 2;

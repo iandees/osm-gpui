@@ -3,7 +3,7 @@
 use super::{data_with, empty_tags};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
-use crate::layers::{EditableLayer, MapLayer};
+use crate::layers::{EditError, EditableLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::{FeatureKind, FeatureRef};
 use std::collections::HashMap;
@@ -27,11 +27,14 @@ fn set_relation_members_returns_the_previous_list_and_marks_the_layer_modified()
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
     assert!(!layer.is_modified());
 
-    assert_eq!(layer.set_relation_members(404, vec![]), None);
+    assert_eq!(
+        layer.set_relation_members(404, vec![]),
+        Err(EditError::UnknownRelation(404))
+    );
     assert!(!layer.is_modified(), "unknown relation changes nothing");
 
     let previous = layer.set_relation_members(500, vec![member(10), member(11)]);
-    assert_eq!(previous, Some(vec![member(10)]));
+    assert_eq!(previous, Ok(vec![member(10)]));
     assert!(layer.is_modified());
     assert_eq!(layer.relation(500).unwrap().members.len(), 2);
     assert_eq!(layer.relations_containing_way(11), vec![500]);
@@ -40,7 +43,7 @@ fn set_relation_members_returns_the_previous_list_and_marks_the_layer_modified()
     assert_eq!(diff.modified_relations[0].version, 3);
 
     // Putting the old list back leaves nothing to upload.
-    layer.set_relation_members(500, vec![member(10)]);
+    layer.set_relation_members(500, vec![member(10)]).unwrap();
     assert!(layer.diff_for_upload().is_empty());
 }
 
@@ -80,20 +83,27 @@ fn relation_tags_read_edit_and_remove_through_the_layer() {
     );
     assert!(!layer.is_modified());
 
-    layer.set_tag(FeatureKind::Relation, 500, "name", "Blue Line");
+    layer
+        .set_tag(FeatureKind::Relation, 500, "name", "Blue Line")
+        .unwrap();
     assert!(layer.is_modified());
     assert_eq!(EditableLayer::feature_tags(&layer, &rel).unwrap().len(), 2);
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_relations.len(), 1);
     assert_eq!(diff.modified_relations[0].tags["name"], "Blue Line");
 
-    layer.remove_tag(FeatureKind::Relation, 500, "name");
+    layer
+        .remove_tag(FeatureKind::Relation, 500, "name")
+        .unwrap();
     assert!(layer.diff_for_upload().is_empty(), "back to the original");
 
-    // A relation can't be deleted yet, and a missing one is ignored.
-    assert!(layer.delete_feature(FeatureKind::Relation, 500).is_none());
+    // `delete_feature` is for nodes and ways; a missing relation is refused.
+    assert!(layer.delete_feature(FeatureKind::Relation, 500).is_err());
     assert!(layer.relation(500).is_some());
-    layer.set_tag(FeatureKind::Relation, 404, "a", "b");
+    assert_eq!(
+        layer.set_tag(FeatureKind::Relation, 404, "a", "b"),
+        Err(EditError::UnknownRelation(404))
+    );
 }
 
 #[test]
@@ -247,9 +257,9 @@ fn delete_relation_refuses_a_member_relation_and_restores_in_place() {
         .create_relation(vec![], vec![relation_member(Relation, child)])
         .unwrap();
     assert_eq!(layer.relations_containing_relation(child), vec![parent]);
-    assert!(layer.delete_relation(child).is_none());
+    assert!(layer.delete_relation(child).is_err());
     assert!(layer.relation(child).is_some());
-    assert!(layer.delete_relation(404).is_none());
+    assert!(layer.delete_relation(404).is_err());
 
     // A server relation: delete, restore at the same position, version
     // intact, and nothing left to upload.
@@ -258,8 +268,11 @@ fn delete_relation_refuses_a_member_relation_and_restores_in_place() {
     assert_eq!(snapshot.relation.version, 7);
     assert_eq!(snapshot.index, 0);
     assert_eq!(layer.diff_for_upload().deleted_relation_ids, vec![(500, 7)]);
-    assert!(layer.restore_relation(snapshot.clone()));
-    assert!(!layer.restore_relation(snapshot), "id already present");
+    assert!(layer.restore_relation(snapshot.clone()).is_ok());
+    assert!(
+        layer.restore_relation(snapshot).is_err(),
+        "id already present"
+    );
     assert_eq!(layer.relations(), before);
     assert!(layer.diff_for_upload().deleted_relation_ids.is_empty());
 
@@ -268,8 +281,8 @@ fn delete_relation_refuses_a_member_relation_and_restores_in_place() {
     let parent_snapshot = layer.delete_relation(parent).unwrap();
     let child_snapshot = layer.delete_relation(child).unwrap();
     assert!(layer.diff_for_upload().created_relations.is_empty());
-    assert!(layer.restore_relation(child_snapshot));
-    assert!(layer.restore_relation(parent_snapshot));
+    assert!(layer.restore_relation(child_snapshot).is_ok());
+    assert!(layer.restore_relation(parent_snapshot).is_ok());
     assert_eq!(layer.relations(), before);
 }
 
@@ -291,7 +304,7 @@ fn created_relations_are_remapped_inside_other_relations_after_upload() {
     // The server relation also gains the new parent as a member.
     let mut members = layer.relation(500).unwrap().members;
     members.push(relation_member(Relation, parent));
-    layer.set_relation_members(500, members);
+    layer.set_relation_members(500, members).unwrap();
 
     let diff = layer.diff_for_upload();
     assert_eq!(diff.counts(), (4, 1, 0));

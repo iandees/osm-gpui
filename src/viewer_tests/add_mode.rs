@@ -289,7 +289,8 @@ fn add_mode_refuses_to_grow_a_way_past_the_node_limit(cx: &mut TestAppContext) {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .set_way_nodes(100, long_way_nodes(len));
+                    .set_way_nodes(100, long_way_nodes(len))
+                    .unwrap();
             };
 
             // 1,999 nodes: one more click reaches the limit exactly.
@@ -323,7 +324,8 @@ fn inserting_a_node_on_a_full_way_is_refused(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(100, long_way_nodes(2000));
+                .set_way_nodes(100, long_way_nodes(2000))
+                .unwrap();
             let before = pending(view);
             let drag = ExtrudeDrag {
                 layer: layer_id,

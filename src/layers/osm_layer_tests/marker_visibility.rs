@@ -233,7 +233,7 @@ fn relation_membership_restyles_ways_when_a_relation_changes() {
     assert!(layer.way_styles[idx].casing_width > 0.0);
     let snapshot = layer.delete_relation(rel).unwrap();
     assert_eq!(layer.way_styles[idx].casing_width, 0.0);
-    assert!(layer.restore_relation(snapshot));
+    assert!(layer.restore_relation(snapshot).is_ok());
     assert!(layer.way_styles[idx].casing_width > 0.0);
     let rel2 = layer.relations()[0].id;
     layer.set_relation_members(rel2, vec![]).unwrap();

@@ -123,10 +123,14 @@ fn a_way_in_several_routes_gets_the_lowest_relation_id() {
 #[test]
 fn route_edits_follow_the_relation() {
     let mut layer = layer();
-    layer.set_tag(FeatureKind::Relation, 10, "type", "route_master");
+    layer
+        .set_tag(FeatureKind::Relation, 10, "type", "route_master")
+        .unwrap();
     assert_eq!(layer.route_overlay_colour(1), None);
     assert_eq!(layer.route_overlay_colour(2), Some(0xFF0000));
-    layer.set_tag(FeatureKind::Relation, 10, "type", "route");
+    layer
+        .set_tag(FeatureKind::Relation, 10, "type", "route")
+        .unwrap();
     assert_eq!(layer.route_overlay_colour(1), Some(0x9B30D9));
 }
 
@@ -145,7 +149,7 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
 #[test]
 fn moving_or_deleting_the_via_node_updates_the_marker() {
     let mut layer = layer();
-    layer.commit_node_moves(&[(2, 40.0005, -73.998)]);
+    layer.commit_node_moves(&[(2, 40.0005, -73.998)]).unwrap();
     let (_, x, y, _) = layer.restriction_markers()[0];
     let (ex, ey) = lat_lon_to_mercator(40.0005, -73.998);
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
@@ -153,7 +157,7 @@ fn moving_or_deleting_the_via_node_updates_the_marker() {
     // Node 4 is a standalone via, so it can be deleted.
     let snapshot = layer.delete_feature(FeatureKind::Node, 4).unwrap();
     assert_eq!(layer.restriction_markers().len(), 1);
-    layer.restore_feature(snapshot);
+    layer.restore_feature(snapshot).unwrap();
     assert_eq!(layer.restriction_markers().len(), 2);
 }
 

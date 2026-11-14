@@ -2,8 +2,8 @@
 
 use super::{data_with, empty_tags};
 use crate::layers::osm_layer::OsmLayer;
+use crate::layers::EditableLayer;
 use crate::layers::LayerId;
-use crate::layers::MapLayer;
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::FeatureKind;
 use std::sync::Arc;
@@ -35,7 +35,9 @@ fn diff_for_upload_detects_tag_edit_as_modified() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.set_tag(FeatureKind::Node, 1, "amenity", "cafe");
+    layer
+        .set_tag(FeatureKind::Node, 1, "amenity", "cafe")
+        .unwrap();
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
     assert_eq!(diff.modified_nodes[0].id, 1);
@@ -55,7 +57,7 @@ fn diff_for_upload_detects_move_as_modified() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
     assert_eq!(diff.modified_nodes[0].lat, 41.0);
@@ -73,7 +75,7 @@ fn apply_upload_result_updates_version_for_modified_node() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
     assert!(layer.is_modified());
 
     let mut result = crate::osm_upload::UploadResult::default();

@@ -3,7 +3,7 @@
 use super::{data_with, empty_tags, viewport_centered_on};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
-use crate::layers::{EditableLayer, MapLayer};
+use crate::layers::{EditError, EditableLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::{FeatureKind, FeatureRef};
 use gpui::{point, px};
@@ -83,8 +83,11 @@ fn create_node_with_explicit_id_fails_on_collision() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    assert_eq!(layer.create_node(41.0, -75.0, Some(-1)), None);
-    assert_eq!(layer.create_node(41.0, -75.0, Some(-99)), Some(-99));
+    assert_eq!(
+        layer.create_node(41.0, -75.0, Some(-1)),
+        Err(EditError::IdInUse(FeatureKind::Node, -1))
+    );
+    assert_eq!(layer.create_node(41.0, -75.0, Some(-99)), Ok(-99));
 }
 
 #[test]
@@ -113,13 +116,13 @@ fn delete_feature_refuses_node_referenced_by_way_but_succeeds_once_way_deleted()
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     assert_eq!(
-        layer.delete_feature(FeatureKind::Node, 1),
-        None,
+        layer.delete_feature(FeatureKind::Node, 1).unwrap_err(),
+        EditError::NodeInWay(1),
         "node still referenced by a way must be refused"
     );
     assert!(!layer.is_modified());
 
-    assert!(layer.delete_feature(FeatureKind::Way, 10).is_some());
+    assert!(layer.delete_feature(FeatureKind::Way, 10).is_ok());
     // Now node 1 is no longer referenced by any way.
     let snapshot = layer
         .delete_feature(FeatureKind::Node, 1)
@@ -239,8 +242,14 @@ fn delete_feature_way_removes_way_but_keeps_nodes_and_fixes_other_ways() {
 fn delete_feature_missing_id_returns_none() {
     let data = data_with(vec![], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
-    assert_eq!(layer.delete_feature(FeatureKind::Node, 999), None);
-    assert_eq!(layer.delete_feature(FeatureKind::Way, 999), None);
+    assert_eq!(
+        layer.delete_feature(FeatureKind::Node, 999).unwrap_err(),
+        EditError::UnknownNode(999)
+    );
+    assert_eq!(
+        layer.delete_feature(FeatureKind::Way, 999).unwrap_err(),
+        EditError::UnknownWay(999)
+    );
     assert!(!layer.is_modified());
 }
 
@@ -261,7 +270,7 @@ fn restore_feature_round_trips_deleted_node() {
     let snapshot = layer.delete_feature(FeatureKind::Node, 1).unwrap();
     assert!(!layer.get_osm_data().unwrap().nodes.contains_key(&1));
 
-    layer.restore_feature(snapshot);
+    layer.restore_feature(snapshot).unwrap();
     let restored = layer.get_osm_data().unwrap();
     let node = restored.nodes.get(&1).expect("node should be restored");
     assert_eq!((node.lat, node.lon), (40.0, -74.0));
@@ -305,7 +314,7 @@ fn restore_feature_round_trips_deleted_way() {
     let snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
     assert!(layer.way_node_ids(10).is_none());
 
-    layer.restore_feature(snapshot);
+    layer.restore_feature(snapshot).unwrap();
     assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
     let restored = layer.get_osm_data().unwrap();
     let way = restored.ways.get(&10).unwrap();
@@ -313,7 +322,7 @@ fn restore_feature_round_trips_deleted_way() {
 
     // node_to_ways was patched so the restored way is picked up by a
     // node-move on one of its members.
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]);
+    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
     let (mx, my) = crate::coordinates::lat_lon_to_mercator(41.0, -75.0);
     let verts = layer.way_vertices[*layer.way_id_to_index.get(&10).unwrap()].clone();
     let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
@@ -343,15 +352,19 @@ fn undoing_a_delete_keeps_the_server_version_in_the_uploaded_modify() {
     let node_snapshot = layer.delete_feature(FeatureKind::Node, 3).unwrap();
     assert_eq!((way_snapshot.version, node_snapshot.version), (7, 4));
     // Redo (delete again after undo) reads the version from the layer.
-    layer.restore_feature(node_snapshot.clone());
-    layer.restore_feature(way_snapshot.clone());
+    layer.restore_feature(node_snapshot.clone()).unwrap();
+    layer.restore_feature(way_snapshot.clone()).unwrap();
     assert_eq!(layer.get_osm_data().unwrap().nodes[&3].version, 4);
     assert_eq!(layer.get_osm_data().unwrap().ways[&10].version, 7);
     // Undone: nothing to upload yet.
     assert!(layer.diff_for_upload().is_empty());
 
-    layer.set_tag(FeatureKind::Way, 10, "highway", "path");
-    layer.set_tag(FeatureKind::Node, 3, "amenity", "cafe");
+    layer
+        .set_tag(FeatureKind::Way, 10, "highway", "path")
+        .unwrap();
+    layer
+        .set_tag(FeatureKind::Node, 3, "amenity", "cafe")
+        .unwrap();
     let xml = crate::osm_upload::build_osm_change_xml(1, &[("L", layer.diff_for_upload())]);
     assert!(xml.contains(r#"<way id="10" version="7""#), "{xml}");
     assert!(

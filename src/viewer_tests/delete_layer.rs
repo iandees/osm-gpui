@@ -92,6 +92,8 @@ fn deleting_a_layer_removes_its_undo_and_redo_steps(cx: &mut TestAppContext) {
                 view.layer_manager
                     .find_layer(b)
                     .unwrap()
+                    .as_osm()
+                    .unwrap()
                     .diff_for_upload()
                     .counts()
                     .0

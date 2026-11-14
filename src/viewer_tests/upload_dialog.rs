@@ -22,7 +22,8 @@ fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(100, long_way_nodes(2104));
+                .set_way_nodes(100, long_way_nodes(2104))
+                .unwrap();
             view.open_upload_dialog_as(Some("me"), window, cx);
             assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
             assert_eq!(
@@ -62,6 +63,8 @@ fn an_unmodified_oversized_way_does_not_block_other_changes(cx: &mut TestAppCont
             let diff = view
                 .layer_manager
                 .find_layer(layer_id)
+                .unwrap()
+                .as_osm()
                 .unwrap()
                 .diff_for_upload();
             assert!(diff.modified_ways.is_empty());
@@ -152,7 +155,8 @@ fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContex
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap()
-            .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "");
+            .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "")
+            .unwrap();
         view.open_upload_dialog_as(Some("me"), window, cx);
         let dialog = view.upload_dialog.clone().expect("dialog reopens");
         let d = dialog.read(cx);
@@ -433,12 +437,14 @@ fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(cx: &mut 
             .and_then(|l| l.as_editable_mut())
             .unwrap();
         let node = layer.create_node(CENTER_LAT, CENTER_LON, None).unwrap();
-        layer.set_tag(
-            osm_gpui::selection::FeatureKind::Node,
-            node,
-            "amenity",
-            "cafe",
-        );
+        layer
+            .set_tag(
+                osm_gpui::selection::FeatureKind::Node,
+                node,
+                "amenity",
+                "cafe",
+            )
+            .unwrap();
         view.open_upload_dialog_as(Some("me"), window, cx);
         let dialog = view.upload_dialog.clone().expect("dialog opens");
         assert!(dialog.read(cx).validation().is_empty());

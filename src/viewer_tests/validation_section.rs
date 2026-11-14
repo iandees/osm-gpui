@@ -100,7 +100,8 @@ fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap()
-            .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            .set_tag(FeatureKind::Node, node, "amenity", "cafe")
+            .unwrap();
         record_edit(view);
         cx.notify();
     });
@@ -144,7 +145,8 @@ fn the_validation_section_refreshes_itself_after_edits(cx: &mut TestAppContext) 
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap()
-            .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+            .set_tag(FeatureKind::Node, node, "amenity", "cafe")
+            .unwrap();
         record_edit(view);
         cx.notify();
         node
@@ -180,7 +182,8 @@ fn the_validation_section_refreshes_itself_after_edits(cx: &mut TestAppContext) 
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap()
-            .set_tag(FeatureKind::Node, node, "note", "");
+            .set_tag(FeatureKind::Node, node, "note", "")
+            .unwrap();
         record_edit(view);
         cx.notify();
     });
