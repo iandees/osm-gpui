@@ -1,6 +1,6 @@
 //! Fixed window positions that the documentation screenshot scripts click.
 
-use crate::{selection_actions, MapViewer};
+use crate::{clipboard_actions, selection_actions, MapViewer};
 use gpui::{point, px, size};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;

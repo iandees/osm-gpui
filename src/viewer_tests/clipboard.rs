@@ -5,8 +5,8 @@ use super::{
     undo_step, way_nodes, ways_at_node,
 };
 use crate::{
-    clipboard_actions, key_binding_for, key_bindings_from_settings, HideApp, HideOtherApps,
-    MapViewer, MinimizeWindow, OpenSettings, Quit, RunSelectionAction, MAP_VIEWER_KEY_CONTEXT,
+    key_binding_for, key_bindings_from_settings, HideApp, HideOtherApps, MapViewer, MinimizeWindow,
+    OpenSettings, Quit, RunSelectionAction, MAP_VIEWER_KEY_CONTEXT,
 };
 use gpui::{point, px, Context, KeyBinding, TestAppContext, Window};
 use osm_gpui::layers::osm_layer::OsmLayer;
