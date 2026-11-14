@@ -30,8 +30,8 @@ pub struct HitCandidate {
 }
 
 /// Enough information to fully restore a deleted node or way, produced by
-/// `MapLayer::delete_feature` and consumed by `MapLayer::restore_feature`
-/// (the undo path for a delete).
+/// `EditableLayer::delete_feature` and consumed by `restore_feature` (the undo
+/// path for a delete).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeletedFeatureSnapshot {
     pub kind: FeatureKind,
@@ -50,7 +50,8 @@ pub struct DeletedFeatureSnapshot {
 
 /// A removed relation plus where it sat in the layer's relation list, so
 /// undo can put it back exactly (id, version, tags, members and position).
-/// Relations aren't a `FeatureKind`, so they get their own snapshot type.
+/// A relation has no tags-plus-geometry shape like a node or way, so it has its
+/// own snapshot type; see `EditableLayer::delete_relation`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeletedRelationSnapshot {
     pub relation: crate::osm::OsmRelation,

@@ -619,6 +619,7 @@ shortcut:
 action:
   no_data: "Open or download OSM data first"
   not_editable: "The active layer is not editable"
+  edit_refused: "The edit could not be applied: %{detail}"
   square:
     label: "Square"
     hint: "Select a closed way (or a way with 3+ nodes) to square it"

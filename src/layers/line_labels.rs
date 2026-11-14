@@ -220,10 +220,6 @@ pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
     Ok(k)
 }
 
-// ---------------------------------------------------------------------------
-// Curve flattening and contour helpers (pure).
-// ---------------------------------------------------------------------------
-
 /// Number of segments needed to keep a quadratic Bezier within `tol` of its
 /// flattened form.
 pub fn quad_segments(p0: Pt, p1: Pt, p2: Pt, tol: f32) -> usize {
@@ -414,10 +410,6 @@ pub fn triangulate_contours(contours: &[Vec<Pt>]) -> Vec<Pt> {
     tris
 }
 
-// ---------------------------------------------------------------------------
-// Glyph meshes.
-// ---------------------------------------------------------------------------
-
 /// Triangles for one glyph at one size: `fill` is the glyph, `halo` the
 /// stroked outline. Pixel units, y down, origin on the baseline-left.
 #[derive(Debug, Default)]
@@ -556,10 +548,6 @@ fn shape(face: &rustybuzz::Face<'_>, text: &str, size_px: f32) -> Option<(Vec<Sh
     Some((glyphs, pen))
 }
 
-// ---------------------------------------------------------------------------
-// Placement on a polyline (pure).
-// ---------------------------------------------------------------------------
-
 /// Cumulative arc length and per-vertex absolute turn of a polyline.
 #[derive(Debug, Clone)]
 pub struct Metrics {
@@ -694,10 +682,6 @@ pub fn point_at(pts: &[Pt], m: &Metrics, s: f32) -> (Pt, f32) {
         (b.1 - a.1).atan2(b.0 - a.0),
     )
 }
-
-// ---------------------------------------------------------------------------
-// Label layout, placement and emission.
-// ---------------------------------------------------------------------------
 
 /// One glyph placed on the way: offset of its baseline-left origin from the
 /// layout reference point and the rotation to apply.

@@ -7,6 +7,7 @@
 
 mod create_multipolygon;
 mod delete_and_disconnect;
+mod edit_primitives;
 mod interactions_reverse_split;
 mod interactions_topology;
 mod join_and_merge;

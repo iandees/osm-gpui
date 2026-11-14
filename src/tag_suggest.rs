@@ -95,7 +95,6 @@ impl DataIndex {
         self.keys.get(key).copied().unwrap_or(0)
     }
 
-    /// Every key with its use count.
     pub fn keys(&self) -> impl Iterator<Item = (&str, u32)> {
         self.keys.iter().map(|(k, c)| (k.as_str(), *c))
     }

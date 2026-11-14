@@ -139,7 +139,6 @@ impl Viewport {
         );
     }
 
-    /// Set zoom level directly
     pub fn set_zoom(&mut self, zoom_level: f64) {
         self.transform = CoordinateTransform::new(
             self.transform.center_lat,
@@ -159,17 +158,14 @@ impl Viewport {
         );
     }
 
-    /// Get current zoom level
     pub fn zoom_level(&self) -> f64 {
         self.transform.zoom_level
     }
 
-    /// Get current center coordinates
     pub fn center(&self) -> (f64, f64) {
         (self.transform.center_lat, self.transform.center_lon)
     }
 
-    /// Check if a geographic point is currently visible
     pub fn is_visible(&self, lat: f64, lon: f64) -> bool {
         self.transform.is_visible(lat, lon)
     }
@@ -223,7 +219,6 @@ impl Viewport {
         self.transform.screen_to_mercator(point)
     }
 
-    /// Get current visible bounds
     pub fn visible_bounds(&self) -> crate::coordinates::GeoBounds {
         self.transform.visible_bounds()
     }

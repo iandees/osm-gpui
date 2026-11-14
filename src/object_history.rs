@@ -112,8 +112,6 @@ impl LastEdit {
     }
 }
 
-// ---------------------------------------------------------------- parsing
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryParseError(pub String);
 
@@ -271,8 +269,6 @@ pub fn parse_history(
     Ok(ObjectHistory { kind, id, versions })
 }
 
-// ------------------------------------------------------------------ dates
-
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -319,8 +315,6 @@ pub fn format_date(ts: i64) -> String {
     let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
     format!("{y:04}-{m:02}-{d:02}")
 }
-
-// ------------------------------------------------------------------- diff
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagChange {
@@ -497,8 +491,6 @@ pub fn format_distance(metres: f64) -> String {
         format!("{:.2} km", metres / 1000.0)
     }
 }
-
-// ------------------------------------------------------------- the fetch
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryError {

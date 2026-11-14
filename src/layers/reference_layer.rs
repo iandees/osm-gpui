@@ -415,11 +415,11 @@ impl MapLayer for ReferenceLayer {
         self.id
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn as_reference(&self) -> Option<&ReferenceLayer> {
+        Some(self)
     }
 
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+    fn as_reference_mut(&mut self) -> Option<&mut ReferenceLayer> {
         Some(self)
     }
 
@@ -494,13 +494,8 @@ mod tests {
     fn a_reference_layer_has_no_editing_surface() {
         let layer = line_layer(1, Format::Gpx);
         assert!(layer.as_editable().is_none());
-        assert!(!layer.is_modified());
-        assert_eq!(layer.edit_revision(), 0);
-        assert!(layer.autosave_snapshot().is_none());
-        assert!(layer.export_xml().is_none());
-        assert!(layer.diff_for_upload().counts() == (0, 0, 0));
-        assert!(layer.download_rects().is_empty());
-        assert!(layer.imagery_offset().is_none());
+        assert!(layer.as_osm().is_none());
+        assert!(layer.as_imagery().is_none());
     }
 
     #[test]

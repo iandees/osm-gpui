@@ -1,12 +1,9 @@
 //! Snapping a node onto an existing way or node ("join node to way").
 //!
-//! # Design note
-//!
-//! What already existed: Add mode snaps a placed node onto the nearest way
-//! segment (spliced in as a new vertex, so it becomes shared) and, once a way
-//! is being drawn, onto an existing node (reused). `Ctrl` bypassed both. What
-//! was missing, and what this module (with its callers in `main.rs` and
-//! `selection_actions.rs`) adds:
+//! Add mode snaps a placed node onto the nearest way segment (spliced in as a
+//! new vertex, so it becomes shared) and, once a way is being drawn, onto an
+//! existing node (reused). This module, with its callers in `main.rs` and
+//! `selection_actions.rs`, also provides:
 //!
 //! 1. **Dragging**: releasing a single dragged node within the pixel
 //!    tolerance of a way segment inserts the node into that way at the right
@@ -20,8 +17,8 @@
 //! 3. **A modifier that turns snapping off**: [`snapping_disabled`]. `Alt` /
 //!    `Option` is the documented key (it is free in Select and Add mode;
 //!    Extrude uses it for a different purpose and never snaps). `Ctrl` keeps
-//!    working for Add mode as before, although on macOS Ctrl-click is a
-//!    secondary click, which is why `Alt` is the one the UI hints name.
+//!    working for Add mode, although on macOS Ctrl-click is a secondary
+//!    click, which is why `Alt` is the one the UI hints name.
 //! 4. **Feedback**: while snapping would apply, the target segment (or node)
 //!    and the snap point are highlighted; the click / release then does
 //!    exactly what the highlight showed.

@@ -65,7 +65,8 @@ use crate::menu::{
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
-    CreatedWay, NewNode, NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction,
+    roll_back, write_tag_entries, CreatedWay, NewNode, NodeMoveUndoEntries, NodeMoveUndoEntry,
+    UndoStack, UndoableAction,
 };
 
 use gpui_component::ActiveTheme;
@@ -77,7 +78,7 @@ use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
     grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
-    LayerManager,
+    LayerManager, MapLayer,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
@@ -271,66 +272,6 @@ struct RunSelectionAction {
 #[serde(deny_unknown_fields)]
 struct SetMode {
     mode: EditMode,
-}
-
-/// Undo of a node attached to an existing way's end: pull `node_id` out of
-/// `way_id`, from the front if it was prepended, else from the back.
-fn detach_end_node(
-    editable: &mut dyn osm_gpui::layers::EditableLayer,
-    way_id: i64,
-    node_id: i64,
-    at_start: bool,
-) {
-    let node_ids = editable.way_node_ids(way_id).unwrap_or_default();
-    let idx = if at_start {
-        node_ids.iter().position(|id| *id == node_id)
-    } else {
-        node_ids.iter().rposition(|id| *id == node_id)
-    };
-    if let Some(idx) = idx {
-        editable.remove_node_from_way(way_id, idx);
-    }
-}
-
-/// Redo of a node spliced into a way: put `node_id` back at `index`.
-fn splice_node_into_way(
-    editable: &mut dyn osm_gpui::layers::EditableLayer,
-    way_id: i64,
-    index: usize,
-    node_id: i64,
-) {
-    let mut node_ids = editable.way_node_ids(way_id).unwrap_or_default();
-    if index <= node_ids.len() {
-        node_ids.insert(index, node_id);
-        editable.set_way_nodes(way_id, node_ids);
-    }
-}
-
-/// Redo of Add mode folding `node_id` into the way being drawn: recreate the
-/// way as `[prev_node_id, node_id]` if the click created it, else attach the
-/// node to the matching end of the existing way.
-fn attach_to_drawn_way(
-    editable: &mut dyn osm_gpui::layers::EditableLayer,
-    way_id: i64,
-    prev_node_id: i64,
-    node_id: i64,
-    way_created: bool,
-    at_start: bool,
-) {
-    if way_created {
-        editable.restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
-            kind: osm_gpui::selection::FeatureKind::Way,
-            id: way_id,
-            tags: Vec::new(),
-            way_nodes: vec![prev_node_id, node_id],
-            node_lat_lon: None,
-            version: 0,
-        });
-    } else if at_start {
-        splice_node_into_way(editable, way_id, 0, node_id);
-    } else {
-        editable.extend_way(way_id, node_id);
-    }
 }
 
 /// Add mode's in-progress way-building state: the last-placed node, and
@@ -727,6 +668,7 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
                 .layer_manager
                 .layers()
                 .iter()
+                .filter_map(|l| l.as_osm())
                 .any(|l| l.is_modified())
         })
         .unwrap_or(false)
@@ -1608,10 +1550,10 @@ impl MapViewer {
     /// The layer's unsaved edits, counted as the status bar's "N unsaved
     /// edits" does (and so the quit warning's `is_modified`).
     fn unsaved_edit_count(layer: &dyn osm_gpui::layers::MapLayer) -> usize {
-        if !layer.is_modified() {
+        let Some(osm) = layer.as_osm().filter(|osm| osm.is_modified()) else {
             return 0;
-        }
-        let (created, modified, deleted) = layer.diff_for_upload().counts();
+        };
+        let (created, modified, deleted) = osm.diff_for_upload().counts();
         created + modified + deleted
     }
 
@@ -1917,7 +1859,7 @@ impl MapViewer {
         if self.mode == EditMode::Extrude {
             if let Some(layer_id) = self.active_layer {
                 if let Some(layer) = self.layer_manager.find_layer(layer_id) {
-                    if let Some(osm_layer) = layer.as_any().downcast_ref::<OsmLayer>() {
+                    if let Some(osm_layer) = layer.as_osm() {
                         // A segment of the selected way wins over a nearer
                         // segment of an overlapping one.
                         let selected_way = self
@@ -2080,332 +2022,27 @@ impl MapViewer {
     /// state (undo). Both directions reuse the same commit path as a live
     /// drag, so caches rebuild exactly once per affected layer.
     fn apply_undo_action(&mut self, action: &UndoableAction, forward: bool) {
-        self.apply_undo_action_inner(action, forward);
+        // A refused step means the history and the data disagree. There is
+        // no way to repair that here, so say so and apply the rest.
+        let mut failures = Vec::new();
+        action.apply(&mut self.layer_manager, forward, &mut failures);
+        for failure in &failures {
+            eprintln!(
+                "{} of \"{}\" was refused: {failure}",
+                if forward { "redo" } else { "undo" },
+                action.description()
+            );
+        }
         // A layer undone back to its server baseline has an empty diff and
         // must stop reporting itself as modified (layer dot, quit warning,
         // delete-layer confirmation).
         for id in action.layers() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(id) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
-            }
-        }
-    }
-
-    fn apply_undo_action_inner(&mut self, action: &UndoableAction, forward: bool) {
-        match action {
-            UndoableAction::MoveNodes { per_layer, .. } => {
-                for (layer_id, entries) in per_layer {
-                    let moves: Vec<(i64, f64, f64)> = entries
-                        .iter()
-                        .map(|&(id, before, after)| {
-                            let (lat, lon) = if forward { after } else { before };
-                            (id, lat, lon)
-                        })
-                        .collect();
-                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                        if let Some(editable) = layer.as_editable_mut() {
-                            editable.commit_node_moves(&moves);
-                        }
-                    }
-                }
-            }
-            UndoableAction::SetTags { entries } => {
-                for (feature, key, before, after) in entries {
-                    let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
-                        continue;
-                    };
-                    let Some(editable) = layer.as_editable_mut() else {
-                        continue;
-                    };
-                    let value = if forward { after } else { before };
-                    match value {
-                        Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
-                        None => editable.remove_tag(feature.kind, feature.id, key),
-                    }
-                }
-            }
-            UndoableAction::CreateNode {
-                layer,
-                id,
-                lat,
-                lon,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    // Redo: recreate the node at the exact same id, so any
-                    // later action referencing this id (e.g. a subsequent
-                    // tag edit) still targets the right feature.
-                    editable.create_node(*lat, *lon, Some(*id));
-                } else {
-                    editable.delete_feature(osm_gpui::selection::FeatureKind::Node, *id);
-                }
-            }
-            UndoableAction::DeleteFeature { layer, snapshot } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    editable.delete_feature(snapshot.kind, snapshot.id);
-                } else {
-                    editable.restore_feature(snapshot.clone());
-                }
-            }
-            UndoableAction::CreateWay { layer, snapshot } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    editable.restore_feature(snapshot.clone());
-                } else {
-                    editable.delete_feature(snapshot.kind, snapshot.id);
-                }
-            }
-            UndoableAction::ExtendWay {
-                layer,
-                way_id,
-                node_id,
-                node_lat_lon,
-                prev_node_id,
-                way_created,
-                node_created,
-                at_start,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    if *node_created {
-                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
-                    }
-                    attach_to_drawn_way(
-                        editable,
-                        *way_id,
-                        *prev_node_id,
-                        *node_id,
-                        *way_created,
-                        *at_start,
-                    );
-                } else {
-                    // Detach `node_id` from the way: if this click created
-                    // the way, the whole way goes away (no need to also
-                    // remove the node from a way that's being deleted);
-                    // otherwise just pull it out of the existing way's node
-                    // list.
-                    if *way_created {
-                        editable.remove_way(*way_id);
-                    } else {
-                        detach_end_node(editable, *way_id, *node_id, *at_start);
-                    }
-                    // Only delete the node itself if this click created it —
-                    // a pre-existing node the user connected to may be
-                    // shared with other ways or carry its own tags, so undo
-                    // must leave it alone.
-                    if *node_created {
-                        editable.remove_node(*node_id);
-                    }
-                }
-            }
-            UndoableAction::CreateBuilding { layer, created }
-            | UndoableAction::CreateArc { layer, created }
-            | UndoableAction::ExtrudeWay { layer, created } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    for node in &created.new_nodes {
-                        editable.create_node(node.lat, node.lon, Some(node.id));
-                    }
-                    editable.restore_feature(created.way.clone());
-                } else {
-                    editable.remove_way(created.way.id);
-                    for node in &created.new_nodes {
-                        editable.remove_node(node.id);
-                    }
-                }
-            }
-            UndoableAction::InsertNodeIntoWay {
-                layer,
-                way_id,
-                index,
-                node_id,
-                node_lat_lon,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
-                    splice_node_into_way(editable, *way_id, *index, *node_id);
-                } else {
-                    editable.remove_node_from_way(*way_id, *index);
-                    editable.remove_node(*node_id);
-                }
-            }
-            UndoableAction::SnapExtendWay {
-                layer,
-                way_id,
-                way_created,
-                snap_way_id,
-                snap_index,
-                node_id,
-                node_lat_lon,
-                prev_node_id,
-                at_start,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id));
-                    splice_node_into_way(editable, *snap_way_id, *snap_index, *node_id);
-                    attach_to_drawn_way(
-                        editable,
-                        *way_id,
-                        *prev_node_id,
-                        *node_id,
-                        *way_created,
-                        *at_start,
-                    );
-                } else {
-                    // Detach from the drawn way first (deleting it if this
-                    // click created it), without deleting the node — it's
-                    // still referenced by `snap_way_id` until the next step.
-                    if *way_created {
-                        editable.remove_way(*way_id);
-                    } else {
-                        detach_end_node(editable, *way_id, *node_id, *at_start);
-                    }
-                    // Then remove it from the way it was snapped onto, and
-                    // delete the node itself.
-                    editable.remove_node_from_way(*snap_way_id, *snap_index);
-                    editable.remove_node(*node_id);
-                }
-            }
-            UndoableAction::ReverseWays { layer, way_ids } => {
-                // Reversing is its own inverse, so both directions are the
-                // same operation.
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                for way_id in way_ids {
-                    editable.reverse_way(*way_id);
-                }
-            }
-            UndoableAction::SetWayNodes {
-                layer,
-                way_id,
-                before,
-                after,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                let nodes = if forward { after } else { before };
-                editable.set_way_nodes(*way_id, nodes.clone());
-            }
-            UndoableAction::SetRelationMembers {
-                layer,
-                relation_id,
-                before,
-                after,
-            } => {
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                let members = if forward { after } else { before };
-                editable.set_relation_members(*relation_id, members.clone());
-            }
-            UndoableAction::CreateRelation { layer, snapshot }
-            | UndoableAction::DeleteRelation { layer, snapshot } => {
-                let created = matches!(action, UndoableAction::CreateRelation { .. });
-                let Some(layer) = self.layer_manager.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                // Redo of a create and undo of a delete put the relation
-                // back; the other two directions remove it.
-                if forward == created {
-                    editable.restore_relation(snapshot.clone());
-                } else {
-                    editable.delete_relation(snapshot.relation.id);
-                }
-            }
-            UndoableAction::Purge { layer, purged } => {
-                let Some(editable) = self
-                    .layer_manager
-                    .find_layer_mut(*layer)
-                    .and_then(|layer| layer.as_editable_mut())
-                else {
-                    return;
-                };
-                if forward {
-                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
-                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
-                    let relation_ids: Vec<i64> =
-                        purged.relations.iter().map(|(r, ..)| r.id).collect();
-                    editable.purge_features(&ids, &way_ids, &relation_ids);
-                } else {
-                    editable.restore_purged(purged.clone());
-                }
-            }
-            UndoableAction::PasteFeatures { pasted } => {
-                let Some(editable) = self
-                    .layer_manager
-                    .find_layer_mut(pasted.layer)
-                    .and_then(|layer| layer.as_editable_mut())
-                else {
-                    return;
-                };
-                if forward {
-                    pasted.redo(editable);
-                } else {
-                    pasted.undo(editable);
-                }
-            }
-            UndoableAction::Batch { actions, .. } => {
-                if forward {
-                    for action in actions {
-                        self.apply_undo_action_inner(action, true);
-                    }
-                } else {
-                    for action in actions.iter().rev() {
-                        self.apply_undo_action_inner(action, false);
-                    }
-                }
             }
         }
     }
@@ -2659,17 +2296,9 @@ impl MapViewer {
         }
 
         let indexed = self.current_tag_index_layers();
-        for (feature, k, _before, after) in &entries {
-            let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) else {
-                continue;
-            };
-            let Some(editable) = layer.as_editable_mut() else {
-                continue;
-            };
-            match after {
-                Some(v) => editable.set_tag(feature.kind, feature.id, k, v),
-                None => editable.remove_tag(feature.kind, feature.id, k),
-            }
+        let entries = write_tag_entries(&mut self.layer_manager, entries);
+        if entries.is_empty() {
+            return;
         }
         self.note_tag_changes(&indexed, &entries);
         self.undo_stack.push(UndoableAction::SetTags { entries });
@@ -2696,12 +2325,9 @@ impl MapViewer {
         }
 
         let indexed = self.current_tag_index_layers();
-        for (feature, k, _before, _after) in &entries {
-            if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
-                if let Some(editable) = layer.as_editable_mut() {
-                    editable.remove_tag(feature.kind, feature.id, k);
-                }
-            }
+        let entries = write_tag_entries(&mut self.layer_manager, entries);
+        if entries.is_empty() {
+            return;
         }
         self.note_tag_changes(&indexed, &entries);
         self.undo_stack.push(UndoableAction::SetTags { entries });
@@ -2738,7 +2364,7 @@ impl MapViewer {
         else {
             return;
         };
-        let Some(before) = editable.set_relation_members(relation_id, after.clone()) else {
+        let Ok(before) = editable.set_relation_members(relation_id, after.clone()) else {
             return;
         };
         self.undo_stack.push(UndoableAction::SetRelationMembers {
@@ -3042,7 +2668,9 @@ impl MapViewer {
             .find_layer_mut(layer)
             .and_then(|l| l.as_editable_mut())
         {
-            editable.commit_node_moves(&moves);
+            if let Err(e) = editable.commit_node_moves(&moves) {
+                eprintln!("rotating nodes was refused: {e}");
+            }
         }
     }
 
@@ -3069,7 +2697,11 @@ impl MapViewer {
         session.angle = 0.0;
         self.apply_rotation();
         if let Some(session) = self.rotate_session.take() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(session.layer)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
             }
         }
@@ -3092,7 +2724,11 @@ impl MapViewer {
             .map(|(&(id, b), &a)| (id, b, a))
             .collect();
         if entries.is_empty() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(session.layer)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
             }
             return;
@@ -3547,11 +3183,7 @@ impl MapViewer {
                 .layers()
                 .iter()
                 .filter(|layer| layer.is_visible())
-                .filter_map(|layer| {
-                    layer
-                        .as_any()
-                        .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-                })
+                .filter_map(|layer| layer.as_reference())
                 .filter_map(|layer| layer.data().extent())
                 .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)));
             match extents {
@@ -3894,17 +3526,9 @@ impl MapViewer {
         if entries.is_empty() {
             return;
         }
-        if let Some(editable) = self
-            .layer_manager
-            .find_layer_mut(target.layer_id)
-            .and_then(|l| l.as_editable_mut())
-        {
-            for (feature, key, _before, after) in &entries {
-                match after {
-                    Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
-                    None => editable.remove_tag(feature.kind, feature.id, key),
-                }
-            }
+        let entries = write_tag_entries(&mut self.layer_manager, entries);
+        if entries.is_empty() {
+            return;
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
     }
@@ -3986,15 +3610,9 @@ impl MapViewer {
             return;
         }
 
-        for (feature, key, _before, after) in &entries {
-            if let Some(layer) = self.layer_manager.find_layer_mut(feature.layer_id) {
-                if let Some(editable) = layer.as_editable_mut() {
-                    match after {
-                        Some(v) => editable.set_tag(feature.kind, feature.id, key, v),
-                        None => editable.remove_tag(feature.kind, feature.id, key),
-                    }
-                }
-            }
+        let entries = write_tag_entries(&mut self.layer_manager, entries);
+        if entries.is_empty() {
+            return;
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
     }
@@ -4073,7 +3691,7 @@ impl MapViewer {
         with_nodes: bool,
     ) -> Option<SnapTarget> {
         let layer = self.layer_manager.find_layer(layer_id)?;
-        let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+        let osm_layer = layer.as_osm()?;
         let editable = layer.as_editable()?;
         if with_nodes {
             let hit = osm_layer.snap_to_node_where(
@@ -4473,12 +4091,20 @@ impl MapViewer {
                         moves.push((id, new_lat, new_lon));
                         undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
                     }
-                    if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
-                        if let Some(editable) = layer.as_editable_mut() {
-                            editable.commit_node_moves(&moves);
-                        }
+                    let moved = self
+                        .layer_manager
+                        .find_layer_mut(*layer_id)
+                        .and_then(|layer| layer.as_editable_mut())
+                        .map(|editable| editable.commit_node_moves(&moves));
+                    match moved {
+                        Some(Ok(())) => undo_per_layer.push((*layer_id, undo_entries)),
+                        Some(Err(e)) => eprintln!("moving nodes was refused: {e}"),
+                        None => {}
                     }
-                    undo_per_layer.push((*layer_id, undo_entries));
+                }
+                if undo_per_layer.is_empty() {
+                    cx.notify();
+                    return;
                 }
                 let move_action = UndoableAction::MoveNodes {
                     select: (!self.selected.is_empty()).then(|| self.selected.clone()),
@@ -4780,7 +4406,9 @@ impl MapViewer {
                 let Some(before) = editable.node_lat_lon(node) else {
                     return;
                 };
-                editable.commit_node_moves(&[(node, lat, lon)]);
+                if editable.commit_node_moves(&[(node, lat, lon)]).is_err() {
+                    return;
+                }
                 self.undo_stack.push(UndoableAction::MoveNodes {
                     per_layer: vec![(layer_id, vec![(node, before, (lat, lon))])],
                     select: Some(vec![way_ref]),
@@ -4798,7 +4426,9 @@ impl MapViewer {
                 else {
                     return;
                 };
-                let node_id = editable.insert_node_into_way(way_id, index, lat, lon);
+                let Ok(node_id) = editable.insert_node_into_way(way_id, index, lat, lon) else {
+                    return;
+                };
                 self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
                     layer: layer_id,
                     way_id,
@@ -4850,7 +4480,7 @@ impl MapViewer {
         let sources: Vec<Tags> = Vec::new();
         // An existing node close by wins over a way.
         let node_hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
-            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let osm_layer = layer.as_osm()?;
             let editable = layer.as_editable()?;
             let id = osm_layer.snap_to_node_where(
                 &self.viewport,
@@ -4867,7 +4497,7 @@ impl MapViewer {
             };
         }
         let hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
-            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let osm_layer = layer.as_osm()?;
             let editable = layer.as_editable()?;
             osm_layer.snap_to_way_where(
                 &self.viewport,
@@ -4998,7 +4628,11 @@ impl MapViewer {
         }
         for (i, p) in &splices {
             let (way_id, idx) = way_snap(p).unwrap();
-            let id = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1);
+            let Ok(id) = editable.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1) else {
+                // Put back the splices already made, so nothing is half done.
+                roll_back(&mut self.layer_manager, &actions);
+                return;
+            };
             actions.push(UndoableAction::InsertNodeIntoWay {
                 layer: layer_id,
                 way_id,
@@ -5335,7 +4969,7 @@ impl MapViewer {
         let mut actions = Vec::new();
         let mut new_ids = Vec::with_capacity(new_geo.len());
         for &(lat, lon) in &new_geo {
-            let Some(id) = editable.create_node(lat, lon, None) else {
+            let Ok(id) = editable.create_node(lat, lon, None) else {
                 return;
             };
             new_ids.push(id);
@@ -5355,7 +4989,10 @@ impl MapViewer {
             })
             .collect();
         if after != before {
-            editable.set_way_nodes(drag.way_id, after.clone());
+            if editable.set_way_nodes(drag.way_id, after.clone()).is_err() {
+                roll_back(&mut self.layer_manager, &actions);
+                return;
+            }
             actions.push(UndoableAction::SetWayNodes {
                 layer: drag.layer,
                 way_id: drag.way_id,
@@ -5372,7 +5009,10 @@ impl MapViewer {
                     moves.push((id, lat, lon));
                 }
             }
-            editable.commit_node_moves(&moves);
+            if editable.commit_node_moves(&moves).is_err() {
+                roll_back(&mut self.layer_manager, &actions);
+                return;
+            }
             actions.push(UndoableAction::MoveNodes {
                 select: None,
                 per_layer: vec![(drag.layer, entries)],
@@ -5445,7 +5085,9 @@ impl MapViewer {
         };
         let insert_index = idx_a + 1;
 
-        let new_id = editable.insert_node_into_way(drag.way_id, insert_index, lat, lon);
+        let Ok(new_id) = editable.insert_node_into_way(drag.way_id, insert_index, lat, lon) else {
+            return;
+        };
         self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
             layer: drag.layer,
             way_id: drag.way_id,
@@ -5556,7 +5198,7 @@ impl MapViewer {
                 .or_else(|| {
                     self.layer_manager
                         .find_layer(layer_id)
-                        .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
+                        .and_then(|layer| layer.as_osm())
                         .and_then(|osm_layer| {
                             osm_layer.snap_to_node_where(
                                 &self.viewport,
@@ -5591,7 +5233,7 @@ impl MapViewer {
         } else {
             let sources = self.add_snap_sources(layer_id);
             self.layer_manager.find_layer(layer_id).and_then(|layer| {
-                let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+                let osm_layer = layer.as_osm()?;
                 let editable = layer.as_editable()?;
                 osm_layer.snap_to_way_where(
                     &self.viewport,
@@ -5641,8 +5283,11 @@ impl MapViewer {
                 };
                 let new_id = match snap_hit {
                     Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
-                        let new_id =
-                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon);
+                        let Ok(new_id) =
+                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
+                        else {
+                            return;
+                        };
                         self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
                             layer: layer_id,
                             way_id,
@@ -5691,10 +5336,14 @@ impl MapViewer {
                     return;
                 };
                 let (new_id, snap) = match snap_hit {
-                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => (
-                        editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon),
-                        Some((way_id, idx + 1)),
-                    ),
+                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
+                        let Ok(id) =
+                            editable.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
+                        else {
+                            return;
+                        };
+                        (id, Some((way_id, idx + 1)))
+                    }
                     None => (editable.add_node(lat, lon), None),
                 };
                 let at_start = progress.at_start;
@@ -5751,20 +5400,48 @@ impl MapViewer {
         };
         let node_lat_lon = editable.node_lat_lon(node_id).unwrap_or_default();
 
-        let (way_id, way_created) = match progress_way_id {
+        let attached = match progress_way_id {
             Some(way_id) if at_start => {
                 let mut nodes = editable.way_node_ids(way_id).unwrap_or_default();
                 nodes.insert(0, node_id);
-                editable.set_way_nodes(way_id, nodes);
-                (way_id, false)
+                editable
+                    .set_way_nodes(way_id, nodes)
+                    .map(|()| (way_id, false))
             }
-            Some(way_id) => {
-                editable.extend_way(way_id, node_id);
-                (way_id, false)
-            }
-            None => {
-                let way_id = editable.add_way(vec![last_node_id, node_id], Vec::new());
-                (way_id, true)
+            Some(way_id) => editable
+                .extend_way(way_id, node_id)
+                .map(|()| (way_id, false)),
+            None => Ok((
+                editable.add_way(vec![last_node_id, node_id], Vec::new()),
+                true,
+            )),
+        };
+        let (way_id, way_created) = match attached {
+            Ok(done) => done,
+            Err(e) => {
+                eprintln!("adding to the way was refused: {e}");
+                // Take back the node this click made, so none is left over.
+                let made = match snap {
+                    Some((way_id, index)) => Some(UndoableAction::InsertNodeIntoWay {
+                        layer: layer_id,
+                        way_id,
+                        index,
+                        node_id,
+                        node_lat_lon,
+                    }),
+                    None if node_created => Some(UndoableAction::CreateNode {
+                        layer: layer_id,
+                        id: node_id,
+                        lat: node_lat_lon.0,
+                        lon: node_lat_lon.1,
+                    }),
+                    None => None,
+                };
+                roll_back(
+                    &mut self.layer_manager,
+                    &made.into_iter().collect::<Vec<_>>(),
+                );
+                return progress_way_id.unwrap_or(0);
             }
         };
 
@@ -6149,11 +5826,7 @@ impl MapViewer {
             .iter()
             .rev()
             .filter(|layer| layer.is_visible())
-            .filter_map(|layer| {
-                layer
-                    .as_any()
-                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-            })
+            .filter_map(|layer| layer.as_reference())
             .find_map(|layer| layer.hit(&self.viewport, screen_pt))
             .map(osm_gpui::reference::describe)
     }
@@ -6167,11 +5840,7 @@ impl MapViewer {
             .iter()
             .rev()
             .filter(|layer| layer.is_visible())
-            .filter_map(|layer| {
-                layer
-                    .as_any()
-                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-            })
+            .filter_map(|layer| layer.as_reference())
             .find_map(|layer| {
                 layer.snap(
                     &self.viewport,
@@ -6194,7 +5863,7 @@ impl MapViewer {
                     .iter()
                     .map(|layer| layer.as_ref()),
             )
-            .find_map(|layer| Some((layer.name().to_string(), layer.export_xml()?)))
+            .find_map(|layer| Some((layer.name().to_string(), layer.as_osm()?.export_xml()?)))
     }
 
     /// File > Export…: write a layer (see `exportable_layer`) to a
@@ -6292,21 +5961,11 @@ impl MapViewer {
     }
 
     fn get_layer_stats(&self) -> (usize, usize, usize) {
-        let mut cached_files = 0;
-        let mut osm_nodes = 0;
-        let mut osm_ways = 0;
-
-        for layer in self.layer_manager.layers() {
-            let stats = layer.stats();
-            for (key, value) in stats {
-                match key.as_str() {
-                    "Cached Files" => cached_files = value.parse().unwrap_or(0),
-                    "Nodes" => osm_nodes = value.parse().unwrap_or(0),
-                    "Ways" => osm_ways = value.parse().unwrap_or(0),
-                    _ => {}
-                }
-            }
-        }
+        let osm_gpui::layers::LayerStats {
+            cached_files,
+            osm_nodes,
+            osm_ways,
+        } = self.layer_manager.layer_stats();
 
         // Calculate visible tiles
         let zoom_level = self.viewport.zoom_level();
@@ -6314,7 +5973,7 @@ impl MapViewer {
             .round()
             .clamp(0.0, osm_gpui::coordinates::MAX_MAP_ZOOM) as u32;
         let bounds_geo = self.viewport.visible_bounds();
-        let visible_tiles = tiles::tiles_covering_geo_unclamped(&bounds_geo, tile_zoom);
+        let visible_tiles = tiles::tiles_covering_geo(&bounds_geo, tile_zoom);
         let total_tiles = visible_tiles.len();
 
         (total_tiles, cached_files, osm_nodes + osm_ways)
@@ -6481,7 +6140,12 @@ impl MapViewer {
     /// re-acquisition is needed.
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         use osm_gpui::transfer::{quit_decision, QuitDecision};
-        let unsaved = self.layer_manager.layers().iter().any(|l| l.is_modified());
+        let unsaved = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+            .any(|l| l.is_modified());
         match quit_decision(
             osm_gpui::transfer::blocks_edits(self.transfer.as_ref()),
             unsaved,
@@ -6565,7 +6229,11 @@ impl MapViewer {
 
     /// Whether any layer has changes to upload (enables File > Upload to OSM).
     pub(crate) fn has_uploadable_changes(&self) -> bool {
-        self.layer_manager.layers().iter().any(|l| l.is_modified())
+        self.layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+            .any(|l| l.is_modified())
     }
 
     /// Keep File > Upload to OSM disabled while no layer has changes. The
@@ -6592,15 +6260,16 @@ impl MapViewer {
     /// Only created and modified objects (and what they affect) are checked.
     pub(crate) fn validation_report(&self) -> osm_gpui::validator::Report {
         let mut report = osm_gpui::validator::Report::default();
-        for layer in self.layer_manager.layers() {
+        for layer in self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+        {
             if !layer.is_modified() {
                 continue;
             }
-            let Some(data) = layer
-                .as_any()
-                .downcast_ref::<OsmLayer>()
-                .and_then(|l| l.get_osm_data())
-            else {
+            let Some(data) = layer.get_osm_data() else {
                 continue;
             };
             report.add_layer(layer.id(), &data, &layer.diff_for_upload());
@@ -6665,6 +6334,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.id(), l.diff_for_upload()))
             .collect();
@@ -6672,6 +6342,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .zip(&pending)
             .map(|(l, (_, diff))| {
@@ -6923,6 +6594,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.id(), l.name().to_string()))
             .collect();
@@ -6931,6 +6603,7 @@ impl MapViewer {
             .filter_map(|(id, _)| {
                 self.layer_manager
                     .find_layer(*id)
+                    .and_then(|l| l.as_osm())
                     .map(|l| l.diff_for_upload())
             })
             .collect();
@@ -7158,8 +6831,9 @@ impl MapViewer {
             .iter()
             .filter(|l| {
                 l.is_visible()
-                    && l.imagery_offset().is_some()
-                    && l.imagery_id() != Some(osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID)
+                    && l.as_imagery().is_some_and(|i| {
+                        i.imagery_id() != osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID
+                    })
             })
             .map(|l| l.name().to_string())
             .collect()
@@ -7176,6 +6850,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.name().to_string(), l.diff_for_upload()))
             .collect();
@@ -7588,7 +7263,12 @@ impl MapViewer {
     /// one when no custom style is active) and repaint.
     pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
         let sheet = osm_gpui::style::custom::active_stylesheet();
-        for layer in self.layer_manager.layers_mut() {
+        for layer in self
+            .layer_manager
+            .layers_mut()
+            .iter_mut()
+            .filter_map(|l| l.as_osm_mut())
+        {
             layer.set_stylesheet(sheet.clone());
         }
         cx.notify();
@@ -7764,8 +7444,6 @@ impl Render for MapViewer {
             window.focus(&self.focus_handle, cx);
         }
 
-        // Update all layers
-        self.layer_manager.update_all();
         self.sync_selection_to_layers();
 
         let (center_lat, center_lon) = self.viewport.center();
@@ -8575,7 +8253,10 @@ impl Render for MapViewer {
                             if !layer.is_visible() {
                                 return None;
                             }
-                            layer.attribution().map(|a| (a.text.clone(), a.url.clone()))
+                            layer
+                                .as_imagery()?
+                                .attribution()
+                                .map(|a| (a.text.clone(), a.url.clone()))
                         });
                         let credits = interaction::dedupe_attributions(raw_credits);
                         if credits.is_empty() {
@@ -9423,8 +9104,7 @@ mod tests {
         let id = view.active_layer?;
         view.layer_manager
             .find_layer(id)?
-            .as_any()
-            .downcast_ref::<OsmLayer>()?
+            .as_osm()?
             .vertex_preview_way()
     }
 
@@ -9853,7 +9533,8 @@ mod tests {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                    .unwrap();
 
                 view.apply_download(overlapping_download());
 
@@ -9867,8 +9548,9 @@ mod tests {
                     "local move kept"
                 );
                 // Still exactly one pending edit: the move.
-                assert_eq!(layer.diff_for_upload().counts(), (0, 1, 0));
-                assert!(layer.is_modified());
+                let osm = layer.as_osm().unwrap();
+                assert_eq!(osm.diff_for_upload().counts(), (0, 1, 0));
+                assert!(osm.is_modified());
                 let (message, _) = view.status_message.clone().unwrap();
                 assert_eq!(message, "Downloaded OSM data: 1 new, 1 local edit kept");
             })
@@ -9889,7 +9571,7 @@ mod tests {
                 assert_eq!(layers.len(), 1);
                 assert_eq!(layers[0].name(), DOWNLOAD_LAYER_NAME);
                 assert_eq!(view.active_layer, Some(layers[0].id()));
-                assert!(!layers[0].is_modified());
+                assert!(!layers[0].as_osm().unwrap().is_modified());
             })
             .unwrap();
     }
@@ -9975,6 +9657,8 @@ mod tests {
                 let b_created = |view: &MapViewer| {
                     view.layer_manager
                         .find_layer(b)
+                        .unwrap()
+                        .as_osm()
                         .unwrap()
                         .diff_for_upload()
                         .counts()
@@ -10555,11 +10239,14 @@ mod tests {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)]);
+                    .commit_node_moves(&[(1, CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                    .unwrap();
                 view.handle_add_click(point(px(50.0), px(50.0)), false);
                 let pending = view
                     .layer_manager
                     .find_layer(layer_id)
+                    .unwrap()
+                    .as_osm()
                     .unwrap()
                     .diff_for_upload()
                     .counts();
@@ -10574,7 +10261,12 @@ mod tests {
                     .unwrap();
                 view.add_osm_dataset("reopened".to_string(), data, &edits, cx);
 
-                let reopened = view.layer_manager.layer_named("reopened").unwrap();
+                let reopened = view
+                    .layer_manager
+                    .layer_named("reopened")
+                    .unwrap()
+                    .as_osm()
+                    .unwrap();
                 assert_eq!(reopened.diff_for_upload().counts(), pending);
                 assert!(reopened.is_modified());
             })
@@ -10797,6 +10489,8 @@ mod tests {
         // Way -1, way 8202 and relation 9101.
         let counts = layers
             .find_layer(LayerId(1))
+            .unwrap()
+            .as_osm()
             .unwrap()
             .diff_for_upload()
             .counts();
@@ -11162,8 +10856,8 @@ mod tests {
                 let original = {
                     let layer = view.layer_manager.find_layer_mut(layer_id).unwrap();
                     let editable = layer.as_editable_mut().unwrap();
-                    editable.set_tag(Way, 100, "cycleway:left", "lane");
-                    editable.set_tag(Way, 100, "incline", "5%");
+                    editable.set_tag(Way, 100, "cycleway:left", "lane").unwrap();
+                    editable.set_tag(Way, 100, "incline", "5%").unwrap();
                     tags_of(view, Way, 100)
                 };
                 select(view, Way, &[100]);
@@ -12396,7 +12090,8 @@ mod tests {
                     .unwrap()
                     .as_editable_mut()
                     .unwrap()
-                    .commit_node_moves(&[(2, off_line.0, off_line.1)]);
+                    .commit_node_moves(&[(2, off_line.0, off_line.1)])
+                    .unwrap();
                 select(view, Way, &[100]);
                 view.run_selection_action("straighten", cx);
                 assert_eq!(view.undo_stack.actions.len(), 1);
@@ -12497,6 +12192,8 @@ mod tests {
                 assert!(!view
                     .layer_manager
                     .find_layer(layer_id)
+                    .unwrap()
+                    .as_osm()
                     .unwrap()
                     .is_modified());
             })
@@ -12660,6 +12357,8 @@ mod tests {
         view.layer_manager
             .find_layer(layer_id)
             .unwrap()
+            .as_osm()
+            .unwrap()
             .diff_for_upload()
             .counts()
     }
@@ -12775,7 +12474,8 @@ mod tests {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .set_way_nodes(108, nodes);
+                    .set_way_nodes(108, nodes)
+                    .unwrap();
                 let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Reshape, 60.0);
                 view.commit_extrude_reshape(&drag, up);
                 assert_eq!(way_nodes(view, layer_id, 108).len(), 2000);
@@ -12890,7 +12590,8 @@ mod tests {
                     .unwrap()
                     .as_editable_mut()
                     .unwrap()
-                    .set_relation_members(900, after.clone());
+                    .set_relation_members(900, after.clone())
+                    .unwrap();
                 let action = UndoableAction::SetRelationMembers {
                     layer: layer_id,
                     relation_id: 900,
@@ -12953,7 +12654,7 @@ mod tests {
                 assert_eq!(pending(view), (1, 0, 0));
                 assert_eq!(editable(view).relations_containing_relation(900), [new_id]);
                 // 900 is a member now, so it can't be deleted.
-                assert!(editable(view).delete_relation(900).is_none());
+                assert!(editable(view).delete_relation(900).is_err());
 
                 undo_step(view);
                 assert!(editable(view).relation(new_id).is_none());
@@ -13253,7 +12954,9 @@ mod tests {
 
                 let layer_id = view.active_layer.unwrap();
                 let (lat, lon) = editable(view).node_lat_lon(1).unwrap();
-                editable(view).commit_node_moves(&[(1, lat + 0.001, lon)]);
+                editable(view)
+                    .commit_node_moves(&[(1, lat + 0.001, lon)])
+                    .unwrap();
                 view.undo_stack.push(UndoableAction::MoveNodes {
                     select: None,
                     per_layer: vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
@@ -13284,7 +12987,9 @@ mod tests {
                 select(view, Way, &[101]);
                 let nodes = editable(view).way_node_ids(101).unwrap();
                 let (lat, lon) = editable(view).node_lat_lon(nodes[0]).unwrap();
-                editable(view).commit_node_moves(&[(nodes[0], lat + 0.001, lon)]);
+                editable(view)
+                    .commit_node_moves(&[(nodes[0], lat + 0.001, lon)])
+                    .unwrap();
                 view.undo_stack.push(UndoableAction::MoveNodes {
                     select: Some(view.selected.clone()),
                     per_layer: vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],
@@ -13703,7 +13408,8 @@ mod tests {
                         .find_layer_mut(layer_id)
                         .and_then(|l| l.as_editable_mut())
                         .unwrap()
-                        .set_way_nodes(100, long_way_nodes(len));
+                        .set_way_nodes(100, long_way_nodes(len))
+                        .unwrap();
                 };
 
                 // 1,999 nodes: one more click reaches the limit exactly.
@@ -13737,7 +13443,8 @@ mod tests {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .set_way_nodes(100, long_way_nodes(2000));
+                    .set_way_nodes(100, long_way_nodes(2000))
+                    .unwrap();
                 let before = pending(view);
                 let drag = ExtrudeDrag {
                     layer: layer_id,
@@ -13816,7 +13523,7 @@ mod tests {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .set_way_nodes(100, long_way_nodes(2104));
+                    .set_way_nodes(100, long_way_nodes(2104)).unwrap();
                 view.open_upload_dialog_as(Some("me"), window, cx);
                 assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
                 assert_eq!(
@@ -13853,6 +13560,8 @@ mod tests {
                 let diff = view
                     .layer_manager
                     .find_layer(layer_id)
+                    .unwrap()
+                    .as_osm()
                     .unwrap()
                     .diff_for_upload();
                 assert!(diff.modified_ways.is_empty());
@@ -13984,7 +13693,8 @@ mod tests {
                 .find_layer_mut(id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "");
+                .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "")
+                .unwrap();
             view.open_upload_dialog_as(Some("me"), window, cx);
             let dialog = view.upload_dialog.clone().expect("dialog reopens");
             let d = dialog.read(cx);
@@ -14271,12 +13981,14 @@ mod tests {
                 .and_then(|l| l.as_editable_mut())
                 .unwrap();
             let node = layer.create_node(CENTER_LAT, CENTER_LON, None).unwrap();
-            layer.set_tag(
-                osm_gpui::selection::FeatureKind::Node,
-                node,
-                "amenity",
-                "cafe",
-            );
+            layer
+                .set_tag(
+                    osm_gpui::selection::FeatureKind::Node,
+                    node,
+                    "amenity",
+                    "cafe",
+                )
+                .unwrap();
             view.open_upload_dialog_as(Some("me"), window, cx);
             let dialog = view.upload_dialog.clone().expect("dialog opens");
             assert!(dialog.read(cx).validation().is_empty());
@@ -14381,7 +14093,8 @@ mod tests {
                 .find_layer_mut(id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe")
+                .unwrap();
             record_edit(view);
             cx.notify();
         });
@@ -14425,7 +14138,8 @@ mod tests {
                 .find_layer_mut(id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_tag(FeatureKind::Node, node, "amenity", "cafe");
+                .set_tag(FeatureKind::Node, node, "amenity", "cafe")
+                .unwrap();
             record_edit(view);
             cx.notify();
             node
@@ -14461,7 +14175,8 @@ mod tests {
                 .find_layer_mut(id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_tag(FeatureKind::Node, node, "note", "");
+                .set_tag(FeatureKind::Node, node, "note", "")
+                .unwrap();
             record_edit(view);
             cx.notify();
         });
@@ -14914,7 +14629,9 @@ mod tests {
     /// stack), as it would be when the server then refuses the upload.
     fn tag_node_one(view: &mut MapViewer) {
         let layer_id = view.active_layer.unwrap();
-        editable(view).set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe");
+        editable(view)
+            .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe")
+            .unwrap();
         view.undo_stack.push(UndoableAction::SetTags {
             entries: vec![(
                 osm_gpui::selection::FeatureRef {
@@ -14956,6 +14673,8 @@ mod tests {
                 let diff = view
                     .layer_manager
                     .find_layer(layer_id)
+                    .unwrap()
+                    .as_osm()
                     .unwrap()
                     .diff_for_upload();
                 assert_eq!(diff.modified_nodes.len(), 1);
@@ -15041,7 +14760,7 @@ mod tests {
         window
             .update(cx, |view, _window, _cx| {
                 let layer_id = view.active_layer.unwrap();
-                editable(view).set_tag(Way, 10, "highway", "path");
+                editable(view).set_tag(Way, 10, "highway", "path").unwrap();
                 select(view, Way, &[10]);
                 assert_eq!(view.selected.len(), 1);
                 let note = view
@@ -15393,7 +15112,8 @@ mod autosave_tests {
         layer
             .as_editable_mut()
             .unwrap()
-            .set_tag(FeatureKind::Way, 10, key, "yes");
+            .set_tag(FeatureKind::Way, 10, key, "yes")
+            .unwrap();
         layer
     }
 
@@ -15514,7 +15234,12 @@ mod autosave_tests {
         // an immediate write, as it does after each applied changeset.
         window
             .update(cx, |view, _window, cx| {
-                let layer = view.layer_manager.find_layer_mut(id).unwrap();
+                let layer = view
+                    .layer_manager
+                    .find_layer_mut(id)
+                    .unwrap()
+                    .as_osm_mut()
+                    .unwrap();
                 layer.apply_upload_result(&osm_gpui::osm_upload::UploadResult {
                     node_id_remap: HashMap::new(),
                     way_id_remap: HashMap::from([(10, (10, 4))]),
@@ -15567,9 +15292,10 @@ mod autosave_tests {
                     .iter()
                     .find(|l| l.name() == "Downtown")
                     .expect("the layer is back");
+                let restored_osm = restored.as_osm().unwrap();
                 // Edits pending, and the layer counts as unsaved.
-                assert!(restored.is_modified());
-                assert_eq!(restored.diff_for_upload().counts(), before);
+                assert!(restored_osm.is_modified());
+                assert_eq!(restored_osm.diff_for_upload().counts(), before);
                 assert_eq!(pending(view, restored.id()), before.0 + before.1 + before.2);
                 assert_eq!(view.active_layer, Some(restored.id()));
                 assert!(view.script_autosave_idle().is_ok());

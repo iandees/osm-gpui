@@ -132,10 +132,6 @@ impl MapLayer for StreetImageryLayer {
         self.id
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -233,11 +229,7 @@ mod tests {
             PhotoStore::default(),
         );
         assert!(layer.as_editable().is_none());
-        assert!(!layer.is_modified());
-        assert!(layer.diff_for_upload().is_empty());
-        assert!(layer.autosave_snapshot().is_none());
-        assert!(layer.export_xml().is_none());
-        assert!(layer.download_rects().is_empty());
+        assert!(layer.as_osm().is_none());
         assert_eq!(layer.id(), LayerId(3));
     }
 

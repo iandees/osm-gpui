@@ -14,7 +14,7 @@
 //!   `.xsmall()`
 //! - links: [`link`]
 //!
-//! Conventions enforced here (see docs/superpowers/specs/2026-07-07-ui-consistency-design.md):
+//! Conventions enforced here:
 //! - Panel list rows are built with [`panel_row`] / [`interactive_row`] so
 //!   height, padding, rounding, and hover/selected states match across
 //!   sections.

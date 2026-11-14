@@ -149,6 +149,8 @@ fn autosave_and_crash(s: &Session, root: &std::path::Path) {
         .layer_manager
         .find_layer(s.layer)
         .unwrap()
+        .as_osm()
+        .unwrap()
         .autosave_snapshot()
         .unwrap();
     let session = autosave::Session::start(root).unwrap();

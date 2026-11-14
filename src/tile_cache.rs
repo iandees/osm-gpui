@@ -491,6 +491,9 @@ impl Asset for TileAsset {
         let executor = cx.background_executor().clone();
         let store = shared_store().clone();
         let idle = store.idle.get().cloned();
+        // Cloned here, on the caller's thread, so the background task owns its
+        // own handle.
+        let client = crate::http::default_client();
 
         async move {
             let _active = store.begin_load();
@@ -498,15 +501,12 @@ impl Asset for TileAsset {
                 tracker.tile_fetch_started();
             }
             // The blocking HTTP request runs on the background executor.
-            let result =
-                executor
-                    .spawn({
-                        let store = store.clone();
-                        async move {
-                            load_tile(&store, &crate::http::UreqClient::new(), &cache_dir(), &key)
-                        }
-                    })
-                    .await;
+            let result = executor
+                .spawn({
+                    let store = store.clone();
+                    async move { load_tile(&store, client.as_ref(), &cache_dir(), &key) }
+                })
+                .await;
             // Exactly one finished call for the one started call above,
             // whichever way the load ended.
             if let Some(ref tracker) = idle {
@@ -1966,6 +1966,24 @@ mod tests {
         // The second load needs no response: the client has none left.
         assert!(load_tile(&store, &client, &dir, &key).is_ok());
         assert_eq!(client.request_count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The process-wide client can be installed only once, so this does not
+    /// install a fake. It checks the other half: `TileAsset::load` takes
+    /// `default_client()`, which in tests is the offline client, so a tile load
+    /// fails with a recorded transport error instead of reaching the network.
+    #[test]
+    fn load_tile_through_the_default_client_stays_offline_in_tests() {
+        let dir = temp_dir("load-tile-default-client");
+        let store = TileStore::new();
+        let client = crate::http::default_client();
+        let key = key("src");
+
+        assert!(load_tile(&store, client.as_ref(), &dir, &key).is_err());
+        assert!(store.last_error(URL).is_some());
+        assert!(!tile_file_path(&dir, "src", URL).exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

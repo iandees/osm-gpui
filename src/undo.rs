@@ -1,6 +1,54 @@
 //! Undo/redo model for committed data mutations.
 
-use osm_gpui::layers::LayerId;
+use osm_gpui::layers::{EditError, EditableLayer, LayerId, LayerManager};
+use osm_gpui::selection::FeatureRef;
+
+/// Undo `done`, newest first, for an action that stopped part way. Anything
+/// the layer refuses is logged: the data then differs from what `done` says.
+pub(crate) fn roll_back(layers: &mut LayerManager, done: &[UndoableAction]) {
+    let mut failures = Vec::new();
+    for action in done.iter().rev() {
+        action.apply(layers, false, &mut failures);
+    }
+    for failure in failures {
+        eprintln!("rolling back a half-done edit was refused: {failure}");
+    }
+}
+
+/// One `SetTags` entry: feature, key, value before, value after.
+pub(crate) type TagEntry = (FeatureRef, String, Option<String>, Option<String>);
+
+/// Write each entry's "after" value to its layer and return the entries that
+/// took effect, for the undo step. An entry whose layer or feature is gone is
+/// logged and left out, so the step never claims an edit that did not happen.
+pub(crate) fn write_tag_entries(
+    layers: &mut LayerManager,
+    entries: Vec<TagEntry>,
+) -> Vec<TagEntry> {
+    entries
+        .into_iter()
+        .filter(|(feature, key, _, after)| {
+            let Some(editable) = layers
+                .find_layer_mut(feature.layer_id)
+                .and_then(|layer| layer.as_editable_mut())
+            else {
+                eprintln!(
+                    "tag edit skipped: layer {:?} is not editable",
+                    feature.layer_id
+                );
+                return false;
+            };
+            let written = match after {
+                Some(value) => editable.set_tag(feature.kind, feature.id, key, value),
+                None => editable.remove_tag(feature.kind, feature.id, key),
+            };
+            if let Err(e) = &written {
+                eprintln!("tag edit on {:?} {} refused: {e}", feature.kind, feature.id);
+            }
+            written.is_ok()
+        })
+        .collect()
+}
 
 /// A single node move: its id, (lat, lon) before, and (lat, lon) after.
 pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
@@ -48,9 +96,6 @@ impl CreatedWay {
 }
 
 /// A single reversible data mutation, recorded on the global undo stack.
-/// Only one kind exists today (produced by committing a drag-to-move), but
-/// the enum leaves room for future mutation kinds (tag edits, deletes, ...)
-/// without restructuring the stack.
 #[derive(Clone)]
 pub(crate) enum UndoableAction {
     MoveNodes {
@@ -386,6 +431,364 @@ impl UndoableAction {
         }
     }
 
+    /// Apply this step to `layers`: `forward` redoes it, else undoes it.
+    /// Whatever a layer refuses is added to `failures`; the rest still runs.
+    pub(crate) fn apply(
+        &self,
+        layers: &mut LayerManager,
+        forward: bool,
+        failures: &mut Vec<EditError>,
+    ) {
+        let action = self;
+        match action {
+            UndoableAction::MoveNodes { per_layer, .. } => {
+                for (layer_id, entries) in per_layer {
+                    let moves: Vec<(i64, f64, f64)> = entries
+                        .iter()
+                        .map(|&(id, before, after)| {
+                            let (lat, lon) = if forward { after } else { before };
+                            (id, lat, lon)
+                        })
+                        .collect();
+                    if let Some(layer) = layers.find_layer_mut(*layer_id) {
+                        if let Some(editable) = layer.as_editable_mut() {
+                            keep_going(failures, editable.commit_node_moves(&moves));
+                        }
+                    }
+                }
+            }
+            UndoableAction::SetTags { entries } => {
+                for (feature, key, before, after) in entries {
+                    let Some(layer) = layers.find_layer_mut(feature.layer_id) else {
+                        continue;
+                    };
+                    let Some(editable) = layer.as_editable_mut() else {
+                        continue;
+                    };
+                    let value = if forward { after } else { before };
+                    match value {
+                        Some(v) => {
+                            keep_going(failures, editable.set_tag(feature.kind, feature.id, key, v))
+                        }
+                        None => {
+                            keep_going(failures, editable.remove_tag(feature.kind, feature.id, key))
+                        }
+                    }
+                }
+            }
+            UndoableAction::CreateNode {
+                layer,
+                id,
+                lat,
+                lon,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    // Redo: recreate the node at the exact same id, so any
+                    // later action referencing this id (e.g. a subsequent
+                    // tag edit) still targets the right feature.
+                    keep_going(failures, editable.create_node(*lat, *lon, Some(*id)));
+                } else {
+                    keep_going(
+                        failures,
+                        editable.delete_feature(osm_gpui::selection::FeatureKind::Node, *id),
+                    );
+                }
+            }
+            UndoableAction::DeleteFeature { layer, snapshot } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    keep_going(
+                        failures,
+                        editable.delete_feature(snapshot.kind, snapshot.id),
+                    );
+                } else {
+                    keep_going(failures, editable.restore_feature(snapshot.clone()));
+                }
+            }
+            UndoableAction::CreateWay { layer, snapshot } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    keep_going(failures, editable.restore_feature(snapshot.clone()));
+                } else {
+                    keep_going(
+                        failures,
+                        editable.delete_feature(snapshot.kind, snapshot.id),
+                    );
+                }
+            }
+            UndoableAction::ExtendWay {
+                layer,
+                way_id,
+                node_id,
+                node_lat_lon,
+                prev_node_id,
+                way_created,
+                node_created,
+                at_start,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    if *node_created {
+                        keep_going(
+                            failures,
+                            editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
+                        );
+                    }
+                    attach_to_drawn_way(
+                        editable,
+                        *way_id,
+                        *prev_node_id,
+                        *node_id,
+                        *way_created,
+                        *at_start,
+                        failures,
+                    );
+                } else {
+                    // Detach `node_id` from the way: if this click created
+                    // the way, the whole way goes away (no need to also
+                    // remove the node from a way that's being deleted);
+                    // otherwise just pull it out of the existing way's node
+                    // list.
+                    if *way_created {
+                        keep_going(failures, editable.remove_way(*way_id));
+                    } else {
+                        detach_end_node(editable, *way_id, *node_id, *at_start, failures);
+                    }
+                    // Only delete the node itself if this click created it —
+                    // a pre-existing node the user connected to may be
+                    // shared with other ways or carry its own tags, so undo
+                    // must leave it alone.
+                    if *node_created {
+                        keep_going(failures, editable.remove_node(*node_id));
+                    }
+                }
+            }
+            UndoableAction::CreateBuilding { layer, created }
+            | UndoableAction::CreateArc { layer, created }
+            | UndoableAction::ExtrudeWay { layer, created } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    for node in &created.new_nodes {
+                        keep_going(
+                            failures,
+                            editable.create_node(node.lat, node.lon, Some(node.id)),
+                        );
+                    }
+                    keep_going(failures, editable.restore_feature(created.way.clone()));
+                } else {
+                    keep_going(failures, editable.remove_way(created.way.id));
+                    for node in &created.new_nodes {
+                        keep_going(failures, editable.remove_node(node.id));
+                    }
+                }
+            }
+            UndoableAction::InsertNodeIntoWay {
+                layer,
+                way_id,
+                index,
+                node_id,
+                node_lat_lon,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    keep_going(
+                        failures,
+                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
+                    );
+                    splice_node_into_way(editable, *way_id, *index, *node_id, failures);
+                } else {
+                    keep_going(failures, editable.remove_node_from_way(*way_id, *index));
+                    keep_going(failures, editable.remove_node(*node_id));
+                }
+            }
+            UndoableAction::SnapExtendWay {
+                layer,
+                way_id,
+                way_created,
+                snap_way_id,
+                snap_index,
+                node_id,
+                node_lat_lon,
+                prev_node_id,
+                at_start,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                if forward {
+                    keep_going(
+                        failures,
+                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
+                    );
+                    splice_node_into_way(editable, *snap_way_id, *snap_index, *node_id, failures);
+                    attach_to_drawn_way(
+                        editable,
+                        *way_id,
+                        *prev_node_id,
+                        *node_id,
+                        *way_created,
+                        *at_start,
+                        failures,
+                    );
+                } else {
+                    // Detach from the drawn way first (deleting it if this
+                    // click created it), without deleting the node — it's
+                    // still referenced by `snap_way_id` until the next step.
+                    if *way_created {
+                        keep_going(failures, editable.remove_way(*way_id));
+                    } else {
+                        detach_end_node(editable, *way_id, *node_id, *at_start, failures);
+                    }
+                    // Then remove it from the way it was snapped onto, and
+                    // delete the node itself.
+                    keep_going(
+                        failures,
+                        editable.remove_node_from_way(*snap_way_id, *snap_index),
+                    );
+                    keep_going(failures, editable.remove_node(*node_id));
+                }
+            }
+            UndoableAction::ReverseWays { layer, way_ids } => {
+                // Reversing is its own inverse, so both directions are the
+                // same operation.
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                for way_id in way_ids {
+                    keep_going(failures, editable.reverse_way(*way_id));
+                }
+            }
+            UndoableAction::SetWayNodes {
+                layer,
+                way_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let nodes = if forward { after } else { before };
+                keep_going(failures, editable.set_way_nodes(*way_id, nodes.clone()));
+            }
+            UndoableAction::SetRelationMembers {
+                layer,
+                relation_id,
+                before,
+                after,
+            } => {
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                let members = if forward { after } else { before };
+                keep_going(
+                    failures,
+                    editable.set_relation_members(*relation_id, members.clone()),
+                );
+            }
+            UndoableAction::CreateRelation { layer, snapshot }
+            | UndoableAction::DeleteRelation { layer, snapshot } => {
+                let created = matches!(action, UndoableAction::CreateRelation { .. });
+                let Some(layer) = layers.find_layer_mut(*layer) else {
+                    return;
+                };
+                let Some(editable) = layer.as_editable_mut() else {
+                    return;
+                };
+                // Redo of a create and undo of a delete put the relation
+                // back; the other two directions remove it.
+                if forward == created {
+                    keep_going(failures, editable.restore_relation(snapshot.clone()));
+                } else {
+                    keep_going(failures, editable.delete_relation(snapshot.relation.id));
+                }
+            }
+            UndoableAction::Purge { layer, purged } => {
+                let Some(editable) = layers
+                    .find_layer_mut(*layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                else {
+                    return;
+                };
+                if forward {
+                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
+                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
+                    let relation_ids: Vec<i64> =
+                        purged.relations.iter().map(|(r, ..)| r.id).collect();
+                    editable.purge_features(&ids, &way_ids, &relation_ids);
+                } else {
+                    editable.restore_purged(purged.clone());
+                }
+            }
+            UndoableAction::PasteFeatures { pasted } => {
+                let Some(editable) = layers
+                    .find_layer_mut(pasted.layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                else {
+                    return;
+                };
+                failures.extend(if forward {
+                    pasted.redo(editable)
+                } else {
+                    pasted.undo(editable)
+                });
+            }
+            UndoableAction::Batch { actions, .. } => {
+                if forward {
+                    for action in actions {
+                        action.apply(layers, true, failures);
+                    }
+                } else {
+                    for action in actions.iter().rev() {
+                        action.apply(layers, false, failures);
+                    }
+                }
+            }
+        }
+    }
+
     /// Human-readable label for the history list, e.g. "Moved 3 nodes".
     pub(crate) fn description(&self) -> String {
         match self {
@@ -547,6 +950,89 @@ impl UndoStack {
         self.cursor += 1;
         self.revision += 1;
         Some(action)
+    }
+}
+
+/// Record a refused undo/redo step and carry on; see `apply_undo_action`.
+fn keep_going<T>(failures: &mut Vec<EditError>, result: Result<T, EditError>) {
+    if let Err(e) = result {
+        failures.push(e);
+    }
+}
+
+/// Undo of a node attached to an existing way's end: pull `node_id` out of
+/// `way_id`, from the front if it was prepended, else from the back.
+fn detach_end_node(
+    editable: &mut dyn EditableLayer,
+    way_id: i64,
+    node_id: i64,
+    at_start: bool,
+    failures: &mut Vec<EditError>,
+) {
+    let node_ids = editable.way_node_ids(way_id).unwrap_or_default();
+    let idx = if at_start {
+        node_ids.iter().position(|id| *id == node_id)
+    } else {
+        node_ids.iter().rposition(|id| *id == node_id)
+    };
+    match idx {
+        Some(idx) => keep_going(failures, editable.remove_node_from_way(way_id, idx)),
+        None => failures.push(EditError::UnknownNode(node_id)),
+    }
+}
+
+/// Redo of a node spliced into a way: put `node_id` back at `index`.
+fn splice_node_into_way(
+    editable: &mut dyn EditableLayer,
+    way_id: i64,
+    index: usize,
+    node_id: i64,
+    failures: &mut Vec<EditError>,
+) {
+    let Some(mut node_ids) = editable.way_node_ids(way_id) else {
+        failures.push(EditError::UnknownWay(way_id));
+        return;
+    };
+    if index > node_ids.len() {
+        failures.push(EditError::IndexOutOfRange {
+            way_id,
+            index,
+            len: node_ids.len(),
+        });
+        return;
+    }
+    node_ids.insert(index, node_id);
+    keep_going(failures, editable.set_way_nodes(way_id, node_ids));
+}
+
+/// Redo of Add mode folding `node_id` into the way being drawn: recreate the
+/// way as `[prev_node_id, node_id]` if the click created it, else attach the
+/// node to the matching end of the existing way.
+fn attach_to_drawn_way(
+    editable: &mut dyn EditableLayer,
+    way_id: i64,
+    prev_node_id: i64,
+    node_id: i64,
+    way_created: bool,
+    at_start: bool,
+    failures: &mut Vec<EditError>,
+) {
+    if way_created {
+        keep_going(
+            failures,
+            editable.restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: osm_gpui::selection::FeatureKind::Way,
+                id: way_id,
+                tags: Vec::new(),
+                way_nodes: vec![prev_node_id, node_id],
+                node_lat_lon: None,
+                version: 0,
+            }),
+        );
+    } else if at_start {
+        splice_node_into_way(editable, way_id, 0, node_id, failures);
+    } else {
+        keep_going(failures, editable.extend_way(way_id, node_id));
     }
 }
 
