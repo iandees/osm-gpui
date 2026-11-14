@@ -250,8 +250,7 @@ impl OsmLayer {
         // tolerance above: the R-tree query is only a coarse candidate
         // filter, the refinement loops below do the exact distance check,
         // so over-including candidates costs a little extra refinement work
-        // but never causes a missed hit. Mirrors the box-select envelope
-        // approach in `hit_test_rect`.
+        // but never causes a missed hit.
         const ENVELOPE_PAD_FACTOR: f32 = 4.0;
 
         if self.store.osm_data.is_none() {
@@ -298,9 +297,8 @@ impl OsmLayer {
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
         // Phase 1: nodes within NODE_TOL. Candidates come from the point
-        // R-tree (already built for box-select); refinement reads the
-        // cached mercator position and projects with `mercator_to_screen`
-        // (no trig) instead of `geo_to_screen`.
+        // R-tree; refinement reads the cached mercator position and projects
+        // with `mercator_to_screen` (no trig) instead of `geo_to_screen`.
         let mut node_hits: Vec<HitCandidate> = Vec::new();
         let zoom = viewport.zoom_level();
         let pins = self.pins();
@@ -339,15 +337,12 @@ impl OsmLayer {
         }
 
         // Phase 2: ways within WAY_TOL. Candidates come from the way-bbox
-        // R-tree. Note this uses `locate_in_envelope_intersecting` (not
-        // `locate_in_envelope`, which requires the candidate's bbox to be
-        // fully CONTAINED in the query envelope — the right semantics for
-        // box-select in `hit_test_rect`, but wrong here: a long way's bbox
-        // can be much bigger than our small click-envelope even when the
-        // click lands right on the way). An intersection is guaranteed
-        // whenever the closest point on the way is within `pad` of the
-        // click, since pad >= WAY_TOL. Refinement walks the cached
-        // (already-projected-to-mercator) vertex list for exactly that way.
+        // R-tree, queried with `locate_in_envelope_intersecting`, not
+        // `locate_in_envelope` (which wants the bbox fully CONTAINED in the
+        // envelope: right for box-select, wrong here, since a long way's bbox
+        // is much bigger than the click envelope even when the click lands on
+        // the way). An intersection is guaranteed whenever the closest point
+        // on the way is within `pad` of the click, since pad >= WAY_TOL.
         let mut way_hits: Vec<HitCandidate> = Vec::new();
         for item in self
             .derived
