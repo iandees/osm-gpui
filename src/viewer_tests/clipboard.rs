@@ -1,8 +1,8 @@
 //! Copying, pasting and duplicating tags and features, and their key bindings.
 
 use super::{
-    node_position, pending, redo_step, select, setup_network, status, tag_pairs, tags_of,
-    undo_step, way_nodes, ways_at_node,
+    node_position, pairs, pending, redo_step, select, setup_network, status, tags_of, undo_step,
+    way_nodes, ways_at_node,
 };
 use crate::{
     key_binding_for, key_bindings_from_settings, HideApp, HideOtherApps, MapViewer, MinimizeWindow,
@@ -41,7 +41,7 @@ fn copy_then_paste_tags_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
             });
             view.run_selection_action("paste_tags", cx);
             assert_eq!(view.undo_stack.actions.len(), 1);
-            let pasted = tag_pairs(&[("highway", "residential"), ("name", "Main")]);
+            let pasted = pairs(&[("highway", "residential"), ("name", "Main")]);
             assert_eq!(tags_of(view, Way, 103), pasted);
             assert_eq!(tags_of(view, Node, 8), pasted);
             assert_eq!(

@@ -7,6 +7,10 @@
 # window x 920..1200.
 #   node 2001 cafe          at      (448, 328)
 #   way  3005 untagged      through (188, 553)
+# Side-panel rows below the preset Fields section move whenever a preset gains
+# or loses a field, so for the untagged way the script collapses Fields first
+# (header y=210). Tags then has its header at y=243, its "(no tags)" / first
+# tag row at y=276 and "Add tag" at y=311 (window coordinates).
 
 window 1200 800
 load_osm docs/screenshots/fixtures/styles.osm
@@ -24,7 +28,11 @@ capture docs/screenshots/side-panel-01-fields.png
 click 188,553
 wait_idle 2s
 assert_selected way 3005
-click 960,360
+# Collapse Fields (header y=210) so the Tags rows sit at fixed positions
+# whatever the preset's fields: Tags header y=243, "Add tag" y=311.
+click 1000,210
+wait_idle 1s
+click 960,311
 wait_idle 2s
 
 # Type the key, Enter moves to the value. (The pauses give the app a frame
@@ -48,7 +56,7 @@ wait_idle 2s
 capture docs/screenshots/side-panel-03-tag-added.png
 
 # Clicking a value edits it in place.
-click 1050,324
+click 1050,276
 wait_idle 2s
 capture docs/screenshots/side-panel-04-edit-value.png
 key escape
