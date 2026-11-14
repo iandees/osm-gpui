@@ -43,10 +43,9 @@ impl OsmLayer {
 
     /// Compute the diff between this layer's original (last-synced)
     /// snapshot and its current data — see `diff::diff_osm_data`. Returns
-    /// an all-empty `LayerDiff` if there's no data or no original snapshot
-    /// captured (the latter shouldn't happen in practice, since both
-    /// `new_with_data` and `set_osm_data` always set one, but is handled
-    /// defensively by treating everything current as newly created).
+    /// an all-empty `LayerDiff` if there's no data. Without an original
+    /// snapshot (which loading always sets) everything current counts as
+    /// newly created.
     pub fn diff_for_upload(&self) -> LayerDiff {
         let Some(current) = &self.store.osm_data else {
             return LayerDiff::default();
@@ -74,12 +73,9 @@ impl OsmLayer {
     /// (which also resets `original_data` to this reconciled state and
     /// clears `modified`).
     ///
-    /// A full rebuild — rather than incrementally patching each cache like
-    /// `commit_node_moves` does — is used here deliberately: this runs once
-    /// per upload (not a per-frame/per-drag hot path), and a bulk id remap
-    /// can touch an unbounded number of nodes/ways/index entries, so the
-    /// incremental-patch discipline used elsewhere isn't worth the added
-    /// complexity/risk for a one-time reconciliation pass.
+    /// A full rebuild rather than incremental patching, deliberately: this
+    /// runs once per upload (not a per-frame/per-drag hot path), and a bulk
+    /// id remap can touch an unbounded number of nodes/ways/index entries.
     pub fn apply_upload_result(&mut self, result: &UploadResult) {
         let Some(current) = self.store.osm_data.clone() else {
             return;

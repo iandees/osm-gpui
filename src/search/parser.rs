@@ -365,8 +365,8 @@ impl Parser {
         }
     }
 
-    /// The value after `=`, `~` or `key:`: quoted, or an unquoted run. A
-    /// trailing `key:"quoted"` is also handled here.
+    /// The value after `=`, `~` or a quoted key's `:`: quoted, or an unquoted
+    /// run.
     fn parse_value(&mut self) -> Result<Text, ParseError> {
         if self.peek() == Some('"') {
             self.parse_quoted()

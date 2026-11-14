@@ -5,13 +5,14 @@
 //! be represented, and the free functions in this module implement the
 //! decision tree as pure transitions over plain `(f32, f32)` points, testable
 //! without gpui event or context types. `MapViewer`'s gpui
-//! handlers become thin adapters: convert event coordinates, call these
+//! handlers are thin adapters: convert event coordinates, call these
 //! functions, and act on the result (hit-test, mutate layers, push undo,
 //! `cx.notify()`).
 //!
-//! The drag threshold is `>=` in some comparisons and `<` in others. The
-//! machine tracks the left button only: pan-drags (right/middle button, or Space + left) go straight to the
-//! `Viewport` and never enter this state machine.
+//! A movement of exactly the drag threshold counts as a drag (it starts a
+//! box-select or commits a move), not as a click. The machine tracks the left
+//! button only: pan-drags (right/middle button, or Space + left) go straight
+//! to the `Viewport` and never enter this state machine.
 
 use crate::layers::LayerId;
 
@@ -75,7 +76,6 @@ pub enum Interaction {
 
 impl Interaction {
     /// The most recent mouse-down point recorded in this state, if any.
-    /// Mirrors reading the old standalone `mouse_down_pos` field.
     pub fn down_pos(&self) -> Option<Pt> {
         match self {
             Interaction::Idle => None,
@@ -95,12 +95,11 @@ impl Interaction {
     }
 }
 
-/// Left-button mouse-down: combines the always-happens `mouse_down_pos`
-/// write with the conditional move-drag start. `hit_move_targets` is the
-/// result of hit-testing the press against the current selection and
-/// resolving it via `resolve_move_targets` (both impure, done by the
-/// caller) — `Some` only when non-empty, matching the original's
-/// `if !per_layer.is_empty()` guard.
+/// Left-button mouse-down: a move-drag when the press hit the selection,
+/// else a pending click. `hit_move_targets` is the result of hit-testing the
+/// press against the current selection and resolving it via
+/// `resolve_move_targets` (both impure, done by the caller) — `Some` only
+/// when non-empty.
 pub fn on_left_mouse_down(pos: Pt, hit_move_targets: Option<NodeMoveTargets>) -> Interaction {
     match hit_move_targets {
         Some(targets) => Interaction::MoveDrag { down: pos, targets },
@@ -108,10 +107,9 @@ pub fn on_left_mouse_down(pos: Pt, hit_move_targets: Option<NodeMoveTargets>) ->
     }
 }
 
-/// Mirrors the early-return branch of the original `handle_mouse_move` that
-/// ran whenever a move-drag was active: `Some(delta)` (screen-pixel offset
-/// from the drag's start) if the left button is still held, `None` if it
-/// isn't — in which case, per the original, nothing happens at all (no
+/// The mouse-move step while a move-drag is active: `Some(delta)`
+/// (screen-pixel offset from the drag's start) if the left button is still
+/// held, `None` if it isn't — in which case nothing happens at all (no
 /// viewport pan, no box-select check).
 pub fn move_drag_delta(down: Pt, pos: Pt, left_pressed: bool) -> Option<Pt> {
     if left_pressed {
@@ -121,9 +119,9 @@ pub fn move_drag_delta(down: Pt, pos: Pt, left_pressed: bool) -> Option<Pt> {
     }
 }
 
-/// Mirrors the box-select branch of `handle_mouse_move`, run only when no
-/// move-drag is active. Updates `interaction` in place and reports whether
-/// the box-select rect changed (so the caller knows to `cx.notify()`).
+/// The box-select step of a mouse move, run only when no move-drag is
+/// active. Updates `interaction` in place and reports whether the box-select
+/// rect changed (so the caller knows to `cx.notify()`).
 pub fn update_box_select(interaction: &mut Interaction, pos: Pt, left_pressed: bool) -> bool {
     if !left_pressed {
         return false;
@@ -149,8 +147,7 @@ pub enum Gesture {
     /// screen-pixel delta to `targets` and commit + push undo.
     MoveCommitted { targets: NodeMoveTargets, delta: Pt },
     /// A move-drag was released at/under the threshold: not actually a
-    /// drag, so treat it as a plain click instead (the original's
-    /// `if !moved { ... handle_map_click ...; return; }`).
+    /// drag, so treat it as a plain click instead.
     MoveCancelledAsClick { targets: NodeMoveTargets, at: Pt },
     /// A box-select was released: hit-test this (start, current) rect.
     BoxSelected { rect: (Pt, Pt) },
@@ -161,8 +158,7 @@ pub enum Gesture {
 }
 
 /// Resolve a left-button mouse-up against the current interaction, and
-/// reset it to `Idle` — mirroring the original's `.take()` calls on all
-/// three fields at the top of `handle_mouse_up`.
+/// reset it to `Idle`.
 pub fn on_mouse_up(interaction: &mut Interaction, up_pos: Pt) -> Gesture {
     let taken = std::mem::replace(interaction, Interaction::Idle);
     match taken {
@@ -267,8 +263,6 @@ mod tests {
         )]
     }
 
-    // -- click vs. drag threshold ------------------------------------
-
     #[test]
     fn plain_press_release_below_threshold_is_a_click() {
         let mut interaction = on_left_mouse_down((10.0, 10.0), None);
@@ -282,8 +276,7 @@ mod tests {
     #[test]
     fn press_release_exactly_at_threshold_is_not_a_click() {
         let mut interaction = on_left_mouse_down((0.0, 0.0), None);
-        // magnitude exactly 4.0: original used `< 4.0` for was_click, so
-        // exactly-at-threshold does NOT count as a click.
+        // A click is `< 4.0`, so exactly-at-threshold is not one.
         let gesture = on_mouse_up(&mut interaction, (4.0, 0.0));
         assert_eq!(gesture, Gesture::None);
     }
@@ -312,8 +305,6 @@ mod tests {
         assert!(!update_box_select(&mut interaction, (100.0, 100.0), false));
         assert!(matches!(interaction, Interaction::Pending { .. }));
     }
-
-    // -- box-select lifecycle -----------------------------------------
 
     #[test]
     fn box_select_updates_every_move_once_started_even_below_threshold() {
@@ -362,8 +353,6 @@ mod tests {
         assert_eq!(Interaction::Idle.box_select_rect(), None);
     }
 
-    // -- move-drag lifecycle --------------------------------------------
-
     #[test]
     fn move_drag_starts_on_hit_and_tracks_delta_while_held() {
         let t = targets(1, &[10, 11]);
@@ -382,9 +371,9 @@ mod tests {
 
     #[test]
     fn move_drag_delta_is_none_and_thus_a_no_op_when_left_released() {
-        // Mirrors the original: while move_drag is Some but the left button
-        // isn't held, the whole move-handler does nothing (no viewport pan
-        // either), which is why the caller must skip that too.
+        // While a move-drag is active but the left button isn't held, the
+        // whole move-handler does nothing (no viewport pan either), which is
+        // why the caller must skip that too.
         assert_eq!(move_drag_delta((0.0, 0.0), (100.0, 100.0), false), None);
     }
 
@@ -426,8 +415,8 @@ mod tests {
 
     #[test]
     fn move_drag_exactly_at_threshold_commits_not_cancels() {
-        // Original used `>= 4.0` for the move-drag "moved" check (distinct
-        // from the plain-click `< 4.0`), so exactly-at-threshold commits.
+        // A move-drag commits at `>= 4.0` (a plain click is `< 4.0`), so
+        // exactly-at-threshold commits.
         let t = targets(2, &[1]);
         let mut interaction = Interaction::MoveDrag {
             down: (0.0, 0.0),
@@ -466,8 +455,6 @@ mod tests {
         assert!(matches!(interaction, Interaction::BoxSelect { .. }));
     }
 
-    // -- normalize_rect ---------------------------------------------------
-
     #[test]
     fn normalize_rect_handles_any_drag_direction() {
         assert_eq!(
@@ -502,8 +489,6 @@ mod tests {
             }
         );
     }
-
-    // -- attribution dedup -------------------------------------------------
 
     #[test]
     fn dedupe_attributions_keeps_first_occurrence_and_order() {

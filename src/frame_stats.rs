@@ -6,7 +6,7 @@
 //! until [`report`] prints (and clears) them: one line per phase with sample
 //! count, min, median, p95, max and mean in milliseconds. The script harness
 //! calls it from the `frame_stats LABEL` op, so each section of a benchmark
-//! script gets its own table. See `docs/perf/` for how it was used.
+//! script gets its own table.
 //!
 //! These are CPU-side wall-clock timings of the code that records draw
 //! commands. GPU rasterisation and presentation are not covered.

@@ -1214,8 +1214,7 @@ mod tests {
         // `restrictions`, is listed by no preset).
         assert!(no_key.is_empty(), "fields with no key: {no_key:?}");
         // Presets with no fields at all after resolution: those the schema
-        // defines without any, and no ancestor to inherit from. Before
-        // references and inheritance were resolved this was 902 of 1731.
+        // defines without any, and no ancestor to inherit from.
         let mut ancestorless_children = Vec::new();
         for id in &zero {
             let preset = presets.get(id).unwrap();

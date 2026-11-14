@@ -429,8 +429,6 @@ impl MapViewer {
         self.notes.store.set_selected(None);
     }
 
-    // -- New Note ---------------------------------------------------------
-
     fn signed_in_for_notes(&self) -> bool {
         auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url())).is_some()
     }
@@ -491,8 +489,6 @@ impl MapViewer {
     pub(crate) fn new_note_dialog_element(&self) -> Option<Entity<NewNoteDialog>> {
         self.notes.new_dialog.clone()
     }
-
-    // -- Writes -------------------------------------------------------------
 
     /// Start a write in the background. `Err` says why it could not start
     /// (nothing was sent). Never retried: a failed write is shown, and the
@@ -635,8 +631,6 @@ impl MapViewer {
         }
         outcome
     }
-
-    // -- Side panel ---------------------------------------------------------
 
     /// The Note section while a note is open: its title, its status row
     /// (pinned) and the rest (thread, comment box, buttons; scrolled).
@@ -813,8 +807,6 @@ impl MapViewer {
                 .into_any_element(),
         ))
     }
-
-    // -- Script ---------------------------------------------------------------
 
     /// Run a note script op. Writes have already passed the dev-server guard
     /// (and `start_note_write` checks it again).

@@ -34,9 +34,9 @@ fn icon_for_preset(icon_name: Option<&str>, geometry: Geometry) -> Option<gpui::
 
 /// Build the compact tag preview shown in a result row, e.g.
 /// "amenity=cafe, cuisine=coffee_shop" — up to `PREVIEW_TAG_COUNT` tags,
-/// sorted by key for determinism. Mirrors
-/// `crate::ui::nsi_dialog::format_tag_preview`, duplicated here since that
-/// one is specific to `NsiEntry` rather than any `HashMap<String, String>`.
+/// sorted by key for determinism. Same as
+/// `crate::ui::nsi_dialog::format_tag_preview`, which takes an `NsiEntry`
+/// rather than a tag map.
 pub fn format_tag_preview(tags: &HashMap<String, String>) -> String {
     let mut kv: Vec<(&String, &String)> = tags.iter().collect();
     kv.sort_by(|a, b| a.0.cmp(b.0));

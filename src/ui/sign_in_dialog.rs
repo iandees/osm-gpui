@@ -1,6 +1,6 @@
-//! Modal dialog shown when the user tries to upload while signed out. Mirrors
-//! `upload_dialog.rs`'s scrim/card/focus/Escape conventions. The primary
-//! button asks the host to open Settings (where sign-in lives).
+//! Modal dialog shown when the user needs to be signed in (to upload, write
+//! notes or show Mapillary photos) and is not. The primary button asks the
+//! host to open Settings (where sign-in lives); Escape cancels.
 
 use crate::tr;
 use crate::ui::modal;

@@ -324,8 +324,6 @@ impl MapViewer {
         cx.notify();
     }
 
-    // --- pointer ---------------------------------------------------------
-
     /// Left press (map-local `position`) while adjusting: start moving the
     /// imagery. Returns whether the mode took the press.
     pub(crate) fn offset_adjust_mouse_down(&mut self, position: Point<Pixels>) -> bool {
@@ -375,8 +373,6 @@ impl MapViewer {
             .is_some_and(|adjust| adjust.drag_last.take().is_some())
     }
 
-    // --- keyboard --------------------------------------------------------
-
     /// Whether one of the panel's metre fields has keyboard focus, so the
     /// map must leave the key to it.
     pub(crate) fn offset_field_focused(&self, window: &Window, cx: &gpui::App) -> bool {
@@ -412,8 +408,6 @@ impl MapViewer {
         cx.notify();
         true
     }
-
-    // --- numeric entry ---------------------------------------------------
 
     fn on_offset_input_event(
         &mut self,
@@ -465,8 +459,6 @@ impl MapViewer {
             self.apply_session();
         }
     }
-
-    // --- panel -----------------------------------------------------------
 
     /// The floating panel at the top of the map while adjusting.
     pub(crate) fn render_imagery_offset_panel(

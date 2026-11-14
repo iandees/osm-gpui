@@ -97,7 +97,6 @@ impl CustomImageryDialog {
         let min_zoom = cx.new(|cx| InputState::new(window, cx).placeholder("0"));
         let max_zoom = cx.new(|cx| InputState::new(window, cx).placeholder("19"));
         let focus_handle = cx.focus_handle();
-        // Focus the name field on open.
         name.update(cx, |state, cx| state.focus(window, cx));
         Self {
             name,

@@ -56,7 +56,7 @@ const CASING_COLOR: u32 = 0x1C1C1E;
 
 /// The zoom at which node styles are resolved into the per-node cache.
 /// Node rules with zoom ranges are evaluated at this zoom only (way styles
-/// are re-resolved per zoom bucket; nodes are not yet).
+/// are re-resolved per zoom bucket; nodes are not).
 const NODE_STYLE_ZOOM: f64 = 18.0;
 
 /// Below this zoom turn-restriction markers aren't drawn or clickable.
@@ -79,11 +79,8 @@ struct Store {
     osm_data: Option<Arc<OsmData>>,
     /// The data as it was when this layer was last loaded/downloaded (or
     /// last reconciled with a successful upload) — the stable "before"
-    /// state `diff_for_upload` compares `osm_data` against. Set in
-    /// `new_with_data` and refreshed in `set_osm_data`/
-    /// `apply_upload_result`; left untouched by in-place edit methods
-    /// (`commit_node_moves`/`set_tag`/`remove_tag`), which only mutate
-    /// `osm_data`.
+    /// state `diff_for_upload` compares `osm_data` against. In-place edits
+    /// only mutate `osm_data` and leave this alone.
     original_data: Option<Arc<OsmData>>,
     /// Whether this layer has had a committed move since it was loaded.
     modified: bool,
@@ -105,9 +102,8 @@ struct Store {
 struct Derived {
     /// OSM way id for each entry of `way_bboxes`/`way_vertices`/`way_styles`,
     /// aligned by index. `osm_data.ways` is a `HashMap` keyed by id (not
-    /// positionally ordered), so this is what lets index-aligned code (e.g.
-    /// `commit_node_moves`) recover a way's id from a position in those
-    /// parallel arrays.
+    /// positionally ordered), so this is what lets index-aligned code
+    /// recover a way's id from a position in those parallel arrays.
     way_ids: Vec<i64>,
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
@@ -135,8 +131,8 @@ struct Derived {
     /// cached geometry without a linear scan of `osm_data.ways`.
     way_id_to_index: HashMap<i64, usize>,
     /// node id -> indices of ways (into `way_vertices`/`way_bboxes`) that
-    /// reference it. Built once at load time; lets `commit_node_moves`
-    /// recompute only the affected ways' caches instead of every way.
+    /// reference it; lets an edit recompute only the affected ways' caches
+    /// instead of every way.
     node_to_ways: HashMap<i64, HashSet<usize>>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
@@ -518,7 +514,7 @@ impl MapLayer for OsmLayer {
         // reject offscreen ones with a mercator-space AABB test, and paint
         // visible ones as filled quads on the canvas so we skip GPUI's
         // per-element layout pass. Batching nodes into a single PathBuilder
-        // fill path was tried and turned out much slower — Lyon's fill
+        // fill path is much slower — Lyon's fill
         // tessellator is not tuned for thousands of tiny rectangles. (The
         // simple markers of tagged nodes below are batched as raw triangles,
         // with no tessellation, and are several times cheaper than quads.)
