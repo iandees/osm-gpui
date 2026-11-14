@@ -16,7 +16,7 @@
 //!   `color`) or `fill-opacity` (for `fill-color`).
 //! - Stroke styling: `casing-width`, `casing-color`, `z-index`, `dashes`
 //!   (`dash,gap` in pixels, or `none`) and `opacity`.
-//! - Label properties for a later label-rendering pass: `text` (a tag key,
+//! - Label properties: `text` (a tag key,
 //!   e.g. `name`, or `none`), `font-size`, `text-color`, `text-halo-color`,
 //!   `text-halo-radius`, `text-offset` (pixels; line labels only: perpendicular
 //!   shift from the way, positive above the text, negative below it),
@@ -449,12 +449,9 @@ impl Selector {
 enum Declaration {
     Color(u32),
     Width(f32),
-    /// Node symbol size (also accepts the `width` alias on node rules,
-    /// but at parse time we only mark selectors as node/way per rule —
-    /// so we always store `SymbolSize` for node-applied width on node
-    /// selectors. In mixed-selector rules, `width` is ambiguous, so we
-    /// store it as `Width` and let the evaluator decide whether it
-    /// applies to way width or node size.
+    /// Node `symbol-size`. `width` is always stored as `Width`; node
+    /// resolution treats it as this only when every selector of the rule is
+    /// a node.
     SymbolSize(f32),
     /// Area fill color; only takes effect on closed ways.
     FillColor(u32),
@@ -2087,7 +2084,6 @@ mod tests {
     #[test]
     fn default_stylesheet_parses() {
         let s = Stylesheet::load_default();
-        // Spot-check a couple of rules from the embedded asset.
         let residential = s.way_style(&tags(&[("highway", "residential")]), false, 12.0);
         assert_eq!((residential.color, residential.width), (0xffffff, 2.0));
         // A specific road class overrides the generic highway rule, including

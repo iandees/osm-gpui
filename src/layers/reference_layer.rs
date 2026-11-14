@@ -564,7 +564,7 @@ mod tests {
             color_by: ColorBy::Speed,
             ..TraceStyle::default()
         });
-        // walking (< 5 km/h), ~40 km/h, ~60 km/h
+        // walking (< 5 km/h), ~34 km/h, ~61 km/h
         assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 3);
         layer.set_trace_style(TraceStyle {
             color_by: ColorBy::Direction,
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn a_long_track_stays_unbroken_zoomed_far_out() {
-        // 3000 vertices over ~6 km: every chunk is a few pixels at zoom 12
+        // 3000 vertices over ~5 km: every chunk is a few pixels at zoom 12
         // and under one at zoom 8, yet the line still draws.
         let mut b = Builder::new(Format::Gpx);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);

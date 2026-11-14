@@ -3,10 +3,8 @@
 //! `diff_osm_data` compares an "original" (last-known-server) `OsmData`
 //! snapshot against the current, possibly-edited one and reports exactly
 //! what changed, by id presence/absence and by field comparison — no
-//! dependency on the undo stack or on how the edit was made. This means it
-//! automatically covers node/way creation and deletion the moment
-//! `OsmLayer` gains `create_node`/`delete_feature` methods, with zero
-//! changes required here.
+//! dependency on the undo stack or on how the edit was made, so any way of
+//! creating or deleting an element is covered.
 
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmRelation, OsmWay};
 use std::collections::HashMap;
@@ -84,15 +82,13 @@ pub struct LayerDiff {
     pub deleted_node_ids: Vec<(i64, i32)>,
     pub created_ways: Vec<OsmWay>,
     pub modified_ways: Vec<OsmWay>,
-    /// (id, version-as-of-original) for ways present in the original
-    /// snapshot but no longer present in the current data.
+    /// Same shape as `deleted_node_ids`, for ways.
     pub deleted_way_ids: Vec<(i64, i32)>,
     /// Relations whose members or tags differ from the baseline.
     pub modified_relations: Vec<OsmRelation>,
     /// Relations absent from the baseline (negative local ids).
     pub created_relations: Vec<OsmRelation>,
-    /// (id, version-as-of-original) for relations present in the original
-    /// snapshot but no longer present in the current data.
+    /// Same shape as `deleted_node_ids`, for relations.
     pub deleted_relation_ids: Vec<(i64, i32)>,
 }
 
@@ -110,8 +106,8 @@ impl LayerDiff {
             && self.deleted_relation_ids.is_empty()
     }
 
-    /// Total number of created/modified/deleted elements (nodes, ways and
-    /// relations), for building a human-readable per-layer summary.
+    /// `(created, modified, deleted)` element counts across nodes, ways and
+    /// relations, for a per-layer summary.
     pub fn counts(&self) -> (usize, usize, usize) {
         let created =
             self.created_nodes.len() + self.created_ways.len() + self.created_relations.len();
@@ -147,11 +143,10 @@ fn diff_relations(original: &OsmData, current: &OsmData, diff: &mut LayerDiff) {
     }
 }
 
-/// Compare `original` against `current` by id and classify every node/way as
-/// created, modified, deleted, or unchanged. A node/way counts as modified
-/// if its tags or its position/member list differ; unchanged elements
-/// (including elements untouched since `original` was captured) are omitted
-/// entirely.
+/// Compare `original` against `current` by id and classify every node, way
+/// and relation as created, modified, deleted, or unchanged. An element
+/// counts as modified if its tags or its position/node list/member list
+/// differ; unchanged elements are omitted entirely.
 pub fn diff_osm_data(original: &OsmData, current: &OsmData) -> LayerDiff {
     let mut diff = LayerDiff::default();
 

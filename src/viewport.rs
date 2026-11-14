@@ -79,8 +79,8 @@ impl Viewport {
 
     /// The scroll amount that drives zooming, given the raw vertical scroll
     /// amount (lines for a wheel, pixels for a trackpad) and the "invert
-    /// scroll zoom" setting. Inverting flips the sign, so what zoomed in now
-    /// zooms out. Only scroll zoom uses this: pinch, keys and menus do not.
+    /// scroll zoom" setting. Inverting flips the sign, so what zooms in zooms
+    /// out. Only scroll zoom uses this: pinch, keys and menus do not.
     ///
     /// The base convention matches Leaflet (OSM website), iD and JOSM: GPUI
     /// reports positive vertical deltas when content is scrolled down (wheel
@@ -389,7 +389,6 @@ mod tests {
         let screen_size = size(px(800.0), px(600.0));
         let viewport = Viewport::new(40.7128, -74.0060, 10.0, screen_size);
 
-        // Test round trip conversion
         let original_lat = 40.7500;
         let original_lon = -73.9000;
         let screen_point = viewport.geo_to_screen(original_lat, original_lon);
