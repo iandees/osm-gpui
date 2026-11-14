@@ -19,6 +19,7 @@ mod upload_diff;
 mod vertex_preview;
 mod way_lod;
 
+use crate::coordinates::{LatLon, Mercator};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -35,7 +36,7 @@ fn empty_tags() -> HashMap<String, String> {
 /// of an 800x600 map area. Zoom 18 is high enough that a degree-scale offset
 /// in node positions translates to many pixels.
 fn viewport_centered_on(lat: f64, lon: f64) -> Viewport {
-    Viewport::new(lat, lon, 18.0, size(px(800.0), px(600.0)))
+    Viewport::new(LatLon::new(lat, lon), 18.0, size(px(800.0), px(600.0)))
 }
 
 fn data_with(nodes: Vec<OsmNode>, ways: Vec<OsmWay>) -> Arc<OsmData> {
@@ -99,8 +100,7 @@ fn way_with_poi_layer(n: i64) -> OsmLayer {
 
 fn view_at(zoom: f64) -> Viewport {
     Viewport::new(
-        40.0,
-        -74.0 + 30.0 * 0.0001,
+        LatLon::new(40.0, -74.0 + 30.0 * 0.0001),
         zoom,
         size(px(800.0), px(600.0)),
     )
@@ -109,5 +109,5 @@ fn view_at(zoom: f64) -> Viewport {
 fn node_point(layer: &OsmLayer, vp: &Viewport, id: i64) -> gpui::Point<gpui::Pixels> {
     let idx = layer.derived.node_cache.index_by_id[&id];
     let (_, mx, my) = layer.derived.node_cache.flat[idx];
-    vp.mercator_to_screen(mx, my)
+    vp.mercator_to_screen(Mercator::new(mx, my))
 }

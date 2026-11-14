@@ -5,6 +5,7 @@
 use super::*;
 use crate::{ExtrudeDrag, ExtrudeStyle};
 use gpui::point;
+use osm_gpui::coordinates::LatLon;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -493,10 +494,10 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
     let (data, pts) = ring(lat, lon);
     with_session(cx, data, move |s| {
         // Zoom 20 so the 40 m square is a few hundred pixels wide.
-        s.view.viewport = Viewport::new(lat, lon, 20.0, size(px(800.0), px(600.0)));
+        s.view.viewport = Viewport::new(LatLon::new(lat, lon), 20.0, size(px(800.0), px(600.0)));
         let screen = |s: &Session, id: i64| {
             let (la, lo) = s.editable().node_lat_lon(id).unwrap();
-            s.view.viewport.geo_to_screen(la, lo)
+            s.view.viewport.geo_to_screen(LatLon::new(la, lo))
         };
         let (a, b) = (screen(s, 1), screen(s, 2));
         let mid = point((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);

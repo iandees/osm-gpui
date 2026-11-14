@@ -1,3 +1,4 @@
+use crate::coordinates::Mercator;
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
 use crate::layers::area_labels;
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
@@ -587,7 +588,7 @@ impl MapLayer for OsmLayer {
             if form == NodeForm::Hidden {
                 continue;
             }
-            let mut sp = viewport.mercator_to_screen(mx, my);
+            let mut sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 continue;
             }
@@ -633,7 +634,7 @@ impl MapLayer for OsmLayer {
                 if self.node_form_at(&pins, idx, id, zoom) != NodeForm::Preview {
                     continue;
                 }
-                let mut sp = viewport.mercator_to_screen(mx, my);
+                let mut sp = viewport.mercator_to_screen(Mercator::new(mx, my));
                 if !is_point_valid(sp) {
                     continue;
                 }
@@ -652,7 +653,7 @@ impl MapLayer for OsmLayer {
                 if r.x < vmin_x || r.x > vmax_x || r.y < vmin_y || r.y > vmax_y {
                     continue;
                 }
-                let sp = viewport.mercator_to_screen(r.x, r.y);
+                let sp = viewport.mercator_to_screen(Mercator::new(r.x, r.y));
                 if !is_point_valid(sp) {
                     continue;
                 }

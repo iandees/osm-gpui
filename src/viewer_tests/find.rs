@@ -3,6 +3,7 @@
 use super::{setup, CENTER_LAT, CENTER_LON};
 use crate::{Find, MapViewer};
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 
 fn selected_kind_ids(view: &MapViewer) -> Vec<(osm_gpui::selection::FeatureKind, i64)> {
     view.selected.iter().map(|f| (f.kind, f.id)).collect()
@@ -82,11 +83,12 @@ fn find_moves_the_view_only_when_nothing_selected_is_in_view(cx: &mut TestAppCon
             view.apply_find("type:node", SearchMode::Replace).unwrap();
             assert_eq!(view.viewport.center(), before, "already in view");
 
-            view.viewport.pan_to(CENTER_LAT + 5.0, CENTER_LON + 5.0);
+            view.viewport
+                .pan_to(LatLon::new(CENTER_LAT + 5.0, CENTER_LON + 5.0));
             let far = view.viewport.center();
             view.apply_find("type:node", SearchMode::Replace).unwrap();
             assert_ne!(view.viewport.center(), far);
-            let (lat, lon) = view.viewport.center();
+            let LatLon { lat, lon } = view.viewport.center();
             assert!((lat - CENTER_LAT).abs() < 0.01 && (lon - CENTER_LON).abs() < 0.01);
         })
         .unwrap();

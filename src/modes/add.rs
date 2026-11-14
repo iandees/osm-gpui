@@ -2,6 +2,7 @@
 //! and ways.
 
 use gpui::{CursorStyle, Window};
+use osm_gpui::coordinates::LatLon;
 
 use super::preview::{blue, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
@@ -111,7 +112,7 @@ impl MapViewer {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let (mut lat, mut lon) = self.viewport.screen_to_geo(screen_pt);
+        let LatLon { mut lat, mut lon } = self.viewport.screen_to_geo(screen_pt);
 
         // Every click after the first grows the way being drawn by a node.
         let drawing_way = self.add_progress().and_then(|p| p.way_id);
@@ -193,7 +194,11 @@ impl MapViewer {
         // point (GPX, GeoJSON) under the cursor pulls the new, ordinary node
         // onto itself: onto a vertex, else onto the nearest point of a segment.
         if snap_hit.is_none() && !ctrl_held {
-            if let Some((snap_lat, snap_lon)) = self.reference_snap_at(screen_pt) {
+            if let Some(LatLon {
+                lat: snap_lat,
+                lon: snap_lon,
+            }) = self.reference_snap_at(screen_pt)
+            {
                 lat = snap_lat;
                 lon = snap_lon;
             }

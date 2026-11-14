@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{EditMode, ExtrudeDrag, ExtrudeStyle, MapViewer};
 use gpui::{point, px, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 
 #[gpui::test]
 fn first_click_in_add_mode_snaps_onto_existing_way(cx: &mut TestAppContext) {
@@ -98,7 +99,9 @@ fn second_click_on_an_undrawn_vertex_connects_to_it(cx: &mut TestAppContext) {
             let layer_id = view.active_layer.unwrap();
             // Node 1 is untagged and way 10 is not selected: not drawn,
             // not a hit target.
-            let on_node_1 = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON - 0.001);
+            let on_node_1 = view
+                .viewport
+                .geo_to_screen(LatLon::new(CENTER_LAT, CENTER_LON - 0.001));
             let hits = view.layer_manager.hit_test_all(&view.viewport, on_node_1);
             assert!(hits.iter().flatten().all(|h| h.feature.id != 1));
 
@@ -120,7 +123,9 @@ fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
     window
         .update(cx, |view, _window, _cx| {
             let layer_id = view.active_layer.unwrap();
-            let n1_screen = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON - 0.001);
+            let n1_screen = view
+                .viewport
+                .geo_to_screen(LatLon::new(CENTER_LAT, CENTER_LON - 0.001));
 
             // First click: a free node A, far from way 10 (Ctrl
             // irrelevant here — nothing nearby to snap to).
@@ -184,7 +189,8 @@ fn click_with_no_way_nearby_falls_back_to_free_node(cx: &mut TestAppContext) {
 
 /// Window-independent screen point for a spot well clear of the network.
 fn empty_spot(view: &MapViewer, east: f64) -> gpui::Point<gpui::Pixels> {
-    view.viewport.geo_to_screen(39.98, -73.98 + east)
+    view.viewport
+        .geo_to_screen(LatLon::new(39.98, -73.98 + east))
 }
 
 #[gpui::test]
@@ -358,8 +364,8 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                     .unwrap();
                 (e.node_lat_lon(1).unwrap(), e.node_lat_lon(2).unwrap())
             };
-            let a = view.viewport.geo_to_screen(a_geo.0, a_geo.1);
-            let b = view.viewport.geo_to_screen(b_geo.0, b_geo.1);
+            let a = view.viewport.geo_to_screen(LatLon::new(a_geo.0, a_geo.1));
+            let b = view.viewport.geo_to_screen(LatLon::new(b_geo.0, b_geo.1));
             // A click 30px off the middle of the segment.
             let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
             let len = (dx * dx + dy * dy).sqrt();
@@ -386,7 +392,9 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                 .unwrap()
                 .node_lat_lon(nodes[1])
                 .unwrap();
-            let n = view.viewport.geo_to_screen(new_geo.0, new_geo.1);
+            let n = view
+                .viewport
+                .geo_to_screen(LatLon::new(new_geo.0, new_geo.1));
             let dist = osm_gpui::selection::point_to_segment_distance(n, a, b);
             assert!(dist < 0.5, "new node is {dist}px off the segment");
             assert!((n.x - click.x).to_f64().hypot((n.y - click.y).to_f64()) > 20.0);

@@ -2,6 +2,7 @@
 
 use crate::{clipboard_actions, selection_actions, MapViewer};
 use gpui::{point, px, size};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::viewport::Viewport;
@@ -16,7 +17,11 @@ fn screenshot_script_click_targets_hit_their_features() {
     let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
     let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
     // The map area of a 1200x800 window, centred as the script does.
-    let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+    let viewport = Viewport::new(
+        LatLon::new(40.7120, -74.0060),
+        18.0,
+        size(px(864.0), px(776.0)),
+    );
     for (x, y, way) in [
         (370.0, 470.0, 3001),
         (710.0, 300.0, 3002),
@@ -48,7 +53,11 @@ fn topology_script_targets_hit_their_features() {
             id: 4107,
         }],
     );
-    let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+    let viewport = Viewport::new(
+        LatLon::new(40.7120, -74.0060),
+        18.0,
+        size(px(864.0), px(776.0)),
+    );
     let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
     for (x, y, kind, id) in [
         (640.0, 200.0, Node, 6302),
@@ -88,7 +97,11 @@ fn relation_editor_script_targets_and_fixture() {
         std::fs::read_to_string("docs/screenshots/fixtures/relation-editor.osm").expect("fixture");
     let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
     let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
-    let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+    let viewport = Viewport::new(
+        LatLon::new(40.7120, -74.0060),
+        18.0,
+        size(px(864.0), px(776.0)),
+    );
     let hit_at = |x: f32, y: f32| {
         let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
         let hits = osm_gpui::layers::EditableLayer::hit_test(&layer, &viewport, at);
@@ -133,7 +146,11 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
         }],
     );
     layers.add_layer(Box::new(layer));
-    let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+    let viewport = Viewport::new(
+        LatLon::new(40.7120, -74.0060),
+        18.0,
+        size(px(864.0), px(776.0)),
+    );
     let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
         let at = point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
         let hits = layers
@@ -228,7 +245,11 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
         "L".to_string(),
         Arc::new(data),
     )));
-    let viewport = Viewport::new(40.7120, -74.0060, 18.0, size(px(864.0), px(776.0)));
+    let viewport = Viewport::new(
+        LatLon::new(40.7120, -74.0060),
+        18.0,
+        size(px(864.0), px(776.0)),
+    );
     let local = |x: f32, y: f32| point(px(x - MapViewer::MODE_PANEL_WIDTH), px(y));
     let hit_at = |layers: &osm_gpui::layers::LayerManager, x: f32, y: f32| {
         let layer = layers.find_layer(LayerId(1)).unwrap();

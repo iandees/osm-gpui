@@ -2,6 +2,7 @@
 //! or pull a new way out of it; double-click a segment to add a node.
 
 use gpui::{px, CursorStyle, Pixels, Point, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::interaction;
 use osm_gpui::layers::LayerId;
@@ -183,7 +184,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     ) else {
         return;
     };
-    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos);
+    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos).to_pair();
     let (far_a, far_b) = view.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
     let a = frame.geo(a_geo);
     stroke_polyline(
@@ -216,7 +217,7 @@ impl MapViewer {
         let Some(b_geo) = editable.node_lat_lon(drag.node_b) else {
             return;
         };
-        let cursor_geo = self.viewport.screen_to_geo(up_pos);
+        let cursor_geo = self.viewport.screen_to_geo(up_pos).to_pair();
 
         let (far_a, far_b) = self.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
@@ -264,7 +265,7 @@ impl MapViewer {
         let ids = editable.way_node_ids(drag.way_id)?;
         let screen_of = |id: i64| -> Option<(f64, f64)> {
             let (lat, lon) = editable.node_lat_lon(id)?;
-            let p = self.viewport.geo_to_screen(lat, lon);
+            let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
             Some((p.x.to_f64(), p.y.to_f64()))
         };
         let mut nodes = Vec::with_capacity(ids.len());
@@ -343,6 +344,7 @@ impl MapViewer {
         let to_geo = |p: (f64, f64)| {
             self.viewport
                 .screen_to_geo(gpui::point(px(p.0 as f32), px(p.1 as f32)))
+                .to_pair()
         };
         let new_geo: Vec<(f64, f64)> = plan.new_nodes.iter().map(|&p| to_geo(p)).collect();
         let moved_geo: Vec<(i64, (f64, f64))> =
@@ -435,9 +437,9 @@ impl MapViewer {
         ) else {
             return;
         };
-        let (lat, lon) = {
-            let a = self.viewport.geo_to_screen(a_geo.0, a_geo.1);
-            let b = self.viewport.geo_to_screen(b_geo.0, b_geo.1);
+        let LatLon { lat, lon } = {
+            let a = self.viewport.geo_to_screen(LatLon::new(a_geo.0, a_geo.1));
+            let b = self.viewport.geo_to_screen(LatLon::new(b_geo.0, b_geo.1));
             let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
             let len_sq = dx * dx + dy * dy;
             let t = if len_sq <= f64::EPSILON {

@@ -8,7 +8,7 @@
 //! one flat list. The parsers (`gpx`, `geojson`) fill a [`Builder`]; the layer
 //! (`layers::reference_layer`) draws the result.
 
-use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon};
+use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon, GeoBounds, LatLon, Mercator};
 use crate::tr;
 use crate::viewport::Viewport;
 
@@ -182,7 +182,8 @@ fn track_measures(
     for (i, &(lon, lat)) in lon_lat.iter().enumerate() {
         if i > 0 {
             let (plon, plat) = lon_lat[i - 1];
-            total += crate::imagery_offset::distance_m(plat, plon, lat, lon);
+            total +=
+                crate::imagery_offset::distance_m(LatLon::new(plat, plon), LatLon::new(lat, lon));
         }
         along.push(total);
     }
@@ -233,9 +234,6 @@ pub struct Marker {
     pub at: [f64; 2],
 }
 
-/// `(min_lat, max_lat, min_lon, max_lon)`.
-pub type GeoExtent = (f64, f64, f64, f64);
-
 /// The parsed content of one file.
 #[derive(Debug, Clone)]
 pub struct ReferenceData {
@@ -244,12 +242,12 @@ pub struct ReferenceData {
     pub parts: Vec<Part>,
     pub markers: Vec<Marker>,
     pub vertex_count: usize,
-    extent: Option<GeoExtent>,
+    extent: Option<GeoBounds>,
 }
 
 impl ReferenceData {
     /// The geographic extent of everything in the file.
-    pub fn extent(&self) -> Option<GeoExtent> {
+    pub fn extent(&self) -> Option<GeoBounds> {
         self.extent
     }
 
@@ -281,17 +279,17 @@ impl ReferenceData {
         screen_pt: gpui::Point<gpui::Pixels>,
         tolerance_px: f32,
     ) -> Option<Nearest> {
-        let (cx, cy) = viewport.screen_to_mercator(screen_pt);
+        let at = viewport.screen_to_mercator(screen_pt);
         let (ppm, _) = viewport.projector().pixels_per_meter();
         if !(ppm.is_finite() && ppm > 0.0) {
             return None;
         }
-        self.nearest_mercator((cx, cy), tolerance_px as f64 / ppm)
+        self.nearest_mercator(at, tolerance_px as f64 / ppm)
     }
 
     /// `nearest` in Web Mercator meters.
-    pub fn nearest_mercator(&self, at: (f64, f64), tol_m: f64) -> Option<Nearest> {
-        let (cx, cy) = at;
+    pub fn nearest_mercator(&self, at: Mercator, tol_m: f64) -> Option<Nearest> {
+        let Mercator { x: cx, y: cy } = at;
         let area = MercBox {
             min_x: cx - tol_m,
             max_x: cx + tol_m,
@@ -312,7 +310,7 @@ impl ReferenceData {
                 d2,
                 Nearest {
                     feature: m.feature,
-                    at: (m.at[0], m.at[1]),
+                    at: Mercator::new(m.at[0], m.at[1]),
                     is_vertex: true,
                 },
             );
@@ -324,7 +322,7 @@ impl ReferenceData {
                     d2,
                     Nearest {
                         feature: part.feature,
-                        at: (p[0], p[1]),
+                        at: Mercator::new(p[0], p[1]),
                         is_vertex: true,
                     },
                 );
@@ -336,7 +334,7 @@ impl ReferenceData {
                             d2,
                             Nearest {
                                 feature: part.feature,
-                                at: (sx, sy),
+                                at: Mercator::new(sx, sy),
                                 is_vertex: false,
                             },
                         ));
@@ -369,15 +367,14 @@ pub fn closest_on_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> (f64, 
 pub struct Nearest {
     pub feature: u32,
     /// The point, in Web Mercator meters.
-    pub at: (f64, f64),
+    pub at: Mercator,
     /// A vertex or marker, as opposed to a point inside a segment.
     pub is_vertex: bool,
 }
 
 impl Nearest {
-    /// The point as `(lat, lon)`.
-    pub fn lat_lon(&self) -> (f64, f64) {
-        mercator_to_lat_lon(self.at.0, self.at.1)
+    pub fn lat_lon(&self) -> LatLon {
+        mercator_to_lat_lon(self.at)
     }
 }
 
@@ -388,7 +385,7 @@ pub struct Builder {
     parts: Vec<Part>,
     markers: Vec<Marker>,
     vertex_count: usize,
-    extent: Option<GeoExtent>,
+    extent: Option<GeoBounds>,
 }
 
 impl Builder {
@@ -422,7 +419,7 @@ impl Builder {
 
     /// Check a `lon, lat` pair and widen the extent. Fails for anything that
     /// is not a WGS84 position.
-    fn accept(&mut self, lon: f64, lat: f64) -> Result<(f64, f64), RefError> {
+    fn accept(&mut self, lon: f64, lat: f64) -> Result<Mercator, RefError> {
         if !(lon.is_finite()
             && lat.is_finite()
             && (-180.0..=180.0).contains(&lon)
@@ -430,13 +427,10 @@ impl Builder {
         {
             return Err(RefError::NotGeographic { x: lon, y: lat });
         }
-        let e = self.extent.get_or_insert((lat, lat, lon, lon));
-        e.0 = e.0.min(lat);
-        e.1 = e.1.max(lat);
-        e.2 = e.2.min(lon);
-        e.3 = e.3.max(lon);
+        let at = LatLon::new(lat, lon);
+        GeoBounds::extend(&mut self.extent, at);
         self.vertex_count += 1;
-        Ok(lat_lon_to_mercator(lat, lon))
+        Ok(lat_lon_to_mercator(at))
     }
 
     /// Add a polyline of `(lon, lat)` positions. Fewer than two positions
@@ -466,7 +460,7 @@ impl Builder {
     ) -> Result<(), RefError> {
         let mut merc: Vec<[f64; 2]> = Vec::with_capacity(lon_lat.len());
         for &(lon, lat) in lon_lat {
-            let (x, y) = self.accept(lon, lat)?;
+            let Mercator { x, y } = self.accept(lon, lat)?;
             merc.push([x, y]);
         }
         if merc.len() < 2 {
@@ -504,7 +498,7 @@ impl Builder {
     }
 
     pub fn point(&mut self, feature: u32, lon: f64, lat: f64) -> Result<(), RefError> {
-        let (x, y) = self.accept(lon, lat)?;
+        let Mercator { x, y } = self.accept(lon, lat)?;
         self.markers.push(Marker {
             feature,
             at: [x, y],
@@ -656,7 +650,7 @@ mod tests {
         b.line(f, &[(-1.0, 50.0), (2.0, 51.0)]).unwrap();
         b.point(f, 3.0, 49.0).unwrap();
         let data = b.finish().unwrap();
-        assert_eq!(data.extent(), Some((49.0, 51.0, -1.0, 3.0)));
+        assert_eq!(data.extent(), Some(GeoBounds::new(49.0, 51.0, -1.0, 3.0)));
         assert_eq!(data.vertex_count, 3);
     }
 
@@ -695,8 +689,8 @@ mod tests {
         b.point(f, 10.0005, 10.0).unwrap();
         b.point(f, 30.0, 30.0).unwrap();
         let data = b.finish().unwrap();
-        let (x0, y0) = lat_lon_to_mercator(9.0, 9.0);
-        let (x1, y1) = lat_lon_to_mercator(11.0, 11.0);
+        let Mercator { x: x0, y: y0 } = lat_lon_to_mercator(LatLon::new(9.0, 9.0));
+        let Mercator { x: x1, y: y1 } = lat_lon_to_mercator(LatLon::new(11.0, 11.0));
         let view = MercBox {
             min_x: x0,
             max_x: x1,
@@ -720,21 +714,27 @@ mod tests {
         let f = line_feature(&mut b);
         b.line(f, &[(0.0, 0.0), (0.01, 0.0)]).unwrap();
         let data = b.finish().unwrap();
-        let (ax, ay) = lat_lon_to_mercator(0.0, 0.0);
-        let (bx, _) = lat_lon_to_mercator(0.0, 0.01);
+        let Mercator { x: ax, y: ay } = lat_lon_to_mercator(LatLon::new(0.0, 0.0));
+        let Mercator { x: bx, .. } = lat_lon_to_mercator(LatLon::new(0.0, 0.01));
         // 3 m from the start vertex, tolerance 5 m: the vertex.
-        let n = data.nearest_mercator((ax + 3.0, ay + 1.0), 5.0).unwrap();
+        let n = data
+            .nearest_mercator(Mercator::new(ax + 3.0, ay + 1.0), 5.0)
+            .unwrap();
         assert!(n.is_vertex);
-        assert_eq!(n.at, (ax, ay));
+        assert_eq!(n.at, Mercator::new(ax, ay));
         // Midway, 2 m off the line: a point inside the segment.
         let mid = (ax + bx) / 2.0;
-        let n = data.nearest_mercator((mid, ay + 2.0), 5.0).unwrap();
+        let n = data
+            .nearest_mercator(Mercator::new(mid, ay + 2.0), 5.0)
+            .unwrap();
         assert!(!n.is_vertex);
-        assert!((n.at.0 - mid).abs() < 1e-9 && (n.at.1 - ay).abs() < 1e-9);
-        let (lat, lon) = n.lat_lon();
+        assert!((n.at.x - mid).abs() < 1e-9 && (n.at.y - ay).abs() < 1e-9);
+        let LatLon { lat, lon } = n.lat_lon();
         assert!(lat.abs() < 1e-6 && (lon - 0.005).abs() < 1e-6);
         // Out of tolerance.
-        assert!(data.nearest_mercator((mid, ay + 50.0), 5.0).is_none());
+        assert!(data
+            .nearest_mercator(Mercator::new(mid, ay + 50.0), 5.0)
+            .is_none());
     }
 
     #[test]
@@ -743,8 +743,10 @@ mod tests {
         let f = b.feature(FeatureKind::Waypoint, "", Some("w".into()), vec![]);
         b.point(f, 1.0, 1.0).unwrap();
         let data = b.finish().unwrap();
-        let (x, y) = lat_lon_to_mercator(1.0, 1.0);
-        let n = data.nearest_mercator((x + 2.0, y), 5.0).unwrap();
+        let Mercator { x, y } = lat_lon_to_mercator(LatLon::new(1.0, 1.0));
+        let n = data
+            .nearest_mercator(Mercator::new(x + 2.0, y), 5.0)
+            .unwrap();
         assert_eq!((n.feature, n.is_vertex), (0, true));
     }
 

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use mvt_reader::feature::Value as MvtValue;
 use mvt_reader::Reader;
 
+use crate::coordinates::LatLon;
 use crate::http::{fetch_with_retries, HttpClient, HttpRequest, RetryPolicy};
 use crate::street_imagery::{
     date_from_millis, fotoshi_url, parse_fotoshi, parse_mapillary_image, parse_panoramax,
@@ -41,7 +42,7 @@ pub fn tile_zoom(provider: Provider) -> u32 {
 }
 
 /// Where the point `(px, py)` of a tile of `extent` units lies.
-fn tile_point_to_geo(t: TileCoord, extent: u32, px: f32, py: f32) -> (f64, f64) {
+fn tile_point_to_geo(t: TileCoord, extent: u32, px: f32, py: f32) -> LatLon {
     let e = f64::from(extent.max(1));
     tile_position_to_lat_lon(
         t.z,
@@ -116,7 +117,7 @@ fn points_of(bytes: &[u8], layer: &str, t: TileCoord) -> Result<Vec<TilePoint>, 
         };
         let props = f.properties.unwrap_or_default();
         for p in points {
-            let (lat, lon) = tile_point_to_geo(t, meta.extent, p.x(), p.y());
+            let LatLon { lat, lon } = tile_point_to_geo(t, meta.extent, p.x(), p.y());
             out.push((lat, lon, props.clone()));
         }
     }
@@ -382,9 +383,9 @@ mod tests {
     fn tile_point_positions() {
         let t = TileCoord { z: 1, x: 1, y: 0 };
         // The corner of the tile is the NW corner of the NE quadrant.
-        let (lat, lon) = tile_point_to_geo(t, 4096, 0.0, 0.0);
+        let LatLon { lat, lon } = tile_point_to_geo(t, 4096, 0.0, 0.0);
         assert!((lon - 0.0).abs() < 1e-9 && (lat - 85.0511287798).abs() < 1e-6);
-        let (lat, lon) = tile_point_to_geo(t, 4096, 4096.0, 4096.0);
+        let LatLon { lat, lon } = tile_point_to_geo(t, 4096, 4096.0, 4096.0);
         assert!((lon - 180.0).abs() < 1e-9 && lat.abs() < 1e-9);
     }
 
@@ -436,7 +437,7 @@ mod tests {
         assert_eq!(p.id, "123456789012");
         assert_eq!(p.heading, Some(271.5));
         assert_eq!(p.captured.as_deref(), Some("2023-11-14"));
-        let (lat, lon) = tile_point_to_geo(t, 4096, 1024.0, 2048.0);
+        let LatLon { lat, lon } = tile_point_to_geo(t, 4096, 1024.0, 2048.0);
         assert_eq!((p.lat, p.lon), (lat, lon));
         // Another layer's points are not photos.
         let other = encode_tile("sequence", 4096, &[(1, 1, vec![("id", Prop::Uint(1))])]);

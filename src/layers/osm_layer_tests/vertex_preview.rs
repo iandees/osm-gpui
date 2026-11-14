@@ -1,6 +1,7 @@
 //! Vertex preview of the hovered way and its effect on hit tests and box select.
 
 use super::{data_with, empty_tags, node_point, view_at, way_with_poi_layer};
+use crate::coordinates::LatLon;
 use crate::layers::node_markers::NodeForm;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
@@ -121,7 +122,11 @@ fn only_the_preview_ways_vertices_are_previewed() {
         ],
     );
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
-    let vp = Viewport::new(40.0003, -74.0003, 19.0, size(px(800.0), px(600.0)));
+    let vp = Viewport::new(
+        LatLon::new(40.0003, -74.0003),
+        19.0,
+        size(px(800.0), px(600.0)),
+    );
     let forms = |layer: &OsmLayer| -> Vec<i64> {
         let pins = layer.pins();
         (1..=15)

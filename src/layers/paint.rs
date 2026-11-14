@@ -2,6 +2,7 @@
 //! to window coordinates, batching triangles into one path, and the small
 //! polygons notes and photos are drawn with.
 
+use crate::coordinates::{LatLon, Mercator};
 use gpui::{point, px, rgba, size, Bounds, Path, PathBuilder, PathVertex, Pixels, Point, Window};
 
 use crate::layers::way_stroke::PathSink;
@@ -37,13 +38,13 @@ impl<'a> PaintFrame<'a> {
 
     /// View-local pixels of a geographic position.
     pub fn local_geo(&self, lat: f64, lon: f64) -> (f32, f32) {
-        let p = self.viewport.geo_to_screen(lat, lon);
+        let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
         (p.x.as_f32(), p.y.as_f32())
     }
 
     /// Window pixels of a Web Mercator position.
     pub fn window_mercator(&self, mx: f64, my: f64) -> (f32, f32) {
-        let p = self.viewport.mercator_to_screen(mx, my);
+        let p = self.viewport.mercator_to_screen(Mercator::new(mx, my));
         self.to_window((p.x.as_f32(), p.y.as_f32()))
     }
 }
@@ -199,7 +200,7 @@ mod tests {
 
     fn frame_parts() -> (Viewport, Bounds<Pixels>) {
         (
-            Viewport::new(40.0, -74.0, 15.0, size(px(800.0), px(600.0))),
+            Viewport::new(LatLon::new(40.0, -74.0), 15.0, size(px(800.0), px(600.0))),
             Bounds {
                 origin: point(px(30.0), px(48.0)),
                 size: size(px(800.0), px(600.0)),
@@ -217,7 +218,7 @@ mod tests {
         let (wx, wy) = frame.to_window((x, y));
         assert!((wx - 430.0).abs() < 0.01 && (wy - 348.0).abs() < 0.01);
         assert_eq!(frame.view_size(), (800.0, 600.0));
-        let (mx, my) = vp.screen_to_mercator(point(px(400.0), px(300.0)));
+        let Mercator { x: mx, y: my } = vp.screen_to_mercator(point(px(400.0), px(300.0)));
         let (wx, wy) = frame.window_mercator(mx, my);
         assert!((wx - 430.0).abs() < 0.01 && (wy - 348.0).abs() < 0.01);
     }

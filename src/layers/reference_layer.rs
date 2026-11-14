@@ -10,6 +10,7 @@
 //! the way pass uses: one path for the casing, one for the line, and one each
 //! for the marker halos and fills.
 
+use crate::coordinates::LatLon;
 use gpui::*;
 
 use crate::layers::paint::{PaintFrame, PathBatch};
@@ -144,13 +145,13 @@ impl ReferenceLayer {
     }
 
     /// The nearest vertex, marker or point on a segment within
-    /// `tolerance_px` of `screen_pt`, as `(lat, lon)`.
+    /// `tolerance_px` of `screen_pt`.
     pub fn snap(
         &self,
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tolerance_px: f32,
-    ) -> Option<(f64, f64)> {
+    ) -> Option<LatLon> {
         self.data
             .nearest(viewport, screen_pt, tolerance_px)
             .map(|n| n.lat_lon())
@@ -426,7 +427,7 @@ mod tests {
     fn view(lat: f64, lon: f64, zoom: f64) -> (Viewport, Bounds<Pixels>) {
         let sz = size(px(800.0), px(600.0));
         (
-            Viewport::new(lat, lon, zoom, sz),
+            Viewport::new(LatLon::new(lat, lon), zoom, sz),
             Bounds {
                 origin: point(px(0.0), px(0.0)),
                 size: sz,
@@ -590,10 +591,10 @@ mod tests {
         assert!(layer
             .hit_test_point(&vp, point(px(400.0), px(100.0)))
             .is_none());
-        let (lat, lon) = layer.snap(&vp, point(px(402.0), px(303.0)), 6.0).unwrap();
+        let LatLon { lat, lon } = layer.snap(&vp, point(px(402.0), px(303.0)), 6.0).unwrap();
         assert!((lat - 40.0).abs() < 1e-6 && (lon + 74.0).abs() < 1e-6);
         // Between vertices: lands on the segment, on the line y=40.0.
-        let (lat, _) = layer.snap(&vp, point(px(350.0), px(303.0)), 6.0).unwrap();
+        let LatLon { lat, .. } = layer.snap(&vp, point(px(350.0), px(303.0)), 6.0).unwrap();
         assert!((lat - 40.0).abs() < 1e-6);
         assert!(layer.snap(&vp, point(px(350.0), px(380.0)), 6.0).is_none());
     }

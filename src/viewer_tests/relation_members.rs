@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{side_panel, MemberRef, TagEditContext};
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 
 #[gpui::test]
 fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppContext) {
@@ -85,9 +86,9 @@ fn a_relation_selected_from_a_members_row_edits_and_zooms(cx: &mut TestAppContex
 
             // Zoom to Selection fits the loaded members (way 102 and
             // node 7), not the whole layer.
-            view.viewport.pan_to(10.0, 10.0);
+            view.viewport.pan_to(LatLon::new(10.0, 10.0));
             assert!(view.fit_to_features(&view.selected.clone()));
-            let (lat, lon) = view.viewport.center();
+            let LatLon { lat, lon } = view.viewport.center();
             assert!((lat - 40.002).abs() < 1e-3 && (lon + 73.994).abs() < 1e-3);
         })
         .unwrap();

@@ -6,6 +6,7 @@
 use super::super::{
     vertex_significance, WayDetail, WayLod, CASING_MIN_ZOOM, COARSE_BELOW_ZOOM, COLLAPSE_BELOW_PX,
 };
+use crate::coordinates::LatLon;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -168,7 +169,11 @@ fn layer() -> OsmLayer {
 }
 
 fn view(zoom: f64) -> (Viewport, Bounds<Pixels>) {
-    let v = Viewport::new(LAT, LON + 0.001, zoom, size(px(800.0), px(600.0)));
+    let v = Viewport::new(
+        LatLon::new(LAT, LON + 0.001),
+        zoom,
+        size(px(800.0), px(600.0)),
+    );
     let b = Bounds {
         origin: point(px(0.0), px(0.0)),
         size: size(px(800.0), px(600.0)),

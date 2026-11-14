@@ -6,6 +6,7 @@ use super::{
 };
 use crate::undo::UndoableAction;
 use gpui::{px, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::osm_upload;
 use osm_gpui::viewport::Viewport;
 
@@ -194,12 +195,14 @@ fn show_selects_the_object_and_closes_the_dialog(cx: &mut TestAppContext) {
                 409,
                 "Version mismatch: Provided 1, server had: 2 of Node 2",
             );
-            view.viewport = Viewport::new(10.0, 10.0, 5.0, size(px(800.0), px(600.0)));
+            view.viewport = Viewport::new(LatLon::new(10.0, 10.0), 5.0, size(px(800.0), px(600.0)));
             view.handle_conflict_action(ConflictAction::Show, conflict, cx);
             assert_eq!(view.selected.len(), 1);
             assert_eq!((view.selected[0].kind, view.selected[0].id), (Node, 2));
             // Zoomed in on node 2.
-            let p = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON + 0.001);
+            let p = view
+                .viewport
+                .geo_to_screen(LatLon::new(CENTER_LAT, CENTER_LON + 0.001));
             assert!(p.x > px(0.0) && p.x < px(800.0) && p.y > px(0.0) && p.y < px(600.0));
             assert!(view.upload_dialog.is_none());
             assert!(status_text(view).unwrap().contains("Node 2"));

@@ -32,10 +32,10 @@ impl OsmLayer {
                 let Some(n) = osm_data.nodes.get(&feature.id) else {
                     return;
                 };
-                let Some((lat, lon)) = validate_coords(n.lat, n.lon) else {
+                let Some(at) = validate_coords(n.lat_lon()) else {
                     return;
                 };
-                let mut sp = viewport.geo_to_screen(lat, lon);
+                let mut sp = viewport.geo_to_screen(at);
                 if !is_point_valid(sp) {
                     return;
                 }
@@ -79,8 +79,8 @@ impl OsmLayer {
                 let mut node_styles: Vec<NodeStyle> = Vec::with_capacity(way.nodes.len());
                 for node_id in &way.nodes {
                     if let Some(n) = osm_data.nodes.get(node_id) {
-                        if let Some((lat, lon)) = validate_coords(n.lat, n.lon) {
-                            let mut sp = viewport.geo_to_screen(lat, lon);
+                        if let Some(at) = validate_coords(n.lat_lon()) {
+                            let mut sp = viewport.geo_to_screen(at);
                             if is_point_valid(sp) {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));

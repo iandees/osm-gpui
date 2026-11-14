@@ -6,6 +6,7 @@
 use super::*;
 use crate::{AddProgress, ExtrudeDrag, ExtrudeStyle};
 use gpui::{point, Pixels, Point, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 
 const LAT: f64 = 40.0;
 const LON: f64 = -74.0;
@@ -35,7 +36,7 @@ fn empty() -> OsmData {
 }
 
 fn geo(s: &Session, lat: f64, lon: f64) -> Point<Pixels> {
-    s.view.viewport.geo_to_screen(lat, lon)
+    s.view.viewport.geo_to_screen(LatLon::new(lat, lon))
 }
 
 /// A spot `(dx, dy)` pixels from the viewport centre.

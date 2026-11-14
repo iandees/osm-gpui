@@ -1,4 +1,5 @@
 use super::*;
+use crate::coordinates::Mercator;
 
 /// Per-way axis-aligned bounding box in Web Mercator meters. Used to cull
 /// offscreen ways with a cheap min/max compare against the viewport's
@@ -79,10 +80,10 @@ pub(super) fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> Nod
     let mut flat = Vec::with_capacity(data.nodes.len());
     let mut styles = Vec::with_capacity(data.nodes.len());
     for node in data.nodes.values() {
-        if let Some((lat, lon)) = validate_coords(node.lat, node.lon) {
-            let (mx, my) = lat_lon_to_mercator(lat, lon);
+        if let Some(at) = validate_coords(node.lat_lon()) {
+            let Mercator { x, y } = lat_lon_to_mercator(at);
             index_by_id.insert(node.id, flat.len());
-            flat.push((node.id, mx, my));
+            flat.push((node.id, x, y));
             styles.push(stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM));
         }
     }
@@ -485,11 +486,11 @@ impl OsmLayer {
     /// grows.
     pub(super) fn index_node_set(&mut self, node: &OsmNode) {
         let id = node.id;
-        let Some((lat, lon)) = validate_coords(node.lat, node.lon) else {
+        let Some(at) = validate_coords(node.lat_lon()) else {
             self.index_node_removed(id);
             return;
         };
-        let (mx, my) = lat_lon_to_mercator(lat, lon);
+        let Mercator { x: mx, y: my } = lat_lon_to_mercator(at);
         let style = self
             .store
             .stylesheet

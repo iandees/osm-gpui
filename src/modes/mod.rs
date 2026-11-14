@@ -22,6 +22,7 @@ pub(crate) mod select;
 pub(crate) mod state_tests;
 
 use gpui::{px, CursorStyle, Pixels, Point, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 
 pub(crate) use add::{AddProgress, AddState};
@@ -421,22 +422,28 @@ impl crate::MapViewer {
         b: (f64, f64),
         cursor: (f64, f64),
     ) -> ((f64, f64), (f64, f64)) {
-        let a_screen = self.viewport.geo_to_screen(a.0, a.1);
-        let b_screen = self.viewport.geo_to_screen(b.0, b.1);
-        let cursor_screen = self.viewport.geo_to_screen(cursor.0, cursor.1);
+        let a_screen = self.viewport.geo_to_screen(LatLon::new(a.0, a.1));
+        let b_screen = self.viewport.geo_to_screen(LatLon::new(b.0, b.1));
+        let cursor_screen = self.viewport.geo_to_screen(LatLon::new(cursor.0, cursor.1));
         let (far_a_screen, far_b_screen) = osm_gpui::selection::rectangle_from_edge(
             (a_screen.x.to_f64(), a_screen.y.to_f64()),
             (b_screen.x.to_f64(), b_screen.y.to_f64()),
             (cursor_screen.x.to_f64(), cursor_screen.y.to_f64()),
         );
-        let far_a = self.viewport.screen_to_geo(gpui::point(
-            px(far_a_screen.0 as f32),
-            px(far_a_screen.1 as f32),
-        ));
-        let far_b = self.viewport.screen_to_geo(gpui::point(
-            px(far_b_screen.0 as f32),
-            px(far_b_screen.1 as f32),
-        ));
+        let far_a = self
+            .viewport
+            .screen_to_geo(gpui::point(
+                px(far_a_screen.0 as f32),
+                px(far_a_screen.1 as f32),
+            ))
+            .to_pair();
+        let far_b = self
+            .viewport
+            .screen_to_geo(gpui::point(
+                px(far_b_screen.0 as f32),
+                px(far_b_screen.1 as f32),
+            ))
+            .to_pair();
         (far_a, far_b)
     }
 }

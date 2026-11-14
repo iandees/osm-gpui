@@ -76,6 +76,7 @@ use crate::undo::{
 
 use gpui_component::ActiveTheme;
 use osm_gpui::auth;
+use osm_gpui::coordinates::{GeoBounds, LatLon};
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::idle_tracker::IdleTracker;
@@ -714,7 +715,7 @@ struct MapViewer {
     interaction: Interaction,
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
-    last_menu_center: Option<(f64, f64)>,
+    last_menu_center: Option<LatLon>,
     /// Where the Editor Layer Index load stands.
     imagery_load_state: ImageryLoadState,
     /// The load state the Imagery menu was last rebuilt for.
@@ -994,18 +995,13 @@ impl MapViewer {
                 .last_map_view
                 .and_then(|v| v.validated())
         };
-        let (start_lat, start_lon, start_zoom) = start
-            .map(|v| (v.lat, v.lon, v.zoom))
-            .unwrap_or((40.7128, -74.0060, 11.0));
-        let viewport = Viewport::new(
-            start_lat,
-            start_lon,
-            start_zoom,
-            gpui::size(px(800.0), px(600.0)),
-        );
+        let (start_center, start_zoom) = start
+            .map(|v| (LatLon::new(v.lat, v.lon), v.zoom))
+            .unwrap_or((LatLon::new(40.7128, -74.0060), 11.0));
+        let viewport = Viewport::new(start_center, start_zoom, gpui::size(px(800.0), px(600.0)));
         // Remember the view on any normal quit.
         cx.on_app_quit(|this, _cx| {
-            let (lat, lon) = this.viewport.center();
+            let LatLon { lat, lon } = this.viewport.center();
             let view = settings_store::MapView {
                 lat,
                 lon,
@@ -1132,14 +1128,13 @@ impl MapViewer {
         }
     }
 
-    /// The `(center_lat, center_lon, ImageryLoadState)` triple `rebuild_menus`
+    /// The view centre and `ImageryLoadState` that `rebuild_menus`
     /// needs, as currently known to this viewer. Exposed so callers outside
     /// the per-frame `maybe_rebuild_imagery_menu` loop (e.g. the Settings
     /// window's keybindings-changed handler in `menu.rs`) can trigger an
     /// immediate menu rebuild without duplicating this lookup.
-    pub(crate) fn imagery_menu_context(&self) -> (f64, f64, ImageryLoadState) {
-        let (lat, lon) = self.viewport.center();
-        (lat, lon, self.imagery_load_state)
+    pub(crate) fn imagery_menu_context(&self) -> (LatLon, ImageryLoadState) {
+        (self.viewport.center(), self.imagery_load_state)
     }
 
     /// Whether View > Show Downloaded Area is on (drives its menu checkmark).
@@ -1203,22 +1198,24 @@ impl MapViewer {
 
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
-        let (lat, lon) = self.viewport.center();
+        let center = self.viewport.center();
 
         let current_state = self.imagery_load_state;
 
         let state_changed = self.last_imagery_load_state != Some(current_state);
         let center_moved = match self.last_menu_center {
             None => true,
-            Some((plat, plon)) => (plat - lat).abs() > 0.5 || (plon - lon).abs() > 0.5,
+            Some(prev) => {
+                (prev.lat - center.lat).abs() > 0.5 || (prev.lon - center.lon).abs() > 0.5
+            }
         };
         if !state_changed && !center_moved {
             return;
         }
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
-        rebuild_menus(&mut *cx, lat, lon, current_state, self.menu_toggles());
-        self.last_menu_center = Some((lat, lon));
+        rebuild_menus(&mut *cx, center, current_state, self.menu_toggles());
+        self.last_menu_center = Some(center);
         self.last_imagery_load_state = Some(current_state);
     }
 
@@ -1271,17 +1268,13 @@ impl MapViewer {
         if min_lat != f64::INFINITY {
             let screen_width = self.viewport.transform.screen_size.width.to_f64();
             let screen_height = self.viewport.transform.screen_size.height.to_f64();
-            let (center_lat, center_lon, zoom_level) =
-                osm_gpui::coordinates::fit_bounds_to_viewport(
-                    min_lat,
-                    max_lat,
-                    min_lon,
-                    max_lon,
-                    screen_width,
-                    screen_height,
-                );
+            let (center, zoom_level) = osm_gpui::coordinates::fit_bounds_to_viewport(
+                GeoBounds::new(min_lat, max_lat, min_lon, max_lon),
+                screen_width,
+                screen_height,
+            );
 
-            self.viewport.pan_to(center_lat, center_lon);
+            self.viewport.pan_to(center);
             self.viewport.set_zoom(zoom_level);
         }
     }
@@ -2257,7 +2250,7 @@ impl MapViewer {
 
     /// The rotation centre in map pixels under the current viewport.
     fn rotate_center_px(&self, center: osm_gpui::geometry::LatLon) -> (f64, f64) {
-        pointer_px(self.viewport.geo_to_screen(center.0, center.1))
+        pointer_px(self.viewport.geo_to_screen(LatLon::new(center.0, center.1)))
     }
 
     /// Turn the nodes of the Rotate in progress to follow the pointer.
@@ -2724,14 +2717,9 @@ impl MapViewer {
     fn fit_to_features(&mut self, features: &[osm_gpui::selection::FeatureRef]) -> bool {
         use osm_gpui::selection::FeatureKind;
 
-        // (min_lat, max_lat, min_lon, max_lon)
-        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        let mut bounds: Option<GeoBounds> = None;
         let mut extend = |(lat, lon): (f64, f64)| {
-            let b = bounds.get_or_insert((lat, lat, lon, lon));
-            b.0 = b.0.min(lat);
-            b.1 = b.1.max(lat);
-            b.2 = b.2.min(lon);
-            b.3 = b.3.max(lon);
+            GeoBounds::extend(&mut bounds, LatLon::new(lat, lon));
         };
         for feature in features {
             let Some(editable) = self
@@ -2759,7 +2747,11 @@ impl MapViewer {
                     let Some(relation) = editable.relation(feature.id) else {
                         continue;
                     };
-                    let node = |id: i64| editable.node_lat_lon(id);
+                    let node = |id: i64| {
+                        editable
+                            .node_lat_lon(id)
+                            .map(|(lat, lon)| LatLon::new(lat, lon))
+                    };
                     let way_nodes = |id: i64| editable.way_node_ids(id);
                     let find = |id: i64| editable.relation(id);
                     let lookup = osm_gpui::relations::MemberLookup {
@@ -2767,30 +2759,18 @@ impl MapViewer {
                         way_nodes: &way_nodes,
                         relation: &find,
                     };
-                    if let Some((min_lat, max_lat, min_lon, max_lon)) =
-                        osm_gpui::relations::members_bounds(&relation, &lookup)
-                    {
-                        extend((min_lat, min_lon));
-                        extend((max_lat, max_lon));
+                    if let Some(b) = osm_gpui::relations::members_bounds(&relation, &lookup) {
+                        extend((b.min_lat, b.min_lon));
+                        extend((b.max_lat, b.max_lon));
                     }
                 }
             }
         }
 
-        let Some((min_lat, max_lat, min_lon, max_lon)) = bounds else {
+        let Some(bounds) = bounds else {
             return false;
         };
-        let size = self.viewport.transform.screen_size;
-        let (lat, lon, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
-            min_lat,
-            max_lat,
-            min_lon,
-            max_lon,
-            size.width.to_f64(),
-            size.height.to_f64(),
-        );
-        self.viewport.pan_to(lat, lon);
-        self.viewport.set_zoom(zoom);
+        self.fit_to_extent(bounds);
         true
     }
 
@@ -2816,7 +2796,7 @@ impl MapViewer {
                 .filter(|layer| layer.is_visible())
                 .filter_map(|layer| layer.as_reference())
                 .filter_map(|layer| layer.data().extent())
-                .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)));
+                .reduce(|a, b| a.union(&b));
             match extents {
                 Some(extent) => self.fit_to_extent(extent),
                 None => self.set_status(tr!("status.no_data_to_zoom")),
@@ -3659,9 +3639,12 @@ impl MapViewer {
                     let mut undo_entries: Vec<NodeMoveUndoEntry> =
                         Vec::with_capacity(originals.len());
                     for &(id, lat, lon) in originals {
-                        let anchor = self.viewport.geo_to_screen(lat, lon);
+                        let anchor = self.viewport.geo_to_screen(LatLon::new(lat, lon));
                         let new_screen = anchor + delta;
-                        let (mut new_lat, mut new_lon) = self.viewport.screen_to_geo(new_screen);
+                        let LatLon {
+                            lat: mut new_lat,
+                            lon: mut new_lon,
+                        } = self.viewport.screen_to_geo(new_screen);
                         // Onto an existing node: land exactly on it.
                         if let Some((_, SnapTarget::Node { lat, lon, .. })) = &snap {
                             (new_lat, new_lon) = (*lat, *lon);
@@ -4177,22 +4160,16 @@ impl MapViewer {
         cx.notify();
     }
 
-    /// Pan/zoom to a `(min_lat, max_lat, min_lon, max_lon)` extent; a single
-    /// point is centred at an editing zoom (see `fit_bounds_to_viewport`).
-    fn fit_to_extent(
-        &mut self,
-        (min_lat, max_lat, min_lon, max_lon): osm_gpui::reference::GeoExtent,
-    ) {
+    /// Pan/zoom to an extent; a single point is centred at an editing zoom
+    /// (see `fit_bounds_to_viewport`).
+    fn fit_to_extent(&mut self, extent: GeoBounds) {
         let size = self.viewport.transform.screen_size;
-        let (lat, lon, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
-            min_lat,
-            max_lat,
-            min_lon,
-            max_lon,
+        let (center, zoom) = osm_gpui::coordinates::fit_bounds_to_viewport(
+            extent,
             size.width.to_f64(),
             size.height.to_f64(),
         );
-        self.viewport.pan_to(lat, lon);
+        self.viewport.pan_to(center);
         self.viewport.set_zoom(zoom);
     }
 
@@ -4218,7 +4195,7 @@ impl MapViewer {
     /// The point of a visible reference layer to snap a new node to: the
     /// nearest vertex, marker or point on a segment within the snap
     /// tolerance, as `(lat, lon)`. Topmost layer first.
-    fn reference_snap_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<(f64, f64)> {
+    fn reference_snap_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<LatLon> {
         self.layer_manager
             .layers()
             .iter()
@@ -4431,8 +4408,8 @@ impl MapViewer {
             return;
         }
         self.show_downloaded_area = show;
-        let (lat, lon, state) = self.imagery_menu_context();
-        rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
+        let (center, state) = self.imagery_menu_context();
+        rebuild_menus(&mut *cx, center, state, self.menu_toggles());
         cx.notify();
     }
 
@@ -5874,7 +5851,10 @@ impl Render for MapViewer {
 
         self.sync_selection_to_layers();
 
-        let (center_lat, center_lon) = self.viewport.center();
+        let LatLon {
+            lat: center_lat,
+            lon: center_lon,
+        } = self.viewport.center();
         let zoom_level = self.viewport.zoom_level();
         let (total_tiles, cached_files, osm_objects) = self.get_layer_stats();
         let fps = self.tick_fps();
@@ -6564,8 +6544,7 @@ fn main() {
         // rebuild_menus again whenever the load state or viewport changes.
         rebuild_menus(
             cx,
-            40.7128,
-            -74.0060,
+            LatLon::new(40.7128, -74.0060),
             ImageryLoadState::Loading,
             menu::MenuToggles::default(),
         );

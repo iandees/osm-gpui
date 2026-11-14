@@ -383,6 +383,7 @@ impl MapViewer {
 mod tests {
     use super::*;
     use gpui::{px, size, TestAppContext};
+    use osm_gpui::coordinates::LatLon;
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::osm::OsmParser;
     use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -403,8 +404,7 @@ mod tests {
         window
             .update(cx, |view, _window, _cx| {
                 view.viewport = osm_gpui::viewport::Viewport::new(
-                    40.712,
-                    -74.006,
+                    LatLon::new(40.712, -74.006),
                     18.0,
                     size(px(800.0), px(600.0)),
                 );

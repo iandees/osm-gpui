@@ -12,6 +12,8 @@
 
 use std::time::{Duration, Instant};
 
+use osm_gpui::coordinates::LatLon;
+
 use gpui::{actions, div, prelude::*, px, AnyElement, Context, Entity, SharedString, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -73,7 +75,7 @@ pub(crate) struct NotesState {
     /// New Note was chosen: the next click on the map places the note.
     armed: bool,
     /// Where the click landed; the dialog opens on the next frame.
-    pending_new: Option<(f64, f64)>,
+    pending_new: Option<LatLon>,
     new_dialog: Option<Entity<NewNoteDialog>>,
     /// Empty the text box on the next frame (after a successful write).
     clear_input: bool,
@@ -111,8 +113,8 @@ impl MapViewer {
     }
 
     fn refresh_menus_for_notes(&mut self, cx: &mut Context<Self>) {
-        let (lat, lon, state) = self.imagery_menu_context();
-        crate::menu::rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
+        let (center, state) = self.imagery_menu_context();
+        crate::menu::rebuild_menus(&mut *cx, center, state, self.menu_toggles());
     }
 
     /// Turn the Notes layer on or off. Turning it on fetches the notes.
@@ -320,7 +322,7 @@ impl MapViewer {
         if let Some(id) = self.notes.pending_open.take() {
             self.open_note(id, window, cx);
         }
-        if let Some((lat, lon)) = self.notes.pending_new.take() {
+        if let Some(LatLon { lat, lon }) = self.notes.pending_new.take() {
             self.open_new_note_dialog(lat, lon, window, cx);
         }
         if std::mem::take(&mut self.notes.clear_input) {

@@ -1,3 +1,4 @@
+use crate::coordinates::LatLon;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,13 @@ pub struct OsmNode {
     pub lon: f64,
     pub version: i32,
     pub tags: HashMap<String, String>,
+}
+
+impl OsmNode {
+    #[inline]
+    pub fn lat_lon(&self) -> LatLon {
+        LatLon::new(self.lat, self.lon)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

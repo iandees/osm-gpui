@@ -10,7 +10,7 @@
 //! The offset is applied to where imagery pixels are painted only: OSM data,
 //! the grid, hit-testing and every coordinate stay where they are.
 
-use crate::coordinates::WORLD_WIDTH_M;
+use crate::coordinates::{LatLon, WORLD_WIDTH_M};
 use crate::persist::{self, JsonStore, WriteOpts};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -205,6 +205,11 @@ impl StoredOffset {
     pub fn offset(&self) -> ImageryOffset {
         ImageryOffset::new(self.east_m, self.north_m)
     }
+
+    /// Where the offset was made.
+    pub fn at(&self) -> LatLon {
+        LatLon::new(self.lat, self.lon)
+    }
 }
 
 /// The file's contents: a flat list so a source can have several offsets for
@@ -219,47 +224,45 @@ pub struct OffsetStore {
 const MAX_ENTRIES: usize = 200;
 
 /// Great-circle distance in metres.
-pub fn distance_m(lat_a: f64, lon_a: f64, lat_b: f64, lon_b: f64) -> f64 {
-    let (la, lb) = (lat_a.to_radians(), lat_b.to_radians());
+pub fn distance_m(a: LatLon, b: LatLon) -> f64 {
+    let (la, lb) = (a.lat.to_radians(), b.lat.to_radians());
     let dlat = lb - la;
-    let dlon = (lon_b - lon_a).to_radians();
+    let dlon = (b.lon - a.lon).to_radians();
     let h = (dlat / 2.0).sin().powi(2) + la.cos() * lb.cos() * (dlon / 2.0).sin().powi(2);
     2.0 * 6_371_008.8 * h.sqrt().min(1.0).asin()
 }
 
-/// Whether `stored` should auto-apply to a view centred on `(lat, lon)`:
-/// the view is within [`NEAR_RADIUS_M`] of where the offset was made.
-pub fn is_near(stored: &StoredOffset, lat: f64, lon: f64) -> bool {
-    distance_m(stored.lat, stored.lon, lat, lon) <= NEAR_RADIUS_M
+/// Whether `stored` should auto-apply to a view centred on `at`: the view is
+/// within [`NEAR_RADIUS_M`] of where the offset was made.
+pub fn is_near(stored: &StoredOffset, at: LatLon) -> bool {
+    distance_m(stored.at(), at) <= NEAR_RADIUS_M
 }
 
 impl OffsetStore {
-    /// The offset to auto-apply to `imagery_id` for a view centred on
-    /// `(lat, lon)`: the nearest remembered one within [`NEAR_RADIUS_M`], or
-    /// none (the layer then starts at zero and the stored ones are left alone).
-    pub fn lookup(&self, imagery_id: &str, lat: f64, lon: f64) -> Option<ImageryOffset> {
+    /// The offset to auto-apply to `imagery_id` for a view centred on `at`:
+    /// the nearest remembered one within [`NEAR_RADIUS_M`], or none (the layer
+    /// then starts at zero and the stored ones are left alone).
+    pub fn lookup(&self, imagery_id: &str, at: LatLon) -> Option<ImageryOffset> {
         self.entries
             .iter()
-            .filter(|e| e.imagery_id == imagery_id && is_near(e, lat, lon))
-            .min_by(|a, b| {
-                distance_m(a.lat, a.lon, lat, lon).total_cmp(&distance_m(b.lat, b.lon, lat, lon))
-            })
+            .filter(|e| e.imagery_id == imagery_id && is_near(e, at))
+            .min_by(|a, b| distance_m(a.at(), at).total_cmp(&distance_m(b.at(), at)))
             .map(StoredOffset::offset)
     }
 
-    /// Remember `offset` for `imagery_id` made at `(lat, lon)`. It replaces
-    /// any remembered offset for that source within range of the same place
-    /// (a zero offset just removes it); offsets made elsewhere are kept.
-    pub fn remember(&mut self, imagery_id: &str, offset: ImageryOffset, lat: f64, lon: f64) {
+    /// Remember `offset` for `imagery_id` made at `at`. It replaces any
+    /// remembered offset for that source within range of the same place (a
+    /// zero offset just removes it); offsets made elsewhere are kept.
+    pub fn remember(&mut self, imagery_id: &str, offset: ImageryOffset, at: LatLon) {
         self.entries
-            .retain(|e| !(e.imagery_id == imagery_id && is_near(e, lat, lon)));
+            .retain(|e| !(e.imagery_id == imagery_id && is_near(e, at)));
         if !offset.is_zero() {
             self.entries.push(StoredOffset {
                 imagery_id: imagery_id.to_string(),
                 east_m: offset.east_m,
                 north_m: offset.north_m,
-                lat,
-                lon,
+                lat: at.lat,
+                lon: at.lon,
             });
         }
         if self.entries.len() > MAX_ENTRIES {
@@ -304,19 +307,19 @@ pub fn init_store(offsets: OffsetStore) {
 }
 
 /// The offset to auto-apply to a new layer of `imagery_id` viewed around
-/// `(lat, lon)`, if one was remembered near there.
-pub fn lookup(imagery_id: &str, lat: f64, lon: f64) -> Option<ImageryOffset> {
+/// `at`, if one was remembered near there.
+pub fn lookup(imagery_id: &str, at: LatLon) -> Option<ImageryOffset> {
     STORE
-        .read("imagery_offset_store", |s| s.lookup(imagery_id, lat, lon))
+        .read("imagery_offset_store", |s| s.lookup(imagery_id, at))
         .flatten()
 }
 
-/// Remember `offset` for `imagery_id` as made around `(lat, lon)`, for this
-/// session and (unless persistence is off) future launches.
-pub fn remember(imagery_id: &str, offset: ImageryOffset, lat: f64, lon: f64) {
+/// Remember `offset` for `imagery_id` as made around `at`, for this session
+/// and (unless persistence is off) future launches.
+pub fn remember(imagery_id: &str, offset: ImageryOffset, at: LatLon) {
     STORE.update_and_save(
         "imagery_offset_store",
-        |s| s.remember(imagery_id, offset, lat, lon),
+        |s| s.remember(imagery_id, offset, at),
         |snapshot| {
             persist::save_reporting("imagery_offset_store", default_path().as_deref(), |p| {
                 save_to(p, snapshot)
@@ -448,22 +451,26 @@ mod tests {
             lat: 40.0,
             lon: -74.0,
         };
-        assert!(is_near(&stored, 40.0, -74.0));
+        assert!(is_near(&stored, LatLon::new(40.0, -74.0)));
         // About 5.5 km north.
-        assert!(is_near(&stored, 40.05, -74.0));
+        assert!(is_near(&stored, LatLon::new(40.05, -74.0)));
         // About 11 km north.
-        assert!(!is_near(&stored, 40.1, -74.0));
+        assert!(!is_near(&stored, LatLon::new(40.1, -74.0)));
         // Across the world.
-        assert!(!is_near(&stored, -33.9, 151.2));
+        assert!(!is_near(&stored, LatLon::new(-33.9, 151.2)));
     }
 
     #[test]
     fn two_stores_do_not_share_offsets() {
         let mut a = OffsetStore::default();
         let b = OffsetStore::default();
-        a.remember("eli-1", ImageryOffset::new(3.0, -1.0), 40.0, -74.0);
-        assert!(a.lookup("eli-1", 40.0, -74.0).is_some());
-        assert_eq!(b.lookup("eli-1", 40.0, -74.0), None);
+        a.remember(
+            "eli-1",
+            ImageryOffset::new(3.0, -1.0),
+            LatLon::new(40.0, -74.0),
+        );
+        assert!(a.lookup("eli-1", LatLon::new(40.0, -74.0)).is_some());
+        assert_eq!(b.lookup("eli-1", LatLon::new(40.0, -74.0)), None);
     }
 
     #[test]
@@ -477,42 +484,61 @@ mod tests {
     #[test]
     fn store_lookup_applies_only_near_and_keeps_far_entries() {
         let mut store = OffsetStore::default();
-        store.remember("eli-1", ImageryOffset::new(3.0, -1.0), 40.0, -74.0);
-        store.remember("eli-1", ImageryOffset::new(-2.0, 5.0), 51.5, -0.1);
-        store.remember("other", ImageryOffset::new(9.0, 9.0), 40.0, -74.0);
+        store.remember(
+            "eli-1",
+            ImageryOffset::new(3.0, -1.0),
+            LatLon::new(40.0, -74.0),
+        );
+        store.remember(
+            "eli-1",
+            ImageryOffset::new(-2.0, 5.0),
+            LatLon::new(51.5, -0.1),
+        );
+        store.remember(
+            "other",
+            ImageryOffset::new(9.0, 9.0),
+            LatLon::new(40.0, -74.0),
+        );
         assert_eq!(
-            store.lookup("eli-1", 40.01, -74.01),
+            store.lookup("eli-1", LatLon::new(40.01, -74.01)),
             Some(ImageryOffset::new(3.0, -1.0))
         );
         assert_eq!(
-            store.lookup("eli-1", 51.5, -0.1),
+            store.lookup("eli-1", LatLon::new(51.5, -0.1)),
             Some(ImageryOffset::new(-2.0, 5.0))
         );
-        assert_eq!(store.lookup("eli-1", 0.0, 0.0), None);
-        assert_eq!(store.lookup("missing", 40.0, -74.0), None);
+        assert_eq!(store.lookup("eli-1", LatLon::new(0.0, 0.0)), None);
+        assert_eq!(store.lookup("missing", LatLon::new(40.0, -74.0)), None);
         // Setting a new offset at the first place replaces only that one.
-        store.remember("eli-1", ImageryOffset::new(4.0, 4.0), 40.02, -74.0);
+        store.remember(
+            "eli-1",
+            ImageryOffset::new(4.0, 4.0),
+            LatLon::new(40.02, -74.0),
+        );
         assert_eq!(store.entries.len(), 3);
         assert_eq!(
-            store.lookup("eli-1", 40.0, -74.0),
+            store.lookup("eli-1", LatLon::new(40.0, -74.0)),
             Some(ImageryOffset::new(4.0, 4.0))
         );
         // Resetting to zero drops it and leaves the other place alone.
-        store.remember("eli-1", ImageryOffset::ZERO, 40.0, -74.0);
-        assert_eq!(store.lookup("eli-1", 40.0, -74.0), None);
-        assert!(store.lookup("eli-1", 51.5, -0.1).is_some());
+        store.remember("eli-1", ImageryOffset::ZERO, LatLon::new(40.0, -74.0));
+        assert_eq!(store.lookup("eli-1", LatLon::new(40.0, -74.0)), None);
+        assert!(store.lookup("eli-1", LatLon::new(51.5, -0.1)).is_some());
     }
 
     #[test]
     fn store_round_trips_through_a_file() {
         let path = tmp_dir("round-trip").join("imagery-offsets.json");
         let mut store = OffsetStore::default();
-        store.remember("eli-1", ImageryOffset::new(3.2, -1.75), 40.7, -74.0);
+        store.remember(
+            "eli-1",
+            ImageryOffset::new(3.2, -1.75),
+            LatLon::new(40.7, -74.0),
+        );
         store.remember(
             "custom:https://t/{z}/{x}/{y}",
             ImageryOffset::new(0.5, 0.5),
-            1.0,
-            2.0,
+            LatLon::new(1.0, 2.0),
         );
         save_to(&path, &store).unwrap();
         assert_eq!(load_from(&path), store);
@@ -540,8 +566,7 @@ mod tests {
             store.remember(
                 "x",
                 ImageryOffset::new(1.0, 1.0),
-                (i % 80) as f64,
-                (i / 80) as f64 * 3.0,
+                LatLon::new((i % 80) as f64, (i / 80) as f64 * 3.0),
             );
         }
         assert!(store.entries.len() <= MAX_ENTRIES);

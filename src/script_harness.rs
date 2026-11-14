@@ -5,6 +5,7 @@ use gpui::{
     point, px, Context, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
     ScrollWheelEvent, Window,
 };
+use osm_gpui::coordinates::{LatLon, Mercator};
 use std::sync::{Arc, Condvar, Mutex};
 
 use osm_gpui::idle_tracker::IdleTracker;
@@ -297,7 +298,9 @@ impl MapViewer {
         match at {
             script::Where::Window(p) => point(px(p.x), px(p.y)),
             script::Where::Map(p) => to_window(point(px(p.x), px(p.y))),
-            script::Where::Geo { lat, lon } => to_window(self.viewport.geo_to_screen(lat, lon)),
+            script::Where::Geo { lat, lon } => {
+                to_window(self.viewport.geo_to_screen(LatLon::new(lat, lon)))
+            }
         }
     }
 
@@ -371,7 +374,7 @@ impl MapViewer {
         if let Some(cmd) = cmd {
             match cmd {
                 ScriptCommand::SetViewport { lat, lon, zoom } => {
-                    self.viewport.pan_to(lat, lon);
+                    self.viewport.pan_to(LatLon::new(lat, lon));
                     self.viewport.set_zoom(zoom);
                     // Ensure tile layer exists (benchmarks set
                     // OSM_GPUI_FRAME_STATS_NO_TILES to measure vector drawing
@@ -1089,8 +1092,10 @@ impl MapViewer {
                     })
                     .flatten()
                     .ok_or_else(|| "the selected feature is not a node".to_string())?;
-                let (ax, ay) = osm_gpui::coordinates::lat_lon_to_mercator(pos.0, pos.1);
-                let (bx, by) = osm_gpui::coordinates::lat_lon_to_mercator(*lat, *lon);
+                let Mercator { x: ax, y: ay } =
+                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(pos.0, pos.1));
+                let Mercator { x: bx, y: by } =
+                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(*lat, *lon));
                 // Mercator metres stretch by 1/cos(lat); undo that.
                 let scale = pos.0.to_radians().cos();
                 let metres = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt() * scale;

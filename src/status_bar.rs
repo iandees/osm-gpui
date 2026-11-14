@@ -14,6 +14,7 @@ use gpui_component::{
 };
 
 use osm_gpui::auth;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::settings_store;
 use osm_gpui::tr;
 use osm_gpui::tr_count;
@@ -260,7 +261,7 @@ impl MapViewer {
                 Some(name) => name.into(),
                 None => tr!("status.not_signed_in"),
             }))
-            .children(cursor.map(|(lat, lon)| {
+            .children(cursor.map(|LatLon { lat, lon }| {
                 // Fixed width so the segments to its left don't jitter as
                 // the digits change.
                 segment()

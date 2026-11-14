@@ -8,6 +8,7 @@ use crate::undo::UndoableAction;
 use crate::{selection_actions, EditMode, MapViewer};
 use gpui::prelude::*;
 use gpui::{point, px, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::viewport::Viewport;
 use std::sync::Arc;
@@ -327,7 +328,11 @@ fn tab_reaches_member_buttons_in_row_order_and_reveals_the_row(cx: &mut TestAppC
         .downcast::<MapViewer>()
         .unwrap();
     view.update(vcx, |view, _| {
-        view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+        view.viewport = Viewport::new(
+            LatLon::new(CENTER_LAT, CENTER_LON),
+            18.0,
+            size(px(800.0), px(600.0)),
+        );
         let layer_id = view.layer_manager.alloc_id();
         let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
         view.layer_manager.add_layer(Box::new(layer));

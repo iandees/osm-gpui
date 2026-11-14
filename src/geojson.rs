@@ -237,7 +237,10 @@ mod tests {
         let d = ok(r#"{"type":"Point","coordinates":[10.5,50.25]}"#);
         assert_eq!(d.markers.len(), 1);
         assert_eq!(d.features[0].geometry, "Point");
-        assert_eq!(d.extent(), Some((50.25, 50.25, 10.5, 10.5)));
+        assert_eq!(
+            d.extent(),
+            Some(crate::coordinates::GeoBounds::new(50.25, 50.25, 10.5, 10.5))
+        );
     }
 
     #[test]

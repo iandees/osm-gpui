@@ -7,6 +7,7 @@
 use crate::{parse_cli_args_from, MapViewer};
 use gpui::{px, size, TestAppContext};
 use osm_gpui::autosave::{Session, Snapshot};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::layers::MapLayer;
@@ -67,7 +68,8 @@ fn window(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
     let window = cx.add_window(MapViewer::new);
     window
         .update(cx, |view, _window, _cx| {
-            view.viewport = Viewport::new(40.0, -74.0, 18.0, size(px(800.0), px(600.0)));
+            view.viewport =
+                Viewport::new(LatLon::new(40.0, -74.0), 18.0, size(px(800.0), px(600.0)));
         })
         .unwrap();
     window

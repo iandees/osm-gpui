@@ -6,6 +6,7 @@
 //! `as_editable`/`is_modified`/`autosave_snapshot`); its pins are found by
 //! `MapLayer::hit_test_point` here and by nothing else.
 
+use crate::coordinates::LatLon;
 use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
 use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
@@ -74,7 +75,7 @@ fn hit_test(store: &NoteStore, viewport: &Viewport, pos: Point<Pixels>) -> Optio
         // Drawn open-last, so test that way round.
         let in_draw_order: Vec<&Note> = draw_order(&s.notes);
         in_draw_order.into_iter().rev().find_map(|n| {
-            let p = viewport.geo_to_screen(n.lat, n.lon);
+            let p = viewport.geo_to_screen(LatLon::new(n.lat, n.lon));
             let (x, y) = (p.x.as_f32(), p.y.as_f32());
             let near_head = {
                 let (dx, dy) = (mx - x, my - (y - HEAD_OFFSET));
@@ -198,7 +199,7 @@ mod tests {
     }
 
     fn viewport() -> Viewport {
-        Viewport::new(10.0, 20.0, 15.0, size(px(800.0), px(600.0)))
+        Viewport::new(LatLon::new(10.0, 20.0), 15.0, size(px(800.0), px(600.0)))
     }
 
     fn layer_with(notes: Vec<Note>) -> (NotesLayer, NoteStore) {
@@ -227,7 +228,7 @@ mod tests {
     fn pins_are_hit_on_head_and_tail_only() {
         let vp = viewport();
         let (_, store) = layer_with(vec![note(1, 10.0, 20.0, NoteStatus::Open)]);
-        let tip = vp.geo_to_screen(10.0, 20.0);
+        let tip = vp.geo_to_screen(LatLon::new(10.0, 20.0));
         let at = |dx: f32, dy: f32| point(tip.x + px(dx), tip.y + px(dy));
         assert_eq!(hit_test(&store, &vp, at(0.0, -HEAD_OFFSET)), Some(1));
         assert_eq!(hit_test(&store, &vp, at(0.0, -3.0)), Some(1));
@@ -242,7 +243,7 @@ mod tests {
     fn the_trait_method_reports_the_note_under_the_click() {
         let vp = viewport();
         let (layer, _) = layer_with(vec![note(4, 10.0, 20.0, NoteStatus::Open)]);
-        let tip = vp.geo_to_screen(10.0, 20.0);
+        let tip = vp.geo_to_screen(LatLon::new(10.0, 20.0));
         let head = point(tip.x, tip.y - px(HEAD_OFFSET));
         assert_eq!(layer.hit_test_point(&vp, head), Some(LayerHit::Note(4)));
         let away = point(tip.x + px(60.0), tip.y);
@@ -256,7 +257,7 @@ mod tests {
             note(1, 10.0, 20.0, NoteStatus::Open),
             note(2, 10.0, 20.0, NoteStatus::Closed),
         ]);
-        let tip = vp.geo_to_screen(10.0, 20.0);
+        let tip = vp.geo_to_screen(LatLon::new(10.0, 20.0));
         let pos = point(tip.x, tip.y - px(HEAD_OFFSET));
         assert_eq!(hit_test(&store, &vp, pos), Some(1));
         let order: Vec<i64> = store.with(|s| draw_order(&s.notes).iter().map(|n| n.id).collect());

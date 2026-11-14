@@ -9,6 +9,8 @@ use crate::{
     OpenSettings, Quit, RunSelectionAction, MAP_VIEWER_KEY_CONTEXT,
 };
 use gpui::{point, px, Context, KeyBinding, TestAppContext, Window};
+use osm_gpui::coordinates::LatLon;
+use osm_gpui::coordinates::Mercator;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::settings_store;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -137,13 +139,20 @@ fn copy_and_paste_features_is_one_undo_step_with_the_same_ids_on_redo(cx: &mut T
             let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
             for id in &pasted_nodes {
                 let (lat, lon) = node_position(view, *id);
-                let (x, y) = osm_gpui::coordinates::lat_lon_to_mercator(lat, lon);
+                let Mercator { x, y } =
+                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(lat, lon));
                 lo = (lo.0.min(x), lo.1.min(y));
                 hi = (hi.0.max(x), hi.1.max(y));
             }
-            let (want_lat, want_lon) = view.viewport.screen_to_geo(pointer);
+            let LatLon {
+                lat: want_lat,
+                lon: want_lon,
+            } = view.viewport.screen_to_geo(pointer);
             let (cx_m, cy_m) = ((lo.0 + hi.0) / 2.0, (lo.1 + hi.1) / 2.0);
-            let (want_x, want_y) = osm_gpui::coordinates::lat_lon_to_mercator(want_lat, want_lon);
+            let Mercator {
+                x: want_x,
+                y: want_y,
+            } = osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(want_lat, want_lon));
             assert!((cx_m - want_x).abs() < 0.01 && (cy_m - want_y).abs() < 0.01);
             // Two ways that met at node 3 still meet at one new node.
             let meets: Vec<_> = pasted_nodes

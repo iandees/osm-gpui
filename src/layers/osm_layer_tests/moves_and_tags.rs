@@ -1,6 +1,8 @@
 //! Node moves, tag edits and drag previews keep the layer's caches consistent.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::coordinates::LatLon;
+use crate::coordinates::Mercator;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::layers::{EditError, EditableLayer};
@@ -431,7 +433,10 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
 
     // Both ways' cached vertex lists must carry node 1's new mercator
     // position.
-    let (new_mx, new_my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
+    let Mercator {
+        x: new_mx,
+        y: new_my,
+    } = crate::coordinates::lat_lon_to_mercator(LatLon::new(new_lat, new_lon));
     for verts in [
         &layer.derived.way_vertices[0],
         &layer.derived.way_vertices[1],
@@ -651,7 +656,8 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
         "unrelated way bboxes must be untouched"
     );
 
-    let (mx, my) = crate::coordinates::lat_lon_to_mercator(new_lat, new_lon);
+    let Mercator { x: mx, y: my } =
+        crate::coordinates::lat_lon_to_mercator(LatLon::new(new_lat, new_lon));
     let idx = *layer.derived.node_cache.index_by_id.get(&3).unwrap();
     let (_, cached_mx, cached_my) = layer.derived.node_cache.flat[idx];
     assert!((cached_mx - mx).abs() < 1e-6);

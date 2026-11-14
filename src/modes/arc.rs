@@ -2,6 +2,7 @@
 //! whose nodes lie on a circle.
 
 use gpui::{px, CursorStyle, Pixels, Point, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 
 use super::preview::{blue, fill_square, line_width, stroke_polyline, PreviewFrame};
@@ -111,7 +112,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     // The cursor, snapped onto a way as a click would be.
     let cursor_geo = view.last_mouse_pos.map(|p| match view.active_layer {
         Some(layer_id) => view.arc_point_at(layer_id, p, false).geo,
-        None => frame.viewport.screen_to_geo(p),
+        None => frame.viewport.screen_to_geo(p).to_pair(),
     });
     let path_points: Vec<(f64, f64)> = match (progress.end, cursor_geo) {
         (None, Some(cursor)) => vec![progress.start.geo, cursor],
@@ -141,7 +142,7 @@ impl MapViewer {
         no_snap: bool,
     ) -> ArcPoint {
         let plain = ArcPoint {
-            geo: self.viewport.screen_to_geo(screen_pt),
+            geo: self.viewport.screen_to_geo(screen_pt).to_pair(),
             snap: None,
         };
         if no_snap {
@@ -197,7 +198,7 @@ impl MapViewer {
         through: (f64, f64),
     ) -> Option<Vec<(f64, f64)>> {
         let to_screen = |g: (f64, f64)| {
-            let p = self.viewport.geo_to_screen(g.0, g.1);
+            let p = self.viewport.geo_to_screen(LatLon::new(g.0, g.1));
             (p.x.to_f64(), p.y.to_f64())
         };
         let points = osm_gpui::arc::arc_through(
@@ -217,7 +218,8 @@ impl MapViewer {
                     i if i == last => end,
                     _ => self
                         .viewport
-                        .screen_to_geo(gpui::point(px(x as f32), px(y as f32))),
+                        .screen_to_geo(gpui::point(px(x as f32), px(y as f32)))
+                        .to_pair(),
                 })
                 .collect(),
         )

@@ -5,6 +5,7 @@
 //! upload diff, export or autosave snapshot. Its dots are found by
 //! `MapLayer::hit_test_point` here and by nothing else.
 
+use crate::coordinates::LatLon;
 use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
 use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
@@ -84,7 +85,7 @@ fn hit_test(
     let mut best: Option<(f32, StreetPhoto)> = None;
     store.with(|s| {
         for p in &s.photos {
-            let sp = viewport.geo_to_screen(p.lat, p.lon);
+            let sp = viewport.geo_to_screen(LatLon::new(p.lat, p.lon));
             let (dx, dy) = (mx - sp.x.as_f32(), my - sp.y.as_f32());
             let d = (dx * dx + dy * dy).sqrt();
             if d <= HIT_RADIUS && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
@@ -197,7 +198,7 @@ mod tests {
     }
 
     fn viewport() -> Viewport {
-        Viewport::new(10.0, 20.0, 15.0, size(px(800.0), px(600.0)))
+        Viewport::new(LatLon::new(10.0, 20.0), 15.0, size(px(800.0), px(600.0)))
     }
 
     #[test]
@@ -221,7 +222,7 @@ mod tests {
             crate::tiles::TileCoord { z: 15, x: 0, y: 0 },
             vec![photo("a", 10.0, 20.0), photo("b", 10.0, 20.00005)],
         );
-        let at = vp.geo_to_screen(10.0, 20.0);
+        let at = vp.geo_to_screen(LatLon::new(10.0, 20.0));
         let layer = layer_over(store);
         let Some(LayerHit::Photo { photo, .. }) = layer.hit_test_point(&vp, at) else {
             panic!("on a dot");

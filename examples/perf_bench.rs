@@ -8,6 +8,7 @@
 //! build), click hit-testing, box-select, and the commit/rebuild path.
 
 use gpui::{point, px, size, Path, PathVertex, Pixels, Point};
+use osm_gpui::coordinates::{LatLon, Mercator};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
@@ -210,7 +211,7 @@ fn render_ways_cpu_inner(
         let mut prev: Option<Point<Pixels>> = None;
         let n = verts.len();
         for (vi, &(_id, mx, my)) in verts.iter().enumerate() {
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             let p = point(sp.x, sp.y);
             if let Some(p0) = prev {
                 if min_seg_px > 0.0 && vi != n - 1 {
@@ -287,7 +288,7 @@ fn render_nodes_cpu(
         if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
             continue;
         }
-        let sp = viewport.mercator_to_screen(mx, my);
+        let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
         let sizef = if skip_style {
             5.0
         } else {
@@ -323,9 +324,17 @@ fn main() {
     let stylesheet = Stylesheet::load_default();
 
     // Zoom 14 puts the whole 0.05-degree box on screen -> ~everything visible.
-    let viewport = Viewport::new(CENTER_LAT, CENTER_LON, 14.0, size(px(1600.0), px(1000.0)));
+    let viewport = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        14.0,
+        size(px(1600.0), px(1000.0)),
+    );
     // Zoom 17: only a fraction of the box visible -> culling does its job.
-    let viewport_z17 = Viewport::new(CENTER_LAT, CENTER_LON, 17.0, size(px(1600.0), px(1000.0)));
+    let viewport_z17 = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        17.0,
+        size(px(1600.0), px(1000.0)),
+    );
 
     // Rebuild the same derived tables the layer holds, so the render replica
     // matches the real loop's data layout.
@@ -333,7 +342,7 @@ fn main() {
     let mut merc: HashMap<i64, (f64, f64)> = HashMap::with_capacity(data.nodes.len());
     let mut flat: Vec<(i64, f64, f64)> = Vec::with_capacity(data.nodes.len());
     for n in data.nodes.values() {
-        let (mx, my) = lat_lon_to_mercator(n.lat, n.lon);
+        let Mercator { x: mx, y: my } = lat_lon_to_mercator(LatLon::new(n.lat, n.lon));
         merc.insert(n.id, (mx, my));
         flat.push((n.id, mx, my));
     }
@@ -597,7 +606,11 @@ fn line_labels_section() {
         size: size(px(1600.0), px(1000.0)),
     };
     for z in [16.0, 17.0] {
-        let vp = Viewport::new(CENTER_LAT, CENTER_LON, z, size(px(1600.0), px(1000.0)));
+        let vp = Viewport::new(
+            LatLon::new(CENTER_LAT, CENTER_LON),
+            z,
+            size(px(1600.0), px(1000.0)),
+        );
         let first = layer.line_label_frame(&vp, bounds);
         println!(
             "z{z}: {} labels placed, {} fill verts + {} halo verts ({:.0} + {:.0} per label), first frame built {} layouts",
@@ -618,8 +631,7 @@ fn line_labels_section() {
         );
         // Alternate between two zooms so every call is a cold layout.
         let vp2 = Viewport::new(
-            CENTER_LAT,
-            CENTER_LON,
+            LatLon::new(CENTER_LAT, CENTER_LON),
             z + 0.01,
             size(px(1600.0), px(1000.0)),
         );
@@ -637,7 +649,11 @@ fn line_labels_section() {
 
     // Vertex budget vs flatten tolerance, on a cache driven directly.
     let data = build_street_dataset();
-    let vp = Viewport::new(CENTER_LAT, CENTER_LON, 16.0, size(px(1600.0), px(1000.0)));
+    let vp = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        16.0,
+        size(px(1600.0), px(1000.0)),
+    );
     let proj = vp.projector();
     #[allow(clippy::type_complexity)]
     let mut verts: Vec<(i64, Vec<(i64, f64, f64)>, String)> = Vec::new();
@@ -647,7 +663,8 @@ fn line_labels_section() {
             .iter()
             .map(|id| {
                 let n = &data.nodes[id];
-                let (mx, my) = osm_gpui::coordinates::lat_lon_to_mercator(n.lat, n.lon);
+                let Mercator { x: mx, y: my } =
+                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(n.lat, n.lon));
                 (*id, mx, my)
             })
             .collect();
@@ -982,11 +999,18 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         origin: point(px(0.0), px(0.0)),
         size: size(px(1600.0), px(1000.0)),
     };
-    let z14 = Viewport::new(CENTER_LAT, CENTER_LON, 14.0, size(px(1600.0), px(1000.0)));
-    let z17 = Viewport::new(CENTER_LAT, CENTER_LON, 17.0, size(px(1600.0), px(1000.0)));
+    let z14 = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        14.0,
+        size(px(1600.0), px(1000.0)),
+    );
+    let z17 = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        17.0,
+        size(px(1600.0), px(1000.0)),
+    );
     let z17_edge = Viewport::new(
-        CENTER_LAT,
-        CENTER_LON + 0.0095,
+        LatLon::new(CENTER_LAT, CENTER_LON + 0.0095),
         17.0,
         size(px(1600.0), px(1000.0)),
     );
@@ -1076,7 +1100,11 @@ fn labels_section() {
     use osm_gpui::layers::labels::{self, Anchor, Config, IconCache, Item, KIND_NODE};
     println!("\n-- labels (z17, 1600x1000, ~450 candidate nodes) --");
     let stylesheet = Stylesheet::load_default();
-    let viewport = Viewport::new(CENTER_LAT, CENTER_LON, 17.0, size(px(1600.0), px(1000.0)));
+    let viewport = Viewport::new(
+        LatLon::new(CENTER_LAT, CENTER_LON),
+        17.0,
+        size(px(1600.0), px(1000.0)),
+    );
     let mut rng = Lcg(7);
     let kinds = [
         ("amenity", "cafe"),
@@ -1096,7 +1124,7 @@ fn labels_section() {
         if rng.next() % 10 < 8 {
             t.insert("name".into(), format!("Place number {id}"));
         }
-        let (mx, my) = lat_lon_to_mercator(lat, lon);
+        let Mercator { x: mx, y: my } = lat_lon_to_mercator(LatLon::new(lat, lon));
         pois.push((id, mx, my, t));
     }
     // Cold: resolve every node's label (stylesheet + preset icon, cached by
@@ -1127,7 +1155,7 @@ fn labels_section() {
         .iter()
         .filter_map(|(id, mx, my, l)| {
             let l = l.as_ref()?;
-            let sp = viewport.mercator_to_screen(*mx, *my);
+            let sp = viewport.mercator_to_screen(Mercator::new(*mx, *my));
             Some(Item {
                 key: (KIND_NODE, *id),
                 center: (f32::from(sp.x), f32::from(sp.y)),
@@ -1178,7 +1206,7 @@ fn labels_section() {
         let mut acc = 0f32;
         for p in &out {
             let (_, mx, my, _) = &resolved[items[p.item].key.1 as usize];
-            let sp = viewport.mercator_to_screen(*mx, *my);
+            let sp = viewport.mercator_to_screen(Mercator::new(*mx, *my));
             acc += f32::from(sp.x) + f32::from(sp.y);
         }
         acc as u64

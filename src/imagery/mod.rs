@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::coordinates::GeoBounds;
+use crate::coordinates::{GeoBounds, LatLon};
 
 const ELI_URL: &str = "https://osmlab.github.io/editor-layer-index/imagery.geojson";
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
@@ -46,16 +46,18 @@ pub struct ImageryEntry {
 impl ImageryEntry {
     /// Does this entry's geometry cover the given point? An entry with no
     /// geometry is considered global and matches all points.
-    pub fn covers(&self, lat: f64, lon: f64) -> bool {
+    pub fn covers(&self, at: LatLon) -> bool {
         let Some(bbox) = self.bbox else {
             return true;
         };
-        if !bbox.contains(lat, lon) {
+        if !bbox.contains(at) {
             return false;
         }
         // The bbox is only a first cut: any ring containing the point matches.
         if let Some(polygons) = &self.polygon {
-            return polygons.iter().any(|ring| point_in_ring(lon, lat, ring));
+            return polygons
+                .iter()
+                .any(|ring| point_in_ring(at.lon, at.lat, ring));
         }
         true
     }
@@ -349,16 +351,8 @@ fn point_in_ring(x: f64, y: f64, ring: &[(f64, f64)]) -> bool {
 /// Return the subset of entries visible for the given viewport center, sorted
 /// `best`-first and then alphabetically by name. Caller should treat the
 /// list's order as display order. The list is capped to avoid an unusable menu.
-pub fn entries_for_viewport(
-    all: &[ImageryEntry],
-    center_lat: f64,
-    center_lon: f64,
-) -> Vec<ImageryEntry> {
-    let mut matched: Vec<ImageryEntry> = all
-        .iter()
-        .filter(|e| e.covers(center_lat, center_lon))
-        .cloned()
-        .collect();
+pub fn entries_for_viewport(all: &[ImageryEntry], center: LatLon) -> Vec<ImageryEntry> {
+    let mut matched: Vec<ImageryEntry> = all.iter().filter(|e| e.covers(center)).cloned().collect();
 
     matched.sort_by(|a, b| {
         b.best
@@ -518,13 +512,13 @@ mod tests {
     fn bbox_contains_point() {
         let entries = parse(SAMPLE_GEOJSON);
         let poly = entries.iter().find(|e| e.id == "poly_entry").unwrap();
-        assert!(poly.covers(45.0, 0.0));
-        assert!(!poly.covers(45.0, 50.0));
-        assert!(!poly.covers(0.0, 0.0));
+        assert!(poly.covers(LatLon::new(45.0, 0.0)));
+        assert!(!poly.covers(LatLon::new(45.0, 50.0)));
+        assert!(!poly.covers(LatLon::new(0.0, 0.0)));
 
         let global = entries.iter().find(|e| e.id == "global_tms").unwrap();
-        assert!(global.covers(0.0, 0.0));
-        assert!(global.covers(-80.0, 179.0));
+        assert!(global.covers(LatLon::new(0.0, 0.0)));
+        assert!(global.covers(LatLon::new(-80.0, 179.0)));
     }
 
     #[test]
@@ -596,7 +590,7 @@ mod tests {
     fn entries_for_viewport_sorts_best_first() {
         let entries = parse(SAMPLE_GEOJSON);
         // At (45, 0) both the global and the polygon entry should match.
-        let shown = entries_for_viewport(&entries, 45.0, 0.0);
+        let shown = entries_for_viewport(&entries, LatLon::new(45.0, 0.0));
         assert!(shown.len() >= 2);
         assert!(shown[0].best, "best entries come first");
     }

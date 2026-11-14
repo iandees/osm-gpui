@@ -4,6 +4,7 @@ use super::{make_pending_change, way_fixture, CENTER_LAT, CENTER_LON};
 use crate::{script_harness, MapViewer};
 use gpui::prelude::*;
 use gpui::{px, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::osm_upload;
 use osm_gpui::viewport::Viewport;
@@ -37,7 +38,11 @@ fn view_with_layer(
         );
         view.layer_manager.add_layer(Box::new(layer));
         view.active_layer = Some(layer_id);
-        view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
+        view.viewport = Viewport::new(
+            LatLon::new(CENTER_LAT, CENTER_LON),
+            18.0,
+            size(px(800.0), px(600.0)),
+        );
     });
     view
 }

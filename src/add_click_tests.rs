@@ -6,6 +6,7 @@
 use super::*;
 use crate::test_support::*;
 use gpui::{point, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::reference::{Builder, FeatureKind as RefKind, Format};
 
 /// A standalone OSM node that a reference vertex also sits on.
@@ -53,7 +54,7 @@ fn with_refs(
             view.add_reference_dataset(format!("ref{i}"), data, cx);
         }
         // add_reference_dataset re-fits the viewport; restore ours.
-        view.viewport = Viewport::new(LAT, LON, 18.0, size(px(800.0), px(600.0)));
+        view.viewport = Viewport::new(LatLon::new(LAT, LON), 18.0, size(px(800.0), px(600.0)));
         view.active_layer = Some(layer);
         f(view, w, cx, layer);
     });
@@ -92,7 +93,7 @@ fn is_modified(view: &MapViewer, layer: LayerId) -> bool {
 /// (and the viewport resized) after the first update, so positions are always
 /// taken relative to this rather than as absolute pixels.
 fn center(view: &MapViewer) -> gpui::Point<gpui::Pixels> {
-    view.viewport.geo_to_screen(LAT, LON)
+    view.viewport.geo_to_screen(LatLon::new(LAT, LON))
 }
 
 /// A spot far from every OSM and reference feature.
@@ -101,7 +102,7 @@ fn far(view: &MapViewer) -> gpui::Point<gpui::Pixels> {
 }
 
 fn screen(view: &MapViewer, p: (f64, f64)) -> gpui::Point<gpui::Pixels> {
-    view.viewport.geo_to_screen(p.0, p.1)
+    view.viewport.geo_to_screen(LatLon::new(p.0, p.1))
 }
 
 /// Perform exactly one Add click and return the change it made relative to
@@ -246,9 +247,9 @@ click_case!(
 #[gpui::test]
 fn osm_way_snap_wins_over_a_nearby_reference_line(cx: &mut TestAppContext) {
     let refs = |vp: &Viewport| {
-        let c = vp.geo_to_screen(LAT, LON);
-        let a = vp.screen_to_geo(c + point(px(-150.0), px(3.0)));
-        let b = vp.screen_to_geo(c + point(px(150.0), px(3.0)));
+        let c = vp.geo_to_screen(LatLon::new(LAT, LON));
+        let a = vp.screen_to_geo(c + point(px(-150.0), px(3.0))).to_pair();
+        let b = vp.screen_to_geo(c + point(px(150.0), px(3.0))).to_pair();
         vec![gpx(&[&[a, b]], &[])]
     };
     with_refs(cx, refs, |view, w, cx, layer| {
