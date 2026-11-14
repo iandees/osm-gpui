@@ -4,8 +4,8 @@ use crate::osm::MemberType;
 impl OsmLayer {
     /// Apply `edit` to the node list of way `way_id`, then bring the way's
     /// caches and the multipolygons up to date and mark the layer modified.
-    /// `edit` returns `Err`, having changed nothing, to refuse. A way may not
-    /// be edited down to fewer than two nodes.
+    /// `edit` returns `Err`, having changed nothing, to refuse. A way cannot
+    /// be shortened below two nodes.
     pub(super) fn edit_way_nodes<R>(
         &mut self,
         way_id: i64,
@@ -88,8 +88,7 @@ impl OsmLayer {
         };
         let tags = tags.ok_or_else(|| EditError::unknown(kind, id))?;
         edit(tags);
-        // A relation's style (or whether it is a multipolygon at all)
-        // follows its tags.
+        // A relation's style, and whether it is a multipolygon, follow its tags.
         self.apply_change(&Change {
             retagged: vec![(kind, id)],
             ..Change::default()
@@ -98,8 +97,10 @@ impl OsmLayer {
     }
 
     /// Insert (or overwrite) a node, creating empty data if the layer has
-    /// none, and patch the caches. Keeps `next_new_id` below `id` so a later
-    /// auto-allocation never collides with an explicitly inserted id (a redo).
+    /// none, and patch the caches. `restored` marks a node brought back after
+    /// a delete rather than a new one. Keeps `next_new_id` below `id` so a
+    /// later auto-allocation never collides with an explicitly inserted id
+    /// (a redo).
     pub(super) fn insert_node(
         &mut self,
         id: i64,
