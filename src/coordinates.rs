@@ -49,7 +49,6 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     let x = lon * MERCATOR_HALF_WORLD_M / 180.0;
     let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * MERCATOR_HALF_WORLD_M / PI;
 
-    // Ensure finite values
     let x = if x.is_finite() { x } else { 0.0 };
     let y = if y.is_finite() { y } else { 0.0 };
 
@@ -131,10 +130,8 @@ impl CoordinateTransform {
         zoom_level: f64,
         screen_size: Size<Pixels>,
     ) -> Self {
-        // Convert center to Mercator coordinates
         let (center_x, center_y) = lat_lon_to_mercator(center_lat, center_lon);
 
-        // Calculate the scale factor for this zoom level
         // At zoom level 0, the entire world (40075016.686 m) fits in 256 pixels
         let world_width_meters = WORLD_WIDTH_M;
         let tile_size = 256.0;
@@ -155,7 +152,6 @@ impl CoordinateTransform {
         let pixels_per_meter_x = screen_size.width.to_f64() / denom_x;
         let pixels_per_meter_y = screen_size.height.to_f64() / denom_y;
 
-        // Calculate geographic bounds for compatibility
         let (min_lat, min_lon) = mercator_to_lat_lon(mercator_min_x, mercator_min_y);
         let (max_lat, max_lon) = mercator_to_lat_lon(mercator_max_x, mercator_max_y);
         let bounds = GeoBounds::new(
@@ -236,7 +232,6 @@ impl CoordinateTransform {
         let merc_y = center_merc_y
             - (point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y; // Flip Y axis
 
-        // Ensure finite mercator coordinates before conversion
         let merc_x = if merc_x.is_finite() {
             merc_x
         } else {
@@ -344,7 +339,6 @@ impl CoordinateTransform {
         let mercator_dx = dx.to_f64() / self.pixels_per_meter_x;
         let mercator_dy = -dy.to_f64() / self.pixels_per_meter_y; // Negative because screen Y increases downward
 
-        // Ensure finite mercator deltas
         let mercator_dx = if mercator_dx.is_finite() {
             mercator_dx
         } else {
@@ -365,12 +359,10 @@ impl CoordinateTransform {
         self.pan_to(new_center_lat, new_center_lon);
     }
 
-    /// Check if a geographic point is visible in the current view
     pub fn is_visible(&self, lat: f64, lon: f64) -> bool {
         self.bounds.contains(lat, lon)
     }
 
-    /// Get the current visible geographic bounds
     pub fn visible_bounds(&self) -> GeoBounds {
         self.bounds
     }
@@ -396,9 +388,8 @@ pub const MAX_MAP_ZOOM: f64 = 23.0;
 /// only the other axis decides the zoom; with none on either (a single
 /// point) the result is centred on it at [`POINT_ZOOM`].
 ///
-/// This is the pure computation extracted from `MapViewer::fit_to_osm_data`
-/// — the caller is still responsible for first reducing a dataset's nodes
-/// down to a min/max lat/lon bounding box.
+/// The caller (`MapViewer::fit_to_osm_data`) is responsible for first
+/// reducing a dataset's nodes down to a min/max lat/lon bounding box.
 pub fn fit_bounds_to_viewport(
     min_lat: f64,
     max_lat: f64,
@@ -410,9 +401,9 @@ pub fn fit_bounds_to_viewport(
     let mut center_lat = (min_lat + max_lat) / 2.0;
     let mut center_lon = (min_lon + max_lon) / 2.0;
 
-    // An axis with no extent does not constrain the zoom. (It used to be
-    // padded by 0.005 degrees, about a kilometre, which zoomed a point or a
-    // perfectly horizontal or vertical way out to about z16.) Both axes
+    // An axis with no extent does not constrain the zoom. (Padding it, say by
+    // 0.005 degrees, about a kilometre, would zoom a point or a perfectly
+    // horizontal or vertical way out to about z16.) Both axes
     // without extent is a single point: centre on it at an editing zoom.
     let flat_lat = (max_lat - min_lat).abs() < 1e-6;
     let flat_lon = (max_lon - min_lon).abs() < 1e-6;
@@ -426,16 +417,13 @@ pub fn fit_bounds_to_viewport(
         center_lon = min_lon;
     }
 
-    // Calculate required zoom to fit bounding box
-    let margin = 1.2; // Add 20% margin
+    let margin = 1.2; // 20% margin
 
-    // Convert bounding box to Mercator
     let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
     let (max_x, max_y) = lat_lon_to_mercator(max_lat, max_lon);
     let bbox_width = (max_x - min_x).abs();
     let bbox_height = (max_y - min_y).abs();
 
-    // Calculate zoom to fit bbox in screen
     let world_width_meters = WORLD_WIDTH_M;
     let tile_size = 256.0;
     let zoom_x = if flat_lon {
@@ -686,8 +674,8 @@ mod tests {
 
     #[test]
     fn fit_bounds_a_flat_short_line_fits_by_its_length_not_a_padded_kilometre() {
-        // A way 20 m long and exactly horizontal (the "Short Cut" of the
-        // validator screenshots) used to be padded to 1 km tall: z16.
+        // A way 20 m long and exactly horizontal must not be padded to 1 km
+        // tall (z16).
         let (_, _, zoom) = fit_bounds_to_viewport(40.712, 40.712, -74.0062, -74.0060, 800.0, 600.0);
         assert!((zoom - 18.0).abs() < 1e-9, "z{zoom}");
         // Likewise exactly vertical.

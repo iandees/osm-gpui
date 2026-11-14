@@ -67,10 +67,6 @@ pub fn panoramax_tile_url(t: TileCoord) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Decoding
-// ---------------------------------------------------------------------------
-
 fn number(v: &MvtValue) -> Option<f64> {
     match v {
         MvtValue::Float(f) => Some(f64::from(*f)),
@@ -182,10 +178,6 @@ pub fn decode_panoramax_tile(bytes: &[u8], t: TileCoord) -> Result<Vec<StreetPho
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// Requests
-// ---------------------------------------------------------------------------
-
 /// The photos of tile `t` from `provider`, and whether the tile may hold more
 /// than were returned (only Fotoshi's searches are paged). `credential` is
 /// Mapillary's access token, or the optional Fotoshi API key (which raises
@@ -295,8 +287,6 @@ mod tests {
         y: 11796,
     };
 
-    // --- a minimal MVT writer, for tiles we cannot download -----------------
-
     fn varint(mut v: u64, out: &mut Vec<u8>) {
         loop {
             let b = (v & 0x7f) as u8;
@@ -387,8 +377,6 @@ mod tests {
         bytes_field(3, &l, &mut tile);
         tile
     }
-
-    // --- tests --------------------------------------------------------------
 
     #[test]
     fn tile_point_positions() {

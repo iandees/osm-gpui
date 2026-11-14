@@ -1,4 +1,4 @@
-//! Persistent storage for app-wide settings (currently: which OSM API server to use).
+//! Persistent storage for app-wide settings (see [`AppSettings`]).
 //!
 //! Stored as JSON in `<config_dir>/osm-gpui/settings.json`. Missing, unreadable, or
 //! malformed files fall back to defaults (logged to stderr); a malformed file is
@@ -106,8 +106,7 @@ pub struct AppSettings {
     pub client_ids: HashMap<String, String>,
     #[serde(deserialize_with = "persist::lenient")]
     pub text_size_preset: TextSizePreset,
-    /// Tile cache size budget, in megabytes. Defaults to 500 for
-    /// `settings.json` files written before this field existed.
+    /// Tile cache size budget, in megabytes.
     pub cache_budget_mb: u64,
     /// User overrides for customizable keyboard shortcuts, keyed by the
     /// shortcut id (see `crate::keybindings::SHORTCUTS`), valued by a gpui
@@ -125,48 +124,42 @@ pub struct AppSettings {
     /// Ids of the presets most recently applied in the preset picker, most
     /// recent first (see `crate::preset_recents`).
     pub recent_presets: Vec<String>,
-    /// Light, dark, or follow the OS. Missing in older files, meaning System.
+    /// Light, dark, or follow the OS.
     #[serde(deserialize_with = "persist::lenient")]
     pub theme: ThemePreference,
     /// Whether layers with unsaved edits are autosaved for crash recovery
-    /// (see `crate::autosave`). On by default, including for settings files
-    /// written before this field existed.
+    /// (see `crate::autosave`). On by default.
     pub autosave: bool,
-    /// True once the user closed the welcome card. Missing in older files,
-    /// meaning the card is shown.
+    /// True once the user closed the welcome card.
     pub welcome_dismissed: bool,
-    /// Reverse the direction in which scrolling zooms the map. Missing in
-    /// older files, meaning the default direction.
+    /// Reverse the direction in which scrolling zooms the map.
     pub invert_scroll_zoom: bool,
     /// The `source` text of the last upload, prefilled in the next upload
-    /// dialog. Missing in older files, meaning empty.
+    /// dialog.
     pub last_source: String,
     /// The last distinct changeset comments, most recent first (see
-    /// `crate::changeset_tags::push_recent_comment`). Missing in older files,
-    /// meaning none.
+    /// `crate::changeset_tags::push_recent_comment`).
     pub recent_comments: Vec<String>,
     /// Whether the tag key/value inputs ask taginfo.openstreetmap.org for
-    /// suggestions (see `crate::taginfo`). On by default, including for
-    /// settings files written before this field existed.
+    /// suggestions (see `crate::taginfo`). On by default.
     pub suggest_from_taginfo: bool,
     /// Simplify Way's Douglas-Peucker tolerance in metres. Use
     /// [`AppSettings::simplify_tolerance`] to read it: a value outside
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
     pub simplify_tolerance_m: f64,
     /// Locations (local file paths or http(s) URLs) of the custom MapCSS
-    /// styles the user added. Missing in older files, meaning none.
+    /// styles the user added.
     pub map_styles: Vec<String>,
     /// The location in `map_styles` that is in use; `None` is the built-in
-    /// style. Missing in older files, meaning the built-in style.
+    /// style.
     pub active_map_style: Option<String>,
-    /// Where the map was when the app last quit, reopened there next time.
-    /// Missing in older files, meaning the built-in starting view.
+    /// Where the map was when the app last quit, reopened there next time;
+    /// `None` is the built-in starting view.
     pub last_map_view: Option<MapView>,
-    /// The main window's position and size when the app last quit. Missing
-    /// in older files, meaning the default placement.
+    /// The main window's position and size when the app last quit; `None` is
+    /// the default placement.
     pub window_bounds: Option<WindowRect>,
-    /// How downloaded GPS traces draw (colours, width, age filter). Missing
-    /// in older files, meaning the defaults.
+    /// How downloaded GPS traces draw (colours, width, age filter).
     pub gps_trace_style: crate::trace_style::TraceStyle,
     /// Mapillary access token (a client token from the Mapillary developer
     /// dashboard), needed to show Mapillary street imagery. Empty when unset.
@@ -373,41 +366,36 @@ fn update_in(
     Some(updated)
 }
 
-/// Set only the welcome-card flag. Written to disk when `persist` is true.
+// The `set_*` helpers below each change one field through `update`; `persist`
+// is passed on to it (written to disk when true).
+
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
     update(persist, |s| s.welcome_dismissed = dismissed);
 }
 
-/// Set only the invert-scroll-zoom flag. Written to disk when `persist` is true.
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
     update(persist, |s| s.invert_scroll_zoom = invert);
 }
 
-/// Set only the taginfo-suggestions flag. Written to disk when `persist` is true.
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     update(persist, |s| s.suggest_from_taginfo = on);
 }
 
-/// Set only the Fotoshi API key. Surrounding whitespace is dropped. Written to
-/// disk when `persist` is true.
+/// Surrounding whitespace is dropped.
 pub fn set_fotoshi_api_key(key: &str, persist: bool) {
     update(persist, |s| s.fotoshi_api_key = key.trim().to_string());
 }
 
-/// Turn the per-feature Fotoshi lookup on or off (see
-/// `AppSettings::fotoshi_lookup_selected`).
 pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
     update(persist, |s| s.fotoshi_lookup_selected = on);
 }
 
-/// Set only the Mapillary access token. Surrounding whitespace is dropped.
-/// Written to disk when `persist` is true.
+/// Surrounding whitespace is dropped.
 pub fn set_mapillary_token(token: &str, persist: bool) {
     update(persist, |s| s.mapillary_token = token.trim().to_string());
 }
 
-/// Set only the Simplify Way tolerance (metres). Values outside the allowed
-/// range are ignored (`false`). Written to disk when `persist` is true.
+/// Values outside the allowed range are ignored (`false`).
 pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
     let Some(metres) = valid_simplify_tolerance(metres) else {
         return false;
@@ -416,24 +404,20 @@ pub fn set_simplify_tolerance(metres: f64, persist: bool) -> bool {
     true
 }
 
-/// Set only the last map view. Written to disk when `persist` is true.
 pub fn set_last_map_view(view: MapView, persist: bool) {
     update(persist, |s| s.last_map_view = Some(view));
 }
 
-/// Set only the window bounds. Written to disk when `persist` is true.
 pub fn set_window_bounds(rect: WindowRect, persist: bool) {
     update(persist, |s| s.window_bounds = Some(rect));
 }
 
-/// Set only the GPS trace style. Written to disk when `persist` is true.
 pub fn set_gps_trace_style(style: crate::trace_style::TraceStyle, persist: bool) {
     update(persist, |s| s.gps_trace_style = style);
 }
 
 /// Remember the source text and the comment of an upload that went through:
 /// the source is prefilled next time and the comment joins the recent list.
-/// Written to disk when `persist` is true.
 pub fn remember_upload_text(source: &str, comment: &str, persist: bool) {
     update(persist, |s| {
         s.last_source = source.trim().to_string();
@@ -441,7 +425,6 @@ pub fn remember_upload_text(source: &str, comment: &str, persist: bool) {
     });
 }
 
-/// Return a snapshot of the current in-memory settings.
 pub fn snapshot() -> AppSettings {
     APP_SETTINGS.snapshot("settings_store")
 }

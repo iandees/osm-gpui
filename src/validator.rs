@@ -391,8 +391,6 @@ impl<'a> Context<'a> {
     }
 }
 
-// ---------------------------------------------------------------- ways
-
 fn check_way(way: &OsmWay, cx: &Context, out: &mut Vec<Finding>) {
     let feature = vec![(FeatureKind::Way, way.id)];
     if way.tags.is_empty() && !cx.way_member.contains(&way.id) {
@@ -503,8 +501,6 @@ fn area_tag(tags: &HashMap<String, String>) -> Option<String> {
         .map(|k| format!("{k}={}", tags[k]))
 }
 
-// ----------------------------------------------------------- relations
-
 fn check_relation(relation: &OsmRelation, out: &mut Vec<Finding>) {
     let feature = vec![(FeatureKind::Relation, relation.id)];
     if relation.members.is_empty() {
@@ -570,8 +566,6 @@ fn check_multipolygon(data: &OsmData, relation: &OsmRelation, out: &mut Vec<Find
         ));
     }
 }
-
-// ---------------------------------------------------------------- tags
 
 /// Tags well known to be replaced: `(key, value, what to use instead)`.
 const DEPRECATED: [(&str, &str, &str); 14] = [
@@ -680,8 +674,6 @@ fn check_tags(kind: FeatureKind, id: i64, tags: &HashMap<String, String>, out: &
     out.extend(deprecated);
 }
 
-// ----------------------------------------------------- duplicate nodes
-
 fn position_key(lat: f64, lon: f64) -> (i64, i64) {
     (
         (lat * POSITION_STEPS).round() as i64,
@@ -726,8 +718,6 @@ fn check_duplicate_nodes(data: &OsmData, changed: &[i64], out: &mut Vec<Finding>
         ));
     }
 }
-
-// ------------------------------------------------------------ crossings
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Crossable {
@@ -984,8 +974,6 @@ fn check_crossings(data: &OsmData, cx: &Context, out: &mut Vec<Finding>) {
         }
     }
 }
-
-// -------------------------------------------------------------- report
 
 /// A finding together with the layer it was found in and a name for each
 /// object concerned, ready to show.

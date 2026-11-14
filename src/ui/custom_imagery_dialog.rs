@@ -71,10 +71,6 @@ fn parse_zoom(raw: &str, default_if_blank: u32) -> Result<u32, ()> {
     Ok(v)
 }
 
-// ---------------------------------------------------------------------------
-// Dialog entity
-// ---------------------------------------------------------------------------
-
 pub enum DialogEvent {
     Submitted(CustomImageryEntry),
     Cancelled,

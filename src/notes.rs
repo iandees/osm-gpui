@@ -37,10 +37,6 @@ pub const CLOSED_DAYS: i32 = 7;
 /// big to cover and the visible map is used instead.
 pub const MAX_FETCH_REQUESTS: usize = 6;
 
-// ---------------------------------------------------------------------------
-// Model
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteStatus {
     Open,
@@ -126,10 +122,6 @@ impl Note {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum NotesError {
     Http {
@@ -202,10 +194,6 @@ impl std::fmt::Display for NotesError {
 
 impl std::error::Error for NotesError {}
 
-// ---------------------------------------------------------------------------
-// Time
-// ---------------------------------------------------------------------------
-
 /// Days since 1970-01-01 of a civil date (proleptic Gregorian).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -274,10 +262,6 @@ pub fn now_unix() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
 
 /// Parse an API 0.6 notes document (`<osm><note>...</note>...</osm>`).
 pub fn parse_notes(xml: &str) -> Result<Vec<Note>, NotesError> {
@@ -365,10 +349,6 @@ pub fn parse_notes(xml: &str) -> Result<Vec<Note>, NotesError> {
     }
     Ok(notes)
 }
-
-// ---------------------------------------------------------------------------
-// API calls
-// ---------------------------------------------------------------------------
 
 fn base(base_url: &str) -> &str {
     base_url.trim_end_matches('/')
@@ -500,10 +480,6 @@ pub fn write_note_with(
         .ok_or_else(|| NotesError::Parse("the answer holds no note".into()))
 }
 
-// ---------------------------------------------------------------------------
-// Fetch planning
-// ---------------------------------------------------------------------------
-
 /// Cut `b` into a grid of cells each at most `max_area` square degrees.
 pub fn split_for_area(b: &GeoBounds, max_area: f64) -> Vec<GeoBounds> {
     let (w, h) = (b.width(), b.height());
@@ -585,10 +561,6 @@ pub fn merc_to_geo(r: &crate::download_bounds::MercRect) -> GeoBounds {
     let lat = |y: f64| (y / R).sinh().atan().to_degrees();
     GeoBounds::new(lat(r.min_y), lat(r.max_y), lon(r.min_x), lon(r.max_x))
 }
-
-// ---------------------------------------------------------------------------
-// Shared store
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
 pub struct NoteStoreInner {
