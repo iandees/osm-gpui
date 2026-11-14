@@ -426,6 +426,19 @@ pub(super) fn build_way_index(
 impl OsmLayer {
     /// Recompute every derived cache and index from `osm_data`.
     pub(super) fn rebuild_caches(&mut self, osm_data: &Arc<OsmData>) {
+        let ways_sorted = sorted_ways(osm_data);
+        self.rebuild_styled_tables(osm_data, &ways_sorted);
+        self.derived.way_id_to_index = build_way_id_index(&ways_sorted);
+        self.derived.node_to_ways = build_node_to_ways(&ways_sorted);
+        self.store.next_new_id = compute_next_new_id(osm_data);
+        self.store.next_placeholder_way_id = compute_next_way_id(osm_data);
+        self.render.download_rects = crate::download_bounds::merc_rects(&osm_data.bounds);
+    }
+
+    /// Recompute everything that depends on the stylesheet or on node
+    /// positions, as opposed to on which ways exist and what they reference:
+    /// `ways_sorted` is `sorted_ways(osm_data)`.
+    fn rebuild_styled_tables(&mut self, osm_data: &OsmData, ways_sorted: &[&OsmWay]) {
         self.derived.node_cache = compute_node_cache(osm_data, &self.store.stylesheet);
         self.render.member_ways = relation_member_ways(osm_data, &self.store.stylesheet);
         let (ids, bboxes, verts, styles, fill_tris) = compute_way_tables(
@@ -444,13 +457,7 @@ impl OsmLayer {
             .rebuild_all(osm_data, &self.derived.node_cache, &self.store.stylesheet);
         self.derived.layer_bbox = compute_layer_bbox(&self.derived.node_cache);
         self.derived.node_index = build_node_index(&self.derived.node_cache);
-        let ways_sorted = sorted_ways(osm_data);
-        self.derived.way_index = build_way_index(&self.derived.way_bboxes, &ways_sorted);
-        self.derived.way_id_to_index = build_way_id_index(&ways_sorted);
-        self.derived.node_to_ways = build_node_to_ways(&ways_sorted);
-        self.store.next_new_id = compute_next_new_id(osm_data);
-        self.store.next_placeholder_way_id = compute_next_way_id(osm_data);
-        self.render.download_rects = crate::download_bounds::merc_rects(&osm_data.bounds);
+        self.derived.way_index = build_way_index(&self.derived.way_bboxes, ways_sorted);
     }
 
     // Cache patching shared by the edit primitives. Each `index_*` method
@@ -637,25 +644,7 @@ impl OsmLayer {
         self.store.stylesheet = stylesheet;
         self.store.revision += 1;
         if let Some(data) = self.store.osm_data.clone() {
-            self.derived.node_cache = compute_node_cache(&data, &self.store.stylesheet);
-            self.render.member_ways = relation_member_ways(&data, &self.store.stylesheet);
-            let (ids, bboxes, verts, styles, fill_tris) = compute_way_tables(
-                &data,
-                &self.derived.node_cache,
-                &self.store.stylesheet,
-                &self.render.member_ways,
-            );
-            self.derived.way_ids = ids;
-            self.derived.way_bboxes = bboxes;
-            self.derived.way_vertices = verts;
-            self.render.way_styles = styles;
-            self.render.way_fill_tris = fill_tris;
-            self.derived
-                .mp
-                .rebuild_all(&data, &self.derived.node_cache, &self.store.stylesheet);
-            self.derived.layer_bbox = compute_layer_bbox(&self.derived.node_cache);
-            self.derived.node_index = build_node_index(&self.derived.node_cache);
-            self.derived.way_index = build_way_index(&self.derived.way_bboxes, &sorted_ways(&data));
+            self.rebuild_styled_tables(&data, &sorted_ways(&data));
         }
     }
 }
