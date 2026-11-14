@@ -25,8 +25,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::layers::area_labels::Fingerprint;
-use crate::layers::labels::{CollisionGrid, Rect, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER};
+use crate::layers::labels::{
+    CollisionGrid, FadeSet, Rect, TextLook, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER,
+};
 use crate::layers::way_stroke::{Polyline, Shape};
+use crate::style::TextStyle;
 
 /// A screen-space point in pixels.
 pub type Pt = (f32, f32);
@@ -41,16 +44,16 @@ pub const MAX_VERTEX_TURN_DEG: f32 = 25.0;
 pub const MAX_TOTAL_TURN_DEG: f32 = 45.0;
 /// The way must be at least this much longer than the label.
 pub const FIT_FACTOR: f32 = 1.2;
-/// Smallest zoom at which line labels are drawn.
-pub const MIN_ZOOM: f64 = 15.0;
+/// Smallest zoom at which line labels are placed: street names come with the
+/// other labels.
+pub const MIN_ZOOM: f64 = crate::layers::labels::LABEL_MIN_ZOOM;
 
 /// Style of one label, resolved from MapCSS (`font-size`, `text-color`,
 /// `text-halo-color`, `text-halo-radius`, `text-offset`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LabelStyle {
-    pub size_px: f32,
-    /// Halo thickness outside the glyph outline, in pixels.
-    pub halo_px: f32,
+    /// Size, colours and halo (thickness outside the glyph outline, pixels).
+    pub look: TextLook,
     /// Perpendicular shift of the text from the way, in pixels. Convention:
     /// measured in the text's own frame, positive = toward the top of the
     /// glyphs ("above" the text), so it stays on the same side of the text
@@ -60,24 +63,35 @@ pub struct LabelStyle {
     /// default is half the x-height plus about a 2 px road half-width, so
     /// the text clears the line; see [`clear_offset`] for wide roads).
     pub offset_px: f32,
-    /// Fill colour `0xRRGGBB`.
-    pub color: u32,
-    /// Halo colour `0xRRGGBB`.
-    pub halo_color: u32,
-    /// Halo opacity (`text-halo-color` alpha or `text-halo-opacity`).
-    pub halo_alpha: f32,
+}
+
+impl LabelStyle {
+    /// The stylesheet's `text-offset` when it gives none: half the x-height
+    /// plus about a 2 px road half-width.
+    fn default_offset(size_px: f32) -> f32 {
+        0.35 * size_px + 2.0
+    }
+
+    /// The style of a street name from its MapCSS text style, for a road
+    /// drawn `half_width` pixels from its centre line to its outer edge.
+    pub fn resolve(st: &TextStyle, half_width: f32) -> Self {
+        let look = TextLook::resolve(st, TextLook::LINE);
+        let offset_px = clear_offset(
+            st.offset
+                .unwrap_or_else(|| Self::default_offset(look.font_px)),
+            look.font_px,
+            half_width,
+        );
+        Self { look, offset_px }
+    }
 }
 
 impl Default for LabelStyle {
     fn default() -> Self {
-        let size_px = 12.0;
+        let look = TextLook::LINE;
         Self {
-            size_px,
-            halo_px: 1.5,
-            offset_px: 0.35 * size_px + 2.0,
-            color: 0x1f2937,
-            halo_color: 0xffffff,
-            halo_alpha: crate::layers::labels::DEFAULT_HALO_ALPHA,
+            look,
+            offset_px: Self::default_offset(look.font_px),
         }
     }
 }
@@ -95,8 +109,8 @@ pub struct Tuning {
     pub spacing_px: f32,
     /// Most labels one way can get.
     pub max_per_way: usize,
-    /// How the halo is built (`StrokeCoarse` by default, see [`HaloMode`]).
-    pub halo_mode: HaloMode,
+    /// How the halo is built (`StrokeCoarse` by default, see [`MeshHalo`]).
+    pub halo_mode: MeshHalo,
 }
 
 impl Default for Tuning {
@@ -107,14 +121,16 @@ impl Default for Tuning {
             pad_px: 4.0,
             spacing_px: 300.0,
             max_per_way: 40,
-            halo_mode: HaloMode::StrokeCoarse,
+            halo_mode: MeshHalo::StrokeCoarse,
         }
     }
 }
 
-/// Halo construction variants, to compare vertex counts and frame times.
+/// How a street name's halo mesh is built. This is not the point labels'
+/// `labels::HaloMode`: those repaint text at paint time, these are meshes
+/// built once per glyph and cached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HaloMode {
+pub enum MeshHalo {
     /// Fully joined stroke around every contour.
     Stroke,
     /// Unjoined stroke segments around a coarser outline: noticeably fewer
@@ -127,77 +143,45 @@ pub enum HaloMode {
     None,
 }
 
-/// Benchmark knobs, settable from a script (`action LabelBench ...`).
+/// Benchmark knobs, settable from a script (`action LabelBench ...`); they
+/// live in [`crate::layers::labels::LabelTuning`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BenchKnobs {
     pub labels: bool,
-    pub halo: HaloMode,
+    pub halo: MeshHalo,
     /// Paint the label batches this many times (GPU load multiplier).
     pub repeat: u32,
     /// Text offset override in whole pixels (`None` = the style default).
     pub offset: Option<u8>,
 }
 
-static BENCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn pack(k: BenchKnobs) -> u32 {
-    (k.labels as u32)
-        | ((k.halo as u32) << 1)
-        | (k.repeat.min(255) << 8)
-        | (k.offset.map_or(0, |o| o as u32 + 1) << 16)
-        | (1 << 31)
-}
-
-/// Current knobs (defaults: labels on, coarse halo, repeat 1).
-pub fn bench_knobs() -> BenchKnobs {
-    let v = BENCH.load(std::sync::atomic::Ordering::Relaxed);
-    if v == 0 {
-        return BenchKnobs {
+impl Default for BenchKnobs {
+    /// Labels on, coarse halo, painted once, the style's own offset.
+    fn default() -> Self {
+        Self {
             labels: true,
-            halo: HaloMode::StrokeCoarse,
+            halo: MeshHalo::StrokeCoarse,
             repeat: 1,
             offset: None,
-        };
-    }
-    BenchKnobs {
-        labels: v & 1 != 0,
-        halo: match (v >> 1) & 3 {
-            0 => HaloMode::Stroke,
-            1 => HaloMode::StrokeCoarse,
-            2 => HaloMode::Offset4,
-            _ => HaloMode::None,
-        },
-        repeat: ((v >> 8) & 255).max(1),
-        offset: match (v >> 16) & 511 {
-            0 => None,
-            n => Some((n - 1) as u8),
-        },
+        }
     }
 }
 
-/// Changes whenever the knobs do, so callers can invalidate placements.
-pub fn bench_stamp() -> usize {
-    (BENCH.load(std::sync::atomic::Ordering::Relaxed) as usize) << 3
+impl BenchKnobs {
+    /// Differs between any two distinct knob settings, so a cache keyed on it
+    /// is invalidated when a knob changes.
+    pub fn stamp(&self) -> u32 {
+        (self.labels as u32)
+            | ((self.halo as u32) << 1)
+            | (self.repeat.min(255) << 8)
+            | (self.offset.map_or(0, |o| o as u32 + 1) << 16)
+    }
 }
 
-/// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none` and
-/// `repeat=N` tokens, e.g. `on halo=none repeat=4`.
-pub fn set_bench(spec: &str) -> Result<(), String> {
-    BENCH.store(
-        pack(parse_bench(spec)?),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    Ok(())
-}
-
-/// The pure half of [`set_bench`].
+/// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none`,
+/// `offset=N` and `repeat=N` tokens, e.g. `on halo=none repeat=4`.
 pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
-    let mut k = BenchKnobs {
-        labels: true,
-        halo: HaloMode::StrokeCoarse,
-        repeat: 1,
-        offset: None,
-    };
+    let mut k = BenchKnobs::default();
     for tok in spec.split_whitespace() {
         match tok {
             "on" => k.labels = true,
@@ -205,10 +189,10 @@ pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
             _ => {
                 let (key, val) = tok.split_once('=').ok_or(format!("bad token {tok}"))?;
                 match (key, val) {
-                    ("halo", "stroke") => k.halo = HaloMode::Stroke,
-                    ("halo", "coarse") => k.halo = HaloMode::StrokeCoarse,
-                    ("halo", "offset4") => k.halo = HaloMode::Offset4,
-                    ("halo", "none") => k.halo = HaloMode::None,
+                    ("halo", "stroke") => k.halo = MeshHalo::Stroke,
+                    ("halo", "coarse") => k.halo = MeshHalo::StrokeCoarse,
+                    ("halo", "offset4") => k.halo = MeshHalo::Offset4,
+                    ("halo", "none") => k.halo = MeshHalo::None,
                     ("offset", n) => {
                         k.offset = Some(n.parse().map_err(|_| format!("bad offset {n}"))?)
                     }
@@ -472,7 +456,7 @@ fn build_mesh(
 ) -> GlyphMesh {
     let upem = face.units_per_em() as f32;
     let mut oc = OutlineCollector {
-        scale: style.size_px / upem,
+        scale: style.look.font_px / upem,
         tol: tuning.fill_tol,
         contours: Vec::new(),
         cur: Vec::new(),
@@ -486,14 +470,14 @@ fn build_mesh(
     let fill = triangulate_contours(&oc.contours);
     let mut halo = Vec::new();
     let (tol, shape) = match tuning.halo_mode {
-        HaloMode::StrokeCoarse => (tuning.halo_tol.max(0.5), Shape::PLAIN),
+        MeshHalo::StrokeCoarse => (tuning.halo_tol.max(0.5), Shape::PLAIN),
         _ => (tuning.halo_tol, Shape::FULL),
     };
     match tuning.halo_mode {
-        HaloMode::None => {}
-        _ if style.halo_px <= 0.0 => {}
-        HaloMode::Offset4 => {
-            let r = style.halo_px;
+        MeshHalo::None => {}
+        _ if style.look.halo_radius <= 0.0 => {}
+        MeshHalo::Offset4 => {
+            let r = style.look.halo_radius;
             for (dx, dy) in [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)] {
                 halo.extend(fill.iter().map(|&(x, y)| (x + dx, y + dy)));
             }
@@ -507,7 +491,7 @@ fn build_mesh(
                 }
                 pl.set(s.iter().copied().chain(std::iter::once(s[0])));
                 let mut tris: Vec<[Pt; 3]> = Vec::new();
-                pl.emit(&mut tris, style.halo_px, shape);
+                pl.emit(&mut tris, style.look.halo_radius, shape);
                 for t in tris {
                     halo.extend(t);
                 }
@@ -781,9 +765,7 @@ pub struct LinePlaced {
     pub mx: f64,
     pub my: f64,
     pub label: Arc<PlacedLabel>,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
     /// When it started fading in; `None` once it is fully opaque.
     pub born: Option<Instant>,
 }
@@ -792,10 +774,10 @@ pub struct LinePlaced {
 #[derive(Debug, Default)]
 pub struct LineState {
     pub placed: Vec<LinePlaced>,
-    /// The zoom they were placed at.
-    pub zoom: f64,
     /// When the last fade-in finishes.
     pub fade_end: Option<Instant>,
+    /// By `(way, slot)`.
+    fade: FadeSet<(i64, usize)>,
 }
 
 impl LineState {
@@ -810,23 +792,16 @@ impl LineState {
         keep: f64,
         fade: std::time::Duration,
     ) {
-        let kept: HashSet<(i64, usize)> = if (self.zoom - zoom).abs() <= keep {
-            self.placed.iter().map(|p| (p.way_id, p.slot)).collect()
-        } else {
-            HashSet::new()
-        };
-        let mut any = false;
-        for p in &mut placed {
-            if kept.contains(&(p.way_id, p.slot)) {
-                p.born = None;
-            } else {
-                p.born = Some(now);
-                any = true;
-            }
-        }
+        self.fade_end = self.fade.replace(
+            &mut placed,
+            zoom,
+            keep,
+            now,
+            fade,
+            |p| (p.way_id, p.slot),
+            |p, born| p.born = born,
+        );
         self.placed = placed;
-        self.zoom = zoom;
-        self.fade_end = any.then(|| now + fade);
     }
 }
 
@@ -870,9 +845,9 @@ fn geometry_sig(verts: &[(i64, f64, f64)]) -> Fingerprint {
 
 fn style_sig(s: &LabelStyle) -> [u32; 3] {
     [
-        (s.size_px * 4.0).round() as u32,
+        (s.look.font_px * 4.0).round() as u32,
         (s.offset_px * 8.0).round() as i32 as u32,
-        (s.halo_px * 8.0).round() as u32,
+        (s.look.halo_radius * 8.0).round() as u32,
     ]
 }
 
@@ -901,8 +876,8 @@ impl LineLabelCache {
     fn mesh(&mut self, id: u16, style: &LabelStyle) -> Arc<GlyphMesh> {
         let key = (
             id,
-            (style.size_px * 4.0).round() as u32,
-            (style.halo_px * 8.0).round() as u32,
+            (style.look.font_px * 4.0).round() as u32,
+            (style.look.halo_radius * 8.0).round() as u32,
         );
         if let Some(m) = self.glyphs.get(&key) {
             return m.clone();
@@ -920,10 +895,10 @@ impl LineLabelCache {
         if pts.len() < 2 {
             return Vec::new();
         }
-        let Some((shaped, width)) = shape(&self.face, text, style.size_px) else {
+        let Some((shaped, width)) = shape(&self.face, text, style.look.font_px) else {
             return Vec::new();
         };
-        let size = style.size_px;
+        let size = style.look.font_px;
         let pad = self.tuning.pad_px;
         let length = width + 2.0 * pad;
         let closed = pts.len() >= 4 && dist2(pts[0], pts[pts.len() - 1]) < 1e-4;
@@ -980,7 +955,7 @@ impl LineLabelCache {
                 let oy = py_ + lx * sin + ly * cos;
                 let mesh = self.mesh(g.id, style);
                 // Glyph box in local frame, with halo margin.
-                let mg = style.halo_px + 1.0;
+                let mg = style.look.halo_radius + 1.0;
                 for (cx, cy) in [
                     (-mg, -0.8 * size - mg),
                     (g.advance + mg, -0.8 * size - mg),
@@ -1038,16 +1013,17 @@ impl LineLabelCache {
     /// the `(way, slot)` pairs placed last time: they get a priority bonus
     /// so a small camera change does not swap which of two overlapping
     /// labels wins.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         cands: &[Candidate<'_>],
         zoom: f64,
+        knobs: &BenchKnobs,
         to_screen: impl Fn(f64, f64) -> Pt,
         view: (f32, f32),
         obstacles: &[Rect],
         prev: &HashSet<(i64, usize)>,
     ) -> (Vec<LinePlaced>, usize) {
-        let knobs = bench_knobs();
         if zoom < MIN_ZOOM || !knobs.labels {
             return (Vec::new(), 0);
         }
@@ -1164,9 +1140,7 @@ impl LineLabelCache {
                 mx,
                 my,
                 label,
-                color: c.style.color,
-                halo_color: c.style.halo_color,
-                halo_alpha: c.style.halo_alpha,
+                look: c.style.look,
                 born: None,
             });
         }
@@ -1184,7 +1158,15 @@ impl LineLabelCache {
         view: (f32, f32),
         out: &mut FrameOut,
     ) {
-        let (placed, built) = self.place(cands, zoom, &to_screen, view, &[], &HashSet::new());
+        let (placed, built) = self.place(
+            cands,
+            zoom,
+            &BenchKnobs::default(),
+            &to_screen,
+            view,
+            &[],
+            &HashSet::new(),
+        );
         out.layouts_built += built;
         emit_frame(&placed, to_screen, origin, view, Instant::now(), out);
     }
@@ -1213,7 +1195,11 @@ pub fn emit_frame(
         out.labels += 1;
         let (ax, ay) = (rx + origin.0, ry + origin.1);
         let fade = crate::layers::labels::fade_alpha(p.born, now);
-        let (fill_c, halo_c) = (rgba(p.color, fade), rgba(p.halo_color, p.halo_alpha * fade));
+        let look = &p.look;
+        let (fill_c, halo_c) = (
+            rgba(look.color, fade),
+            rgba(look.halo_color, look.halo_alpha * fade),
+        );
         for g in &p.label.glyphs {
             let (gx, gy) = (ax + g.x, ay + g.y);
             let xf = |&(vx, vy): &Pt| (gx + vx * g.cos - vy * g.sin, gy + vx * g.sin + vy * g.cos);
@@ -1520,16 +1506,17 @@ mod tests {
             parse_bench("on halo=none repeat=4"),
             Ok(BenchKnobs {
                 labels: true,
-                halo: HaloMode::None,
+                halo: MeshHalo::None,
                 repeat: 4,
                 offset: None
             })
         );
         assert!(!parse_bench("off").unwrap().labels);
         assert!(parse_bench("halo=wat").is_err());
-        // Packing round-trips.
+        // The stamp tells distinct settings apart.
         let k = parse_bench("halo=offset4 repeat=3").unwrap();
-        assert_eq!(pack(k) & 1, 1);
+        assert_eq!(k.stamp() & 1, 1);
+        assert_ne!(k.stamp(), BenchKnobs::default().stamp());
     }
 
     #[test]
@@ -1565,15 +1552,39 @@ mod tests {
         let verts = east_way();
         let cands = [cand(1, "Elm St", &verts)];
         let view = (800.0, 600.0);
-        let (free, _) = cache.place(&cands, 17.0, to_screen, view, &[], &HashSet::new());
+        let (free, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(free.len(), 1);
         // A point label (or icon) right where the street name would go.
         let blocker = Rect::new(150.0, 70.0, 260.0, 130.0);
-        let (blocked, _) = cache.place(&cands, 17.0, to_screen, view, &[blocker], &HashSet::new());
+        let (blocked, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[blocker],
+            &HashSet::new(),
+        );
         assert!(blocked.is_empty());
         // Far away it does not matter.
         let far = Rect::new(600.0, 400.0, 700.0, 450.0);
-        let (ok, _) = cache.place(&cands, 17.0, to_screen, view, &[far], &HashSet::new());
+        let (ok, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[far],
+            &HashSet::new(),
+        );
         assert_eq!(ok.len(), 1);
     }
 
@@ -1589,13 +1600,29 @@ mod tests {
         b.priority = 50;
         let view = (800.0, 600.0);
         let none = HashSet::new();
-        let (fresh, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &none);
+        let (fresh, _) = cache.place(
+            &[a, b],
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &none,
+        );
         assert_eq!(fresh.iter().map(|p| p.way_id).collect::<Vec<_>>(), [2]);
         let prev: HashSet<(i64, usize)> = [(1, 0)].into();
         let a = cand(1, "Elm St", &verts);
         let mut b = cand(2, "Elm St", &verts);
         b.priority = 50;
-        let (kept, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &prev);
+        let (kept, _) = cache.place(
+            &[a, b],
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &prev,
+        );
         assert_eq!(kept.iter().map(|p| p.way_id).collect::<Vec<_>>(), [1]);
     }
 
@@ -1608,6 +1635,7 @@ mod tests {
         let (p, _) = cache.place(
             &cands,
             17.0,
+            &BenchKnobs::default(),
             to_screen,
             (180.0, 600.0),
             &[],
@@ -1622,7 +1650,7 @@ mod tests {
         let v1 = east_way();
         let v2: Vec<(i64, f64, f64)> = v1.iter().map(|&(i, x, y)| (i + 10, x, y - 100.0)).collect();
         let mut red = cand(2, "Oak St", &v2);
-        red.style.color = 0xff0000;
+        red.style.look.color = 0xff0000;
         let cands = [cand(1, "Elm St", &v1), red];
         let mut out = FrameOut::default();
         cache.frame(
@@ -1671,6 +1699,7 @@ mod tests {
         let (placed, _) = cache.place(
             &cands,
             17.0,
+            &BenchKnobs::default(),
             to_screen,
             (800.0, 600.0),
             &[],
@@ -1716,6 +1745,7 @@ mod tests {
             c.place(
                 &cands,
                 17.0,
+                &BenchKnobs::default(),
                 to_screen,
                 (800.0, 600.0),
                 &[],
@@ -1746,11 +1776,44 @@ mod tests {
         let mut cache = LineLabelCache::default();
         let verts = east_way();
         let mut c = cand(1, "Elm St", &verts);
-        c.style.halo_alpha = 0.5;
+        c.style.look.halo_alpha = 0.5;
         let mut out = FrameOut::default();
         cache.frame(&[c], 17.0, to_screen, (0.0, 0.0), (800.0, 600.0), &mut out);
         assert_eq!(out.halo[0].0 & 0xff, 0x80);
         assert_eq!(out.fill[0].0 & 0xff, 0xff);
+    }
+
+    #[test]
+    fn line_look_resolves_defaults_and_every_property() {
+        let bare = LabelStyle::resolve(&TextStyle::default(), 0.0);
+        assert_eq!(bare.look.font_px, 12.0);
+        assert_eq!(
+            (bare.look.color, bare.look.halo_color),
+            (0x1f2937, 0xffffff)
+        );
+        assert_eq!((bare.look.halo_radius, bare.look.halo_alpha), (1.5, 0.9));
+        assert!((bare.offset_px - 6.2).abs() < 1e-5);
+        assert_eq!(bare, LabelStyle::default());
+        let all = TextStyle {
+            font_size: Some(15.0),
+            color: Some(0x112233),
+            halo_color: Some(0x445566),
+            halo_radius: Some(2.5),
+            halo_opacity: Some(0.4),
+            offset: Some(-8.0),
+            ..TextStyle::default()
+        };
+        let s = LabelStyle::resolve(&all, 2.0);
+        assert_eq!(s.look.font_px, 15.0);
+        assert_eq!((s.look.color, s.look.halo_color), (0x112233, 0x445566));
+        assert_eq!((s.look.halo_radius, s.look.halo_alpha), (2.5, 0.4));
+        assert_eq!(s.offset_px, -8.0);
+        // A small stylesheet offset is pushed clear of a wide road.
+        let small = TextStyle {
+            offset: Some(1.0),
+            ..TextStyle::default()
+        };
+        assert!((LabelStyle::resolve(&small, 6.0).offset_px - (0.35 * 12.0 + 6.0)).abs() < 1e-5);
     }
 
     #[test]
