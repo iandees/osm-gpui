@@ -761,8 +761,8 @@ struct LayerState {
 
 impl Tracker {
     /// Look at a layer. `pending` is whether it has unsaved edits. Returns
-    /// whether to write it now; if so the caller must call [`started`] with
-    /// the revision it snapshotted, then [`finished`].
+    /// whether to write it now; if so the caller must call [`started`], then
+    /// [`finished`] with the revision it snapshotted.
     ///
     /// [`started`]: Tracker::started
     /// [`finished`]: Tracker::finished
@@ -792,7 +792,7 @@ impl Tracker {
         s.force || settled || waited
     }
 
-    /// A write of `revision` was handed to the background.
+    /// A write was handed to the background.
     pub fn started(&mut self, id: u64) {
         let s = self.layers.entry(id).or_default();
         s.in_flight = true;
@@ -1670,7 +1670,7 @@ mod tests {
     fn a_build_without_markers_sees_an_ordinary_session() {
         // What an older build does with a session that carries a marker: it
         // only looks at `.json` manifests and the lock, so the layer is
-        // offered as before and the extra file is just removed with the rest.
+        // offered normally and the extra file is just removed with the rest.
         let layer = heavily_edited();
         let root = tmp_root("marker-old");
         let dead = Session::start(&root).unwrap();
@@ -1756,8 +1756,6 @@ mod tests {
     fn unit_tests_never_resolve_the_real_data_directory() {
         assert_eq!(default_root(), None);
     }
-
-    // --- scheduling ---
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
@@ -1873,8 +1871,6 @@ mod tests {
         let _ = t.poll(t0 + secs(100), 4, 13, true);
         assert!(t.poll(t0 + secs(104), 4, 13, true));
     }
-
-    // --- cost on a big layer ---
 
     /// Not a correctness test: prints what snapshotting and writing a big
     /// layer costs. Run with
