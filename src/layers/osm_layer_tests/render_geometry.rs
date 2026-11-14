@@ -8,8 +8,8 @@ use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
 use crate::selection::FeatureKind;
 use crate::style::Stylesheet;
+use crate::tags::Tags;
 use gpui::{point, px};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[test]
@@ -121,8 +121,8 @@ fn square_ring_data() -> Arc<OsmData> {
         version: 1,
         tags: empty_tags(),
     };
-    let mut way_tags = HashMap::new();
-    way_tags.insert("building".to_string(), "yes".to_string());
+    let mut way_tags = Tags::new();
+    way_tags.insert("building", "yes");
     let way = OsmWay {
         id: WayId(10),
         nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
@@ -257,7 +257,7 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
         reference,
         role: role.to_string(),
     };
-    let mut tags = HashMap::new();
+    let mut tags = Tags::new();
     for (k, v) in [
         ("type", "multipolygon"),
         ("leisure", "park"),
@@ -368,8 +368,8 @@ fn degenerate_ring_yields_no_fill_without_panic() {
         version: 1,
         tags: empty_tags(),
     };
-    let mut way_tags = HashMap::new();
-    way_tags.insert("building".to_string(), "yes".to_string());
+    let mut way_tags = Tags::new();
+    way_tags.insert("building", "yes");
     let way = OsmWay {
         id: WayId(10),
         nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
@@ -396,8 +396,8 @@ fn delete_way_shifts_fill_cache() {
     let mut data = square_ring_data();
     {
         let d = Arc::make_mut(&mut data);
-        let mut tags = HashMap::new();
-        tags.insert("building".to_string(), "yes".to_string());
+        let mut tags = Tags::new();
+        tags.insert("building", "yes");
         d.ways.insert(
             WayId(20),
             OsmWay {

@@ -37,10 +37,11 @@ use gpui::TestAppContext;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::LayerId;
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
+use osm_gpui::tags::Tags;
 use std::collections::HashMap;
 
-fn empty_tags() -> HashMap<String, String> {
-    HashMap::new()
+fn empty_tags() -> Tags {
+    Tags::new()
 }
 
 /// A single 2-node way `10 = [1, 2]`, both nodes at `center_lat`, lon

@@ -9,6 +9,7 @@ use crate::layers::LayerId;
 use crate::layers::{EditError, EditableLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::{FeatureKind, FeatureRef};
+use crate::tags::Tags;
 use gpui::{point, px};
 
 #[test]
@@ -198,7 +199,7 @@ fn delete_feature_way_removes_way_but_keeps_nodes_and_fixes_other_ways() {
         version: 1,
     };
     let mut tags10 = empty_tags();
-    tags10.insert("highway".to_string(), "residential".to_string());
+    tags10.insert("highway", "residential");
     let way_a = OsmWay {
         id: WayId(10),
         nodes: vec![NodeId(1), NodeId(2)],
@@ -222,10 +223,7 @@ fn delete_feature_way_removes_way_but_keeps_nodes_and_fixes_other_ways() {
     assert!(layer.is_modified());
     assert_eq!(snapshot.kind, FeatureKind::Way);
     assert_eq!(snapshot.way_nodes, vec![NodeId(1), NodeId(2)]);
-    assert_eq!(
-        snapshot.tags,
-        vec![("highway".to_string(), "residential".to_string())]
-    );
+    assert_eq!(snapshot.tags, Tags::from([("highway", "residential")]));
 
     let updated = layer.get_osm_data().unwrap();
     assert!(
@@ -272,7 +270,7 @@ fn delete_feature_missing_id_returns_none() {
 #[test]
 fn restore_feature_round_trips_deleted_node() {
     let mut tags = empty_tags();
-    tags.insert("amenity".to_string(), "cafe".to_string());
+    tags.insert("amenity", "cafe");
     let n1 = OsmNode {
         id: NodeId(1),
         lat: 40.0,
@@ -293,7 +291,7 @@ fn restore_feature_round_trips_deleted_node() {
         .get(&NodeId(1))
         .expect("node should be restored");
     assert_eq!((node.lat, node.lon), (40.0, -74.0));
-    assert_eq!(node.tags.get("amenity"), Some(&"cafe".to_string()));
+    assert_eq!(node.tags.get("amenity"), Some("cafe"));
 
     // Hit-testable again after restore.
     let viewport = viewport_centered_on(40.0, -74.0);
@@ -320,7 +318,7 @@ fn restore_feature_round_trips_deleted_way() {
         version: 1,
     };
     let mut tags = empty_tags();
-    tags.insert("highway".to_string(), "residential".to_string());
+    tags.insert("highway", "residential");
     let way = OsmWay {
         id: WayId(10),
         nodes: vec![NodeId(1), NodeId(2)],
@@ -340,7 +338,7 @@ fn restore_feature_round_trips_deleted_way() {
     );
     let restored = layer.get_osm_data().unwrap();
     let way = restored.ways.get(&WayId(10)).unwrap();
-    assert_eq!(way.tags.get("highway"), Some(&"residential".to_string()));
+    assert_eq!(way.tags.get("highway"), Some("residential"));
 
     // node_to_ways was patched so the restored way is picked up by a
     // node-move on one of its members.

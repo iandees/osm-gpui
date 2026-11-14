@@ -149,6 +149,7 @@ mod paste_applicability {
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::layers::{LayerId, LayerManager};
     use osm_gpui::selection::FeatureRef;
+    use osm_gpui::tags::Tags;
     use std::sync::Arc;
 
     fn applicable(id: &str, env: &ActionEnv) -> bool {
@@ -199,7 +200,7 @@ mod paste_applicability {
         assert_eq!(any_paste(&empty), (false, false));
 
         let mut tags_only = Clipboards::default();
-        tags_only.set_tags(vec![("a".into(), "b".into())]);
+        tags_only.set_tags(Tags::from([("a", "b")]));
         let editable = layers.find_layer(layer_id).unwrap().as_editable().unwrap();
         let features_only = Clipboards {
             features: FeatureClipboard::copy(editable, layer_id, &[node]),

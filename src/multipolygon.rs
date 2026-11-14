@@ -31,15 +31,13 @@
 //! drawn, with the holes still subtracted by the even-odd-like triangulation.
 
 use crate::ids::{NodeId, WayId};
+use crate::tags::Tags;
 use std::collections::{HashMap, HashSet};
 
 /// Whether `tags` describe a relation that is drawn as an area: a
 /// multipolygon or a boundary.
-pub fn is_area_relation(tags: &HashMap<String, String>) -> bool {
-    matches!(
-        tags.get("type").map(String::as_str),
-        Some("multipolygon" | "boundary")
-    )
+pub fn is_area_relation(tags: &Tags) -> bool {
+    matches!(tags.get("type"), Some("multipolygon" | "boundary"))
 }
 
 /// One way member of a relation, as the assembler needs it.
@@ -794,11 +792,11 @@ mod tests {
 
     #[test]
     fn is_area_relation_accepts_multipolygon_and_boundary_only() {
-        let tags = |t: &str| HashMap::from([("type".to_string(), t.to_string())]);
+        let tags = |t: &str| Tags::from([("type", t)]);
         assert!(is_area_relation(&tags("multipolygon")));
         assert!(is_area_relation(&tags("boundary")));
         assert!(!is_area_relation(&tags("route")));
-        assert!(!is_area_relation(&HashMap::new()));
+        assert!(!is_area_relation(&Tags::new()));
     }
 
     #[test]

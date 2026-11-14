@@ -613,20 +613,12 @@ fn order_created_relations(mut relations: Vec<&OsmRelation>) -> Vec<&OsmRelation
     }
 }
 
-/// Sorted `(k, v)` pairs for deterministic XML output (tags are stored in a
-/// `HashMap`, whose iteration order is otherwise unspecified).
-fn sorted_tags(tags: &HashMap<String, String>) -> Vec<(&String, &String)> {
-    let mut v: Vec<_> = tags.iter().collect();
-    v.sort_by(|a, b| a.0.cmp(b.0));
-    v
-}
-
 fn node_xml(n: &OsmNode, changeset_id: u64) -> String {
     let mut s = format!(
         r#"<node id="{}" lat="{}" lon="{}" version="{}" changeset="{}">"#,
         n.id, n.lat, n.lon, n.version, changeset_id
     );
-    for (k, v) in sorted_tags(&n.tags) {
+    for (k, v) in n.tags.sorted() {
         s.push_str(&format!(
             r#"<tag k="{}" v="{}"/>"#,
             xml_escape(k),
@@ -645,7 +637,7 @@ fn way_xml(w: &OsmWay, changeset_id: u64) -> String {
     for nd in &w.nodes {
         s.push_str(&format!(r#"<nd ref="{}"/>"#, nd));
     }
-    for (k, v) in sorted_tags(&w.tags) {
+    for (k, v) in w.tags.sorted() {
         s.push_str(&format!(
             r#"<tag k="{}" v="{}"/>"#,
             xml_escape(k),
@@ -672,7 +664,7 @@ fn relation_xml(r: &OsmRelation, changeset_id: u64) -> String {
             xml_escape(&m.role)
         ));
     }
-    for (k, v) in sorted_tags(&r.tags) {
+    for (k, v) in r.tags.sorted() {
         s.push_str(&format!(
             r#"<tag k="{}" v="{}"/>"#,
             xml_escape(k),
@@ -804,7 +796,7 @@ fn parse_diff_result(xml: &str) -> Result<UploadResult, UploadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use crate::tags::Tags;
 
     #[test]
     fn http_failures_map_to_upload_errors() {
@@ -837,11 +829,8 @@ mod tests {
         ));
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]
@@ -951,7 +940,7 @@ mod tests {
             lat: 1.0,
             lon: 2.0,
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         let xml = build_osm_change_xml(7, &[("L", diff)]);
         assert!(xml.contains("<modify>"), "{}", xml);
@@ -1015,20 +1004,20 @@ mod tests {
             id: WayId(-3),
             nodes: vec![NodeId(12), NodeId(13)],
             version: 0,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         diff.modified_ways.push(OsmWay {
             id: WayId(40),
             nodes: vec![NodeId(1), NodeId(2)],
             version: 2,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         diff.modified_nodes.push(OsmNode {
             id: NodeId(12),
             lat: 0.0,
             lon: 0.0,
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         // Deleted: a way and a node it used, plus nothing else.
         diff.deleted_way_ids.push((WayId(77), 1));
@@ -1092,14 +1081,14 @@ mod tests {
             id: WayId(-2),
             nodes: vec![NodeId(-1), NodeId(5)],
             version: 0,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         diff.created_nodes.push(OsmNode {
             id: NodeId(-1),
             lat: 1.0,
             lon: 2.0,
             version: 0,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         diff.modified_relations.push(rel(500, &[(Way, 40)]));
         diff.deleted_relation_ids.push((RelationId(600), 3));
@@ -1206,7 +1195,7 @@ mod tests {
             lat: 0.0,
             lon: 0.0,
             version: 0,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         let mut diff_b = LayerDiff::default();
         diff_b.deleted_node_ids.push((NodeId(3), 1));
@@ -1512,7 +1501,7 @@ mod tests {
             lat: 1.0,
             lon: 2.0,
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         vec![("L", diff)]
     }

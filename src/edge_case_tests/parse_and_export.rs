@@ -4,6 +4,7 @@ use super::*;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::osm::OsmParser;
 use osm_gpui::osm_export::to_osm_xml;
+use osm_gpui::tags::Tags;
 
 fn parse(xml: &str) -> Result<OsmData, osm_gpui::osm::OsmParseError> {
     OsmParser::new().parse_str(xml)
@@ -138,7 +139,7 @@ fn pending_edits_round_trip_through_the_action_attributes() {
             id: WayId(-1),
             nodes: vec![NodeId(1), NodeId(2)],
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         },
     );
     current.relations[0].members.push(OsmMember {

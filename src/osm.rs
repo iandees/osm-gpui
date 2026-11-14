@@ -1,5 +1,6 @@
 use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
+use crate::tags::Tags;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::{HashMap, HashSet};
@@ -22,7 +23,7 @@ pub struct OsmNode {
     pub lat: f64,
     pub lon: f64,
     pub version: i32,
-    pub tags: HashMap<String, String>,
+    pub tags: Tags,
 }
 
 impl OsmNode {
@@ -37,7 +38,7 @@ pub struct OsmWay {
     pub id: WayId,
     pub nodes: Vec<NodeId>,
     pub version: i32,
-    pub tags: HashMap<String, String>,
+    pub tags: Tags,
 }
 
 impl OsmWay {
@@ -54,7 +55,7 @@ pub struct OsmRelation {
     pub id: RelationId,
     pub members: Vec<OsmMember>,
     pub version: i32,
-    pub tags: HashMap<String, String>,
+    pub tags: Tags,
 }
 
 /// The kind of element an `OsmMember` (a relation member) refers to. Parsed
@@ -502,7 +503,7 @@ impl OsmParser {
             lat: lat.ok_or_else(|| OsmParseError::MissingAttribute("lat".to_string()))?,
             lon: lon.ok_or_else(|| OsmParseError::MissingAttribute("lon".to_string()))?,
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         })
     }
 
@@ -526,7 +527,7 @@ impl OsmParser {
             id: WayId(id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?),
             nodes: Vec::new(),
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         })
     }
 
@@ -550,7 +551,7 @@ impl OsmParser {
             id: RelationId(id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?),
             members: Vec::new(),
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         })
     }
 
@@ -693,7 +694,7 @@ mod tests {
             id: WayId(1),
             nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -785,7 +786,7 @@ mod tests {
 
         let tagged = &osm_data.nodes[&NodeId(2)];
         assert_eq!(
-            tagged.tags.get("name").map(|s| s.as_str()),
+            tagged.tags.get("name"),
             Some("tagged"),
             "tag on node 2 was not parsed"
         );

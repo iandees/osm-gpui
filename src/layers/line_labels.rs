@@ -1209,6 +1209,7 @@ pub fn emit_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::Tags;
 
     fn way(pts: &[(f64, f64)]) -> Vec<(NodeId, f64, f64)> {
         pts.iter()
@@ -1674,9 +1675,8 @@ mod tests {
     fn default_stylesheet_labels_named_roads_and_waterways_along_the_line() {
         use crate::style::{Stylesheet, TextPosition};
         let s = Stylesheet::load_default();
-        let tags = |k: &str, v: &str| -> HashMap<String, String> {
-            [(k.to_string(), v.to_string())].into_iter().collect()
-        };
+        let tags =
+            |k: &str, v: &str| -> Tags { [(k.to_string(), v.to_string())].into_iter().collect() };
         let road = s.way_text_style(&tags("highway", "residential"), false, 16.0);
         assert_eq!(road.position, Some(TextPosition::Line));
         assert_eq!(road.text.as_deref(), Some("name"));

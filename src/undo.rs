@@ -9,6 +9,8 @@ use osm_gpui::osm::OsmMember;
 use osm_gpui::selection::FeatureRef;
 #[cfg(test)]
 use osm_gpui::selection::{DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind};
+#[cfg(test)]
+use osm_gpui::tags::Tags;
 
 /// Undo what `rec` has recorded so far, for an action that stopped part way.
 pub(crate) fn roll_back_recording(rec: Recording<'_>) {
@@ -241,7 +243,7 @@ impl UndoableAction {
         let snapshot = DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: id.get(),
-            tags: Vec::new(),
+            tags: Tags::new(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((lat, lon)),
             version: 0,
@@ -564,6 +566,7 @@ mod undo_stack_tests {
     use osm_gpui::edit_ops::EditOp;
     use osm_gpui::ids::{NodeId, RelationId, WayId};
     use osm_gpui::selection::{FeatureKind, FeatureRef};
+    use osm_gpui::tags::Tags;
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
         UndoableAction::move_nodes(vec![(LayerId(1), vec![(NodeId(id), before, after)])], None)
@@ -914,7 +917,7 @@ mod undo_stack_tests {
         osm_gpui::selection::DeletedFeatureSnapshot {
             kind: osm_gpui::selection::FeatureKind::Node,
             id,
-            tags: vec![("amenity".to_string(), "cafe".to_string())],
+            tags: Tags::from([("amenity", "cafe")]),
             way_nodes: Vec::new(),
             node_lat_lon: Some((40.0, -74.0)),
             version: 1,
@@ -925,7 +928,7 @@ mod undo_stack_tests {
         osm_gpui::selection::DeletedFeatureSnapshot {
             kind: osm_gpui::selection::FeatureKind::Way,
             id,
-            tags: vec![("highway".to_string(), "residential".to_string())],
+            tags: Tags::from([("highway", "residential")]),
             way_nodes: vec![NodeId(1), NodeId(2)],
             node_lat_lon: None,
             version: 1,
@@ -966,7 +969,7 @@ mod undo_stack_tests {
             snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
                 kind: FeatureKind::Node,
                 id,
-                tags: Vec::new(),
+                tags: Tags::new(),
                 way_nodes: Vec::new(),
                 node_lat_lon: Some((0.0, 0.0)),
                 version: 0,
@@ -1020,7 +1023,7 @@ mod undo_stack_tests {
         let node = |id: i64| osm_gpui::selection::DeletedFeatureSnapshot {
             kind: Node,
             id,
-            tags: Vec::new(),
+            tags: Tags::new(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((0.0, 0.0)),
             version: 0,
@@ -1137,7 +1140,7 @@ mod undo_stack_tests {
                 snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
                     kind: Way,
                     id: -40,
-                    tags: Vec::new(),
+                    tags: Tags::new(),
                     way_nodes: vec![NodeId(-6), NodeId(-5)],
                     node_lat_lon: None,
                     version: 0,

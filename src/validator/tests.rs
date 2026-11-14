@@ -1,11 +1,9 @@
 use super::*;
 use crate::osm::{OsmMember, OsmNode};
+use crate::tags::Tags;
 
-fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(pairs: &[(&str, &str)]) -> Tags {
+    Tags::from(pairs)
 }
 
 fn node(id: i64, lat: f64, lon: f64, pairs: &[(&str, &str)]) -> OsmNode {
@@ -1201,8 +1199,8 @@ fn the_screenshot_fixture_reports_exactly_its_new_and_edited_objects() {
         .unwrap();
     let baseline = baseline_for_loaded_file(&current, &edits);
     let tags = &mut current.nodes.get_mut(&NodeId(2002)).unwrap().tags;
-    tags.insert("landuse".into(), "farm".into());
-    tags.insert("fixme".into(), "check the field boundary".into());
+    tags.insert("landuse", "farm");
+    tags.insert("fixme", "check the field boundary");
     let diff = diff_osm_data(&baseline, &current);
     let findings = validate_diff(&current, &diff);
     for f in &findings {

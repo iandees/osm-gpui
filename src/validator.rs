@@ -45,6 +45,7 @@
 //! | `fixme`                 | warning  | a `fixme` / `FIXME` tag on a changed object               |
 //! | `deprecated_tag`        | warning  | a well-known deprecated tag                               |
 
+use crate::tags::Tags;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -384,7 +385,7 @@ impl<'a> Context<'a> {
     /// A multipolygon is checked when it is changed or a member way is
     /// changed or affected (a moved node).
     fn is_multipolygon_to_check(&self, relation: &OsmRelation) -> bool {
-        relation.tags.get("type").map(String::as_str) == Some("multipolygon")
+        relation.tags.get("type") == Some("multipolygon")
             && (self.changes.relations.contains(&relation.id)
                 || relation.members.iter().any(|m| {
                     m.member_type == MemberType::Way
@@ -485,14 +486,14 @@ const LINE_VALUES: [(&str, &str); 15] = [
 /// formatted `key=value`, or `None` when its tags say nothing of the sort.
 /// Uses the same table as presets for closed ways, restricted to the keys that
 /// are areas without doubt.
-fn area_tag(tags: &HashMap<String, String>) -> Option<String> {
+fn area_tag(tags: &Tags) -> Option<String> {
     if !crate::presets::area_keys().closed_way_is_area(tags) {
         return None;
     }
-    if tags.get("area").map(String::as_str) == Some("yes") {
+    if tags.get("area") == Some("yes") {
         return Some("area=yes".to_string());
     }
-    if LINE_KEYS.iter().any(|k| tags.contains_key(*k)) {
+    if LINE_KEYS.iter().any(|k| tags.contains_key(k)) {
         return None;
     }
     let mut keys: Vec<&String> = tags.keys().collect();
@@ -606,7 +607,7 @@ fn short(text: &str) -> String {
     }
 }
 
-fn check_tags(kind: FeatureKind, id: i64, tags: &HashMap<String, String>, out: &mut Vec<Finding>) {
+fn check_tags(kind: FeatureKind, id: i64, tags: &Tags, out: &mut Vec<Finding>) {
     let feature = vec![(kind, id)];
     let mut entries: Vec<(&String, &String)> = tags.iter().collect();
     entries.sort();
@@ -760,7 +761,7 @@ fn crossing_matters(a: Crossable, b: Crossable) -> bool {
     )
 }
 
-fn has_value(tags: &HashMap<String, String>, key: &str) -> bool {
+fn has_value(tags: &Tags, key: &str) -> bool {
     tags.get(key).is_some_and(|v| v != "no")
 }
 
@@ -768,11 +769,11 @@ fn has_value(tags: &HashMap<String, String>, key: &str) -> bool {
 /// feature the check covers. Roads, tracks and rails that are not built
 /// yet or no longer used are left out, as are area highways and trams (which
 /// run in the road).
-fn crossable(tags: &HashMap<String, String>) -> Option<Crossable> {
+fn crossable(tags: &Tags) -> Option<Crossable> {
     if has_value(tags, "building") {
         return Some(Crossable::Building);
     }
-    if tags.get("area").map(String::as_str) == Some("yes") {
+    if tags.get("area") == Some("yes") {
         return None;
     }
     if let Some(v) = tags.get("highway") {
@@ -789,7 +790,7 @@ fn crossable(tags: &HashMap<String, String>) -> Option<Crossable> {
             "elevator",
             "ford",
         ];
-        return (!ignored.contains(&v.as_str())).then_some(Crossable::Highway);
+        return (!ignored.contains(&v)).then_some(Crossable::Highway);
     }
     if let Some(v) = tags.get("railway") {
         let rails = [
@@ -801,11 +802,11 @@ fn crossable(tags: &HashMap<String, String>) -> Option<Crossable> {
             "funicular",
             "miniature",
         ];
-        return rails.contains(&v.as_str()).then_some(Crossable::Railway);
+        return rails.contains(&v).then_some(Crossable::Railway);
     }
     if let Some(v) = tags.get("waterway") {
         let streams = ["river", "stream", "canal", "drain", "ditch", "brook"];
-        return streams.contains(&v.as_str()).then_some(Crossable::Waterway);
+        return streams.contains(&v).then_some(Crossable::Waterway);
     }
     None
 }
@@ -853,8 +854,8 @@ fn way_geom(way: &OsmWay, data: &OsmData) -> Option<WayGeom> {
             .unwrap_or(0),
         separated: has_value(tags, "bridge")
             || has_value(tags, "tunnel")
-            || tags.get("covered").map(String::as_str) == Some("yes"),
-        ford: tags.get("ford").map(String::as_str) == Some("yes"),
+            || tags.get("covered") == Some("yes"),
+        ford: tags.get("ford") == Some("yes"),
         nodes: way.nodes.clone(),
         pts,
         bbox,

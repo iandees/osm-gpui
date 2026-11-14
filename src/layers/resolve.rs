@@ -206,7 +206,7 @@ mod tests {
     use super::*;
     use crate::layers::diff::diff_osm_data;
     use crate::osm::{OsmRelation, OsmWay};
-    use std::collections::HashMap;
+    use crate::tags::Tags;
 
     fn node(id: i64, lat: f64, version: i32) -> OsmNode {
         OsmNode {
@@ -214,7 +214,7 @@ mod tests {
             lat,
             lon: 0.0,
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -223,7 +223,7 @@ mod tests {
             id: WayId(id),
             nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -273,7 +273,7 @@ mod tests {
             id: RelationId(5),
             members: vec![],
             version: 2,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         let mut current = original.clone();
         current.relations[0]
@@ -414,7 +414,7 @@ mod tests {
                 role: role.to_string(),
             }],
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         };
         let mut original = data(vec![], vec![]);
         original.relations.push(rel(2, ""));

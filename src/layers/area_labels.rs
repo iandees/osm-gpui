@@ -26,6 +26,7 @@
 
 use crate::polylabel::{self, Pole, Pt};
 use crate::style::{TextPosition, TextStyle};
+use crate::tags::Tags;
 use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,11 +63,7 @@ pub struct AreaLabel {
 /// `None` when the style has no text, the zoom is below the label zoom, the
 /// rule asks for a line label (`text-position: line` is for street names),
 /// or the tag is missing.
-pub fn resolve_area_label(
-    style: &TextStyle,
-    tags: &HashMap<String, String>,
-    zoom: f64,
-) -> Option<AreaLabel> {
+pub fn resolve_area_label(style: &TextStyle, tags: &Tags, zoom: f64) -> Option<AreaLabel> {
     if zoom < LABEL_MIN_ZOOM || style.position == Some(TextPosition::Line) {
         return None;
     }
@@ -445,11 +442,8 @@ mod tests {
         AreaView::new(0.0, 1000.0, 800.0, 1000.0, 800.0)
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]
@@ -644,7 +638,7 @@ mod tests {
         let node = |t: &[(&str, &str)], has_icon, named| {
             LabelPriority::of(LabelClass::Node { has_icon, named }, &tags(t)).tier
         };
-        let area = |t: &HashMap<String, String>| LabelPriority::of(LabelClass::Area, t);
+        let area = |t: &Tags| LabelPriority::of(LabelClass::Area, t);
         let named = node(&[("man_made", "x")], false, true);
         let num = node(&[("addr:housenumber", "1")], false, false);
         for t in [

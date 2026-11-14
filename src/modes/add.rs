@@ -342,7 +342,7 @@ impl MapViewer {
                 rec.set_way_nodes(way_id, nodes).map(|()| way_id)
             }
             Some(way_id) => rec.extend_way(way_id, node_id).map(|()| way_id),
-            None => Ok(rec.add_way(vec![last_node_id, node_id], Vec::new())),
+            None => Ok(rec.add_way(vec![last_node_id, node_id], Tags::new())),
         };
         let way_id = match attached {
             Ok(way_id) => way_id,

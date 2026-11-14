@@ -315,9 +315,9 @@ impl MapViewer {
                 let mut selection_values: Vec<String> = Vec::new();
                 if snapshots.len() > 1 {
                     for (_, tags) in &snapshots {
-                        if let Some((_, v)) = tags.iter().find(|(k, _)| *k == key_text) {
-                            if !selection_values.contains(v) {
-                                selection_values.push(v.clone());
+                        if let Some(v) = tags.get(&key_text) {
+                            if !selection_values.iter().any(|s| s == v) {
+                                selection_values.push(v.to_string());
                             }
                         }
                     }
@@ -460,7 +460,7 @@ impl MapViewer {
             snapshots.split_first().and_then(|((_, first), rest)| {
                 let (k, v) = taginfo::primary_tag(first)?;
                 rest.iter()
-                    .all(|(_, t)| t.iter().any(|(tk, tv)| tk == k && tv == v))
+                    .all(|(_, t)| t.is(k, v))
                     .then(|| (k.to_string(), v.to_string()))
             })
         };

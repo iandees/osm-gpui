@@ -3,6 +3,7 @@
 use super::*;
 use osm_gpui::ids::{NodeId, RelationId};
 use osm_gpui::osm_upload::build_osm_change_xml;
+use osm_gpui::tags::Tags;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -12,7 +13,7 @@ fn new_rel(id: i64, members: &[(MemberType, i64)]) -> OsmRelation {
     OsmRelation {
         id: RelationId(id),
         version: 1,
-        tags: HashMap::new(),
+        tags: Tags::new(),
         members: members
             .iter()
             .map(|&(member_type, reference)| OsmMember {
@@ -134,7 +135,7 @@ fn created_then_deleted_in_one_session_uploads_nothing(cx: &mut TestAppContext) 
                 .unwrap();
             let a = e.add_node(40.1, -74.1);
             let b = e.add_node(40.2, -74.2);
-            (a, e.add_way(vec![a, b], vec![]))
+            (a, e.add_way(vec![a, b], Tags::new()))
         };
         assert_eq!(s.counts(), (3, 0, 0));
         s.select(&[(W, w.get())]);

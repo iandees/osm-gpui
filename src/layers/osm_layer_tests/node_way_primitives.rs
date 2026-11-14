@@ -7,8 +7,8 @@ use crate::layers::LayerId;
 use crate::layers::{EditableLayer, MapLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::FeatureKind;
+use crate::tags::Tags;
 use gpui::{point, px};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[test]
@@ -56,10 +56,7 @@ fn add_way_creates_closed_building_way_and_is_hit_testable() {
     // exactly at the click point would shadow the way we're testing.
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -73.999);
-    let way_id = layer.add_way(
-        vec![n1, n2, n1],
-        vec![("building".to_string(), "yes".to_string())],
-    );
+    let way_id = layer.add_way(vec![n1, n2, n1], Tags::from([("building", "yes")]));
     assert_eq!(way_id, WayId(-1), "first placeholder way id should be -1");
 
     let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
@@ -73,7 +70,7 @@ fn add_way_creates_closed_building_way_and_is_hit_testable() {
             id: way_id.get(),
         })
         .expect("way should have tags");
-    assert!(tags.contains(&("building".to_string(), "yes".to_string())));
+    assert!(tags.is("building", "yes"));
 }
 
 #[test]
@@ -82,7 +79,7 @@ fn remove_way_drops_it_from_data_and_index_but_keeps_its_nodes() {
     let viewport = viewport_centered_on(40.0, -74.0);
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -74.0);
-    let way_id = layer.add_way(vec![n1, n2], vec![]);
+    let way_id = layer.add_way(vec![n1, n2], Tags::new());
 
     layer.remove_way(way_id).unwrap();
 
@@ -105,7 +102,7 @@ fn extend_way_appends_node_and_updates_bbox() {
     let mut layer = OsmLayer::new(LayerId(1));
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -74.0);
-    let way_id = layer.add_way(vec![n1, n2], vec![]);
+    let way_id = layer.add_way(vec![n1, n2], Tags::new());
     let n3 = layer.add_node(40.001, -74.0);
 
     layer.extend_way(way_id, n3).unwrap();
@@ -121,7 +118,7 @@ fn reverse_way_flips_node_order_and_is_its_own_inverse() {
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -74.0);
     let n3 = layer.add_node(40.001, -74.0);
-    let way_id = layer.add_way(vec![n1, n2, n3], vec![]);
+    let way_id = layer.add_way(vec![n1, n2, n3], Tags::new());
 
     assert!(layer.reverse_way(way_id).is_ok());
     assert_eq!(layer.way_node_ids(way_id), Some(vec![n3, n2, n1]));
@@ -139,8 +136,8 @@ fn set_way_nodes_rewrites_the_list_and_tracks_node_usage() {
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -74.0);
     let n3 = layer.add_node(40.001, -74.0);
-    let w1 = layer.add_way(vec![n1, n2], vec![]);
-    let w2 = layer.add_way(vec![n2, n3], vec![]);
+    let w1 = layer.add_way(vec![n1, n2], Tags::new());
+    let w2 = layer.add_way(vec![n2, n3], Tags::new());
     assert_eq!(layer.ways_using_node(n2), vec![w2, w1]);
 
     // Swap w2's use of n2 for a fresh node at the same spot.
@@ -192,7 +189,7 @@ fn relations_containing_way_reads_member_refs() {
             },
         ],
         version: 1,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     });
     let layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data));
     assert_eq!(
@@ -213,7 +210,7 @@ fn insert_node_into_way_splices_at_index_and_remove_node_from_way_undoes_it() {
     let mut layer = OsmLayer::new(LayerId(1));
     let n1 = layer.add_node(40.0, -74.001);
     let n2 = layer.add_node(40.0, -74.0);
-    let way_id = layer.add_way(vec![n1, n2], vec![]);
+    let way_id = layer.add_way(vec![n1, n2], Tags::new());
 
     let mid = layer
         .insert_node_into_way(way_id, 1, 40.0, -74.0005)
@@ -291,8 +288,8 @@ fn feature_geometry_classifies_closed_area_way() {
         version: 1,
         tags: empty_tags(),
     };
-    let mut tags = HashMap::new();
-    tags.insert("building".to_string(), "yes".to_string());
+    let mut tags = Tags::new();
+    tags.insert("building", "yes");
     let way = OsmWay {
         id: WayId(10),
         nodes: vec![NodeId(1), NodeId(2), NodeId(2), NodeId(1)],

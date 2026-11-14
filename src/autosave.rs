@@ -1139,6 +1139,7 @@ mod tests {
     use crate::layers::{EditableLayer, LayerId};
     use crate::osm::{MemberType, OsmMember, OsmNode, OsmRelation, OsmWay};
     use crate::selection::FeatureKind;
+    use crate::tags::Tags;
 
     fn tmp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1150,11 +1151,8 @@ mod tests {
         dir
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn node(id: i64, lat: f64, lon: f64, version: i32, t: &[(&str, &str)]) -> OsmNode {
@@ -1251,14 +1249,11 @@ mod tests {
         let b = layer.add_node(40.021, -74.021);
         let c = layer.add_node(40.022, -74.019);
         assert!(a < NodeId(0) && b < NodeId(0) && c < NodeId(0));
-        let new_way = layer.add_way(
-            vec![a, b, c, a],
-            vec![("building".to_string(), "house".to_string())],
-        );
+        let new_way = layer.add_way(vec![a, b, c, a], Tags::from([("building", "house")]));
         assert!(new_way < WayId(0));
         let new_relation = layer
             .create_relation(
-                vec![("type".to_string(), "multipolygon".to_string())],
+                Tags::from([("type", "multipolygon")]),
                 vec![
                     member(MemberType::Way, new_way.get(), "outer"),
                     member(MemberType::Way, 101, "inner"),
@@ -1369,7 +1364,7 @@ mod tests {
         out
     }
 
-    fn sorted(tags: &HashMap<String, String>) -> Vec<(&String, &String)> {
+    fn sorted(tags: &Tags) -> Vec<(&String, &String)> {
         let mut v: Vec<_> = tags.iter().collect();
         v.sort();
         v
@@ -1890,7 +1885,7 @@ mod tests {
             id: WayId(31),
             nodes: vec![NodeId(1), NodeId(2)],
             version: 2,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         chunk.deleted_relation_ids.push((RelationId(77), 3));
         let marker = UploadMarker::for_request(

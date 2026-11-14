@@ -24,13 +24,14 @@ use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::osm::{OsmData, OsmNode, OsmWay};
+use crate::tags::Tags;
 use crate::viewport::Viewport;
 use gpui::{px, size};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-fn empty_tags() -> HashMap<String, String> {
-    HashMap::new()
+fn empty_tags() -> Tags {
+    Tags::new()
 }
 
 /// Build a viewport whose center projects a chosen (lat, lon) to the middle
@@ -57,9 +58,9 @@ fn data_with(nodes: Vec<OsmNode>, ways: Vec<OsmWay>) -> Arc<OsmData> {
     })
 }
 
-fn tagged() -> HashMap<String, String> {
-    let mut tags = HashMap::new();
-    tags.insert("amenity".to_string(), "cafe".to_string());
+fn tagged() -> Tags {
+    let mut tags = Tags::new();
+    tags.insert("amenity", "cafe");
     tags
 }
 
@@ -94,7 +95,7 @@ fn way_with_poi_layer(n: i64) -> OsmLayer {
         id: WayId(100),
         nodes: (1..=n).map(NodeId).collect(),
         version: 1,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     };
     OsmLayer::new_with_data(LayerId(1), "L", data_with(nodes, vec![way]))
 }

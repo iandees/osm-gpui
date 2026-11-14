@@ -9,6 +9,7 @@ use gpui::{px, size, TestAppContext};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::osm_upload;
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 
 fn server_node(version: i32, lat: f64) -> osm_gpui::osm_api::ServerElement {
@@ -18,7 +19,7 @@ fn server_node(version: i32, lat: f64) -> osm_gpui::osm_api::ServerElement {
     let node = data.nodes.get_mut(&NodeId(1)).unwrap();
     node.version = version;
     node.lat = lat;
-    node.tags.insert("shop".to_string(), "bakery".to_string());
+    node.tags.insert("shop", "bakery");
     osm_gpui::osm_api::ServerElement::Present(data)
 }
 
@@ -44,13 +45,7 @@ fn keep_mine_moves_the_version_and_keeps_edit_and_undo(cx: &mut TestAppContext) 
                 .diff_for_upload();
             assert_eq!(diff.modified_nodes.len(), 1);
             assert_eq!(diff.modified_nodes[0].version, 5);
-            assert_eq!(
-                diff.modified_nodes[0]
-                    .tags
-                    .get("amenity")
-                    .map(String::as_str),
-                Some("cafe")
-            );
+            assert_eq!(diff.modified_nodes[0].tags.get("amenity"), Some("cafe"));
             assert_eq!(view.undo_stack.actions.len(), 1, "history untouched");
         })
         .unwrap();
@@ -115,7 +110,7 @@ fn use_theirs_replaces_the_object_and_keeps_unrelated_undo_history(cx: &mut Test
                     id: 1,
                 })
                 .unwrap();
-            assert_eq!(tags, vec![("shop".to_string(), "bakery".to_string())]);
+            assert_eq!(tags, Tags::from([("shop", "bakery")]));
         })
         .unwrap();
 }

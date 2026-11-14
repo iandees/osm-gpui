@@ -12,6 +12,7 @@ use gpui_component::{
 };
 
 use osm_gpui::layers::LayerId;
+use osm_gpui::tags::Tags;
 use osm_gpui::ui::style::{interactive_row, muted_text_size, panel_row, PANEL_ROW_HEIGHT};
 use osm_gpui::{tr, tr_count};
 
@@ -979,8 +980,7 @@ impl MapViewer {
     ) -> Option<(String, Option<SharedString>)> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
-        let tags: std::collections::HashMap<String, String> =
-            editable.feature_tags(feat)?.into_iter().collect();
+        let tags = editable.feature_tags(feat)?;
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
         let (name, icon_name) =
             osm_gpui::catalogue::Catalogue::bundled().describe(&tags, geometry, feat.kind);
@@ -1012,9 +1012,9 @@ impl MapViewer {
             .and_then(|layer| layer.as_editable())
             .and_then(|editable| editable.feature_tags(feat))
             .and_then(|tags| {
-                tags.into_iter()
-                    .find(|(k, v)| k == "name" && !v.trim().is_empty())
-                    .map(|(_, v)| v)
+                tags.get("name")
+                    .filter(|v| !v.trim().is_empty())
+                    .map(str::to_string)
             });
         let plain = tr!("panel.selection.row", kind = kind_label, id = feat.id);
         let (title, detail, icon_path) = match (described, own_name) {
@@ -1535,7 +1535,7 @@ impl MapViewer {
                 .into_any_element();
         }
 
-        let per_feature: Vec<Vec<(String, String)>> = self
+        let per_feature: Vec<Tags> = self
             .selected
             .iter()
             .filter_map(|sel| {
@@ -1772,14 +1772,15 @@ mod preset_label_tests {
     use osm_gpui::layers::LayerManager;
     use osm_gpui::osm::{OsmData, OsmNode};
     use osm_gpui::selection::{FeatureKind, FeatureRef};
+    use osm_gpui::tags::Tags;
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn manager_with_cafe_node() -> (LayerManager, FeatureRef) {
         let mut manager = LayerManager::new();
         let layer_id = manager.alloc_id();
-        let mut tags = HashMap::new();
-        tags.insert("amenity".to_string(), "cafe".to_string());
+        let mut tags = Tags::new();
+        tags.insert("amenity", "cafe");
         let node = OsmNode {
             id: NodeId(1),
             lat: 40.0,
@@ -1812,11 +1813,7 @@ mod preset_label_tests {
         let (manager, feature) = manager_with_cafe_node();
         let layer = manager.find_layer(feature.layer_id).unwrap();
         let editable = layer.as_editable().unwrap();
-        let tags: HashMap<String, String> = editable
-            .feature_tags(&feature)
-            .unwrap()
-            .into_iter()
-            .collect();
+        let tags = editable.feature_tags(&feature).unwrap();
         let geometry = editable
             .feature_geometry(&feature, osm_gpui::presets::area_keys())
             .unwrap();

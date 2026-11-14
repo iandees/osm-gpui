@@ -13,7 +13,7 @@
 
 use crate::ids::{NodeId, WayId};
 use crate::osm::{MemberType, OsmData, OsmRelation};
-use std::collections::HashMap;
+use crate::tags::Tags;
 
 /// The route colours, in one place: `(route values, colour)`. A route whose
 /// `route` value is in none of these lists gets [`FALLBACK_COLOUR`].
@@ -47,13 +47,13 @@ pub const RESTRICTION_NO_COLOUR: u32 = 0xD32F2F;
 pub const RESTRICTION_ONLY_COLOUR: u32 = 0x1565C0;
 
 /// Whether `tags` describe a route that is drawn. `route_master` is not.
-pub fn is_route(tags: &HashMap<String, String>) -> bool {
-    tags.get("type").map(String::as_str) == Some("route")
+pub fn is_route(tags: &Tags) -> bool {
+    tags.get("type") == Some("route")
 }
 
 /// Whether `tags` describe a turn restriction.
-pub fn is_restriction(tags: &HashMap<String, String>) -> bool {
-    tags.get("type").map(String::as_str) == Some("restriction")
+pub fn is_restriction(tags: &Tags) -> bool {
+    tags.get("type") == Some("restriction")
 }
 
 /// Parse `#rgb`, `#rrggbb` or a small set of CSS colour names into `0xRRGGBB`.
@@ -98,15 +98,15 @@ pub fn parse_colour(text: &str) -> Option<u32> {
 
 /// The overlay colour of a route: its `colour` (or `color`) tag if that
 /// parses, else the palette entry for its `route` value.
-pub fn route_colour(tags: &HashMap<String, String>) -> u32 {
+pub fn route_colour(tags: &Tags) -> u32 {
     if let Some(c) = tags
         .get("colour")
         .or_else(|| tags.get("color"))
-        .and_then(|v| parse_colour(v))
+        .and_then(parse_colour)
     {
         return c;
     }
-    let kind = tags.get("route").map(String::as_str).unwrap_or("");
+    let kind = tags.get("route").unwrap_or("");
     PALETTE
         .iter()
         .find(|(names, _)| names.contains(&kind))
@@ -157,7 +157,7 @@ pub struct RestrictionEntry {
 
 /// The restriction value: `restriction`, else the first `restriction:<mode>`
 /// key (in key order, so deterministic).
-fn restriction_value(tags: &HashMap<String, String>) -> Option<&str> {
+fn restriction_value(tags: &Tags) -> Option<&str> {
     if let Some(v) = tags.get("restriction") {
         return Some(v);
     }
@@ -166,7 +166,7 @@ fn restriction_value(tags: &HashMap<String, String>) -> Option<&str> {
         .filter(|k| k.starts_with("restriction:"))
         .collect();
     keys.sort();
-    keys.first().and_then(|k| tags.get(*k)).map(String::as_str)
+    keys.first().and_then(|k| tags.get(k))
 }
 
 /// Build the entry for `relation`. `position` maps a node id to its mercator
@@ -239,12 +239,10 @@ mod tests {
     use super::*;
     use crate::ids::{NodeId, RelationId, WayId};
     use crate::osm::{OsmMember, OsmWay};
+    use std::collections::HashMap;
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn member(ty: MemberType, id: i64, role: &str) -> OsmMember {
@@ -278,7 +276,7 @@ mod tests {
                     id: WayId(*id),
                     nodes: nodes.iter().copied().map(NodeId).collect(),
                     version: 1,
-                    tags: HashMap::new(),
+                    tags: Tags::new(),
                 },
             );
         }

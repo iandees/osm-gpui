@@ -191,10 +191,11 @@ pub fn diff_osm_data(original: &OsmData, current: &OsmData) -> LayerDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::Tags;
     use std::collections::HashMap;
 
-    fn empty_tags() -> HashMap<String, String> {
-        HashMap::new()
+    fn empty_tags() -> Tags {
+        Tags::new()
     }
 
     fn data(nodes: Vec<OsmNode>, ways: Vec<OsmWay>) -> OsmData {
@@ -449,9 +450,7 @@ mod tests {
 
         // A tag change counts too.
         let mut current = original.clone();
-        current.relations[1]
-            .tags
-            .insert("type".into(), "route".into());
+        current.relations[1].tags.insert("type", "route");
         let diff = diff_osm_data(&original, &current);
         assert_eq!(diff.modified_relations[0].id, RelationId(6));
     }

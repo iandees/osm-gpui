@@ -3,6 +3,7 @@
 //! finding which end of a way can be continued. Nothing here touches a layer
 //! or the UI, so it is all unit-testable on plain ids and node lists.
 
+use crate::tags::Tags;
 use std::collections::{BTreeMap, VecDeque};
 
 /// A way as the join planner sees it.
@@ -10,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
 pub struct JoinWay {
     pub id: i64,
     pub nodes: Vec<i64>,
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
 }
 
 /// Why a set of ways can't be joined.
@@ -48,13 +49,13 @@ pub struct JoinPlan {
     /// Its new node list, shared end nodes appearing once.
     pub nodes: Vec<i64>,
     /// Its new tags: the union of every way's tags, sorted by key.
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
     /// The ways to delete, in selection order.
     pub remove: Vec<i64>,
 }
 
 /// Whether a way's tags change meaning if its node order is reversed.
-pub fn is_direction_dependent(tags: &[(String, String)]) -> bool {
+pub fn is_direction_dependent(tags: &Tags) -> bool {
     tags.iter().any(|(k, v)| match k.as_str() {
         "oneway" => v != "no",
         "direction" | "incline" | "conveying" => true,
@@ -233,7 +234,7 @@ fn changes_between(
 ///   is how the user turns the traffic around, so the tag keeps its meaning.
 ///
 /// Returns only the keys that end up different, sorted by key.
-pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
+pub fn reversed_tag_changes(tags: &Tags) -> Vec<TagChange> {
     let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut after: BTreeMap<String, String> = BTreeMap::new();
     for (key, value) in &before {
@@ -247,7 +248,7 @@ pub fn reversed_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
 /// similar) swaps, as do `:forward`/`:backward` key parts such as
 /// `traffic_sign:forward`. Compass and degree directions are absolute and
 /// stay. Only the keys that end up different are returned, sorted by key.
-pub fn reversed_node_tag_changes(tags: &[(String, String)]) -> Vec<TagChange> {
+pub fn reversed_node_tag_changes(tags: &Tags) -> Vec<TagChange> {
     let before: BTreeMap<&str, &str> = tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut after: BTreeMap<String, String> = BTreeMap::new();
     for (key, value) in &before {
@@ -357,7 +358,7 @@ pub fn plan_join(ways: &[JoinWay]) -> Result<JoinPlan, JoinError> {
     let order = chain_order(ways).ok_or(JoinError::NotChainable)?;
 
     // Union of tags; differing values for one key block the join.
-    let merged = union_tags(ways.iter().map(|w| w.tags.as_slice()))
+    let merged = union_tags(ways.iter().map(|w| &w.tags))
         .map_err(|key| JoinError::TagConflict(key.to_string()))?;
 
     // The chain can be walked either way round; pick the direction that
@@ -408,12 +409,10 @@ pub fn plan_join(ways: &[JoinWay]) -> Result<JoinPlan, JoinError> {
 /// The union of several features' tags, sorted by key. If two features have
 /// different values for one key, the (alphabetically first) such key is the
 /// error.
-fn union_tags<'a>(
-    sets: impl Iterator<Item = &'a [(String, String)]>,
-) -> Result<Vec<(String, String)>, String> {
+fn union_tags<'a>(sets: impl Iterator<Item = &'a Tags>) -> Result<Tags, String> {
     let mut merged: BTreeMap<&str, &str> = BTreeMap::new();
     let mut conflict: Option<&str> = None;
-    for (k, v) in sets.flatten() {
+    for (k, v) in sets.flat_map(Tags::iter) {
         match merged.get(k.as_str()) {
             Some(existing) if *existing != v.as_str() => {
                 if conflict.is_none_or(|c| k.as_str() < c) {
@@ -438,7 +437,7 @@ fn union_tags<'a>(
 #[derive(Clone, Debug)]
 pub struct MergeNode {
     pub id: i64,
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
 }
 
 /// Why a set of nodes can't be merged.
@@ -475,7 +474,7 @@ pub struct MergePlan {
     /// The nodes to delete, in selection order.
     pub remove: Vec<i64>,
     /// The survivor's tags afterwards: the union of every node's tags.
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
     /// Every way that used a removed node, with its new node list.
     pub way_edits: Vec<SeparateEdit>,
 }
@@ -509,8 +508,7 @@ pub fn plan_merge_nodes(
     } else {
         unique[0].id
     };
-    let tags =
-        union_tags(unique.iter().map(|n| n.tags.as_slice())).map_err(MergeError::TagConflict)?;
+    let tags = union_tags(unique.iter().map(|n| &n.tags)).map_err(MergeError::TagConflict)?;
     let remove: Vec<i64> = unique
         .iter()
         .map(|n| n.id)
@@ -1038,9 +1036,9 @@ pub fn plan_delete_segment(
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ExtractSplit {
     /// Tags that leave the way and go onto the new node.
-    pub moved: Vec<(String, String)>,
+    pub moved: Tags,
     /// Tags the node gets a copy of while the way keeps them (`source`).
-    pub copied: Vec<(String, String)>,
+    pub copied: Tags,
     /// The way would lose everything that makes it an area, so it gets
     /// `area=yes` to stay one.
     pub add_area: bool,
@@ -1069,21 +1067,20 @@ fn stays_on_area(key: &str) -> bool {
 /// do): the building and address tags stay, `source` stays and is also
 /// copied, and every other tag (the point of interest) moves to the new
 /// node. `moved` is empty when there is nothing to extract.
-pub fn extract_split(tags: &[(String, String)]) -> ExtractSplit {
+pub fn extract_split(tags: &Tags) -> ExtractSplit {
     let mut split = ExtractSplit::default();
     for (key, value) in tags {
-        let pair = (key.clone(), value.clone());
         if key == "source" || key.starts_with("source:") {
-            split.copied.push(pair);
+            split.copied.insert(key.clone(), value.clone());
         } else if !stays_on_area(key) {
-            split.moved.push(pair);
+            split.moved.insert(key.clone(), value.clone());
         }
     }
     if split.moved.is_empty() {
         split.copied.clear();
         return split;
     }
-    split.add_area = !tags.iter().any(|(k, _)| k == "building" || k == "area");
+    split.add_area = !(tags.contains_key("building") || tags.contains_key("area"));
     split
 }
 
@@ -1228,11 +1225,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             plan.tags,
-            vec![
-                ("highway".to_string(), "residential".to_string()),
-                ("name".to_string(), "Main".to_string()),
-                ("surface".to_string(), "paved".to_string()),
-            ]
+            Tags::from([
+                ("highway", "residential"),
+                ("name", "Main"),
+                ("surface", "paved"),
+            ])
         );
         let err = plan_join(&[
             way(-1, &[1, 2], &[("name", "Main"), ("ref", "1")]),
@@ -1277,7 +1274,7 @@ mod tests {
 
     #[test]
     fn direction_dependent_tags() {
-        let t = |k: &str, v: &str| vec![(k.to_string(), v.to_string())];
+        let t = |k: &str, v: &str| Tags::from([(k, v)]);
         assert!(is_direction_dependent(&t("oneway", "yes")));
         assert!(is_direction_dependent(&t("oneway", "-1")));
         assert!(!is_direction_dependent(&t("oneway", "no")));
@@ -1582,10 +1579,8 @@ mod tests {
         );
     }
 
-    fn tags(list: &[(&str, &str)]) -> Vec<(String, String)> {
-        list.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(list: &[(&str, &str)]) -> Tags {
+        Tags::from(list)
     }
 
     fn change(key: &str, before: Option<&str>, after: Option<&str>) -> TagChange {
@@ -1699,21 +1694,19 @@ mod tests {
             ("incline", "12%"),
             ("direction", "forward"),
         ]);
-        let apply = |tags: &[(String, String)]| {
-            let mut map: BTreeMap<String, String> = tags.iter().cloned().collect();
+        let apply = |tags: &Tags| {
+            let mut map = tags.clone();
             for (key, _, after) in reversed_tag_changes(tags) {
                 match after {
                     Some(v) => map.insert(key, v),
                     None => map.remove(&key),
                 };
             }
-            map.into_iter().collect::<Vec<_>>()
+            map
         };
         let once = apply(&original);
         assert_ne!(once, original);
-        let mut sorted = original.clone();
-        sorted.sort();
-        assert_eq!(apply(&once), sorted);
+        assert_eq!(apply(&once), original);
     }
 
     fn ways(list: &[(i64, &[i64])]) -> Vec<(i64, Vec<i64>)> {

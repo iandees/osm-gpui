@@ -847,6 +847,7 @@ mod tests {
     use crate::http::fake::{ok, status_err, FakeClient};
     use crate::osm::OsmMember;
     use crate::osm_upload::{build_osm_change_xml, ConflictKind, UploadError};
+    use crate::tags::Tags;
 
     const BASE: &str = "https://osm.test";
 
@@ -856,7 +857,7 @@ mod tests {
             lat: 1.0,
             lon: 2.0,
             version: if id > 0 { 1 } else { 0 },
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -865,7 +866,7 @@ mod tests {
             id: WayId(id),
             nodes: NodeId::from_raw_vec(nodes),
             version: if id > 0 { 1 } else { 0 },
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -882,7 +883,7 @@ mod tests {
             id: RelationId(id),
             members,
             version: if id > 0 { 1 } else { 0 },
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 

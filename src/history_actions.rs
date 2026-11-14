@@ -5,7 +5,7 @@
 //! "Object history" is the server's versions of one object. The side panel's
 //! "History" section is the undo history, a different thing.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -18,6 +18,7 @@ use osm_gpui::object_history::{
 };
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::settings_store;
+use osm_gpui::tags::Tags;
 use osm_gpui::tr;
 use osm_gpui::ui::object_history_view::{LoadState, ObjectHistoryView, ViewEvent};
 
@@ -256,7 +257,7 @@ impl MapViewer {
             .layer_manager
             .find_layer(feat.layer_id)?
             .as_editable()?;
-        let tags: BTreeMap<String, String> = editable.feature_tags(feat)?.into_iter().collect();
+        let tags = editable.feature_tags(feat)?;
         let mut state = ObjectState {
             tags,
             ..ObjectState::default()
@@ -298,7 +299,7 @@ impl MapViewer {
     pub(crate) fn revert_tags_to_version(
         &mut self,
         version: u32,
-        target: &BTreeMap<String, String>,
+        target: &Tags,
         cx: &mut Context<Self>,
     ) {
         if self.edits_blocked(cx) {
@@ -311,7 +312,6 @@ impl MapViewer {
         let Some((_, current)) = self.feature_tag_snapshots(&[feat]).into_iter().next() else {
             return;
         };
-        let current: BTreeMap<String, String> = current.into_iter().collect();
         let entries: Vec<_> = tag_revert_edits(&current, target)
             .into_iter()
             .map(|(key, before, after)| (feat, key, before, after))
@@ -438,7 +438,7 @@ mod tests {
         feat
     }
 
-    fn way_tags(view: &MapViewer, feat: &FeatureRef) -> BTreeMap<String, String> {
+    fn way_tags(view: &MapViewer, feat: &FeatureRef) -> Tags {
         view.local_object_state(feat).unwrap().tags
     }
 

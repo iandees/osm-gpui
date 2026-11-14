@@ -11,6 +11,7 @@ use crate::osm::OsmMember;
 use crate::selection::{
     DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind, FeatureRef, PurgedFeatures,
 };
+use crate::tags::Tags;
 
 /// One node's move: id, (lat, lon) before and (lat, lon) after.
 pub type NodeMove = (NodeId, (f64, f64), (f64, f64));
@@ -297,9 +298,8 @@ impl<'a> Recording<'a> {
         };
         self.layer
             .feature_tags(&feature)?
-            .into_iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v)
+            .get(key)
+            .map(str::to_string)
     }
 
     fn way_nodes(&self, way_id: WayId) -> Result<Vec<NodeId>, EditError> {
@@ -312,7 +312,7 @@ impl<'a> Recording<'a> {
         DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: id.get(),
-            tags: Vec::new(),
+            tags: Tags::new(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((lat, lon)),
             version: 0,
@@ -402,7 +402,7 @@ impl<'a> Recording<'a> {
         Ok(())
     }
 
-    pub fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Vec<(String, String)>) -> WayId {
+    pub fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Tags) -> WayId {
         let id = self.layer.add_way(node_ids.clone(), tags.clone());
         self.ops.push(EditOp::PutFeature {
             snapshot: DeletedFeatureSnapshot {
@@ -527,7 +527,7 @@ impl<'a> Recording<'a> {
 
     pub fn create_relation(
         &mut self,
-        tags: Vec<(String, String)>,
+        tags: Tags,
         members: Vec<OsmMember>,
     ) -> Result<RelationId, EditError> {
         let id = self.layer.create_relation(tags, members)?;

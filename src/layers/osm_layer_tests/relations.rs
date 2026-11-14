@@ -7,6 +7,7 @@ use crate::layers::LayerId;
 use crate::layers::{EditError, EditableLayer};
 use crate::osm::{OsmNode, OsmWay};
 use crate::selection::{FeatureKind, FeatureRef};
+use crate::tags::Tags;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,7 +69,7 @@ fn relation_tags_read_edit_and_remove_through_the_layer() {
     base.relations.push(OsmRelation {
         id: RelationId(500),
         version: 3,
-        tags: HashMap::from([("type".to_string(), "route".to_string())]),
+        tags: Tags::from([("type", "route")]),
         members: vec![],
     });
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(base));
@@ -80,7 +81,7 @@ fn relation_tags_read_edit_and_remove_through_the_layer() {
     let missing = FeatureRef { id: 404, ..rel };
     assert_eq!(
         EditableLayer::feature_tags(&layer, &rel),
-        Some(vec![("type".to_string(), "route".to_string())])
+        Some(Tags::from([("type", "route")]))
     );
     assert_eq!(EditableLayer::feature_tags(&layer, &missing), None);
     assert_eq!(
@@ -236,11 +237,11 @@ fn create_relation_allocates_unique_negative_ids_shared_with_nodes_and_ways() {
     use crate::osm::MemberType::Way;
     let mut layer = layer_with_server_relation();
     let n = layer.add_node(40.0, -74.0);
-    let w = layer.add_way(vec![n], vec![]);
-    let r1 = layer.create_relation(vec![], vec![]).unwrap();
+    let w = layer.add_way(vec![n], Tags::new());
+    let r1 = layer.create_relation(Tags::new(), vec![]).unwrap();
     let r2 = layer
         .create_relation(
-            vec![("type".to_string(), "multipolygon".to_string())],
+            Tags::from([("type", "multipolygon")]),
             vec![relation_member(Way, w.get())],
         )
         .unwrap();
@@ -263,9 +264,9 @@ fn create_relation_allocates_unique_negative_ids_shared_with_nodes_and_ways() {
 fn delete_relation_refuses_a_member_relation_and_restores_in_place() {
     use crate::osm::MemberType::Relation;
     let mut layer = layer_with_server_relation();
-    let child = layer.create_relation(vec![], vec![]).unwrap();
+    let child = layer.create_relation(Tags::new(), vec![]).unwrap();
     let parent = layer
-        .create_relation(vec![], vec![relation_member(Relation, child.get())])
+        .create_relation(Tags::new(), vec![relation_member(Relation, child.get())])
         .unwrap();
     assert_eq!(layer.relations_containing_relation(child), vec![parent]);
     assert!(layer.delete_relation(child).is_err());
@@ -305,13 +306,13 @@ fn created_relations_are_remapped_inside_other_relations_after_upload() {
     use crate::osm::MemberType::{Node, Relation, Way};
     let mut layer = layer_with_server_relation();
     let n = layer.add_node(40.0, -74.0);
-    let w = layer.add_way(vec![n], vec![]);
+    let w = layer.add_way(vec![n], Tags::new());
     let child = layer
-        .create_relation(vec![], vec![relation_member(Node, n.get())])
+        .create_relation(Tags::new(), vec![relation_member(Node, n.get())])
         .unwrap();
     let parent = layer
         .create_relation(
-            vec![("type".to_string(), "route".to_string())],
+            Tags::from([("type", "route")]),
             vec![
                 relation_member(Relation, child.get()),
                 relation_member(Way, w.get()),
@@ -385,7 +386,7 @@ fn merge_keeps_a_locally_created_relation_and_a_locally_deleted_one() {
     use crate::osm::{MemberType::Way, OsmData, OsmRelation};
     let mut layer = layer_with_server_relation();
     let created = layer
-        .create_relation(vec![], vec![relation_member(Way, 10)])
+        .create_relation(Tags::new(), vec![relation_member(Way, 10)])
         .unwrap();
     layer.delete_relation(RelationId(500)).unwrap();
 

@@ -5,6 +5,7 @@
 use super::*;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::{EditError, EditableLayer};
+use osm_gpui::tags::Tags;
 
 fn layer_with(data: OsmData) -> OsmLayer {
     OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))
@@ -116,7 +117,7 @@ fn undoing_a_creation_removes_the_way_before_its_nodes() {
     let mut layer = layer_with(network());
     let a = layer.add_node(40.1, -74.1);
     let b = layer.add_node(40.2, -74.2);
-    let way = layer.add_way(vec![a, b], vec![]);
+    let way = layer.add_way(vec![a, b], Tags::new());
     assert_eq!(layer.remove_node(a), Err(EditError::NodeInWay(a)));
     layer.remove_way(way).unwrap();
     layer.remove_node(a).unwrap();
@@ -142,16 +143,13 @@ fn remove_way_and_delete_feature_leave_the_same_layer() {
 #[test]
 fn add_way_and_restore_feature_build_the_same_way() {
     let mut added = layer_with(network());
-    let id = added.add_way(
-        vec![NodeId(1), NodeId(4)],
-        vec![("name".into(), "x".into())],
-    );
+    let id = added.add_way(vec![NodeId(1), NodeId(4)], Tags::from([("name", "x")]));
     let mut restored = layer_with(network());
     restored
         .restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
             kind: FeatureKind::Way,
             id: id.get(),
-            tags: vec![("name".into(), "x".into())],
+            tags: Tags::from([("name", "x")]),
             way_nodes: vec![NodeId(1), NodeId(4)],
             node_lat_lon: None,
             version: 0,
@@ -329,8 +327,8 @@ fn assert_fresh_ids_are_unused(layer: &mut OsmLayer) {
     let ways_before = layer.get_osm_data().unwrap().ways.len();
     let used_node = layer.add_node(40.0, -74.0);
     let used_node_2 = layer.add_node(40.0, -74.1);
-    let way = layer.add_way(vec![used_node, used_node_2], vec![]);
-    let relation = layer.create_relation(vec![], vec![]).unwrap();
+    let way = layer.add_way(vec![used_node, used_node_2], Tags::new());
+    let relation = layer.create_relation(Tags::new(), vec![]).unwrap();
     let data = layer.get_osm_data().unwrap();
     assert_eq!(data.nodes.values().filter(|n| n.id == used_node).count(), 1);
     assert_ne!(used_node, used_node_2);
@@ -367,7 +365,7 @@ fn ids_are_derived_again_when_data_is_loaded_into_an_existing_layer() {
     // counters follow the new data, not the old.
     let mut layer = layer_with(network());
     layer.add_node(40.0, -74.0);
-    layer.add_way(vec![NodeId(1), NodeId(2)], vec![]);
+    layer.add_way(vec![NodeId(1), NodeId(2)], Tags::new());
     layer.set_osm_data(Arc::new(local_ids()));
     assert_fresh_ids_are_unused(&mut layer);
     let data = layer.get_osm_data().unwrap();

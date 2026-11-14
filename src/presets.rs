@@ -5,6 +5,7 @@ use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::OsmData;
 use crate::preset_translations::{active, PresetTranslations};
 use crate::selection::FeatureKind;
+use crate::tags::Tags;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -74,7 +75,7 @@ pub struct Preset {
     #[serde(default)]
     pub icon: Option<String>,
     #[serde(default)]
-    pub tags: HashMap<String, String>,
+    pub tags: Tags,
     pub geometry: Vec<Geometry>,
     #[serde(default = "default_match_score")]
     pub match_score: f32,
@@ -272,11 +273,7 @@ impl PresetIndex {
     /// `"*"` value. So `highway=service` is the Service Road preset (0.9)
     /// rather than the generic any-`highway` one (1.0 x 0.5). Ties go to the
     /// larger `match_score`.
-    pub fn match_feature(
-        &self,
-        tags: &HashMap<String, String>,
-        geometry: Geometry,
-    ) -> Option<&Preset> {
+    pub fn match_feature(&self, tags: &Tags, geometry: Geometry) -> Option<&Preset> {
         self.presets
             .iter()
             .filter(|p| p.geometry.contains(&geometry))
@@ -384,7 +381,7 @@ impl PresetIndex {
 /// (e.g. in a minimal test fixture).
 pub fn describe_feature(
     index: &PresetIndex,
-    tags: &HashMap<String, String>,
+    tags: &Tags,
     geometry: Geometry,
 ) -> (String, Option<String>) {
     describe_feature_in(active(), index, tags, geometry)
@@ -395,7 +392,7 @@ pub fn describe_feature(
 pub fn describe_feature_in(
     translations: Option<&PresetTranslations>,
     index: &PresetIndex,
-    tags: &HashMap<String, String>,
+    tags: &Tags,
     geometry: Geometry,
 ) -> (String, Option<String>) {
     match index.match_feature(tags, geometry) {
@@ -555,8 +552,8 @@ impl AreaKeys {
     /// key is an area key and whose value isn't excluded does. Says nothing
     /// about open ways, which are never areas. An untagged closed way is
     /// *not* an area by tags alone; see [`way_geometry`].
-    pub fn closed_way_is_area(&self, tags: &HashMap<String, String>) -> bool {
-        match tags.get("area").map(String::as_str) {
+    pub fn closed_way_is_area(&self, tags: &Tags) -> bool {
+        match tags.get("area") {
             Some("yes") => return true,
             Some("no") => return false,
             _ => {}
@@ -578,11 +575,7 @@ impl AreaKeys {
 /// an `Area` when it has no tags at all: that is a freshly drawn closed
 /// shape, and the generic Area preset (with the area presets reachable from
 /// the picker) is the least surprising reading of it.
-pub fn way_geometry(
-    tags: &HashMap<String, String>,
-    closed: bool,
-    area_keys: &AreaKeys,
-) -> Geometry {
+pub fn way_geometry(tags: &Tags, closed: bool, area_keys: &AreaKeys) -> Geometry {
     if !closed {
         Geometry::Line
     } else if tags.is_empty() || area_keys.closed_way_is_area(tags) {
@@ -597,11 +590,7 @@ pub fn way_geometry(
 /// a fence loop is a closed line), so both are offered, ordered by
 /// [`way_geometry`]: an area (or untagged) closed way lists area presets
 /// first, a line-tagged closed way lists line presets first.
-pub fn way_candidate_geometries(
-    tags: &HashMap<String, String>,
-    closed: bool,
-    area_keys: &AreaKeys,
-) -> Vec<Geometry> {
+pub fn way_candidate_geometries(tags: &Tags, closed: bool, area_keys: &AreaKeys) -> Vec<Geometry> {
     if !closed {
         return vec![Geometry::Line];
     }
@@ -619,16 +608,18 @@ pub fn way_candidate_geometries(
 /// area-only preset whose tags wouldn't by themselves make it an area also
 /// sets `area=yes`, and a line-only preset removes an existing `area=yes`.
 pub fn preset_tag_changes(
-    preset_tags: &HashMap<String, String>,
+    preset_tags: &Tags,
     preset_geometry: &[Geometry],
-    existing: &HashMap<String, String>,
+    existing: &Tags,
     closed: bool,
     area_keys: &AreaKeys,
 ) -> Vec<(String, Option<String>)> {
     let mut merged = existing.clone();
     for (key, value) in preset_tags {
         if value == "*" {
-            merged.entry(key.clone()).or_insert_with(|| "yes".into());
+            if !merged.contains_key(key) {
+                merged.insert(key.clone(), "yes");
+            }
         } else {
             merged.insert(key.clone(), value.clone());
         }
@@ -639,14 +630,14 @@ pub fn preset_tag_changes(
         let line_only =
             preset_geometry.contains(&Geometry::Line) && !preset_geometry.contains(&Geometry::Area);
         if area_only && !area_keys.closed_way_is_area(&merged) {
-            merged.insert("area".into(), "yes".into());
-        } else if line_only && merged.get("area").map(String::as_str) == Some("yes") {
+            merged.insert("area", "yes");
+        } else if line_only && merged.is("area", "yes") {
             merged.remove("area");
         }
     }
     let mut changes: Vec<(String, Option<String>)> = Vec::new();
     for (key, after) in &merged {
-        if existing.get(key) != Some(after) {
+        if existing.get(key) != Some(after.as_str()) {
             changes.push((key.clone(), Some(after.clone())));
         }
     }
@@ -724,7 +715,7 @@ mod tests {
         assert_eq!(index.get("@templates/t").unwrap().name, "T");
     }
 
-    fn node(id: i64, tags: HashMap<String, String>) -> OsmNode {
+    fn node(id: i64, tags: Tags) -> OsmNode {
         OsmNode {
             id: NodeId(id),
             lat: 0.0,
@@ -734,7 +725,7 @@ mod tests {
         }
     }
 
-    fn way(id: i64, nodes: Vec<i64>, tags: HashMap<String, String>) -> OsmWay {
+    fn way(id: i64, nodes: Vec<i64>, tags: Tags) -> OsmWay {
         OsmWay {
             id: WayId(id),
             nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
@@ -807,34 +798,34 @@ mod tests {
     #[test]
     fn closed_way_is_area_true_when_key_has_no_exclusions() {
         let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
-        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        let tags = Tags::from([("building", "yes")]);
         assert!(area_keys.closed_way_is_area(&tags));
     }
 
     #[test]
     fn closed_way_is_area_false_when_value_excluded() {
         let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
-        let tags = HashMap::from([("highway".to_string(), "residential".to_string())]);
+        let tags = Tags::from([("highway", "residential")]);
         assert!(!area_keys.closed_way_is_area(&tags));
     }
 
     #[test]
     fn closed_way_is_area_true_when_value_not_excluded() {
         let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
-        let tags = HashMap::from([("highway".to_string(), "pedestrian".to_string())]);
+        let tags = Tags::from([("highway", "pedestrian")]);
         assert!(area_keys.closed_way_is_area(&tags));
     }
 
     #[test]
     fn closed_way_is_area_false_when_no_area_key_present() {
         let area_keys = AreaKeys::from_json(AREA_KEYS_FIXTURE).unwrap();
-        let tags = HashMap::from([("natural".to_string(), "water".to_string())]);
+        let tags = Tags::from([("natural", "water")]);
         assert!(!area_keys.closed_way_is_area(&tags));
     }
 
     #[test]
     fn unreferenced_node_is_point() {
-        let data = data_with(vec![node(1, HashMap::new())], vec![]);
+        let data = data_with(vec![node(1, Tags::new())], vec![]);
         let area_keys = AreaKeys::from_json("{}").unwrap();
         assert_eq!(
             classify_geometry(&data, FeatureKind::Node, 1, &area_keys),
@@ -845,8 +836,8 @@ mod tests {
     #[test]
     fn referenced_node_is_vertex() {
         let data = data_with(
-            vec![node(1, HashMap::new()), node(2, HashMap::new())],
-            vec![way(10, vec![1, 2], HashMap::new())],
+            vec![node(1, Tags::new()), node(2, Tags::new())],
+            vec![way(10, vec![1, 2], Tags::new())],
         );
         let area_keys = AreaKeys::from_json("{}").unwrap();
         assert_eq!(
@@ -858,8 +849,8 @@ mod tests {
     #[test]
     fn open_way_is_line() {
         let data = data_with(
-            vec![node(1, HashMap::new()), node(2, HashMap::new())],
-            vec![way(10, vec![1, 2], HashMap::new())],
+            vec![node(1, Tags::new()), node(2, Tags::new())],
+            vec![way(10, vec![1, 2], Tags::new())],
         );
         let area_keys = AreaKeys::from_json("{}").unwrap();
         assert_eq!(
@@ -870,9 +861,9 @@ mod tests {
 
     #[test]
     fn closed_way_with_area_key_is_area() {
-        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        let tags = Tags::from([("building", "yes")]);
         let data = data_with(
-            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![node(1, Tags::new()), node(2, Tags::new())],
             vec![way(10, vec![1, 2, 2, 1], tags)],
         );
         let area_keys = AreaKeys::from_json(r#"{"building": {}}"#).unwrap();
@@ -884,9 +875,9 @@ mod tests {
 
     #[test]
     fn closed_way_without_area_key_is_line() {
-        let tags = HashMap::from([("highway".to_string(), "residential".to_string())]);
+        let tags = Tags::from([("highway", "residential")]);
         let data = data_with(
-            vec![node(1, HashMap::new()), node(2, HashMap::new())],
+            vec![node(1, Tags::new()), node(2, Tags::new())],
             vec![way(10, vec![1, 2, 2, 1], tags)],
         );
         let area_keys = AreaKeys::from_json(r#"{"highway": {"residential": true}}"#).unwrap();
@@ -956,7 +947,7 @@ mod tests {
     #[test]
     fn match_feature_finds_exact_tag_match() {
         let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
-        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let tags = Tags::from([("amenity", "cafe")]);
         let preset = index.match_feature(&tags, Geometry::Point).unwrap();
         assert_eq!(preset.id, "amenity/cafe");
     }
@@ -964,10 +955,7 @@ mod tests {
     #[test]
     fn match_feature_prefers_more_specific_match() {
         let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
-        let tags = HashMap::from([
-            ("amenity".to_string(), "cafe".to_string()),
-            ("organic".to_string(), "only".to_string()),
-        ]);
+        let tags = Tags::from([("amenity", "cafe"), ("organic", "only")]);
         let preset = index.match_feature(&tags, Geometry::Point).unwrap();
         assert_eq!(preset.id, "amenity/cafe/organic");
     }
@@ -975,7 +963,7 @@ mod tests {
     #[test]
     fn match_feature_matches_wildcard_value() {
         let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
-        let tags = HashMap::from([("building".to_string(), "house".to_string())]);
+        let tags = Tags::from([("building", "house")]);
         let preset = index.match_feature(&tags, Geometry::Area).unwrap();
         assert_eq!(preset.id, "building");
     }
@@ -994,13 +982,13 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        let tags = HashMap::from([("highway".to_string(), "service".to_string())]);
+        let tags = Tags::from([("highway", "service")]);
         assert_eq!(
             index.match_feature(&tags, Geometry::Line).unwrap().id,
             "highway/service"
         );
         // An unlisted value still falls back to the generic preset.
-        let tags = HashMap::from([("highway".to_string(), "corridor".to_string())]);
+        let tags = Tags::from([("highway", "corridor")]);
         assert_eq!(
             index.match_feature(&tags, Geometry::Line).unwrap().id,
             "highway"
@@ -1105,14 +1093,14 @@ mod tests {
             ("track", "highway/track"),
             ("path", "highway/path"),
         ] {
-            let tags = HashMap::from([("highway".to_string(), value.to_string())]);
+            let tags = Tags::from([("highway", value)]);
             assert_eq!(
                 index.match_feature(&tags, Geometry::Line).unwrap().id,
                 id,
                 "highway={value}"
             );
         }
-        let fence = HashMap::from([("barrier".to_string(), "fence".to_string())]);
+        let fence = Tags::from([("barrier", "fence")]);
         assert_eq!(
             index.match_feature(&fence, Geometry::Line).unwrap().id,
             "barrier/fence"
@@ -1125,14 +1113,14 @@ mod tests {
         // "amenity/cafe" doesn't list "line" in its geometry, so a line
         // with the same tags should fall through to no match at all
         // (there's no generic "line" fallback in this fixture).
-        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let tags = Tags::from([("amenity", "cafe")]);
         assert!(index.match_feature(&tags, Geometry::Line).is_none());
     }
 
     #[test]
     fn match_feature_falls_back_to_generic_geometry_preset() {
         let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
-        let tags = HashMap::from([("shop".to_string(), "bakery".to_string())]);
+        let tags = Tags::from([("shop", "bakery")]);
         let preset = index.match_feature(&tags, Geometry::Point).unwrap();
         assert_eq!(preset.id, "point");
     }
@@ -1140,7 +1128,7 @@ mod tests {
     #[test]
     fn describe_feature_returns_name_and_icon_on_match() {
         let index = PresetIndex::from_json(MATCH_FIXTURE).unwrap();
-        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let tags = Tags::from([("amenity", "cafe")]);
         let (name, icon) = describe_feature(&index, &tags, Geometry::Point);
         assert_eq!(name, "Cafe");
         assert_eq!(icon, Some("maki-cafe".to_string()));
@@ -1149,7 +1137,7 @@ mod tests {
     #[test]
     fn describe_feature_falls_back_to_geometry_name_when_index_has_no_match() {
         let index = PresetIndex::from_json("[]").unwrap();
-        let tags = HashMap::from([("shop".to_string(), "bakery".to_string())]);
+        let tags = Tags::from([("shop", "bakery")]);
         let (name, icon) = describe_feature(&index, &tags, Geometry::Vertex);
         assert_eq!(name, "Vertex");
         assert_eq!(icon, None);
@@ -1163,7 +1151,7 @@ mod tests {
             "expected hundreds of vendored presets, got {}",
             index.len()
         );
-        let tags = HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+        let tags = Tags::from([("amenity", "cafe")]);
         let preset = index
             .match_feature(&tags, Geometry::Point)
             .expect("amenity=cafe should match a vendored preset");
@@ -1173,7 +1161,7 @@ mod tests {
     #[test]
     fn vendored_area_keys_loads_and_treats_building_as_area() {
         let area_keys = area_keys();
-        let tags = HashMap::from([("building".to_string(), "yes".to_string())]);
+        let tags = Tags::from([("building", "yes")]);
         assert!(area_keys.closed_way_is_area(&tags));
     }
 
@@ -1351,10 +1339,7 @@ mod tests {
     fn preset_parses_fields_and_more_fields() {
         let index = PresetIndex::from_json(FIELDS_FIXTURE).unwrap();
         let cafe = index
-            .match_feature(
-                &HashMap::from([("amenity".to_string(), "cafe".to_string())]),
-                Geometry::Point,
-            )
+            .match_feature(&Tags::from([("amenity", "cafe")]), Geometry::Point)
             .unwrap();
         assert_eq!(cafe.fields, vec!["name".to_string(), "cuisine".to_string()]);
         assert_eq!(cafe.more_fields, vec!["internet_access".to_string()]);
@@ -1363,9 +1348,7 @@ mod tests {
     #[test]
     fn preset_without_fields_defaults_to_empty() {
         let index = PresetIndex::from_json(FIXTURE).unwrap();
-        let point = index
-            .match_feature(&HashMap::new(), Geometry::Point)
-            .unwrap();
+        let point = index.match_feature(&Tags::new(), Geometry::Point).unwrap();
         assert!(point.fields.is_empty());
         assert!(point.more_fields.is_empty());
     }
@@ -1379,8 +1362,8 @@ mod tests {
         assert!(!area_only_results.iter().any(|p| p.id == "amenity/cafe"));
     }
 
-    fn residential_road_tags() -> HashMap<String, String> {
-        HashMap::from([("highway".to_string(), "residential".to_string())])
+    fn residential_road_tags() -> Tags {
+        Tags::from([("highway", "residential")])
     }
 
     #[test]
@@ -1392,14 +1375,14 @@ mod tests {
         let (park, _) = describe_feature_in(
             de,
             preset_index(),
-            &HashMap::from([("leisure".to_string(), "park".to_string())]),
+            &Tags::from([("leisure", "park")]),
             Geometry::Area,
         );
         assert_eq!(park, "Park");
         let (building, _) = describe_feature_in(
             de,
             preset_index(),
-            &HashMap::from([("building".to_string(), "yes".to_string())]),
+            &Tags::from([("building", "yes")]),
             Geometry::Area,
         );
         assert_eq!(building, "Gebäude");
@@ -1451,11 +1434,8 @@ mod tests {
         assert!(index.get("does/not/exist").is_none());
     }
 
-    fn t(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn t(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]

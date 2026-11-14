@@ -628,6 +628,7 @@ mod tests {
     use super::*;
     use crate::ids::{NodeId, WayId};
     use crate::osm::{OsmNode, OsmWay};
+    use crate::tags::Tags;
 
     /// The tests state their inputs positionally; these adapters build the
     /// `SuggestInput` the library takes.
@@ -667,11 +668,8 @@ mod tests {
         })
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn data(nodes: &[&[(&str, &str)]], ways: &[&[(&str, &str)]]) -> OsmData {
@@ -1090,7 +1088,7 @@ mod tests {
         use std::time::Instant;
         let mut nodes = HashMap::new();
         for i in 0..300_000i64 {
-            let mut t = HashMap::new();
+            let mut t = Tags::new();
             if i % 3 == 0 {
                 t.insert("name".to_string(), format!("Place number {i}"));
             }
@@ -1101,7 +1099,7 @@ mod tests {
             if i % 7 == 0 {
                 t.insert(
                     "amenity".to_string(),
-                    ["cafe", "bench", "bar"][(i % 3) as usize].into(),
+                    ["cafe", "bench", "bar"][(i % 3) as usize],
                 );
                 t.insert(format!("survey:{}", i % 50), "yes".to_string());
             }

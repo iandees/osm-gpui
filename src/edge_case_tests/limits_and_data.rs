@@ -7,6 +7,7 @@ use crate::{ExtrudeDrag, ExtrudeStyle};
 use gpui::point;
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
+use osm_gpui::tags::Tags;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -335,7 +336,7 @@ fn put(mut b: Build, id: i64, pos: (f64, f64)) -> Build {
             lat: pos.0,
             lon: pos.1,
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         },
     );
     b

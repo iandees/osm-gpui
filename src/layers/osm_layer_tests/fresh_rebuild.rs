@@ -7,6 +7,7 @@ use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
+use crate::tags::Tags;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -20,10 +21,8 @@ const CSS: &str = "way { width: 2; color: #888888; } \
     node:connection { symbol-size: 6; } \
     node:tagged, node:unconnected { symbol-shape: cross; }";
 
-fn tags(list: &[(&str, &str)]) -> HashMap<String, String> {
-    list.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(list: &[(&str, &str)]) -> Tags {
+    Tags::from(list)
 }
 
 fn node(id: i64, row: f64, col: f64, t: &[(&str, &str)]) -> OsmNode {
@@ -441,19 +440,16 @@ fn add_way_matches_a_fresh_rebuild() {
     let a = l.add_node(40.002, -73.999);
     let b = l.add_node(40.002, -73.996);
     let c = l.add_node(40.004, -73.996);
-    l.add_way(vec![NodeId(1), a], vec![]);
+    l.add_way(vec![NodeId(1), a], Tags::new());
     assert_fresh(&l, "after an untagged open way off the road");
-    let ring = l.add_way(
-        vec![a, b, c, a],
-        vec![("building".to_string(), "yes".to_string())],
-    );
+    let ring = l.add_way(vec![a, b, c, a], Tags::from([("building", "yes")]));
     assert_fresh(&l, "after a closed building");
     l.add_way(
         vec![NodeId(8), NodeId(9)],
-        vec![("highway".to_string(), "path".to_string())],
+        Tags::from([("highway", "path")]),
     );
     assert_fresh(&l, "after a way over two loose nodes");
-    l.add_way(vec![NodeId(ring.get())], vec![]);
+    l.add_way(vec![NodeId(ring.get())], Tags::new());
     assert_fresh(&l, "after a way naming a way id as a node");
 }
 
@@ -687,20 +683,14 @@ fn create_relation_matches_a_fresh_rebuild() {
     let mut l = start();
     let wood = l
         .create_relation(
-            vec![
-                ("type".to_string(), "multipolygon".to_string()),
-                ("natural".to_string(), "wood".to_string()),
-            ],
+            Tags::from([("type", "multipolygon"), ("natural", "wood")]),
             vec![member(MemberType::Way, 102, "outer")],
         )
         .unwrap();
     assert_fresh(&l, "after a multipolygon over the building ring");
     let route = l
         .create_relation(
-            vec![
-                ("type".to_string(), "route".to_string()),
-                ("route".to_string(), "foot".to_string()),
-            ],
+            Tags::from([("type", "route"), ("route", "foot")]),
             vec![
                 member(MemberType::Way, 105, ""),
                 member(MemberType::Way, 106, ""),
@@ -709,7 +699,7 @@ fn create_relation_matches_a_fresh_rebuild() {
         .unwrap();
     assert_fresh(&l, "after a route over two leaf ways");
     l.create_relation(
-        vec![("type".to_string(), "site".to_string())],
+        Tags::from([("type", "site")]),
         vec![
             member(MemberType::Relation, wood.get(), ""),
             member(MemberType::Relation, route.get(), ""),

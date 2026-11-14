@@ -239,7 +239,7 @@ mod tests {
     use super::*;
     use crate::ids::NodeId;
     use crate::osm::{MemberType, OsmMember, OsmRelation, OsmWay};
-    use std::collections::HashMap;
+    use crate::tags::Tags;
 
     #[test]
     fn chunk_cap_lowers_the_changeset_limit_only() {
@@ -265,7 +265,7 @@ mod tests {
             id: WayId(id),
             version: 1,
             nodes: (1..=len as i64).map(NodeId).collect(),
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -280,7 +280,7 @@ mod tests {
                     role: String::new(),
                 })
                 .collect(),
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 

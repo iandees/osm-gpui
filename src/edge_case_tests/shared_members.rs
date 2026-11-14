@@ -6,6 +6,7 @@
 
 use super::*;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
+use osm_gpui::tags::Tags;
 
 fn undo_redo(s: &mut Session, before: &Snap) {
     let after = s.snap();
@@ -373,7 +374,7 @@ fn deleting_a_refused_and_an_allowed_node_together_deletes_only_the_allowed_one_
             lat: 40.01,
             lon: -74.01,
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         },
     );
     data.relations.push(OsmRelation {
@@ -510,7 +511,7 @@ fn disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed(cx: &mu
             lat: 40.02,
             lon: -74.02,
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         },
     );
     data.ways.insert(
@@ -519,7 +520,7 @@ fn disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed(cx: &mu
             id: WayId(12),
             nodes: vec![NodeId(3), NodeId(6)],
             version: 3,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         },
     );
     with_session(cx, data, move |s| {

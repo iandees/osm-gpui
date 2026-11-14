@@ -1,4 +1,5 @@
 use super::*;
+use crate::tags::Tags;
 
 /// The ids of the ways that are a member of any relation, for
 /// `way:in-relation` rules. Empty (and not worth computing) for a stylesheet
@@ -55,7 +56,7 @@ pub(super) struct MpEntry {
     /// way stays what a click selects.
     pub(super) tagged: bool,
     /// The relation's tags, for its area label.
-    pub(super) tags: HashMap<String, String>,
+    pub(super) tags: Tags,
 }
 
 /// What became of a relation in the cache (tests inspect this).

@@ -3,6 +3,7 @@
 use super::{editable, make_pending_change, pending, select, setup, status_text};
 use crate::{DeleteSelection, MapViewer, MemberRef, Redo, TagEditContext, Undo, UploadToOsm};
 use gpui::{point, px, Context, TestAppContext, Window};
+use osm_gpui::tags::Tags;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 use osm_gpui::{auth, settings_store};
 
@@ -81,7 +82,7 @@ fn side_panel_edits_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
                 },
             ];
             let relation_id = editable(view)
-                .create_relation(Vec::new(), members.clone())
+                .create_relation(Tags::new(), members.clone())
                 .unwrap();
             let node1 = FeatureRef {
                 layer_id,
@@ -99,8 +100,7 @@ fn side_panel_edits_are_refused_while_an_upload_runs(cx: &mut TestAppContext) {
                 relation_id,
                 index: 0,
             };
-            let preset_tags =
-                std::collections::HashMap::from([("amenity".to_string(), "cafe".to_string())]);
+            let preset_tags = Tags::from([("amenity", "cafe")]);
             select(view, FeatureKind::Node, &[1]);
 
             // Each edit, as the side panel makes it.

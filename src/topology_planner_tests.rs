@@ -7,10 +7,8 @@ fn ways(list: &[(i64, &[i64])]) -> Vec<(i64, Vec<i64>)> {
     list.iter().map(|(id, n)| (*id, n.to_vec())).collect()
 }
 
-fn tag_list(list: &[(&str, &str)]) -> Vec<(String, String)> {
-    list.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tag_list(list: &[(&str, &str)]) -> Tags {
+    Tags::from(list)
 }
 
 fn change(key: &str, old: Option<&str>, new: Option<&str>) -> TagChange {
@@ -317,7 +315,7 @@ fn reversing_a_node_keeps_absolute_directions_and_unrelated_tags() {
             "{key}={value}"
         );
     }
-    assert!(reversed_node_tag_changes(&[]).is_empty());
+    assert!(reversed_node_tag_changes(&Tags::new()).is_empty());
 }
 
 #[test]
@@ -367,24 +365,18 @@ fn reversing_a_node_twice_gives_the_original_tags() {
         ("traffic_sign:backward", "give_way"),
         ("highway", "stop"),
     ]);
-    let apply = |tags: &[(String, String)]| -> Vec<(String, String)> {
-        let mut map: BTreeMap<String, String> = tags.iter().cloned().collect();
+    let apply = |tags: &Tags| -> Tags {
+        let mut map = tags.clone();
         for (key, _, new) in reversed_node_tag_changes(tags) {
             match new {
                 Some(v) => map.insert(key, v),
                 None => map.remove(&key),
             };
         }
-        map.into_iter().collect()
+        map
     };
     let once = apply(&original);
-    assert_ne!(once, {
-        let mut o = original.clone();
-        o.sort();
-        o
-    });
+    assert_ne!(once, original);
     let twice = apply(&once);
-    let mut expected = original;
-    expected.sort();
-    assert_eq!(twice, expected);
+    assert_eq!(twice, original);
 }

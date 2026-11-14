@@ -7,6 +7,7 @@ use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
+use crate::tags::Tags;
 use crate::viewport::Viewport;
 use gpui::{point, px, size};
 use std::collections::HashMap;
@@ -18,7 +19,7 @@ fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
         lat,
         lon,
         version: 1,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     }
 }
 
@@ -27,7 +28,7 @@ fn way(id: i64, nodes: &[i64]) -> OsmWay {
         id: WayId(id),
         nodes: NodeId::from_raw_vec(nodes),
         version: 1,
-        tags: HashMap::from([("highway".to_string(), "residential".to_string())]),
+        tags: Tags::from([("highway", "residential")]),
     }
 }
 

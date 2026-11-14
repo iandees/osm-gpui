@@ -26,6 +26,7 @@
 //! `query` is a substring match on keys and values.
 
 use crate::http::{HttpClient, HttpError, HttpRequest};
+use crate::tags::Tags;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -272,11 +273,11 @@ const PRIMARY_KEYS: &[&str] = &[
 
 /// The tag of `tags` that best says what the feature is (the first of
 /// `PRIMARY_KEYS` it has), for `Target::Key` lookups of related keys.
-pub fn primary_tag(tags: &[(String, String)]) -> Option<(&str, &str)> {
+pub fn primary_tag(tags: &Tags) -> Option<(&str, &str)> {
     PRIMARY_KEYS.iter().find_map(|pk| {
-        tags.iter()
-            .find(|(k, v)| k == pk && !v.is_empty() && v != "yes" && v.len() <= MAX_QUERY_CHARS)
-            .map(|(k, v)| (k.as_str(), v.as_str()))
+        tags.get(pk)
+            .filter(|v| !v.is_empty() && *v != "yes" && v.len() <= MAX_QUERY_CHARS)
+            .map(|v| (*pk, v))
     })
 }
 
@@ -675,11 +676,8 @@ mod tests {
         ));
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]
