@@ -216,18 +216,67 @@ fn restore_purged_puts_everything_back_in_place_and_in_the_baseline() {
     );
 }
 
-/// `purge_features` records each relation's index after the earlier ones were
-/// removed, while `restore_purged` re-inserts them lowest index first as if
-/// they were original positions: purging 50 and 52 records (0, 1) and
-/// restores to [50, 52, 51] instead of [50, 51, 52].
 #[test]
-#[ignore = "restore_purged misplaces relations purged together: indices are recorded after earlier removals"]
 fn restore_purged_puts_back_several_relations_in_their_original_order() {
     let mut l = layer();
     let purged = l.purge_features(&[], &[], &[50, 52]);
     assert_eq!(l.relation_ids(), vec![51]);
     l.restore_purged(purged);
     assert_eq!(l.relation_ids(), vec![50, 51, 52]);
+}
+
+fn layer_with_relations(ids: &[i64]) -> OsmLayer {
+    let mut data = server_data();
+    data.relations = ids
+        .iter()
+        .map(|&id| relation(id, &[("type", "route")], vec![way_member(10)]))
+        .collect();
+    OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))
+}
+
+/// Purging `purge` in one call and restoring leaves the working data and the
+/// baseline, relation order included, exactly as they were.
+fn assert_purge_round_trips(all: &[i64], purge: &[i64]) {
+    let mut l = layer_with_relations(all);
+    let data = l.osm_data.as_deref().cloned().unwrap();
+    let base = l.original_data.as_deref().cloned().unwrap();
+    let purged = l.purge_features(&[], &[], purge);
+    assert_eq!(purged.relations.len(), purge.len());
+    let left: Vec<i64> = all.iter().copied().filter(|i| !purge.contains(i)).collect();
+    assert_eq!(l.relation_ids(), left, "purge {purge:?}");
+    l.restore_purged(purged);
+    assert_eq!(l.relation_ids(), all, "working order after {purge:?}");
+    let base_ids: Vec<i64> = l
+        .original_data
+        .as_ref()
+        .unwrap()
+        .relations
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(base_ids, all, "baseline order after {purge:?}");
+    assert_eq!(l.osm_data.as_deref(), Some(&data), "data after {purge:?}");
+    assert_eq!(
+        l.original_data.as_deref(),
+        Some(&base),
+        "baseline after {purge:?}"
+    );
+    super::fresh_rebuild::assert_fresh(&l, &format!("restoring {purge:?}"));
+    assert!(l.diff_for_upload().is_empty());
+}
+
+#[test]
+fn restore_purged_round_trips_relations_purged_together_in_any_shape() {
+    let three = [50, 51, 52];
+    assert_purge_round_trips(&three, &[52, 50]);
+    assert_purge_round_trips(&three, &[50, 51]);
+    assert_purge_round_trips(&three, &[51, 52]);
+    assert_purge_round_trips(&three, &[52, 51, 50]);
+    assert_purge_round_trips(&three, &[51]);
+    assert_purge_round_trips(&three, &[50, 51, 52]);
+    let five = [50, 51, 52, 53, 54];
+    assert_purge_round_trips(&five, &[51, 53]);
+    assert_purge_round_trips(&five, &[54, 50, 52]);
 }
 
 #[test]
@@ -279,11 +328,13 @@ fn set_base_version_of_an_unknown_object_is_false_and_changes_nothing() {
     let mut l = layer();
     l.set_tag(Way, 10, "name", "Main").unwrap();
     let before = counts(&l);
+    let revision = l.edit_revision();
     for kind in [Node, Way, Relation] {
         assert!(!l.set_base_version(kind, 777, 3), "{kind:?}");
     }
     assert_eq!(counts(&l), before);
     assert_eq!(l.diff_for_upload().modified_ways[0].version, VERSION);
+    assert_eq!(l.edit_revision(), revision, "no change, no new revision");
 }
 
 fn server_with_node(id: i64, lat: f64, version: i32) -> ServerElement {

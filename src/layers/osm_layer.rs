@@ -5210,16 +5210,22 @@ impl EditableLayer for OsmLayer {
                 purged.ways.push(w);
             }
         }
-        for &id in relations {
-            let base_index = base.relations.iter().position(|r| r.id == id);
-            if let Some(i) = base_index {
-                base.relations.remove(i);
-            }
-            if let Some(i) = data.relations.iter().position(|r| r.id == id) {
-                let r = data.relations.remove(i);
-                purged.relations.push((r, i, base_index.unwrap_or(i)));
+        // Indices are read before anything is removed, so they are positions in
+        // the untouched lists and `restore_purged` can re-insert in ascending
+        // order.
+        let doomed: HashSet<i64> = relations.iter().copied().collect();
+        for (i, r) in data.relations.iter().enumerate() {
+            if doomed.contains(&r.id) {
+                let base_index = base
+                    .relations
+                    .iter()
+                    .position(|b| b.id == r.id)
+                    .unwrap_or(i);
+                purged.relations.push((r.clone(), i, base_index));
             }
         }
+        data.relations.retain(|r| !doomed.contains(&r.id));
+        base.relations.retain(|r| !doomed.contains(&r.id));
         if purged.is_empty() {
             return purged;
         }
@@ -5599,14 +5605,17 @@ impl EditableLayer for OsmLayer {
         else {
             return false;
         };
-        self.revision += 1;
-        resolve::set_base_version(
+        let changed = resolve::set_base_version(
             Arc::make_mut(original),
             Arc::make_mut(current),
             kind,
             id,
             version,
-        )
+        );
+        if changed {
+            self.revision += 1;
+        }
+        changed
     }
 
     fn adopt_server_element(
