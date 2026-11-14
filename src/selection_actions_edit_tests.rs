@@ -4,7 +4,6 @@
 use super::*;
 use crate::test_support::Build;
 use osm_gpui::layers::osm_layer::OsmLayer;
-use osm_gpui::layers::EditError;
 use std::sync::Arc;
 
 fn layers_with(data: osm_gpui::osm::OsmData) -> (LayerManager, LayerId) {
@@ -63,21 +62,59 @@ fn a_refused_step_undoes_what_was_applied_and_reports_it() {
     );
     let before = snapshot(&layers, id);
 
-    // Two steps of an action were applied...
     let editable = layers
         .find_layer_mut(id)
         .unwrap()
         .as_editable_mut()
         .unwrap();
-    editable.set_way_nodes(10, vec![1, 3]).unwrap();
-    let removed = editable.delete_feature(FeatureKind::Node, 2).unwrap();
-    let done = vec![
-        UndoableAction::set_way_nodes(id, 10, vec![1, 2, 3], vec![1, 3]),
-        UndoableAction::delete_feature(id, removed),
-    ];
-    // ...and the third was refused.
-    let message = abort(&mut layers, &done, EditError::NodeInWay(7));
+    let result = record_edit(id, editable, |rec| {
+        // Two steps of an action are applied...
+        rec.set_way_nodes(10, vec![1, 3]).map_err(refused)?;
+        rec.delete_feature(FeatureKind::Node, 2).map_err(refused)?;
+        // ...and the third is refused: node 3 is still in way 10.
+        rec.delete_feature(FeatureKind::Node, 3).map_err(refused)
+    });
+    let message = result.unwrap_err();
 
     assert_eq!(snapshot(&layers, id).0, before.0);
-    assert!(message.contains("node 7"), "{message}");
+    assert!(message.contains("node 3"), "{message}");
+}
+
+#[test]
+fn a_successful_edit_hands_back_what_it_recorded() {
+    let (mut layers, id) = layers_with(Build::new().nodes(&[1, 2, 3]).done());
+    let editable = layers
+        .find_layer_mut(id)
+        .unwrap()
+        .as_editable_mut()
+        .unwrap();
+    let (new_id, ops) = record_edit(id, editable, |rec| {
+        rec.commit_node_moves(&[(1, 5.0, 6.0)]).map_err(refused)?;
+        Ok(rec.add_node(1.0, 2.0))
+    })
+    .unwrap();
+    assert!(new_id < 0);
+    assert!(matches!(ops[..], [EditOp::MoveNodes { .. }, EditOp::PutFeature { .. }]));
+}
+
+#[test]
+fn a_failed_edit_leaves_tags_and_positions_as_they_were() {
+    let (mut layers, id) = layers_with(Build::new().nodes(&[1, 2]).way(10, &[1, 2], &[]).done());
+    let before = snapshot(&layers, id);
+    let editable = layers
+        .find_layer_mut(id)
+        .unwrap()
+        .as_editable_mut()
+        .unwrap();
+    let result = record_edit(id, editable, |rec| {
+        rec.set_tag(FeatureKind::Way, 10, "highway", "path")
+            .map_err(refused)?;
+        rec.commit_node_moves(&[(1, 5.0, 6.0), (2, 7.0, 8.0)])
+            .map_err(refused)?;
+        rec.reverse_way(10).map_err(refused)?;
+        // No such way.
+        rec.set_way_nodes(99, vec![1, 2]).map_err(refused)
+    });
+    assert!(result.is_err());
+    assert_eq!(snapshot(&layers, id).0, before.0);
 }

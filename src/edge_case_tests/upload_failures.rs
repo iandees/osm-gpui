@@ -539,9 +539,12 @@ fn edit_tag(s: &mut Session, kind: FeatureKind, id: i64, key: &str, value: &str)
     s.set_tag(kind, id, key, value);
     s.view
         .undo_stack
-        .push(crate::undo::UndoableAction::SetTags {
-            entries: vec![(feature, key.to_string(), before, Some(value.to_string()))],
-        });
+        .push(crate::undo::UndoableAction::set_tags(vec![(
+            feature,
+            key.to_string(),
+            before,
+            Some(value.to_string()),
+        )]));
 }
 
 fn failure_of(up: &ChunkedUpload) -> &UploadFailure {

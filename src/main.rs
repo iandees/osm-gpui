@@ -1944,7 +1944,7 @@ impl MapViewer {
             return;
         }
         self.note_tag_changes(&indexed, &entries);
-        self.undo_stack.push(UndoableAction::SetTags { entries });
+        self.undo_stack.push(UndoableAction::set_tags(entries));
     }
 
     /// Delete `key` from every currently-selected feature that has it,
@@ -1973,7 +1973,7 @@ impl MapViewer {
             return;
         }
         self.note_tag_changes(&indexed, &entries);
-        self.undo_stack.push(UndoableAction::SetTags { entries });
+        self.undo_stack.push(UndoableAction::set_tags(entries));
         cx.notify();
     }
 
@@ -2378,10 +2378,10 @@ impl MapViewer {
         }
         self.undo_stack.push(UndoableAction::Batch {
             label: tr!("history.rotated").to_string(),
-            actions: vec![UndoableAction::MoveNodes {
-                select: None,
-                per_layer: vec![(session.layer, entries)],
-            }],
+            actions: vec![UndoableAction::move_nodes(
+                vec![(session.layer, entries)],
+                None,
+            )],
         });
         self.set_status(tr!("action.rotate.done", degrees = format!("{degrees:.0}")));
     }
@@ -3166,7 +3166,7 @@ impl MapViewer {
         if entries.is_empty() {
             return;
         }
-        self.undo_stack.push(UndoableAction::SetTags { entries });
+        self.undo_stack.push(UndoableAction::set_tags(entries));
     }
 
     /// Apply `preset_tags` to `target`: for each preset key whose value
@@ -3250,7 +3250,7 @@ impl MapViewer {
         if entries.is_empty() {
             return;
         }
-        self.undo_stack.push(UndoableAction::SetTags { entries });
+        self.undo_stack.push(UndoableAction::set_tags(entries));
     }
 
     /// The dialog host's focus rule: while a modal dialog is open, focus is
@@ -3675,12 +3675,13 @@ impl MapViewer {
                             )
                         });
                     match joined {
-                        Some(Ok(actions)) => {
+                        Some(Ok(ops)) => {
                             let label = tr!("action.join_node_way.done").to_string();
-                            self.undo_stack.push(UndoableAction::Batch {
-                                label: label.clone(),
-                                actions,
-                            });
+                            self.undo_stack.push(UndoableAction::edit(
+                                *layer_id,
+                                EditLabel::Text(label.clone()),
+                                ops,
+                            ));
                             self.set_status(label);
                             cx.notify();
                             return;
@@ -3722,10 +3723,10 @@ impl MapViewer {
                     cx.notify();
                     return;
                 }
-                let move_action = UndoableAction::MoveNodes {
-                    select: (!self.selected.is_empty()).then(|| self.selected.clone()),
-                    per_layer: undo_per_layer,
-                };
+                let move_action = UndoableAction::move_nodes(
+                    undo_per_layer,
+                    (!self.selected.is_empty()).then(|| self.selected.clone()),
+                );
                 if let Some(((layer_id, node), SnapTarget::Node { id: target, .. })) = snap {
                     // Merge the dropped node with the one it landed on, as
                     // one undo step with the move.

@@ -244,6 +244,20 @@ impl<'a> Recording<'a> {
         failures
     }
 
+    /// A position in the recording, for `roll_back_to`.
+    pub fn mark(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// Undo and forget everything recorded after `mark`, newest first, and
+    /// return what the layer refused.
+    pub fn roll_back_to(&mut self, mark: usize) -> Vec<EditError> {
+        let tail = self.ops.split_off(mark.min(self.ops.len()));
+        let mut failures = Vec::new();
+        replay(&tail, false, self.layer, &mut failures);
+        failures
+    }
+
     fn tag_of(&self, kind: FeatureKind, id: i64, key: &str) -> Option<String> {
         let feature = FeatureRef {
             layer_id: self.layer_id,

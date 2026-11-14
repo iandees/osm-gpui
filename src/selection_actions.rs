@@ -21,11 +21,8 @@ use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
 use crate::clipboard_actions::{ClipboardOp, Clipboards};
-#[cfg(test)]
-use crate::undo::EditLabel;
-use crate::undo::{roll_back, NodeMoveUndoEntry, TagEntry, UndoableAction};
-#[cfg(test)]
-use osm_gpui::edit_ops::EditOp;
+use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
+use osm_gpui::edit_ops::{EditOp, Recording};
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -877,28 +874,37 @@ fn refused(e: EditError) -> String {
     tr!("action.edit_refused", detail = e.to_string()).to_string()
 }
 
-/// Write the "after" value of each entry in turn, stopping at the first
-/// refusal; the entries that took effect are added to `applied`.
-fn write_entries(
+/// Edit `editable` through a recording. If `edit` fails, everything it did is
+/// undone and the layer is as it was; if it succeeds, the recorded ops come
+/// back for the undo step.
+fn record_edit<T>(
+    layer_id: LayerId,
     editable: &mut dyn EditableLayer,
-    entries: Vec<TagEntry>,
-    applied: &mut Vec<TagEntry>,
-) -> Result<(), EditError> {
-    for entry in entries {
-        let (feature, key, _, after) = &entry;
-        match after {
-            Some(value) => editable.set_tag(feature.kind, feature.id, key, value),
-            None => editable.remove_tag(feature.kind, feature.id, key),
-        }?;
-        applied.push(entry);
+    edit: impl FnOnce(&mut Recording<'_>) -> Result<T, String>,
+) -> Result<(T, Vec<EditOp>), String> {
+    let mut rec = Recording::new(layer_id, editable);
+    match edit(&mut rec) {
+        Ok(value) => Ok((value, rec.into_ops())),
+        Err(message) => {
+            roll_back_recording(rec);
+            Err(message)
+        }
     }
-    Ok(())
 }
 
-/// Undo what `done` already applied, then report the refusal `cause`.
-fn abort(layers: &mut LayerManager, done: &[UndoableAction], cause: EditError) -> String {
-    roll_back(layers, done);
-    refused(cause)
+/// Set tag `key` of a feature to `value`, or remove it when `value` is `None`.
+fn write_tag(
+    rec: &mut Recording<'_>,
+    kind: FeatureKind,
+    id: i64,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
+    match value {
+        Some(value) => rec.set_tag(kind, id, key, value),
+        None => rec.remove_tag(kind, id, key),
+    }
+    .map_err(refused)
 }
 
 fn active_editable_mut(
@@ -955,26 +961,25 @@ fn reshape_ways(
         return Err(none_changed().to_string());
     }
 
-    let mut entries: Vec<NodeMoveUndoEntry> = current
+    let mut moves: Vec<(i64, f64, f64)> = current
         .iter()
         .filter(|(id, after)| original[id] != **after)
-        .map(|(&id, &after)| (id, original[&id], after))
+        .map(|(&id, &(lat, lon))| (id, lat, lon))
         .collect();
-    entries.sort_by_key(|e| e.0);
-    if entries.is_empty() {
+    moves.sort_by_key(|m| m.0);
+    if moves.is_empty() {
         return Err(none_changed().to_string());
     }
-    let moves: Vec<(i64, f64, f64)> = entries
-        .iter()
-        .map(|&(id, _, (lat, lon))| (id, lat, lon))
-        .collect();
-    editable.commit_node_moves(&moves).map_err(refused)?;
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        rec.commit_node_moves(&moves).map_err(refused)
+    })?;
 
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(layer_id, entries)],
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::MovedNodes(moves.len()),
+            ops,
+        )),
         status: done(changed_ways).to_string(),
         clear_selection: false,
         select: None,
@@ -1075,7 +1080,7 @@ pub(crate) fn simplify_ways(
     tolerance: f64,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
-    let mut actions = Vec::new();
+    let mut way_edits: Vec<(i64, Vec<i64>)> = Vec::new();
     let mut dropped: Vec<i64> = Vec::new();
     let mut done_ways: Vec<i64> = Vec::new();
     for way in selected_ways_in(editable, layer_id, selection) {
@@ -1096,33 +1101,30 @@ pub(crate) fn simplify_ways(
         if after.len() == way.node_ids.len() || (closed && after.len() < 4) {
             continue;
         }
-        if editable.set_way_nodes(way.way_id, after.clone()).is_ok() {
-            actions.push(UndoableAction::set_way_nodes(
-                layer_id,
-                way.way_id,
-                way.node_ids.clone(),
-                after,
-            ));
-            dropped.extend(
-                way.node_ids
-                    .iter()
-                    .zip(&keep)
-                    .filter(|(_, &k)| !k)
-                    .map(|(&id, _)| id),
-            );
-        }
+        way_edits.push((way.way_id, after));
+        dropped.extend(
+            way.node_ids
+                .iter()
+                .zip(&keep)
+                .filter(|(_, &k)| !k)
+                .map(|(&id, _)| id),
+        );
     }
     if dropped.is_empty() {
         return Err(tr!("action.simplify.none", tolerance = tolerance).to_string());
     }
-    for &id in &dropped {
-        // A dropped node another way still uses is refused, and stays.
-        if let Ok(snapshot) = editable.delete_feature(FeatureKind::Node, id) {
-            actions.push(UndoableAction::delete_feature(layer_id, snapshot));
-        }
-    }
     let status =
         tr_count!("action.simplify.done", dropped.len(), tolerance = tolerance).to_string();
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        for (way_id, after) in way_edits {
+            rec.set_way_nodes(way_id, after).map_err(refused)?;
+        }
+        for &id in &dropped {
+            // A dropped node another way still uses is refused, and stays.
+            let _ = rec.delete_feature(FeatureKind::Node, id);
+        }
+        Ok(())
+    })?;
     let select = selection
         .iter()
         .filter(|f| {
@@ -1131,10 +1133,11 @@ pub(crate) fn simplify_ways(
         .cloned()
         .collect();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: status.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(status.clone()),
+            ops,
+        )),
         status,
         clear_selection: false,
         select: Some(select),
@@ -1201,124 +1204,97 @@ fn apply_reverse(
             return Err(tr!("action.reverse.error.tag_too_long", way = way.way_id).to_string());
         }
     }
-    let mut reversed = Vec::new();
-    let mut tag_entries = Vec::new();
-    for way in ways.iter().filter(|w| w.node_ids.len() >= 2) {
-        if editable.reverse_way(way.way_id).is_err() {
-            continue;
-        }
-        reversed.push(way.way_id);
-        // Keep direction-dependent tags meaning the same thing.
-        let way_ref = FeatureRef {
-            layer_id,
-            kind: FeatureKind::Way,
-            id: way.way_id,
-        };
-        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
-        for (key, before, after) in topology::reversed_tag_changes(&tags) {
-            let written = match &after {
-                Some(value) => editable.set_tag(FeatureKind::Way, way.way_id, &key, value),
-                None => editable.remove_tag(FeatureKind::Way, way.way_id, &key),
-            };
-            written.map_err(refused)?;
-            tag_entries.push((way_ref, key, before, after));
-        }
-    }
-    if reversed.is_empty() {
+    let targets: Vec<&WayGeometry> = ways.iter().filter(|w| w.node_ids.len() >= 2).collect();
+    if targets.is_empty() {
         return Err(tr!("action.reverse.hint").to_string());
     }
-    // Facing tags on the ways' nodes (a stop sign's `direction=forward`,
-    // `traffic_sign:forward`) flip too. A node shared by several reversed ways
-    // is flipped once; a node that is also used by a way that is not being
-    // reversed keeps its tags, since it still faces the right way for that way.
-    let mut seen_nodes = std::collections::HashSet::new();
-    for way in ways.iter().filter(|w| reversed.contains(&w.way_id)) {
-        for &node_id in &way.node_ids {
-            if !seen_nodes.insert(node_id) {
-                continue;
-            }
-            if editable
-                .ways_using_node(node_id)
-                .iter()
-                .any(|w| !reversed.contains(w))
-            {
-                continue;
-            }
-            let node_ref = FeatureRef {
+    let (reversed, ops) = record_edit(layer_id, editable, |rec| {
+        let mut reversed = Vec::new();
+        for way in &targets {
+            rec.reverse_way(way.way_id).map_err(refused)?;
+            reversed.push(way.way_id);
+            // Keep direction-dependent tags meaning the same thing.
+            let way_ref = FeatureRef {
                 layer_id,
-                kind: FeatureKind::Node,
-                id: node_id,
+                kind: FeatureKind::Way,
+                id: way.way_id,
             };
-            let tags = editable.feature_tags(&node_ref).unwrap_or_default();
-            for (key, before, after) in topology::reversed_node_tag_changes(&tags) {
-                let written = match &after {
-                    Some(value) => editable.set_tag(FeatureKind::Node, node_id, &key, value),
-                    None => editable.remove_tag(FeatureKind::Node, node_id, &key),
-                };
-                written.map_err(refused)?;
-                tag_entries.push((node_ref, key, before, after));
+            let tags = rec.layer().feature_tags(&way_ref).unwrap_or_default();
+            for (key, _, after) in topology::reversed_tag_changes(&tags) {
+                write_tag(rec, FeatureKind::Way, way.way_id, &key, after.as_deref())?;
             }
         }
-    }
-    // Route relations: a member's `forward`/`backward` role swaps with its way.
-    let mut relation_edits = Vec::new();
-    let mut relation_ids: Vec<i64> = reversed
-        .iter()
-        .flat_map(|id| editable.relations_containing_way(*id))
-        .collect();
-    relation_ids.sort_unstable();
-    relation_ids.dedup();
-    for relation_id in relation_ids {
-        let Some(relation) = editable.relation(relation_id) else {
-            continue;
-        };
-        let mut after = relation.members.clone();
-        let mut changed = false;
-        for member in after.iter_mut() {
-            if member.member_type == osm_gpui::osm::MemberType::Way
-                && reversed.contains(&member.reference)
-            {
-                let flipped = match member.role.as_str() {
-                    "forward" => "backward",
-                    "backward" => "forward",
-                    _ => continue,
+        // Facing tags on the ways' nodes (a stop sign's `direction=forward`,
+        // `traffic_sign:forward`) flip too. A node shared by several reversed
+        // ways is flipped once; a node that is also used by a way that is not
+        // being reversed keeps its tags, since it still faces the right way
+        // for that way.
+        let mut seen_nodes = std::collections::HashSet::new();
+        for way in targets.iter().filter(|w| reversed.contains(&w.way_id)) {
+            for &node_id in &way.node_ids {
+                if !seen_nodes.insert(node_id) {
+                    continue;
+                }
+                if rec
+                    .layer()
+                    .ways_using_node(node_id)
+                    .iter()
+                    .any(|w| !reversed.contains(w))
+                {
+                    continue;
+                }
+                let node_ref = FeatureRef {
+                    layer_id,
+                    kind: FeatureKind::Node,
+                    id: node_id,
                 };
-                member.role = flipped.to_string();
-                changed = true;
+                let tags = rec.layer().feature_tags(&node_ref).unwrap_or_default();
+                for (key, _, after) in topology::reversed_node_tag_changes(&tags) {
+                    write_tag(rec, FeatureKind::Node, node_id, &key, after.as_deref())?;
+                }
             }
         }
-        if changed {
-            editable
-                .set_relation_members(relation_id, after.clone())
-                .map_err(refused)?;
-            relation_edits.push(UndoableAction::set_relation_members(
-                layer_id,
-                relation_id,
-                relation.members,
-                after,
-            ));
+        // Route relations: a member's `forward`/`backward` role swaps with its way.
+        let mut relation_ids: Vec<i64> = reversed
+            .iter()
+            .flat_map(|id| rec.layer().relations_containing_way(*id))
+            .collect();
+        relation_ids.sort_unstable();
+        relation_ids.dedup();
+        for relation_id in relation_ids {
+            let Some(relation) = rec.layer().relation(relation_id) else {
+                continue;
+            };
+            let mut after = relation.members.clone();
+            let mut changed = false;
+            for member in after.iter_mut() {
+                if member.member_type == osm_gpui::osm::MemberType::Way
+                    && reversed.contains(&member.reference)
+                {
+                    let flipped = match member.role.as_str() {
+                        "forward" => "backward",
+                        "backward" => "forward",
+                        _ => continue,
+                    };
+                    member.role = flipped.to_string();
+                    changed = true;
+                }
+            }
+            if changed {
+                rec.set_relation_members(relation_id, after)
+                    .map_err(refused)?;
+            }
         }
-    }
-    let status = tr_count!("action.reverse.done", reversed.len()).to_string();
-    let reverse = UndoableAction::reverse_ways(layer_id, reversed);
+        Ok(reversed)
+    })?;
     // The node order, the tag flips and the role swaps are one undo step.
-    let undo = if tag_entries.is_empty() && relation_edits.is_empty() {
-        reverse
-    } else {
-        let mut actions = vec![reverse];
-        if !tag_entries.is_empty() {
-            actions.push(UndoableAction::SetTags {
-                entries: tag_entries,
-            });
-        }
-        actions.extend(relation_edits);
-        UndoableAction::Batch {
-            label: status.clone(),
-            actions,
-        }
-    };
+    let status = tr_count!("action.reverse.done", reversed.len()).to_string();
     Ok(ActionOutcome {
-        undo: Some(undo),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Reversed(reversed.len()),
+            ops,
+        )),
         status,
         clear_selection: false,
         select: None,
@@ -1375,60 +1351,32 @@ fn apply_join(
         id,
     };
 
-    let mut actions = vec![UndoableAction::set_way_nodes(
-        layer_id,
-        plan.keep,
-        kept.nodes.clone(),
-        plan.nodes.clone(),
-    )];
-    // A refusal from here on undoes what `actions` holds before reporting it.
-    editable
-        .set_way_nodes(plan.keep, plan.nodes)
-        .map_err(refused)?;
-
-    let mut tag_entries = Vec::new();
-    for (key, value) in &plan.tags {
-        if !kept.tags.iter().any(|(k, _)| k == key) {
-            if let Err(e) = editable.set_tag(FeatureKind::Way, plan.keep, key, value) {
-                if !tag_entries.is_empty() {
-                    actions.push(UndoableAction::SetTags {
-                        entries: tag_entries,
-                    });
-                }
-                return Err(abort(layers, &actions, e));
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        rec.set_way_nodes(plan.keep, plan.nodes.clone())
+            .map_err(refused)?;
+        for (key, value) in &plan.tags {
+            if !kept.tags.iter().any(|(k, _)| k == key) {
+                rec.set_tag(FeatureKind::Way, plan.keep, key, value)
+                    .map_err(refused)?;
             }
-            tag_entries.push((way_ref(plan.keep), key.clone(), None, Some(value.clone())));
         }
-    }
-    if !tag_entries.is_empty() {
-        actions.push(UndoableAction::SetTags {
-            entries: tag_entries,
-        });
-    }
-    for (relation_id, before, after) in relation_edits {
-        if let Err(e) = editable.set_relation_members(relation_id, after.clone()) {
-            return Err(abort(layers, &actions, e));
+        for (relation_id, _, after) in relation_edits {
+            rec.set_relation_members(relation_id, after)
+                .map_err(refused)?;
         }
-        actions.push(UndoableAction::set_relation_members(
-            layer_id,
-            relation_id,
-            before,
-            after,
-        ));
-    }
-    for id in &plan.remove {
-        match editable.delete_feature(FeatureKind::Way, *id) {
-            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
-            Err(e) => return Err(abort(layers, &actions, e)),
+        for id in &plan.remove {
+            rec.delete_feature(FeatureKind::Way, *id).map_err(refused)?;
         }
-    }
+        Ok(())
+    })?;
 
     let label = tr_count!("action.join.done", ways.len()).to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: false,
         select: Some(vec![way_ref(plan.keep)]),
@@ -1493,42 +1441,36 @@ fn apply_extract(
         return Err(tr!("action.extract.hint").to_string());
     }
 
-    let mut actions = Vec::new();
-    let mut created = Vec::new();
-    for plan in plans {
-        let (lat, lon) = plan.at;
-        let id = editable.add_node(lat, lon);
-        let node = FeatureRef {
-            layer_id,
-            kind: FeatureKind::Node,
-            id,
-        };
-        actions.push(UndoableAction::create_node(layer_id, id, lat, lon));
-        let mut entries = Vec::new();
-        for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
-            entries.push((node, key.clone(), None, Some(value.clone())));
+    let (created, ops) = record_edit(layer_id, editable, |rec| {
+        let mut created = Vec::new();
+        for plan in &plans {
+            let (lat, lon) = plan.at;
+            let id = rec.add_node(lat, lon);
+            for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
+                write_tag(rec, FeatureKind::Node, id, key, Some(value.as_str()))?;
+            }
+            for (key, _) in &plan.split.moved {
+                write_tag(rec, FeatureKind::Way, plan.way.id, key, None)?;
+            }
+            if plan.split.add_area {
+                write_tag(rec, FeatureKind::Way, plan.way.id, "area", Some("yes"))?;
+            }
+            created.push(FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id,
+            });
         }
-        for (key, value) in &plan.split.moved {
-            entries.push((plan.way, key.clone(), Some(value.clone()), None));
-        }
-        if plan.split.add_area {
-            entries.push((plan.way, "area".to_string(), None, Some("yes".to_string())));
-        }
-        let mut applied = Vec::new();
-        let written = write_entries(editable, entries, &mut applied);
-        actions.push(UndoableAction::SetTags { entries: applied });
-        if let Err(e) = written {
-            return Err(abort(layers, &actions, e));
-        }
-        created.push(node);
-    }
+        Ok(created)
+    })?;
 
     let label = tr_count!("action.extract.done", created.len()).to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: true,
         select: Some(created),
@@ -1653,29 +1595,20 @@ fn separate_node(
         }
     }
 
-    let mut created = Vec::new();
-    let edits = plan(&mut || {
-        let id = editable.add_node(lat, lon);
-        created.push(id);
-        id
-    })
-    .ok_or_else(hint)?;
-
-    let mut actions: Vec<UndoableAction> = created
-        .iter()
-        .map(|&id| UndoableAction::create_node(layer_id, id, lat, lon))
-        .collect();
-    for edit in edits {
-        if let Err(e) = editable.set_way_nodes(edit.way_id, edit.after.clone()) {
-            return Err(abort(layers, &actions, e));
+    let (created, ops) = record_edit(layer_id, editable, |rec| {
+        let mut created = Vec::new();
+        let edits = plan(&mut || {
+            let id = rec.add_node(lat, lon);
+            created.push(id);
+            id
+        })
+        .ok_or_else(hint)?;
+        for edit in edits {
+            rec.set_way_nodes(edit.way_id, edit.after)
+                .map_err(refused)?;
         }
-        actions.push(UndoableAction::set_way_nodes(
-            layer_id,
-            edit.way_id,
-            edit.before,
-            edit.after,
-        ));
-    }
+        Ok(created)
+    })?;
 
     let label = if unjoin {
         tr!("action.unjoin.done").to_string()
@@ -1683,10 +1616,11 @@ fn separate_node(
         tr_count!("action.separate.done", created.len() + 1).to_string()
     };
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: false,
         select: None,
@@ -1767,26 +1701,25 @@ fn apply_paste_tags(
         return Err(tr!("action.paste_tags.hint").to_string());
     }
 
-    let mut entries = Vec::new();
-    let mut changed_features = 0usize;
-    for feature in &targets {
-        let Some(existing) = editable.feature_tags(feature) else {
-            continue;
-        };
-        let before = entries.len();
-        for (key, value) in &clipboard {
-            let old = existing.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-            if old == Some(value) {
+    let (changed_features, ops) = record_edit(layer_id, editable, |rec| {
+        let mut changed_features = 0usize;
+        for feature in &targets {
+            let Some(existing) = rec.layer().feature_tags(feature) else {
                 continue;
+            };
+            let before = rec.mark();
+            for (key, value) in &clipboard {
+                if existing.iter().find(|(k, _)| k == key).map(|(_, v)| v) == Some(value) {
+                    continue;
+                }
+                rec.set_tag(feature.kind, feature.id, key, value)
+                    .map_err(refused)?;
             }
-            if let Err(e) = editable.set_tag(feature.kind, feature.id, key, value) {
-                return Err(abort(layers, &[UndoableAction::SetTags { entries }], e));
-            }
-            entries.push((*feature, key.clone(), old.cloned(), Some(value.clone())));
+            changed_features += usize::from(rec.mark() > before);
         }
-        changed_features += usize::from(entries.len() > before);
-    }
-    if entries.is_empty() {
+        Ok(changed_features)
+    })?;
+    if ops.is_empty() {
         return Err(tr!("action.paste_tags.none").to_string());
     }
     let status = tr!(
@@ -1796,7 +1729,11 @@ fn apply_paste_tags(
     )
     .to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::SetTags { entries }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::ChangedTags(ops.len()),
+            ops,
+        )),
         status,
         clear_selection: false,
         select: None,
@@ -1939,52 +1876,59 @@ fn apply_split(
         }
     }
 
-    let mut actions = Vec::new();
-    let mut new_ids = Vec::new();
-    for (plan, ids) in plans.iter().zip(&ids_by_plan) {
-        let way_ref = FeatureRef {
-            layer_id,
-            kind: FeatureKind::Way,
-            id: plan.way_id,
-        };
-        let tags = editable.feature_tags(&way_ref).unwrap_or_default();
-        // Where every way of this plan ends up, replaying its cuts.
-        let mut finals = vec![plan.before.clone()];
-        for cut in plan.cuts() {
-            finals[cut.holder] = cut.keep;
-            finals.push(cut.new);
-        }
-        for (k, nodes) in finals.iter().enumerate().skip(1) {
-            let new_id = editable.add_way(nodes.clone(), tags.clone());
-            new_ids.push((ids[k], new_id));
-            actions.push(UndoableAction::create_way(
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        let mut new_ids = Vec::new();
+        for (plan, ids) in plans.iter().zip(&ids_by_plan) {
+            let way_ref = FeatureRef {
                 layer_id,
-                osm_gpui::selection::DeletedFeatureSnapshot {
-                    kind: FeatureKind::Way,
-                    id: new_id,
-                    tags: tags.clone(),
-                    way_nodes: nodes.clone(),
-                    node_lat_lon: None,
-                    version: 0,
-                },
-            ));
+                kind: FeatureKind::Way,
+                id: plan.way_id,
+            };
+            let tags = rec.layer().feature_tags(&way_ref).unwrap_or_default();
+            // Where every way of this plan ends up, replaying its cuts.
+            let mut finals = vec![plan.before.clone()];
+            for cut in plan.cuts() {
+                finals[cut.holder] = cut.keep;
+                finals.push(cut.new);
+            }
+            for (k, nodes) in finals.iter().enumerate().skip(1) {
+                let new_id = rec.add_way(nodes.clone(), tags.clone());
+                new_ids.push((ids[k], new_id));
+            }
+            if plan.cuts().is_empty() {
+                // A closed way only turned to start at the node.
+                finals[0] = plan.keep().to_vec();
+            }
+            rec.set_way_nodes(plan.way_id, finals.swap_remove(0))
+                .map_err(refused)?;
         }
-        if plan.cuts().is_empty() {
-            // A closed way only turned to start at the node.
-            finals[0] = plan.keep().to_vec();
-        }
-        if let Err(e) = editable.set_way_nodes(plan.way_id, finals[0].clone()) {
-            return Err(abort(layers, &actions, e));
-        }
-        actions.push(UndoableAction::set_way_nodes(
+        retarget_relations(rec, relations, &new_ids)
+    })?;
+
+    let label = tr_count!("action.split.done", plans.len()).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::edit(
             layer_id,
-            plan.way_id,
-            plan.before.clone(),
-            finals[0].clone(),
-        ));
-    }
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
+        status: label,
+        clear_selection: false,
+        select: None,
+        continue_way: None,
+    })
+}
+
+/// Give each of `relations` its planned member list, with the placeholder ids
+/// in `new_ids` (placeholder, real id) swapped for the real ones; relations
+/// whose list ends up unchanged are left alone.
+fn retarget_relations(
+    rec: &mut Recording<'_>,
+    relations: Vec<osm_gpui::osm::OsmRelation>,
+    new_ids: &[(i64, i64)],
+) -> Result<(), String> {
     for relation in relations {
-        let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
+        let Some(before) = rec.layer().relation(relation.id).map(|r| r.members) else {
             continue;
         };
         let mut after = relation.members;
@@ -1994,29 +1938,11 @@ fn apply_split(
             }
         }
         if after != before {
-            if let Err(e) = editable.set_relation_members(relation.id, after.clone()) {
-                return Err(abort(layers, &actions, e));
-            }
-            actions.push(UndoableAction::set_relation_members(
-                layer_id,
-                relation.id,
-                before,
-                after,
-            ));
+            rec.set_relation_members(relation.id, after)
+                .map_err(refused)?;
         }
     }
-
-    let label = tr_count!("action.split.done", plans.len()).to_string();
-    Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
-        status: label,
-        clear_selection: false,
-        select: None,
-        continue_way: None,
-    })
+    Ok(())
 }
 
 /// The selection read as "delete this segment": two nodes of the active layer
@@ -2193,95 +2119,57 @@ fn apply_delete_segment(
         id: way_id,
     };
     let tags = editable.feature_tags(&way_ref).unwrap_or_default();
-    let mut actions = Vec::new();
-    let mut new_ids: Vec<(i64, i64)> = Vec::new();
-    let kept = match &split {
-        Some(plan) => {
-            // Where every way of the split ends up; the middle one is not made.
-            let mut finals = vec![plan.before.clone()];
-            for cut in plan.cuts() {
-                finals[cut.holder] = cut.keep;
-                finals.push(cut.new);
-            }
-            for (k, nodes) in finals.iter().enumerate().skip(1) {
-                if Some(k) == middle_idx {
-                    continue;
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        let mut new_ids: Vec<(i64, i64)> = Vec::new();
+        let kept = match &split {
+            Some(plan) => {
+                // Where every way of the split ends up; the middle one is not made.
+                let mut finals = vec![plan.before.clone()];
+                for cut in plan.cuts() {
+                    finals[cut.holder] = cut.keep;
+                    finals.push(cut.new);
                 }
-                let new_id = editable.add_way(nodes.clone(), tags.clone());
-                new_ids.push((ids[k], new_id));
-                actions.push(UndoableAction::create_way(
-                    layer_id,
-                    osm_gpui::selection::DeletedFeatureSnapshot {
-                        kind: FeatureKind::Way,
-                        id: new_id,
-                        tags: tags.clone(),
-                        way_nodes: nodes.clone(),
-                        node_lat_lon: None,
-                        version: 0,
-                    },
-                ));
+                for (k, nodes) in finals.iter().enumerate().skip(1) {
+                    if Some(k) == middle_idx {
+                        continue;
+                    }
+                    let new_id = rec.add_way(nodes.clone(), tags.clone());
+                    new_ids.push((ids[k], new_id));
+                }
+                finals.swap_remove(0)
             }
-            finals.swap_remove(0)
-        }
-        None => deletion.pieces[0].clone(),
-    };
-    if let Err(e) = editable.set_way_nodes(way_id, kept.clone()) {
-        return Err(abort(layers, &actions, e));
-    }
-    actions.push(UndoableAction::set_way_nodes(
-        layer_id,
-        way_id,
-        deletion.before.clone(),
-        kept,
-    ));
-    for relation in relations {
-        let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
-            continue;
+            None => deletion.pieces[0].clone(),
         };
-        let mut after = relation.members;
-        for member in &mut after {
-            if let Some(&(_, real)) = new_ids.iter().find(|(p, _)| *p == member.reference) {
-                member.reference = real;
-            }
-        }
-        if after != before {
-            if let Err(e) = editable.set_relation_members(relation.id, after.clone()) {
-                return Err(abort(layers, &actions, e));
-            }
-            actions.push(UndoableAction::set_relation_members(
+        rec.set_way_nodes(way_id, kept).map_err(refused)?;
+        retarget_relations(rec, relations, &new_ids)?;
+        for node_id in deletion.dropped_nodes() {
+            let node = FeatureRef {
                 layer_id,
-                relation.id,
-                before,
-                after,
-            ));
+                kind: FeatureKind::Node,
+                id: node_id,
+            };
+            let layer = rec.layer();
+            if !layer.ways_using_node(node_id).is_empty()
+                || !layer.relations_containing_node(node_id).is_empty()
+                || layer
+                    .feature_tags(&node)
+                    .is_some_and(|tags| !tags.is_empty())
+            {
+                continue;
+            }
+            rec.delete_feature(FeatureKind::Node, node_id)
+                .map_err(refused)?;
         }
-    }
-    for node_id in deletion.dropped_nodes() {
-        let node = FeatureRef {
-            layer_id,
-            kind: FeatureKind::Node,
-            id: node_id,
-        };
-        if !editable.ways_using_node(node_id).is_empty()
-            || !editable.relations_containing_node(node_id).is_empty()
-            || editable
-                .feature_tags(&node)
-                .is_some_and(|tags| !tags.is_empty())
-        {
-            continue;
-        }
-        match editable.delete_feature(FeatureKind::Node, node_id) {
-            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
-            Err(e) => return Err(abort(layers, &actions, e)),
-        }
-    }
+        Ok(())
+    })?;
 
     let label = tr!("action.delete_segment.done").to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: true,
         select: None,
@@ -2354,79 +2242,52 @@ pub(crate) fn apply_merge(
         return Err(refused(EditError::NodeInWay(node)));
     }
 
-    let mut actions = Vec::new();
     let kept = nodes
         .iter()
         .find(|n| n.id == plan.keep)
         .expect("the plan keeps one of the given nodes");
-    let mut tag_entries = Vec::new();
-    for (key, value) in &plan.tags {
-        if !kept.tags.iter().any(|(k, _)| k == key) {
-            if let Err(e) = editable.set_tag(FeatureKind::Node, plan.keep, key, value) {
-                if !tag_entries.is_empty() {
-                    actions.push(UndoableAction::SetTags {
-                        entries: tag_entries,
-                    });
-                }
-                return Err(abort(layers, &actions, e));
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        for (key, value) in &plan.tags {
+            if !kept.tags.iter().any(|(k, _)| k == key) {
+                rec.set_tag(FeatureKind::Node, plan.keep, key, value)
+                    .map_err(refused)?;
             }
-            tag_entries.push((node_ref(plan.keep), key.clone(), None, Some(value.clone())));
         }
-    }
-    if !tag_entries.is_empty() {
-        actions.push(UndoableAction::SetTags {
-            entries: tag_entries,
-        });
-    }
-    for edit in plan.way_edits {
-        if let Err(e) = editable.set_way_nodes(edit.way_id, edit.after.clone()) {
-            return Err(abort(layers, &actions, e));
+        for edit in &plan.way_edits {
+            rec.set_way_nodes(edit.way_id, edit.after.clone())
+                .map_err(refused)?;
         }
-        actions.push(UndoableAction::set_way_nodes(
-            layer_id,
-            edit.way_id,
-            edit.before,
-            edit.after,
-        ));
-    }
-    let mut relation_ids: Vec<i64> = plan
-        .remove
-        .iter()
-        .flat_map(|&id| editable.relations_containing_node(id))
-        .collect();
-    relation_ids.sort_unstable();
-    relation_ids.dedup();
-    for relation_id in relation_ids {
-        let Some(relation) = editable.relation(relation_id) else {
-            continue;
-        };
-        if let Some(after) =
-            osm_gpui::relations::merge_node_members(&relation.members, &plan.remove, plan.keep)
-        {
-            if let Err(e) = editable.set_relation_members(relation_id, after.clone()) {
-                return Err(abort(layers, &actions, e));
+        let mut relation_ids: Vec<i64> = plan
+            .remove
+            .iter()
+            .flat_map(|&id| rec.layer().relations_containing_node(id))
+            .collect();
+        relation_ids.sort_unstable();
+        relation_ids.dedup();
+        for relation_id in relation_ids {
+            let Some(relation) = rec.layer().relation(relation_id) else {
+                continue;
+            };
+            if let Some(after) =
+                osm_gpui::relations::merge_node_members(&relation.members, &plan.remove, plan.keep)
+            {
+                rec.set_relation_members(relation_id, after)
+                    .map_err(refused)?;
             }
-            actions.push(UndoableAction::set_relation_members(
-                layer_id,
-                relation_id,
-                relation.members,
-                after,
-            ));
         }
-    }
-    for id in &plan.remove {
-        match editable.delete_feature(FeatureKind::Node, *id) {
-            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
-            Err(e) => return Err(abort(layers, &actions, e)),
+        for id in &plan.remove {
+            rec.delete_feature(FeatureKind::Node, *id).map_err(refused)?;
         }
-    }
+        Ok(())
+    })?;
 
     let label = tr_count!("action.merge.done", nodes.len()).to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: false,
         select: Some(vec![node_ref(plan.keep)]),
@@ -2465,7 +2326,7 @@ fn join_node_way_target(
 /// undo move starts from the node's stored position. Used by Join Node to Way
 /// and by snapping on a drag.
 /// Checks the way-size limit and that the node is not already in the way, and
-/// changes nothing on refusal. Returns the undo steps (a move, then the way's
+/// changes nothing on refusal. Returns the recorded ops (a move, then the way's
 /// new node list); relation memberships are not touched, so a node that is a
 /// relation member stays one and relations on the way are unchanged.
 pub(crate) fn join_node_into_way(
@@ -2475,7 +2336,7 @@ pub(crate) fn join_node_into_way(
     way: i64,
     segment: Option<usize>,
     drop_at: Option<LatLon>,
-) -> Result<Vec<UndoableAction>, String> {
+) -> Result<Vec<EditOp>, String> {
     use osm_gpui::snap::{plan_join_at_segment, plan_join_nearest, JoinError};
     let stored = editable
         .node_lat_lon(node)
@@ -2514,31 +2375,16 @@ pub(crate) fn join_node_into_way(
     {
         return Err(message);
     }
-    let mut actions = Vec::new();
-    if plan.point != stored {
-        editable
-            .commit_node_moves(&[(node, plan.point.0, plan.point.1)])
-            .map_err(refused)?;
-        actions.push(UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(layer_id, vec![(node, stored, plan.point)])],
-        });
-    }
-    let mut after = before.clone();
+    let mut after = before;
     after.insert(plan.index, node);
-    if let Err(e) = editable.set_way_nodes(way, after.clone()) {
-        // Put the node back where it was, so nothing is half done.
-        if !actions.is_empty()
-            && editable
-                .commit_node_moves(&[(node, stored.0, stored.1)])
-                .is_err()
-        {
-            eprintln!("could not move node {node} back after a refused Join Node to Way");
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        if plan.point != stored {
+            rec.commit_node_moves(&[(node, plan.point.0, plan.point.1)])
+                .map_err(refused)?;
         }
-        return Err(refused(e));
-    }
-    actions.push(UndoableAction::set_way_nodes(layer_id, way, before, after));
-    Ok(actions)
+        rec.set_way_nodes(way, after).map_err(refused)
+    })?;
+    Ok(ops)
 }
 
 /// Join Node to Way (JOSM "Join Node to Way"): put the selected node onto
@@ -2552,13 +2398,14 @@ fn apply_join_node_way(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let (node, way) = join_node_way_target(editable, layer_id, selection)
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
-    let actions = join_node_into_way(editable, layer_id, node, way, None, None)?;
+    let ops = join_node_into_way(editable, layer_id, node, way, None, None)?;
     let label = tr!("action.join_node_way.done").to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: false,
         select: None,
@@ -2661,17 +2508,15 @@ fn apply_new_relation(
         return Err(m);
     }
     let count = members.len();
-    let id = editable
-        .create_relation(Vec::new(), members)
-        .map_err(|_| tr!("action.no_data").to_string())?;
-    let relation = editable
-        .relation(id)
-        .ok_or_else(|| tr!("action.new_relation.hint").to_string())?;
-    let index = editable.relation_ids().len().saturating_sub(1);
+    let (id, ops) = record_edit(layer_id, editable, |rec| {
+        rec.create_relation(Vec::new(), members)
+            .map_err(|_| tr!("action.no_data").to_string())
+    })?;
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::create_relation(
+        undo: Some(UndoableAction::edit(
             layer_id,
-            osm_gpui::selection::DeletedRelationSnapshot { relation, index },
+            EditLabel::CreatedRelation,
+            ops,
         )),
         status: tr!(
             "action.new_relation.done",
@@ -2793,7 +2638,7 @@ fn apply_create_multipolygon(
         .filter(|r| r.role == Role::Outer)
         .collect();
     let mut relation_tags = vec![("type".to_string(), "multipolygon".to_string())];
-    let mut tag_entries = Vec::new();
+    let mut moved_tags: Vec<(FeatureRef, String)> = Vec::new();
     if let [outer] = outers.as_slice() {
         if let [way] = outer.ways.as_slice() {
             let feature = FeatureRef {
@@ -2808,7 +2653,7 @@ fn apply_create_multipolygon(
             {
                 for (k, v) in tags {
                     if AREA_TAG_KEYS.contains(&k.as_str()) || k == "name" {
-                        tag_entries.push((feature, k.clone(), Some(v.clone()), None));
+                        moved_tags.push((feature, k.clone()));
                         relation_tags.push((k, v));
                     }
                 }
@@ -2829,36 +2674,17 @@ fn apply_create_multipolygon(
         })
         .count();
 
-    let mut applied = Vec::new();
-    if let Err(e) = write_entries(editable, tag_entries.clone(), &mut applied) {
-        return Err(abort(
-            layers,
-            &[UndoableAction::SetTags { entries: applied }],
-            e,
-        ));
-    }
     let count = members.len();
     let (n_outer, n_inner) = (outers.len(), plan.rings.len() - outers.len());
-    let id = match editable.create_relation(relation_tags, members) {
-        Ok(id) => id,
-        Err(_) => {
-            roll_back(
-                layers,
-                &[UndoableAction::SetTags {
-                    entries: tag_entries,
-                }],
-            );
-            return Err(tr!("action.no_data").to_string());
+    let (id, ops) = record_edit(layer_id, editable, |rec| {
+        let id = rec
+            .create_relation(relation_tags, members)
+            .map_err(|_| tr!("action.no_data").to_string())?;
+        for (feature, key) in &moved_tags {
+            write_tag(rec, feature.kind, feature.id, key, None)?;
         }
-    };
-    let relation = editable
-        .relation(id)
-        .ok_or_else(|| tr!("action.create_multipolygon.hint").to_string())?;
-    let index = editable.relation_ids().len().saturating_sub(1);
-    let create = UndoableAction::create_relation(
-        layer_id,
-        osm_gpui::selection::DeletedRelationSnapshot { relation, index },
-    );
+        Ok(id)
+    })?;
     let mut status = tr!(
         "action.create_multipolygon.done",
         members = tr_count!("action.feature_count", count),
@@ -2872,21 +2698,13 @@ fn apply_create_multipolygon(
             tr!("action.create_multipolygon.shared", count = shared)
         );
     }
-    let undo = if tag_entries.is_empty() {
-        create
+    let label = if moved_tags.is_empty() {
+        EditLabel::CreatedRelation
     } else {
-        UndoableAction::Batch {
-            label: status.clone(),
-            actions: vec![
-                create,
-                UndoableAction::SetTags {
-                    entries: tag_entries,
-                },
-            ],
-        }
+        EditLabel::Text(status.clone())
     };
     Ok(ActionOutcome {
-        undo: Some(undo),
+        undo: Some(UndoableAction::edit(layer_id, label, ops)),
         status,
         clear_selection: false,
         select: Some(vec![FeatureRef {
@@ -2921,15 +2739,16 @@ pub(crate) fn add_to_relation(
         return Err(m);
     }
     let added = after.len() - relation.members.len();
-    let before = editable
-        .set_relation_members(relation_id, after.clone())
-        .map_err(|_| tr!("action.add_to_relation.hint").to_string())?;
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        rec.set_relation_members(relation_id, after)
+            .map(drop)
+            .map_err(|_| tr!("action.add_to_relation.hint").to_string())
+    })?;
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::set_relation_members(
+        undo: Some(UndoableAction::edit(
             layer_id,
-            relation_id,
-            before,
-            after,
+            EditLabel::ChangedRelationMembers,
+            ops,
         )),
         status: tr!(
             "action.add_to_relation.done",
@@ -2984,27 +2803,19 @@ fn plan_member_edits(
     Ok(edits)
 }
 
-/// Apply planned relation edits and record them as undo entries. On a refusal
-/// the edits made so far stay in `actions`, for the caller to roll back.
+/// Apply planned relation edits through `rec`. On a refusal the edits made so
+/// far stay recorded, for the caller to roll back.
 fn apply_member_edits(
-    editable: &mut dyn EditableLayer,
-    layer_id: LayerId,
+    rec: &mut Recording<'_>,
     edits: Vec<MemberEdit>,
-    actions: &mut Vec<UndoableAction>,
     changed_relations: &mut Vec<(LayerId, i64)>,
 ) -> Result<(), String> {
-    for (relation_id, before, after) in edits {
-        editable
-            .set_relation_members(relation_id, after.clone())
+    for (relation_id, _, after) in edits {
+        rec.set_relation_members(relation_id, after)
             .map_err(refused)?;
-        actions.push(UndoableAction::set_relation_members(
-            layer_id,
-            relation_id,
-            before,
-            after,
-        ));
-        if !changed_relations.contains(&(layer_id, relation_id)) {
-            changed_relations.push((layer_id, relation_id));
+        let changed = (rec.layer_id(), relation_id);
+        if !changed_relations.contains(&changed) {
+            changed_relations.push(changed);
         }
     }
     Ok(())
@@ -3013,24 +2824,24 @@ fn apply_member_edits(
 /// Delete the way, then every node it used that is now an orphan: untagged,
 /// in no other way and no relation, and not selected itself (a selected node
 /// is handled on its own turn) nor `keep`. `Ok(false)` if the way is gone.
-/// An `Err` from a refused step leaves what was done so far in `actions`; the
-/// caller rolls that back.
+/// An `Err` from a refused step leaves what was done so far recorded in
+/// `rec`; the caller rolls that back.
 fn delete_way_and_orphans(
-    editable: &mut dyn EditableLayer,
-    layer_id: LayerId,
+    rec: &mut Recording<'_>,
     way_id: i64,
     keep: Option<i64>,
     selection: &[FeatureRef],
-    actions: &mut Vec<UndoableAction>,
     changed_relations: &mut Vec<(LayerId, i64)>,
 ) -> Result<bool, String> {
-    let edits = plan_member_edits(editable, FeatureKind::Way, way_id)?;
-    let Ok(snapshot) = editable.delete_feature(FeatureKind::Way, way_id) else {
+    let Some(way_nodes) = rec.layer().way_node_ids(way_id) else {
         return Ok(false);
     };
-    let way_nodes = snapshot.way_nodes.clone();
-    actions.push(UndoableAction::delete_feature(layer_id, snapshot));
-    apply_member_edits(editable, layer_id, edits, actions, changed_relations)?;
+    let layer_id = rec.layer_id();
+    let edits = plan_member_edits(rec.layer(), FeatureKind::Way, way_id)?;
+    // The layer refuses to delete a way a relation still lists.
+    apply_member_edits(rec, edits, changed_relations)?;
+    rec.delete_feature(FeatureKind::Way, way_id)
+        .map_err(refused)?;
     let mut seen = Vec::new();
     for node_id in way_nodes {
         if seen.contains(&node_id) {
@@ -3042,20 +2853,19 @@ fn delete_way_and_orphans(
             kind: FeatureKind::Node,
             id: node_id,
         };
+        let layer = rec.layer();
         if Some(node_id) == keep
             || selection.contains(&node)
-            || !editable.ways_using_node(node_id).is_empty()
-            || !editable.relations_containing_node(node_id).is_empty()
-            || editable
+            || !layer.ways_using_node(node_id).is_empty()
+            || !layer.relations_containing_node(node_id).is_empty()
+            || layer
                 .feature_tags(&node)
                 .is_some_and(|tags| !tags.is_empty())
         {
             continue;
         }
-        let snapshot = editable
-            .delete_feature(FeatureKind::Node, node_id)
+        rec.delete_feature(FeatureKind::Node, node_id)
             .map_err(refused)?;
-        actions.push(UndoableAction::delete_feature(layer_id, snapshot));
     }
     Ok(true)
 }
@@ -3093,61 +2903,45 @@ fn way_without_node(way_nodes: &[i64], node: i64) -> WayFate {
 /// Delete a node. One used by ways is taken out of each of them first; a way
 /// left with too few nodes is deleted (with its orphaned nodes). The plan is
 /// checked before anything changes, so a refusal by the user's rules leaves
-/// no trace; the layer refusing a step (a bug) leaves what was done so far in
-/// `actions`, for the caller to roll back.
+/// no trace; the layer refusing a step (a bug) leaves what was done so far
+/// recorded in `rec`, for the caller to roll back.
 fn delete_vertex(
-    editable: &mut dyn EditableLayer,
-    layer_id: LayerId,
+    rec: &mut Recording<'_>,
     node_id: i64,
     selection: &[FeatureRef],
-    actions: &mut Vec<UndoableAction>,
     changed_relations: &mut Vec<(LayerId, i64)>,
 ) -> Result<bool, String> {
-    if editable.node_lat_lon(node_id).is_none() {
+    if rec.layer().node_lat_lon(node_id).is_none() {
         return Ok(false);
     }
-    let node_edits = plan_member_edits(editable, FeatureKind::Node, node_id)?;
+    let node_edits = plan_member_edits(rec.layer(), FeatureKind::Node, node_id)?;
     let mut fates = Vec::new();
-    let mut way_ids = editable.ways_using_node(node_id);
+    let mut way_ids = rec.layer().ways_using_node(node_id);
     way_ids.sort_unstable();
     for way_id in way_ids {
-        let Some(way_nodes) = editable.way_node_ids(way_id) else {
+        let Some(way_nodes) = rec.layer().way_node_ids(way_id) else {
             continue;
         };
         let fate = way_without_node(&way_nodes, node_id);
         if matches!(fate, WayFate::Delete) {
-            plan_member_edits(editable, FeatureKind::Way, way_id)?;
+            plan_member_edits(rec.layer(), FeatureKind::Way, way_id)?;
         }
-        fates.push((way_id, way_nodes, fate));
+        fates.push((way_id, fate));
     }
-    for (way_id, before, fate) in fates {
+    for (way_id, fate) in fates {
         match fate {
             WayFate::Shorten(after) => {
-                editable
-                    .set_way_nodes(way_id, after.clone())
-                    .map_err(refused)?;
-                actions.push(UndoableAction::set_way_nodes(
-                    layer_id, way_id, before, after,
-                ));
+                rec.set_way_nodes(way_id, after).map_err(refused)?;
             }
             WayFate::Delete => {
-                delete_way_and_orphans(
-                    editable,
-                    layer_id,
-                    way_id,
-                    Some(node_id),
-                    selection,
-                    actions,
-                    changed_relations,
-                )?;
+                delete_way_and_orphans(rec, way_id, Some(node_id), selection, changed_relations)?;
             }
         }
     }
-    let snapshot = editable
-        .delete_feature(FeatureKind::Node, node_id)
+    // The layer refuses to delete a node a relation still lists.
+    apply_member_edits(rec, node_edits, changed_relations)?;
+    rec.delete_feature(FeatureKind::Node, node_id)
         .map_err(refused)?;
-    actions.push(UndoableAction::delete_feature(layer_id, snapshot));
-    apply_member_edits(editable, layer_id, node_edits, actions, changed_relations)?;
     Ok(true)
 }
 
@@ -3163,7 +2957,7 @@ fn apply_delete(
     selection: &[FeatureRef],
     _active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
-    let mut actions = Vec::new();
+    let mut recorded: Vec<(LayerId, Vec<EditOp>)> = Vec::new();
     let mut deleted = 0usize;
     let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
     let mut refusal: Option<String> = None;
@@ -3179,21 +2973,21 @@ fn apply_delete(
     loop {
         let before = pending.len();
         pending.retain(|feature| {
-            let Some(editable) = layers
-                .find_layer_mut(feature.layer_id)
-                .and_then(|l| l.as_editable_mut())
-            else {
-                return false;
-            };
-            match editable.delete_relation(feature.id) {
-                Ok(snapshot) => {
+            let outcome = with_recording(layers, &mut recorded, feature.layer_id, |rec| {
+                match rec.delete_relation(feature.id) {
+                    Ok(_) => None,
+                    // Gone already: nothing to do. Otherwise another relation
+                    // still has it as a member.
+                    Err(_) => Some(rec.layer().relation(feature.id).is_some()),
+                }
+            });
+            match outcome {
+                None => false,
+                Some(None) => {
                     deleted_relations += 1;
-                    actions.push(UndoableAction::delete_relation(feature.layer_id, snapshot));
                     false
                 }
-                // Gone already: nothing to do. Otherwise another relation
-                // still has it as a member.
-                Err(_) => editable.relation(feature.id).is_some(),
+                Some(Some(retry)) => retry,
             }
         });
         if pending.len() == before {
@@ -3229,42 +3023,31 @@ fn apply_delete(
     let ways = selection.iter().filter(|f| f.kind == FeatureKind::Way);
     let nodes = selection.iter().filter(|f| f.kind == FeatureKind::Node);
     for feature in ways.chain(nodes) {
-        let Some(editable) = layers
-            .find_layer_mut(feature.layer_id)
-            .and_then(|l| l.as_editable_mut())
-        else {
-            continue;
-        };
-        let layer_id = feature.layer_id;
-        let (actions_start, relations_start) = (actions.len(), changed_relations.len());
-        let result = match feature.kind {
-            FeatureKind::Way => delete_way_and_orphans(
-                editable,
-                layer_id,
-                feature.id,
-                None,
-                selection,
-                &mut actions,
-                &mut changed_relations,
-            ),
-            FeatureKind::Node => delete_vertex(
-                editable,
-                layer_id,
-                feature.id,
-                selection,
-                &mut actions,
-                &mut changed_relations,
-            ),
-            FeatureKind::Relation => continue,
-        };
-        match result {
-            Ok(true) => deleted += 1,
-            Ok(false) => {}
-            Err(message) => {
+        let relations_start = changed_relations.len();
+        let result = with_recording(layers, &mut recorded, feature.layer_id, |rec| {
+            let mark = rec.mark();
+            let result = match feature.kind {
+                FeatureKind::Way => {
+                    delete_way_and_orphans(rec, feature.id, None, selection, &mut changed_relations)
+                }
+                FeatureKind::Node => {
+                    delete_vertex(rec, feature.id, selection, &mut changed_relations)
+                }
+                FeatureKind::Relation => Ok(false),
+            };
+            if result.is_err() {
                 // Put back what this feature's deletion did before it stopped.
-                let partial = actions.split_off(actions_start);
+                for failure in rec.roll_back_to(mark) {
+                    eprintln!("rolling back a half-done edit was refused: {failure}");
+                }
+            }
+            result
+        });
+        match result {
+            Some(Ok(true)) => deleted += 1,
+            Some(Ok(false)) | None => {}
+            Some(Err(message)) => {
                 changed_relations.truncate(relations_start);
-                roll_back(layers, &partial);
                 refusal.get_or_insert(message);
             }
         }
@@ -3284,12 +3067,25 @@ fn apply_delete(
         )
         .to_string()
     };
-    let undo = if actions.len() == 1 {
-        actions.remove(0)
+    let mut edits: Vec<UndoableAction> = recorded
+        .into_iter()
+        .filter(|(_, ops)| !ops.is_empty())
+        .map(|(layer_id, ops)| {
+            // A lone deletion is named after what it deleted.
+            let label = match &ops[..] {
+                [EditOp::RemoveFeature { snapshot }] => EditLabel::Deleted(snapshot.kind),
+                [EditOp::RemoveRelation { .. }] => EditLabel::Deleted(FeatureKind::Relation),
+                _ => EditLabel::Text(status.clone()),
+            };
+            UndoableAction::edit(layer_id, label, ops)
+        })
+        .collect();
+    let undo = if edits.len() == 1 {
+        edits.remove(0)
     } else {
         UndoableAction::Batch {
             label: status.clone(),
-            actions,
+            actions: edits,
         }
     };
     if let Some(reason) = refusal {
@@ -3302,6 +3098,31 @@ fn apply_delete(
         select: None,
         continue_way: None,
     })
+}
+
+/// Run `edit` on a recording of layer `layer_id` that carries on from the ops
+/// already recorded for it in `recorded`, and keep what it adds there. `None`
+/// if the layer is gone or not editable.
+fn with_recording<T>(
+    layers: &mut LayerManager,
+    recorded: &mut Vec<(LayerId, Vec<EditOp>)>,
+    layer_id: LayerId,
+    edit: impl FnOnce(&mut Recording<'_>) -> T,
+) -> Option<T> {
+    let editable = layers
+        .find_layer_mut(layer_id)
+        .and_then(|l| l.as_editable_mut())?;
+    let slot = match recorded.iter().position(|(id, _)| *id == layer_id) {
+        Some(slot) => slot,
+        None => {
+            recorded.push((layer_id, Vec::new()));
+            recorded.len() - 1
+        }
+    };
+    let mut rec = Recording::resume(layer_id, editable, std::mem::take(&mut recorded[slot].1));
+    let out = edit(&mut rec);
+    recorded[slot].1 = rec.into_ops();
+    Some(out)
 }
 
 /// Purge: drop the selected objects from the layer's
@@ -3505,26 +3326,25 @@ fn reposition_nodes(
     }
     let after =
         reposition(&before).ok_or_else(|| tr!("action.align.error.same_place").to_string())?;
-    let entries: Vec<NodeMoveUndoEntry> = ids
+    let moves: Vec<(i64, f64, f64)> = ids
         .iter()
         .zip(before.iter().zip(&after))
         .filter(|(_, (b, a))| b != a)
-        .map(|(&id, (&b, &a))| (id, b, a))
+        .map(|(&id, (_, &(lat, lon)))| (id, lat, lon))
         .collect();
-    if entries.is_empty() {
+    if moves.is_empty() {
         return Err(tr!("action.align.none").to_string());
     }
-    let moves: Vec<(i64, f64, f64)> = entries
-        .iter()
-        .map(|&(id, _, (lat, lon))| (id, lat, lon))
-        .collect();
-    editable.commit_node_moves(&moves).map_err(refused)?;
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        rec.commit_node_moves(&moves).map_err(refused)
+    })?;
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(layer_id, entries.clone())],
-        }),
-        status: done(entries.len()).to_string(),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::MovedNodes(moves.len()),
+            ops,
+        )),
+        status: done(moves.len()).to_string(),
         clear_selection: false,
         select: None,
         continue_way: None,
@@ -3611,46 +3431,36 @@ pub(crate) fn create_parallel_ways(
         return Err(tr!("action.parallel.hint").to_string());
     }
 
-    let mut actions = Vec::new();
-    let mut new_ways = Vec::new();
-    for (line, tags) in plans {
-        // A ring's last point is its first node again.
-        let closed = line.len() >= 4 && line.first() == line.last();
-        let distinct = if closed { line.len() - 1 } else { line.len() };
-        let mut node_ids = Vec::with_capacity(line.len());
-        for &(lat, lon) in &line[..distinct] {
-            let id = editable.add_node(lat, lon);
-            actions.push(UndoableAction::create_node(layer_id, id, lat, lon));
-            node_ids.push(id);
-        }
-        if closed {
-            node_ids.push(node_ids[0]);
-        }
-        let way_id = editable.add_way(node_ids.clone(), tags.clone());
-        actions.push(UndoableAction::create_way(
-            layer_id,
-            osm_gpui::selection::DeletedFeatureSnapshot {
+    let (new_ways, ops) = record_edit(layer_id, editable, |rec| {
+        let mut new_ways = Vec::new();
+        for (line, tags) in plans {
+            // A ring's last point is its first node again.
+            let closed = line.len() >= 4 && line.first() == line.last();
+            let distinct = if closed { line.len() - 1 } else { line.len() };
+            let mut node_ids = Vec::with_capacity(line.len());
+            for &(lat, lon) in &line[..distinct] {
+                node_ids.push(rec.add_node(lat, lon));
+            }
+            if closed {
+                node_ids.push(node_ids[0]);
+            }
+            let way_id = rec.add_way(node_ids, tags);
+            new_ways.push(FeatureRef {
+                layer_id,
                 kind: FeatureKind::Way,
                 id: way_id,
-                tags,
-                way_nodes: node_ids,
-                node_lat_lon: None,
-                version: 0,
-            },
-        ));
-        new_ways.push(FeatureRef {
-            layer_id,
-            kind: FeatureKind::Way,
-            id: way_id,
-        });
-    }
+            });
+        }
+        Ok(new_ways)
+    })?;
 
     let label = tr_count!("action.parallel.done", new_ways.len()).to_string();
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::Batch {
-            label: label.clone(),
-            actions,
-        }),
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
         status: label,
         clear_selection: false,
         select: Some(new_ways),
@@ -3750,6 +3560,31 @@ mod tests {
     use super::*;
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::osm::{OsmMember, OsmRelation};
+
+    /// The label and ops of an outcome that recorded one `Edit` step.
+    fn edit_of(out: &ActionOutcome) -> (&EditLabel, &[EditOp]) {
+        let Some(UndoableAction::Edit { label, ops, .. }) = out.undo.as_ref() else {
+            panic!("expected one Edit step");
+        };
+        (label, ops)
+    }
+
+    /// The shape of `ops`: one short name per op.
+    fn shape(ops: &[EditOp]) -> Vec<&'static str> {
+        ops.iter()
+            .map(|op| match op {
+                EditOp::PutFeature { .. } => "put",
+                EditOp::RemoveFeature { .. } => "remove",
+                EditOp::PutRelation { .. } => "put_relation",
+                EditOp::RemoveRelation { .. } => "remove_relation",
+                EditOp::MoveNodes { .. } => "move",
+                EditOp::SetTag { .. } => "tag",
+                EditOp::SetWayNodes { .. } => "way_nodes",
+                EditOp::SetRelationMembers { .. } => "members",
+                EditOp::ReverseWay { .. } => "reverse",
+            })
+            .collect()
+    }
 
     /// A layer holding one skewed closed rectangle ("way") and one open
     /// two-node way, plus the ids needed to select them.
@@ -3976,11 +3811,12 @@ mod tests {
         let out = (find("square").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Squared 1 way");
         assert!(!out.clear_selection);
-        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one MoveNodes step");
+        let (label, ops) = edit_of(&out);
+        assert_eq!(label, &EditLabel::MovedNodes(4));
+        let [EditOp::MoveNodes { moves }] = ops else {
+            panic!("expected one MoveNodes op");
         };
-        assert_eq!(per_layer.len(), 1);
-        assert_eq!(per_layer[0].1.len(), 4);
+        assert_eq!(moves.len(), 4);
         assert_ne!(node_positions(&f), before);
         assert!(f
             .layers
@@ -4002,11 +3838,11 @@ mod tests {
         let sel = [way_ref(&f, f.rect)];
         let out =
             (find("circularize").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
-        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
+        let [EditOp::MoveNodes { moves }] = edit_of(&out).1 else {
             panic!("expected MoveNodes");
         };
         // Each entry's `before` is the original position.
-        for (id, b, _) in &per_layer[0].1 {
+        for (id, b, _) in moves {
             let idx = f.rect_nodes.iter().position(|n| n == id).unwrap();
             assert_eq!(*b, before[idx]);
         }
@@ -4058,9 +3894,11 @@ mod tests {
         let out = (find("delete").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert!(out.clear_selection);
         assert_eq!(out.status, "Deleted 2 features");
-        assert!(
-            matches!(out.undo.as_ref().unwrap(), UndoableAction::Batch { actions, .. } if actions.len() >= 2)
-        );
+        let (_, ops) = edit_of(&out);
+        assert!(ops.len() >= 2);
+        assert!(ops
+            .iter()
+            .all(|op| matches!(op, EditOp::RemoveFeature { .. })));
         assert_eq!(
             out.undo.as_ref().unwrap().description(),
             "Deleted 2 features"
@@ -4082,27 +3920,11 @@ mod tests {
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 2));
         let undo = out.undo.as_ref().unwrap();
         assert_eq!(undo.description(), out.status);
-        let UndoableAction::Batch { actions, .. } = undo else {
-            panic!("expected one Batch step");
-        };
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::Deleted(_),
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedRelationMembers,
-                    ops: members_ops,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::Deleted(_),
-                    ..
-                }
-            ] if matches!(members_ops[..], [EditOp::SetRelationMembers { id: 900, .. }])
-        ));
+        let (_, ops) = edit_of(&out);
+        // The relation stops listing the way before the way goes, so the
+        // layer never holds a way a relation still names.
+        assert_eq!(shape(ops), ["members", "remove", "remove"]);
+        assert!(matches!(ops[0], EditOp::SetRelationMembers { id: 900, .. }));
 
         // A node that is on no way works the same.
         let mut n = net();
@@ -4199,16 +4021,10 @@ mod tests {
         assert!(n.editable().way_node_ids(102).is_some());
         assert!(n.editable().way_node_ids(106).is_none());
         // The undo step is just way 106 and its orphaned node.
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert!(actions.iter().all(|a| matches!(
-            a,
-            UndoableAction::Edit {
-                label: EditLabel::Deleted(_),
-                ..
-            }
-        )));
+        let (_, ops) = edit_of(&out);
+        assert!(ops
+            .iter()
+            .all(|op| matches!(op, EditOp::RemoveFeature { .. })));
     }
 
     #[test]
@@ -4400,24 +4216,9 @@ mod tests {
         // and the other way as deleted (nodes are untouched).
         assert!(n.layer().is_modified());
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
-        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert_eq!(label, "Joined 2 ways");
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                },
-                UndoableAction::SetTags { .. },
-                UndoableAction::Edit {
-                    label: EditLabel::Deleted(_),
-                    ..
-                }
-            ]
-        ));
+        let (label, ops) = edit_of(&out);
+        assert_eq!(label, &EditLabel::Text("Joined 2 ways".into()));
+        assert_eq!(shape(ops), ["way_nodes", "tag", "remove"]);
     }
 
     #[test]
@@ -4451,27 +4252,9 @@ mod tests {
         assert_eq!(n.members(), members_of(&[(101, ""), (7, "stop")]));
         assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5, 6]));
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 2, 1));
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert!(matches!(
-                   actions.as_slice(),
-                   [
-                       UndoableAction::Edit {
-        label: EditLabel::ChangedWayNodes,
-        ..
-        },
-                       UndoableAction::Edit {
-                           label: EditLabel::ChangedRelationMembers,
-                           ops: members_ops,
-                           ..
-                       },
-                       UndoableAction::Edit {
-                           label: EditLabel::Deleted(_),
-                           ..
-                       }
-                   ] if matches!(members_ops[..], [EditOp::SetRelationMembers { id: 900, .. }])
-               ));
+        let (_, ops) = edit_of(&out);
+        assert_eq!(shape(ops), ["way_nodes", "members", "remove"]);
+        assert!(matches!(ops[1], EditOp::SetRelationMembers { id: 900, .. }));
         // Selected the other way round, the member way survives untouched.
         let mut n = net();
         assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
@@ -4563,22 +4346,7 @@ mod tests {
         // One new node and one changed way show up in the upload diff.
         assert!(n.layer().is_modified());
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedNode,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                }
-            ]
-        ));
+        assert_eq!(shape(edit_of(&out).1), ["put", "way_nodes"]);
 
         // Nothing left to separate.
         assert!(n.run("separate", &[node4]).is_err());
@@ -4675,19 +4443,9 @@ mod tests {
         // Open ways never qualify.
         assert!(!n.applicable(&n.ways(&[100])).contains(&"extract"));
 
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedNode,
-                    ..
-                },
-                UndoableAction::SetTags { .. }
-            ]
-        ));
+        let shape = shape(edit_of(&out).1);
+        assert_eq!(shape[0], "put");
+        assert!(shape[1..].iter().all(|name| *name == "tag"));
     }
 
     #[test]
@@ -4707,19 +4465,10 @@ mod tests {
                 ("oneway", "yes"),
             ])
         );
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert!(matches!(
-                   actions.as_slice(),
-                   [
-                       UndoableAction::Edit {
-        label: EditLabel::Reversed(_),
-        ..
-        },
-                       UndoableAction::SetTags { entries }
-                   ] if entries.len() == 3
-               ));
+        let (label, ops) = edit_of(&out);
+        assert_eq!(label, &EditLabel::Reversed(1));
+        // The node order, then the three tag flips, in one step.
+        assert_eq!(shape(ops), ["reverse", "tag", "tag", "tag"]);
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 0));
     }
 
@@ -4844,17 +4593,25 @@ mod tests {
             n.tags_of(FeatureKind::Way, 100),
             pairs(&[("highway", "residential")])
         );
-        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
-            panic!("expected one SetTags step");
-        };
+        let (label, ops) = edit_of(&out);
         // Way 103: 2 (highway overwritten, name added); node 8: 2; node 4: 2.
-        assert_eq!(entries.len(), 6);
-        let overwrite = entries
+        assert_eq!(label, &EditLabel::ChangedTags(6));
+        assert_eq!(shape(ops), ["tag"; 6]);
+        let overwrite = ops
             .iter()
-            .find(|e| e.0 == n.feature(FeatureKind::Way, 103) && e.1 == "highway")
+            .find_map(|op| match op {
+                EditOp::SetTag {
+                    kind: FeatureKind::Way,
+                    id: 103,
+                    key,
+                    before,
+                    after,
+                } if key == "highway" => Some((before, after)),
+                _ => None,
+            })
             .unwrap();
-        assert_eq!(overwrite.2.as_deref(), Some("footway"));
-        assert_eq!(overwrite.3.as_deref(), Some("residential"));
+        assert_eq!(overwrite.0.as_deref(), Some("footway"));
+        assert_eq!(overwrite.1.as_deref(), Some("residential"));
         // Ways modified: 103 (tags); nodes: 8 and 4 (tags).
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 0));
 
@@ -4873,10 +4630,7 @@ mod tests {
         // Way 101 is the source and has both.
         let out = n.run("paste_tags", &n.ways(&[100, 101])).unwrap();
         assert_eq!(out.status, "Pasted 2 tags onto 1 feature");
-        let UndoableAction::SetTags { entries } = out.undo.as_ref().unwrap() else {
-            panic!("expected one SetTags step");
-        };
-        assert_eq!(entries.len(), 1);
+        assert_eq!(shape(edit_of(&out).1), ["tag"]);
     }
 
     #[test]
@@ -4988,31 +4742,9 @@ mod tests {
 
         // Two new ways, two modified ones.
         assert_eq!(n.layer().diff_for_upload().counts(), (2, 2, 0));
-        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert_eq!(label, "Split 2 ways");
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedWay,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedWay,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                }
-            ]
-        ));
+        let (label, ops) = edit_of(&out);
+        assert_eq!(label, &EditLabel::Text("Split 2 ways".into()));
+        assert_eq!(shape(ops), ["put", "way_nodes", "put", "way_nodes"]);
     }
 
     #[test]
@@ -5155,31 +4887,13 @@ mod tests {
         assert_eq!(n.relation_edits(), 1);
 
         // One undo step, with the relation change last.
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
+        let (_, ops) = edit_of(&out);
+        assert_eq!(shape(ops), ["put", "way_nodes", "members"]);
         assert!(matches!(
-                   actions.as_slice(),
-                   [
-                       UndoableAction::Edit {
-        label: EditLabel::CreatedWay,
-        ..
-        },
-                       UndoableAction::Edit {
-        label: EditLabel::ChangedWayNodes,
-        ..
-        },
-                       UndoableAction::Edit {
-                           label: EditLabel::ChangedRelationMembers,
-                           ops: members_ops,
-                           ..
-                       }
-                   ] if matches!(
-                       &members_ops[..],
-                       [EditOp::SetRelationMembers { id: 900, before, after }]
-                           if before.len() == 3 && after.len() == 4
-                   )
-               ));
+            &ops[2],
+            EditOp::SetRelationMembers { id: 900, before, after }
+                if before.len() == 3 && after.len() == 4
+        ));
     }
 
     #[test]
@@ -5250,10 +4964,7 @@ mod tests {
         ));
         let out = n.run("split", &n.at_4_in(101)).unwrap();
         assert_eq!(n.relation_edits(), 0);
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert_eq!(actions.len(), 2, "no relation step");
+        assert_eq!(shape(edit_of(&out).1), ["put", "way_nodes"], "no relation step");
     }
 
     #[test]
@@ -5357,28 +5068,9 @@ mod tests {
 
         // Node 4 deleted; node 8 (tag) and ways 101 and 103 modified.
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 3, 1));
-        let UndoableAction::Batch { label, actions } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
-        assert_eq!(label, "Merged 2 nodes");
-        assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::SetTags { .. },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedWayNodes,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::Deleted(_),
-                    ..
-                }
-            ]
-        ));
+        let (label, ops) = edit_of(&out);
+        assert_eq!(label, &EditLabel::Text("Merged 2 nodes".into()));
+        assert_eq!(shape(ops), ["tag", "way_nodes", "way_nodes", "remove"]);
     }
 
     #[test]
@@ -5448,26 +5140,12 @@ mod tests {
         assert_eq!(n.editable().node_lat_lon(7), None);
         // Relation 900, the way untouched, the node gone.
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
-        let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one Batch step");
-        };
+        let (_, ops) = edit_of(&out);
+        assert_eq!(shape(ops), ["members", "remove"]);
         assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::ChangedRelationMembers,
-                    ops: members_ops,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::Deleted(_),
-                    ..
-                }
-            ] if matches!(
-                &members_ops[..],
-                [EditOp::SetRelationMembers { id: 900, before, after }]
-                    if before.len() == 2 && after.len() == 2
-            )
+            &ops[0],
+            EditOp::SetRelationMembers { id: 900, before, after }
+                if before.len() == 2 && after.len() == 2
         ));
         // Selected the other way round, the member survives unchanged.
         let mut n = net();
@@ -5527,12 +5205,12 @@ mod tests {
         n.nudge(2, straight.0 + 0.00005, straight.1);
         let out = n.run("straighten", &n.ways(&[100])).unwrap();
         assert_eq!(out.status, "Straightened 1 way");
-        let UndoableAction::MoveNodes { per_layer, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected one MoveNodes step");
+        let [EditOp::MoveNodes { moves }] = edit_of(&out).1 else {
+            panic!("expected one MoveNodes op");
         };
         // Only the interior node moved: from the nudge back onto the line.
-        assert_eq!(per_layer[0].1.len(), 1);
-        let (id, before, after) = per_layer[0].1[0];
+        assert_eq!(moves.len(), 1);
+        let (id, before, after) = moves[0];
         assert_eq!(id, 2);
         assert_eq!(before, (straight.0 + 0.00005, straight.1));
         // Projected onto the line through nodes 1 and 3 (the nudge was
@@ -5801,29 +5479,11 @@ mod tests {
         let tags = n.editable().feature_tags(&select[0]).unwrap();
         assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
         // One undo step: nodes first, then the way.
-        let Some(UndoableAction::Batch { actions, .. }) = &out.undo else {
-            panic!("expected one Batch step");
-        };
+        assert_eq!(shape(edit_of(&out).1), ["put", "put", "put", "put"]);
+        let (_, ops) = edit_of(&out);
         assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedNode,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedNode,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedNode,
-                    ..
-                },
-                UndoableAction::Edit {
-                    label: EditLabel::CreatedWay,
-                    ..
-                },
-            ]
+            &ops[3],
+            EditOp::PutFeature { snapshot } if snapshot.kind == FeatureKind::Way
         ));
         // 5 m to the right of the first segment, in metres on the ground.
         let (a, b) = (
@@ -5935,7 +5595,7 @@ mod tests {
         let relation = n.editable().relation(900).unwrap();
         let before = positions(&n, &ids);
         let out = n.run("align", &nodes(&n, &ids)).unwrap();
-        assert!(matches!(out.undo, Some(UndoableAction::MoveNodes { .. })));
+        assert_eq!(shape(edit_of(&out).1), ["move"]);
         let after = positions(&n, &ids);
         assert_ne!(after, before);
         // Collinear within a millimetre.
