@@ -6,9 +6,11 @@
 # relation-editor.osmscript; fixtures/side-panel-clarity.osm is laid out for
 # it): node 8104 (bus stop) at (560, 200), way 8202 at (520, 200), way 8301
 # (heavily tagged) at (340, 400), cafe node 8120 at (674, 683). The click on
-# the Relations row selects relation 9101; its y depends on the panel layout
-# (y=607 with the zone strips; 583 with only the grouped layout; the original
-# panel had it at y=595).
+# the Relations row selects relation 9101. The way's preset Fields push that row
+# off screen, so the script first collapses Fields (header y=210) and Tags
+# (y=243, once Fields has collapsed); the row is then at y=306 whatever the
+# preset. Those sections stay collapsed afterwards, so the relation's Members
+# list starts at y=332 (first row; 47.5 per member).
 
 window 1200 800
 load_osm docs/screenshots/fixtures/side-panel-clarity.osm
@@ -37,13 +39,17 @@ wait_idle 2s
 assert_selected way 8202
 capture out/side-panel-clarity-05-member-way.png
 
-click 1000,607
+click 1000,210
+wait_idle 1s
+click 1000,243
+wait_idle 1s
+click 1000,306
 wait_idle 2s
 assert_selected relation 9101
 capture out/side-panel-clarity-06-relation-members.png
 
 # Hovering a member row (the "after" panel reveals its reorder/remove buttons).
-hover 1000,564
+hover 1000,332
 wait_idle 1s
 capture out/side-panel-clarity-06b-member-hover.png
 

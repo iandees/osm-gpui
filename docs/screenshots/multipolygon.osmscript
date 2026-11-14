@@ -55,7 +55,11 @@ wait_idle 2s
 assert_selected none
 capture out/multipolygon-07-broken-not-selectable.png
 
-# Move a lake corner node: the fill follows the drag and the commit.
+# Move a lake corner node: the fill follows the drag and the commit. An
+# untagged vertex is not drawn or clickable until its way is hovered or
+# selected, so hover the corner first (a bare click would select the way).
+hover 430,220
+wait_idle 1s
 click 430,220
 wait_idle 2s
 assert_selected node 6104
