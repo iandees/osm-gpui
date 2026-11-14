@@ -391,6 +391,37 @@ fn relation_picker_arrows_move_the_selection_and_enter_submits_it(cx: &mut TestA
 }
 
 #[gpui::test]
+fn find_up_arrow_twice_shows_the_second_newest_query(cx: &mut TestAppContext) {
+    use ui::find_dialog::{DialogEvent, FindDialog};
+    let build = |w: &mut Window, cx: &mut Context<FindDialog>| {
+        let history = ["newest", "older", "oldest"].map(String::from).to_vec();
+        FindDialog::new(Default::default(), history, w, cx)
+    };
+    let _ = dialog_events(
+        cx,
+        build,
+        |_: &DialogEvent| String::new(),
+        |vcx, dialog| {
+            let shown = |vcx: &mut gpui::VisualTestContext| {
+                dialog.read_with(vcx, |d, cx| d.query_text(cx))
+            };
+            vcx.simulate_keystrokes("up");
+            vcx.run_until_parked();
+            assert_eq!(shown(vcx), "newest");
+            vcx.simulate_keystrokes("up");
+            vcx.run_until_parked();
+            assert_eq!(shown(vcx), "older");
+            vcx.simulate_keystrokes("down");
+            vcx.run_until_parked();
+            assert_eq!(shown(vcx), "newest");
+            vcx.simulate_keystrokes("down");
+            vcx.run_until_parked();
+            assert_eq!(shown(vcx), "");
+        },
+    );
+}
+
+#[gpui::test]
 fn new_note_ignores_escape_while_sending_and_enter_never_submits(cx: &mut TestAppContext) {
     use ui::note_dialog::{DialogEvent, NewNoteDialog};
     let build =

@@ -53,15 +53,80 @@ pub enum Preview {
     Error(ParseError),
 }
 
+/// Arrow-key navigation through earlier queries, independent of the input.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryNav {
+    /// Earlier queries, newest first.
+    entries: Vec<String>,
+    /// Which entry the field currently shows; `None` while the user's own
+    /// text is showing.
+    pos: Option<usize>,
+    /// What was typed before the arrow keys started replacing it.
+    draft: String,
+}
+
+impl HistoryNav {
+    pub fn new(entries: Vec<String>) -> Self {
+        Self {
+            entries,
+            pos: None,
+            draft: String::new(),
+        }
+    }
+
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
+    /// Up (older) or Down (newer) pressed with `current` in the field.
+    /// Returns the text to show, or `None` when nothing changes.
+    pub fn step(&mut self, older: bool, current: &str) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let next = match (self.pos, older) {
+            (None, true) => {
+                self.draft = current.to_string();
+                Some(0)
+            }
+            (None, false) => return None,
+            (Some(i), true) => Some((i + 1).min(self.entries.len() - 1)),
+            (Some(0), false) => None,
+            (Some(i), false) => Some(i - 1),
+        };
+        self.pos = next;
+        Some(match next {
+            Some(i) => self.entries[i].clone(),
+            None => self.draft.clone(),
+        })
+    }
+
+    /// The field's text changed to `text`. Leaves history mode, unless this
+    /// is just the entry the navigation itself put there.
+    pub fn edited(&mut self, text: &str) {
+        if let Some(i) = self.pos {
+            if self.entries[i] != text {
+                self.pos = None;
+            }
+        }
+    }
+
+    /// `text` was applied: it becomes the newest entry (moving it up if it
+    /// was already there) and navigation starts over.
+    pub fn submitted(&mut self, text: &str) {
+        self.entries.retain(|e| e != text);
+        if !text.trim().is_empty() {
+            self.entries.insert(0, text.to_string());
+        }
+        self.pos = None;
+        self.draft.clear();
+    }
+}
+
 pub struct FindDialog {
     query: Entity<InputState>,
     mode: SearchMode,
-    /// Earlier queries, newest first.
-    history: Vec<String>,
-    /// Which history entry the field currently shows (arrow keys).
-    history_pos: Option<usize>,
-    /// What was typed before the arrow keys started replacing it.
-    draft: String,
+    nav: HistoryNav,
     hint_open: bool,
     preview: Preview,
     /// The query text `preview` was computed for.
@@ -86,16 +151,15 @@ impl FindDialog {
         query.update(cx, |state, cx| state.focus(window, cx));
         let subscription = cx.subscribe(&query, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
-                this.history_pos = None;
+                let text = this.query_text(cx);
+                this.nav.edited(&text);
                 this.schedule_preview(cx);
             }
         });
         Self {
             query,
             mode,
-            history,
-            history_pos: None,
-            draft: String::new(),
+            nav: HistoryNav::new(history),
             hint_open: false,
             preview: Preview::Blank,
             preview_for: String::new(),
@@ -225,26 +289,10 @@ impl FindDialog {
     }
 
     fn recall(&mut self, older: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history.is_empty() {
-            return;
+        let current = self.query_text(cx);
+        if let Some(text) = self.nav.step(older, &current) {
+            self.set_query(&text, window, cx);
         }
-        let next = match (self.history_pos, older) {
-            (None, true) => {
-                self.draft = self.query_text(cx);
-                Some(0)
-            }
-            (None, false) => return,
-            (Some(i), true) => Some((i + 1).min(self.history.len() - 1)),
-            (Some(0), false) => None,
-            (Some(i), false) => Some(i - 1),
-        };
-        let text = match next {
-            Some(i) => self.history[i].clone(),
-            None => self.draft.clone(),
-        };
-        self.set_query(&text, window, cx);
-        // `set_query` ends in a Change-less update; keep the position.
-        self.history_pos = next;
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -347,7 +395,7 @@ impl Render for FindDialog {
             .child(Label::new(self.preview_text()).text_color(status_color));
 
         // Under an empty field: the last few queries, to click.
-        let recent = (self.preview == Preview::Blank && !self.history.is_empty()).then(|| {
+        let recent = (self.preview == Preview::Blank && !self.nav.entries().is_empty()).then(|| {
             v_flex()
                 .gap_0p5()
                 .child(
@@ -356,7 +404,8 @@ impl Render for FindDialog {
                         .text_color(muted),
                 )
                 .children(
-                    self.history
+                    self.nav
+                        .entries()
                         .iter()
                         .take(RECENT_SHOWN)
                         .enumerate()
@@ -448,5 +497,82 @@ impl Render for FindDialog {
         let frame =
             modal::dialog_frame(cx, gpui::px(680.0), tr!("dialog.find.title"), body, footer);
         modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nav(entries: &[&str]) -> HistoryNav {
+        HistoryNav::new(entries.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn up_twice_walks_two_entries_back() {
+        let mut n = nav(&["newest", "older", "oldest"]);
+        let first = n.step(true, "");
+        assert_eq!(first.as_deref(), Some("newest"));
+        // The input reports the recalled text back as a change.
+        n.edited("newest");
+        assert_eq!(n.step(true, "newest").as_deref(), Some("older"));
+    }
+
+    #[test]
+    fn up_stops_at_the_oldest_entry() {
+        let mut n = nav(&["a", "b"]);
+        n.step(true, "");
+        n.step(true, "a");
+        assert_eq!(n.step(true, "b").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn down_returns_to_the_draft() {
+        let mut n = nav(&["a", "b"]);
+        n.step(true, "my draft");
+        n.step(true, "a");
+        assert_eq!(n.step(false, "b").as_deref(), Some("a"));
+        assert_eq!(n.step(false, "a").as_deref(), Some("my draft"));
+        assert_eq!(n.step(false, "my draft"), None);
+    }
+
+    #[test]
+    fn an_edit_after_recalling_leaves_history_mode() {
+        let mut n = nav(&["a", "b"]);
+        n.step(true, "");
+        n.edited("ax");
+        // Up now starts over from the newest, keeping the edit as draft.
+        assert_eq!(n.step(true, "ax").as_deref(), Some("a"));
+        assert_eq!(n.step(false, "a").as_deref(), Some("ax"));
+    }
+
+    #[test]
+    fn empty_history_does_nothing() {
+        let mut n = nav(&[]);
+        assert_eq!(n.step(true, "x"), None);
+        assert_eq!(n.step(false, "x"), None);
+    }
+
+    #[test]
+    fn down_without_recalling_does_nothing() {
+        let mut n = nav(&["a"]);
+        assert_eq!(n.step(false, "x"), None);
+    }
+
+    #[test]
+    fn submitting_moves_a_duplicate_to_the_front_and_resets() {
+        let mut n = nav(&["a", "b", "c"]);
+        n.step(true, "");
+        n.step(true, "a");
+        n.submitted("b");
+        assert_eq!(n.entries(), ["b", "a", "c"]);
+        assert_eq!(n.step(true, "").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn submitting_a_blank_query_adds_nothing() {
+        let mut n = nav(&["a"]);
+        n.submitted("  ");
+        assert_eq!(n.entries(), ["a"]);
     }
 }
