@@ -50,6 +50,22 @@ fn cli_positional_files_mix_with_flags() {
 }
 
 #[test]
+fn cli_offline_and_http_fixtures_flags() {
+    let a = args(&[
+        "--script",
+        "s.osmscript",
+        "--offline",
+        "--http-fixtures",
+        "fx/m.json",
+    ]);
+    assert!(a.offline);
+    assert_eq!(a.http_fixtures, Some(PathBuf::from("fx/m.json")));
+    let b = args(&["--script", "s.osmscript"]);
+    assert!(!b.offline);
+    assert_eq!(b.http_fixtures, None);
+}
+
+#[test]
 fn cli_api_server_flag_values() {
     assert_eq!(args(&[]).api_server, None);
     assert_eq!(

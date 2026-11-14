@@ -31,6 +31,40 @@ use std::time::{Duration, Instant};
 
 pub const API_BASE: &str = "https://taginfo.openstreetmap.org/api/4";
 
+/// Environment variable naming a JSON file of canned taginfo answers for a
+/// `--script` run: `{"<text in the request URL>": [<data entries>], ...}`.
+pub const FIXTURE_ENV: &str = "OSM_GPUI_TAGINFO_FIXTURE";
+
+/// A routing rule that answers every taginfo request from `fixture`: the first
+/// entry whose key occurs in the request URL supplies the `data` array, and a
+/// request no entry matches gets a 404. It answers by URL text rather than by
+/// a URL prefix, so it is a custom handler instead of a fixtures-manifest rule.
+pub fn fixture_rule(fixture: serde_json::Value) -> crate::http::Rule {
+    use crate::http::{HttpResponse, RouteHandler, RouteMatch, Rule};
+    Rule {
+        matcher: RouteMatch::Host {
+            host: "taginfo.openstreetmap.org".to_string(),
+            path_prefix: None,
+        },
+        handler: RouteHandler::Custom(std::sync::Arc::new(move |req| {
+            let data = fixture
+                .as_object()
+                .and_then(|m| m.iter().find(|(k, _)| req.url.contains(k.as_str())))
+                .map(|(_, v)| v.clone());
+            match data {
+                Some(data) => Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::json!({ "data": data }).to_string().into_bytes(),
+                }),
+                None => Err(HttpError::Status {
+                    status: 404,
+                    body: Vec::new(),
+                }),
+            }
+        })),
+    }
+}
+
 /// How long typing must pause before a request goes out.
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
 /// Keys shorter than this (in characters) are never sent.
@@ -554,6 +588,19 @@ mod tests {
             text: t.into(),
             count: c,
         }
+    }
+
+    #[test]
+    fn the_fixture_rule_answers_taginfo_urls_by_text_and_404s_the_rest() {
+        let rule = fixture_rule(serde_json::json!({
+            "keys/all?query=sur": [{"key": "surface", "count_all": 7}],
+        }));
+        let client = crate::http::RoutedClient::offline(vec![rule]);
+        let items = fetch(&client, &keys("sur")).unwrap();
+        assert_eq!(items, vec![item("surface", 7)]);
+        assert!(fetch(&client, &keys("hig")).is_err());
+        let other = client.request(HttpRequest::get("https://example.test/"));
+        assert!(other.is_err());
     }
 
     #[test]

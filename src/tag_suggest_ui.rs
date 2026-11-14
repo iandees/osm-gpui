@@ -53,61 +53,11 @@ fn schema() -> &'static SchemaIndex {
 /// for suggestions).
 fn taginfo_enabled() -> bool {
     if crate::script_harness::script_mode() {
-        // Scripted runs never touch the network; they may be given canned
-        // answers (see `FixtureClient`).
-        return fixture_path().is_some();
+        // A scripted run asks taginfo only when it was given canned answers:
+        // `fn main` then routes taginfo requests to them (`taginfo::fixture_rule`).
+        return std::env::var_os(taginfo::FIXTURE_ENV).is_some();
     }
     !cfg!(test) && settings_store::snapshot().suggest_from_taginfo
-}
-
-/// Environment variable naming a JSON file of canned taginfo answers for a
-/// `--script` run: `{"<text in the request URL>": [<data entries>], ...}`.
-const FIXTURE_ENV: &str = "OSM_GPUI_TAGINFO_FIXTURE";
-
-fn fixture_path() -> Option<std::path::PathBuf> {
-    std::env::var_os(FIXTURE_ENV).map(Into::into)
-}
-
-/// Answers taginfo requests from the `FIXTURE_ENV` file: the first entry
-/// whose key occurs in the request URL supplies the `data` array.
-struct FixtureClient(serde_json::Value);
-
-impl osm_gpui::http::HttpClient for FixtureClient {
-    fn request(
-        &self,
-        req: osm_gpui::http::HttpRequest,
-    ) -> Result<osm_gpui::http::HttpResponse, osm_gpui::http::HttpError> {
-        let data = self
-            .0
-            .as_object()
-            .and_then(|m| m.iter().find(|(k, _)| req.url.contains(k.as_str())))
-            .map(|(_, v)| v.clone());
-        match data {
-            Some(data) => Ok(osm_gpui::http::HttpResponse {
-                status: 200,
-                body: serde_json::json!({ "data": data }).to_string().into_bytes(),
-            }),
-            None => Err(osm_gpui::http::HttpError::Status {
-                status: 404,
-                body: Vec::new(),
-            }),
-        }
-    }
-}
-
-/// Fetch `query` from taginfo, or from the fixture in a scripted run.
-fn fetch_taginfo(
-    http: &dyn osm_gpui::http::HttpClient,
-    query: &taginfo::TaginfoQuery,
-) -> Result<Vec<TaginfoItem>, taginfo::FetchError> {
-    if crate::script_harness::script_mode() {
-        let fixture = fixture_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(serde_json::Value::Null);
-        return taginfo::fetch(&FixtureClient(fixture), query);
-    }
-    taginfo::fetch(http, query)
 }
 
 /// One layer's key/value counts and the edit revision they describe.
@@ -575,7 +525,7 @@ impl MapViewer {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { fetch_taginfo(http.as_ref(), &query) })
+                .spawn(async move { taginfo::fetch(http.as_ref(), &query) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let items = this.tag_suggest.taginfo.finish(Instant::now(), job, result);
