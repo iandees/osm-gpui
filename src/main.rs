@@ -65,9 +65,9 @@ mod viewer_tests;
 mod welcome;
 
 use crate::menu::{
-    add_coordinate_grid, add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
-    download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
+    add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
+    no_op_imagery_info, open_custom_imagery_dialog, open_osm_file, open_settings, quit,
+    rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -84,8 +84,7 @@ use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
-    grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
-    LayerManager, MapLayer,
+    osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId, LayerManager, MapLayer,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
@@ -105,7 +104,6 @@ actions!(
         OpenOsmFile,
         Quit,
         AddOsmCarto,
-        AddCoordinateGrid,
         DownloadFromOsm,
         ToggleDebugOverlay,
         ToggleDownloadedArea,
@@ -433,7 +431,6 @@ fn pointer_px(p: gpui::Point<gpui::Pixels>) -> (f64, f64) {
 #[derive(Debug, Clone)]
 enum LayerRequest {
     OsmCarto,
-    CoordinateGrid,
     Imagery {
         name: String,
         url_template: String,
@@ -1008,7 +1005,7 @@ impl MapViewer {
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let layer_manager = LayerManager::new();
         // No layers here; the window setup adds OSM Carto (see
-        // `add_default_layers`), other imagery and the grid come from the
+        // `add_default_layers`), other imagery comes from the
         // menu, and loaded files add their own OSM layer.
         Self {
             viewport,
@@ -1280,7 +1277,7 @@ impl MapViewer {
     /// than going through `LayerRequest`.
     ///
     /// A layer with unsaved edits asks first (`show_delete_layer_dialog`);
-    /// one without (imagery, the grid, a data layer with nothing pending)
+    /// one without (imagery, a data layer with nothing pending)
     /// goes straight away.
     fn on_delete_layer(
         &mut self,
@@ -5192,13 +5189,6 @@ impl MapViewer {
                     self.layer_manager.add_layer(Box::new(tile_layer));
                 }
             }
-            LayerRequest::CoordinateGrid => {
-                if self.layer_manager.layer_named("Coordinate Grid").is_none() {
-                    let layer_id = self.layer_manager.alloc_id();
-                    self.layer_manager
-                        .add_layer(Box::new(GridLayer::new(layer_id)));
-                }
-            }
             LayerRequest::Imagery {
                 name,
                 url_template,
@@ -7341,7 +7331,6 @@ fn main() {
         // Register the open file action
         cx.on_action(open_osm_file);
         cx.on_action(add_osm_carto);
-        cx.on_action(add_coordinate_grid);
         cx.on_action(download_from_osm);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);

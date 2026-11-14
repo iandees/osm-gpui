@@ -91,7 +91,7 @@ An assertion that does not hold fails the run with a message naming the line.
 | `assert_snap none\|node ID\|way ID segment N` | What the snap highlight targets now; segment 0 lies between a way's first two nodes. |
 | `assert_way_nodes WAY NODE...` | The way's nodes, in order. |
 | `assert_node_shared NODE [WAY...]` | Exactly these ways use the node, in any order. |
-| `assert_layer gpx\|geojson\|osm\|imagery\|grid NAME` | A layer of that kind and exact name exists (NAME is the rest of the line). |
+| `assert_layer gpx\|geojson\|osm\|imagery NAME` | A layer of that kind and exact name exists (NAME is the rest of the line). |
 | `assert_layer_count COUNT` | Exactly COUNT layers (imagery and data) are on the map. |
 | `assert_pending COUNT` | The active layer has COUNT pending edits (created, modified and deleted). |
 | `assert_zoom LEVEL [tol=N]` | The map zoom, within the tolerance (default 0.001). |

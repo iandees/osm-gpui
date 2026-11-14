@@ -48,7 +48,6 @@ menu:
     custom: "Eigenes Hintergrundbild"
     custom_add: "Hinzufügen …"
     osm_carto: "OpenStreetMap Carto"
-    coordinate_grid: "Koordinatengitter"
     loading: "(Lade Bildquellenverzeichnis …)"
     unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
     # Eine empfohlene Bildquelle im Menü.
