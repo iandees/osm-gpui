@@ -198,37 +198,147 @@ struct Entry {
     last_error: Option<CapabilitiesError>,
 }
 
-fn store() -> &'static Mutex<HashMap<String, Entry>> {
-    static STORE: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
-    STORE.get_or_init(Default::default)
-}
-
 fn key(base_url: &str) -> String {
     base_url.trim_end_matches('/').to_string()
 }
 
-/// The capabilities known for `base_url`, or the defaults if none have been
-/// fetched (yet).
+/// What is known about each server's capabilities, with the in-flight and
+/// cooldown state of its fetches. Owned: tests and callers that want their
+/// own state build one with `new`; the app reaches the shared one through the
+/// free functions below.
+#[derive(Default)]
+pub struct CapabilitiesCache {
+    servers: Mutex<HashMap<String, Entry>>,
+}
+
+impl CapabilitiesCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The capabilities known for `base_url`, or the defaults if none have
+    /// been fetched (yet).
+    pub fn for_server(&self, base_url: &str) -> Capabilities {
+        self.servers
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&key(base_url)).and_then(|e| e.caps.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Why the latest fetch for `base_url` failed, if it did.
+    pub fn last_error(&self, base_url: &str) -> Option<CapabilitiesError> {
+        self.servers
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&key(base_url)).and_then(|e| e.last_error.clone()))
+    }
+
+    /// Whether the server at `base_url` accepts a download of `bounds`.
+    pub fn allows_download(&self, base_url: &str, bounds: &GeoBounds) -> bool {
+        self.for_server(base_url).allows_download(bounds)
+    }
+
+    /// Decide whether a fetch for `base_url` should start now, marking it in
+    /// flight if so. A server with no capabilities, or whose last known status
+    /// was offline (possibly stale), is retried at most once per cooldown; a
+    /// healthy cached entry is never refetched.
+    fn begin_attempt(&self, base_url: &str, now: Instant) -> bool {
+        let Ok(mut g) = self.servers.lock() else {
+            return false;
+        };
+        let e = g.entry(key(base_url)).or_default();
+        if e.in_flight {
+            return false;
+        }
+        let healthy = e.caps.as_ref().is_some_and(|c| !c.is_offline());
+        if healthy {
+            return false;
+        }
+        if e.last_attempt
+            .is_some_and(|t| now.duration_since(t) < RETRY_COOLDOWN)
+        {
+            return false;
+        }
+        e.in_flight = true;
+        e.last_attempt = Some(now);
+        true
+    }
+
+    fn finish_attempt(&self, base_url: &str, result: Result<Capabilities, CapabilitiesError>) {
+        let Ok(mut g) = self.servers.lock() else {
+            return;
+        };
+        let e = g.entry(key(base_url)).or_default();
+        e.in_flight = false;
+        match result {
+            Ok(caps) => {
+                e.caps = Some(caps);
+                e.last_error = None;
+            }
+            // Keep whatever we had (or the defaults) and retry on a later attempt.
+            Err(err) => {
+                log_debug(&format!("fetch for {base_url} failed: {err}"));
+                e.last_error = Some(err);
+            }
+        }
+    }
+
+    /// Fetch synchronously if `begin_attempt` allows it. Returns whether a fetch ran.
+    pub fn refresh_blocking(&self, client: &dyn HttpClient, base_url: &str, now: Instant) -> bool {
+        if !self.begin_attempt(base_url, now) {
+            return false;
+        }
+        self.finish_attempt(base_url, fetch_with(client, base_url));
+        true
+    }
+
+    /// Start a background fetch for `base_url` if one is due (see
+    /// `begin_attempt`). Never blocks; safe to call on every download attempt,
+    /// at startup and after the server setting changes.
+    pub fn ensure_fetched(self: &Arc<Self>, client: Arc<dyn HttpClient>, base_url: &str) {
+        if base_url.is_empty() || !self.begin_attempt(base_url, Instant::now()) {
+            return;
+        }
+        let base = base_url.to_string();
+        let cache = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("capabilities".into())
+            .spawn({
+                let base = base.clone();
+                move || cache.finish_attempt(&base, fetch_with(client.as_ref(), &base))
+            });
+        if spawned.is_err() {
+            self.finish_attempt(&base, Err(CapabilitiesError::Spawn));
+        }
+    }
+}
+
+/// The app's one cache. A global because the size limits are consulted from
+/// pure edit-time checks (`limits::way_over_limit`, `Limits::for_server`) and
+/// the download gate in about twenty places that have no viewer to ask, and
+/// from the settings store's server-changed hook.
+static SHARED: OnceLock<Arc<CapabilitiesCache>> = OnceLock::new();
+
+/// The app's shared cache.
+pub fn shared() -> &'static Arc<CapabilitiesCache> {
+    SHARED.get_or_init(Default::default)
+}
+
+/// The capabilities known for `base_url` in the shared cache.
 pub fn for_server(base_url: &str) -> Capabilities {
-    store()
-        .lock()
-        .ok()
-        .and_then(|g| g.get(&key(base_url)).and_then(|e| e.caps.clone()))
-        .unwrap_or_default()
+    shared().for_server(base_url)
 }
 
 /// Why the latest fetch for `base_url` failed, if it did.
 pub fn last_error(base_url: &str) -> Option<CapabilitiesError> {
-    store()
-        .lock()
-        .ok()
-        .and_then(|g| g.get(&key(base_url)).and_then(|e| e.last_error.clone()))
+    shared().last_error(base_url)
 }
 
 /// Whether the server at `base_url` accepts a download of `bounds`. The one
 /// shared download gate (status bar hint, Download action, `osm_api::check_area`).
 pub fn allows_download(base_url: &str, bounds: &GeoBounds) -> bool {
-    for_server(base_url).allows_download(bounds)
+    shared().allows_download(base_url, bounds)
 }
 
 /// Largest bbox area (square degrees) the server at `base_url` answers a
@@ -270,77 +380,9 @@ pub fn fetch_with(
     Capabilities::parse(&body)
 }
 
-/// Decide whether a fetch for `base_url` should start now, marking it in
-/// flight if so. A server with no capabilities, or whose last known status
-/// was offline (possibly stale), is retried at most once per cooldown; a
-/// healthy cached entry is never refetched.
-fn begin_attempt(base_url: &str, now: Instant) -> bool {
-    let Ok(mut g) = store().lock() else {
-        return false;
-    };
-    let e = g.entry(key(base_url)).or_default();
-    if e.in_flight {
-        return false;
-    }
-    let healthy = e.caps.as_ref().is_some_and(|c| !c.is_offline());
-    if healthy {
-        return false;
-    }
-    if e.last_attempt
-        .is_some_and(|t| now.duration_since(t) < RETRY_COOLDOWN)
-    {
-        return false;
-    }
-    e.in_flight = true;
-    e.last_attempt = Some(now);
-    true
-}
-
-fn finish_attempt(base_url: &str, result: Result<Capabilities, CapabilitiesError>) {
-    let Ok(mut g) = store().lock() else {
-        return;
-    };
-    let e = g.entry(key(base_url)).or_default();
-    e.in_flight = false;
-    match result {
-        Ok(caps) => {
-            e.caps = Some(caps);
-            e.last_error = None;
-        }
-        // Keep whatever we had (or the defaults) and retry on a later attempt.
-        Err(err) => {
-            log_debug(&format!("fetch for {base_url} failed: {err}"));
-            e.last_error = Some(err);
-        }
-    }
-}
-
-/// Fetch synchronously if `begin_attempt` allows it. Returns whether a fetch ran.
-pub fn refresh_blocking(client: &dyn HttpClient, base_url: &str, now: Instant) -> bool {
-    if !begin_attempt(base_url, now) {
-        return false;
-    }
-    finish_attempt(base_url, fetch_with(client, base_url));
-    true
-}
-
-/// Start a background fetch for `base_url` if one is due (see
-/// `begin_attempt`). Never blocks; safe to call on every download attempt,
-/// at startup and after the server setting changes.
+/// Start a background fetch into the shared cache if one is due.
 pub fn ensure_fetched(client: Arc<dyn HttpClient>, base_url: &str) {
-    if base_url.is_empty() || !begin_attempt(base_url, Instant::now()) {
-        return;
-    }
-    let base = base_url.to_string();
-    let spawned = std::thread::Builder::new()
-        .name("capabilities".into())
-        .spawn({
-            let base = base.clone();
-            move || finish_attempt(&base, fetch_with(client.as_ref(), &base))
-        });
-    if spawned.is_err() {
-        finish_attempt(&base, Err(CapabilitiesError::Spawn));
-    }
+    shared().ensure_fetched(client, base_url);
 }
 
 #[cfg(test)]
@@ -452,15 +494,16 @@ mod tests {
 
         // The failure is kept for the server until a fetch succeeds.
         let failing = FakeClient::new(vec![status_err(500, "oops")]);
-        assert!(refresh_blocking(&failing, base, Instant::now()));
+        let cache = CapabilitiesCache::new();
+        assert!(cache.refresh_blocking(&failing, base, Instant::now()));
         assert!(matches!(
-            last_error(base),
+            cache.last_error(base),
             Some(CapabilitiesError::Fetch(_))
         ));
         let later = Instant::now() + RETRY_COOLDOWN + Duration::from_secs(1);
         let healthy = FakeClient::new(vec![ok(200, "<osm/>")]);
-        assert!(refresh_blocking(&healthy, base, later));
-        assert!(last_error(base).is_none());
+        assert!(cache.refresh_blocking(&healthy, base, later));
+        assert!(cache.last_error(base).is_none());
     }
 
     #[test]
@@ -493,31 +536,47 @@ mod tests {
         let base = "https://caps-success.test";
         let xml = r#"<osm><api><area maximum="1"/></api></osm>"#;
         let client = FakeClient::new(vec![ok(200, xml)]);
-        assert!(!allows_download(base, &b(40.0, 41.0, -75.0, -74.0)));
-        assert!(refresh_blocking(&client, base, Instant::now()));
+        let cache = CapabilitiesCache::new();
+        assert!(!cache.allows_download(base, &b(40.0, 41.0, -75.0, -74.0)));
+        assert!(cache.refresh_blocking(&client, base, Instant::now()));
         assert_eq!(
             client.requests.lock().unwrap()[0].url,
             format!("{base}/api/capabilities")
         );
-        assert!(allows_download(base, &b(40.0, 41.0, -75.0, -74.0)));
+        assert!(cache.allows_download(base, &b(40.0, 41.0, -75.0, -74.0)));
         // A healthy cached entry is not refetched.
-        assert!(!refresh_blocking(&client, base, Instant::now()));
+        assert!(!cache.refresh_blocking(&client, base, Instant::now()));
         assert_eq!(client.request_count(), 1);
     }
 
     #[test]
     fn size_limit_accessors_follow_the_fetched_server() {
         let base = "https://caps-limits.test";
-        assert_eq!(max_way_nodes(base), 2000);
-        assert_eq!(max_relation_members(base), 32000);
-        assert_eq!(max_changeset_elements(base), 10000);
+        let cache = CapabilitiesCache::new();
+        let caps = |c: &CapabilitiesCache| c.for_server(base);
+        assert_eq!(caps(&cache).waynodes_maximum, 2000);
+        assert_eq!(caps(&cache).relationmembers_maximum, 32000);
+        assert_eq!(caps(&cache).changeset_maximum_elements, 10000);
         let xml = r#"<osm><api><waynodes maximum="10"/><relationmembers maximum="20"/>
             <changesets maximum_elements="30"/></api></osm>"#;
         let client = FakeClient::new(vec![ok(200, xml)]);
-        assert!(refresh_blocking(&client, base, Instant::now()));
-        assert_eq!(max_way_nodes(base), 10);
-        assert_eq!(max_relation_members(base), 20);
-        assert_eq!(max_changeset_elements(base), 30);
+        assert!(cache.refresh_blocking(&client, base, Instant::now()));
+        assert_eq!(caps(&cache).waynodes_maximum, 10);
+        assert_eq!(caps(&cache).relationmembers_maximum, 20);
+        assert_eq!(caps(&cache).changeset_maximum_elements, 30);
+    }
+
+    #[test]
+    fn two_caches_do_not_share_what_they_know() {
+        let base = "https://caps-independent.test";
+        let xml = r#"<osm><api><area maximum="1"/></api></osm>"#;
+        let (a, b_cache) = (CapabilitiesCache::new(), CapabilitiesCache::new());
+        assert!(a.refresh_blocking(&FakeClient::new(vec![ok(200, xml)]), base, Instant::now()));
+        assert_eq!(a.for_server(base).area_maximum, 1.0);
+        assert_eq!(b_cache.for_server(base), Capabilities::default());
+        // The other cache is not in cooldown or in flight either.
+        let client = FakeClient::new(vec![ok(200, xml)]);
+        assert!(b_cache.refresh_blocking(&client, base, Instant::now()));
     }
 
     #[test]
@@ -525,17 +584,14 @@ mod tests {
         let base = "https://caps-failure.test/";
         let client = FakeClient::new(vec![status_err(503, "down"), ok(200, "<osm/>")]);
         let t0 = Instant::now();
-        assert!(refresh_blocking(&client, base, t0));
-        assert_eq!(for_server(base), Capabilities::default());
+        let cache = CapabilitiesCache::new();
+        assert!(cache.refresh_blocking(&client, base, t0));
+        assert_eq!(cache.for_server(base), Capabilities::default());
         // Inside the cooldown: no request.
-        assert!(!refresh_blocking(
-            &client,
-            base,
-            t0 + Duration::from_secs(5)
-        ));
+        assert!(!cache.refresh_blocking(&client, base, t0 + Duration::from_secs(5)));
         assert_eq!(client.request_count(), 1);
         // After it: retried, and the success sticks.
-        assert!(refresh_blocking(&client, base, t0 + RETRY_COOLDOWN));
+        assert!(cache.refresh_blocking(&client, base, t0 + RETRY_COOLDOWN));
         assert_eq!(client.request_count(), 2);
     }
 
@@ -545,9 +601,10 @@ mod tests {
         let offline = r#"<osm><api><status api="offline" database="online"/></api></osm>"#;
         let client = FakeClient::new(vec![ok(200, offline), ok(200, LIVE)]);
         let t0 = Instant::now();
-        assert!(refresh_blocking(&client, base, t0));
-        assert!(for_server(base).is_offline());
-        assert!(refresh_blocking(&client, base, t0 + RETRY_COOLDOWN));
-        assert!(!for_server(base).is_offline());
+        let cache = CapabilitiesCache::new();
+        assert!(cache.refresh_blocking(&client, base, t0));
+        assert!(cache.for_server(base).is_offline());
+        assert!(cache.refresh_blocking(&client, base, t0 + RETRY_COOLDOWN));
+        assert!(!cache.for_server(base).is_offline());
     }
 }

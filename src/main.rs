@@ -7370,7 +7370,11 @@ fn main() {
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.
-        osm_gpui::imagery_offset::init_store(!script_harness::script_mode());
+        osm_gpui::imagery_offset::init_store(if script_harness::script_mode() {
+            Default::default()
+        } else {
+            osm_gpui::imagery_offset::load()
+        });
 
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value
