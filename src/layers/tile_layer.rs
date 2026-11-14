@@ -253,26 +253,22 @@ fn edge_bleed_margin(tile_width_px: f32) -> f32 {
     (0.5 * tile_width_px / TILE_TEXELS).clamp(0.0, 16.0)
 }
 
-/// Screen rect (x, y, width, height) for one tile: each tile is projected
-/// independently at its exact, continuous (sub-pixel) screen position —
-/// deliberately *not* rounded, so tiles move perfectly smoothly and in
-/// exact lockstep as the viewport pans or zooms, with no per-tile or
-/// per-frame quantization to desync.
-///
-/// The box is then grown by `TILE_OVERLAP_PX` split evenly on *all four*
-/// sides (not just grown rightward/downward), so it overlaps every
-/// neighbor — including diagonally, at the corner where four tiles meet.
-/// Growing one-sided only would let a tile overlap its right/bottom
-/// neighbor but not its left/top one, leaving the shared corner of a 2×2
-/// tile block uncovered from every direction — visible as a faint cross
-/// where the dark fallback background shows through at that one point.
+/// Screen rect (x, y, width, height) for one tile with no imagery offset.
 #[cfg(test)]
 fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
     tile_screen_rect_shifted(viewport, tile, (0.0, 0.0))
 }
 
-/// `tile_screen_rect` for imagery painted `(off_x, off_y)` Web Mercator metres
-/// away from where the tile says it is (the layer's imagery offset).
+/// Screen rect (x, y, width, height) for one tile, for imagery painted
+/// `(off_x, off_y)` Web Mercator metres away from where the tile says it is
+/// (the layer's imagery offset).
+///
+/// Each tile is projected independently at its exact sub-pixel position,
+/// deliberately not rounded, so tiles move in lockstep as the viewport pans
+/// or zooms. The box is then grown by `TILE_OVERLAP_PX` split evenly on all
+/// four sides: one-sided growth would overlap the right/bottom neighbour only,
+/// leaving the corner shared by a 2×2 block uncovered (a faint cross where
+/// the dark fallback shows through).
 fn tile_screen_rect_shifted(
     viewport: &Viewport,
     tile: &TileCoord,
@@ -373,7 +369,6 @@ impl MapLayer for TileLayer {
             let (tile_x, tile_y, tile_width, tile_height) =
                 tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
 
-            // Generate tile URL via the layer's URL template.
             let tile_url = url_from_template(&self.url_template, tile_coord);
 
             let asset_key = crate::tile_cache::TileAssetKey {
@@ -417,7 +412,6 @@ impl MapLayer for TileLayer {
                 })
             };
 
-            // Create tile element using GPUI's img with asset loading
             let mut tile_element = div()
                 .absolute()
                 .left(tile_x)
@@ -431,18 +425,16 @@ impl MapLayer for TileLayer {
                 tile_element = tile_element.child(parent_el);
             }
 
-            // Pick a character budget for the fallback message based on
-            // the on-screen tile width: roughly one char per 6 px, clamped
-            // to a sensible range so very small tiles still get something.
             let bleed = px(edge_bleed_margin(f32::from(tile_width)));
+            // Character budget for the fallback message: roughly one char per
+            // 6 px of tile width, clamped so very small tiles still get some.
             let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
             let fallback_url = tile_url;
 
             let tile_element = tile_element
                 .child(
-                    // Use GPUI's img with asset loading system. Extended past
-                    // the tile box by `edge_bleed_margin` (see its docs) and
-                    // clipped by the box's overflow_hidden.
+                    // Extended past the tile box by `edge_bleed_margin` (see
+                    // its docs) and clipped by the box's overflow_hidden.
                     img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
                         window.use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                     })
@@ -524,12 +516,9 @@ mod tests {
         ]
     }
 
-    /// The single point where four tiles meet (top-right corner of the
-    /// top-left tile) must be covered by every one of the four tiles'
-    /// rendered boxes, regardless of paint order. Growing a tile's box only
-    /// rightward/downward covers its right and bottom neighbors but leaves
-    /// this exact corner uncovered by the tiles above/left of it — visible
-    /// as a faint cross where the dark fallback background shows through.
+    /// The point where four tiles meet (top-right corner of the top-left
+    /// tile) must be covered by all four rendered boxes, regardless of paint
+    /// order.
     #[test]
     fn shared_corner_of_four_tiles_is_covered_from_every_side() {
         let screen_size = size(px(801.0), px(600.0));
@@ -594,14 +583,10 @@ mod tests {
     }
 
     /// During a pure pan, every visible tile must shift by the *same*
-    /// amount each frame — no per-tile quantization to desync. Since tile
-    /// positions are now projected independently at full precision (no
-    /// rounding), this holds automatically; this test locks that in as a
-    /// regression guard. Tiles here are multiple columns/rows apart, which
-    /// would have caught the earlier (since-reverted) `anchor + index *
-    /// rounded_width` design: that scheme jumped a tile by an amount
-    /// proportional to its distance from the anchor whenever the rounded
-    /// width ticked over.
+    /// amount each frame. The tiles are several columns/rows apart, which
+    /// exposes an `anchor + index * rounded_width` scheme: it jumps a tile in
+    /// proportion to its distance from the anchor whenever the rounded width
+    /// ticks over.
     #[test]
     fn tiles_pan_in_lockstep_without_relative_jiggle() {
         let screen_size = size(px(801.0), px(600.0));
@@ -637,17 +622,12 @@ mod tests {
         }
     }
 
-    /// During a slow zoom, a tile's position must change *smoothly* — no
-    /// disproportionate per-frame jump. Zooming legitimately moves
-    /// different tiles by different amounts (it scales distances from the
-    /// viewport center, so a lockstep-equal-delta check does not apply
-    /// here, unlike panning). What must hold is that each small zoom step
-    /// produces a correspondingly small position change; a quantization
-    /// scheme that rounds tile size once and multiplies by tile-index
-    /// distance from some anchor would instead show sudden jumps whenever
-    /// the rounded size ticks over — bigger for tiles farther from the
-    /// anchor. This tile is several tiles away from the viewport center,
-    /// which is exactly the case that would expose that.
+    /// During a slow zoom, a tile's position must change *smoothly*. Zooming
+    /// moves different tiles by different amounts (distances from the
+    /// viewport center scale), so the equal-delta check of the pan test does
+    /// not apply; each small zoom step must just produce a small position
+    /// change. The tile is several tiles from the center, where an
+    /// anchor-plus-rounded-size scheme would jump the most.
     #[test]
     fn tiles_zoom_smoothly_without_disproportionate_jumps() {
         let screen_size = size(px(801.0), px(600.0));
@@ -820,11 +800,9 @@ mod tests {
         );
     }
 
-    /// Guards against `TileLayer`'s `source_key` field and
-    /// `source_key_for_template` silently desyncing under future refactors:
-    /// a layer built via `TileLayer::new` (the built-in OSM Carto layer)
-    /// must derive its `source_key` from the same template it uses to
-    /// resolve tile URLs.
+    /// A layer built via `TileLayer::new` (the built-in OSM Carto layer)
+    /// derives its `source_key` from the same template it uses to resolve
+    /// tile URLs.
     #[gpui::test]
     fn built_in_layer_source_key_matches_template_derivation(cx: &mut gpui::TestAppContext) {
         use crate::idle_tracker::IdleTracker;
