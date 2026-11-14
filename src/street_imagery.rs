@@ -156,10 +156,6 @@ impl std::fmt::Display for ImageryError {
 
 impl std::error::Error for ImageryError {}
 
-// ---------------------------------------------------------------------------
-// Requests
-// ---------------------------------------------------------------------------
-
 /// A Fotoshi STAC search of `b`, `limit` photos a page.
 pub fn fotoshi_url(b: &GeoBounds, limit: usize) -> String {
     format!(
@@ -173,10 +169,6 @@ pub fn fetch_image_with(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, I
     let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::standard())?;
     Ok(resp.body)
 }
-
-// ---------------------------------------------------------------------------
-// Parsers
-// ---------------------------------------------------------------------------
 
 fn point_of(v: &Value) -> Option<(f64, f64)> {
     let c = v.get("coordinates")?.as_array()?;
@@ -453,10 +445,6 @@ pub fn parse_panoramax(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
     }
     Ok(out)
 }
-
-// ---------------------------------------------------------------------------
-// Shared store
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
 pub struct PhotoStoreInner {

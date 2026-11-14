@@ -252,8 +252,8 @@ pub struct UploadFailure {
     pub changeset_id: Option<u64>,
 }
 
-/// Per-changeset result of a successful `upload_changes` call: for every
-/// node/way the server accepted, maps its LOCAL id (the id we sent — a
+/// Per-changeset result of a successful `upload_changes_with` call: for every
+/// node/way/relation the server accepted, maps its LOCAL id (the id we sent — a
 /// possibly-negative placeholder for a create, or the real id for a
 /// modify) to its new `(id, version)`. For a modify, `new_id == old local
 /// id`. For a create, `new_id` is the real server-assigned id. Deleted
@@ -705,7 +705,7 @@ fn delete_way_xml(id: i64, version: i32, changeset_id: u64) -> String {
 }
 
 /// Parse a `<diffResult>` response from `.../changeset/{id}/upload`. Each
-/// `<node>`/`<way>` child carries `old_id` always, and `new_id`/
+/// `<node>`/`<way>`/`<relation>` child carries `old_id` always, and `new_id`/
 /// `new_version` when the element was created or modified (both present
 /// together); a deleted element is confirmed with just `old_id` and no
 /// `new_id`/`new_version`, which we skip since there's nothing to remap.
