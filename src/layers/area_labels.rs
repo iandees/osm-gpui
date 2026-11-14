@@ -54,10 +54,6 @@ const MAX_POLYS: usize = 8;
 /// would otherwise accumulate).
 const GEOM_CACHE_CAP: usize = 6000;
 
-// ---------------------------------------------------------------------------
-// Text
-// ---------------------------------------------------------------------------
-
 /// An area's label, independent of the viewport.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AreaLabel {
@@ -130,10 +126,6 @@ pub fn resolve_area_label(
         priority: area_priority(tags),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Geometry
-// ---------------------------------------------------------------------------
 
 /// A hash of vertex coordinates; two equal fingerprints mean (to within a
 /// 64-bit collision) the same geometry.
@@ -272,10 +264,6 @@ impl AreaCaches {
         self.geoms.len()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Locating a label on screen
-// ---------------------------------------------------------------------------
 
 /// The view a label is located in: Mercator bounds and the pixel scale.
 #[derive(Debug, Clone, Copy)]

@@ -1,6 +1,6 @@
 //! Which node markers are shown at which zoom, and in which form.
 //!
-//! Drawing a marker costs about 1.3 us (one `paint_quad` each), so a dense
+//! Drawing a marker costs one `paint_quad` each, so a dense
 //! download viewed whole would spend most of a frame on dots too small and
 //! too close together to read or click. The rule is by zoom and tags only:
 //!

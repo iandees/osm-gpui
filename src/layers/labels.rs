@@ -71,10 +71,6 @@ const MAX_TEXT_CHARS: usize = 32;
 /// small zoom does not swap which of two overlapping labels wins.
 pub const HYSTERESIS_BONUS: i32 = 40;
 
-// ---------------------------------------------------------------------------
-// Geometry and collision
-// ---------------------------------------------------------------------------
-
 /// An axis-aligned screen rectangle (`x0 <= x1`, `y0 <= y1`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -246,10 +242,6 @@ pub fn label_rect(anchor: Anchor, c: (f32, f32), reach: f32, gap: f32, w: f32, h
     }
 }
 
-// ---------------------------------------------------------------------------
-// Placement
-// ---------------------------------------------------------------------------
-
 /// A feature key: `(kind, id)`, so node and way ids never clash.
 pub type Key = (u8, i64);
 pub const KIND_NODE: u8 = 0;
@@ -415,10 +407,6 @@ pub fn place(
         })
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Node label resolution
-// ---------------------------------------------------------------------------
 
 /// The icon a node gets.
 #[derive(Debug, Clone, PartialEq)]
@@ -609,10 +597,6 @@ pub fn resolve_node_label(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Shaping cache
-// ---------------------------------------------------------------------------
-
 /// An LRU of shaped lines keyed by text and size.
 #[derive(Default)]
 pub struct ShapeCache {
@@ -669,10 +653,6 @@ impl ShapeCache {
         self.map.retain(|_, (_, t)| *t > cut);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Placement results and per-layer state
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct PlacedText {
@@ -806,7 +786,7 @@ pub enum Step {
     HideAndWait,
 }
 
-/// Per-layer label state; lives in a `RefCell` on the layer.
+/// Per-layer label state; lives in a `Mutex` on the layer.
 pub struct LabelCache {
     pub shapes: ShapeCache,
     pub icons: IconCache,
@@ -942,10 +922,6 @@ impl LabelCache {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Painting
-// ---------------------------------------------------------------------------
-
 fn rgb_hsla(c: u32, alpha: f32) -> Hsla {
     let mut h: Hsla = Rgba {
         r: ((c >> 16) & 0xFF) as f32 / 255.0,
@@ -997,11 +973,9 @@ pub fn forced_halo_mode() -> Option<HaloMode> {
     })
 }
 
-/// Measured in release at about 300 placed labels with icons: no halo 1.05 ms,
-/// `Quad` 1.24 ms, `Shadow` 2.4 ms, `Offsets` 9.1 ms per frame (each glyph
-/// pass costs about 1.3 ms there, about 4 us per label). The outline is the
-/// most legible, so it is used while there are few labels; with more than
-/// [`OUTLINE_MAX_LABELS`] placed, the cheap backing quad takes over.
+/// The outline (`Offsets`) is the most legible but paints every glyph several
+/// times, so it is used only while there are few labels; with more than
+/// [`OUTLINE_MAX_LABELS`] placed, the much cheaper backing quad takes over.
 pub const OUTLINE_MAX_LABELS: usize = 40;
 
 /// The halo for a placement with `n_text` text labels, unless overridden by
@@ -1015,8 +989,8 @@ pub fn halo_for(n_text: usize) -> HaloMode {
 }
 
 /// Offsets (in pixels) at which the halo is painted for radius `r`: the four
-/// axis directions, plus the diagonals from a radius of 2 (each pass costs about 0.3 us per glyph,
-/// so the default 1.5 px halo is four passes).
+/// axis directions, plus the diagonals from a radius of 2 (each offset is one
+/// more pass over every glyph, so the default 1.5 px halo is four passes).
 pub fn halo_offsets(r: f32) -> Vec<(f32, f32)> {
     if r <= 0.0 {
         return Vec::new();
