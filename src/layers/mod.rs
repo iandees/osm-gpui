@@ -247,6 +247,70 @@ pub enum HighlightKind {
     Member,
 }
 
+/// Why an edit primitive of an `EditableLayer` refused; the layer is left
+/// unchanged. Callers turn it into their own user-facing message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditError {
+    /// The layer holds no data.
+    NoData,
+    UnknownNode(i64),
+    UnknownWay(i64),
+    UnknownRelation(i64),
+    /// A node cannot be removed while a way still lists it.
+    NodeInWay(i64),
+    /// A relation cannot be deleted while another has it as a member.
+    RelationInUse(i64),
+    /// An object with this id exists already.
+    IdInUse(crate::selection::FeatureKind, i64),
+    /// A position past the end of a way's node list.
+    IndexOutOfRange {
+        way_id: i64,
+        index: usize,
+        len: usize,
+    },
+    /// The operation covers nodes and ways only.
+    NotNodeOrWay(crate::selection::FeatureKind),
+    /// A node snapshot without coordinates.
+    MissingCoordinates(i64),
+}
+
+impl EditError {
+    /// The unknown-object error for `kind`.
+    pub fn unknown(kind: crate::selection::FeatureKind, id: i64) -> Self {
+        use crate::selection::FeatureKind;
+        match kind {
+            FeatureKind::Node => EditError::UnknownNode(id),
+            FeatureKind::Way => EditError::UnknownWay(id),
+            FeatureKind::Relation => EditError::UnknownRelation(id),
+        }
+    }
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::NoData => write!(f, "the layer has no data"),
+            EditError::UnknownNode(id) => write!(f, "no node {id}"),
+            EditError::UnknownWay(id) => write!(f, "no way {id}"),
+            EditError::UnknownRelation(id) => write!(f, "no relation {id}"),
+            EditError::NodeInWay(id) => write!(f, "node {id} is still part of a way"),
+            EditError::RelationInUse(id) => {
+                write!(f, "relation {id} is still a member of another relation")
+            }
+            EditError::IdInUse(kind, id) => write!(f, "{kind:?} {id} already exists"),
+            EditError::IndexOutOfRange { way_id, index, len } => {
+                write!(
+                    f,
+                    "index {index} is past the end of way {way_id} ({len} nodes)"
+                )
+            }
+            EditError::NotNodeOrWay(kind) => write!(f, "{kind:?} is not a node or way"),
+            EditError::MissingCoordinates(id) => write!(f, "node {id} has no coordinates"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
 /// The vector-editing surface a layer may support: hit-testing, selection
 /// highlight, tag read/write, node moves, and create/delete. Reached from a
 /// `&dyn MapLayer`/`&mut dyn MapLayer` via `as_editable`/`as_editable_mut`.
@@ -408,73 +472,85 @@ pub trait EditableLayer {
     /// The member node ids of a way this layer owns, if any.
     fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>>;
 
-    /// Commit a set of `(node_id, new_lat, new_lon)` moves into this layer's
-    /// data, rebuilding derived caches once.
-    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]);
+    // -- Edit primitives. Each changes the data and every derived cache
+    // together and marks the layer modified. A refusal returns `Err` having
+    // changed nothing. --
 
-    /// Set (insert or overwrite) a single tag on a feature this layer owns.
-    fn set_tag(&mut self, kind: crate::selection::FeatureKind, id: i64, key: &str, value: &str);
+    /// Move nodes: `(node_id, new_lat, new_lon)`. Moves none if any id is
+    /// unknown. Caches are patched for the moved nodes and their ways only.
+    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) -> Result<(), EditError>;
 
-    /// Remove a single tag key from a feature this layer owns.
-    fn remove_tag(&mut self, kind: crate::selection::FeatureKind, id: i64, key: &str);
+    /// Set (insert or overwrite) a tag on a node, way or relation.
+    fn set_tag(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        key: &str,
+        value: &str,
+    ) -> Result<(), EditError>;
 
-    /// Create a new, tag-less node at `(lat, lon)` and return its id.
-    /// `id`, when given, forces the new node to use exactly that id
-    /// (fails/returns `None` if a feature with that id already exists) —
-    /// used by redo, so a recreated node reuses its original id rather than
-    /// allocating a fresh one. When `id` is `None`, the layer allocates a
-    /// fresh negative (not-yet-uploaded) id.
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64>;
+    /// Remove a tag key from a node, way or relation.
+    fn remove_tag(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        key: &str,
+    ) -> Result<(), EditError>;
 
-    /// Delete a node or way this layer owns, returning a snapshot with
-    /// enough information to restore it later (see
-    /// `crate::selection::DeletedFeatureSnapshot`). `None` if nothing was
-    /// deleted (feature not found, or — for a node — refused because it's
-    /// still referenced by a way; see `OsmLayer::delete_feature`'s doc
-    /// comment for that limitation).
+    /// Create a tag-less node at `(lat, lon)` and return its id: a fresh
+    /// negative one when `id` is `None`, else exactly `id` (redo), which must
+    /// be unused.
+    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Result<i64, EditError>;
+
+    /// `create_node` with a fresh id, which cannot fail.
+    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
+
+    /// Delete a node or way, returning what `restore_feature` needs. A node
+    /// still in a way is refused (delete or edit the way first); a way's
+    /// nodes stay. Relations have their own `delete_relation`.
     fn delete_feature(
         &mut self,
         kind: crate::selection::FeatureKind,
         id: i64,
-    ) -> Option<crate::selection::DeletedFeatureSnapshot>;
+    ) -> Result<crate::selection::DeletedFeatureSnapshot, EditError>;
 
-    /// Re-insert a feature previously removed by `delete_feature`, using
-    /// exactly the id/tags/geometry captured in `snapshot`.
-    fn restore_feature(&mut self, snapshot: crate::selection::DeletedFeatureSnapshot);
+    /// Put a deleted node or way back with the snapshot's id, tags and
+    /// geometry; its id must be unused.
+    fn restore_feature(
+        &mut self,
+        snapshot: crate::selection::DeletedFeatureSnapshot,
+    ) -> Result<(), EditError>;
 
-    /// Insert a brand-new node at `(lat, lon)` and return its id.
-    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
-
-    /// Insert a brand-new way referencing existing node ids, with the given
-    /// tags, and return its id.
+    /// Add a way over existing nodes with a fresh negative id and return it.
     fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64;
 
-    /// Append a node id to an existing way.
-    fn extend_way(&mut self, way_id: i64, node_id: i64);
+    /// Append a node id to a way.
+    fn extend_way(&mut self, way_id: i64, node_id: i64) -> Result<(), EditError>;
 
-    /// Create a new node and splice it into an existing way at `index`,
-    /// returning the new node's id.
-    fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64;
+    /// Create a node and splice it into a way at `index` (`0..=len`), returning
+    /// its id. Creates nothing if the way or index is bad.
+    fn insert_node_into_way(
+        &mut self,
+        way_id: i64,
+        index: usize,
+        lat: f64,
+        lon: f64,
+    ) -> Result<i64, EditError>;
 
-    /// Remove a node this layer owns (must not still be referenced by any
-    /// way).
-    fn remove_node(&mut self, node_id: i64);
+    /// Remove a node that no way uses (undo of a create).
+    fn remove_node(&mut self, node_id: i64) -> Result<(), EditError>;
 
-    /// Remove a way this layer owns (its member nodes are untouched).
-    fn remove_way(&mut self, way_id: i64);
+    /// Remove a way; its nodes stay.
+    fn remove_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
-    /// Inverse of `insert_node_into_way`: remove the node at `index` from a
-    /// way's node list without deleting the node.
-    fn remove_node_from_way(&mut self, way_id: i64, index: usize);
+    /// Take the node at `index` out of a way's node list; the node stays.
+    fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError>;
 
-    /// Reverse a way's node order. Its own inverse (applying it twice
-    /// restores the original). Returns whether the way was found.
-    fn reverse_way(&mut self, way_id: i64) -> bool;
+    /// Reverse a way's node order (its own inverse).
+    fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
-    /// Replace a way's whole node list (the nodes must already exist).
-    /// Returns whether the way was found.
-    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool;
-
+    /// Replace a way's node list. The nodes should already exist.
+    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> Result<(), EditError>;
     /// The ids of the ways whose node list includes `node_id`.
     fn ways_using_node(&self, node_id: i64) -> Vec<i64>;
 
@@ -491,13 +567,12 @@ pub trait EditableLayer {
     /// The ids of every relation the layer has, in the order it stores them.
     fn relation_ids(&self) -> Vec<i64>;
 
-    /// Replace a relation's whole member list and return the previous one
-    /// (`None`, changing nothing, if the layer has no such relation).
+    /// Replace a relation's whole member list and return the previous one.
     fn set_relation_members(
         &mut self,
         relation_id: i64,
         members: Vec<crate::osm::OsmMember>,
-    ) -> Option<Vec<crate::osm::OsmMember>>;
+    ) -> Result<Vec<crate::osm::OsmMember>, EditError>;
 
     /// Copies of every relation in the layer.
     fn relations(&self) -> Vec<crate::osm::OsmRelation>;
@@ -506,25 +581,26 @@ pub trait EditableLayer {
     fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64>;
 
     /// Create a relation with a fresh negative id (from the same pool new
-    /// nodes and ways draw from) and return it; `None` if the layer has no
-    /// data.
+    /// nodes and ways draw from) and return it. Member refs are not checked.
     fn create_relation(
         &mut self,
         tags: Vec<(String, String)>,
         members: Vec<crate::osm::OsmMember>,
-    ) -> Option<i64>;
+    ) -> Result<i64, EditError>;
 
     /// Delete a relation, returning a snapshot for `restore_relation`.
-    /// `None`, changing nothing, if there is no such relation or it is a
-    /// member of another relation (remove that membership first).
+    /// Refused while another relation has it as a member.
     fn delete_relation(
         &mut self,
         relation_id: i64,
-    ) -> Option<crate::selection::DeletedRelationSnapshot>;
+    ) -> Result<crate::selection::DeletedRelationSnapshot, EditError>;
 
     /// Put a deleted (or, for redo, created) relation back with its original
-    /// id, version, content and position. `false` if the id is taken.
-    fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool;
+    /// id, version, content and position; the id must be unused.
+    fn restore_relation(
+        &mut self,
+        snapshot: crate::selection::DeletedRelationSnapshot,
+    ) -> Result<(), EditError>;
 
     /// Whether the object has a pending local edit: it was created here, or
     /// differs from the server baseline. `false` for an unknown object.

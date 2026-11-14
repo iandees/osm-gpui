@@ -832,10 +832,16 @@ mod tests {
     fn heavily_edited() -> OsmLayer {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Edited", Arc::new(downloaded()));
         // Geometry and tags of existing objects.
-        layer.commit_node_moves(&[(2, 40.00123456789, -74.00012345)]);
-        layer.set_tag(FeatureKind::Way, 100, "name", "Main Street");
-        layer.set_tag(FeatureKind::Way, 100, "surface", "asphalt");
-        layer.remove_tag(FeatureKind::Node, 3, "highway");
+        layer
+            .commit_node_moves(&[(2, 40.00123456789, -74.00012345)])
+            .unwrap();
+        layer
+            .set_tag(FeatureKind::Way, 100, "name", "Main Street")
+            .unwrap();
+        layer
+            .set_tag(FeatureKind::Way, 100, "surface", "asphalt")
+            .unwrap();
+        layer.remove_tag(FeatureKind::Node, 3, "highway").unwrap();
         // New objects.
         let a = layer.add_node(40.02, -74.02);
         let b = layer.add_node(40.021, -74.021);
@@ -857,25 +863,27 @@ mod tests {
             .unwrap();
         assert!(new_relation < 0);
         // A relation's membership changes.
-        layer.set_relation_members(
-            200,
-            vec![
-                member(MemberType::Way, 100, "forward"),
-                member(MemberType::Way, new_way, "backward"),
-            ],
-        );
+        layer
+            .set_relation_members(
+                200,
+                vec![
+                    member(MemberType::Way, 100, "forward"),
+                    member(MemberType::Way, new_way, "backward"),
+                ],
+            )
+            .unwrap();
         // Deleted objects: a relation, a way and a loose node.
-        layer.delete_relation(201);
-        layer.delete_feature(FeatureKind::Way, 101);
-        layer.delete_feature(FeatureKind::Node, 9);
+        layer.delete_relation(201).unwrap();
+        layer.delete_feature(FeatureKind::Way, 101).unwrap();
+        layer.delete_feature(FeatureKind::Node, 9).unwrap();
         // A node created and deleted again never existed on the server.
         let gone = layer.add_node(41.0, -75.0);
-        layer.delete_feature(FeatureKind::Node, gone);
+        layer.delete_feature(FeatureKind::Node, gone).unwrap();
         // Undone work: deleted and restored, changed and changed back.
         let snap = layer.delete_feature(FeatureKind::Node, 8).unwrap();
-        layer.restore_feature(snap);
-        layer.set_tag(FeatureKind::Node, 4, "note", "tmp");
-        layer.remove_tag(FeatureKind::Node, 4, "note");
+        layer.restore_feature(snap).unwrap();
+        layer.set_tag(FeatureKind::Node, 4, "note", "tmp").unwrap();
+        layer.remove_tag(FeatureKind::Node, 4, "note").unwrap();
         layer
     }
 
@@ -1061,9 +1069,13 @@ mod tests {
         // the app triggers right after: a restore must not offer the
         // accepted objects again.
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Partial", Arc::new(downloaded()));
-        layer.set_tag(FeatureKind::Way, 100, "name", "Changed");
+        layer
+            .set_tag(FeatureKind::Way, 100, "name", "Changed")
+            .unwrap();
         let a = layer.add_node(40.5, -74.5);
-        layer.set_tag(FeatureKind::Node, 9, "name", "Second chunk");
+        layer
+            .set_tag(FeatureKind::Node, 9, "name", "Second chunk")
+            .unwrap();
 
         let full = layer.diff_for_upload();
         let chunk = LayerDiff {
@@ -1158,7 +1170,9 @@ mod tests {
     #[test]
     fn a_crash_between_writes_keeps_the_previous_autosave_readable() {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(downloaded()));
-        layer.set_tag(FeatureKind::Way, 100, "name", "First");
+        layer
+            .set_tag(FeatureKind::Way, 100, "name", "First")
+            .unwrap();
         let root = tmp_root("crash-mid");
         let session = Session::start(&root).unwrap();
         session.write(&snapshot_of(&layer, 1)).unwrap();
@@ -1572,7 +1586,9 @@ mod tests {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Big", Arc::new(data));
         println!("build layer (not part of autosave): {:?}", t.elapsed());
         for i in 0..200 {
-            layer.set_tag(FeatureKind::Way, i + 1, "surface", "asphalt");
+            layer
+                .set_tag(FeatureKind::Way, i + 1, "surface", "asphalt")
+                .unwrap();
         }
         for i in 0..100 {
             layer.add_node(41.0 + i as f64 * 1e-4, -75.0);
@@ -1585,13 +1601,17 @@ mod tests {
         // An edit while the writer still holds the snapshot pays a
         // copy-on-write of the data, once.
         let t = Instant::now();
-        layer.set_tag(FeatureKind::Way, 500, "surface", "gravel");
+        layer
+            .set_tag(FeatureKind::Way, 500, "surface", "gravel")
+            .unwrap();
         println!(
             "UI thread: first edit while the writer holds the snapshot: {:?}",
             t.elapsed()
         );
         let t = Instant::now();
-        layer.set_tag(FeatureKind::Way, 501, "surface", "gravel");
+        layer
+            .set_tag(FeatureKind::Way, 501, "surface", "gravel")
+            .unwrap();
         println!("UI thread: next edit: {:?}", t.elapsed());
 
         let t = Instant::now();
