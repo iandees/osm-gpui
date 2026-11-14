@@ -73,17 +73,30 @@ Avoid large closures and complex state machines embedded in UI rendering code. I
 
 ### Custom error types per module
 
-Define a custom `Error` or `<Module>Error` enum for each module that can fail. Example:
+Define a custom `Error` or `<Module>Error` enum for each module that can fail. The project does not use `thiserror`: write `Display` and `std::error::Error` by hand, as `autosave::RecoverError` does:
 
 ```rust
-#[derive(thiserror::Error, Debug)]
-pub enum OsmParseError {
-    #[error("XML parse failed: {0}")]
-    XmlError(String),
-    #[error("Invalid coordinate: {0}")]
-    InvalidCoord(String),
+#[derive(Debug)]
+pub enum RecoverError {
+    /// The layer's `.osm` file could not be read.
+    Read(std::io::Error),
+    /// The file is not valid OSM XML.
+    Parse(OsmParseError),
 }
+
+impl std::fmt::Display for RecoverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecoverError::Read(e) => write!(f, "{e}"),
+            RecoverError::Parse(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RecoverError {}
 ```
+
+A module that makes HTTP requests also implements `From<HttpError>` for its error, built on `http::HttpFailure` (the status / transport / cancelled split with the body already decoded), so the mapping lives in one place and call sites just use `?`.
 
 Use `?` operator and `.map_err()` to propagate. Avoid generic `String` errors and bare `.unwrap()`.
 

@@ -23,7 +23,6 @@ use gpui_component::{
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
 use osm_gpui::coordinates::GeoBounds;
-use osm_gpui::http::UreqClient;
 use osm_gpui::layers::street_imagery_layer::{self, StreetImageryLayer};
 use osm_gpui::layers::LayerId;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
@@ -31,7 +30,8 @@ use osm_gpui::settings_store;
 use osm_gpui::street_imagery::{
     self as imagery, ImageryError, ObjectPhotos, PhotoStore, Provider, StreetPhoto,
 };
-use osm_gpui::street_imagery_tiles::{self as tiles, TileId};
+use osm_gpui::street_imagery_tiles as tiles;
+use osm_gpui::tiles::{tiles_covering_geo, TileCoord};
 use osm_gpui::tr;
 use osm_gpui::ui::sign_in_dialog::SignInPurpose;
 use osm_gpui::ui::style::muted_text_size;
@@ -82,9 +82,9 @@ struct ProviderState {
     store: PhotoStore,
     layer: Option<LayerId>,
     /// Tiles being fetched.
-    in_flight: HashSet<TileId>,
+    in_flight: HashSet<TileCoord>,
     /// Tiles that failed, and when; they are left alone for a while.
-    failed: HashMap<TileId, Instant>,
+    failed: HashMap<TileCoord, Instant>,
     /// Bumped to discard the answers of fetches that are no longer wanted.
     epoch: u64,
     /// The view needs more tiles than are fetched; the status bar said so.
@@ -395,7 +395,7 @@ impl MapViewer {
             return;
         }
         let view = expand(&self.viewport.visible_bounds(), 0.15);
-        let needed = tiles::tiles_covering(&view, tiles::tile_zoom(provider));
+        let needed = tiles_covering_geo(&view, tiles::tile_zoom(provider));
         if needed.len() > tiles::MAX_TILES_PER_VIEW {
             // Too far out to show photos: say so once.
             if !std::mem::replace(&mut self.imagery.providers[i].zoomed_out, true) {
@@ -410,7 +410,7 @@ impl MapViewer {
         let st = &mut self.imagery.providers[i];
         st.zoomed_out = false;
         if st.store.tile_count() > MAX_CACHED_TILES {
-            let keep: HashSet<TileId> = needed.iter().copied().collect();
+            let keep: HashSet<TileCoord> = needed.iter().copied().collect();
             st.store.retain_tiles(|t| keep.contains(t));
         }
         let now = Instant::now();
@@ -440,11 +440,12 @@ impl MapViewer {
         cx.notify();
         for t in started {
             let cred = cred.clone();
+            let http = self.http.clone();
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        tiles::fetch_tile_with(&UreqClient::new(), provider, t, cred.as_deref())
+                        tiles::fetch_tile_with(http.as_ref(), provider, t, cred.as_deref())
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -458,7 +459,7 @@ impl MapViewer {
     fn finish_tile(
         &mut self,
         provider: Provider,
-        t: TileId,
+        t: TileCoord,
         epoch: u64,
         result: Result<(Vec<StreetPhoto>, bool), ImageryError>,
         cx: &mut Context<Self>,
@@ -559,10 +560,13 @@ impl MapViewer {
         });
         let epoch = self.imagery.object_epoch;
         let key = settings_store::snapshot().fotoshi_api_key;
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { imagery::fetch_object_photos(&osm_id, &key) })
+                .spawn(
+                    async move { imagery::fetch_object_photos_with(http.as_ref(), &osm_id, &key) },
+                )
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if epoch != this.imagery.object_epoch {
@@ -700,14 +704,15 @@ impl MapViewer {
         });
         cx.notify();
         let cred = credential(photo.provider);
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let client = UreqClient::new();
+                    let client = http.as_ref();
                     // A tile leaves out the image URLs and the author.
                     let photo = if photo.large_url.is_none() {
-                        match tiles::fetch_detail_with(&client, &photo, cred.as_deref()) {
+                        match tiles::fetch_detail_with(client, &photo, cred.as_deref()) {
                             Ok(detailed) => detailed,
                             Err(e) => return (photo, Err(e)),
                         }
@@ -720,7 +725,7 @@ impl MapViewer {
                             .clone()
                             .or_else(|| photo.thumb_url.clone())
                             .ok_or_else(|| ImageryError::Parse("no image".into()))?;
-                        let bytes = imagery::fetch_image(&url)?;
+                        let bytes = imagery::fetch_image_with(client, &url)?;
                         decode(&bytes).map_err(ImageryError::Parse)
                     })();
                     (photo, image)

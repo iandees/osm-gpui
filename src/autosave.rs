@@ -65,7 +65,7 @@
 //! when the app quits normally.
 
 use crate::layers::diff::{diff_osm_data, LayerDiff};
-use crate::osm::{FileEdits, OsmData, OsmParser};
+use crate::osm::{FileEdits, OsmData, OsmParseError, OsmParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -403,13 +403,33 @@ pub struct RecoverableLayer {
     pub osm_path: PathBuf,
 }
 
+/// Why an autosaved layer could not be loaded back.
+#[derive(Debug)]
+pub enum RecoverError {
+    /// The layer's `.osm` file could not be read.
+    Read(std::io::Error),
+    /// The file is not valid OSM XML.
+    Parse(OsmParseError),
+}
+
+impl std::fmt::Display for RecoverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecoverError::Read(e) => write!(f, "{e}"),
+            RecoverError::Parse(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RecoverError {}
+
 impl RecoverableLayer {
     /// Parse the layer's data and its recorded pending edits.
-    pub fn load(&self) -> Result<(OsmData, FileEdits), String> {
-        let xml = std::fs::read_to_string(&self.osm_path).map_err(|e| e.to_string())?;
+    pub fn load(&self) -> Result<(OsmData, FileEdits), RecoverError> {
+        let xml = std::fs::read_to_string(&self.osm_path).map_err(RecoverError::Read)?;
         OsmParser::new()
             .parse_str_with_edits(&xml)
-            .map_err(|e| e.to_string())
+            .map_err(RecoverError::Parse)
     }
 }
 
@@ -989,6 +1009,36 @@ mod tests {
         let (data, edits) = rec.load().unwrap();
         found.discard();
         OsmLayer::new_with_edits(LayerId(7), rec.manifest.layer_name, Arc::new(data), &edits)
+    }
+
+    fn recoverable_at(osm_path: PathBuf) -> RecoverableLayer {
+        RecoverableLayer {
+            manifest: Manifest {
+                format: 1,
+                layer_id: 1,
+                layer_name: "L".into(),
+                source_path: None,
+                api_server: None,
+                saved_at: 0,
+                edit_count: 0,
+                app_version: "test".into(),
+            },
+            osm_path,
+        }
+    }
+
+    #[test]
+    fn loading_a_layer_reports_a_missing_file_and_a_corrupt_one_separately() {
+        let root = tmp_root("recover-errors");
+        let missing = recoverable_at(root.join("gone.osm"));
+        assert!(matches!(missing.load(), Err(RecoverError::Read(_))));
+
+        let corrupt_path = root.join("corrupt.osm");
+        std::fs::write(&corrupt_path, "<osm><node id=\"1\"").unwrap();
+        let err = recoverable_at(corrupt_path).load().unwrap_err();
+        assert!(matches!(err, RecoverError::Parse(_)), "{err:?}");
+        assert!(!err.to_string().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

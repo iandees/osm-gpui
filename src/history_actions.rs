@@ -142,6 +142,7 @@ impl MapViewer {
         }
 
         let fixture = self.object_history.fixture.clone();
+        let http = self.http.clone();
         let api = settings_store::api_base_url();
         let (tx, rx) = mpsc::channel();
         let worker_cancel = cancel.clone();
@@ -150,7 +151,13 @@ impl MapViewer {
                 Some(path) => std::fs::read_to_string(&path)
                     .map_err(|e| HistoryError::Network(format!("{}: {e}", path.display())))
                     .and_then(|body| parse_response(&body, feat.kind, feat.id)),
-                None => fetch_from_server(&api, &feat, &worker_cancel),
+                None => osm_gpui::object_history::fetch_history_with(
+                    http.as_ref(),
+                    &api,
+                    feat.kind,
+                    feat.id,
+                    &worker_cancel,
+                ),
             };
             let _ = tx.send(result);
         });
@@ -369,24 +376,6 @@ impl MapViewer {
             Some(LoadState::Loading) => Err("the object history is still loading".to_string()),
             Some(_) => Ok(()),
         }
-    }
-}
-
-/// The anonymous request to the API server. Unit tests never touch the
-/// network.
-fn fetch_from_server(
-    api: &str,
-    feat: &FeatureRef,
-    cancel: &AtomicBool,
-) -> Result<ObjectHistory, HistoryError> {
-    #[cfg(test)]
-    {
-        let _ = (api, feat, cancel);
-        Err(HistoryError::Network("no network in tests".to_string()))
-    }
-    #[cfg(not(test))]
-    {
-        osm_gpui::object_history::fetch_history(api, feat.kind, feat.id, cancel)
     }
 }
 

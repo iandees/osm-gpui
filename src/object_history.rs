@@ -13,7 +13,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
 use crate::http::{
-    fetch_with_retries_progress, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries_progress, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
 use crate::osm::{MemberType, OsmMember};
 use crate::selection::FeatureKind;
@@ -516,6 +516,18 @@ pub enum HistoryError {
     Cancelled,
 }
 
+impl From<HttpError> for HistoryError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status: 404, .. } => HistoryError::NotFound,
+            HttpFailure::Status { status: 410, .. } => HistoryError::Gone,
+            HttpFailure::Status { status, .. } => HistoryError::Http { status },
+            HttpFailure::Transport(msg) => HistoryError::Network(msg),
+            HttpFailure::Cancelled => HistoryError::Cancelled,
+        }
+    }
+}
+
 impl HistoryError {
     /// Worth offering a Retry button.
     pub fn is_retryable(&self) -> bool {
@@ -603,13 +615,6 @@ pub fn fetch_history_with(
     let req = HttpRequest::get(history_url(api_base, kind, id));
     let resp = fetch_with_retries_progress(client, &req, &RetryPolicy::standard(), &mut |_, _| {
         !cancel.load(Ordering::Relaxed)
-    })
-    .map_err(|e| match e {
-        HttpError::Status { status: 404, .. } => HistoryError::NotFound,
-        HttpError::Status { status: 410, .. } => HistoryError::Gone,
-        HttpError::Status { status, .. } => HistoryError::Http { status },
-        HttpError::Transport(msg) => HistoryError::Network(msg),
-        HttpError::Cancelled => HistoryError::Cancelled,
     })?;
     if cancel.load(Ordering::Relaxed) {
         return Err(HistoryError::Cancelled);
@@ -618,16 +623,6 @@ pub fn fetch_history_with(
         .into_string()
         .map_err(|e| HistoryError::Network(e.to_string()))?;
     parse_response(&body, kind, id)
-}
-
-/// `fetch_history_with` against the real network.
-pub fn fetch_history(
-    api_base: &str,
-    kind: FeatureKind,
-    id: i64,
-    cancel: &AtomicBool,
-) -> Result<ObjectHistory, HistoryError> {
-    fetch_history_with(&UreqClient::new(), api_base, kind, id, cancel)
 }
 
 /// Parse a history document, mapping its failures to [`HistoryError`].
