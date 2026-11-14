@@ -644,10 +644,10 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::AssertMode(want) => {
-                    let result = if self.mode == want {
+                    let result = if self.mode() == want {
                         Ok(())
                     } else {
-                        Err(format!("expected mode {:?}, got {:?}", want, self.mode))
+                        Err(format!("expected mode {:?}, got {:?}", want, self.mode()))
                     };
                     bus.set_assert_result(result);
                 }

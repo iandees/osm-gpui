@@ -45,7 +45,7 @@ impl MapViewer {
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_active = self.mode == mode;
+        let is_active = self.mode() == mode;
         let mut button = Button::new(("mode", mode as usize))
             .w(px(46.0))
             .h(px(46.0))

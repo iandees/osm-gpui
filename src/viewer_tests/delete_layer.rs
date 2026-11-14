@@ -25,9 +25,9 @@ fn add_second_layer(view: &mut MapViewer) -> LayerId {
 /// Records a Create Node step by clicking at `pt` in Add mode on `layer`.
 fn click_node_in(view: &mut MapViewer, layer: LayerId, pt: (f32, f32)) {
     view.active_layer = Some(layer);
-    view.add_progress = None;
+    view.set_add_progress(None);
     view.handle_add_click(point(px(pt.0), px(pt.1)), false);
-    view.add_progress = None;
+    view.set_add_progress(None);
 }
 
 /// History: [B create, A create, A extend, B create], A being the first
@@ -40,7 +40,7 @@ fn mixed_layer_history(view: &mut MapViewer) -> (LayerId, LayerId) {
     view.active_layer = Some(a);
     view.handle_add_click(point(px(50.0), px(150.0)), false);
     view.handle_add_click(point(px(50.0), px(200.0)), false);
-    view.add_progress = None;
+    view.set_add_progress(None);
     click_node_in(view, b, (50.0, 250.0));
     (a, b)
 }

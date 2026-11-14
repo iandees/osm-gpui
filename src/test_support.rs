@@ -192,7 +192,7 @@ pub(crate) fn with_osm(
     with_view(cx, move |view, window, cx| {
         let layer = add_osm_layer(view, "Net", data);
         view.active_layer = Some(layer);
-        view.mode = mode;
+        view.enter_mode(mode);
         f(view, window, cx, layer);
     });
 }

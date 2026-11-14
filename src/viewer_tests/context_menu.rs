@@ -14,7 +14,7 @@ fn right_click_selects_the_feature_and_opens_the_menu(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |view, window, cx| {
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
             view.right_press = Some(on_the_way());
             view.finish_right_press(on_the_way(), window, cx);
             assert_eq!(view.selected.len(), 1);
@@ -30,7 +30,7 @@ fn right_click_selects_the_feature_and_opens_the_menu(cx: &mut TestAppContext) {
 fn right_click_events_open_the_menu(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
-        .update(cx, |view, _, _| view.mode = EditMode::Select)
+        .update(cx, |view, _, _| view.enter_mode(EditMode::Select))
         .unwrap();
     let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
     // Events are only routed through a rendered frame.
@@ -64,7 +64,7 @@ fn right_drag_pans_without_opening_the_menu(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |view, window, cx| {
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
             view.right_press = Some(on_the_way());
             let released = on_the_way() + point(px(30.0), px(0.0));
             view.finish_right_press(released, window, cx);
@@ -79,7 +79,7 @@ fn right_click_on_empty_map_opens_nothing(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |view, window, cx| {
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
             let empty = point(px(100.0), px(500.0));
             view.right_press = Some(empty);
             view.finish_right_press(empty, window, cx);
@@ -93,7 +93,7 @@ fn right_click_inside_the_selection_keeps_it(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
         .update(cx, |view, window, cx| {
-            view.mode = EditMode::Select;
+            view.enter_mode(EditMode::Select);
             let layer_id = view.active_layer.unwrap();
             let way = osm_gpui::selection::FeatureRef {
                 layer_id,

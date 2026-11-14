@@ -651,7 +651,7 @@ impl MapViewer {
     /// A click on the map at `pos` (map-local pixels): opens the photo whose
     /// dot was clicked. Returns whether the click was used.
     pub(crate) fn imagery_click(&mut self, pos: gpui::Point<gpui::Pixels>) -> bool {
-        if self.mode != EditMode::Select {
+        if self.mode() != EditMode::Select {
             self.close_photo_panel();
             return false;
         }

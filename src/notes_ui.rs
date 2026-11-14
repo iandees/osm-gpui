@@ -360,7 +360,7 @@ impl MapViewer {
             self.notes.pending_new = Some(self.viewport.screen_to_geo(pos));
             return true;
         }
-        if self.mode != EditMode::Select {
+        if self.mode() != EditMode::Select {
             return false;
         }
         let Some(layer_id) = self.notes.layer else {
@@ -449,10 +449,8 @@ impl MapViewer {
 
     /// Leave the current mode (the click that places the note must reach the
     /// notes handler, not an editing mode) and wait for that click.
-    fn arm_new_note(&mut self) {
-        self.mode = EditMode::Select;
-        self.reset_mode_progress();
-        self.building_reference = None;
+    pub(crate) fn arm_new_note(&mut self) {
+        self.enter_mode(EditMode::Select);
         self.notes.armed = true;
         self.set_status(tr!("notes.new.armed"));
     }
@@ -952,36 +950,23 @@ impl MapViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AddProgress, BuildingProgress};
+    use crate::modes::state_tests::{has_gesture, start_gesture, GESTURE_MODES};
+    use crate::test_support::{empty_data, with_osm};
     use gpui::TestAppContext;
 
     #[gpui::test]
     fn arming_a_note_drops_every_modes_unfinished_gesture(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let window = cx.add_window(MapViewer::new);
-        window
-            .update(cx, |view, _w, _cx| {
-                view.mode = EditMode::Building;
-                view.add_progress = Some(AddProgress {
-                    way_id: None,
-                    last_node_id: -1,
-                    at_start: false,
-                });
-                view.building_progress = Some(BuildingProgress {
-                    corner_a: (0.0, 0.0),
-                    corner_b: None,
-                });
+        for mode in GESTURE_MODES {
+            with_osm(cx, empty_data(), mode, move |view, _w, _cx, layer| {
+                start_gesture(view, layer);
+                assert!(has_gesture(view), "{mode:?}");
                 view.arm_new_note();
-                assert_eq!(view.mode, EditMode::Select);
-                assert!(view.add_progress.is_none());
-                assert!(view.arc_progress.is_none());
-                assert!(view.building_progress.is_none());
-                assert!(view.building_press.is_none());
-                assert!(view.extrude_drag.is_none());
-                assert!(view.building_reference.is_none());
+                assert_eq!(view.mode(), EditMode::Select);
+                assert!(!has_gesture(view), "{mode:?}");
+                assert!(view.building_reference().is_none());
                 assert!(view.notes.armed);
-            })
-            .unwrap();
+            });
+        }
     }
 
     #[test]

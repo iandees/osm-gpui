@@ -346,7 +346,7 @@ fn tab_reaches_member_buttons_in_row_order_and_reveals_the_row(cx: &mut TestAppC
         let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
         view.layer_manager.add_layer(Box::new(layer));
         view.active_layer = Some(layer_id);
-        view.mode = EditMode::Select;
+        view.enter_mode(EditMode::Select);
         view.set_selection(vec![osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Relation,

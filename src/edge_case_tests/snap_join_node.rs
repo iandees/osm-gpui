@@ -431,12 +431,12 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
     // Way 10 is a building outline. A drawn way that is untagged snaps to
     // anything, but once it is a footway it must not glue onto the building.
     with_session(cx, scene(&[("building", "yes")], &[]), |s| {
-        s.view.mode = EditMode::Add;
+        s.view.enter_mode(EditMode::Add);
         s.view
             .handle_add_click(point(gpui::px(50.0), gpui::px(50.0)), false);
         s.view
             .handle_add_click(point(gpui::px(60.0), gpui::px(80.0)), false);
-        let drawn = s.view.add_progress.as_ref().unwrap().way_id.unwrap();
+        let drawn = s.view.add_progress().unwrap().way_id.unwrap();
         s.set_tag(W, drawn, "highway", "footway");
         let on_building = screen(s, 40.0, -74.0);
         s.view.handle_add_click(on_building, false);
@@ -458,7 +458,7 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
 #[gpui::test]
 fn add_mode_with_an_untagged_way_snaps_and_the_modifier_prevents_it(cx: &mut TestAppContext) {
     with_session(cx, scene(&[("building", "yes")], &[]), |s| {
-        s.view.mode = EditMode::Add;
+        s.view.enter_mode(EditMode::Add);
         let on_line = screen(s, 40.0, -74.0);
         // Held Alt (the click handler receives "snapping disabled"): free node.
         s.view
@@ -558,7 +558,7 @@ fn pressing_and_releasing_alt_updates_the_highlight_without_a_mouse_move(cx: &mu
     };
     // Hovering in Add mode.
     with_session(cx, scene(&road(), &[]), move |s| {
-        s.view.mode = EditMode::Add;
+        s.view.enter_mode(EditMode::Add);
         let near = screen(s, 40.0, -74.0);
         let at = point(near.x, near.y + gpui::px(2.0));
         let cx = &mut *s.cx;

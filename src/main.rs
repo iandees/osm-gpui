@@ -7,9 +7,9 @@
 
 use gpui::Action;
 use gpui::{
-    actions, canvas, div, fill, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollWheelEvent,
-    SharedString, Window, WindowOptions,
+    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window,
+    WindowOptions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -40,6 +40,10 @@ mod imagery_state_tests;
 mod improve_click_tests;
 mod menu;
 mod mode_panel;
+mod modes;
+use modes::{
+    AddProgress, ArcPoint, ArcSnap, BuildingReference, ExtrudeDrag, ExtrudeResult, ExtrudeStyle,
+};
 mod notes_ui;
 #[cfg(test)]
 mod reference_tests;
@@ -276,83 +280,6 @@ struct SetMode {
     mode: EditMode,
 }
 
-/// Add mode's in-progress way-building state: the last-placed node, and
-/// which way (if any) it belongs to. `None` on `MapViewer` means "no node
-/// placed yet in this continuation" — the next click starts fresh.
-struct AddProgress {
-    way_id: Option<i64>,
-    last_node_id: i64,
-    /// Continuing an existing way from its first node (Extend Way on a way's
-    /// start): new nodes are prepended to `way_id` instead of appended.
-    at_start: bool,
-}
-
-/// Building mode's in-progress rectangle: corner A is fixed after click 1;
-/// corner B after click 2. Both are geo (lat, lon) coordinates.
-#[derive(Clone, Copy)]
-struct BuildingProgress {
-    corner_a: (f64, f64),
-    corner_b: Option<(f64, f64)>,
-}
-
-/// Arc mode's in-progress arc: the start point is fixed after click 1, the
-/// end point after click 2; the third click picks a point the arc passes
-/// through. Both are geo (lat, lon) coordinates.
-#[derive(Clone, Copy)]
-struct ArcProgress {
-    start: ArcPoint,
-    end: Option<ArcPoint>,
-}
-
-/// What an Arc-mode click snapped onto.
-#[derive(Clone, Copy)]
-enum ArcSnap {
-    /// An existing node, which the arc then uses as that endpoint.
-    Node(i64),
-    /// A way's segment (`way_id`, index of the segment's first node): the
-    /// endpoint is a new node spliced into the way.
-    Way(i64, usize),
-}
-
-/// A clicked Arc-mode point: its geo position (snapped onto a node or way
-/// when the click was near one) and what it snapped onto.
-#[derive(Clone, Copy)]
-struct ArcPoint {
-    geo: (f64, f64),
-    snap: Option<ArcSnap>,
-}
-
-/// What a click would do to Improve Way mode's target way: the way, its node
-/// ids and their screen positions, and the planned edit (in screen space).
-struct ImprovePlan {
-    layer_id: LayerId,
-    way_id: i64,
-    ids: Vec<i64>,
-    points: Vec<osm_gpui::improve_way::Pt>,
-    plan: osm_gpui::improve_way::Plan,
-}
-
-/// The squared way whose orientation Building mode borrows: captured when
-/// the mode is entered with exactly that way selected, and kept (even though
-/// the selection moves on to each new building) until the mode is exited.
-#[derive(Clone, Copy)]
-struct BuildingReference {
-    layer_id: LayerId,
-    way_id: i64,
-    /// Bearing of the way's longest edge in a local metric projection, in
-    /// radians in `[0, pi)` (see `osm_gpui::building`).
-    orientation: f64,
-}
-
-/// A left press in oriented Building mode, awaiting its release.
-#[derive(Clone, Copy)]
-struct BuildingPress {
-    down: gpui::Point<gpui::Pixels>,
-    /// True if this press placed the first corner (so releasing in place is
-    /// just a click and the building waits for a second one).
-    placed_first_corner: bool,
-}
-
 /// What a pointer at a given spot would snap onto (see `osm_gpui::snap`):
 /// shown as a highlight while it applies, and what a click (Add mode) or
 /// drag release (a single node) then does.
@@ -462,71 +389,6 @@ fn snap_node_ok(
         .all(|w| osm_gpui::snap::may_snap(&refs, &snap_target_tags(editable, layer_id, w)))
 }
 
-/// Highlight a snap target: the segment it would join (amber) and a ring
-/// around the point the node would land on.
-fn paint_snap_target(
-    target: &SnapTarget,
-    viewport: &Viewport,
-    origin: gpui::Point<gpui::Pixels>,
-    window: &mut Window,
-) {
-    let amber = rgb(0xf59e0b);
-    let at = |lat: f64, lon: f64| {
-        let p = viewport.geo_to_screen(lat, lon);
-        point(p.x + origin.x, p.y + origin.y)
-    };
-    let (lat, lon) = match target {
-        SnapTarget::Node { lat, lon, .. } => (*lat, *lon),
-        SnapTarget::Way { a, b, lat, lon, .. } => {
-            let mut builder = PathBuilder::stroke(px(4.0));
-            builder.move_to(at(a.0, a.1));
-            builder.line_to(at(b.0, b.1));
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, amber);
-            }
-            (*lat, *lon)
-        }
-    };
-    let c = at(lat, lon);
-    let half = px(7.0);
-    let bounds = Bounds {
-        origin: point(c.x - half, c.y - half),
-        size: size(half * 2.0, half * 2.0),
-    };
-    window.paint_quad(gpui::quad(
-        bounds,
-        half,
-        gpui::transparent_black(),
-        px(2.5),
-        amber,
-        gpui::BorderStyle::default(),
-    ));
-}
-
-/// What an Extrude-mode drag does, fixed by the modifier keys held at
-/// mouse-down.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ExtrudeStyle {
-    /// Default: reshape the way, growing or notching it (JOSM's plain drag).
-    Reshape,
-    /// Cmd (Ctrl off macOS): translate the segment's endpoints, no new nodes.
-    Move,
-    /// Alt/Option: pull a new separate, untagged way out of the segment.
-    NewWay,
-}
-
-impl ExtrudeStyle {
-    fn from_modifiers(m: gpui::Modifiers) -> Self {
-        if m.alt {
-            ExtrudeStyle::NewWay
-        } else if m.secondary() {
-            ExtrudeStyle::Move
-        } else {
-            ExtrudeStyle::Reshape
-        }
-    }
-}
-
 /// Window-space position to map-area-local, given the height of the chrome
 /// (in-window menu bar) above the map. See `MapViewer::window_to_map`.
 fn window_to_map_origin(
@@ -537,24 +399,6 @@ fn window_to_map_origin(
         position.x - px(MapViewer::MODE_PANEL_WIDTH),
         position.y - top_chrome,
     )
-}
-
-/// The index `i` such that `node_ids[i] == a && node_ids[i + 1] == b`,
-/// preferring `hint` (the hit-test's index) when it is consistent.
-fn segment_index_in_way(node_ids: &[i64], hint: usize, a: i64, b: i64) -> Option<usize> {
-    let matches = |i: usize| node_ids.get(i) == Some(&a) && node_ids.get(i + 1) == Some(&b);
-    if matches(hint) {
-        return Some(hint);
-    }
-    (0..node_ids.len().saturating_sub(1)).find(|&i| matches(i))
-}
-
-/// An Extrude drag resolved against the current cursor: the plan to apply and
-/// the resulting outline in screen coordinates, for the live preview.
-struct ExtrudeResult {
-    plan: osm_gpui::extrude::ExtrudePlan,
-    /// The way's node list after the edit, as screen positions.
-    outline: Vec<(f64, f64)>,
 }
 
 /// An interactive Rotate in progress: the selection's nodes turn around their
@@ -580,23 +424,6 @@ struct RotateSession {
 /// A pointer position as plain f64 pixels.
 fn pointer_px(p: gpui::Point<gpui::Pixels>) -> (f64, f64) {
     (f64::from(f32::from(p.x)), f64::from(f32::from(p.y)))
-}
-
-/// Extrude mode's in-progress drag: the way segment being extruded from,
-/// and the two endpoint node ids used to build the preview/final rectangle.
-struct ExtrudeDrag {
-    layer: LayerId,
-    way_id: i64,
-    node_a: i64,
-    node_b: i64,
-    /// Index of the segment (`node_a`) in the way's node list.
-    segment: usize,
-    style: ExtrudeStyle,
-    /// Screen position of the mouse-down that started this drag — needed
-    /// for the click/drag threshold check on release, since (unlike Select
-    /// mode's move-drag) this doesn't go through the shared `Interaction`
-    /// state machine.
-    down: gpui::Point<gpui::Pixels>,
 }
 
 /// Request to add a new layer, applied directly to the live `MapViewer` (via
@@ -980,31 +807,17 @@ struct MapViewer {
     focus_handle: gpui::FocusHandle,
     /// Global undo/redo history of committed data mutations.
     undo_stack: UndoStack,
-    /// The current map-interaction mode (Select/Add/Building/Extrude).
-    mode: EditMode,
-    /// Id of the OSM layer that Add/Building/Extrude write into, or `None`
-    /// if no layer is designated (those modes are disabled then).
+    /// The current edit mode and the gesture state only that mode has.
+    mode_state: modes::ModeState,
+    /// Id of the OSM layer that the drawing modes write into, or `None` if
+    /// no layer is designated (those modes are disabled then).
     active_layer: Option<LayerId>,
-    /// In-progress Add-mode way-building state, or `None` between
-    /// continuations (see `AddProgress`).
-    add_progress: Option<AddProgress>,
     /// What the pointer would snap onto right now (Add mode hover, or a
     /// single node being dragged), drawn as a highlight. See `SnapTarget`.
     snap_preview: Option<SnapTarget>,
-    /// In-progress Building-mode rectangle state, or `None` between
-    /// continuations (see `BuildingProgress`).
-    building_progress: Option<BuildingProgress>,
-    /// In-progress Arc-mode state, or `None` between arcs (see `ArcProgress`).
-    arc_progress: Option<ArcProgress>,
     /// The modifier keys as of the last mouse move, click or modifier change;
     /// Improve Way mode reads it to preview and pick its operation.
     last_modifiers: gpui::Modifiers,
-    /// The squared way Building mode is aligned to, if any (see
-    /// `BuildingReference`). When set, a building takes two corners instead
-    /// of three clicks.
-    building_reference: Option<BuildingReference>,
-    /// The pending left press in oriented Building mode.
-    building_press: Option<BuildingPress>,
     /// Last known mouse position within the map area, updated on every
     /// mouse-move; used to drive the live Building-mode preview (which
     /// needs a cursor position outside of a drag) during `render()`.
@@ -1017,9 +830,6 @@ struct MapViewer {
     /// and the node becomes the selection once the drag passes the threshold
     /// (a release without moving is a plain click and selects it that way).
     vertex_grab: Option<osm_gpui::selection::FeatureRef>,
-    /// Extrude mode's in-progress drag, or `None` when not dragging (see
-    /// `ExtrudeDrag`).
-    extrude_drag: Option<ExtrudeDrag>,
     /// The interactive Rotate in progress, if any (see `RotateSession`).
     rotate_session: Option<RotateSession>,
     /// Window position of the last right-button press on the map, kept until
@@ -1106,31 +916,6 @@ struct MemberRef {
 struct RoleEdit {
     member: MemberRef,
     input: gpui::Entity<gpui_component::input::InputState>,
-}
-
-/// The mouse cursor to show over the map: a closed hand while pan-dragging,
-/// an open hand while Space arms a pan, a crosshair in the modes that place
-/// points, and a pointing hand over something a click would select.
-fn map_cursor(
-    mode: EditMode,
-    panning: bool,
-    space_held: bool,
-    hovering: bool,
-) -> gpui::CursorStyle {
-    use gpui::CursorStyle;
-    if panning {
-        CursorStyle::ClosedHand
-    } else if space_held {
-        CursorStyle::OpenHand
-    } else {
-        match mode {
-            EditMode::Add | EditMode::Building | EditMode::Arc | EditMode::Improve => {
-                CursorStyle::Crosshair
-            }
-            EditMode::Select if hovering => CursorStyle::PointingHand,
-            EditMode::Select | EditMode::Extrude => CursorStyle::Arrow,
-        }
-    }
 }
 
 /// Convert a gpui screen point to the plain `(f32, f32)` pair the pure
@@ -1299,19 +1084,13 @@ impl MapViewer {
             fields_promoted_more_fields: std::collections::HashSet::new(),
             focus_handle,
             undo_stack: UndoStack::default(),
-            mode: EditMode::Select,
+            mode_state: modes::ModeState::fresh(EditMode::Select),
             active_layer: None,
-            add_progress: None,
             snap_preview: None,
-            building_progress: None,
-            arc_progress: None,
             last_modifiers: gpui::Modifiers::none(),
-            building_reference: None,
-            building_press: None,
             last_mouse_pos: None,
             hovered: None,
             vertex_grab: None,
-            extrude_drag: None,
             rotate_session: None,
             right_press: None,
             menu_swallow_press: false,
@@ -1609,11 +1388,11 @@ impl MapViewer {
             // Mode progress is relative to the active layer.
             self.reset_mode_progress();
         }
-        if self.building_reference.is_some_and(|r| r.layer_id == id) {
-            self.building_reference = None;
+        if self.building_reference().is_some_and(|r| r.layer_id == id) {
+            self.set_building_reference(None);
         }
-        if self.extrude_drag.as_ref().is_some_and(|d| d.layer == id) {
-            self.extrude_drag = None;
+        if self.extrude_drag().is_some_and(|d| d.layer == id) {
+            self.set_extrude_drag(None);
         }
         if self.rotate_session.as_ref().is_some_and(|r| r.layer == id) {
             self.rotate_session = None;
@@ -1667,8 +1446,7 @@ impl MapViewer {
     }
 
     /// Handle the `SetActiveLayer` context-menu action: makes the OSM layer
-    /// at `index` the active (editable) layer, gating the Add/Building/
-    /// Extrude mode buttons on it.
+    /// at `index` the active (editable) layer, which the drawing modes need.
     fn on_set_active_layer(
         &mut self,
         action: &SetActiveLayer,
@@ -1707,10 +1485,7 @@ impl MapViewer {
     }
 
     /// Handle the `SetMode` action: switch modes, discarding any
-    /// in-progress add/building/extrude state without committing it (Tasks
-    /// 6-8 populate these fields; they don't exist until then, so this
-    /// handler is added here as a no-op placeholder for those clears and
-    /// extended in each later task).
+    /// in-progress gesture without committing it.
     fn on_set_mode(&mut self, action: &SetMode, window: &mut Window, cx: &mut Context<Self>) {
         let mode = action.mode;
         // The drawing modes need a layer to write into. The toolbar buttons
@@ -1724,30 +1499,26 @@ impl MapViewer {
         self.finish_offset_adjust(true, window, cx);
         // Entering Building mode with one squared way selected borrows its
         // orientation; staying in Building mode keeps the existing one.
-        self.building_reference = match mode {
-            EditMode::Building if self.mode == EditMode::Building => self.building_reference,
+        let reference = match mode {
+            EditMode::Building if self.mode() == EditMode::Building => {
+                self.building_reference().copied()
+            }
             EditMode::Building => self.squared_selection_reference(),
             _ => None,
         };
-        self.mode = mode;
+        self.enter_mode(mode);
+        self.set_building_reference(reference);
         self.hovered = None;
         self.clear_vertex_preview();
-        self.reset_mode_progress();
         self.cancel_rotate();
         cx.notify();
     }
 
-    /// Discard every mode's half-finished gesture without committing it.
-    /// Every path that leaves a mode or invalidates the layer the gesture
-    /// refers to calls this, so a mode's state can't survive its mode.
-    /// `building_reference` is not progress: it outlives a Building session's
-    /// gestures and is managed by whoever changes the mode.
+    /// Discard the current mode's half-finished gesture without committing
+    /// it. Paths that invalidate the layer the gesture refers to call this.
+    /// A Building session's reference way is not progress and stays.
     pub(crate) fn reset_mode_progress(&mut self) {
-        self.add_progress = None;
-        self.building_progress = None;
-        self.building_press = None;
-        self.arc_progress = None;
-        self.extrude_drag = None;
+        self.mode_state.reset_progress();
     }
 
     /// If the selection is exactly one closed, squared way, the reference a
@@ -1798,115 +1569,6 @@ impl MapViewer {
     /// is a row above the map, so it shifts the map's origin down too.
     fn window_to_map(&self, position: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
         window_to_map_origin(position, menu::top_chrome_height())
-    }
-
-    /// Left-button mouse-down: if the point hits a currently-selected
-    /// feature, start a move-drag instead of the usual box-select/click
-    /// tracking. Always records the mouse-down position either way, since
-    /// both paths need it to distinguish a click from a drag on release.
-    /// `position` must already be in map-local coordinates (see
-    /// `window_to_map`) — callers pass the raw event position through
-    /// `window_to_map` first.
-    fn handle_map_mouse_down(
-        &mut self,
-        position: gpui::Point<gpui::Pixels>,
-        modifiers: gpui::Modifiers,
-    ) {
-        // Adjusting the imagery offset: the press starts moving the imagery.
-        if self.offset_adjust_mouse_down(position) {
-            self.interaction = Interaction::Idle;
-            return;
-        }
-        // Oriented Building mode owns the left button entirely (no
-        // box-select, and no move-drag of the selected reference way): the
-        // press places the first corner, the release decides click vs drag.
-        if self.mode == EditMode::Building && self.building_reference.is_some() {
-            let placed_first_corner = self.building_progress.is_none();
-            if placed_first_corner {
-                let corner = self.viewport.screen_to_geo(position);
-                self.building_progress = Some(BuildingProgress {
-                    corner_a: corner,
-                    corner_b: None,
-                });
-            }
-            self.building_press = Some(BuildingPress {
-                down: position,
-                placed_first_corner,
-            });
-            self.interaction = Interaction::Idle;
-            return;
-        }
-        if self.mode == EditMode::Extrude {
-            if let Some(layer_id) = self.active_layer {
-                if let Some(layer) = self.layer_manager.find_layer(layer_id) {
-                    if let Some(osm_layer) = layer.as_osm() {
-                        // A segment of the selected way wins over a nearer
-                        // segment of an overlapping one.
-                        let selected_way = self
-                            .selected
-                            .iter()
-                            .find(|f| {
-                                f.layer_id == layer_id
-                                    && f.kind == osm_gpui::selection::FeatureKind::Way
-                            })
-                            .map(|f| f.id);
-                        if let Some((way_id, node_a, node_b, idx)) = osm_layer
-                            .hit_test_segment_preferring(
-                                &self.viewport,
-                                position,
-                                6.0,
-                                selected_way,
-                            )
-                        {
-                            let segment = layer
-                                .as_editable()
-                                .and_then(|e| e.way_node_ids(way_id))
-                                .and_then(|ids| segment_index_in_way(&ids, idx, node_a, node_b));
-                            if let Some(segment) = segment {
-                                self.extrude_drag = Some(ExtrudeDrag {
-                                    layer: layer_id,
-                                    way_id,
-                                    node_a,
-                                    node_b,
-                                    segment,
-                                    style: ExtrudeStyle::from_modifiers(modifiers),
-                                    down: position,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            return;
-        }
-
-        self.vertex_grab = None;
-        let mut hit_move_targets = if self.selected.is_empty()
-            || self
-                .layer_manager
-                .hit_test_selection(&self.viewport, position, &self.selected)
-                .is_none()
-        {
-            None
-        } else {
-            let per_layer = self.resolve_move_targets();
-            if per_layer.is_empty() {
-                None
-            } else {
-                Some(per_layer)
-            }
-        };
-        // A press on a visible vertex that is not selected (one of the
-        // previewed way's, or of a selected way) grabs just that node, as in
-        // iD and JOSM: select-and-move in one gesture. Shift keeps the
-        // toggle-on-click meaning, and the other modes are untouched.
-        if hit_move_targets.is_none() && self.mode == EditMode::Select && !modifiers.shift {
-            if let Some((feature, targets)) = self.unselected_node_grab(position) {
-                self.vertex_grab = Some(feature);
-                hit_move_targets = Some(targets);
-            }
-        }
-        self.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
     }
 
     /// The node a press at `position` lands on, if it is not already
@@ -2867,16 +2529,14 @@ impl MapViewer {
     /// way's first node if `from.at_start`), as if the user had just placed
     /// that end node while drawing.
     fn continue_way_in_add_mode(&mut self, from: osm_gpui::topology::Continuation) {
-        self.mode = EditMode::Add;
+        self.enter_mode(EditMode::Add);
         self.hovered = None;
         self.clear_vertex_preview();
-        self.reset_mode_progress();
-        self.building_reference = None;
-        self.add_progress = Some(AddProgress {
+        self.set_add_progress(Some(AddProgress {
             way_id: Some(from.way_id),
             last_node_id: from.from_node,
             at_start: from.at_start,
-        });
+        }));
     }
 
     /// Replace the selection, resetting the Fields section's per-feature
@@ -3272,10 +2932,7 @@ impl MapViewer {
         let UndoableAction::PasteFeatures { pasted } = action else {
             return;
         };
-        if self.add_progress.is_some()
-            || self.building_progress.is_some()
-            || self.arc_progress.is_some()
-        {
+        if self.mode_state.is_drawing() {
             return;
         }
         let wanted = if forward {
@@ -3328,9 +2985,7 @@ impl MapViewer {
     /// alone (apart from that pruning), so the drawing session isn't disturbed.
     /// Never moves the viewport.
     fn select_after_history_step(&mut self, action: &UndoableAction) {
-        let drawing = self.add_progress.is_some()
-            || self.building_progress.is_some()
-            || self.arc_progress.is_some();
+        let drawing = self.mode_state.is_drawing();
         let next: Vec<osm_gpui::selection::FeatureRef> = if drawing {
             self.selected.clone()
         } else {
@@ -3756,12 +3411,12 @@ impl MapViewer {
     ) -> bool {
         let target = if let Some(dragged) = dragged {
             self.drag_snap_target(pos, modifiers, dragged)
-        } else if self.mode == EditMode::Add
+        } else if self.mode() == EditMode::Add
             && !osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
         {
             self.active_layer.and_then(|layer_id| {
                 let sources = self.add_snap_sources(layer_id);
-                self.find_snap_target(layer_id, pos, None, &sources, self.add_progress.is_some())
+                self.find_snap_target(layer_id, pos, None, &sources, self.add_progress().is_some())
             })
         } else {
             None
@@ -3775,7 +3430,7 @@ impl MapViewer {
     /// being drawn, if it has any. A way with none yet (the usual case; tags
     /// come after drawing) snaps to anything, see `osm_gpui::snap`.
     fn add_snap_sources(&self, layer_id: LayerId) -> Vec<Tags> {
-        let Some(way_id) = self.add_progress.as_ref().and_then(|p| p.way_id) else {
+        let Some(way_id) = self.add_progress().and_then(|p| p.way_id) else {
             return Vec::new();
         };
         self.layer_manager
@@ -3808,7 +3463,7 @@ impl MapViewer {
             }
             _ => None,
         };
-        if dragged.is_some() || (self.mode == EditMode::Add && no_button) {
+        if dragged.is_some() || (self.mode() == EditMode::Add && no_button) {
             self.update_snap_preview(pos, modifiers, dragged);
         } else {
             self.snap_preview = None;
@@ -3821,7 +3476,7 @@ impl MapViewer {
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
         self.last_modifiers = modifiers;
-        if self.mode == EditMode::Improve {
+        if self.mode() == EditMode::Improve {
             // The preview depends on the held keys.
             cx.notify();
         }
@@ -3851,10 +3506,7 @@ impl MapViewer {
         }
         // What a click here would select — only meaningful in Select mode
         // with no button down and no pan pending.
-        let hover_enabled = self.mode == EditMode::Select
-            && event.pressed_button.is_none()
-            && !self.space_held
-            && self.offset_adjust.is_none();
+        let hover_enabled = self.hover_tracking(event.pressed_button.is_some());
         let hit_here = |this: &Self| {
             osm_gpui::selection::resolve_hits(
                 this.layer_manager
@@ -3895,7 +3547,7 @@ impl MapViewer {
             event.pressed_button.is_none(),
         );
         // Repaint on every move: the status bar shows the cursor's
-        // coordinates, and Add/Building/Extrude draw a live preview to it.
+        // coordinates, and the drawing modes draw a live preview to it.
         cx.notify();
 
         // Adjusting the imagery offset: a left-drag moves the imagery.
@@ -3966,24 +3618,7 @@ impl MapViewer {
             return;
         }
 
-        if let Some(press) = self.building_press.take() {
-            self.finish_oriented_building_press(press, up_pos);
-            cx.notify();
-            return;
-        }
-
-        if let Some(drag) = self.extrude_drag.take() {
-            let moved = (up_pos - drag.down).magnitude() >= 4.0;
-            if moved {
-                match drag.style {
-                    ExtrudeStyle::NewWay => self.commit_extrude(&drag, up_pos),
-                    ExtrudeStyle::Reshape | ExtrudeStyle::Move => {
-                        self.commit_extrude_reshape(&drag, up_pos)
-                    }
-                }
-            } else if event.click_count == 2 {
-                self.insert_node_on_segment(&drag, up_pos);
-            }
+        if self.mode_release(event.click_count, up_pos) {
             cx.notify();
             return;
         }
@@ -4178,7 +3813,7 @@ impl MapViewer {
                 // way id doesn't change), so the before/after diff alone
                 // misses that the way's geometry grew a node — always
                 // notify for Add mode regardless of the selection diff.
-                if before != self.selected || self.mode == EditMode::Add {
+                if before != self.selected || self.mode() == EditMode::Add {
                     cx.notify();
                 }
             }
@@ -4202,244 +3837,7 @@ impl MapViewer {
         if self.imagery_click(screen_pt) {
             return;
         }
-        match self.mode {
-            EditMode::Select => self.handle_select_click(screen_pt, shift_held, click_count),
-            EditMode::Add => self.handle_add_click(screen_pt, ctrl_held),
-            EditMode::Building => self.handle_building_click(screen_pt),
-            EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
-            EditMode::Improve => self.handle_improve_click(screen_pt, cx),
-            EditMode::Extrude => {
-                // Extrude works from mouse-down/move/up directly; a stray
-                // click here (a zero-movement mouse-up) does nothing.
-            }
-        }
-    }
-
-    /// Building mode: click 1 sets corner A, click 2 sets corner B (fixing
-    /// the first edge), click 3 commits the rectangle. See
-    /// docs/superpowers/specs/2026-07-07-mode-selector-design.md "Building mode".
-    fn handle_building_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>) {
-        let Some(layer_id) = self.active_layer else {
-            return;
-        };
-        let (lat, lon) = self.viewport.screen_to_geo(screen_pt);
-
-        match self.building_progress.take() {
-            None => {
-                self.building_progress = Some(BuildingProgress {
-                    corner_a: (lat, lon),
-                    corner_b: None,
-                });
-            }
-            Some(BuildingProgress {
-                corner_a,
-                corner_b: None,
-            }) => {
-                self.building_progress = Some(BuildingProgress {
-                    corner_a,
-                    corner_b: Some((lat, lon)),
-                });
-            }
-            Some(BuildingProgress {
-                corner_a,
-                corner_b: Some(corner_b),
-            }) => {
-                self.commit_building(layer_id, corner_a, corner_b, (lat, lon));
-                self.building_progress = None;
-            }
-        }
-    }
-
-    /// Arc mode: click 1 sets the arc's start, click 2 its end, click 3 a
-    /// point the arc passes through and commits it. Each click snaps onto a
-    /// nearby way (unless Ctrl/Alt is held).
-    fn handle_arc_click(&mut self, screen_pt: gpui::Point<gpui::Pixels>, no_snap: bool) {
-        let Some(layer_id) = self.active_layer else {
-            return;
-        };
-        let point = self.arc_point_at(layer_id, screen_pt, no_snap);
-
-        match self.arc_progress.take() {
-            None => {
-                self.arc_progress = Some(ArcProgress {
-                    start: point,
-                    end: None,
-                });
-            }
-            Some(ArcProgress { start, end: None }) => {
-                self.arc_progress = Some(ArcProgress {
-                    start,
-                    end: Some(point),
-                });
-            }
-            Some(ArcProgress {
-                start,
-                end: Some(end),
-            }) => {
-                // A third point in line with the first two defines no arc;
-                // keep waiting for a better one.
-                if self.arc_from_geo(start.geo, end.geo, point.geo).is_some() {
-                    self.commit_arc(layer_id, start, end, point.geo);
-                } else {
-                    self.arc_progress = Some(ArcProgress {
-                        start,
-                        end: Some(end),
-                    });
-                }
-            }
-        }
-    }
-
-    /// Improve Way mode's target: the one way that is selected, if any.
-    fn improve_target(&self) -> Option<(LayerId, i64)> {
-        match self.selected.as_slice() {
-            [f] if f.kind == osm_gpui::selection::FeatureKind::Way => Some((f.layer_id, f.id)),
-            _ => None,
-        }
-    }
-
-    /// The operation the held modifiers select in Improve Way mode: Shift
-    /// deletes, Ctrl/Cmd/Alt insert, none moves.
-    fn improve_op(&self) -> osm_gpui::improve_way::Op {
-        let m = self.last_modifiers;
-        osm_gpui::improve_way::Op::from_modifiers(m.shift, m.control || m.platform || m.alt)
-    }
-
-    /// What a click at `cursor` would do to the target way: its node ids,
-    /// their screen positions and the planned edit (in screen space).
-    fn improve_plan_at(&self, cursor: gpui::Point<gpui::Pixels>) -> Option<ImprovePlan> {
-        let (layer_id, way_id) = self.improve_target()?;
-        let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
-        let ids = editable.way_node_ids(way_id)?;
-        let points: Vec<osm_gpui::improve_way::Pt> = ids
-            .iter()
-            .map(|&id| {
-                let (lat, lon) = editable.node_lat_lon(id)?;
-                let p = self.viewport.geo_to_screen(lat, lon);
-                Some((p.x.to_f64(), p.y.to_f64()))
-            })
-            .collect::<Option<_>>()?;
-        let plan = osm_gpui::improve_way::plan(
-            &points,
-            &ids,
-            (cursor.x.to_f64(), cursor.y.to_f64()),
-            self.improve_op(),
-        )?;
-        Some(ImprovePlan {
-            layer_id,
-            way_id,
-            ids,
-            points,
-            plan,
-        })
-    }
-
-    /// Improve Way mode: with no way chosen, a click picks the way under the
-    /// cursor; with one chosen, a click edits it (move the nearest node to
-    /// the cursor, insert a node along the way, or delete the nearest node).
-    fn handle_improve_click(
-        &mut self,
-        screen_pt: gpui::Point<gpui::Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        use osm_gpui::improve_way::Plan;
-        use osm_gpui::selection::{FeatureKind, FeatureRef};
-
-        if self.improve_target().is_none() {
-            self.handle_select_click(screen_pt, false, 1);
-            if self.improve_target().is_none() {
-                self.set_selection(Vec::new());
-            }
-            return;
-        }
-        if self.refuse_edit_during_upload() {
-            return;
-        }
-        let Some(ImprovePlan {
-            layer_id,
-            way_id,
-            plan,
-            ..
-        }) = self.improve_plan_at(screen_pt)
-        else {
-            return;
-        };
-        let viewport = self.viewport.clone();
-        let to_geo = move |p: osm_gpui::improve_way::Pt| {
-            viewport.screen_to_geo(gpui::point(px(p.0 as f32), px(p.1 as f32)))
-        };
-        let way_ref = FeatureRef {
-            layer_id,
-            kind: FeatureKind::Way,
-            id: way_id,
-        };
-        match plan {
-            Plan::Move { node, to } => {
-                let (lat, lon) = to_geo(to);
-                let Some(editable) = self
-                    .layer_manager
-                    .find_layer_mut(layer_id)
-                    .and_then(|l| l.as_editable_mut())
-                else {
-                    return;
-                };
-                let Some(before) = editable.node_lat_lon(node) else {
-                    return;
-                };
-                if editable.commit_node_moves(&[(node, lat, lon)]).is_err() {
-                    return;
-                }
-                self.undo_stack.push(UndoableAction::MoveNodes {
-                    per_layer: vec![(layer_id, vec![(node, before, (lat, lon))])],
-                    select: Some(vec![way_ref]),
-                });
-            }
-            Plan::Insert { index, at } => {
-                if self.refuse_way_growth(layer_id, way_id, 1) {
-                    return;
-                }
-                let (lat, lon) = to_geo(at);
-                let Some(editable) = self
-                    .layer_manager
-                    .find_layer_mut(layer_id)
-                    .and_then(|l| l.as_editable_mut())
-                else {
-                    return;
-                };
-                let Ok(node_id) = editable.insert_node_into_way(way_id, index, lat, lon) else {
-                    return;
-                };
-                self.undo_stack.push(UndoableAction::InsertNodeIntoWay {
-                    layer: layer_id,
-                    way_id,
-                    index,
-                    node_id,
-                    node_lat_lon: (lat, lon),
-                });
-            }
-            Plan::Delete { node } => {
-                // The ordinary Delete action does the bookkeeping (other
-                // ways, relations, orphans) as one undo step.
-                self.set_selection(vec![FeatureRef {
-                    layer_id,
-                    kind: FeatureKind::Node,
-                    id: node,
-                }]);
-                self.run_selection_action("delete", cx);
-                // Keep working on the way if it survived.
-                let still_there = self
-                    .layer_manager
-                    .find_layer(layer_id)
-                    .and_then(|l| l.as_editable())
-                    .is_some_and(|e| e.has_feature(FeatureKind::Way, way_id));
-                self.set_selection(if still_there {
-                    vec![way_ref]
-                } else {
-                    Vec::new()
-                });
-            }
-        }
-        cx.notify();
+        self.mode_click(screen_pt, shift_held, click_count, ctrl_held, cx);
     }
 
     /// The geo position for an Arc-mode click at `screen_pt`: snapped onto the
@@ -4654,37 +4052,6 @@ impl MapViewer {
         self.fields_text_subscribed.clear();
         self.fields_open_combo = None;
         self.fields_promoted_more_fields.clear();
-    }
-
-    /// Release of an oriented-Building press. A release within a few pixels
-    /// of the press is a click: the first one leaves the corner placed and
-    /// waits, the second finishes the building at that point. A release
-    /// farther away is a drag and finishes the building at the release point.
-    fn finish_oriented_building_press(
-        &mut self,
-        press: BuildingPress,
-        up_pos: gpui::Point<gpui::Pixels>,
-    ) {
-        let (Some(reference), Some(layer_id), Some(progress)) = (
-            self.building_reference,
-            self.active_layer,
-            self.building_progress,
-        ) else {
-            return;
-        };
-        let moved = (up_pos - press.down).magnitude() >= interaction::DRAG_THRESHOLD as f64;
-        if press.placed_first_corner && !moved {
-            return;
-        }
-        let opposite = self.viewport.screen_to_geo(up_pos);
-        if let Some(corners) = osm_gpui::building::rectangle_from_opposite_corners(
-            progress.corner_a,
-            opposite,
-            reference.orientation,
-        ) {
-            self.commit_building_corners(layer_id, corners);
-            self.building_progress = None;
-        }
     }
 
     /// Compute the far 2 corners of a rectangle whose near edge is
@@ -5077,40 +4444,6 @@ impl MapViewer {
         });
     }
 
-    /// Resolve a plain click into a selection change. `shift_held` toggles
-    /// the hit feature in/out of the existing selection (add if absent,
-    /// remove if already selected) instead of replacing it; a shift-click
-    /// that hits nothing is a no-op, leaving the existing selection intact.
-    fn handle_select_click(
-        &mut self,
-        screen_pt: gpui::Point<gpui::Pixels>,
-        shift_held: bool,
-        click_count: usize,
-    ) {
-        let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
-        let mut hit = osm_gpui::selection::resolve_hits(per_layer);
-        // Double-click inside a closed way's interior (away from its
-        // outline, which a plain click already selects) selects the way.
-        if hit.is_none() && click_count == 2 {
-            let interior = self
-                .layer_manager
-                .hit_test_interior_all(&self.viewport, screen_pt);
-            hit = osm_gpui::selection::resolve_hits(interior);
-        }
-        // Data underneath always wins. A click on nothing but a read-only
-        // reference feature (GPX, GeoJSON) shows what it is in the status bar.
-        if hit.is_none() && !shift_held {
-            if let Some(text) = self.reference_feature_at(screen_pt) {
-                self.set_status(text);
-            }
-        }
-        self.selected = osm_gpui::selection::apply_click_selection(&self.selected, hit, shift_held);
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
-    }
-
     /// Edit-time server limit: whether growing way `way_id` by `by` nodes
     /// would pass the server's way-node maximum. If so, say so in the status
     /// bar and return true (the caller abandons the edit). A way already over
@@ -5149,7 +4482,7 @@ impl MapViewer {
         let (mut lat, mut lon) = self.viewport.screen_to_geo(screen_pt);
 
         // Every click after the first grows the way being drawn by a node.
-        let drawing_way = self.add_progress.as_ref().and_then(|p| p.way_id);
+        let drawing_way = self.add_progress().and_then(|p| p.way_id);
         if let Some(way_id) = drawing_way {
             if self.refuse_way_growth(layer_id, way_id, 1) {
                 return;
@@ -5158,7 +4491,7 @@ impl MapViewer {
 
         // Clicking an existing node/way finishes the in-progress way by
         // connecting to it. Skipped entirely when Ctrl is held.
-        if !ctrl_held && self.add_progress.is_some() {
+        if !ctrl_held && self.add_progress().is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             let sources = self.add_snap_sources(layer_id);
             let node_allowed = |id: i64| {
@@ -5190,7 +4523,7 @@ impl MapViewer {
                 });
             if let Some(node_id) = hit_node {
                 let way_id = self.add_extend_or_start_way(layer_id, node_id, false, None);
-                self.add_progress = None;
+                self.set_add_progress(None);
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
@@ -5244,11 +4577,11 @@ impl MapViewer {
 
         // Note: `find_layer_mut` is re-called in each arm below (rather than
         // binding `layer` once above the match) so its mutable borrow ends
-        // before the arm needs `&mut self` again for `self.add_progress`/
+        // before the arm needs `&mut self` again for `self.set_add_progress`/
         // `self.add_extend_or_start_way`/`self.undo_stack` — binding it once
         // outside the match would keep the borrow alive across those calls
         // and fail to compile.
-        match self.add_progress.take() {
+        match self.take_add_progress() {
             None => {
                 // First click of a fresh continuation: a lone node (or, if
                 // snapped, a node spliced into the snapped-onto way), no way
@@ -5292,11 +4625,11 @@ impl MapViewer {
                         new_id
                     }
                 };
-                self.add_progress = Some(AddProgress {
+                self.set_add_progress(Some(AddProgress {
                     way_id: None,
                     last_node_id: new_id,
                     at_start: false,
-                });
+                }));
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Node,
@@ -5327,13 +4660,13 @@ impl MapViewer {
                     None => (editable.add_node(lat, lon), None),
                 };
                 let at_start = progress.at_start;
-                self.add_progress = Some(progress);
+                self.set_add_progress(Some(progress));
                 let way_id = self.add_extend_or_start_way(layer_id, new_id, true, snap);
-                self.add_progress = Some(AddProgress {
+                self.set_add_progress(Some(AddProgress {
                     way_id: Some(way_id),
                     last_node_id: new_id,
                     at_start,
-                });
+                }));
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
@@ -5365,11 +4698,10 @@ impl MapViewer {
         node_created: bool,
         snap: Option<(i64, usize)>,
     ) -> i64 {
-        let progress_way_id = self.add_progress.as_ref().and_then(|p| p.way_id);
-        let at_start = self.add_progress.as_ref().is_some_and(|p| p.at_start);
+        let progress_way_id = self.add_progress().and_then(|p| p.way_id);
+        let at_start = self.add_progress().is_some_and(|p| p.at_start);
         let last_node_id = self
-            .add_progress
-            .as_ref()
+            .add_progress()
             .map(|p| p.last_node_id)
             .unwrap_or(node_id);
         let Some(layer) = self.layer_manager.find_layer_mut(layer_id) else {
@@ -5560,7 +4892,7 @@ impl MapViewer {
     ) {
         use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
-        if self.mode != EditMode::Select {
+        if self.mode() != EditMode::Select {
             return;
         }
         let map_pos = self.window_to_map(position);
@@ -7482,12 +6814,12 @@ impl Render for MapViewer {
                                 gpui::CursorStyle::OpenHand
                             }
                         }
-                        _ => map_cursor(
+                        _ => modes::pointer::map_cursor(
                             // A New Note waiting for its click: a crosshair.
                             if self.notes_armed() {
                                 EditMode::Add
                             } else {
-                                self.mode
+                                self.mode()
                             },
                             self.viewport.is_dragging,
                             self.space_held,
@@ -7550,21 +6882,7 @@ impl Render for MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                            if this.menu_swallow_press {
-                                // This press only closed an open menu.
-                                return;
-                            }
-                            window.focus(&this.focus_handle, cx);
-                            if this.rotate_session.is_some() {
-                                // The release applies the rotation.
-                                return;
-                            }
-                            let position = this.window_to_map(ev.position);
-                            if this.space_held {
-                                this.start_pan_drag(position, cx);
-                            } else {
-                                this.handle_map_mouse_down(position, ev.modifiers);
-                            }
+                            this.on_left_press(ev, window, cx);
                         }),
                     )
                     .on_mouse_up_out(
@@ -7585,120 +6903,12 @@ impl Render for MapViewer {
                         this.handle_pinch(ev, cx);
                     }))
                     .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                        let modifiers = ev.keystroke.modifiers;
-                        if this.offset_field_focused(window, cx) {
-                            // Typing in the imagery offset panel's fields.
-                        } else if modifiers.platform || modifiers.control || modifiers.alt {
-                            // Modifier chords belong to the keymap (menu
-                            // shortcuts), never to the bare-key handling below.
-                        } else if ev.keystroke.key == "space" {
-                            // Held Space turns a left-drag into a pan.
-                            if !this.space_held {
-                                this.space_held = true;
-                                cx.notify();
-                            }
-                        } else if this.offset_adjust_key(
-                            &ev.keystroke.key,
-                            modifiers.shift,
-                            window,
-                            cx,
-                        ) {
-                            // Adjusting imagery offset: arrows nudge the
-                            // imagery, Escape cancels, Enter keeps.
-                        } else if this.handle_navigation_key(&ev.keystroke.key, cx) {
-                            // Arrow keys pan; +/- zoom.
-                        } else if ev.keystroke.key == "escape" && this.close_photo_fullscreen() {
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" && this.cancel_rotate() {
-                            // A Rotate in progress is undone.
-                            cx.notify();
-                        } else if ev.keystroke.key == "enter" && this.rotate_session.is_some() {
-                            this.finish_rotate();
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" && this.cancel_armed_note() {
-                            // A New Note waiting for its click is cancelled.
-                            cx.notify();
-                        } else if ev.keystroke.key == "escape" {
-                            let cancelled_drag = this.cancel_move_drag(cx);
-                            match this.mode {
-                                // Escape backs out one step at a time: an
-                                // in-progress shape first, then the mode.
-                                EditMode::Add => {
-                                    if this.add_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Building => {
-                                    this.building_press = None;
-                                    if this.building_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                        this.building_reference = None;
-                                    }
-                                }
-                                EditMode::Extrude => {
-                                    if this.extrude_drag.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Arc => {
-                                    if this.arc_progress.take().is_none() {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Improve => {
-                                    // First Esc lets go of the way (to pick
-                                    // another), the second leaves the mode.
-                                    if this.improve_target().is_some() {
-                                        this.set_selection(Vec::new());
-                                    } else {
-                                        this.mode = EditMode::Select;
-                                    }
-                                }
-                                EditMode::Select => {
-                                    if !cancelled_drag {
-                                        this.set_selection(Vec::new());
-                                    }
-                                }
-                            }
-                            cx.notify();
-                        } else if ev.keystroke.key == "enter" && this.mode == EditMode::Add {
-                            if this.add_progress.take().is_some() {
-                                cx.notify();
-                            }
-                        } else if ev.keystroke.key == "delete" || ev.keystroke.key == "backspace" {
-                            this.delete_selected_features(cx);
-                        } else {
-                            let settings = osm_gpui::settings_store::snapshot();
-                            let key = ev.keystroke.key.as_str();
-                            // Mode-switch shortcuts are handled here rather
-                            // than as global key bindings so they only fire
-                            // while the map area has focus (see the comment
-                            // by `cx.bind_keys` in `main()`).
-                            let key_mode = EditMode::ALL.into_iter().find(|m| {
-                                key == osm_gpui::keybindings::effective_spec(
-                                    &settings,
-                                    m.shortcut_id(),
-                                )
-                            });
-                            if let Some(mode) = key_mode {
-                                this.on_set_mode(&SetMode { mode }, window, cx);
-                            } else if let Some(action) =
-                                selection_actions::find_by_key(&settings, key)
-                            {
-                                // Like the mode keys above, these only fire
-                                // while the map area has focus, so typing in
-                                // a text input never triggers them.
-                                this.run_selection_action(action.id, cx);
-                            }
-                        }
+                        this.on_map_key_down(ev, window, cx);
                     }))
                     .on_mouse_up(
                         gpui::MouseButton::Left,
                         cx.listener(|this, ev: &MouseUpEvent, _, cx| {
-                            if std::mem::take(&mut this.menu_swallow_press) {
-                                return;
-                            }
-                            this.handle_mouse_up(ev, cx);
+                            this.on_left_release(ev, cx);
                         }),
                     )
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
@@ -7740,8 +6950,10 @@ impl Render for MapViewer {
                                     let fs_frame = osm_gpui::frame_stats::start();
                                     move |bounds, _, window, cx| {
                                         let fs_paint = osm_gpui::frame_stats::start();
-                                        let _paint_scope =
-                                            osm_gpui::frame_stats::Scoped::new("canvas.paint", fs_paint);
+                                        let _paint_scope = osm_gpui::frame_stats::Scoped::new(
+                                            "canvas.paint",
+                                            fs_paint,
+                                        );
                                         let _frame_scope = osm_gpui::frame_stats::Scoped::new(
                                             "frame.render_start_to_canvas_end",
                                             fs_frame,
@@ -7799,402 +7011,13 @@ impl Render for MapViewer {
                                             cx,
                                         );
 
-                                        if let Some(reference) = this.building_reference {
-                                            // Mark the way the building is aligned to.
-                                            this.layer_manager.render_highlight(
-                                                &osm_gpui::selection::FeatureRef {
-                                                    layer_id: reference.layer_id,
-                                                    kind: osm_gpui::selection::FeatureKind::Way,
-                                                    id: reference.way_id,
-                                                },
-                                                HighlightKind::Hovered,
-                                                &viewport_clone,
+                                        this.paint_mode_preview(
+                                            &modes::PreviewFrame {
+                                                viewport: &viewport_clone,
                                                 bounds,
-                                                window,
-                                            );
-                                        }
-
-                                        if let Some(progress) = this.building_progress {
-                                            let origin_x = bounds.origin.x;
-                                            let origin_y = bounds.origin.y;
-                                            let a_screen = viewport_clone.geo_to_screen(
-                                                progress.corner_a.0,
-                                                progress.corner_a.1,
-                                            );
-                                            match progress.corner_b {
-                                                None if this.building_reference.is_some() => {
-                                                    // Oriented: the cursor is the opposite
-                                                    // corner, so preview the whole rectangle.
-                                                    let half = px(4.0);
-                                                    let quad_bounds = Bounds {
-                                                        origin: point(
-                                                            a_screen.x + origin_x - half,
-                                                            a_screen.y + origin_y - half,
-                                                        ),
-                                                        size: size(px(8.0), px(8.0)),
-                                                    };
-                                                    window.paint_quad(fill(
-                                                        quad_bounds,
-                                                        rgb(0x3b82f6),
-                                                    ));
-                                                    let corners = this
-                                                        .building_reference
-                                                        .zip(this.last_mouse_pos)
-                                                        .and_then(|(reference, mouse)| {
-                                                            osm_gpui::building::rectangle_from_opposite_corners(
-                                                                progress.corner_a,
-                                                                viewport_clone.screen_to_geo(mouse),
-                                                                reference.orientation,
-                                                            )
-                                                        });
-                                                    if let Some(corners) = corners {
-                                                        let mut builder = PathBuilder::stroke(px(2.0));
-                                                        for (i, c) in
-                                                            corners.iter().chain(Some(&corners[0])).enumerate()
-                                                        {
-                                                            let p = viewport_clone.geo_to_screen(c.0, c.1);
-                                                            let p = point(p.x + origin_x, p.y + origin_y);
-                                                            if i == 0 {
-                                                                builder.move_to(p);
-                                                            } else {
-                                                                builder.line_to(p);
-                                                            }
-                                                        }
-                                                        if let Ok(path) = builder.build() {
-                                                            window.paint_path(path, rgb(0x3b82f6));
-                                                        }
-                                                    }
-                                                }
-                                                None => {
-                                                    // Only corner A placed: draw a marker at the
-                                                    // fixed corner plus a rubber-band line to the
-                                                    // cursor (no edge yet to offset a rectangle from).
-                                                    let half = px(4.0);
-                                                    let quad_bounds = Bounds {
-                                                        origin: point(
-                                                            a_screen.x + origin_x - half,
-                                                            a_screen.y + origin_y - half,
-                                                        ),
-                                                        size: size(px(8.0), px(8.0)),
-                                                    };
-                                                    window.paint_quad(fill(
-                                                        quad_bounds,
-                                                        rgb(0x3b82f6),
-                                                    ));
-
-                                                    if let Some(mouse_pos) = this.last_mouse_pos {
-                                                        let p0 = point(
-                                                            a_screen.x + origin_x,
-                                                            a_screen.y + origin_y,
-                                                        );
-                                                        let p1 = point(
-                                                            mouse_pos.x + origin_x,
-                                                            mouse_pos.y + origin_y,
-                                                        );
-                                                        let mut builder =
-                                                            PathBuilder::stroke(px(2.0));
-                                                        builder.move_to(p0);
-                                                        builder.line_to(p1);
-                                                        if let Ok(path) = builder.build() {
-                                                            window.paint_path(path, rgb(0x3b82f6));
-                                                        }
-                                                    }
-                                                }
-                                                Some(corner_b) => {
-                                                    let cursor_geo = this
-                                                        .last_mouse_pos
-                                                        .map(|p| viewport_clone.screen_to_geo(p))
-                                                        .unwrap_or(corner_b);
-                                                    let (far_a, far_b) = this
-                                                        .rectangle_from_geo_edge(
-                                                            progress.corner_a,
-                                                            corner_b,
-                                                            cursor_geo,
-                                                        );
-                                                    let b_screen = viewport_clone
-                                                        .geo_to_screen(corner_b.0, corner_b.1);
-                                                    let far_a_screen = viewport_clone
-                                                        .geo_to_screen(far_a.0, far_a.1);
-                                                    let far_b_screen = viewport_clone
-                                                        .geo_to_screen(far_b.0, far_b.1);
-                                                    let pts = [
-                                                        a_screen,
-                                                        b_screen,
-                                                        far_b_screen,
-                                                        far_a_screen,
-                                                        a_screen,
-                                                    ];
-                                                    let mut builder = PathBuilder::stroke(px(2.0));
-                                                    for (i, p) in pts.iter().enumerate() {
-                                                        let p =
-                                                            point(p.x + origin_x, p.y + origin_y);
-                                                        if i == 0 {
-                                                            builder.move_to(p);
-                                                        } else {
-                                                            builder.line_to(p);
-                                                        }
-                                                    }
-                                                    if let Ok(path) = builder.build() {
-                                                        window.paint_path(path, rgb(0x3b82f6));
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(progress) = this.arc_progress {
-                                            // Screen position of a geo point, in window space.
-                                            let to_window = |g: (f64, f64)| {
-                                                let p = viewport_clone.geo_to_screen(g.0, g.1);
-                                                point(p.x + bounds.origin.x, p.y + bounds.origin.y)
-                                            };
-                                            let blue = rgb(0x3b82f6);
-                                            let half = px(4.0);
-                                            let marker = |window: &mut Window, g: (f64, f64)| {
-                                                let c = to_window(g);
-                                                window.paint_quad(fill(
-                                                    Bounds {
-                                                        origin: point(c.x - half, c.y - half),
-                                                        size: size(px(8.0), px(8.0)),
-                                                    },
-                                                    blue,
-                                                ));
-                                            };
-                                            marker(window, progress.start.geo);
-                                            // The cursor, snapped onto a way as a click would be.
-                                            let cursor_geo = this.last_mouse_pos.map(|p| {
-                                                match this.active_layer {
-                                                    Some(layer_id) => {
-                                                        this.arc_point_at(layer_id, p, false).geo
-                                                    }
-                                                    None => viewport_clone.screen_to_geo(p),
-                                                }
-                                            });
-                                            // The path to draw: the start..cursor
-                                            // rubber band before the end is placed,
-                                            // then the arc through the cursor (a
-                                            // straight chord while it is degenerate).
-                                            let path_points: Vec<(f64, f64)> = match (
-                                                progress.end,
-                                                cursor_geo,
-                                            ) {
-                                                (None, Some(cursor)) => vec![progress.start.geo, cursor],
-                                                (None, None) => Vec::new(),
-                                                (Some(end), cursor) => {
-                                                    marker(window, end.geo);
-                                                    cursor
-                                                        .and_then(|c| {
-                                                            this.arc_from_geo(
-                                                                progress.start.geo,
-                                                                end.geo,
-                                                                c,
-                                                            )
-                                                        })
-                                                        .unwrap_or_else(|| {
-                                                            vec![progress.start.geo, end.geo]
-                                                        })
-                                                }
-                                            };
-                                            let mut builder = PathBuilder::stroke(px(2.0));
-                                            for (i, g) in path_points.iter().enumerate() {
-                                                let p = to_window(*g);
-                                                if i == 0 {
-                                                    builder.move_to(p);
-                                                } else {
-                                                    builder.line_to(p);
-                                                }
-                                            }
-                                            if let Ok(path) = builder.build() {
-                                                window.paint_path(path, blue);
-                                            }
-                                        }
-
-                                        // Improve Way preview: the target way as it
-                                        // would look after a click at the cursor.
-                                        if this.mode == EditMode::Improve {
-                                            if let Some(ip) = this
-                                                .last_mouse_pos
-                                                .and_then(|c| this.improve_plan_at(c))
-                                            {
-                                                use osm_gpui::improve_way::{marker, preview, Plan};
-                                                let color = if matches!(ip.plan, Plan::Delete { .. }) {
-                                                    rgb(0xef4444)
-                                                } else {
-                                                    rgb(0x3b82f6)
-                                                };
-                                                let to_window = |p: (f64, f64)| {
-                                                    point(
-                                                        px(p.0 as f32) + bounds.origin.x,
-                                                        px(p.1 as f32) + bounds.origin.y,
-                                                    )
-                                                };
-                                                let outline = preview(&ip.points, &ip.ids, ip.plan);
-                                                let mut builder = PathBuilder::stroke(px(2.0));
-                                                for (i, p) in outline.iter().enumerate() {
-                                                    let p = to_window(*p);
-                                                    if i == 0 {
-                                                        builder.move_to(p);
-                                                    } else {
-                                                        builder.line_to(p);
-                                                    }
-                                                }
-                                                if let Ok(path) = builder.build() {
-                                                    window.paint_path(path, color);
-                                                }
-                                                let c = to_window(marker(&ip.points, &ip.ids, ip.plan));
-                                                let half = px(5.0);
-                                                window.paint_quad(fill(
-                                                    Bounds {
-                                                        origin: point(c.x - half, c.y - half),
-                                                        size: size(px(10.0), px(10.0)),
-                                                    },
-                                                    color,
-                                                ));
-                                            }
-                                        }
-
-                                        // Reshape/Move preview: the way's whole
-                                        // outline as it would be after the drop.
-                                        if let Some(drag) = this
-                                            .extrude_drag
-                                            .as_ref()
-                                            .filter(|d| d.style != ExtrudeStyle::NewWay)
-                                        {
-                                            if let Some(mouse_pos) = this.last_mouse_pos {
-                                                if let Some(result) =
-                                                    this.compute_extrude(drag, mouse_pos)
-                                                {
-                                                    let mut builder = PathBuilder::stroke(px(2.0));
-                                                    for (i, p) in result.outline.iter().enumerate()
-                                                    {
-                                                        let p = point(
-                                                            px(p.0 as f32) + bounds.origin.x,
-                                                            px(p.1 as f32) + bounds.origin.y,
-                                                        );
-                                                        if i == 0 {
-                                                            builder.move_to(p);
-                                                        } else {
-                                                            builder.line_to(p);
-                                                        }
-                                                    }
-                                                    if let Ok(path) = builder.build() {
-                                                        window.paint_path(path, rgb(0x3b82f6));
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(drag) = this
-                                            .extrude_drag
-                                            .as_ref()
-                                            .filter(|d| d.style == ExtrudeStyle::NewWay)
-                                        {
-                                            if let Some(mouse_pos) = this.last_mouse_pos {
-                                                if let Some(layer) =
-                                                    this.layer_manager.find_layer(drag.layer)
-                                                {
-                                                    if let Some(editable) = layer.as_editable() {
-                                                        if let (Some(a_geo), Some(b_geo)) = (
-                                                            editable.node_lat_lon(drag.node_a),
-                                                            editable.node_lat_lon(drag.node_b),
-                                                        ) {
-                                                            let origin_x = bounds.origin.x;
-                                                            let origin_y = bounds.origin.y;
-                                                            let cursor_geo = viewport_clone
-                                                                .screen_to_geo(mouse_pos);
-                                                            let (far_a, far_b) = this
-                                                                .rectangle_from_geo_edge(
-                                                                    a_geo, b_geo, cursor_geo,
-                                                                );
-                                                            let a_screen = viewport_clone
-                                                                .geo_to_screen(a_geo.0, a_geo.1);
-                                                            let b_screen = viewport_clone
-                                                                .geo_to_screen(b_geo.0, b_geo.1);
-                                                            let far_a_screen = viewport_clone
-                                                                .geo_to_screen(far_a.0, far_a.1);
-                                                            let far_b_screen = viewport_clone
-                                                                .geo_to_screen(far_b.0, far_b.1);
-                                                            let pts = [
-                                                                a_screen,
-                                                                b_screen,
-                                                                far_b_screen,
-                                                                far_a_screen,
-                                                                a_screen,
-                                                            ];
-                                                            let mut builder =
-                                                                PathBuilder::stroke(px(2.0));
-                                                            for (i, p) in pts.iter().enumerate() {
-                                                                let p = point(
-                                                                    p.x + origin_x,
-                                                                    p.y + origin_y,
-                                                                );
-                                                                if i == 0 {
-                                                                    builder.move_to(p);
-                                                                } else {
-                                                                    builder.line_to(p);
-                                                                }
-                                                            }
-                                                            if let Ok(path) = builder.build() {
-                                                                window.paint_path(
-                                                                    path,
-                                                                    rgb(0x3b82f6),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(target) = &this.snap_preview {
-                                            paint_snap_target(
-                                                target,
-                                                &viewport_clone,
-                                                bounds.origin,
-                                                window,
-                                            );
-                                        }
-
-                                        if let Some(progress) = &this.add_progress {
-                                            if let Some(mouse_pos) = this.last_mouse_pos {
-                                                if let Some(layer_id) = this.active_layer {
-                                                    if let Some(layer) =
-                                                        this.layer_manager.find_layer(layer_id)
-                                                    {
-                                                        if let Some(editable) = layer.as_editable()
-                                                        {
-                                                            if let Some(last_geo) = editable
-                                                                .node_lat_lon(progress.last_node_id)
-                                                            {
-                                                                let origin_x = bounds.origin.x;
-                                                                let origin_y = bounds.origin.y;
-                                                                let last_screen = viewport_clone
-                                                                    .geo_to_screen(
-                                                                        last_geo.0, last_geo.1,
-                                                                    );
-                                                                let p0 = point(
-                                                                    last_screen.x + origin_x,
-                                                                    last_screen.y + origin_y,
-                                                                );
-                                                                let p1 = point(
-                                                                    mouse_pos.x + origin_x,
-                                                                    mouse_pos.y + origin_y,
-                                                                );
-                                                                let mut builder =
-                                                                    PathBuilder::stroke(px(2.0));
-                                                                builder.move_to(p0);
-                                                                builder.line_to(p1);
-                                                                if let Ok(path) = builder.build() {
-                                                                    window.paint_path(
-                                                                        path,
-                                                                        rgb(0x3b82f6),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                            },
+                                            window,
+                                        );
                                     }
                                 })
                                 .absolute()
